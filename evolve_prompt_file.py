@@ -3,7 +3,7 @@ import openai
 import os
 import re
 
-# --- Load Config --- #
+# --- Load Config --- # (supports Render deployment with env vars)
 try:
     with open("config.json", encoding="utf-8") as f:
         config = json.load(f)

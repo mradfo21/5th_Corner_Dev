@@ -9,15 +9,25 @@ import base64
 from pathlib import Path
 
 # Load config
+import os
 ROOT = Path(__file__).parent
-with open(ROOT / "config.json", "r", encoding="utf-8") as f:
-    config = json.load(f)
+# Load config from file if it exists, otherwise use empty dict (for Render deployment)
+try:
+    with open(ROOT / "config.json", "r", encoding="utf-8") as f:
+        config = json.load(f)
+except FileNotFoundError:
+    config = {}
 
 # Load prompts from JSON (single source of truth!)
-with open(ROOT / "prompts" / "simulation_prompts.json", "r", encoding="utf-8") as f:
-    PROMPTS = json.load(f)
+try:
+    with open(ROOT / "prompts" / "simulation_prompts.json", "r", encoding="utf-8") as f:
+        PROMPTS = json.load(f)
+except FileNotFoundError:
+    with open(ROOT / "prompts" / "1993_base.json", "r", encoding="utf-8") as f:
+        PROMPTS = json.load(f)
 
-GEMINI_API_KEY = config.get("GEMINI_API_KEY", "")
+# Read from environment variables first, fall back to config.json
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", config.get("GEMINI_API_KEY", ""))
 IMAGE_DIR = Path("images")
 
 # Google Gemini models

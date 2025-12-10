@@ -25,9 +25,16 @@ if DISCORD_ENABLED:
 
     # ───────── configuration ────────────────────────────────────────────────────
     ROOT   = Path(__file__).parent.resolve()
-    conf   = json.load((ROOT / "config.json").open(encoding="utf-8"))
-    TOKEN  = conf["DISCORD_TOKEN"]
-    CHAN   = int(conf["CHANNEL_ID"])
+    
+    # Load config from file if it exists, otherwise use empty dict (for Render deployment)
+    try:
+        conf = json.load((ROOT / "config.json").open(encoding="utf-8"))
+    except FileNotFoundError:
+        conf = {}
+    
+    # Read from environment variables first, fall back to config.json
+    TOKEN  = os.getenv("DISCORD_TOKEN", conf.get("DISCORD_TOKEN"))
+    CHAN   = int(os.getenv("CHANNEL_ID", conf.get("CHANNEL_ID", 0)))
     VOTE_S = int(os.getenv("VOTE_SECONDS", conf.get("VOTE_SECONDS", 120)))
     
     # Reset game state on bot startup (unless RESUME_MODE is enabled)
@@ -38,8 +45,8 @@ if DISCORD_ENABLED:
 
     EMOJI = ["1️⃣", "2️⃣", "3️⃣"]
 
-    DISCORD_TOKEN = conf["DISCORD_TOKEN"]
-    OPENAI_API_KEY = conf["OPENAI_API_KEY"]
+    DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", conf.get("DISCORD_TOKEN"))
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", conf.get("OPENAI_API_KEY"))
 
     # ───────── discord init ─────────────────────────────────────────────────────
     logging.basicConfig(level=logging.INFO, format="BOT | %(message)s")
@@ -911,7 +918,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
             loop = asyncio.get_running_loop()
             loop.run_in_executor(None, self._do_reset)
             # 3. Reset inactivity timer
-            start_inactivity_timer(interaction.channel)
+            # start_inactivity_timer(interaction.channel)  # TODO: Not implemented yet
 
         def _do_reset(self):
             try:
