@@ -4,11 +4,14 @@ import os
 import re
 
 # --- Load Config --- #
-with open("config.json", encoding="utf-8") as f:
-    config = json.load(f)
+try:
+    with open("config.json", encoding="utf-8") as f:
+        config = json.load(f)
+except FileNotFoundError:
+    config = {}
 
 # --- OpenAI API Key --- #
-OPENAI_API_KEY = config["OPENAI_API_KEY"]
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", config.get("OPENAI_API_KEY"))
 
 # Initialize OpenAI client
 openai.api_key = OPENAI_API_KEY
