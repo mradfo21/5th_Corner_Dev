@@ -145,7 +145,6 @@ def log_error(message: str):
     print(f"ERROR: {message}", file=sys.stderr, flush=True)
 
 # ───────── prompt fragments ──────────────────────────────────────────────────
-style_prompt    = PROMPTS["style_prompt"]
 image_modes     = PROMPTS["image_mode_styles"]
 choice_tmpl     = PROMPTS["choice_prompt_template"]
 dispatch_sys    = PROMPTS["dispatch_system_guide"]
@@ -553,7 +552,7 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
         use_color = prev_color
         flux_instruction = PROMPTS.get("image_prompt_instruction", "")
         neg = PROMPTS["image_negative_prompt"]
-        style_block = f"{image_aesthetic} {style_prompt} {image_modes[mode]}. Time of day: {use_time_of_day}. Color: {use_color}. No: {neg}"
+        style_block = f"{image_aesthetic} {image_modes[mode]}. Time of day: {use_time_of_day}. Color: {use_color}. No: {neg}"
         prev_captions = ". ".join(prev_img_captions) if prev_img_captions else ""
         # --- Inject world summary as background context ---
         world_summary = summarize_world_state(state) if 'state' in globals() else ""
