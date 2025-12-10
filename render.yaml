@@ -3,7 +3,7 @@ services:
     name: somewhere-discord-bot
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python render_start.py
+    startCommand: python bot.py
     envVars:
       - key: DISCORD_TOKEN
         sync: false
