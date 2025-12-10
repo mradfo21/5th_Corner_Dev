@@ -1,0 +1,8 @@
+openai
+flask
+flask-cors
+Pillow
+discord.py
+requests
+replicate
+imageio-ffmpeg 

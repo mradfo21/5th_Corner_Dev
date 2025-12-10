@@ -1,0 +1,74 @@
+[
+  {
+    "turn": 1,
+    "dispatch": null,
+    "choices": [
+      "Observe the guards' movements and look for an opening to move closer to the facility.",
+      "Use the distraction to quietly move toward the facility entrance.",
+      "\u2014"
+    ],
+    "issues": [
+      "The dispatch is missing, making it difficult to assess the contextual grounding of the choices.",
+      "The third choice ('\u2014') is incoherent and not actionable."
+    ],
+    "suggestions": [
+      "Provide a brief scene description or context for where the player currently is to better ground the choices.",
+      "Replace the incoherent choice with a specific action such as 'Assess the surroundings for alternative entry points.'"
+    ]
+  },
+  {
+    "turn": 2,
+    "dispatch": "Jason darts from his cover, using the fiery chaos as a shield, and slips past the distracted guards toward the facility's side entrance.",
+    "choices": [
+      "Examine the discarded backpack and map for clues",
+      "Approach the side entrance",
+      "Listen carefully for any approaching vehicles or guards"
+    ],
+    "issues": [],
+    "suggestions": []
+  },
+  {
+    "turn": 3,
+    "dispatch": "Jason edges closer to the facility's perimeter, spotting a guard's predictable patrol loop, then darts behind a nearby stack of crates.",
+    "choices": [
+      "Observe guard's movements",
+      "Examine the abandoned backpack",
+      "Investigate the graffiti symbols on the facility's outer wall"
+    ],
+    "issues": [],
+    "suggestions": []
+  },
+  {
+    "turn": 4,
+    "dispatch": "Jason crouches behind a crumbling partition, watching as guards in black tactical gear with red night vision goggles patrol the corridor, their weapons raised, scanning for intruders.",
+    "choices": [
+      "Observe guard movements",
+      "Crawl toward the exit",
+      "Try to decipher the graffiti symbols from memory"
+    ],
+    "issues": [],
+    "suggestions": []
+  },
+  {
+    "turn": 5,
+    "dispatch": "Jason ducks behind a rusted barrel, noting the guards' patrol patterns as they converge near a Horizon-branded checkpoint, their red night vision goggles glowing ominously.",
+    "choices": [
+      "Observe guard patterns closely",
+      "Hide behind nearby crates",
+      "Study the graffiti for clues"
+    ],
+    "issues": [],
+    "suggestions": []
+  },
+  {
+    "turn": 6,
+    "dispatch": "Jason slips past the fence, crouching low as armed guards with red night vision goggles patrol nearby, their focus momentarily diverted by a distant explosion.",
+    "choices": [
+      "Examine the cryptic symbols on the abandoned vehicle more closely.",
+      "Move quietly towards the source of the radio transmission to gather more information.",
+      "Find a hidden spot to observe the guards and plan the next move."
+    ],
+    "issues": [],
+    "suggestions": []
+  }
+]

@@ -1,0 +1,34 @@
+[
+  {
+    "name": "Jason Fleece",
+    "role": "Independent field journalist",
+    "affiliation": "None (formerly Associated Press)",
+    "description": "Embedded in the Four Corners zone, documenting Horizon Corporation’s activities. Collected, persistent, emotionally distant.",
+    "important": true,
+    "notes": "Believes his father was involved in the original incident. Sends dispatches via encrypted radio."
+  },
+  {
+    "name": "Kane Fleece",
+    "role": "Former Horizon executive",
+    "affiliation": "Horizon Corporation (missing)",
+    "description": "Jason’s estranged father. Vanished shortly after the Gateway anomaly was discovered. May have entered the site before lockdown.",
+    "important": true,
+    "notes": "Mentioned in redacted reports and internal memos. Motivations unclear."
+  },
+  {
+    "name": "Kelsey Rowe",
+    "role": "Editor, Associated Press",
+    "affiliation": "AP, New York Bureau",
+    "description": "Jason’s last known contact outside the zone. Receives encrypted updates and curates them for potential release.",
+    "important": moderate,
+    "notes": "Struggling to verify Jason’s materials due to military interference and increasing media blackouts."
+  },
+  {
+    "name": "Hoc",
+    "role": "Activist and investigator",
+    "affiliation": "Unknown (possible ties to whistleblower networks)",
+    "description": "Ruthless and resourceful outsider attempting to uncover the truth. Known to infiltrate military perimeters and sabotage Horizon equipment.",
+    "important": true,
+    "notes": "Believes Horizon is covering up a mass casualty event. May be following Jason’s trail."
+  }
+]

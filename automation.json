@@ -1,0 +1,12 @@
+{
+  "directive": "Automated Self-Improvement Workflow",
+  "description": "This project is currently set up for automated testing and iterative self-improvement. The workflow is as follows: 1) Run autotest.py to generate playthrough logs and improvement suggestions. 2) Parse and prioritize suggestions from autotest_suggestions.json. 3) Implement improvements iteratively, focusing on narrative, prompt, and system enhancements. 4) Re-run autotest.py to validate changes and repeat the cycle.",
+  "steps": [
+    "Run autotest.py to perform automated playthroughs and generate suggestions.",
+    "Review and parse autotest_suggestions.json for actionable improvements.",
+    "Implement prioritized suggestions in code or prompts.",
+    "Re-run autotest.py to test the effectiveness of changes.",
+    "Repeat the cycle for continuous self-improvement."
+  ],
+  "note": "This file signals that the current project directive is to use automated testing and self-improvement. Any time this workspace is opened, this workflow should be followed until the directive changes."
+} 

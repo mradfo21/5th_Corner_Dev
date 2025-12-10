@@ -1,0 +1,74 @@
+[
+  {
+    "turn": 1,
+    "choice": "Crawl toward the facility",
+    "dispatch": null,
+    "image": null,
+    "caption": null,
+    "choices": [
+      "Observe the guards' movements and look for an opening to move closer to the facility.",
+      "Use the distraction to quietly move toward the facility entrance.",
+      "\u2014"
+    ]
+  },
+  {
+    "turn": 2,
+    "choice": "Observe guards' reactions",
+    "dispatch": "Jason darts from his cover, using the fiery chaos as a shield, and slips past the distracted guards toward the facility's side entrance.",
+    "image": null,
+    "caption": "A rusted Horizon vehicle looms nearby, its corroded surface blending into the shadows. Beyond it, the facility sprawls, a monolithic structure under the dim light. A group of guards, clad in black, patrols near a quarantine fence, their red night vision goggles glowing ominously as they scan the area. Suddenly, a figure darts from the shadows, arm arcing forward. A Molotov cocktail sails through the air, shattering against the ground near the guards. Flames burst",
+    "choices": [
+      "Examine the discarded backpack and map for clues",
+      "Approach the side entrance",
+      "Listen carefully for any approaching vehicles or guards"
+    ]
+  },
+  {
+    "turn": 3,
+    "choice": "Observe the guards' patterns",
+    "dispatch": "Jason edges closer to the facility's perimeter, spotting a guard's predictable patrol loop, then darts behind a nearby stack of crates.",
+    "image": null,
+    "caption": "A chain-link fence stretches across the horizon, topped with razor wire glinting under a dim, overcast sky. Beyond the fence, a guard in a dark uniform walks a steady, repetitive path, his flashlight beam cutting through the gloom in rhythmic sweeps. To the side, a stack of weathered crates stands, casting long shadows across the cracked pavement.\n\nThe facility's outer wall looms nearby, covered in fresh graffiti. The symbols are jagged and cryptic, their dark paint stark",
+    "choices": [
+      "Observe guard's movements",
+      "Examine the abandoned backpack",
+      "Investigate the graffiti symbols on the facility's outer wall"
+    ]
+  },
+  {
+    "turn": 4,
+    "choice": "Observe the guards' movements",
+    "dispatch": "Jason crouches behind a crumbling partition, watching as guards in black tactical gear with red night vision goggles patrol the corridor, their weapons raised, scanning for intruders.",
+    "image": null,
+    "caption": "A crumbling partition stands in the foreground, pieces of plaster flaking off and littering the ground. Beyond it, a dimly lit corridor stretches out, its walls lined with peeling paint and exposed wires. Guards in black tactical gear move methodically through the space, their red night vision goggles glowing ominously in the low light. Each guard grips a weapon, sweeping it across the corridor in calculated arcs, their movements precise and synchronized.\n\nOn the outer wall of the facility, layers of graffiti are",
+    "choices": [
+      "Observe guard movements",
+      "Crawl toward the exit",
+      "Try to decipher the graffiti symbols from memory"
+    ]
+  },
+  {
+    "turn": 5,
+    "choice": "Observe the guards' movements to find a safe path through the chaos.",
+    "dispatch": "Jason ducks behind a rusted barrel, noting the guards' patrol patterns as they converge near a Horizon-branded checkpoint, their red night vision goggles glowing ominously.",
+    "image": null,
+    "caption": "A rusted barrel stands to the side, its surface flaking with age and neglect. Beyond it, two guards move in synchronized patterns, their boots crunching against the gravel. They pause near a checkpoint, the Horizon logo barely visible under the dim light. The guards' red night vision goggles cast an eerie glow, cutting through the darkness like ghostly eyes. \n\nOn the walls of the abandoned factory, fresh graffiti sprawls across the crumbling brick, a series of cryptic symbols that seem",
+    "choices": [
+      "Observe guard patterns closely",
+      "Hide behind nearby crates",
+      "Study the graffiti for clues"
+    ]
+  },
+  {
+    "turn": 6,
+    "choice": "Slip past the fence while the guards are distracted",
+    "dispatch": "Jason slips past the fence, crouching low as armed guards with red night vision goggles patrol nearby, their focus momentarily diverted by a distant explosion.",
+    "image": null,
+    "caption": "A chain-link fence looms ahead, its metallic surface glistening under the dim glow of distant floodlights. Beyond the fence, shadows shift as armed guards move in synchronized patrols. Their red night vision goggles cast an eerie glow, scanning the area with mechanical precision. Suddenly, a bright flash illuminates the horizon, followed by a muted explosion, momentarily pulling the guards' attention away.\n\nOn the facility's outer wall, a fresh piece of graffiti stands out against the concrete, a series",
+    "choices": [
+      "Examine the cryptic symbols on the abandoned vehicle more closely.",
+      "Move quietly towards the source of the radio transmission to gather more information.",
+      "Find a hidden spot to observe the guards and plan the next move."
+    ]
+  }
+]

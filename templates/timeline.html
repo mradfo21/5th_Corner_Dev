@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>📜 Narrative Timeline</title>
+  <style>
+    body {
+      background: #000;
+      color: #eee;
+      font-family: monospace;
+      padding: 2em;
+    }
+    h1 { color: #6ef; }
+    .entry {
+      margin-bottom: 3em;
+      border-bottom: 1px solid #333;
+      padding-bottom: 1em;
+    }
+    .dispatch { font-weight: bold; color: #6ef; }
+    .caption { color: #aaa; margin-top: 0.3em; }
+    .narrative {
+      margin-top: 1em;
+      padding: 0.5em 1em;
+      background: #111;
+      border-left: 3px solid #555;
+      white-space: pre-wrap;
+    }
+    .meta {
+      font-size: 0.8em;
+      color: #888;
+      margin-top: 0.5em;
+    }
+    .consequence-box {
+      background: #fffbe6;
+      color: #b85c00;
+      border: 2px solid #ffbb33;
+      border-radius: 6px;
+      margin: 1em 0;
+      padding: 0.7em 1em;
+      font-weight: bold;
+      font-size: 1.1em;
+      box-shadow: 0 2px 8px #ffbb3340;
+      animation: pulse-fade 1.1s cubic-bezier(0.4,0,0.2,1);
+      transition: background 0.3s, color 0.3s, border 0.3s, opacity 0.3s;
+    }
+    @keyframes pulse-fade {
+      0% { background: #fffbe6; color: #b85c00; border-color: #ffbb33; opacity: 0.2; }
+      30% { background: #ffbb33; color: #222; border-color: #ffbb33; opacity: 1; }
+      60% { background: #fffbe6; color: #b85c00; border-color: #ffbb33; opacity: 1; }
+      100% { background: #fffbe6; color: #b85c00; border-color: #ffbb33; opacity: 1; }
+    }
+  </style>
+</head>
+<body>
+<nav style="margin-bottom: 1em;">
+  <a href="/" style="color:#aaa;">📡 Dispatch Feed</a> |
+  <a href="/timeline" style="color:#6ef;">📜 Narrative Timeline</a>
+</nav>
+<hr style="border: none; border-top: 1px solid #333;">
+
+
+  <h1>📜 Narrative Timeline</h1>
+  {% for entry in history %}
+    <div class="entry">
+      <div class="dispatch">{{ entry.dispatch }}</div>
+      {% if entry.caption and ("consequence" in entry.caption.lower() or "danger" in entry.caption.lower() or "alert" in entry.caption.lower() or "event" in entry.caption.lower() or "mutation" in entry.caption.lower() or "alliance" in entry.caption.lower() or "chaos" in entry.caption.lower() or "injury" in entry.caption.lower() or "critical" in entry.caption.lower() or "warning" in entry.caption.lower() or "disaster" in entry.caption.lower() or "explosion" in entry.caption.lower() or "panic" in entry.caption.lower() or "contamination" in entry.caption.lower() or "artifact" in entry.caption.lower() or "ancient" in entry.caption.lower() or "storm" in entry.caption.lower() or "hostile" in entry.caption.lower() or "rumor" in entry.caption.lower() or "evidence" in entry.caption.lower() or "mutation" in entry.caption.lower() or "leader" in entry.caption.lower() or "broadcast" in entry.caption.lower() or "rescue" in entry.caption.lower() or "raid" in entry.caption.lower() or "sabotage" in entry.caption.lower() or "betrayal" in entry.caption.lower()) %}
+        <div class="consequence-box">⚠️ {{ entry.caption }}</div>
+      {% endif %}
+      {% if entry.narrative and ("consequence" in entry.narrative.lower() or "danger" in entry.narrative.lower() or "alert" in entry.narrative.lower() or "event" in entry.narrative.lower() or "mutation" in entry.narrative.lower() or "alliance" in entry.narrative.lower() or "chaos" in entry.narrative.lower() or "injury" in entry.narrative.lower() or "critical" in entry.narrative.lower() or "warning" in entry.narrative.lower() or "disaster" in entry.narrative.lower() or "explosion" in entry.narrative.lower() or "panic" in entry.narrative.lower() or "contamination" in entry.narrative.lower() or "artifact" in entry.narrative.lower() or "ancient" in entry.narrative.lower() or "storm" in entry.narrative.lower() or "hostile" in entry.narrative.lower() or "rumor" in entry.narrative.lower() or "evidence" in entry.narrative.lower() or "mutation" in entry.narrative.lower() or "leader" in entry.narrative.lower() or "broadcast" in entry.narrative.lower() or "rescue" in entry.narrative.lower() or "raid" in entry.narrative.lower() or "sabotage" in entry.narrative.lower() or "betrayal" in entry.narrative.lower()) %}
+        <div class="consequence-box">⚠️ {{ entry.narrative }}</div>
+      {% endif %}
+      <div class="meta">
+        Phase: {{ entry.phase }} | Prediction: {{ entry.prediction }} | {{ entry.timestamp }}
+      </div>
+    </div>
+  {% endfor %}
+</body>
+</html>
