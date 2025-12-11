@@ -2257,6 +2257,135 @@ def reset_state():
     _last_image_path = None
     print("[STARTUP] Game state cleared. Starting fresh.")
 
+def generate_intro_image_fast():
+    """
+    PHASE 1 (FAST): Generate ONLY the intro image and basic info.
+    Returns immediately so bot can display image while choices are generating.
+    """
+    global state, _last_image_path
+    import random
+    
+    # Randomize opening scene
+    opening_scenes = [
+        {
+            "prologue": "Jason surveys the Horizon facility from a rocky outcrop in the desert.",
+            "vision": "The Horizon facility sprawls across the red desert valley below, industrial structures stark against the mesa backdrop."
+        },
+        {
+            "prologue": "Jason stands at the edge of the quarantine perimeter, watching the facility in the distance.",
+            "vision": "Beyond the barbed wire fence, the Horizon facility's concrete structures stretch across the arid landscape."
+        },
+        {
+            "prologue": "Jason approaches the facility compound across the open desert terrain.",
+            "vision": "The facility looms ahead across the barren red earth, its angular silhouette cutting through the dusty air."
+        },
+        {
+            "prologue": "Jason pauses near a warning sign marking the quarantine zone boundary.",
+            "vision": "Past the weathered quarantine signs, the sprawling Horizon complex dominates the valley floor."
+        },
+        {
+            "prologue": "Jason observes the facility from a vantage point atop the red mesa.",
+            "vision": "From the mesa's edge, the entire Horizon facility layout is visible below—a vast industrial complex in the desert."
+        }
+    ]
+    
+    scene = random.choice(opening_scenes)
+    prologue = scene["prologue"]
+    vision_dispatch = scene["vision"]
+    
+    state = _load_state()
+    state["world_prompt"] = prologue
+    state["current_phase"] = "normal"
+    state["chaos_level"] = 0
+    state["last_choice"] = ""
+    state["seen_elements"] = []
+    state["player_state"] = {"alive": True, "health": 100}
+    _save_state(state)
+    
+    mode = state.get("mode", "camcorder")
+    
+    # Generate opening image ONLY
+    dispatch_img_url = None
+    try:
+        print("[INTRO FAST] Generating opening image...")
+        dispatch_img_url = _gen_image(
+            vision_dispatch,
+            mode,
+            "Intro",
+            image_description="",
+            time_of_day=state.get('time_of_day', 'golden hour'),
+            use_edit_mode=False,
+            frame_idx=0,
+            dispatch=prologue,
+            world_prompt=prologue,
+            hard_transition=False
+        )
+        if dispatch_img_url:
+            print(f"✅ [INTRO FAST] Image ready for display: {dispatch_img_url}")
+            _last_image_path = dispatch_img_url
+    except Exception as e:
+        print(f"❌ [INTRO FAST] Image generation error: {e}")
+    
+    return {
+        "dispatch": prologue,
+        "vision_dispatch": vision_dispatch,
+        "dispatch_image": dispatch_img_url,
+        "prologue": prologue,
+        "mode": mode
+    }
+
+def generate_intro_choices_deferred(image_url: str, prologue: str, vision_dispatch: str, dispatch: str = None):
+    """
+    PHASE 2 (DEFERRED): Generate choices after image is displayed.
+    Can run in background while user is looking at the image.
+    """
+    global state, history
+    from choices import generate_choices
+    
+    state = _load_state()
+    
+    # Generate dynamic situation report from LLM based on current world state
+    situation_summary = _generate_situation_report()
+    options = generate_choices(
+        client, choice_tmpl,
+        prologue,  # What's happening in intro
+        n=3,
+        image_url=image_url,  # Gemini sees the image directly!
+        seen_elements='',
+        recent_choices='',
+        caption="",  # Let Gemini look at image, not stale text
+        image_description="",  # Let Gemini look at image, not stale text
+        time_of_day=state.get('time_of_day', ''),
+        world_prompt=prologue,
+        temperature=0.7,
+        situation_summary=situation_summary
+    )
+    if len(options) == 1:
+        parts = re.split(r"[\/,\x19\x12\-]|  +", options[0])
+        options = [p.strip() for p in parts if p.strip()][:3]
+    # Don't pad with placeholders - just return what we got
+    
+    # Save to history
+    entry = {
+        "choice": "Intro",
+        "dispatch": prologue,
+        "vision_dispatch": vision_dispatch,
+        "vision_analysis": "",  # Not needed anymore
+        "world_prompt": prologue,
+        "image": image_url,
+        "image_url": image_url
+    }
+    history = [entry]
+    (ROOT / "history.json").write_text(json.dumps(history, indent=2))
+    _save_state(state)
+    
+    return {
+        "choices": options,
+        "phase": state["current_phase"],
+        "chaos": state["chaos_level"],
+        "player_state": state.get('player_state', {})
+    }
+
 def generate_intro_turn():
     """
     Generate the intro turn: dispatch, vision_dispatch, image, and choices,

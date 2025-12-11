@@ -9,5 +9,7 @@ services:
         sync: false
       - key: GEMINI_API_KEY
         sync: false
+      - key: OPENAI_API_KEY
+        sync: false
       - key: CHANNEL_ID
         sync: false 
