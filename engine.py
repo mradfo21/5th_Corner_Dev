@@ -580,12 +580,15 @@ def summarize_world_prompt_for_image(world_prompt: str) -> str:
 def _generate_dispatch(choice: str, state: dict, prev_state: dict = None) -> dict:
     """Generate dispatch with death detection. Returns dict with 'dispatch' and 'player_alive' keys."""
     try:
-        # Get previous vision analysis for spatial consistency
+        # Get previous vision analysis AND image for spatial consistency
         prev_vision = ""
+        prev_image_path = None
         if history and len(history) > 0:
             last_entry = history[-1]
             if last_entry.get("vision_analysis"):
                 prev_vision = last_entry["vision_analysis"][:300]
+            if last_entry.get("image"):
+                prev_image_path = last_entry["image"]  # e.g. "/images/123_file.png"
         
         spatial_context = ""
         if prev_vision:
@@ -600,7 +603,8 @@ def _generate_dispatch(choice: str, state: dict, prev_state: dict = None) -> dic
             f"{spatial_context}\n\n"
             "Describe what Jason does and what immediately happens as a result."
         )
-        result = _ask(prompt, model="gemini", temp=1.0, tokens=250)
+        # Pass previous image for visual continuity
+        result = _ask(prompt, model="gemini", temp=1.0, tokens=250, image_path=prev_image_path)
         
         # Try to parse as JSON first (new format)
         import json
@@ -898,7 +902,8 @@ def _generate_vision_dispatch(narrative_dispatch: str, world_prompt: str = "") -
     return result
 
 # ───────── public API (two‑stage) ───────────────────────────────────────────
-def _generate_situation_report() -> str:
+def _generate_situation_report(current_image: str = None) -> str:
+    """Generate situation report with optional visual context from current frame."""
     if history:
         last_dispatch = history[-1]["dispatch"]
         # Use the updated world state after the simulation tick
@@ -915,7 +920,8 @@ def _generate_situation_report() -> str:
             major_event_nudge +
             "\nDescribe what is happening NOW, after the dispatch, as a concise 1-2 sentence situation. This should set up the next set of choices."
         )
-        return _ask(prompt, model="gemini", temp=0.7, tokens=40)
+        # Pass current image for visual grounding
+        return _ask(prompt, model="gemini", temp=0.7, tokens=40, image_path=current_image)
     return "You stand on a rocky outcrop overlooking the Horizon facility, the quarantine fence stretching across the red desert. Patrol lights sweep the landscape as distant thunder rumbles."
 
 def begin_tick() -> dict:
@@ -2316,7 +2322,7 @@ def advance_turn_choices_deferred(consequence_img_url: str, dispatch: str, visio
     from choices import generate_choices
     
     state = _load_state()
-    situation_summary = _generate_situation_report()
+    situation_summary = _generate_situation_report(current_image=consequence_img_url)
     
     next_choices = generate_choices(
         client, choice_tmpl,
@@ -2560,7 +2566,7 @@ def generate_intro_choices_deferred(image_url: str, prologue: str, vision_dispat
     state = _load_state()
     
     # Generate dynamic situation report from LLM based on current world state
-    situation_summary = _generate_situation_report()
+    situation_summary = _generate_situation_report(current_image=image_url)
     options = generate_choices(
         client, choice_tmpl,
         prologue,  # What's happening in intro

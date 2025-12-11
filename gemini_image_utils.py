@@ -220,11 +220,12 @@ def generate_with_gemini(
     }
     
     try:
-        # Make the request with increased timeout and retry logic
-        max_retries = 2
+        # Make the request with REDUCED timeout (30s) to prevent death sequence hangs
+        # Gemini Pro can hang indefinitely on some prompts, especially death scenes
+        max_retries = 1  # Reduced from 2 - don't waste time retrying slow calls
         for attempt in range(max_retries):
             try:
-                response = requests.post(api_url, headers=headers, json=payload, timeout=120)
+                response = requests.post(api_url, headers=headers, json=payload, timeout=30)
                 response.raise_for_status()
                 break
             except requests.exceptions.Timeout:
@@ -232,7 +233,8 @@ def generate_with_gemini(
                     print(f"⏱️ [GOOGLE GEMINI] Timeout on attempt {attempt + 1}, retrying...")
                     continue
                 else:
-                    raise
+                    print(f"❌ [GOOGLE GEMINI] TIMEOUT after 30s - Gemini API not responding!")
+                    return None  # Graceful fallback instead of crash
         
         result = response.json()
         
@@ -298,7 +300,8 @@ def generate_with_gemini(
         raise
     except Exception as e:
         print(f"❌ [GOOGLE GEMINI] Unexpected error: {e}")
-        raise
+        print(f"❌ [GOOGLE GEMINI] Returning None to allow game to continue")
+        return None  # Graceful fallback - don't crash the death sequence!
 
 
 def _apply_fps_hands_compositing(corrected_path, small_corrected_path, action_context=""):
@@ -386,7 +389,12 @@ def _apply_fps_hands_compositing(corrected_path, small_corrected_path, action_co
             print("⚠️ [FPS COMPOSITING] No result, using corrected image")
             return None
         
-        image_b64 = result["candidates"][0]["content"]["parts"][0]["inlineData"]["data"]
+        # Safely access parts with error handling
+        try:
+            image_b64 = result["candidates"][0]["content"]["parts"][0]["inlineData"]["data"]
+        except (KeyError, IndexError) as e:
+            print(f"⚠️ [FPS COMPOSITING] Error extracting image: {e}, response: {result}")
+            return None
         composited_bytes = base64.b64decode(image_b64)
         
         # Save composited version with _fps suffix
@@ -494,7 +502,12 @@ def _apply_pov_correction(original_path, small_path, previous_corrected_path=Non
             print("⚠️ [POV CORRECTION] No result, using original")
             return None
         
-        image_b64 = result["candidates"][0]["content"]["parts"][0]["inlineData"]["data"]
+        # Safely access parts with error handling
+        try:
+            image_b64 = result["candidates"][0]["content"]["parts"][0]["inlineData"]["data"]
+        except (KeyError, IndexError) as e:
+            print(f"⚠️ [POV CORRECTION] Error extracting image: {e}, response: {result}")
+            return None
         corrected_bytes = base64.b64decode(image_b64)
         
         # Save corrected version with _corrected suffix
@@ -653,11 +666,12 @@ def generate_gemini_img2img(
     }
     
     try:
-        # Make the request with increased timeout and retry logic
-        max_retries = 2
+        # Make the request with REDUCED timeout (30s) to prevent death sequence hangs
+        # Gemini Pro can hang indefinitely on some prompts, especially death scenes
+        max_retries = 1  # Reduced from 2 - don't waste time retrying slow calls
         for attempt in range(max_retries):
             try:
-                response = requests.post(api_url, headers=headers, json=payload, timeout=120)
+                response = requests.post(api_url, headers=headers, json=payload, timeout=30)
                 response.raise_for_status()
                 break
             except requests.exceptions.Timeout:
@@ -665,9 +679,18 @@ def generate_gemini_img2img(
                     print(f"⏱️ [GOOGLE GEMINI] Timeout on attempt {attempt + 1}, retrying...")
                     continue
                 else:
-                    raise
+                    print(f"❌ [GOOGLE GEMINI] TIMEOUT after 30s - Gemini API not responding!")
+                    return None  # Graceful fallback instead of crash
         
         result = response.json()
+        
+        # Check for API errors first
+        if "candidates" not in result:
+            print(f"❌ [GOOGLE GEMINI] API error response: {result}")
+            if "error" in result:
+                error_details = result['error']
+                print(f"❌ [GOOGLE GEMINI] Error code: {error_details.get('code')}, Message: {error_details.get('message')}")
+            raise RuntimeError(f"Gemini image API error: {result.get('error', {}).get('message', 'Unknown error')}")
         
         # Extract image data
         parts = result["candidates"][0]["content"]["parts"]
@@ -712,5 +735,6 @@ def generate_gemini_img2img(
         
     except Exception as e:
         print(f"❌ [GOOGLE GEMINI] Edit error: {e}")
-        raise
+        print(f"❌ [GOOGLE GEMINI] Returning None to allow game to continue")
+        return None  # Graceful fallback - don't crash the death sequence!
 

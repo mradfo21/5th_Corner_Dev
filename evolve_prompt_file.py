@@ -186,20 +186,48 @@ def evolve_world_state(dispatches, consequence_summary=None, state_file="world_s
         import requests
         gemini_api_key = GEMINI_API_KEY
         
-        # Convert messages to Gemini format
-        prompt_text = ""
+        # Convert messages to Gemini format WITH IMAGES
+        import base64
+        from pathlib import Path
+        
+        parts = []
         for msg in messages:
             if msg["role"] == "system":
-                prompt_text += f"{msg['content']}\n\n"
+                parts.append({"text": f"{msg['content']}\n\n"})
             elif msg["role"] == "user":
-                prompt_text += msg["content"]
+                # Handle both string content and multimodal list content
+                if isinstance(msg["content"], str):
+                    parts.append({"text": msg["content"]})
+                elif isinstance(msg["content"], list):
+                    for item in msg["content"]:
+                        if item["type"] == "text":
+                            parts.append({"text": item["text"]})
+                        elif item["type"] == "image_url":
+                            # Convert image URL to inline data for Gemini
+                            img_url = item["image_url"]["url"]
+                            if img_url.startswith("/images/"):
+                                img_path = Path("images") / img_url.replace("/images/", "")
+                                # Use small version if available
+                                small_path = img_path.parent / img_path.name.replace(".png", "_small.png")
+                                use_path = small_path if small_path.exists() else img_path
+                                
+                                if use_path.exists():
+                                    with open(use_path, "rb") as f:
+                                        image_data = base64.b64encode(f.read()).decode('utf-8')
+                                    parts.insert(0, {
+                                        "inlineData": {
+                                            "mimeType": "image/png",
+                                            "data": image_data
+                                        }
+                                    })
+                                    print(f"[WORLD EVOLUTION] Including image for context: {img_url}")
         
         print("[GEMINI TEXT] Calling Gemini 2.0 Flash for world evolution...")
         response_data = requests.post(
             "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
             headers={"x-goog-api-key": gemini_api_key, "Content-Type": "application/json"},
             json={
-                "contents": [{"parts": [{"text": prompt_text}]}],
+                "contents": [{"parts": parts}],
                 "generationConfig": {"temperature": 0.8, "maxOutputTokens": 60}  # Force brevity!
             },
             timeout=30

@@ -14,3 +14,7 @@ history.json
 *.gif
 *.mp4
 .env
+*.env
+render.env
+RENDER_SETUP.txt
+test_*.py
