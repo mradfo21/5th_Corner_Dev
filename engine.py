@@ -103,6 +103,9 @@ IMAGE_PROVIDER = CONFIG.get("IMAGE_PROVIDER", "openai").lower()
 # Track the last dispatch image path for vision continuity
 _last_image_path: Optional[str] = None
 
+# Global vision cache to avoid re-analyzing the same image
+_vision_cache = {}
+
 # Add a global counter for choices since last reset
 _choices_since_edit_reset = 0
 
