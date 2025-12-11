@@ -1787,6 +1787,203 @@ def discord_token_exchange():
         logging.error(f"Error in Discord token exchange: {e}")
         return jsonify({"error": "Internal server error during token exchange"}), 500
 
+# ───────── game loop ──────────────────────────────────────────────────────────
+def advance_turn_image_fast(choice: str) -> dict:
+    """
+    PHASE 1 (FAST): Generate dispatch and image, return immediately.
+    Returns image ASAP so bot can display it while choices are generating.
+    """
+    global state, history
+    try:
+        state = _load_state()
+        history_path = ROOT / "history.json"
+        if history_path.exists():
+            with history_path.open("r", encoding="utf-8") as f:
+                history = json.load(f)
+        else:
+            history = []
+        prev_state = state.copy() if isinstance(state, dict) else dict(state)
+        from choices import generate_and_apply_choice, generate_choices
+        generate_and_apply_choice(choice)
+        state = _load_state()
+        
+        # Get previous vision and image
+        prev_vision = ""
+        prev_image = None
+        if history and len(history) > 0:
+            prev_vision = history[-1].get("vision_dispatch", "")
+            prev_image = history[-1].get("image_url", None)
+        
+        # Generate dispatch
+        dispatch = _generate_dispatch(choice, state, prev_state)
+        vision_dispatch = dispatch  # Simplified
+        player_alive = state.get('player_state', {}).get('alive', True)
+        
+        state['player_state']['alive'] = player_alive
+        _save_state(state)
+        
+        if not dispatch or dispatch.strip().lower() in {"none", "", "[", "[]"}:
+            dispatch = "Jason makes a tense move in the chaos."
+        if not vision_dispatch or vision_dispatch.strip().lower() in {"none", "", "[", "[]"}:
+            vision_dispatch = dispatch
+        
+        # Evolve world state
+        from evolve_prompt_file import evolve_world_state
+        consequence_summary = summarize_world_state(state)
+        evolve_world_state(history, consequence_summary, vision_description=vision_dispatch)
+        state = _load_state()
+        
+        # Generate image
+        mode = state.get("mode", "camcorder")
+        frame_idx = len(history) + 1
+        hard_transition = is_hard_transition(choice, dispatch)
+        
+        consequence_img_url = None
+        try:
+            last_image_path = None
+            if history and len(history) > 0:
+                for entry in reversed(history):
+                    if entry.get("image"):
+                        last_image_path = entry["image"].lstrip("/")
+                        break
+            
+            consequence_img_url = _gen_image(
+                vision_dispatch,
+                mode,
+                choice,
+                image_description="",
+                time_of_day=state.get('time_of_day', ''),
+                use_edit_mode=(last_image_path and os.path.exists(last_image_path)),
+                frame_idx=frame_idx,
+                dispatch=dispatch,
+                world_prompt=state.get("world_prompt", ""),
+                hard_transition=hard_transition
+            )
+            print(f"✅ [IMG FAST] Image ready: {consequence_img_url}")
+        except Exception as e:
+            print(f"❌ [IMG FAST] Error: {e}")
+        
+        return {
+            "dispatch": dispatch,
+            "vision_dispatch": vision_dispatch,
+            "consequence_image": consequence_img_url,
+            "phase": state["current_phase"],
+            "chaos": state["chaos_level"],
+            "world_prompt": state.get("world_prompt", ""),
+            "mode": state.get("mode", "camcorder")
+        }
+    except Exception as e:
+        print(f"❌ [IMG FAST] Fatal error: {e}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "dispatch": f"Error: {e}",
+            "vision_dispatch": "",
+            "consequence_image": None,
+            "phase": "error",
+            "chaos": 0,
+            "world_prompt": "",
+            "mode": "camcorder"
+        }
+
+def advance_turn_choices_deferred(consequence_img_url: str, dispatch: str, vision_dispatch: str, choice: str) -> dict:
+    """
+    PHASE 2 (DEFERRED): Generate choices after image is displayed.
+    """
+    global state, history
+    from choices import generate_choices
+    
+    state = _load_state()
+    situation_summary = _generate_situation_report()
+    
+    next_choices = generate_choices(
+        client, choice_tmpl,
+        dispatch,
+        n=3,
+        image_url=consequence_img_url,
+        seen_elements='',
+        recent_choices='',
+        caption="",
+        image_description="",
+        time_of_day=state.get('time_of_day', ''),
+        world_prompt=state.get('world_prompt', ''),
+        temperature=0.7,
+        situation_summary=situation_summary
+    )
+    
+    next_choices = [c for c in next_choices if c and c.strip() and c.strip() != '—']
+    if not next_choices:
+        next_choices = ["Look around", "Move forward", "Wait"]
+    while len(next_choices) < 3:
+        next_choices.append("—")
+    
+    # Save to history
+    history_entry = {
+        "choice": choice,
+        "dispatch": dispatch,
+        "vision_dispatch": vision_dispatch,
+        "vision_analysis": "",
+        "world_prompt": state.get("world_prompt", ""),
+        "image": consequence_img_url,
+        "image_url": consequence_img_url
+    }
+    history.append(history_entry)
+    (ROOT / "history.json").write_text(json.dumps(history, indent=2))
+    
+    return {
+        "choices": next_choices,
+        "situation_report": situation_summary,
+        "consequences": "",
+        "player_state": state.get('player_state', {}),
+        "streak_reward": state.get('streak_reward', None),
+        "rare_event": state.get('rare_event', None),
+        "danger": False,
+        "combat": False
+    }
+
+def advance_turn(choice: str) -> dict:
+    """Atomically advance the simulation by one turn."""
+    global state, history, _last_image_path
+    try:
+        # Phase 1: Image fast
+        phase1_result = advance_turn_image_fast(choice)
+        
+        # Phase 2: Choices deferred
+        phase2_result = advance_turn_choices_deferred(
+            phase1_result["consequence_image"],
+            phase1_result["dispatch"],
+            phase1_result["vision_dispatch"],
+            choice
+        )
+        
+        # Combine results
+        return {
+            **phase1_result,
+            **phase2_result
+        }
+    except Exception as e:
+        log_error(f"[ADVANCE TURN] {e}")
+        import traceback
+        traceback.print_exc()
+        return {
+            "phase": "error",
+            "chaos": 0,
+            "dispatch": f"Error: {str(e)}",
+            "vision_dispatch": "",
+            "dispatch_image": None,
+            "consequence_image": None,
+            "caption": "Error",
+            "mode": "camcorder",
+            "situation_report": f"An error occurred: {str(e)}",
+            "choices": ["Restart", "Continue", "—"],
+            "player_state": {},
+            "consequences": f"Error: {str(e)}",
+            'error': str(e)
+        }
+
+# Alias for compatibility
+complete_tick = advance_turn
+
 # ───────── state management ──────────────────────────────────────────────────
 def get_state():
     return _load_state()
