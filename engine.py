@@ -886,12 +886,12 @@ def _generate_situation_report() -> str:
                 "\n\nIMPORTANT: This is a turning point. Introduce a major new development, threat, opportunity, or mystery. Shake up the situation in a dramatic way."
             )
         prompt = (
-            PROMPTS["situation_report_prompt"] +
+            PROMPTS["situation_summary_instructions"] +
             f"\n\nWorld State (after last action):\n{world_state}\nLast Dispatch (player's action):\n{last_dispatch}" +
             major_event_nudge +
             "\nDescribe what is happening NOW, after the dispatch, as a concise 1-2 sentence situation. This should set up the next set of choices."
         )
-        return _ask(prompt, model="gemini", temp=0.5, tokens=40)
+        return _ask(prompt, model="gemini", temp=0.7, tokens=40)
     return "You stand on a rocky outcrop overlooking the Horizon facility, the quarantine fence stretching across the red desert. Patrol lights sweep the landscape as distant thunder rumbles."
 
 def begin_tick() -> dict:
