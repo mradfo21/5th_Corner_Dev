@@ -87,8 +87,8 @@ STATE_PATH = ROOT/"world_state.json"
 IMAGE_DIR = ROOT / "images"
 WORLD_STATE_LOCK = threading.Lock() # Global lock for world_state.json access
 
-IMAGE_ENABLED       = False # MODIFIED FOR TESTING
-WORLD_IMAGE_ENABLED = False # MODIFIED FOR TESTING (align with IMAGE_ENABLED)
+IMAGE_ENABLED       = True  # ENABLED for production
+WORLD_IMAGE_ENABLED = True  # ENABLED for production
 
 DEFAULT_BASE = "https://api.openai.com/v1"
 API_BASE     = (os.getenv("OPENAI_BASE_URL") or DEFAULT_BASE).strip() or DEFAULT_BASE
@@ -96,7 +96,7 @@ API_BASE     = (os.getenv("OPENAI_BASE_URL") or DEFAULT_BASE).strip() or DEFAULT
 client      = _client(OPENAI_API_KEY, API_BASE)
 LLM_ENABLED = True
 
-VISION_ENABLED = False # MODIFIED FOR TESTING
+VISION_ENABLED = True  # ENABLED for production
 
 IMAGE_PROVIDER = CONFIG.get("IMAGE_PROVIDER", "openai").lower()
 
