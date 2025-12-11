@@ -221,15 +221,19 @@ def generate_choices(
     seen = set()
     for line in raw.splitlines():
         line = line.strip().lstrip("-*0123456789. ").strip()
+        line_lower = line.lower()
+        # Skip preamble text and meta-commentary
         if (
             4 < len(line) <= 40
             and not line.endswith(("...", "-", "—"))
-            and line.lower() not in seen
-            and "choices:" not in line.lower()
-            and not line.lower().startswith(("scene:", "narrative:", "option:", "choice:"))
+            and line_lower not in seen
+            and " choices" not in line_lower  # Filter ANY line mentioning " choices"
+            and " action choices" not in line_lower  # Specific filter for "action choices"
+            and not line_lower.startswith(("scene:", "narrative:", "option:", "choice:", "here are", "here's", "here is"))
+            and "for jason" not in line_lower  # Filter any meta-commentary about Jason
         ):
             opts.append(line)
-            seen.add(line.lower())
+            seen.add(line_lower)
     # Stricter filtering: remove out-of-context choices
     opts = filter_choices(opts, seen_elements, recent_choices, dispatch=last_dispatch, image_description=image_description, world_prompt=world_prompt)
     # Filter out repeated choices

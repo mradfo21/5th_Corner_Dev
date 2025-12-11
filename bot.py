@@ -572,6 +572,8 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                         print(f"[DEATH] Failed to send tape: {e}")
                 
                 # Create Play Again button (independent of disabled view)
+                manual_restart_done = asyncio.Event()  # Flag to prevent double restart
+                
                 class PlayAgainButton(Button):
                     def __init__(self):
                         super().__init__(label="▶️ Play Again", style=discord.ButtonStyle.success)
@@ -579,6 +581,9 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                     async def callback(self, button_interaction: discord.Interaction):
                         global auto_advance_task, countdown_task, auto_play_enabled
                         print("[DEATH] Play Again button pressed - manual restart")
+                        
+                        # Mark that manual restart is happening
+                        manual_restart_done.set()
                         
                         try:
                             await button_interaction.response.defer()
@@ -610,9 +615,13 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                     view=play_again_view
                 )
                 
-                # Auto-restart after 30 seconds if player doesn't click (increased from 15s)
+                # Wait 30s for manual restart (check every second if button was clicked)
                 print("[DEATH] Waiting 30s for manual restart or auto-restart...")
-                await asyncio.sleep(30)
+                for _ in range(30):
+                    if manual_restart_done.is_set():
+                        print("[DEATH] Manual restart detected - skipping auto-restart")
+                        return  # Player clicked button, don't auto-restart
+                    await asyncio.sleep(1)
                 
                 # Auto-restart the game (fallback if player didn't click)
                 print("[DEATH] Auto-restarting game...")
@@ -857,6 +866,8 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                         print(f"[DEATH] Failed to send tape: {e}")
                 
                 # Create Play Again button (independent of disabled view)
+                manual_restart_done = asyncio.Event()  # Flag to prevent double restart
+                
                 class PlayAgainButton(Button):
                     def __init__(self):
                         super().__init__(label="▶️ Play Again", style=discord.ButtonStyle.success)
@@ -864,6 +875,9 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                     async def callback(self, button_interaction: discord.Interaction):
                         global auto_advance_task, countdown_task, auto_play_enabled
                         print("[DEATH CUSTOM] Play Again button pressed - manual restart")
+                        
+                        # Mark that manual restart is happening
+                        manual_restart_done.set()
                         
                         try:
                             await button_interaction.response.defer()
@@ -895,9 +909,13 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                     view=play_again_view
                 )
                 
-                # Auto-restart after 30s if player doesn't click
+                # Wait 30s for manual restart (check every second if button was clicked)
                 print("[DEATH CUSTOM] Waiting 30s for manual restart or auto-restart...")
-                await asyncio.sleep(30)
+                for _ in range(30):
+                    if manual_restart_done.is_set():
+                        print("[DEATH CUSTOM] Manual restart detected - skipping auto-restart")
+                        return  # Player clicked button, don't auto-restart
+                    await asyncio.sleep(1)
                 
                 # Cancel all running tasks
                 if auto_advance_task and not auto_advance_task.done():
@@ -1053,6 +1071,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
             # start_inactivity_timer(interaction.channel)  # TODO: Not implemented yet
 
         def _do_reset(self):
+            global _run_images
             try:
                 with open(ROOT / "history.json", "w", encoding="utf-8") as f:
                     f.write("[]")
@@ -1065,12 +1084,16 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                         "chaos_level": 0,
                         "last_choice": "",
                         "last_saved": "",
-                        "seen_elements": []
+                        "seen_elements": [],
+                        "player_state": {"alive": True, "health": 100}  # Reset player state consistently
                     }, f, indent=2)
                 engine.reset_state()
-                print("[LOG] RestartButton: state reset complete (background)")
+                
+                # Clear tape recording for new run (CRITICAL FIX)
+                _run_images.clear()
+                print("[RESTART] Game state reset complete. New tape ready.")
             except Exception as e:
-                print(f"[LOG] RestartButton background reset exception: {e}")
+                print(f"[RESTART] Reset error: {e}")
 
     class AutoPlayDelayModal(Modal, title="Auto-Play Settings"):
         delay_input = TextInput(
@@ -1458,22 +1481,43 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                 engine.IMAGE_ENABLED = True
                 engine.WORLD_IMAGE_ENABLED = True
                 
-                # Show initial micro-reaction (consistent with choice flow)
-                micro_msg = await interaction.channel.send(embed=discord.Embed(
-                    description=safe_embed_desc("📼 The tape begins to roll..."),
-                    color=CORNER_TEAL
-                ))
-                
-                # PHASE 1: Generate image FAST (no choices yet)
+                # PHASE 1: Generate image FAST (start in background)
                 loop = asyncio.get_running_loop()
                 image_task = loop.run_in_executor(None, engine.generate_intro_image_fast)
                 
-                # Wait for image generation
+                # Show VHS loading sequence WHILE generating
+                vhs_msg = await interaction.channel.send(embed=discord.Embed(
+                    description="`[00:00:00]` VHS PLAYER\n`LOADING...`",
+                    color=CORNER_GREY
+                ))
+                
+                vhs_sequence = [
+                    (1.5, "`[00:00:03]` TRACKING HEADS\n`ENGAGING...`"),
+                    (1.5, "`[00:00:06]` MAGNETIC STRIP\n`READING...`"),
+                    (1.5, "`[00:00:09]` VIDEO SIGNAL\n`DETECTED`"),
+                    (1.5, "`[00:00:12]` AUDIO CHANNELS\n`SYNCHRONIZING...`"),
+                    (1.5, "`[00:00:15]` PLAYBACK\n`STARTING...`")
+                ]
+                
+                # Cycle through VHS sequence while image generates
+                for delay, message in vhs_sequence:
+                    done, pending = await asyncio.wait([image_task], timeout=delay)
+                    if done:
+                        break  # Image ready, stop cycling
+                    try:
+                        await vhs_msg.edit(embed=discord.Embed(
+                            description=message,
+                            color=CORNER_GREY
+                        ))
+                    except Exception:
+                        break
+                
+                # Wait for image generation to complete
                 intro_phase1 = await image_task
                 
-                # Clean up micro message
+                # Clean up VHS loading message
                 try:
-                    await micro_msg.delete()
+                    await vhs_msg.delete()
                 except Exception:
                     pass
                 
@@ -1567,42 +1611,45 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                 engine.IMAGE_ENABLED = False
                 engine.WORLD_IMAGE_ENABLED = False
                 
-                # Show initial micro-reaction (consistent with choice flow)
-                micro_msg = await interaction.channel.send(embed=discord.Embed(
-                    description=safe_embed_desc("📼 The tape begins to roll..."),
-                    color=CORNER_TEAL
-                ))
-                
-                # Run intro generation in executor
+                # Run intro generation in executor (start immediately)
                 loop = asyncio.get_running_loop()
                 intro_task = loop.run_in_executor(None, engine.generate_intro_turn)
                 
-                # Show progress message after a delay (consistent with choice flow)
-                try:
-                    done, pending = await asyncio.wait([intro_task], timeout=1.5)
-                    if not done:
-                        progress_msg = await interaction.channel.send(embed=discord.Embed(
-                            description=safe_embed_desc("⏳ Initializing simulation (no images)..."),
+                # Show VHS loading sequence WHILE generating
+                vhs_msg = await interaction.channel.send(embed=discord.Embed(
+                    description="`[00:00:00]` VHS PLAYER\n`LOADING...`",
+                    color=CORNER_GREY
+                ))
+                
+                vhs_sequence = [
+                    (1.5, "`[00:00:03]` TRACKING HEADS\n`ENGAGING...`"),
+                    (1.5, "`[00:00:06]` MAGNETIC STRIP\n`READING...`"),
+                    (1.5, "`[00:00:09]` VIDEO SIGNAL\n`DETECTED`"),
+                    (1.5, "`[00:00:12]` AUDIO CHANNELS\n`SYNCHRONIZING...`"),
+                    (1.5, "`[00:00:15]` PLAYBACK\n`STARTING...`")
+                ]
+                
+                # Cycle through VHS sequence while image generates
+                for delay, message in vhs_sequence:
+                    done, pending = await asyncio.wait([intro_task], timeout=delay)
+                    if done:
+                        break  # Image ready, stop cycling
+                    try:
+                        await vhs_msg.edit(embed=discord.Embed(
+                            description=message,
                             color=CORNER_GREY
                         ))
-                    else:
-                        progress_msg = None
-                except Exception:
-                    progress_msg = None
+                    except Exception:
+                        break
                 
                 # Wait for result
                 intro_result = await intro_task
                 
-                # Clean up progress messages
+                # Clean up VHS loading message
                 try:
-                    await micro_msg.delete()
+                    await vhs_msg.delete()
                 except Exception:
                     pass
-                if progress_msg:
-                    try:
-                        await progress_msg.delete()
-                    except Exception:
-                        pass
                 # 1. Send the intro narrative as an embed
                 embed_dispatch = discord.Embed(
                     title="Prologue",
@@ -1789,26 +1836,76 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                             except Exception as e:
                                 print(f"[COUNTDOWN DEATH] Failed to send tape: {e}")
                         
-                        # Wait and restart (give player time to download tape)
-                        await channel.send(embed=discord.Embed(
-                            description="💾 **Save the tape now!** Game will restart in 15 seconds...",
-                            color=CORNER_GREY
-                        ))
-                        await asyncio.sleep(15)
+                        # Create Play Again button (independent of disabled view)
+                        manual_restart_done = asyncio.Event()  # Flag to prevent double restart
                         
-                        # Cancel all running tasks
-                        if auto_advance_task and not auto_advance_task.done():
-                            auto_advance_task.cancel()
-                            print("[COUNTDOWN DEATH] Cancelled auto-play task")
-                        if countdown_task and not countdown_task.done():
-                            countdown_task.cancel()
-                            print("[COUNTDOWN DEATH] Cancelled countdown task")
-                        auto_play_enabled = False
+                        class PlayAgainButton(Button):
+                            def __init__(self):
+                                super().__init__(label="▶️ Play Again", style=discord.ButtonStyle.success)
+                            
+                            async def callback(self, button_interaction: discord.Interaction):
+                                global auto_advance_task, countdown_task, auto_play_enabled
+                                print("[COUNTDOWN DEATH] Play Again button pressed - manual restart")
+                                
+                                # Mark that manual restart is happening
+                                manual_restart_done.set()
+                                
+                                try:
+                                    await button_interaction.response.defer()
+                                except Exception:
+                                    pass
+                                
+                                # Cancel all running tasks
+                                if auto_advance_task and not auto_advance_task.done():
+                                    auto_advance_task.cancel()
+                                if countdown_task and not countdown_task.done():
+                                    countdown_task.cancel()
+                                auto_play_enabled = False
+                                
+                                # Reset game
+                                loop = asyncio.get_running_loop()
+                                await loop.run_in_executor(None, ChoiceButton._do_reset_static)
+                                
+                                # Show intro
+                                await send_intro_tutorial(button_interaction.channel)
                         
-                        # Reset game
-                        loop = asyncio.get_running_loop()
-                        await loop.run_in_executor(None, ChoiceButton._do_reset_static)
-                        await send_intro_tutorial(channel)
+                        # Show Play Again button immediately
+                        play_again_view = View(timeout=None)
+                        play_again_view.add_item(PlayAgainButton())
+                        await channel.send(
+                            embed=discord.Embed(
+                                description="💾 **Save the tape!** Press Play Again to restart.",
+                                color=CORNER_GREY
+                            ),
+                            view=play_again_view
+                        )
+                        
+                        # Wait 30s for manual restart (check every second if button was clicked)
+                        print("[COUNTDOWN DEATH] Waiting 30s for manual restart or auto-restart...")
+                        for _ in range(30):
+                            if manual_restart_done.is_set():
+                                print("[COUNTDOWN DEATH] Manual restart detected - skipping auto-restart")
+                                break  # Exit countdown loop, player restarted manually
+                            await asyncio.sleep(1)
+                        
+                        # Only auto-restart if player didn't click button
+                        if not manual_restart_done.is_set():
+                            print("[COUNTDOWN DEATH] Auto-restarting game...")
+                            
+                            # Cancel all running tasks
+                            if auto_advance_task and not auto_advance_task.done():
+                                auto_advance_task.cancel()
+                                print("[COUNTDOWN DEATH] Cancelled auto-play task")
+                            if countdown_task and not countdown_task.done():
+                                countdown_task.cancel()
+                                print("[COUNTDOWN DEATH] Cancelled countdown task")
+                            auto_play_enabled = False
+                            
+                            # Reset game
+                            loop = asyncio.get_running_loop()
+                            await loop.run_in_executor(None, ChoiceButton._do_reset_static)
+                            await send_intro_tutorial(channel)
+                        
                         break  # Exit countdown loop
                     
                     # Show situation report during generation
@@ -2095,6 +2192,8 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                     print(f"[AUTO-PLAY] Failed to send tape: {e}")
             
             # Create Play Again button (independent of disabled view)
+            manual_restart_done = asyncio.Event()  # Flag to prevent double restart
+            
             class PlayAgainButton(Button):
                 def __init__(self):
                     super().__init__(label="▶️ Play Again", style=discord.ButtonStyle.success)
@@ -2102,6 +2201,9 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                 async def callback(self, button_interaction: discord.Interaction):
                     global auto_advance_task, countdown_task, auto_play_enabled
                     print("[AUTO-PLAY DEATH] Play Again button pressed - manual restart")
+                    
+                    # Mark that manual restart is happening
+                    manual_restart_done.set()
                     
                     try:
                         await button_interaction.response.defer()
@@ -2133,9 +2235,13 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                 view=play_again_view
             )
             
-            # Auto-restart after 30s if player doesn't click
+            # Wait 30s for manual restart (check every second if button was clicked)
             print("[AUTO-PLAY DEATH] Waiting 30s for manual restart or auto-restart...")
-            await asyncio.sleep(30)
+            for _ in range(30):
+                if manual_restart_done.is_set():
+                    print("[AUTO-PLAY DEATH] Manual restart detected - skipping auto-restart")
+                    return  # Player clicked button, don't auto-restart
+                await asyncio.sleep(1)
             
             # Cancel all running tasks
             if auto_advance_task and not auto_advance_task.done():
