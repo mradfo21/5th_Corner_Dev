@@ -550,7 +550,7 @@ def summarize_world_prompt_for_image(world_prompt: str) -> str:
     prompt = (
         "Summarize the following world context in 1-2 vivid, scene-specific sentences, focusing only on details relevant to the current visual environment. Omit backstory and generalities.\n\nWORLD PROMPT: " + world_prompt
     )
-    return _ask(prompt, model="gpt-4o", temp=0.4, tokens=48)
+    return _ask(prompt, model="gemini", temp=0.4, tokens=48)
 
 def _generate_dispatch(choice: str, state: dict, prev_state: dict = None) -> dict:
     """Generate dispatch with death detection. Returns dict with 'dispatch' and 'player_alive' keys."""
@@ -890,7 +890,7 @@ def _generate_situation_report() -> str:
             major_event_nudge +
             "\nDescribe what is happening NOW, after the dispatch, as a concise 1-2 sentence situation. This should set up the next set of choices."
         )
-        return _ask(prompt, model="gpt-4o-mini", temp=0.5, tokens=40)
+        return _ask(prompt, model="gemini", temp=0.5, tokens=40)
     return "You stand on a rocky outcrop overlooking the Horizon facility, the quarantine fence stretching across the red desert. Patrol lights sweep the landscape as distant thunder rumbles."
 
 def begin_tick() -> dict:
@@ -947,7 +947,7 @@ def check_player_death(dispatch: str, world_prompt: str, choice: str) -> bool:
         f'WORLD STATE: {world_prompt}\n'
         f'PLAYER CHOICE: {choice}'
     )
-    result = _ask(prompt, model="gpt-4o", temp=0, tokens=2).strip().lower()
+    result = _ask(prompt, model="gemini", temp=0, tokens=2).strip().lower()
     return result == "dead"
 
 def combat_hook(state, dispatch, vision_dispatch):
@@ -1005,7 +1005,7 @@ def generate_crisis_choices(dispatch, vision, world_prompt):
         "Do not include exploration or investigation. Only direct, crisis responses.\n"
         f"DISPATCH: {dispatch}\nVISION: {vision}\nWORLD: {world_prompt}"
     )
-    rsp = _ask(crisis_prompt, model="gpt-4o", temp=0.7, tokens=40)
+    rsp = _ask(crisis_prompt, model="gemini", temp=0.7, tokens=40)
     opts = []
     for line in rsp.splitlines():
         line = line.strip().lstrip("-*0123456789. ").strip()
@@ -1033,7 +1033,7 @@ def generate_consequence_summary(dispatch_text: str, prev_state: dict, current_s
             f"PREVIOUS STATE: {json.dumps(prev_state, ensure_ascii=False)}\n"
             f"CURRENT STATE: {json.dumps(current_state, ensure_ascii=False)}\n"
         )
-        result = _ask(prompt, model="gpt-4o", temp=0.4, tokens=48)
+        result = _ask(prompt, model="gemini", temp=0.4, tokens=48)
         if result and result.strip():
             return result.strip()
     except Exception as e:
@@ -2171,7 +2171,7 @@ def resolve_risky_action(choice, threat_level, dispatch, world_prompt):
         "If success, describe how the player advances or avoids danger. If failure, describe the immediate negative result."
     )
     try:
-        summary = _ask(prompt, model="gpt-4o-mini", temp=1.0, tokens=40)
+        summary = _ask(prompt, model="gemini", temp=1.0, tokens=40)
         if not summary.strip():
             summary = 'No major consequence.'
         return success, summary
