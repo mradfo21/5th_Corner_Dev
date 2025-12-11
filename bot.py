@@ -71,22 +71,24 @@ if DISCORD_ENABLED:
     VHS_RED = 0x8B0000            # Danger/death ONLY
     
     # ───────── Fate Roll System ─────────────────────────────────────────────────
-    async def roll_fate(channel):
+    def compute_fate():
         """
-        Roll fate during image generation - minimal bar animation
+        Instantly compute fate (no animation)
         Returns: 'LUCKY' (25%), 'NORMAL' (50%), or 'UNLUCKY' (25%)
         """
-        import random
-        
-        # Determine outcome
         roll = random.random()
         if roll < 0.25:
-            fate = "LUCKY"
+            return "LUCKY"
         elif roll < 0.75:
-            fate = "NORMAL"
+            return "NORMAL"
         else:
-            fate = "UNLUCKY"
-        
+            return "UNLUCKY"
+    
+    async def animate_fate_roll(channel, fate):
+        """
+        Show fate roll animation WHILE image is generating in background.
+        The outcome is already determined - this is just for show/entertainment.
+        """
         # Show rolling animation
         msg = await channel.send(embed=discord.Embed(
             description="🎰 Rolling fate...",
@@ -102,7 +104,7 @@ if DISCORD_ENABLED:
                 description=f"`{bars}{empty}`",
                 color=CORNER_GREY
             ))
-            await asyncio.sleep(0.12)
+            await asyncio.sleep(0.15)  # 1.5 seconds total
         
         # Reveal outcome with color coding
         fate_colors = {
@@ -115,10 +117,8 @@ if DISCORD_ENABLED:
             description=f"`[██████████]`\n**{fate}**",
             color=fate_colors[fate]
         ))
-        await asyncio.sleep(1.5)
+        await asyncio.sleep(1.5)  # Display result
         await msg.delete()
-        
-        return fate
     
     def _create_death_replay_gif() -> Optional[str]:
         """Create a VHS tape (GIF) from all images in the current run. Returns tape path or None."""
@@ -440,18 +440,21 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                 color=CORNER_TEAL  # purple for action
             ))
 
-            # PHASE 1: Generate dispatch and image FAST (start in background)
+            # PHASE 1: Generate dispatch and image FAST
             loop = asyncio.get_running_loop()
             
-            # Roll fate DURING image generation for suspense
-            await asyncio.sleep(1.0)  # Brief pause before fate roll
-            fate = await roll_fate(interaction.channel)
-            print(f"[FATE] Rolled: {fate}")
+            # Compute fate INSTANTLY (no wait)
+            fate = compute_fate()
+            print(f"[FATE] Computed: {fate}")
             
-            # Start Phase 1 with fate modifier
+            # Start Phase 1 immediately with fate modifier (image generation in background)
             phase1_task = loop.run_in_executor(None, engine.advance_turn_image_fast, self.label, fate)
             
-            # Wait for Phase 1 (dispatch + image) to complete
+            # WHILE image is generating, show fate animation (fills wait time!)
+            await asyncio.sleep(0.1)  # Tiny breath, then action!
+            await animate_fate_roll(interaction.channel, fate)
+            
+            # Wait for Phase 1 to complete (should be done or almost done by now)
             phase1 = await phase1_task
 
             # Clean up interim messages
@@ -774,18 +777,21 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                 color=CORNER_TEAL  # purple for action
             ))
             
-            # Phase 1: Generate dispatch and image FAST (start in background)
+            # Phase 1: Generate dispatch and image FAST
             loop = asyncio.get_running_loop()
             
-            # Roll fate DURING image generation for suspense
-            await asyncio.sleep(1.0)  # Brief pause before fate roll
-            fate = await roll_fate(interaction.channel)
-            print(f"[FATE CUSTOM] Rolled: {fate}")
+            # Compute fate INSTANTLY (no wait)
+            fate = compute_fate()
+            print(f"[FATE CUSTOM] Computed: {fate}")
             
-            # Start Phase 1 with fate modifier
+            # Start Phase 1 immediately with fate modifier (image generation in background)
             phase1_task = loop.run_in_executor(None, engine.advance_turn_image_fast, custom_choice, fate)
             
-            # Wait for Phase 1 (dispatch + image) to complete
+            # WHILE image is generating, show fate animation (fills wait time!)
+            await asyncio.sleep(0.1)  # Tiny breath, then action!
+            await animate_fate_roll(interaction.channel, fate)
+            
+            # Wait for Phase 1 to complete (should be done or almost done by now)
             phase1 = await phase1_task
             
             # Clean up interim messages
@@ -2018,13 +2024,18 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
         # Process the choice (same two-phase logic as ChoiceButton callback)
         loop = asyncio.get_running_loop()
         
-        # Roll fate DURING image generation for suspense
-        await asyncio.sleep(0.5)  # Brief pause before fate roll
-        fate = await roll_fate(channel)
-        print(f"[FATE AUTO] Rolled: {fate}")
+        # Compute fate INSTANTLY (no wait)
+        fate = compute_fate()
+        print(f"[FATE AUTO] Computed: {fate}")
         
-        # PHASE 1: Generate image fast with fate modifier
+        # PHASE 1: Generate image fast with fate modifier (start immediately)
         phase1_task = loop.run_in_executor(None, engine.advance_turn_image_fast, chosen, fate)
+        
+        # WHILE image is generating, show fate animation (fills wait time!)
+        await asyncio.sleep(0.1)  # Tiny breath, then action!
+        await animate_fate_roll(channel, fate)
+        
+        # Wait for Phase 1 to complete
         phase1_result = await phase1_task
         
         # Display dispatch and image immediately
