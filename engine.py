@@ -2009,10 +2009,13 @@ def discord_token_exchange():
         return jsonify({"error": "Internal server error during token exchange"}), 500
 
 # ───────── COMBINED dispatch generator (saves 1 API call) ─────────────────────
-def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = None, prev_vision: str = "", current_image: str = None) -> tuple[str, str, bool]:
+def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = None, prev_vision: str = "", current_image: str = None, fate: str = "NORMAL") -> tuple[str, str, bool]:
     """
     Generate BOTH narrative dispatch AND vision dispatch in ONE API call.
     Now supports multimodal input - can see the current frame!
+    
+    Args:
+        fate: Luck modifier - "LUCKY", "NORMAL", or "UNLUCKY"
     
     Returns: (dispatch, vision_dispatch, player_alive)
     """
@@ -2042,11 +2045,20 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
             "to torso", "to limb", "trauma", "burns to", "pressure on", "collapses on"
         ])
         
+        # Build fate modifier text
+        fate_modifier = ""
+        if fate == "LUCKY":
+            fate_modifier = "\n\n🎰 FATE MODIFIER: Something fortunate happens. A small detail goes in the character's favor. Not a major change, but a subtle positive twist.\n"
+        elif fate == "UNLUCKY":
+            fate_modifier = "\n\n🎰 FATE MODIFIER: Something unfortunate happens. A small complication or minor setback occurs. Not catastrophic, but a subtle negative twist.\n"
+        # NORMAL = no modifier, outcome is purely based on choice
+        
         # Use JUST the dispatch_sys instructions (which has JSON format)
         json_prompt = (
             f"{dispatch_sys}\n\n"
             f"PLAYER CHOICE: '{choice}'\n"
             f"WORLD CONTEXT: {world_prompt}\n\n"
+            f"{fate_modifier}"
             f"{spatial_context}"
             f"{prev_context}\n\n"
             "Generate the consequence in valid JSON format."
@@ -2211,10 +2223,14 @@ def resolve_risky_action(choice, threat_level, dispatch, world_prompt):
         return success, 'No major consequence.'
 
 # ───────── game loop ──────────────────────────────────────────────────────────
-def advance_turn_image_fast(choice: str) -> dict:
+def advance_turn_image_fast(choice: str, fate: str = "NORMAL") -> dict:
     """
     PHASE 1 (FAST): Generate dispatch and image, return immediately.
     Returns image ASAP so bot can display it while choices are generating.
+    
+    Args:
+        choice: Player's chosen action
+        fate: Luck modifier - "LUCKY", "NORMAL", or "UNLUCKY"
     """
     global state, history
     try:
@@ -2237,8 +2253,8 @@ def advance_turn_image_fast(choice: str) -> dict:
             prev_vision = history[-1].get("vision_dispatch", "")
             prev_image = history[-1].get("image_url", None)
         
-        # Generate dispatch using FULL StoryGen version
-        dispatch, vision_dispatch, player_alive = _generate_combined_dispatches(choice, state, prev_state, prev_vision, prev_image)
+        # Generate dispatch using FULL StoryGen version (with fate modifier)
+        dispatch, vision_dispatch, player_alive = _generate_combined_dispatches(choice, state, prev_state, prev_vision, prev_image, fate)
         
         # SIMPLE DEATH SYSTEM: Just trust the LLM
         state['player_state']['alive'] = player_alive

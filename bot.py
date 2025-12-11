@@ -62,6 +62,64 @@ if DISCORD_ENABLED:
     TAPES_DIR.mkdir(exist_ok=True)
     _run_images = []  # Track all images from current run for VHS tape
     
+    # ───────── 5th Corner VHS Color Palette ─────────────────────────────────────
+    # Based on 5th Corner brand logo - teal surveillance camera aesthetic
+    CORNER_TEAL = 0x6BABAE        # Main content, narrative, actions
+    CORNER_TEAL_DARK = 0x3D7175   # Context, world state, backgrounds
+    CORNER_BLACK = 0x0D1B1B       # Deep shadows, recessed elements
+    CORNER_GREY = 0x2A3838        # System messages, loading states
+    VHS_RED = 0x8B0000            # Danger/death ONLY
+    
+    # ───────── Fate Roll System ─────────────────────────────────────────────────
+    async def roll_fate(channel):
+        """
+        Roll fate during image generation - minimal bar animation
+        Returns: 'LUCKY' (25%), 'NORMAL' (50%), or 'UNLUCKY' (25%)
+        """
+        import random
+        
+        # Determine outcome
+        roll = random.random()
+        if roll < 0.25:
+            fate = "LUCKY"
+        elif roll < 0.75:
+            fate = "NORMAL"
+        else:
+            fate = "UNLUCKY"
+        
+        # Show rolling animation
+        msg = await channel.send(embed=discord.Embed(
+            description="🎰 Rolling fate...",
+            color=CORNER_GREY
+        ))
+        await asyncio.sleep(0.4)
+        
+        # Build tension with bars
+        for i in range(1, 11):
+            bars = "█" * i
+            empty = "░" * (10 - i)
+            await msg.edit(embed=discord.Embed(
+                description=f"`{bars}{empty}`",
+                color=CORNER_GREY
+            ))
+            await asyncio.sleep(0.12)
+        
+        # Reveal outcome with color coding
+        fate_colors = {
+            "LUCKY": CORNER_TEAL,
+            "NORMAL": CORNER_GREY,
+            "UNLUCKY": VHS_RED
+        }
+        
+        await msg.edit(embed=discord.Embed(
+            description=f"`[██████████]`\n**{fate}**",
+            color=fate_colors[fate]
+        ))
+        await asyncio.sleep(1.5)
+        await msg.delete()
+        
+        return fate
+    
     def _create_death_replay_gif() -> Optional[str]:
         """Create a VHS tape (GIF) from all images in the current run. Returns tape path or None."""
         if not _run_images or len(_run_images) < 2:
@@ -127,7 +185,7 @@ if DISCORD_ENABLED:
         e = discord.Embed(
             title="Situation Update",
             description=d["report"],
-            color=0xB30000
+            color=VHS_RED
         )
         e.add_field(
             name="Choices",
@@ -143,7 +201,7 @@ if DISCORD_ENABLED:
         e = discord.Embed(
             title="🖋️ Dispatch",
             description=d["dispatch"],
-            color=0x0055FF
+            color=CORNER_TEAL
         )
         e.add_field(name="Winning choice", value=win, inline=False)
         if img_name:
@@ -372,28 +430,28 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                 micro_reaction = "👀 The world holds its breath."
             micro_msg = await interaction.channel.send(embed=discord.Embed(
                 description=safe_embed_desc(micro_reaction),
-                color=0x3498db  # blue for anticipation
+                color=CORNER_TEAL  # blue for anticipation
             ))
             
             # PROGRESSIVE FEEDBACK: Show action taken immediately
             await asyncio.sleep(0.6)  # Brief pause after micro-reaction
             action_msg = await interaction.channel.send(embed=discord.Embed(
                 description=safe_embed_desc(f"**Action:** {choice_text}"),
-                color=0x9b59b6  # purple for action
+                color=CORNER_TEAL  # purple for action
             ))
 
-            # PHASE 1: Generate dispatch and image FAST
+            # PHASE 1: Generate dispatch and image FAST (start in background)
             loop = asyncio.get_running_loop()
-            phase1_task = loop.run_in_executor(None, engine.advance_turn_image_fast, self.label)
             
-            # Show "Generating..." after 1 second
-            await asyncio.sleep(1.0)
-            generating_msg = await interaction.channel.send(embed=discord.Embed(
-                description="⚙️ Generating...",
-                color=0x555555
-            ))
+            # Roll fate DURING image generation for suspense
+            await asyncio.sleep(1.0)  # Brief pause before fate roll
+            fate = await roll_fate(interaction.channel)
+            print(f"[FATE] Rolled: {fate}")
             
-            # Wait for Phase 1 (dispatch + image)
+            # Start Phase 1 with fate modifier
+            phase1_task = loop.run_in_executor(None, engine.advance_turn_image_fast, self.label, fate)
+            
+            # Wait for Phase 1 (dispatch + image) to complete
             phase1 = await phase1_task
 
             # Clean up interim messages
@@ -406,18 +464,13 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                     await action_msg.delete()
             except Exception:
                 pass
-            try:
-                if 'generating_msg' in locals():
-                    await generating_msg.delete()
-            except Exception:
-                pass
 
             # Show dispatch IMMEDIATELY from Phase 1 (what you feel/experience)
             dispatch_text = phase1.get("dispatch", "")
             if dispatch_text:
                 await interaction.channel.send(embed=discord.Embed(
                     description=safe_embed_desc(dispatch_text.strip()),
-                    color=0xAA2222
+                    color=VHS_RED
                 ))
                 await asyncio.sleep(0.8)  # Brief pause
             
@@ -440,7 +493,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
             # Show "Generating choices..." while Phase 2 runs
             choices_msg = await interaction.channel.send(embed=discord.Embed(
                 description="⚙️ Analyzing scene...",
-                color=0x555555
+                color=CORNER_GREY
             ))
             
             # PHASE 2: Generate choices in background
@@ -497,7 +550,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                 await interaction.channel.send(embed=discord.Embed(
                     title="💀 YOU DIED",
                     description="The camera stops recording.",
-                    color=0xFF0000
+                    color=VHS_RED
                 ))
                 await asyncio.sleep(1)
                 
@@ -507,7 +560,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                     await interaction.channel.send(embed=discord.Embed(
                         title="📼 VHS TAPE RECOVERED",
                         description="Camera footage retrieved from scene.",
-                        color=0x666666
+                        color=CORNER_GREY
                     ))
                     try:
                         await interaction.channel.send(file=discord.File(tape_path))
@@ -515,14 +568,50 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                     except Exception as e:
                         print(f"[DEATH] Failed to send tape: {e}")
                 
-                # Wait 15 seconds then auto-restart (give player time to download tape)
-                await interaction.channel.send(embed=discord.Embed(
-                    description="💾 **Save the tape now!** Game will restart in 15 seconds...",
-                    color=0x555555
-                ))
-                await asyncio.sleep(15)
+                # Create Play Again button (independent of disabled view)
+                class PlayAgainButton(Button):
+                    def __init__(self):
+                        super().__init__(label="▶️ Play Again", style=discord.ButtonStyle.success)
+                    
+                    async def callback(self, button_interaction: discord.Interaction):
+                        global auto_advance_task, countdown_task, auto_play_enabled
+                        print("[DEATH] Play Again button pressed - manual restart")
+                        
+                        try:
+                            await button_interaction.response.defer()
+                        except Exception:
+                            pass
+                        
+                        # Cancel all running tasks
+                        if auto_advance_task and not auto_advance_task.done():
+                            auto_advance_task.cancel()
+                        if countdown_task and not countdown_task.done():
+                            countdown_task.cancel()
+                        auto_play_enabled = False
+                        
+                        # Reset game
+                        loop = asyncio.get_running_loop()
+                        await loop.run_in_executor(None, ChoiceButton._do_reset_static)
+                        
+                        # Show intro
+                        await send_intro_tutorial(button_interaction.channel)
                 
-                # Auto-restart the game
+                # Show Play Again button immediately
+                play_again_view = View(timeout=None)
+                play_again_view.add_item(PlayAgainButton())
+                await interaction.channel.send(
+                    embed=discord.Embed(
+                        description="💾 **Save the tape!** Press Play Again to restart.",
+                        color=CORNER_GREY
+                    ),
+                    view=play_again_view
+                )
+                
+                # Auto-restart after 30 seconds if player doesn't click (increased from 15s)
+                print("[DEATH] Waiting 30s for manual restart or auto-restart...")
+                await asyncio.sleep(30)
+                
+                # Auto-restart the game (fallback if player didn't click)
                 print("[DEATH] Auto-restarting game...")
                 
                 # Cancel all running tasks
@@ -548,7 +637,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
             if world_context and not any(g in world_context.lower() for g in generic_defaults):
                 await interaction.channel.send(embed=discord.Embed(
                     description=safe_embed_desc(f"📍 {world_context.strip()}"),
-                    color=0x7289da  # discord blue
+                    color=CORNER_TEAL_DARK  # discord blue
                 ))
                 await asyncio.sleep(0.5)
 
@@ -557,7 +646,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
             if rare_event:
                 await interaction.channel.send(embed=discord.Embed(
                     description=safe_embed_desc(f"✨ **Rare Event:** {rare_event.strip()}"),
-                    color=0x8e44ad  # purple for rare
+                    color=CORNER_TEAL  # purple for rare
                 ))
                 await asyncio.sleep(random.uniform(2.5, 3.5))
 
@@ -566,7 +655,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
             if streak_reward:
                 await interaction.channel.send(embed=discord.Embed(
                     description=safe_embed_desc(f"🔥 **Streak!** {streak_reward.strip()}"),
-                    color=0xe67e22  # orange for streak
+                    color=CORNER_TEAL  # orange for streak
                 ))
                 await asyncio.sleep(random.uniform(2.5, 3.5))
 
@@ -574,14 +663,14 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
             if disp.get('danger'):
                 await interaction.channel.send(embed=discord.Embed(
                     description=safe_embed_desc('⚠️ **Danger! Threat detected in the scene.**'),
-                    color=0xFF2222
+                    color=VHS_RED
                 ))
                 await asyncio.sleep(random.uniform(1.5, 2.5))
             if disp.get('combat'):
                 msg = disp.get('combat_message', 'Combat imminent!')
                 await interaction.channel.send(embed=discord.Embed(
                     description=safe_embed_desc(f'⚔️ **{msg}**'),
-                    color=0x880000
+                    color=VHS_RED
                 ))
                 await asyncio.sleep(random.uniform(1.5, 2.5))
 
@@ -675,28 +764,28 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
             
             micro_msg = await interaction.channel.send(embed=discord.Embed(
                 description=safe_embed_desc(micro_reaction),
-                color=0x3498db
+                color=CORNER_TEAL
             ))
             
             # Show action taken
             await asyncio.sleep(0.6)
             action_msg = await interaction.channel.send(embed=discord.Embed(
                 description=safe_embed_desc(f"**Action:** {custom_choice}"),
-                color=0x9b59b6  # purple for action
+                color=CORNER_TEAL  # purple for action
             ))
             
-            # Phase 1: Generate dispatch and image FAST
+            # Phase 1: Generate dispatch and image FAST (start in background)
             loop = asyncio.get_running_loop()
-            phase1_task = loop.run_in_executor(None, engine.advance_turn_image_fast, custom_choice)
             
-            # Show "Generating..." after 1 second
-            await asyncio.sleep(1.0)
-            generating_msg = await interaction.channel.send(embed=discord.Embed(
-                description="⚙️ Generating...",
-                color=0x555555
-            ))
+            # Roll fate DURING image generation for suspense
+            await asyncio.sleep(1.0)  # Brief pause before fate roll
+            fate = await roll_fate(interaction.channel)
+            print(f"[FATE CUSTOM] Rolled: {fate}")
             
-            # Wait for Phase 1 (dispatch + image)
+            # Start Phase 1 with fate modifier
+            phase1_task = loop.run_in_executor(None, engine.advance_turn_image_fast, custom_choice, fate)
+            
+            # Wait for Phase 1 (dispatch + image) to complete
             phase1 = await phase1_task
             
             # Clean up interim messages
@@ -708,17 +797,13 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                 await action_msg.delete()
             except Exception:
                 pass
-            try:
-                await generating_msg.delete()
-            except Exception:
-                pass
             
             disp = phase1
             # Extract the choice text without emoji (handle custom action)
             choice_text = custom_choice
             
             # Display dispatch (what you feel/experience)
-            await interaction.channel.send(embed=discord.Embed(description=safe_embed_desc(disp["dispatch"]), color=0x3b88c3))
+            await interaction.channel.send(embed=discord.Embed(description=safe_embed_desc(disp["dispatch"]), color=CORNER_TEAL))
             
             # Display image IMMEDIATELY
             img_path = disp.get("consequence_image")
@@ -747,7 +832,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                 await interaction.channel.send(embed=discord.Embed(
                     title="💀 YOU DIED",
                     description="The camera stops recording.",
-                    color=0xFF0000
+                    color=VHS_RED
                 ))
                 await asyncio.sleep(1)
                 
@@ -757,7 +842,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                     await interaction.channel.send(embed=discord.Embed(
                         title="📼 VHS TAPE RECOVERED",
                         description="Camera footage retrieved from scene.",
-                        color=0x666666
+                        color=CORNER_GREY
                     ))
                     try:
                         await interaction.channel.send(file=discord.File(tape_path))
@@ -765,12 +850,48 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                     except Exception as e:
                         print(f"[DEATH] Failed to send tape: {e}")
                 
-                # Auto-restart after 15s (give player time to download tape)
-                await interaction.channel.send(embed=discord.Embed(
-                    description="💾 **Save the tape now!** Game will restart in 15 seconds...",
-                    color=0x555555
-                ))
-                await asyncio.sleep(15)
+                # Create Play Again button (independent of disabled view)
+                class PlayAgainButton(Button):
+                    def __init__(self):
+                        super().__init__(label="▶️ Play Again", style=discord.ButtonStyle.success)
+                    
+                    async def callback(self, button_interaction: discord.Interaction):
+                        global auto_advance_task, countdown_task, auto_play_enabled
+                        print("[DEATH CUSTOM] Play Again button pressed - manual restart")
+                        
+                        try:
+                            await button_interaction.response.defer()
+                        except Exception:
+                            pass
+                        
+                        # Cancel all running tasks
+                        if auto_advance_task and not auto_advance_task.done():
+                            auto_advance_task.cancel()
+                        if countdown_task and not countdown_task.done():
+                            countdown_task.cancel()
+                        auto_play_enabled = False
+                        
+                        # Reset game
+                        loop = asyncio.get_running_loop()
+                        await loop.run_in_executor(None, ChoiceButton._do_reset_static)
+                        
+                        # Show intro
+                        await send_intro_tutorial(button_interaction.channel)
+                
+                # Show Play Again button immediately
+                play_again_view = View(timeout=None)
+                play_again_view.add_item(PlayAgainButton())
+                await interaction.channel.send(
+                    embed=discord.Embed(
+                        description="💾 **Save the tape!** Press Play Again to restart.",
+                        color=CORNER_GREY
+                    ),
+                    view=play_again_view
+                )
+                
+                # Auto-restart after 30s if player doesn't click
+                print("[DEATH CUSTOM] Waiting 30s for manual restart or auto-restart...")
+                await asyncio.sleep(30)
                 
                 # Cancel all running tasks
                 if auto_advance_task and not auto_advance_task.done():
@@ -799,7 +920,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
             # Show "analyzing scene..." message
             choices_loading_msg = await interaction.channel.send(embed=discord.Embed(
                 description="⚙️ Analyzing scene...",
-                color=0x95a5a6
+                color=CORNER_GREY
             ))
             
             # Wait for Phase 2
@@ -816,7 +937,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
             if disp.get("situation_report"):
                 await interaction.channel.send(embed=discord.Embed(
                     description=safe_embed_desc(f"📍 {disp['situation_report']}"),
-                    color=0xe74c3c
+                    color=VHS_RED
                 ))
             
             # Show new choices
@@ -872,8 +993,8 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
 
     class RestartButton(Button):
         def __init__(self):
-            super().__init__(emoji="🔄", style=discord.ButtonStyle.danger, row=2)
-            self.label = None  # Emoji only
+            super().__init__(emoji="⏏️", style=discord.ButtonStyle.danger, row=2)
+            self.label = None  # Emoji only - VHS eject button
 
         async def callback(self, interaction: discord.Interaction):
             global auto_advance_task, countdown_task, auto_play_enabled
@@ -909,7 +1030,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                 await interaction.channel.send(embed=discord.Embed(
                     title="📼 VHS TAPE SAVED",
                     description="Recording saved before restart.",
-                    color=0x666666
+                    color=CORNER_GREY
                 ))
                 try:
                     await interaction.channel.send(file=discord.File(tape_path))
@@ -1115,7 +1236,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                 situation_report = disp.get("situation_report") or disp.get("dispatch") or ""
                 world_embed = discord.Embed(
                     description=situation_report.strip(),
-                    color=0xB30000
+                    color=VHS_RED
                 )
                 await interaction.channel.send(embed=world_embed)
                 ch = interaction.channel
@@ -1212,7 +1333,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
             embed_sr = discord.Embed(
                 title="Time Advances.",
                 description=clean_report,
-                color=0xB30000
+                color=VHS_RED
             )
             await ch.send(embed=embed_sr)
 
@@ -1260,7 +1381,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
             if dispatch_text:
                 await ctx.send(embed=discord.Embed(
                     description=safe_embed_desc(dispatch_text.strip()),
-                    color=0xAA2222
+                    color=VHS_RED
                 ))
             
             # Send choices
@@ -1273,7 +1394,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
     def beginning_simulation_embed():
         embed = discord.Embed(
             title="🟢 Beginning Simulation",
-            color=0x43B581
+            color=CORNER_TEAL
         )
         embed.add_field(name="Status", value="The world is initializing...\nPlease stand by.", inline=False)
         embed.set_footer(text="Get ready to explore!")
@@ -1283,7 +1404,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
     async def send_intro_tutorial(channel):
         rules_embed = discord.Embed(
             title="📼 Welcome to SOMEWHERE: An Analog Horror Story",
-            color=0x43B581
+            color=CORNER_TEAL
         )
         rules_embed.add_field(
             name="You Are",
@@ -1334,7 +1455,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                 # Show initial micro-reaction (consistent with choice flow)
                 micro_msg = await interaction.channel.send(embed=discord.Embed(
                     description=safe_embed_desc("📼 The tape begins to roll..."),
-                    color=0x3498db
+                    color=CORNER_TEAL
                 ))
                 
                 # PHASE 1: Generate image FAST (no choices yet)
@@ -1357,7 +1478,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                 if dispatch_text:
                     await interaction.channel.send(embed=discord.Embed(
                         description=safe_embed_desc(dispatch_text.strip()),
-                        color=0xAA2222
+                        color=VHS_RED
                     ))
                 
                 # Display the opening image if generated
@@ -1380,7 +1501,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                 # Show "Generating choices..." while Phase 2 runs
                 choices_msg = await interaction.channel.send(embed=discord.Embed(
                     description=safe_embed_desc("⚙️ Generating choices..."),
-                    color=0x95a5a6
+                    color=CORNER_GREY
                 ))
                 
                 # PHASE 2: Generate choices in background
@@ -1443,7 +1564,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                 # Show initial micro-reaction (consistent with choice flow)
                 micro_msg = await interaction.channel.send(embed=discord.Embed(
                     description=safe_embed_desc("📼 The tape begins to roll..."),
-                    color=0x3498db
+                    color=CORNER_TEAL
                 ))
                 
                 # Run intro generation in executor
@@ -1456,7 +1577,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                     if not done:
                         progress_msg = await interaction.channel.send(embed=discord.Embed(
                             description=safe_embed_desc("⏳ Initializing simulation (no images)..."),
-                            color=0x95a5a6
+                            color=CORNER_GREY
                         ))
                     else:
                         progress_msg = None
@@ -1480,14 +1601,14 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                 embed_dispatch = discord.Embed(
                     title="Prologue",
                     description=intro_result.get("dispatch", ""),
-                    color=0x0055FF
+                    color=CORNER_TEAL
                 )
                 await interaction.channel.send(embed=embed_dispatch)
                 # 2. Send the vision description as a second embed (what Jason sees)
                 embed_vision = discord.Embed(
                     title="What You See",
                     description=intro_result.get("vision_dispatch", ""),
-                    color=0x43B581
+                    color=CORNER_TEAL
                 )
                 await interaction.channel.send(embed=embed_vision)
                 # 3. Send the choices
@@ -1590,7 +1711,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                     # Update with timeout message
                     timeout_embed = discord.Embed(
                         description=f"**Hesitation has consequences.**\n\n{penalty_choice}",
-                        color=0xFF0000
+                        color=VHS_RED
                     )
                     
                     try:
@@ -1614,7 +1735,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                     if dispatch_text:
                         await channel.send(embed=discord.Embed(
                             description=safe_embed_desc(dispatch_text.strip()),
-                            color=0xAA2222
+                            color=VHS_RED
                         ))
                     
                     consequence_image_path = phase1_result.get("consequence_image")
@@ -1644,7 +1765,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                         await channel.send(embed=discord.Embed(
                             title="💀 YOU DIED",
                             description="The camera stops recording.",
-                            color=0xFF0000
+                            color=VHS_RED
                         ))
                         await asyncio.sleep(1)
                         
@@ -1654,7 +1775,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                             await channel.send(embed=discord.Embed(
                                 title="📼 VHS TAPE RECOVERED",
                                 description="Camera footage retrieved from scene.",
-                                color=0x666666
+                                color=CORNER_GREY
                             ))
                             try:
                                 await channel.send(file=discord.File(tape_path))
@@ -1665,7 +1786,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                         # Wait and restart (give player time to download tape)
                         await channel.send(embed=discord.Embed(
                             description="💾 **Save the tape now!** Game will restart in 15 seconds...",
-                            color=0x555555
+                            color=CORNER_GREY
                         ))
                         await asyncio.sleep(15)
                         
@@ -1689,13 +1810,13 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                     if situation_report:
                         await channel.send(embed=discord.Embed(
                             description=f"📍 {situation_report}",
-                            color=0xFF5555
+                            color=VHS_RED
                         ))
                     
                     # Phase 2: Generate choices
                     choices_msg = await channel.send(embed=discord.Embed(
                         description=safe_embed_desc("⚙️ Generating choices..."),
-                        color=0x95a5a6
+                        color=CORNER_GREY
                     ))
                     
                     phase2_task = loop.run_in_executor(
@@ -1880,7 +2001,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
         embed = discord.Embed(
             title="🤖 Auto-Play",
             description=f"Automatically selecting: **{chosen}**",
-            color=0x9B59B6
+            color=CORNER_TEAL
         )
         await channel.send(embed=embed)
         
@@ -1897,8 +2018,13 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
         # Process the choice (same two-phase logic as ChoiceButton callback)
         loop = asyncio.get_running_loop()
         
-        # PHASE 1: Generate image fast
-        phase1_task = loop.run_in_executor(None, engine.advance_turn_image_fast, chosen)
+        # Roll fate DURING image generation for suspense
+        await asyncio.sleep(0.5)  # Brief pause before fate roll
+        fate = await roll_fate(channel)
+        print(f"[FATE AUTO] Rolled: {fate}")
+        
+        # PHASE 1: Generate image fast with fate modifier
+        phase1_task = loop.run_in_executor(None, engine.advance_turn_image_fast, chosen, fate)
         phase1_result = await phase1_task
         
         # Display dispatch and image immediately
@@ -1906,7 +2032,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
         if dispatch_text:
             await channel.send(embed=discord.Embed(
                 description=safe_embed_desc(dispatch_text.strip()),
-                color=0xAA2222
+                color=VHS_RED
             ))
         
         consequence_image_path = phase1_result.get("consequence_image")
@@ -1939,7 +2065,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
             await channel.send(embed=discord.Embed(
                 title="💀 YOU DIED",
                 description="The camera stops recording.",
-                color=0xFF0000
+                color=VHS_RED
             ))
             await asyncio.sleep(1)
             
@@ -1949,7 +2075,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                 await channel.send(embed=discord.Embed(
                     title="📼 VHS TAPE RECOVERED",
                     description="Camera footage retrieved from scene.",
-                    color=0x666666
+                    color=CORNER_GREY
                 ))
                 try:
                     await channel.send(file=discord.File(tape_path))
@@ -1957,12 +2083,48 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                 except Exception as e:
                     print(f"[AUTO-PLAY] Failed to send tape: {e}")
             
-            # Auto-restart after 15s (give player time to download tape)
-            await channel.send(embed=discord.Embed(
-                description="💾 **Save the tape now!** Game will restart in 15 seconds...",
-                color=0x555555
-            ))
-            await asyncio.sleep(15)
+            # Create Play Again button (independent of disabled view)
+            class PlayAgainButton(Button):
+                def __init__(self):
+                    super().__init__(label="▶️ Play Again", style=discord.ButtonStyle.success)
+                
+                async def callback(self, button_interaction: discord.Interaction):
+                    global auto_advance_task, countdown_task, auto_play_enabled
+                    print("[AUTO-PLAY DEATH] Play Again button pressed - manual restart")
+                    
+                    try:
+                        await button_interaction.response.defer()
+                    except Exception:
+                        pass
+                    
+                    # Cancel all running tasks
+                    if auto_advance_task and not auto_advance_task.done():
+                        auto_advance_task.cancel()
+                    if countdown_task and not countdown_task.done():
+                        countdown_task.cancel()
+                    auto_play_enabled = False
+                    
+                    # Reset game
+                    loop = asyncio.get_running_loop()
+                    await loop.run_in_executor(None, ChoiceButton._do_reset_static)
+                    
+                    # Show intro
+                    await send_intro_tutorial(button_interaction.channel)
+            
+            # Show Play Again button immediately
+            play_again_view = View(timeout=None)
+            play_again_view.add_item(PlayAgainButton())
+            await channel.send(
+                embed=discord.Embed(
+                    description="💾 **Save the tape!** Press Play Again to restart.",
+                    color=CORNER_GREY
+                ),
+                view=play_again_view
+            )
+            
+            # Auto-restart after 30s if player doesn't click
+            print("[AUTO-PLAY DEATH] Waiting 30s for manual restart or auto-restart...")
+            await asyncio.sleep(30)
             
             # Cancel all running tasks
             if auto_advance_task and not auto_advance_task.done():
@@ -1980,7 +2142,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
         # Show "Generating choices..." while Phase 2 runs
         choices_msg = await channel.send(embed=discord.Embed(
             description=safe_embed_desc("⚙️ Generating choices..."),
-            color=0x95a5a6
+            color=CORNER_GREY
         ))
         
         # PHASE 2: Generate choices in background
@@ -2008,7 +2170,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
             if world_prompt:
                 await channel.send(embed=discord.Embed(
                     description=f"📍 {world_prompt}",
-                    color=0xFF5555
+                    color=VHS_RED
                 ))
             
             await channel.send("🟢 What will you do next?")
