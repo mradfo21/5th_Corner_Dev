@@ -552,24 +552,54 @@ def summarize_world_prompt_for_image(world_prompt: str) -> str:
     )
     return _ask(prompt, model="gpt-4o", temp=0.4, tokens=48)
 
-def _generate_dispatch(choice: str, state: dict, prev_state: dict = None) -> str:
+def _generate_dispatch(choice: str, state: dict, prev_state: dict = None) -> dict:
+    """Generate dispatch with death detection. Returns dict with 'dispatch' and 'player_alive' keys."""
     try:
+        # Get previous vision analysis for spatial consistency
+        prev_vision = ""
+        if history and len(history) > 0:
+            last_entry = history[-1]
+            if last_entry.get("vision_analysis"):
+                prev_vision = last_entry["vision_analysis"][:300]
+        
+        spatial_context = ""
+        if prev_vision:
+            spatial_context = f"\n\nCURRENT VISUAL SCENE (MUST STAY CONSISTENT): {prev_vision}\nDo NOT change locations unless the choice explicitly moves through a door, entrance, or exit. Stay in the same environment."
+        
         # System instructions + user prompt combined for Gemini
         prompt = (
-            f"{PROMPTS['dispatch_system_guide']}\n\n"
-            f"{PROMPTS['dispatch_prompt']}\n"
-            "Keep the dispatch to 1-3 sentences, focusing on immediate, visual, and action-oriented outcomes. Be concise and avoid backstory or exposition.\n"
+            f"{dispatch_sys}\n\n"
             f"PLAYER CHOICE: '{choice}'\n"
             f"WORLD CONTEXT: {state['world_prompt']}\n"
             f"PREVIOUS: {prev_state['world_prompt'] if prev_state else ''}"
+            f"{spatial_context}\n\n"
+            "Describe what Jason does and what immediately happens as a result."
         )
-        result = _ask(prompt, model="gemini", temp=0.5, tokens=80)
+        result = _ask(prompt, model="gemini", temp=1.0, tokens=250)
+        
+        # Try to parse as JSON first (new format)
+        import json
+        try:
+            parsed = json.loads(result)
+            if isinstance(parsed, dict) and "dispatch" in parsed:
+                dispatch_text = parsed.get("dispatch", "").strip()
+                player_alive = parsed.get("player_alive", True)
+                
+                # Hard cap at 400 characters
+                if len(dispatch_text) > 400:
+                    dispatch_text = dispatch_text[:385] + "...(truncated)"
+                
+                return {"dispatch": dispatch_text, "player_alive": player_alive}
+        except json.JSONDecodeError:
+            pass  # Not JSON, treat as plain text (backward compatibility)
+        
+        # FALLBACK: Plain text (old format) - assume player alive
         # If result is just '[' or '[]' or empty, fallback immediately
         if result.strip() in {"[", "[]", ""}:
-            return "Jason makes a tense move in the chaos."
-        # Sanitize: if result looks like a list or JSON, extract the text
+            return {"dispatch": "Jason makes a tense move in the chaos.", "player_alive": True}
+        
+        # Sanitize: if result looks like a list, extract the text
         if result.startswith("[") or result.startswith("-") or result.startswith("\""):
-            import json
             try:
                 arr = json.loads(result)
                 if isinstance(arr, list):
@@ -580,15 +610,18 @@ def _generate_dispatch(choice: str, state: dict, prev_state: dict = None) -> str
             except Exception:
                 lines = [l.strip('-*[] ",') for l in result.splitlines() if l.strip()]
                 if not lines or all(l in {"[", "[]", ""} for l in lines):
-                    return "Jason makes a tense move in the chaos."
+                    return {"dispatch": "Jason makes a tense move in the chaos.", "player_alive": True}
                 result = " ".join(lines)
+        
         # Hard cap at 400 characters
         if len(result) > 400:
             result = result[:385] + "...(truncated)"
-        return result
+        
+        return {"dispatch": result, "player_alive": True}
+        
     except Exception as e:
         log_error(f"[DISPATCH] LLM error: {e}")
-        return "Jason makes a tense move in the chaos."
+        return {"dispatch": "Jason makes a tense move in the chaos.", "player_alive": True}
 
 def _generate_caption(dispatch: str, mode: str, is_first_frame: bool = False) -> str:
     # Simplified caption generation - not used in StoryGen version
