@@ -343,11 +343,6 @@ def describe_image_with_vision(image_path):
                 self.choices = [type('obj', (object,), {'message': type('obj', (object,), {'content': text})()})]
         
         rsp = MockResp(result)
-        if False:  # Skip the old OpenAI code block
-            with open(img_path, "rb") as imgf:
-                pass
-                temperature=0.8,
-            )
         desc = rsp.choices[0].message.content.strip().replace("\n", " ")
         return desc
     except Exception as e:
