@@ -89,6 +89,7 @@ WORLD_STATE_LOCK = threading.Lock() # Global lock for world_state.json access
 
 IMAGE_ENABLED       = True  # ENABLED for production
 WORLD_IMAGE_ENABLED = True  # ENABLED for production
+HD_MODE             = True  # HD mode for high-quality images (slower)
 
 DEFAULT_BASE = "https://api.openai.com/v1"
 API_BASE     = (os.getenv("OPENAI_BASE_URL") or DEFAULT_BASE).strip() or DEFAULT_BASE
