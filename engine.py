@@ -277,21 +277,74 @@ def _call(fn, *a, **kw):
             print("LLM disabled:", e, file=sys.stderr, flush=True)
         raise
 
-def _ask(prompt: str, model="gpt-4o", temp=0.5, tokens=90) -> str:
+def _ask(prompt: str, model="gemini", temp=0.8, tokens=90, image_path: str = None) -> str:
+    """Use Gemini Flash for all text generation - much faster than GPT-4o
+    
+    Args:
+        prompt: Text prompt
+        model: Model to use (default: "gemini")
+        temp: Temperature (0-1)
+        tokens: Max output tokens
+        image_path: Optional path to image for multimodal input (e.g. "/images/file.png")
+    """
     if not LLM_ENABLED:
         return random.choice([
             "System communications remain static; awaiting new data.",
             "Narrative paused until resources are replenished.",
             "The world holds its breath for new directives."
         ])
-    rsp = _call(
-        client.chat.completions.create,
-        model="gpt-4o",
-        messages=[{"role":"user","content":prompt}],
-        temperature=temp,
-        max_tokens=tokens,
-    )
-    return rsp.choices[0].message.content.strip()
+    
+    # Use Gemini Flash for speed (supports multimodal!)
+    import requests
+    import base64
+    from pathlib import Path
+    gemini_api_key = CONFIG.get("GEMINI_API_KEY", "")
+    
+    try:
+        # Build parts list (text + optional image)
+        parts = [{"text": prompt}]
+        
+        # Add image if provided
+        if image_path:
+            # Convert path to actual file path
+            if image_path.startswith("/images/"):
+                actual_path = Path("images") / image_path.replace("/images/", "")
+            else:
+                actual_path = Path(image_path)
+            
+            if actual_path.exists():
+                # Use pre-downsampled version if available (saves processing time)
+                small_path = actual_path.parent / actual_path.name.replace(".png", "_small.png")
+                use_path = small_path if small_path.exists() else actual_path
+                
+                with open(use_path, "rb") as f:
+                    image_data = base64.b64encode(f.read()).decode('utf-8')
+                
+                parts.insert(0, {
+                    "inlineData": {
+                        "mimeType": "image/png",
+                        "data": image_data
+                    }
+                })
+                size_note = "(480x270)" if small_path.exists() else "(full-res)"
+                print(f"[GEMINI TEXT+IMG] Including image: {image_path} {size_note}")
+        
+        response_data = requests.post(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+            headers={"x-goog-api-key": gemini_api_key, "Content-Type": "application/json"},
+            json={
+                "contents": [{"parts": parts}],
+                "generationConfig": {"temperature": temp, "maxOutputTokens": tokens}
+            },
+            timeout=15
+        ).json()
+        
+        result = response_data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        print(f"[GEMINI TEXT] _ask() complete")
+        return result or ""
+    except Exception as e:
+        log_error(f"[ASK GEMINI] {e}")
+        return ""
 
 # ───────── vision description helper ────────────────────────────────────────
 def _downscale_for_vision(image_path: str, size=(640, 426)) -> io.BytesIO:
@@ -310,31 +363,164 @@ def _downscale_for_vision(image_path: str, size=(640, 426)) -> io.BytesIO:
         print("[VISION] Downscale error:", e, file=sys.stderr)
         return None
 
-def _vision_describe(image_path: str) -> str:
+def _vision_analyze_all(image_path: str) -> dict:
+    """
+    Unified vision analysis - gets description, time of day, and color in ONE API call.
+    Results are cached to avoid redundant API calls.
+    
+    Returns dict with keys: 'description', 'time_of_day', 'color_palette'
+    """
+    import base64
+    import requests
+    import os
+    
     if not LLM_ENABLED or not VISION_ENABLED:
-        return ""
-    buf = _downscale_for_vision(image_path)
-    if buf is None:
-        return ""
+        return {"description": "", "time_of_day": "", "color_palette": ""}
+    
+    # Check cache first
+    cache_key = os.path.abspath(image_path)
+    if cache_key in _vision_cache:
+        print(f"[VISION] Using cached analysis for {os.path.basename(image_path)}")
+        return _vision_cache[cache_key]
+    
     try:
-        rsp = client.chat.completions.create(
-            model="gpt-4o-vision",
-            messages=[
-                {"role":"system","content":"You will be shown an image."},
-                {"role":"user","content":(
-                    "Describe in detail what is visible in this image, focusing on objects, threats, exits, and anything Jason could interact with. "
-                    "Tie the description into the story's themes and mood, reinforcing the ambiance and narrative coherence of the current scene. "
-                    "Be direct and literal. If there are hands, weapons, or tools visible, mention them. If there are any visible figures, silhouettes, or creatures—even if partially obscured, ambiguous, or shadowy—mention them explicitly. If there are no figures, say so."
-                )}
-            ],
-            files=[{"file": buf, "filename": "downscaled.png"}],
-            temperature=0.3,
-        )
-        desc = rsp.choices[0].message.content.strip().replace("\n"," ")
-        return desc
+        
+        # Handle path - ensure it's accessible
+        full_path = image_path.lstrip("/")
+        if not os.path.exists(full_path):
+            full_path = os.path.join("images", os.path.basename(image_path))
+        
+        if not os.path.exists(full_path):
+            print(f"[VISION ERROR] Image file not found: {image_path}")
+            return {"description": "", "time_of_day": "", "color_palette": ""}
+        
+        # Use pre-downsampled version if available (saves processing time)
+        from pathlib import Path
+        full_path_obj = Path(full_path)
+        small_path = full_path_obj.parent / full_path_obj.name.replace(".png", "_small.png")
+        use_path = small_path if small_path.exists() else full_path_obj
+        
+        with open(use_path, "rb") as f:
+            image_bytes = f.read()
+        image_b64 = base64.b64encode(image_bytes).decode('utf-8')
+        
+        if small_path.exists():
+            print(f"[VISION] Using pre-downsampled image (480x270)")
+        
+        # Determine MIME type
+        mime_type = "image/png"
+        if full_path.endswith(('.jpg', '.jpeg')):
+            mime_type = "image/jpeg"
+        
+        # Use Gemini vision API - ONE call for everything
+        print(f"[VISION] Analyzing {os.path.basename(image_path)} (all-in-one)...")
+        
+        vision_prompt = """Analyze this image and respond in this EXACT format:
+
+TIME: <time of day - use ONLY: dawn, morning, afternoon, golden hour, dusk, or night>
+COLOR: <dominant color palette>
+DESCRIPTION: <detailed description of what is visible, focusing on objects, threats, exits, and anything Jason could interact with. Be direct and literal. If there are hands, weapons, tools, figures, silhouettes, or creatures visible, mention them explicitly.>"""
+        
+        api_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+        
+        headers = {
+            "x-goog-api-key": CONFIG.get("GEMINI_API_KEY", ""),
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "contents": [{
+                "parts": [
+                    {"text": vision_prompt},
+                    {
+                        "inlineData": {
+                            "mimeType": mime_type,
+                            "data": image_b64
+                        }
+                    }
+                ]
+            }],
+            "generationConfig": {
+                "temperature": 0.3,
+                "maxOutputTokens": 800
+            }
+        }
+        
+        response = requests.post(api_url, headers=headers, json=payload, timeout=30)
+        response.raise_for_status()
+        
+        result = response.json()
+        
+        # Extract text from Gemini response
+        if "candidates" not in result or not result["candidates"]:
+            print(f"[VISION ERROR] No candidates in response")
+            return {"description": "", "time_of_day": "", "color_palette": ""}
+        
+        candidate = result["candidates"][0]
+        if "content" not in candidate or "parts" not in candidate["content"]:
+            print(f"[VISION ERROR] Invalid response structure")
+            return {"description": "", "time_of_day": "", "color_palette": ""}
+        
+        parts = candidate["content"]["parts"]
+        full_text = ""
+        for part in parts:
+            if "text" in part:
+                full_text += part["text"]
+        
+        if not full_text:
+            print(f"[VISION ERROR] No text in response")
+            return {"description": "", "time_of_day": "", "color_palette": ""}
+        
+        # Parse the structured response
+        time_of_day = ""
+        color_palette = ""
+        description = ""
+        
+        lines = full_text.strip().split("\n")
+        for i, line in enumerate(lines):
+            if line.startswith("TIME:"):
+                time_of_day = line.replace("TIME:", "").strip()
+            elif line.startswith("COLOR:"):
+                color_palette = line.replace("COLOR:", "").strip()
+            elif line.startswith("DESCRIPTION:"):
+                description = line.replace("DESCRIPTION:", "").strip()
+                # Capture any subsequent lines as part of description
+                if i + 1 < len(lines):
+                    description += " " + " ".join(lines[i+1:])
+                break
+        
+        # If parsing failed, try fallback
+        if not description:
+            description = full_text
+        
+        result_dict = {
+            "description": description.strip().replace("\n", " "),
+            "time_of_day": time_of_day.strip(),
+            "color_palette": color_palette.strip()
+        }
+        
+        # Cache the result
+        _vision_cache[cache_key] = result_dict
+        
+        print(f"[VISION] Analysis complete: {len(description)} chars, time={time_of_day}, color={color_palette[:30]}")
+        return result_dict
+    
+    except requests.exceptions.HTTPError as e:
+        print(f"[VISION ERROR] Gemini API HTTP error: {e}")
+        if e.response is not None:
+            print(f"[VISION ERROR] Response: {e.response.text}")
+        return {"description": "", "time_of_day": "", "color_palette": ""}
     except Exception as e:
-        print("vision describe error:", e, file=sys.stderr)
-        return ""
+        print(f"[VISION ERROR] Failed to analyze image: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"description": "", "time_of_day": "", "color_palette": ""}
+
+# Legacy wrapper for backward compatibility
+def _vision_describe(image_path: str) -> str:
+    """Get image description (uses cached unified analysis)."""
+    result = _vision_analyze_all(image_path)
+    return result["description"]
 
 # ───────── world report (with vision‑desc) ─────────────────────────────────
 def _world_report() -> str:
@@ -464,52 +650,22 @@ def is_hard_transition(choice: str, dispatch: str) -> bool:
     text = f"{choice} {dispatch}".lower()
     return any(k in text for k in keywords)
 
-def build_image_prompt(previous_desc: str, change_desc: str, style_block: str, player_choice: str = "", dispatch: str = "", world_prompt: str = "", prev_captions: str = "", hard_transition: bool = False) -> str:
+def build_image_prompt(player_choice: str = "", dispatch: str = "", prev_vision_analysis: str = "", hard_transition: bool = False) -> str:
     """
-    Build a minimal, ultra-literal, action-focused image prompt for the next frame.
-    - First-person POV from Jason's eyes. Never show his face or full body.
-    - Show exactly what is described: {dispatch}.
-    - VHS scanlines, analog static, tape noise, color bleed.
-    - 1980s–90s found footage, home video, camcorder artifacts.
-    - Visible timecode and battery readout overlays (burn-ins).
-    - Muted, analog color palette, low contrast, soft focus.
-    - Maintain visual and spatial continuity with the last image. Do not abruptly change location unless the narrative explicitly transitions.
-    - Never show Jason's face, body, silhouette, reflection, or shadow. Only show what Jason sees from his own eyes. If Jason's hands are visible, they must be in first-person POV, interacting with objects. Do NOT show Jason in the frame. No over-the-shoulder, no third-person, no reflection, no shadow, no silhouette. The viewer *is* Jason. The camera is his eyes. Only his hands may be visible, and only if interacting with objects.
-    - Do not add or invent anything not in the dispatch.
-    - Analog VHS, grainy, muted colors, motion blur.
-    - Jason is Jason Fleece, a photojournalist. Never show a hockey mask, mask, or any horror/slasher tropes. Never depict Jason as Jason Voorhees or any killer.
-    - THIS IS FOUND FOOTAGE. THE STYLE MUST ALWAYS BE: VHS, FIRST-PERSON POV, HANDS ONLY IF VISIBLE, NO JASON IN FRAME. DO NOT OMIT THESE ELEMENTS UNDER ANY CIRCUMSTANCES.
+    Build image prompt with continuity from previous vision analysis.
+    Explicitly includes player choice so the image reflects the action taken.
     """
-    prompt = (
-        "First-person POV from Jason's eyes. Never show his face or full body. "
-        f"Show exactly what is described: {dispatch}. "
-        "VHS scanlines, analog static, tape noise, color bleed. "
-        "1980s–90s found footage, home video, camcorder artifacts. "
-        "Visible timecode and battery readout overlays (burn-ins). "
-        "Muted, analog color palette, low contrast, soft focus. "
-    )
-    if not hard_transition:
-        prompt += "Maintain visual and spatial continuity with the last image. Do not abruptly change location unless the narrative explicitly transitions. "
-    else:
-        prompt += "This is a hard transition: do not reference the previous image. Show the new location as described in the dispatch, and clarify the transition visually. "
-    prompt += (
-        "Never show Jason's face, body, silhouette, reflection, or shadow. Only show what Jason sees from his own eyes. If Jason's hands are visible, they must be in first-person POV, interacting with objects. Do NOT show Jason in the frame. No over-the-shoulder, no third-person, no reflection, no shadow, no silhouette. The viewer *is* Jason. The camera is his eyes. Only his hands may be visible, and only if interacting with objects. "
-        "Do not add or invent anything not in the dispatch. "
-        "Analog VHS, grainy, muted colors, motion blur. "
-        "Jason is Jason Fleece, a photojournalist. Never show a hockey mask, mask, or any horror/slasher tropes. Never depict Jason as Jason Voorhees or any killer. "
-        "THIS IS FOUND FOOTAGE. THE STYLE MUST ALWAYS BE: VHS, FIRST-PERSON POV, HANDS ONLY IF VISIBLE, NO JASON IN FRAME. DO NOT OMIT THESE ELEMENTS UNDER ANY CIRCUMSTANCES. "
-    )
-    if prev_captions and not hard_transition:
-        prompt += f" Previous scenes: {prev_captions}."
-    if world_prompt:
-        prompt += f" Context: {world_prompt}."
-    if globals().get('_is_inside', False):
-        prompt += " This scene is indoors."
-    prompt += f" Style: {style_block}."
+    # Start with the player's choice and what happened
+    prompt = f"Action taken: {player_choice}. Result: {dispatch}"
+    
+    # Add previous vision analysis for visual continuity (unless hard transition)
+    if prev_vision_analysis and not hard_transition:
+        prompt = f"{prompt} Continue from previous scene: {prev_vision_analysis[:200]}"
+    
     return prompt
 
-def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optional[str] = None, previous_caption: Optional[str] = None, previous_mode: Optional[str] = None, strength: float = 0.1, image_description: str = "", time_of_day: str = "", use_edit_mode: bool = False, frame_idx: int = 0, dispatch: str = "", world_prompt: str = "", hard_transition: bool = False) -> Optional[str]:
-    global _last_image_path, _is_inside
+def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optional[str] = None, previous_caption: Optional[str] = None, previous_mode: Optional[str] = None, strength: float = 0.25, image_description: str = "", time_of_day: str = "", use_edit_mode: bool = False, frame_idx: int = 0, dispatch: str = "", world_prompt: str = "", hard_transition: bool = False) -> Optional[str]:
+    global _last_image_path
     import random
     if not (IMAGE_ENABLED and LLM_ENABLED):
         print("[IMG] Image or LLM disabled, returning None")
@@ -518,52 +674,78 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
         prev_time_of_day, prev_color = "", ""
         prev_img_paths = []
         prev_img_captions = []
+        prev_vision_analysis = ""  # NEW: Vision AI's analysis of what's actually in the last frame
         prev_img_path = None
+        prev_img_paths_list = []  # List of recent image paths for multi-img2img
+        
         if frame_idx > 0 and history:
             last_imgs = []
+            # Determine number of reference images based on action type
+            # ACTIONS (movement, interaction) = 1 image (show dramatic change)
+            # STATIONARY (photograph, observe) = 2 images (maintain continuity)
+            action_keywords = ["move", "advance", "run", "sprint", "climb", "vault", "enter", "approach", 
+                             "walk", "crawl", "dash", "jump", "dive", "charge", "rush", "slide",
+                             "kick", "grab", "throw", "punch", "strike", "smash", "pry", "wrench"]
+            is_action = any(kw in choice.lower() for kw in action_keywords)
+            num_images_to_collect = 1 if is_action else 2
+            
+            if is_action:
+                print(f"[IMG2IMG] Action detected - using 1 reference image for dramatic change")
+            else:
+                print(f"[IMG2IMG] Stationary action - using 2 reference images for continuity")
+            
             for entry in reversed(history):
                 if entry.get("image") and entry.get("vision_dispatch"):
-                    last_imgs.append((entry["image"], entry["vision_dispatch"]))
-                if len(last_imgs) == 2:
+                    last_imgs.append((
+                        entry["image"],
+                        entry["vision_dispatch"],
+                        entry.get("vision_analysis", "")  # Pull vision analysis
+                    ))
+                if len(last_imgs) == num_images_to_collect:
                     break
-            if frame_idx == 2 and len(last_imgs) >= 1:
-                img, cap = last_imgs[-1]
-                prev_img_paths = [img]
-                prev_img_captions = [cap]
+            
+            if len(last_imgs) >= 1:
+                # Get most recent image for time/color extraction
+                img, cap, vis_analysis = last_imgs[0]
+                prev_vision_analysis = vis_analysis
                 prev_img_path = img.lstrip("/")
                 if not os.path.exists(prev_img_path):
                     prev_img_path = os.path.join("images", os.path.basename(prev_img_path))
-                if prev_img_paths and prev_img_path and os.path.exists(prev_img_path):
-                    prev_time_of_day, prev_color = _extract_time_and_color(prev_img_path)
-            elif len(last_imgs) >= 1:
-                img, cap = last_imgs[0]
-                prev_img_paths = [img]
-                prev_img_captions = [cap]
-                prev_img_path = img.lstrip("/")
-                if not os.path.exists(prev_img_path):
-                    prev_img_path = os.path.join("images", os.path.basename(prev_img_path))
-                if prev_img_paths and prev_img_path and os.path.exists(prev_img_path):
-                    prev_time_of_day, prev_color = _extract_time_and_color(prev_img_path)
+                
+                # Collect all recent image paths for multi-reference img2img
+                for idx, (img, cap, _) in enumerate(last_imgs):
+                    img_path = img.lstrip("/")
+                    if not os.path.exists(img_path):
+                        img_path = os.path.join("images", os.path.basename(img_path))
+                    if os.path.exists(img_path):
+                        # Verify the _small version exists too
+                        small_path = img_path.replace(".png", "_small.png")
+                        if os.path.exists(small_path):
+                            print(f"[IMG2IMG DEBUG] Ref {idx+1}: {os.path.basename(img_path)} (small: {os.path.exists(small_path)})")
+                        else:
+                            print(f"[IMG2IMG WARNING] Ref {idx+1}: {os.path.basename(img_path)} - NO SMALL VERSION!")
+                        prev_img_paths_list.append(img_path)
+                        prev_img_captions.append(cap)
+                    else:
+                        print(f"[IMG2IMG ERROR] Ref {idx+1}: {img_path} NOT FOUND!")
+                
+                print(f"[IMG2IMG] Frame {frame_idx}: Using {len(prev_img_paths_list)} reference image(s) for continuity")
+                
+                # Skip time extraction - we maintain it in state already
+                prev_time_of_day = ""
+                prev_color = ""
         use_time_of_day = time_of_day or prev_time_of_day or (state.get('time_of_day', '') if 'state' in globals() else '')
         use_color = prev_color
-        flux_instruction = PROMPTS.get("image_prompt_instruction", "")
-        neg = PROMPTS["image_negative_prompt"]
-        style_block = f"Time of day: {use_time_of_day}. Color: {use_color}. No: {neg}"
-        prev_captions = ". ".join(prev_img_captions) if prev_img_captions else ""
         # --- Inject world summary as background context ---
         world_summary = summarize_world_state(state) if 'state' in globals() else ""
-        # --- NEW: Summarize world prompt for image flavor ---
+        # --- Summarize world prompt for image flavor ---
         world_flavor = ""
         if 'state' in globals() and state.get("world_prompt", ""):
             world_flavor = summarize_world_prompt_for_image(state["world_prompt"])
         prompt_str = build_image_prompt(
-            previous_desc="",
-            change_desc="",
-            style_block=style_block,
             player_choice=choice,
             dispatch=caption,
-            world_prompt=state.get("world_prompt", ""),
-            prev_captions=prev_captions,
+            prev_vision_analysis=prev_vision_analysis,
             hard_transition=hard_transition
         )
         # Inject world flavor and location for image model only
@@ -571,14 +753,10 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
             prompt_str += f" World flavor: {world_flavor}."
         if world_summary:
             prompt_str += f" Background context: {world_summary}."
-        # Inject death visual biasing if provided
-        if death_visual_bias:
-            prompt_str += death_visual_bias
-        if prev_img_paths:
+        if prev_img_paths and not hard_transition:
             prompt_str = (
                 f"{prompt_str}\nMatch the lighting, time of day, and color palette to the previous image."
             )
-        prompt_str = f"{flux_instruction}\n{prompt_str}"
         # --- LOGGING ---
         print("[IMG LOG] --- IMAGE GENERATION PARAMETERS ---")
         print(f"[IMG LOG] frame_idx: {frame_idx}")
@@ -587,58 +765,89 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
         print(f"[IMG LOG] caption (vision_dispatch): {caption}")
         print(f"[IMG LOG] dispatch (narrative): {dispatch}")
         print(f"[IMG LOG] time_of_day: {use_time_of_day}")
-        print(f"[IMG LOG] style_block: {style_block}")
-        print(f"[IMG LOG] negative prompt: {neg}")
         print(f"[IMG LOG] prompt_str (full): {prompt_str}")
-        print(f"[IMG LOG] previous_image_url: {previous_image_url}")
+        print(f"[IMG LOG] previous_image_path (actual): {prev_img_path if prev_img_path else 'None'}")
+        print(f"[IMG LOG] reference_images_list: {len(prev_img_paths_list)} images")
         print(f"[IMG LOG] use_edit_mode: {use_edit_mode}")
         print(f"[IMG LOG] world_prompt: {world_prompt}")
         print("[IMG LOG] --- END IMAGE GENERATION PARAMETERS ---")
         IMAGE_DIR.mkdir(exist_ok=True)
         filename = f"{hash(caption) & 0xFFFFFFFF}_{_slug(caption)}.png"
         image_path = IMAGE_DIR / filename
-        # --- TRUE IMG2IMG/EDIT MODE ---
-        if use_edit_mode and prev_img_path and os.path.exists(prev_img_path) and frame_idx > 0:
-            print(f"[IMG EDIT] Using previous image as reference: {prev_img_path}")
-            with open(prev_img_path, "rb") as imgf:
-                response = client.images.edit(
+        
+        # --- ROUTE TO APPROPRIATE IMAGE PROVIDER ---
+        if IMAGE_PROVIDER == "gemini":
+            # Use Google Gemini (Nano Banana) - OFFICIAL API
+            print(f"[IMG] Using Google Gemini (Nano Banana) provider")
+            from gemini_image_utils import generate_with_gemini, generate_gemini_img2img
+            
+            if use_edit_mode and prev_img_paths_list and frame_idx > 0:
+                print(f"[IMG] Gemini img2img mode with {len(prev_img_paths_list)} reference images")
+                result_path = generate_gemini_img2img(
+                    prompt=prompt_str,
+                    caption=caption,
+                    reference_image_path=prev_img_paths_list,  # Pass list of recent images
+                    strength=strength,
+                    world_prompt=world_prompt,
+                    time_of_day=use_time_of_day,
+                    action_context=choice,  # Pass action for FPS hands context
+                    hd_mode=HD_MODE  # Use global HD mode setting
+                )
+            else:
+                print(f"[IMG] Gemini text-to-image mode")
+                result_path = generate_with_gemini(
+                    prompt=prompt_str,
+                    caption=caption,
+                    world_prompt=world_prompt,
+                    aspect_ratio="4:3",  # Faster generation, smaller files (1184x864)
+                    time_of_day=use_time_of_day,
+                    is_first_frame=(frame_idx == 0),  # Use Pro for first frame
+                    action_context=choice,  # Pass action for FPS hands context
+                    hd_mode=HD_MODE  # Use global HD mode setting
+                )
+            _last_image_path = result_path
+            return result_path
+        
+        elif IMAGE_PROVIDER == "openai":
+            # Use OpenAI DALL-E (original provider)
+            # --- TRUE IMG2IMG/EDIT MODE ---
+            if use_edit_mode and prev_img_path and os.path.exists(prev_img_path) and frame_idx > 0:
+                print(f"[IMG EDIT] Using previous image as reference: {prev_img_path}")
+                with open(prev_img_path, "rb") as imgf:
+                    response = client.images.edit(
+                        model="gpt-image-1",
+                        image=imgf,
+                        prompt=prompt_str,
+                        n=1,
+                        size="1536x1024",
+                        quality="medium"
+                    )
+                b64_data = response.data[0].b64_json
+                img_data = base64.b64decode(b64_data)
+                with open(image_path, "wb") as f:
+                    f.write(img_data)
+                print(f"[EDIT] Image saved to: {image_path}")
+            else:
+                print(f"[IMG] Generating first frame or no reference image (text-to-image)")
+                response = client.images.generate(
                     model="gpt-image-1",
-                    image=imgf,
                     prompt=prompt_str,
                     n=1,
                     size="1536x1024",
                     quality="medium"
                 )
-            b64_data = response.data[0].b64_json
-            img_data = base64.b64decode(b64_data)
-            with open(image_path, "wb") as f:
-                f.write(img_data)
-            print(f"✅ [EDIT] Image saved to: {image_path}")
+                b64_data = response.data[0].b64_json
+                img_data = base64.b64decode(b64_data)
+                with open(image_path, "wb") as f:
+                    f.write(img_data)
+                print(f"Image saved to: {image_path}")
+            _last_image_path = f"/images/{filename}"
+            return _last_image_path
+        
         else:
-            print(f"[IMG] Generating first frame or no reference image (text-to-image)")
-            response = client.images.generate(
-                model="gpt-image-1",
-                prompt=prompt_str,
-                n=1,
-                size="1536x1024",
-                quality="medium"
-            )
-            b64_data = response.data[0].b64_json
-            img_data = base64.b64decode(b64_data)
-            with open(image_path, "wb") as f:
-                f.write(img_data)
-            print(f"✅ Image saved to: {image_path}")
-        _last_image_path = f"/images/{filename}"
-        # Only run vision analysis if not the first frame
-        if frame_idx > 1:
-            _is_inside = _vision_is_inside(f"/images/{filename}")
-            tod, color = _extract_time_and_color(f"/images/{filename}")
-            state['time_of_day'] = tod
-            state['color_palette'] = color
-            _save_state(state)
-        exit_cues = ["exit", "outside", "outdoors", "leave the building", "step outside", "step outdoors", "emerge", "open air", "under the sky", "out in the open"]
-        if any(cue in caption.lower() or cue in dispatch.lower() for cue in exit_cues):
-            _is_inside = False
+            raise ValueError(f"Unknown IMAGE_PROVIDER: {IMAGE_PROVIDER}. Supported: 'openai', 'gemini'")
+        # Skip time extraction - we already set time_of_day in state before generation
+        # No need to extract it back from the image we just generated!
         return f"/images/{filename}"
     except Exception as e:
         print(f"[IMG PROVIDER {IMAGE_PROVIDER}] Error:", e)
