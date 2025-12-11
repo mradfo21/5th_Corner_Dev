@@ -1787,6 +1787,208 @@ def discord_token_exchange():
         logging.error(f"Error in Discord token exchange: {e}")
         return jsonify({"error": "Internal server error during token exchange"}), 500
 
+# ───────── COMBINED dispatch generator (saves 1 API call) ─────────────────────
+def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = None, prev_vision: str = "", current_image: str = None) -> tuple[str, str, bool]:
+    """
+    Generate BOTH narrative dispatch AND vision dispatch in ONE API call.
+    Now supports multimodal input - can see the current frame!
+    
+    Returns: (dispatch, vision_dispatch, player_alive)
+    """
+    try:
+        # Get previous vision analysis for spatial consistency
+        prev_vision_analysis = ""
+        if history and len(history) > 0:
+            last_entry = history[-1]
+            if last_entry.get("vision_analysis"):
+                prev_vision_analysis = last_entry["vision_analysis"][:300]
+        
+        spatial_context = ""
+        if prev_vision_analysis:
+            spatial_context = f"\n\nCURRENT VISUAL SCENE (MUST STAY CONSISTENT): {prev_vision_analysis}\nDo NOT change locations unless the choice explicitly moves through a door, entrance, or exit. Stay in the same environment."
+        
+        prev_context = f"\n\nPREVIOUS SCENE: {prev_vision[:200]}" if prev_vision else ""
+        world_prompt = state.get('world_prompt', '')
+        
+        image_context = ""
+        if current_image:
+            image_context = "🖼️ ATTACHED IMAGE = CURRENT LOCATION. Jason is HERE. Do NOT teleport him.\n\n"
+        
+        # Detect timeout penalties
+        is_timeout_penalty = any(phrase in choice.lower() for phrase in [
+            "crushes you", "hits you", "attacks you", "shoots you", "tears into you",
+            "engulfs you", "mauls you", "slams into you", "impacts you", "sustained",
+            "to torso", "to limb", "trauma", "burns to", "pressure on", "collapses on"
+        ])
+        
+        # Use JUST the dispatch_sys instructions (which has JSON format)
+        json_prompt = (
+            f"{dispatch_sys}\n\n"
+            f"PLAYER CHOICE: '{choice}'\n"
+            f"WORLD CONTEXT: {world_prompt}\n\n"
+            f"{spatial_context}"
+            f"{prev_context}\n\n"
+            "Generate the consequence in valid JSON format."
+        )
+        
+        # Build parts list (text + optional image)
+        parts = [{"text": json_prompt}]
+        
+        # Add previous timestep image if provided
+        if current_image:
+            # Use pre-downsampled version if available
+            if current_image.startswith("/images/"):
+                actual_path = Path("images") / current_image.replace("/images/", "")
+            else:
+                actual_path = Path(current_image)
+            
+            small_path = actual_path.parent / actual_path.name.replace(".png", "_small.png")
+            use_path = small_path if small_path.exists() else actual_path
+            
+            if use_path.exists():
+                with open(use_path, "rb") as f:
+                    import base64
+                    image_data = base64.b64encode(f.read()).decode('utf-8')
+                
+                parts.insert(0, {
+                    "inlineData": {
+                        "mimeType": "image/png",
+                        "data": image_data
+                    }
+                })
+                size_note = "(480x270)" if small_path.exists() else "(full-res)"
+                print(f"[GEMINI TEXT+IMG] Including PREVIOUS timestep image: {current_image} {size_note}")
+        
+        import requests
+        response_data = requests.post(
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+            headers={"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"},
+            json={
+                "contents": [{"parts": parts}],
+                "generationConfig": {"temperature": 0.8, "maxOutputTokens": 500}
+            },
+            timeout=15
+        ).json()
+        print("[GEMINI TEXT] ✅ Combined dispatches complete")
+        
+        result = response_data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        
+        # Strip markdown code fences if present
+        if result.startswith("```"):
+            lines_raw = result.split("\n")
+            if lines_raw[0].startswith("```"):
+                lines_raw = lines_raw[1:]
+            if lines_raw and lines_raw[-1].strip() == "```":
+                lines_raw = lines_raw[:-1]
+            result = "\n".join(lines_raw)
+        
+        # Parse JSON response
+        dispatch = ""
+        player_alive = True
+        
+        try:
+            import json as json_lib
+            data = json_lib.loads(result)
+            dispatch = data.get("dispatch", "")
+            player_alive = data.get("player_alive", True)
+            print(f"[DISPATCH] Parsed JSON: dispatch={dispatch[:50]}..., alive={player_alive}")
+        except Exception as parse_error:
+            print(f"[DISPATCH] JSON parse failed: {parse_error}")
+            print(f"[DISPATCH] Raw result: {result[:200]}...")
+            # Fallback: try to extract dispatch text
+            dispatch = result.replace('"dispatch":', '').replace('"player_alive":', '').replace('{', '').replace('}', '').strip()
+            if ',' in dispatch:
+                dispatch = dispatch.split(',')[0].strip(' "')
+        
+        # Vision dispatch = same as dispatch
+        vision_dispatch = dispatch
+        
+        # Hard cap at 400 characters
+        if len(dispatch) > 400:
+            dispatch = dispatch[:385] + "...(truncated)"
+        
+        return dispatch, vision_dispatch, player_alive
+        
+    except Exception as e:
+        print(f"[COMBINED DISPATCH ERROR] {e}")
+        import traceback
+        traceback.print_exc()
+        # Fallback to safe defaults
+        return "Jason makes a tense move in the chaos.", "The desert stretches ahead.", True
+
+def summarize_world_state_diff(prev_state: dict, state: dict) -> str:
+    """
+    Return a concise summary of the most important differences between two world states.
+    """
+    diffs = []
+    # Major world prompt change
+    if prev_state.get('world_prompt', '') != state.get('world_prompt', ''):
+        motifs = ["red biome", "creature", "alliance", "alert", "injury", "resource", "threat", "opportunity", "military", "activist", "danger", "quarantine", "mutation", "disaster", "conflict", "chaos", "discovery", "revelation", "attack", "wound", "escape", "surveillance", "protest", "panic", "contamination", "artifact", "ancient", "storm", "explosion", "hostile", "warning", "rumor", "evidence", "mutation", "leader", "broadcast", "rescue", "raid", "sabotage", "betrayal", "alliance broken", "alliance formed"]
+        new_prompt = state.get('world_prompt', '').lower()
+        if any(m in new_prompt for m in motifs):
+            diffs.append(f"World event: {state.get('world_prompt', '')}")
+    # Chaos level
+    if prev_state.get('chaos_level', 0) != state.get('chaos_level', 0):
+        diffs.append(f"Chaos level: {prev_state.get('chaos_level', 0)} → {state.get('chaos_level', 0)}")
+    # Phase
+    if prev_state.get('current_phase', 'normal') != state.get('current_phase', 'normal'):
+        diffs.append(f"Phase: {prev_state.get('current_phase', 'normal')} → {state.get('current_phase', 'normal')}")
+    # Player state
+    if prev_state.get('player_state', {}) != state.get('player_state', {}):
+        prev_alive = prev_state.get('player_state', {}).get('alive', True)
+        curr_alive = state.get('player_state', {}).get('alive', True)
+        if not curr_alive:
+            diffs.append("Player is dead or gravely wounded.")
+        elif not prev_alive and curr_alive:
+            diffs.append("Player revived or recovered.")
+        else:
+            diffs.append(f"Player state changed")
+    # New seen elements
+    prev_seen = set(prev_state.get('seen_elements', []))
+    curr_seen = set(state.get('seen_elements', []))
+    new_seen = curr_seen - prev_seen
+    if new_seen:
+        motifs = ["red biome", "creature", "alliance", "alert", "injury", "resource", "threat"]
+        motif_seen = [e for e in new_seen if any(m in e.lower() for m in motifs)]
+        if motif_seen:
+            diffs.append(f"New key elements: {', '.join(list(motif_seen)[:3])}")
+    if not diffs:
+        return "No major world state changes."
+    return "; ".join(diffs)
+
+def is_clever_or_risky(choice):
+    """Heuristic: risky/clever if contains certain keywords"""
+    keywords = ["sneak", "hide", "stealth", "evade", "escape", "confront", "attack", "investigate", "search", "scan", "explore", "photograph", "analyze", "decipher", "decode", "hack", "sabotage", "ally", "bargain", "bribe", "bluff", "trick", "outsmart", "ambush", "rescue", "save", "risk", "danger", "hazard", "peril", "bold", "daring", "reckless", "brave", "uncover", "discover", "secret", "hidden", "mystery", "clue", "artifact", "ancient", "forbidden", "rare"]
+    return any(k in choice.lower() for k in keywords)
+
+def resolve_risky_action(choice, threat_level, dispatch, world_prompt):
+    import random
+    # Set base success chance by threat level
+    if threat_level == 0:
+        success_chance = 0.85
+    elif threat_level == 1:
+        success_chance = 0.7
+    elif threat_level == 2:
+        success_chance = 0.5
+    else:
+        success_chance = 0.33
+    success = random.random() < success_chance
+    # Use LLM to generate consequence
+    prompt = (
+        f"Write a single, punchy gameplay consequence line for the player's risky action. "
+        f"ACTION: {choice}\nDISPATCH: {dispatch}\nWORLD: {world_prompt}\n"
+        f"OUTCOME: {'success' if success else 'failure'}\n"
+        "If success, describe how the player advances or avoids danger. If failure, describe the immediate negative result."
+    )
+    try:
+        summary = _ask(prompt, model="gpt-4o-mini", temp=1.0, tokens=40)
+        if not summary.strip():
+            summary = 'No major consequence.'
+        return success, summary
+    except Exception as e:
+        log_error(f"[RISKY ACTION CONSEQUENCE] LLM error: {e}")
+        return success, 'No major consequence.'
+
 # ───────── game loop ──────────────────────────────────────────────────────────
 def advance_turn_image_fast(choice: str) -> dict:
     """
@@ -1814,13 +2016,18 @@ def advance_turn_image_fast(choice: str) -> dict:
             prev_vision = history[-1].get("vision_dispatch", "")
             prev_image = history[-1].get("image_url", None)
         
-        # Generate dispatch
-        dispatch = _generate_dispatch(choice, state, prev_state)
-        vision_dispatch = dispatch  # Simplified
-        player_alive = state.get('player_state', {}).get('alive', True)
+        # Generate dispatch using FULL StoryGen version
+        dispatch, vision_dispatch, player_alive = _generate_combined_dispatches(choice, state, prev_state, prev_vision, prev_image)
         
+        # SIMPLE DEATH SYSTEM: Just trust the LLM
         state['player_state']['alive'] = player_alive
+        
+        if not player_alive:
+            print(f"[DEATH] Player killed by: {dispatch[:100]}...")
+        
+        # Save state immediately after death detection
         _save_state(state)
+        print(f"[STATE] Saved - alive={player_alive}, health={state['player_state'].get('health', 100)}")
         
         if not dispatch or dispatch.strip().lower() in {"none", "", "[", "[]"}:
             dispatch = "Jason makes a tense move in the chaos."
@@ -1829,7 +2036,7 @@ def advance_turn_image_fast(choice: str) -> dict:
         
         # Evolve world state
         from evolve_prompt_file import evolve_world_state
-        consequence_summary = summarize_world_state(state)
+        consequence_summary = summarize_world_state_diff(prev_state, state)
         evolve_world_state(history, consequence_summary, vision_description=vision_dispatch)
         state = _load_state()
         
