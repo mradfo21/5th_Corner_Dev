@@ -365,7 +365,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
             )
             try:
                 micro_reaction = await asyncio.get_running_loop().run_in_executor(
-                    None, lambda: engine._ask(micro_prompt, model="gemini", temp=0.4, tokens=50)
+                    None, lambda: engine._ask(micro_prompt, model="gpt-4o-mini", temp=0.4, tokens=50)
                 )
             except Exception:
                 micro_reaction = "👀 The world holds its breath."
@@ -510,16 +510,16 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                     ))
                     try:
                         await interaction.channel.send(file=discord.File(tape_path))
-                        await asyncio.sleep(2)
+                        print("[DEATH] 📼 Tape uploaded - waiting for player to download...")
                     except Exception as e:
                         print(f"[DEATH] Failed to send tape: {e}")
                 
-                # Wait 5 seconds then auto-restart
+                # Wait 15 seconds then auto-restart (give player time to download tape)
                 await interaction.channel.send(embed=discord.Embed(
-                    description="Game will restart in 5 seconds...",
+                    description="💾 **Save the tape now!** Game will restart in 15 seconds...",
                     color=0x555555
                 ))
-                await asyncio.sleep(5)
+                await asyncio.sleep(15)
                 
                 # Auto-restart the game
                 print("[DEATH] Auto-restarting game...")
@@ -663,7 +663,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
             )
             try:
                 micro_reaction = await asyncio.get_running_loop().run_in_executor(
-                    None, lambda: engine._ask(micro_prompt, model="gemini", temp=0.4, tokens=50)
+                    None, lambda: engine._ask(micro_prompt, model="gpt-4o-mini", temp=0.4, tokens=50)
                 )
             except Exception:
                 micro_reaction = "👀 The world holds its breath."
@@ -756,16 +756,16 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                     ))
                     try:
                         await interaction.channel.send(file=discord.File(tape_path))
-                        await asyncio.sleep(2)
+                        print("[DEATH] 📼 Tape uploaded - waiting for player to download...")
                     except Exception as e:
                         print(f"[DEATH] Failed to send tape: {e}")
                 
-                # Auto-restart after 5s
+                # Auto-restart after 15s (give player time to download tape)
                 await interaction.channel.send(embed=discord.Embed(
-                    description="Game will restart in 5 seconds...",
+                    description="💾 **Save the tape now!** Game will restart in 15 seconds...",
                     color=0x555555
                 ))
-                await asyncio.sleep(5)
+                await asyncio.sleep(15)
                 
                 # Cancel all running tasks
                 if auto_advance_task and not auto_advance_task.done():
@@ -1653,16 +1653,16 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                             ))
                             try:
                                 await channel.send(file=discord.File(tape_path))
-                                await asyncio.sleep(2)
+                                print("[COUNTDOWN DEATH] 📼 Tape uploaded - waiting for player to download...")
                             except Exception as e:
                                 print(f"[COUNTDOWN DEATH] Failed to send tape: {e}")
                         
-                        # Wait and restart
+                        # Wait and restart (give player time to download tape)
                         await channel.send(embed=discord.Embed(
-                            description="Game will restart in 5 seconds...",
+                            description="💾 **Save the tape now!** Game will restart in 15 seconds...",
                             color=0x555555
                         ))
-                        await asyncio.sleep(5)
+                        await asyncio.sleep(15)
                         
                         # Cancel all running tasks
                         if auto_advance_task and not auto_advance_task.done():
@@ -1948,16 +1948,16 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                 ))
                 try:
                     await channel.send(file=discord.File(tape_path))
-                    await asyncio.sleep(2)
+                    print("[AUTO-PLAY DEATH] 📼 Tape uploaded - waiting for player to download...")
                 except Exception as e:
                     print(f"[AUTO-PLAY] Failed to send tape: {e}")
             
-            # Auto-restart after 5s
+            # Auto-restart after 15s (give player time to download tape)
             await channel.send(embed=discord.Embed(
-                description="Game will restart in 5 seconds...",
+                description="💾 **Save the tape now!** Game will restart in 15 seconds...",
                 color=0x555555
             ))
-            await asyncio.sleep(5)
+            await asyncio.sleep(15)
             
             # Cancel all running tasks
             if auto_advance_task and not auto_advance_task.done():
