@@ -145,21 +145,17 @@ def log_error(message: str):
     print(f"ERROR: {message}", file=sys.stderr, flush=True)
 
 # ───────── prompt fragments ──────────────────────────────────────────────────
-image_modes     = PROMPTS["image_mode_styles"]
-choice_tmpl     = PROMPTS["choice_prompt_template"]
-dispatch_sys    = PROMPTS["dispatch_system_guide"]
-image_aesthetic = PROMPTS["image_aesthetic"]
+choice_tmpl     = PROMPTS["player_choice_generation_instructions"]
+dispatch_sys    = PROMPTS["action_consequence_instructions"]
 neg_prompt      = PROMPTS["image_negative_prompt"]
-narrative_tmpl  = PROMPTS["narrative_prompt_template"]
-mode_prompt_tpl = PROMPTS["image_mode_prompt"]
-caption_tmpl    = PROMPTS["caption_prompt_template"]
+narrative_tmpl  = PROMPTS["field_notes_format"]
 
 RISKY_ACTION_KEYWORDS = [
     "risky", "dangerous", "reckless", "chance it", "gamble", "all or nothing", 
     "desperate measure", "long shot", "against the odds", "bold move"
 ]
 
-core_modes = list(image_modes)
+# core_modes = list(image_modes)  # Removed - not used in StoryGen version
 
 # ───────── world‑state helpers ───────────────────────────────────────────────
 def _load_state() -> dict:
@@ -412,11 +408,8 @@ def _generate_dispatch(choice: str, state: dict, prev_state: dict = None) -> str
         return "Jason makes a tense move in the chaos."
 
 def _generate_caption(dispatch: str, mode: str, is_first_frame: bool = False) -> str:
-    if is_first_frame:
-        tmpl = PROMPTS.get("first_caption_prompt_template", caption_tmpl)
-    else:
-        tmpl = caption_tmpl
-    return _ask(tmpl.format(dispatch=dispatch, mode=mode), temp=0.7)
+    # Simplified caption generation - not used in StoryGen version
+    return f"{dispatch} ({mode})"
 
 # ───────── imaging helpers ─────────────────────────────────────────────────
 def _slug(s: str) -> str:
@@ -552,7 +545,7 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
         use_color = prev_color
         flux_instruction = PROMPTS.get("image_prompt_instruction", "")
         neg = PROMPTS["image_negative_prompt"]
-        style_block = f"{image_aesthetic} {image_modes[mode]}. Time of day: {use_time_of_day}. Color: {use_color}. No: {neg}"
+        style_block = f"Time of day: {use_time_of_day}. Color: {use_color}. No: {neg}"
         prev_captions = ". ".join(prev_img_captions) if prev_img_captions else ""
         # --- Inject world summary as background context ---
         world_summary = summarize_world_state(state) if 'state' in globals() else ""
