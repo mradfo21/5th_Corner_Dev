@@ -1787,6 +1787,72 @@ def discord_token_exchange():
         logging.error(f"Error in Discord token exchange: {e}")
         return jsonify({"error": "Internal server error during token exchange"}), 500
 
+# ───────── state management ──────────────────────────────────────────────────
+def get_state():
+    return _load_state()
+
+def reset_state():
+    global state, history, _last_image_path, _vision_cache
+    # Forcibly delete history.json and world_state.json if they exist
+    try:
+        os.remove(str(ROOT / "history.json"))
+    except FileNotFoundError:
+        pass
+    try:
+        os.remove(str(ROOT / "world_state.json"))
+    except FileNotFoundError:
+        pass
+    
+    # Clear vision cache
+    _vision_cache.clear()
+    print("[CLEANUP] Cleared vision analysis cache")
+    
+    # Clear all images from the images folder
+    image_dir = ROOT / "images"
+    if image_dir.exists():
+        image_count = 0
+        for image_file in image_dir.glob("*.png"):
+            try:
+                image_file.unlink()
+                image_count += 1
+            except Exception as e:
+                print(f"[CLEANUP] Failed to delete {image_file.name}: {e}")
+        print(f"[CLEANUP] Deleted {image_count} old images from images/ folder")
+    
+    # Recreate history.json as empty list
+    with (ROOT / "history.json").open("w", encoding="utf-8") as f:
+        json.dump([], f)
+    history = []
+    # Recreate world_state.json with intro prompt
+    import random
+    time_options = [
+        "golden hour (late afternoon warm light)",
+        "midday (harsh overhead sunlight)",
+        "early morning (soft blue-tinted light)",
+        "late afternoon (long shadows)",
+        "overcast daylight (diffuse gray light)"
+    ]
+    initial_time = random.choice(time_options)
+    intro_state = {
+        "world_prompt": PROMPTS["world_initial_state"],
+        "current_phase": "normal",
+        "chaos_level": 0,
+        "turn": 0,
+        "time_of_day": initial_time,
+        "last_action": "Initial simulation state",
+        "situation": "You stand at the edge of the restricted zone, camera in hand.",
+        "beat": 0,
+        "injuries": [],
+        "inventory": ["Nikon F3 camera", "notebook", "flashlight"],
+        "location": "desert_edge",
+        "environment_type": "desert"
+    }
+    with (ROOT / "world_state.json").open("w", encoding="utf-8") as f:
+        json.dump(intro_state, f, indent=2)
+    state = intro_state
+    _last_image_path = None
+    print("[STARTUP] Game state cleared. Starting fresh.")
+
 if __name__ == '__main__':
     # Setup logging if you want to see Flask's default logs
     # logging.basicConfig(level=logging.INFO)
