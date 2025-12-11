@@ -365,7 +365,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
             )
             try:
                 micro_reaction = await asyncio.get_running_loop().run_in_executor(
-                    None, lambda: engine._ask(micro_prompt, model="gpt-4o-mini", temp=0.4, tokens=50)
+                    None, lambda: engine._ask(micro_prompt, model="gemini", temp=0.4, tokens=50)
                 )
             except Exception:
                 micro_reaction = "👀 The world holds its breath."
@@ -663,7 +663,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
             )
             try:
                 micro_reaction = await asyncio.get_running_loop().run_in_executor(
-                    None, lambda: engine._ask(micro_prompt, model="gpt-4o-mini", temp=0.4, tokens=50)
+                    None, lambda: engine._ask(micro_prompt, model="gemini", temp=0.4, tokens=50)
                 )
             except Exception:
                 micro_reaction = "👀 The world holds its breath."

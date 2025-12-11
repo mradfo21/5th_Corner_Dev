@@ -7,15 +7,14 @@ import re
 from pathlib import Path
 from typing import List, Union
 
-import openai
 from evolve_prompt_file import generate_interim_messages
 import engine
 import difflib
 
-def _ensure_client(c: openai.OpenAI | None) -> openai.OpenAI:
-    if c is not None:
-        return c
-    raise RuntimeError("OpenAI client not initialised in choices.py")
+# No longer using OpenAI - everything uses Gemini now!
+def _ensure_client(c):
+    """Legacy function - no longer needed, Gemini is used directly"""
+    return None
 
 # ──────────────────────────────────────────────────────────────────────────────
 def filter_choices(choices, seen_elements, recent_choices, dispatch='', image_description='', world_prompt=''):
@@ -59,8 +58,8 @@ def enforce_diversity(choices):
     return unique
 
 def generate_choices(
-    client: openai.OpenAI | None,
-    prompt_tmpl: str,
+    client = None,  # No longer used - Gemini is called directly
+    prompt_tmpl: str = "",
     last_dispatch: str = "",
     n: int = 3,
     image_url: str = None,
@@ -84,7 +83,7 @@ def generate_choices(
       • {beat_nudge}   — the current story beat nudge (if any)
       • {situation_summary} — a single actionable summary of the world state (if any)
     """
-    client = _ensure_client(client)
+    # No longer using OpenAI client - everything uses Gemini now
     # Update the prompt to require unique, contextually grounded, and diverse choices
     prompt = prompt_tmpl.replace('2-4 words', '2-5 words').replace(
         'Suggest a consequence, risk, or emotional cue',

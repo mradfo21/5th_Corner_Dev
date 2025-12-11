@@ -326,14 +326,26 @@ def describe_image_with_vision(image_path):
         print(f"[Vision] Image not found: {img_path}")
         return None
     try:
-        with open(img_path, "rb") as imgf:
-            rsp = openai.chat.completions.create(
-                model="gpt-4o-vision",
-                messages=[
-                    {"role": "system", "content": "You will be shown an image."},
-                    {"role": "user", "content": "Describe briefly what is happening in this image. Be short and descriptive. Do NOT use poetic or flowery language. Include actions and verbs taking place. include color and time of day."}
-                ],
-                files=[{"file": imgf, "filename": img_path.name}],
+        # Use Gemini vision via engine._ask with image_path parameter
+        from engine import _ask
+        img_path_str = str(img_path)
+        if img_path_str.startswith("images/"):
+            img_path_str = "/" + img_path_str
+        elif not img_path_str.startswith("/"):
+            img_path_str = "/images/" + img_path.name
+        
+        prompt = "Describe briefly what is happening in this image. Be short and descriptive. Do NOT use poetic or flowery language. Include actions and verbs taking place. include color and time of day."
+        result = _ask(prompt, model="gemini", temp=0.3, tokens=200, image_path=img_path_str)
+        
+        # Create a mock response object for compatibility
+        class MockResp:
+            def __init__(self, text):
+                self.choices = [type('obj', (object,), {'message': type('obj', (object,), {'content': text})()})]
+        
+        rsp = MockResp(result)
+        if False:  # Skip the old OpenAI code block
+            with open(img_path, "rb") as imgf:
+                pass
                 temperature=0.8,
             )
         desc = rsp.choices[0].message.content.strip().replace("\n", " ")
