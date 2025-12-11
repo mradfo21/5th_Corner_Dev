@@ -216,8 +216,9 @@ else:
     history = []
 
 def _save_state(st: dict):
-    # with WORLD_STATE_LOCK: # REMOVED - Lock should be managed by the caller
-    st["last_saved"] = datetime.now(timezone.utc).isoformat()
+    # CRITICAL FIX: Always acquire lock to prevent concurrent write race conditions
+    with WORLD_STATE_LOCK:
+        st["last_saved"] = datetime.now(timezone.utc).isoformat()
     temp_state_file = STATE_PATH.with_suffix(".json.tmp")
     max_retries = 3
     retry_delay = 0.1 # seconds
@@ -244,12 +245,12 @@ def _save_state(st: dict):
                 break 
             time.sleep(retry_delay)
 
-    logging.error(f"Persistently failed to save state to {STATE_PATH} after {max_retries} attempts.")
-    if temp_state_file.exists():
-        try:
-            os.remove(temp_state_file)
-        except Exception as e_remove:
-            logging.error(f"Error removing temporary state file {temp_state_file} after failed save: {e_remove}")
+            logging.error(f"Persistently failed to save state to {STATE_PATH} after {max_retries} attempts.")
+        if temp_state_file.exists():
+            try:
+                os.remove(temp_state_file)
+            except Exception as e_remove:
+                logging.error(f"Error removing temporary state file {temp_state_file} after failed save: {e_remove}")
 
 def summarize_world_state(state: dict) -> str:
     """

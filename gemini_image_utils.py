@@ -666,12 +666,15 @@ def generate_gemini_img2img(
     }
     
     try:
-        # Make the request with REDUCED timeout (30s) to prevent death sequence hangs
-        # Gemini Pro can hang indefinitely on some prompts, especially death scenes
-        max_retries = 1  # Reduced from 2 - don't waste time retrying slow calls
+        # Dynamic timeout based on number of reference images
+        # More images = more processing time needed (img2img with multiple refs is slow)
+        timeout_seconds = 30 + (len(image_paths) * 10)  # 30s base + 10s per extra image
+        print(f"⏱️ [GOOGLE GEMINI IMG2IMG] Using {timeout_seconds}s timeout for {len(image_paths)} reference image(s)")
+        
+        max_retries = 1  # Don't waste time retrying slow calls
         for attempt in range(max_retries):
             try:
-                response = requests.post(api_url, headers=headers, json=payload, timeout=30)
+                response = requests.post(api_url, headers=headers, json=payload, timeout=timeout_seconds)
                 response.raise_for_status()
                 break
             except requests.exceptions.Timeout:
@@ -679,7 +682,7 @@ def generate_gemini_img2img(
                     print(f"⏱️ [GOOGLE GEMINI] Timeout on attempt {attempt + 1}, retrying...")
                     continue
                 else:
-                    print(f"❌ [GOOGLE GEMINI] TIMEOUT after 30s - Gemini API not responding!")
+                    print(f"❌ [GOOGLE GEMINI] TIMEOUT after {timeout_seconds}s - Gemini API not responding!")
                     return None  # Graceful fallback instead of crash
         
         result = response.json()

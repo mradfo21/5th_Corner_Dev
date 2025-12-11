@@ -311,6 +311,11 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                 timeout=10
             ).json()
             
+            # Check for API error response
+            if "candidates" not in response_data:
+                print(f"[COUNTDOWN] Gemini API error: {response_data.get('error', response_data)}")
+                return "The world turns dangerous in your hesitation"  # Contextual fallback
+            
             result = response_data["candidates"][0]["content"]["parts"][0]["text"].strip()
             print(f"[COUNTDOWN] Raw result: {result}")
             
@@ -414,6 +419,19 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                 await interaction.response.defer()
             except Exception:
                 pass
+            
+            # CRITICAL: Disable ALL buttons immediately to prevent double-click race condition
+            view = self.view
+            if view and hasattr(view, 'children'):
+                for item in view.children:
+                    item.disabled = True
+                try:
+                    if hasattr(view, 'last_choices_message') and view.last_choices_message:
+                        await view.last_choices_message.edit(view=view)
+                        print("[CHOICE] ✅ Buttons disabled to prevent double-click")
+                except Exception as e:
+                    print(f"[CHOICE] Warning: Could not disable buttons: {e}")
+            
             import engine
             world_state = engine.get_state().get('world_prompt', '')
             choice_text = self.label
@@ -754,6 +772,20 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                 await interaction.response.defer()
             except Exception:
                 pass
+            
+            # CRITICAL: Disable ALL buttons immediately to prevent double-click race condition
+            # Get the view from the interaction's message
+            try:
+                message = await interaction.channel.fetch_message(interaction.message.id)
+                if message and message.components:
+                    # Disable the view that spawned this modal
+                    for component in message.components:
+                        for item in component.children:
+                            item.disabled = True
+                    await message.edit(view=discord.ui.View.from_message(message))
+                    print("[CUSTOM ACTION] ✅ Buttons disabled to prevent concurrent actions")
+            except Exception as e:
+                print(f"[CUSTOM ACTION] Warning: Could not disable buttons: {e}")
             
             import engine
             world_state = engine.get_state().get('world_prompt', '')
@@ -1754,14 +1786,35 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                     # TIME'S UP - Generate and execute penalty
                     print("[COUNTDOWN] Time's up! Generating penalty...")
                     
-                    # Disable all buttons
+                    # IMMEDIATELY disable all buttons and push to Discord UI
                     for item in view.children:
                         item.disabled = True
                     
-                    # Generate penalty with current image for context
+                    # Update Discord UI IMMEDIATELY (before penalty generation)
+                    try:
+                        if view.last_choices_message:
+                            await view.last_choices_message.edit(view=view)
+                            print("[COUNTDOWN] ✅ Buttons disabled immediately")
+                    except Exception as e:
+                        print(f"[COUNTDOWN] Failed to disable buttons: {e}")
+                    
+                    # Show "generating penalty..." message
+                    if countdown_message:
+                        try:
+                            await countdown_message.edit(
+                                content=None,
+                                embed=discord.Embed(
+                                    description="⏱️ **Time's up!** Generating consequence...",
+                                    color=VHS_RED
+                                )
+                            )
+                        except Exception:
+                            pass
+                    
+                    # NOW generate penalty (takes time, but buttons are already disabled)
                     penalty_choice = await generate_timeout_penalty(dispatch, situation, current_image_path)
                     
-                    # Update with timeout message
+                    # Update with final timeout message
                     timeout_embed = discord.Embed(
                         description=f"**Hesitation has consequences.**\n\n{penalty_choice}",
                         color=VHS_RED
@@ -1770,10 +1823,8 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                     try:
                         if countdown_message:
                             await countdown_message.edit(content=None, embed=timeout_embed)
-                        if view.last_choices_message:
-                            await view.last_choices_message.edit(view=view)
                     except Exception as e:
-                        print(f"[COUNTDOWN] Failed to update messages: {e}")
+                        print(f"[COUNTDOWN] Failed to update timeout message: {e}")
                     
                     # Process penalty as a choice
                     await asyncio.sleep(2)  # Let them see the penalty
