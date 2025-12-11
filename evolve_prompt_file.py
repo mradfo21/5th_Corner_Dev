@@ -10,8 +10,14 @@ try:
 except FileNotFoundError:
     config = {}
 
-# --- OpenAI API Key --- #
+# --- API Keys --- #
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", config.get("OPENAI_API_KEY"))
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", config.get("GEMINI_API_KEY", ""))
+
+# DEBUG: Log API key loading at module import
+print(f"[EVOLVE DEBUG] GEMINI_API_KEY loaded: {'YES' if GEMINI_API_KEY else 'NO (EMPTY!)'}")
+if GEMINI_API_KEY:
+    print(f"[EVOLVE DEBUG] Key: {GEMINI_API_KEY[:20]}...{GEMINI_API_KEY[-8:]} (len={len(GEMINI_API_KEY)})")
 
 # Initialize OpenAI client
 openai.api_key = OPENAI_API_KEY
@@ -178,7 +184,7 @@ def evolve_world_state(dispatches, consequence_summary=None, state_file="world_s
     try:
         # Request the world evolution from Gemini Flash (much faster!)
         import requests
-        gemini_api_key = config.get("GEMINI_API_KEY", "")
+        gemini_api_key = GEMINI_API_KEY
         
         # Convert messages to Gemini format
         prompt_text = ""
@@ -258,7 +264,7 @@ Write a single, cinematic sentence describing the next shot.
 """
     # Use Gemini Flash for speed
     import requests
-    gemini_api_key = config.get("GEMINI_API_KEY", "")
+    gemini_api_key = GEMINI_API_KEY
     
     response_data = requests.post(
         "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
@@ -375,7 +381,7 @@ def generate_interim_messages(prompt_file="prompts/simulation_prompts.json", n=2
 
     # 3. ask LLM for fresh lines (use Gemini Flash)
     import requests
-    gemini_api_key = config.get("GEMINI_API_KEY", "")
+    gemini_api_key = GEMINI_API_KEY
     
     response_data = requests.post(
         "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
@@ -449,7 +455,7 @@ def generate_interim_messages_on_demand(n=20, prompt_file="prompts/simulation_pr
     llm_prompt = f"{interim_prompt}{context}{example}{harden}"
     # Use Gemini Flash for speed
     import requests
-    gemini_api_key = config.get("GEMINI_API_KEY", "")
+    gemini_api_key = GEMINI_API_KEY
     
     response_data = requests.post(
         "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
@@ -475,7 +481,7 @@ def summarize_world_prompt_to_interim_messages(world_prompt: str):
     )
     # Use Gemini Flash for speed
     import requests
-    gemini_api_key = config.get("GEMINI_API_KEY", "")
+    gemini_api_key = GEMINI_API_KEY
     
     response_data = requests.post(
         "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",

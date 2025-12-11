@@ -2,6 +2,7 @@
 bot.py – single definitive version
 • Attaches world‑image (snapshot) and dispatch‑image so every client sees them
 • Works no matter where the bot is running (no PUBLIC_HOST / IMAGE_PORT)
+• Updated: Extended death tape + FIXED Gemini API key loading from env vars (CRITICAL)
 """
 
 import os
@@ -663,9 +664,13 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
             )
             try:
                 micro_reaction = await asyncio.get_running_loop().run_in_executor(
-                    None, lambda: engine._ask(micro_prompt, model="gpt-4o-mini", temp=0.4, tokens=50)
+                    None, lambda: engine._ask(micro_prompt, model="gemini", temp=0.4, tokens=50)
                 )
-            except Exception:
+                # Ensure we never have empty string for Discord embed
+                if not micro_reaction or not micro_reaction.strip():
+                    micro_reaction = "👀 The world holds its breath."
+            except Exception as e:
+                print(f"[CUSTOM ACTION] Micro reaction failed: {e}")
                 micro_reaction = "👀 The world holds its breath."
             
             micro_msg = await interaction.channel.send(embed=discord.Embed(

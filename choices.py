@@ -129,9 +129,19 @@ def generate_choices(
     # Use Gemini Flash for speed (with multimodal support!)
     import requests
     import base64
+    import os
     from pathlib import Path
-    from engine import CONFIG
-    gemini_api_key = CONFIG.get("GEMINI_API_KEY", "")
+    # CRITICAL: Read from env vars first (for Render deployment)
+    gemini_api_key = os.getenv("GEMINI_API_KEY", "")
+    if not gemini_api_key:
+        from engine import CONFIG
+        gemini_api_key = CONFIG.get("GEMINI_API_KEY", "")
+    
+    # DEBUG: Log API key status
+    if gemini_api_key:
+        print(f"[CHOICES DEBUG] API key loaded: {gemini_api_key[:20]}...{gemini_api_key[-8:]} (len={len(gemini_api_key)})")
+    else:
+        print(f"[CHOICES DEBUG] ERROR - API key is EMPTY or None!")
     
     # Combine system and user messages
     if isinstance(messages[1].get("content"), list):

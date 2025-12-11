@@ -61,6 +61,12 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", CONFIG.get("OPENAI_API_KEY"))
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", CONFIG.get("GEMINI_API_KEY"))
 REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN", CONFIG.get("REPLICATE_API_TOKEN"))
 
+# DEBUG: Log API keys at module initialization
+print(f"[ENGINE INIT] GEMINI_API_KEY loaded: {'YES' if GEMINI_API_KEY else 'NO (EMPTY!)'}")
+if GEMINI_API_KEY:
+    print(f"[ENGINE INIT] Key: {GEMINI_API_KEY[:20]}...{GEMINI_API_KEY[-8:]} (len={len(GEMINI_API_KEY)})")
+print(f"[ENGINE INIT] Source: os.getenv={bool(os.getenv('GEMINI_API_KEY'))}, config={bool(CONFIG.get('GEMINI_API_KEY'))}")
+
 # Load prompts
 PROMPTS = json.load((ROOT/"prompts"/"simulation_prompts.json").open(encoding="utf-8"))
 
@@ -99,7 +105,9 @@ LLM_ENABLED = True
 
 VISION_ENABLED = True  # ENABLED for production
 
-IMAGE_PROVIDER = CONFIG.get("IMAGE_PROVIDER", "openai").lower()
+# Use Gemini by default (OpenAI is legacy)
+IMAGE_PROVIDER = CONFIG.get("IMAGE_PROVIDER", "gemini").lower()
+print(f"[ENGINE INIT] IMAGE_PROVIDER: {IMAGE_PROVIDER}")
 
 # Track the last dispatch image path for vision continuity
 _last_image_path: Optional[str] = None
@@ -299,7 +307,14 @@ def _ask(prompt: str, model="gemini", temp=0.8, tokens=90, image_path: str = Non
     import requests
     import base64
     from pathlib import Path
-    gemini_api_key = CONFIG.get("GEMINI_API_KEY", "")
+    # CRITICAL: Use global variable (reads from env vars), not CONFIG dict
+    gemini_api_key = GEMINI_API_KEY
+    
+    # DEBUG: Log API key status
+    if gemini_api_key:
+        print(f"[ASK DEBUG] API key loaded: {gemini_api_key[:20]}...{gemini_api_key[-8:]} (len={len(gemini_api_key)})")
+    else:
+        print(f"[ASK DEBUG] ERROR - API key is EMPTY or None!")
     
     try:
         # Build parts list (text + optional image)
@@ -340,12 +355,21 @@ def _ask(prompt: str, model="gemini", temp=0.8, tokens=90, image_path: str = Non
             timeout=15
         ).json()
         
+        # Check for error response from Gemini API
+        if "candidates" not in response_data:
+            print(f"[ASK GEMINI ERROR] Gemini API error response: {response_data}")
+            if "error" in response_data:
+                error_details = response_data['error']
+                print(f"[ASK GEMINI ERROR] Code: {error_details.get('code')}, Message: {error_details.get('message')}")
+            # Return fallback response (NEVER empty string!)
+            return "The transmission wavers... static fills the air as the signal struggles to maintain connection."
+        
         result = response_data["candidates"][0]["content"]["parts"][0]["text"].strip()
         print(f"[GEMINI TEXT] _ask() complete")
-        return result or ""
+        return result if result else "..."  # Never return empty string
     except Exception as e:
         log_error(f"[ASK GEMINI] {e}")
-        return ""
+        return "Signal interrupted..."  # Never return empty string
 
 # ───────── vision description helper ────────────────────────────────────────
 def _downscale_for_vision(image_path: str, size=(640, 426)) -> io.BytesIO:
