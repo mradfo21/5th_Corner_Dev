@@ -32,11 +32,11 @@ IMAGE_DIR = Path("images")
 
 # CRITICAL DEBUG: Log API key status at import time
 if not GEMINI_API_KEY:
-    print("❌ [GEMINI INIT] CRITICAL: GEMINI_API_KEY is NOT SET! Images will not generate!")
+    print("[GEMINI INIT] CRITICAL: GEMINI_API_KEY is NOT SET! Images will not generate!")
     print(f"[GEMINI INIT] Environment variable: {os.getenv('GEMINI_API_KEY', 'NOT SET')}")
     print(f"[GEMINI INIT] Config.json value: {config.get('GEMINI_API_KEY', 'NOT SET')}")
 else:
-    print(f"✅ [GEMINI INIT] GEMINI_API_KEY loaded: {GEMINI_API_KEY[:20]}...{GEMINI_API_KEY[-8:]}")
+    print(f"[GEMINI INIT] GEMINI_API_KEY loaded: {GEMINI_API_KEY[:20]}...{GEMINI_API_KEY[-8:]}")
     print(f"[GEMINI INIT] Ready to generate images")
 
 # Google Gemini models
@@ -148,11 +148,11 @@ def generate_with_gemini(
     Returns:
         Local path to the saved image (e.g., "/images/filename.png")
     """
-    print(f"🎨 [GEMINI IMG] generate_with_gemini() CALLED - caption: {caption[:50]}")
-    print(f"🎨 [GEMINI IMG] API key available: {bool(GEMINI_API_KEY)}, length: {len(GEMINI_API_KEY) if GEMINI_API_KEY else 0}")
+    print(f"[GEMINI IMG] generate_with_gemini() CALLED - caption: {caption[:50]}")
+    print(f"[GEMINI IMG] API key available: {bool(GEMINI_API_KEY)}, length: {len(GEMINI_API_KEY) if GEMINI_API_KEY else 0}")
     
     if not GEMINI_API_KEY:
-        print("❌ [GEMINI IMG] FATAL: No API key! Cannot generate image!")
+        print("[GEMINI IMG] FATAL: No API key! Cannot generate image!")
         return None
     if not GEMINI_API_KEY or not GEMINI_API_KEY.strip():
         raise ValueError(
