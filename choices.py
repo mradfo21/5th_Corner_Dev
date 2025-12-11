@@ -196,6 +196,14 @@ def generate_choices(
         def __init__(self, text):
             self.choices = [type('obj', (object,), {'message': type('obj', (object,), {'content': text})()})]
     
+    # Check for API errors
+    if "candidates" not in response_data:
+        print(f"[CHOICES ERROR] Gemini API error response: {response_data}")
+        if "error" in response_data:
+            print(f"[CHOICES ERROR] Error details: {response_data['error']}")
+        # Return fallback choices
+        return ["Look around", "Move forward", "Wait"]
+    
     result_text = response_data["candidates"][0]["content"]["parts"][0]["text"].strip()
     rsp = GeminiResp(result_text)
     raw = rsp.choices[0].message.content.strip()
