@@ -1853,6 +1853,126 @@ def reset_state():
     _last_image_path = None
     print("[STARTUP] Game state cleared. Starting fresh.")
 
+def generate_intro_turn():
+    """
+    Generate the intro turn: dispatch, vision_dispatch, image, and choices,
+    using the prologue as the first dispatch and context.
+    """
+    global state, history, _last_image_path
+    import random
+    from choices import generate_choices
+    
+    # Randomize opening scene for variety - no specific objects that will haunt subsequent generations
+    opening_scenes = [
+        {
+            "prologue": "Jason surveys the Horizon facility from a rocky outcrop in the desert.",
+            "vision": "The Horizon facility sprawls across the red desert valley below, industrial structures stark against the mesa backdrop."
+        },
+        {
+            "prologue": "Jason stands at the edge of the quarantine perimeter, watching the facility in the distance.",
+            "vision": "Beyond the barbed wire fence, the Horizon facility's concrete structures stretch across the arid landscape."
+        },
+        {
+            "prologue": "Jason approaches the facility compound across the open desert terrain.",
+            "vision": "The facility looms ahead across the barren red earth, its angular silhouette cutting through the dusty air."
+        },
+        {
+            "prologue": "Jason pauses near a warning sign marking the quarantine zone boundary.",
+            "vision": "Past the weathered quarantine signs, the sprawling Horizon complex dominates the valley floor."
+        },
+        {
+            "prologue": "Jason observes the facility from a vantage point atop the red mesa.",
+            "vision": "From the mesa's edge, the entire Horizon facility layout is visible below—a vast industrial complex in the desert."
+        }
+    ]
+    
+    scene = random.choice(opening_scenes)
+    prologue = scene["prologue"]
+    vision_dispatch = scene["vision"]
+    
+    state = _load_state()
+    state["world_prompt"] = prologue
+    state["current_phase"] = "normal"
+    state["chaos_level"] = 0
+    state["last_choice"] = ""
+    state["seen_elements"] = []
+    state["player_state"] = {"alive": True, "health": 100}
+    _save_state(state)
+    
+    dispatch = prologue
+    mode = state.get("mode", "camcorder")
+    
+    # Generate opening image to establish the scene
+    dispatch_img_url = None
+    image_description = ""
+    try:
+        print("[INTRO] Generating opening image...")
+        dispatch_img_url = _gen_image(
+            vision_dispatch,  # Visual description of the opening scene
+            mode,
+            "Intro",
+            image_description="",
+            time_of_day=state.get('time_of_day', 'golden hour'),
+            use_edit_mode=False,  # No previous image
+            frame_idx=0,  # First frame
+            dispatch=dispatch,
+            world_prompt=prologue,
+            hard_transition=False
+        )
+        if dispatch_img_url:
+            print(f"✅ [INTRO] Opening image generated: {dispatch_img_url}")
+            _last_image_path = dispatch_img_url
+            image_description = ""  # Not needed anymore
+        else:
+            print("[INTRO] ⚠️ Image generation returned None")
+    except Exception as e:
+        print(f"❌ [INTRO] Error generating opening image: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    situation_summary = summarize_world_state(state)
+    options = generate_choices(
+        client, choice_tmpl,
+        dispatch,  # What's happening now
+        n=3,
+        image_url=dispatch_img_url,  # Opening image - Gemini looks at THIS!
+        seen_elements='',
+        recent_choices='',
+        caption="",  # Let Gemini see the actual image
+        image_description="",  # Let Gemini see the actual image
+        time_of_day=state.get('time_of_day', ''),
+        world_prompt=prologue,
+        temperature=0.7,
+        situation_summary=situation_summary
+    )
+    if len(options) == 1:
+        parts = re.split(r"[\/,\x19\x12\-]|  +", options[0])
+        options = [p.strip() for p in parts if p.strip()][:3]
+    # Don't pad with placeholders - just return what we got
+    entry = {
+        "choice": "Intro",
+        "dispatch": dispatch,
+        "vision_dispatch": vision_dispatch,
+        "vision_analysis": image_description,  # Save vision analysis for first turn continuity
+        "world_prompt": prologue,
+        "image": dispatch_img_url  # Include opening image
+    }
+    history = [entry]
+    (ROOT / "history.json").write_text(json.dumps(history, indent=2))
+    # _last_image_path is already set above if image was generated
+    _save_state(state)
+    return {
+        "dispatch": dispatch,
+        "vision_dispatch": vision_dispatch,
+        "dispatch_image": dispatch_img_url,
+        "choices": options,
+        "caption": vision_dispatch,
+        "mode": mode,
+        "phase": state["current_phase"],
+        "chaos": state["chaos_level"],
+        "player_state": state.get('player_state', {})
+    }
+
 if __name__ == '__main__':
     # Setup logging if you want to see Flask's default logs
     # logging.basicConfig(level=logging.INFO)
