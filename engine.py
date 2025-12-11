@@ -554,22 +554,16 @@ def summarize_world_prompt_for_image(world_prompt: str) -> str:
 
 def _generate_dispatch(choice: str, state: dict, prev_state: dict = None) -> str:
     try:
+        # System instructions + user prompt combined for Gemini
         prompt = (
-            PROMPTS["dispatch_prompt"] +
-            "\nKeep the dispatch to 1-3 sentences, focusing on immediate, visual, and action-oriented outcomes. Be concise and avoid backstory or exposition.\n"
+            f"{PROMPTS['dispatch_system_guide']}\n\n"
+            f"{PROMPTS['dispatch_prompt']}\n"
+            "Keep the dispatch to 1-3 sentences, focusing on immediate, visual, and action-oriented outcomes. Be concise and avoid backstory or exposition.\n"
             f"PLAYER CHOICE: '{choice}'\n"
             f"WORLD CONTEXT: {state['world_prompt']}\n"
             f"PREVIOUS: {prev_state['world_prompt'] if prev_state else ''}"
         )
-        rsp = _call(
-            client.chat.completions.create,
-            model="gpt-4o",
-            messages=[{"role":"system","content":PROMPTS["dispatch_system_guide"]},
-                      {"role":"user","content":prompt}],
-            temperature=0.5,
-            max_tokens=80,
-        )
-        result = rsp.choices[0].message.content.strip()
+        result = _ask(prompt, model="gemini", temp=0.5, tokens=80)
         # If result is just '[' or '[]' or empty, fallback immediately
         if result.strip() in {"[", "[]", ""}:
             return "Jason makes a tense move in the chaos."
@@ -620,27 +614,7 @@ def _generate_burn_in(mode: str) -> str:
     )
     return _ask(prompt, tokens=20)
 
-def _vision_is_inside(image_path: str) -> bool:
-    if not LLM_ENABLED or not VISION_ENABLED:
-        return False
-    buf = _downscale_for_vision(image_path)
-    if buf is None:
-        return False
-    try:
-        rsp = client.chat.completions.create(
-            model="gpt-4o-vision",
-            messages=[
-                {"role": "system", "content": "You will be shown an image."},
-                {"role": "user", "content": "Is this scene indoors or outdoors? Respond with only 'indoors' or 'outdoors'."}
-            ],
-            files=[{"file": buf, "filename": "downscaled.png"}],
-            temperature=0.2,
-        )
-        desc = rsp.choices[0].message.content.strip().lower()
-        return 'indoors' in desc
-    except Exception as e:
-        print("vision is_inside error:", e, file=sys.stderr)
-        return False
+# _vision_is_inside removed - was expensive and never used in StoryGen
 
 def is_hard_transition(choice: str, dispatch: str) -> bool:
     keywords = [
@@ -856,20 +830,13 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
 # ───────── vision dispatch generator ─────────────────────────────────────────
 def _generate_vision_dispatch(narrative_dispatch: str, world_prompt: str = "") -> str:
     prompt = (
+        "You are a visual scene writer for analog horror. Output only the literal, visible scene as Jason would see it, in first-person present tense.\n\n"
         "Rewrite the following narrative as a first-person, present-tense description of what Jason sees, suitable for a visual scene. "
         "Only describe what is visible. Do not include Jason himself or any internal thoughts. "
         "Do not show Jason. Do not show the protagonist. Do not show any character from behind. Only show what Jason sees from his own eyes. "
         f"\n\nNARRATIVE DISPATCH: {narrative_dispatch}\n\nWORLD CONTEXT: {world_prompt}"
     )
-    rsp = _call(
-        client.chat.completions.create,
-        model="gpt-4o",
-        messages=[{"role": "system", "content": "You are a visual scene writer for analog horror. Output only the literal, visible scene as Jason would see it, in first-person present tense."},
-                  {"role": "user", "content": prompt}],
-        temperature=0.4,
-        max_tokens=100,
-    )
-    result = rsp.choices[0].message.content.strip()
+    result = _ask(prompt, model="gemini", temp=0.4, tokens=100)
     return result
 
 # ───────── public API (two‑stage) ───────────────────────────────────────────
@@ -935,31 +902,9 @@ def begin_tick() -> dict:
     }
 
 def _extract_time_and_color(image_path: str) -> tuple[str, str]:
-    if not LLM_ENABLED or not VISION_ENABLED:
-        return "", ""
-    buf = _downscale_for_vision(image_path)
-    if buf is None:
-        return "", ""
-    try:
-        rsp = client.chat.completions.create(
-            model="gpt-4o-vision",
-            messages=[
-                {"role":"system","content":"You will be shown an image."},
-                {"role":"user","content":"Describe the time of day (e.g., dawn, morning, afternoon, dusk, night) and the dominant color or color palette in this image. Respond in the format: 'Time: <time>. Color: <color or palette>.'"}
-            ],
-            files=[{"file": buf, "filename": "downscaled.png"}],
-            temperature=0.6,
-        )
-        desc = rsp.choices[0].message.content.strip()
-        time, color = "", ""
-        if "Time:" in desc and "Color:" in desc:
-            parts = desc.split("Color:")
-            time = parts[0].replace("Time:", "").strip().strip(".")
-            color = parts[1].strip().strip(".")
-        return time, color
-    except Exception as e:
-        print("vision extract error:", e, file=sys.stderr)
-        return "", ""
+    """Extract time of day and color palette (uses cached unified analysis)."""
+    result = _vision_analyze_all(image_path)
+    return result["time_of_day"], result["color_palette"]
 
 # --- LLM-based player death check ---
 def check_player_death(dispatch: str, world_prompt: str, choice: str) -> bool:
