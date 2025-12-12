@@ -199,7 +199,18 @@ def generate_with_gemini(
         "YES: Muted desaturated colors from generation loss\n"
         "YES: Amateur handheld shake, out-of-focus moments, auto-exposure hunting\n"
         "Think: Blair Witch Project, Paranormal Activity, analog horror found footage\n"
-        "MAXIMUM grain, MAXIMUM degradation, MAXIMUM analog imperfection."
+        "MAXIMUM grain, MAXIMUM degradation, MAXIMUM analog imperfection.\n\n"
+        "📹 TECHNICAL CAMERA SPECIFICATION:\n"
+        "Shot on Sony CCD-TR5 Handycam or RCA VHS camcorder (1993 consumer model)\n"
+        "CCD sensor artifacts, interlaced 480i NTSC video, visible scan lines\n"
+        "Cheap plastic lens with poor coatings: lens flare, chromatic aberration, soft edges\n"
+        "Auto-focus constantly hunting (NEVER perfectly sharp, soft focus, blurry moments)\n"
+        "Auto-exposure failing: backlit subjects too dark, bright areas blown out\n"
+        "White balance error: orange tint from sodium vapor lights OR blue tint outdoors\n"
+        "Poor low-light performance: muddy details, heavy noise, high ISO grain\n"
+        "Amateur camerawork: shaky handheld, poorly framed, accidental composition\n"
+        "This looks like 1991 home video or 1993 security footage - NOT a game screenshot with filters.\n"
+        "Specific flaws: out of focus areas, vignetting in corners, tape dropout, generation loss."
     )
     
     structured_prompt = structured_prompt + negative_emphasis + photographic_anchor
@@ -658,7 +669,19 @@ def generate_gemini_img2img(
         "YES: Amateur handheld shake, out-of-focus moments, auto-exposure hunting\n"
         "Think: Blair Witch Project, Paranormal Activity, V/H/S, analog horror found footage\n"
         "PRESERVE the lo-fi VHS analog degradation from reference images. AMPLIFY grain and imperfections.\n"
-        "DO NOT drift toward clean game-like rendering or modern HD video."
+        "DO NOT drift toward clean game-like rendering or modern HD video.\n\n"
+        "📹 TECHNICAL CAMERA SPECIFICATION:\n"
+        "Shot on Sony CCD-TR5 Handycam or RCA VHS camcorder (1993 consumer model)\n"
+        "CCD sensor artifacts, interlaced 480i NTSC video, visible scan lines\n"
+        "Cheap plastic lens with poor coatings: lens flare, chromatic aberration, soft edges\n"
+        "Auto-focus constantly hunting (NEVER perfectly sharp, soft focus throughout)\n"
+        "Auto-exposure failing: backlit subjects too dark, bright areas completely blown out\n"
+        "White balance error: orange tint from sodium vapor lights OR blue tint outdoors\n"
+        "Poor low-light performance: muddy details, heavy noise, visible grain\n"
+        "Amateur camerawork: shaky handheld, poorly framed, accidental composition, tilted horizon\n"
+        "This looks like 1991 home video or 1993 security footage - NOT a polished game screenshot.\n"
+        "Specific flaws: out of focus, vignetting, tape dropout, generation loss, tracking errors.\n"
+        "PRESERVE these technical flaws from reference images. DO NOT make it cleaner or sharper."
     )
     
     full_prompt = structured_prompt + negative_emphasis + photographic_anchor
