@@ -143,8 +143,8 @@ if DISCORD_ENABLED:
             import os
             print(f"[TAPE] Recording VHS tape from {len(_run_images)} frame paths...")
             
-            # Load all images and normalize to same size (1024x1024)
-            TARGET_SIZE = (1024, 1024)
+            # Load all images (logo already cropped to 1024x1024, game images are 1024x1024 from Gemini)
+            # NO scaling/normalization needed - use frames at native resolution!
             frames = []
             missing_files = []
             
@@ -154,23 +154,8 @@ if DISCORD_ENABLED:
                 if full_path.exists():
                     try:
                         img = Image.open(str(full_path))
-                        original_size = img.size
-                        img_rgb = img.convert("RGB")
-                        
-                        # Normalize ALL frames to TARGET_SIZE (fixes cropping issue)
-                        if img_rgb.size != TARGET_SIZE:
-                            # Resize to fit within target size while maintaining aspect ratio
-                            img_rgb.thumbnail(TARGET_SIZE, Image.Resampling.LANCZOS)
-                            # Create black canvas and paste centered
-                            normalized = Image.new("RGB", TARGET_SIZE, (0, 0, 0))
-                            paste_x = (TARGET_SIZE[0] - img_rgb.width) // 2
-                            paste_y = (TARGET_SIZE[1] - img_rgb.height) // 2
-                            normalized.paste(img_rgb, (paste_x, paste_y))
-                            frames.append(normalized)
-                            print(f"[TAPE] ✅ Frame {idx+1}: {original_size} → {TARGET_SIZE} (normalized)")
-                        else:
-                            frames.append(img_rgb)
-                            print(f"[TAPE] ✅ Frame {idx+1}: {original_size} (already correct size)")
+                        frames.append(img.convert("RGB"))
+                        print(f"[TAPE] ✅ Frame {idx+1} loaded successfully ({img.size})")
                     except Exception as e:
                         print(f"[TAPE] ❌ Failed to open frame {idx+1}: {e}")
                         missing_files.append(f"{img_path} (failed to open)")
@@ -182,8 +167,6 @@ if DISCORD_ENABLED:
                 error = f"Not enough valid frames. Found {len(frames)} readable images out of {len(_run_images)} paths. Missing files: {', '.join(missing_files)}"
                 print(f"[TAPE ERROR] {error}")
                 return None, error
-            
-            print(f"[TAPE] ✅ All {len(frames)} frames normalized to {TARGET_SIZE[0]}x{TARGET_SIZE[1]}")
             
             # Create timestamped tape (they are the memories, never deleted)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1806,28 +1789,41 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                 
                 if logo_file and logo_file.exists():
                     try:
-                        # Crop/resize logo to 1024x1024 to match game images (prevents GIF cropping)
+                        # Crop and resize logo to match Gemini's exact 16:9 output
+                        # Gemini is the GOLD STANDARD - logo must match its resolution exactly
                         from PIL import Image
                         logo_img = Image.open(str(logo_file))
                         
-                        # Center crop to square, then resize to 1024x1024
-                        min_dimension = min(logo_img.size)
-                        left = (logo_img.width - min_dimension) // 2
-                        top = (logo_img.height - min_dimension) // 2
-                        right = left + min_dimension
-                        bottom = top + min_dimension
-                        logo_cropped = logo_img.crop((left, top, right, bottom))
-                        logo_resized = logo_cropped.resize((1024, 1024), Image.Resampling.LANCZOS)
+                        # Target: 16:9 aspect ratio (Gemini's standard)
+                        # We'll determine exact resolution from first Gemini image, but use 16:9 for now
+                        target_aspect = 16 / 9
                         
-                        # Save normalized logo to temp file
+                        # Crop logo to 16:9 if needed
+                        current_aspect = logo_img.width / logo_img.height
+                        if abs(current_aspect - target_aspect) > 0.01:
+                            if current_aspect > target_aspect:
+                                # Too wide - crop width
+                                new_width = int(logo_img.height * target_aspect)
+                                left = (logo_img.width - new_width) // 2
+                                logo_cropped = logo_img.crop((left, 0, left + new_width, logo_img.height))
+                            else:
+                                # Too tall - crop height
+                                new_height = int(logo_img.width / target_aspect)
+                                top = (logo_img.height - new_height) // 2
+                                logo_cropped = logo_img.crop((0, top, logo_img.width, top + new_height))
+                        else:
+                            # Already 16:9!
+                            logo_cropped = logo_img
+                        
+                        # Save at native 16:9 resolution (will match Gemini output naturally)
                         normalized_logo_path = ROOT / "static" / "Logo_normalized.jpg"
-                        logo_resized.save(str(normalized_logo_path), "JPEG", quality=95)
+                        logo_cropped.save(str(normalized_logo_path), "JPEG", quality=95)
                         
                         # Send the normalized logo
                         await interaction.channel.send(file=discord.File(str(normalized_logo_path)))
                         # Track normalized logo as Frame 0 of VHS tape
                         _run_images.append(f"/static/Logo_normalized.jpg")
-                        print(f"[TAPE] Frame 0 (logo) recorded: Logo_normalized.jpg (1024x1024)")
+                        print(f"[TAPE] Frame 0 (logo) recorded: Logo_normalized.jpg ({logo_cropped.width}x{logo_cropped.height}, 16:9)")
                     except Exception as e:
                         print(f"[LOGO] Failed to process/send logo: {e}")
                 else:
