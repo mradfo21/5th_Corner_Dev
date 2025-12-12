@@ -123,8 +123,13 @@ if DISCORD_ENABLED:
     def _create_death_replay_gif() -> tuple[Optional[str], str]:
         """
         Create a VHS tape (GIF) from all images in the current run.
+        Automatically compresses to stay under Discord's 8 MB limit.
         Returns: (tape_path or None, error_message or empty string)
         """
+        # Discord file size limits (bytes)
+        DISCORD_MAX_SIZE = 8 * 1024 * 1024  # 8 MB for non-Nitro users
+        SAFE_MAX_SIZE = 7.5 * 1024 * 1024   # 7.5 MB safety margin
+        
         # Check if we have enough frames
         print(f"[TAPE] Checking frames... _run_images contains {len(_run_images) if _run_images else 0} entries")
         if not _run_images or len(_run_images) < 2:
@@ -135,6 +140,7 @@ if DISCORD_ENABLED:
         try:
             from PIL import Image
             from datetime import datetime
+            import os
             print(f"[TAPE] Recording VHS tape from {len(_run_images)} frame paths...")
             
             # Load all images
@@ -164,19 +170,61 @@ if DISCORD_ENABLED:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             tape_path = TAPES_DIR / f"tape_{timestamp}.gif"
             
-            print(f"[TAPE] Saving GIF with {len(frames)} frames to: {tape_path}")
+            # Try progressively smaller scales with color optimization
+            # NEVER skip frames - preserve complete narrative!
+            compression_attempts = [
+                {"scale": 0.75, "colors": 256, "description": "75% scale (high quality)"},
+                {"scale": 0.60, "colors": 256, "description": "60% scale"},
+                {"scale": 0.50, "colors": 128, "description": "50% scale + 128 colors"},
+                {"scale": 0.40, "colors": 96, "description": "40% scale + 96 colors"},
+                {"scale": 0.35, "colors": 64, "description": "35% scale + 64 colors"},
+                {"scale": 0.30, "colors": 48, "description": "30% scale + 48 colors (maximum compression)"},
+            ]
             
-            # Record tape with 0.5 seconds per frame (twice as fast)
-            frames[0].save(
-                str(tape_path),
-                save_all=True,
-                append_images=frames[1:],
-                duration=500,  # 0.5 seconds per frame
-                loop=0
-            )
+            for attempt_num, strategy in enumerate(compression_attempts, 1):
+                print(f"[TAPE] Compression attempt {attempt_num}/{len(compression_attempts)}: {strategy['description']}")
+                
+                # Apply scaling (ALWAYS scale, never skip frames)
+                scaled_frames = []
+                for frame in frames:
+                    new_size = (int(frame.width * strategy["scale"]), int(frame.height * strategy["scale"]))
+                    scaled_frames.append(frame.resize(new_size, Image.Resampling.LANCZOS))
+                
+                print(f"[TAPE] Scaled to {scaled_frames[0].size[0]}x{scaled_frames[0].size[1]} (keeping ALL {len(scaled_frames)} frames)")
+                
+                # Save with optimization - ALL frames preserved
+                scaled_frames[0].save(
+                    str(tape_path),
+                    save_all=True,
+                    append_images=scaled_frames[1:],
+                    duration=500,  # 0.5 seconds per frame
+                    loop=0,
+                    optimize=True,  # Enable GIF optimization
+                    colors=strategy["colors"]  # Reduce color palette progressively
+                )
+                
+                # Check file size
+                file_size = os.path.getsize(tape_path)
+                file_size_mb = file_size / (1024 * 1024)
+                print(f"[TAPE] Generated: {file_size_mb:.2f} MB ({len(scaled_frames)} frames, {scaled_frames[0].size[0]}x{scaled_frames[0].size[1]})")
+                
+                if file_size <= SAFE_MAX_SIZE:
+                    print(f"[TAPE] ✅ Success! Tape under Discord limit with {strategy['description']}")
+                    print(f"[TAPE] ▶ VHS tape recorded: {tape_path.name} ({len(scaled_frames)} frames, {file_size_mb:.2f} MB)")
+                    return str(tape_path), ""
+                else:
+                    print(f"[TAPE] ⚠️ Still too large ({file_size_mb:.2f} MB > 7.5 MB), trying next strategy...")
             
-            print(f"[TAPE] ▶ VHS tape recorded: {tape_path.name} ({len(frames)} frames)")
-            return str(tape_path), ""
+            # If we exhausted all strategies, return the last attempt with a warning
+            file_size = os.path.getsize(tape_path)
+            file_size_mb = file_size / (1024 * 1024)
+            if file_size > DISCORD_MAX_SIZE:
+                error = f"GIF is {file_size_mb:.2f} MB (max 8 MB). Try a shorter session or contact support."
+                print(f"[TAPE ERROR] {error}")
+                return str(tape_path), error  # Return path anyway, let user try
+            else:
+                print(f"[TAPE] ⚠️ Tape is large but under limit: {file_size_mb:.2f} MB")
+                return str(tape_path), ""
         
         except ImportError as e:
             error = f"PIL/Pillow library not installed! Cannot create GIF. Install with: pip install Pillow"
