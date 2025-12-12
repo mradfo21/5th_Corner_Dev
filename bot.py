@@ -1806,6 +1806,19 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                 except Exception as e:
                     print(f"[LOG] Could not delete intro message: {e}")
                 
+                # === DRAMATIC INTRO ===
+                intro_embed = discord.Embed(
+                    title="📼 RECOVERED VHS TAPE - 1993",
+                    description=(
+                        "Horizon Industries\n"
+                        "Four Corners Facility\n\n"
+                        "⚠️ WARNING: Disturbing Content"
+                    ),
+                    color=VHS_RED
+                )
+                await interaction.channel.send(embed=intro_embed)
+                await asyncio.sleep(2)  # Let it sink in
+                
                 # === SHOW LOGO IMMEDIATELY (Frame 0 of VHS tape) ===
                 logo_path = ROOT / "static" / "Logo"
                 
