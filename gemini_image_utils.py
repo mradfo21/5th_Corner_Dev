@@ -185,7 +185,20 @@ def generate_with_gemini(
     # Add negative prompt emphasis
     negative_emphasis = "\n\nNEVER INCLUDE: Borders, frames, black bars, white borders, photo edges, polaroid frames, picture frames, matting, letterbox bars, any kind of border or frame element. Person visible, human visible, man visible, character visible, head visible, shoulders visible, back of head, person's back, body parts, hands, arms, legs, feet."
     
-    structured_prompt = structured_prompt + negative_emphasis
+    # PHOTOGRAPHIC ANCHOR - Critical for first frame to set the tone
+    photographic_anchor = (
+        "\n\n🎬 CRITICAL PHOTOGRAPHIC QUALITY ANCHOR:\n"
+        "This is RAW PHOTOGRAPHIC FOOTAGE captured on PHYSICAL MAGNETIC TAPE in 1993.\n"
+        "NOT: video game, 3D render, CGI, digital art, illustration, game graphics, game engine output\n"
+        "NOT: Unity, Unreal Engine, game screenshot, gameplay footage, virtual environment\n"
+        "NOT: smooth textures, glossy surfaces, perfect lighting, game-like aesthetic, polished rendering\n"
+        "YES: Real camera lens optics, physical film grain, analog tape degradation\n"
+        "YES: Authentic 1993 consumer camcorder footage with natural imperfections\n"
+        "YES: Documentary realism - gritty, raw, unpolished, amateur handheld camerawork\n"
+        "This must look like REAL FOOTAGE from a REAL CAMERA, not a video game or 3D render."
+    )
+    
+    structured_prompt = structured_prompt + negative_emphasis + photographic_anchor
     
     # Gemini has a 5000 char limit, so truncate if needed
     if len(structured_prompt) > 5000:
@@ -457,7 +470,7 @@ def _apply_pov_correction(original_path, small_path, previous_corrected_path=Non
             "- Muted, desaturated color palette\n"
             "- Gritty, raw, unpolished photographic quality\n\n"
             "The image should fill edge-to-edge UNLESS it's a viewing device frame.\n"
-            "Think: Security camera or chest-mounted GoPro - pure environmental view with NO camera operator visible in foreground."
+            "Think: Security camera or handheld camcorder - pure environmental view with NO camera operator visible in foreground."
         )
         
         # Read the current image to correct
@@ -626,7 +639,20 @@ def generate_gemini_img2img(
     # Add negative prompt emphasis
     negative_emphasis = "\n\nNEVER INCLUDE: Borders, frames, black bars, white borders, photo edges, polaroid frames, picture frames, matting, letterbox bars, any kind of border or frame element. Person visible, human visible, man visible, character visible, head visible, back of head, shoulders visible, person's back, character's back, body parts, hands, arms, legs, feet, torso, silhouette, person from behind."
     
-    full_prompt = structured_prompt + negative_emphasis
+    # PHOTOGRAPHIC ANCHOR - Prevent video game aesthetic drift over time
+    photographic_anchor = (
+        "\n\n🎬 CRITICAL PHOTOGRAPHIC QUALITY ANCHOR:\n"
+        "This is RAW PHOTOGRAPHIC FOOTAGE captured on PHYSICAL MAGNETIC TAPE in 1993.\n"
+        "NOT: video game, 3D render, CGI, digital art, illustration, game graphics, game engine output\n"
+        "NOT: Unity, Unreal Engine, game screenshot, gameplay footage, virtual environment\n"
+        "NOT: smooth textures, glossy surfaces, perfect lighting, game-like aesthetic\n"
+        "YES: Real camera lens optics, physical film grain, analog tape degradation\n"
+        "YES: Authentic 1993 consumer camcorder footage with natural imperfections\n"
+        "YES: Documentary realism - gritty, raw, unpolished, amateur handheld camerawork\n"
+        "PRESERVE the photographic analog quality from the reference images. DO NOT drift toward game-like rendering."
+    )
+    
+    full_prompt = structured_prompt + negative_emphasis + photographic_anchor
     
     # Sanitize to avoid safety blocks
     full_prompt = _sanitize_for_safety(full_prompt)
