@@ -793,6 +793,23 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                     else:
                         print(f"[IMG2IMG ERROR] Ref {idx+1}: {img_path} NOT FOUND!")
                 
+                # EXPERIMENTAL: Always include frame 0 as visual anchor
+                # Toggle: Set USE_FRAME_0_ANCHOR = False to disable
+                USE_FRAME_0_ANCHOR = True  # Set to False to disable frame 0 anchoring
+                
+                if USE_FRAME_0_ANCHOR and len(history) > 0 and frame_idx > 1:
+                    frame_0_image = history[0].get("image")
+                    if frame_0_image and frame_0_image not in prev_img_paths_list:
+                        frame_0_path = frame_0_image.lstrip("/")
+                        if not os.path.exists(frame_0_path):
+                            frame_0_path = os.path.join("images", os.path.basename(frame_0_path))
+                        if os.path.exists(frame_0_path):
+                            # Prepend frame 0 as the "visual constitution"
+                            prev_img_paths_list.insert(0, frame_0_path)
+                            print(f"[IMG2IMG] ✅ Frame 0 anchor ENABLED - Added: {os.path.basename(frame_0_path)}")
+                elif not USE_FRAME_0_ANCHOR and frame_idx > 1:
+                    print(f"[IMG2IMG] ⚠️ Frame 0 anchor DISABLED (toggle at line ~798)")
+                
                 print(f"[IMG2IMG] Frame {frame_idx}: Using {len(prev_img_paths_list)} reference image(s) for continuity")
                 
                 # Skip time extraction - we maintain it in state already
