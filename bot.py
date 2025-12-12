@@ -888,7 +888,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
     # Custom Action Modal and Button
     # ═══════════════════════════════════════════════════════════════════════════
     
-    class CustomActionModal(discord.ui.Modal, title="✊ Custom Action"):
+    class CustomActionModal(discord.ui.Modal, title="✨ Free Will"):
         action = discord.ui.TextInput(
             label="What do you want to do?",
             placeholder="e.g., 'Kick down the door', 'Sprint to the tower', 'Hide behind debris'",
@@ -1232,8 +1232,8 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
             # Check if custom action is on cooldown
             if custom_action_available:
                 super().__init__(
-                    emoji="👊",
-                    label="Custom",
+                    emoji="⚡",
+                    label="Free Will",
                     style=discord.ButtonStyle.danger,
                     row=1,
                     disabled=False
@@ -1241,8 +1241,8 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
             else:
                 turns_remaining = CUSTOM_ACTION_COOLDOWN - custom_action_turn_counter
                 super().__init__(
-                    emoji="👊",
-                    label=f"Custom ({turns_remaining} turns)",
+                    emoji="⚡",
+                    label=f"Free Will ({turns_remaining})",
                     style=discord.ButtonStyle.secondary,
                     row=1,
                     disabled=True
@@ -2531,7 +2531,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
     current_situation = ""  # For penalty generation
     
     # --- Custom Action Cooldown ---
-    CUSTOM_ACTION_COOLDOWN = 3  # Custom action available every 3 turns
+    CUSTOM_ACTION_COOLDOWN = 0  # DEMO MODE: Unlimited Free Will (set to 3 for normal cooldown)
     custom_action_turn_counter = 0  # Tracks turns since last custom action
     custom_action_available = True  # Whether custom action can be used
 
