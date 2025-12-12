@@ -993,7 +993,7 @@ def begin_tick() -> dict:
         recent_choices='',
         caption=situation_report,
         image_description='',
-        time_of_day=state.get('time_of_day', ''),
+        time_of_day="",  # Removed - prevents outdoor lighting descriptions
         world_prompt=state.get('world_prompt', ''),
         temperature=0.2,
         situation_summary=situation_summary
@@ -1499,7 +1499,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                 recent_choices=recent_choices_str, # Corrected to be a string
                 caption=state.get("current_image_caption", ""),
                 image_description=state.get("current_image_description", ""), # Keep for now, as it is in the signature
-                time_of_day=state.get("time_of_day", "evening"),
+                time_of_day="",  # Removed - prevents outdoor lighting descriptions
                 beat_nudge=state.get("beat_nudge", ""),
                 pacing=state.get("pacing", "normal"),
                 world_prompt=state.get("world_prompt"),
@@ -1974,7 +1974,7 @@ def api_regenerate_choices():
             world_prompt=world_prompt_context,
             image_description=image_desc_context,
             situation_summary=situation_summary, # Use general summary
-            time_of_day=state_snapshot_for_context.get('time_of_day', ''),
+            time_of_day="",  # Removed - prevents outdoor lighting descriptions
             n=3,
             temperature=0.7 # Slightly higher temp for variety
         )
@@ -2341,7 +2341,7 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL") -> dict:
                 mode,
                 choice,
                 image_description="",
-                time_of_day=state.get('time_of_day', ''),
+                time_of_day="",  # Removed - prevents outdoor lighting forcing indoor→outdoor teleports
                 use_edit_mode=(last_image_path and os.path.exists(last_image_path)),
                 frame_idx=frame_idx,
                 dispatch=dispatch,
@@ -2394,7 +2394,7 @@ def advance_turn_choices_deferred(consequence_img_url: str, dispatch: str, visio
         recent_choices='',
         caption="",
         image_description="",
-        time_of_day=state.get('time_of_day', ''),
+        time_of_day="",  # Removed - prevents outdoor lighting descriptions
         world_prompt=state.get('world_prompt', ''),
         temperature=0.7,
         situation_summary=situation_summary
@@ -2597,7 +2597,7 @@ def generate_intro_image_fast():
             mode,
             "Intro",
             image_description="",
-            time_of_day=state.get('time_of_day', 'golden hour'),
+            time_of_day="",  # Removed - reference images handle lighting continuity
             use_edit_mode=False,
             frame_idx=0,
             dispatch=prologue,
@@ -2639,7 +2639,7 @@ def generate_intro_choices_deferred(image_url: str, prologue: str, vision_dispat
         recent_choices='',
         caption="",  # Let Gemini look at image, not stale text
         image_description="",  # Let Gemini look at image, not stale text
-        time_of_day=state.get('time_of_day', ''),
+        time_of_day="",  # Removed - prevents outdoor lighting descriptions
         world_prompt=prologue,
         temperature=0.7,
         situation_summary=situation_summary
@@ -2729,7 +2729,7 @@ def generate_intro_turn():
             mode,
             "Intro",
             image_description="",
-            time_of_day=state.get('time_of_day', 'golden hour'),
+            time_of_day="",  # Removed - reference images handle lighting continuity
             use_edit_mode=False,  # No previous image
             frame_idx=0,  # First frame
             dispatch=dispatch,
@@ -2757,7 +2757,7 @@ def generate_intro_turn():
         recent_choices='',
         caption="",  # Let Gemini see the actual image
         image_description="",  # Let Gemini see the actual image
-        time_of_day=state.get('time_of_day', ''),
+        time_of_day="",  # Removed - prevents outdoor lighting descriptions
         world_prompt=prologue,
         temperature=0.7,
         situation_summary=situation_summary
