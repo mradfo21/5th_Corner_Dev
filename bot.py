@@ -1733,6 +1733,8 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
             def __init__(self):
                 super().__init__(label="▶️ Play", style=discord.ButtonStyle.success)
             async def callback(self, interaction: discord.Interaction):
+                global _run_images  # MUST be at the very top of the function
+                
                 try:
                     if not interaction.response.is_done():
                         await interaction.response.defer()
@@ -1752,7 +1754,6 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                 
                 # === SHOW LOGO IMMEDIATELY (Frame 0 of VHS tape) ===
                 logo_path = ROOT / "static" / "Logo"
-                global _run_images
                 
                 # Try different logo file extensions
                 logo_file = None
@@ -1829,7 +1830,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                 # Display the opening image if generated
                 if dispatch_image_path:
                     # Track intro image for VHS tape (Frame 1, after logo)
-                    global _run_images
+                    # (_run_images already declared as global at top of function)
                     _run_images.append(dispatch_image_path)
                     print(f"[TAPE] Frame 1 (intro) recorded - total frames: {len(_run_images)}")
                     
