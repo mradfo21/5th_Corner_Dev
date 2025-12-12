@@ -647,8 +647,48 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                 ))
                 await asyncio.sleep(1)
                 
-                # Create and post VHS tape (death replay GIF)
-                tape_path, error_msg = _create_death_replay_gif()
+                # Show VHS ejecting sequence WHILE tape is being created
+                eject_msg = await interaction.channel.send(embed=discord.Embed(
+                    description="`[STOP]` ⏏️ EJECTING TAPE...",
+                    color=VHS_RED
+                ))
+                
+                # Start tape creation in background
+                loop = asyncio.get_running_loop()
+                tape_task = loop.run_in_executor(None, _create_death_replay_gif)
+                
+                # VHS eject animation (plays while GIF generates)
+                eject_sequence = [
+                    (0.8, "`[STOP]` ⏏️\n`REWINDING...`"),
+                    (0.8, "`[STOP]` ⏏️\n`[███░░░░░░░]`"),
+                    (0.8, "`[STOP]` ⏏️\n`[██████░░░░]`"),
+                    (0.8, "`[STOP]` ⏏️\n`[█████████░]`"),
+                    (0.8, "`[STOP]` ⏏️\n`FINALIZING...`"),
+                    (1.0, "`[STOP]` ⏏️\n`TAPE READY`")
+                ]
+                
+                for delay, message in eject_sequence:
+                    done, pending = await asyncio.wait([tape_task], timeout=delay)
+                    if done:
+                        break
+                    try:
+                        await eject_msg.edit(embed=discord.Embed(
+                            description=message,
+                            color=VHS_RED
+                        ))
+                    except Exception:
+                        break
+                
+                # Wait for completion
+                tape_path, error_msg = await tape_task
+                
+                # Clean up animation
+                try:
+                    await eject_msg.delete()
+                except Exception:
+                    pass
+                
+                # Send tape or error
                 if tape_path:
                     await interaction.channel.send(embed=discord.Embed(
                         title="📼 VHS TAPE RECOVERED",
@@ -966,8 +1006,48 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                 ))
                 await asyncio.sleep(1)
                 
-                # Create and post VHS tape (death replay GIF)
-                tape_path, error_msg = _create_death_replay_gif()
+                # Show VHS ejecting sequence WHILE tape is being created
+                eject_msg = await interaction.channel.send(embed=discord.Embed(
+                    description="`[STOP]` ⏏️ EJECTING TAPE...",
+                    color=VHS_RED
+                ))
+                
+                # Start tape creation in background
+                loop = asyncio.get_running_loop()
+                tape_task = loop.run_in_executor(None, _create_death_replay_gif)
+                
+                # VHS eject animation (plays while GIF generates)
+                eject_sequence = [
+                    (0.8, "`[STOP]` ⏏️\n`REWINDING...`"),
+                    (0.8, "`[STOP]` ⏏️\n`[███░░░░░░░]`"),
+                    (0.8, "`[STOP]` ⏏️\n`[██████░░░░]`"),
+                    (0.8, "`[STOP]` ⏏️\n`[█████████░]`"),
+                    (0.8, "`[STOP]` ⏏️\n`FINALIZING...`"),
+                    (1.0, "`[STOP]` ⏏️\n`TAPE READY`")
+                ]
+                
+                for delay, message in eject_sequence:
+                    done, pending = await asyncio.wait([tape_task], timeout=delay)
+                    if done:
+                        break
+                    try:
+                        await eject_msg.edit(embed=discord.Embed(
+                            description=message,
+                            color=VHS_RED
+                        ))
+                    except Exception:
+                        break
+                
+                # Wait for completion
+                tape_path, error_msg = await tape_task
+                
+                # Clean up animation
+                try:
+                    await eject_msg.delete()
+                except Exception:
+                    pass
+                
+                # Send tape or error
                 if tape_path:
                     await interaction.channel.send(embed=discord.Embed(
                         title="📼 VHS TAPE RECOVERED",
@@ -1156,6 +1236,18 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                 print(f"[LOG] RestartButton defer failed: {e}")
                 pass
             
+            # IMMEDIATELY disable all choice buttons
+            view = self.view
+            if view and hasattr(view, 'children'):
+                for item in view.children:
+                    item.disabled = True
+                try:
+                    if hasattr(view, 'last_choices_message') and view.last_choices_message:
+                        await view.last_choices_message.edit(view=view)
+                        print("[RESTART] ✅ Buttons disabled immediately")
+                except Exception as e:
+                    print(f"[RESTART] Warning: Could not disable buttons: {e}")
+            
             # Cancel all running async tasks
             print("[RESTART] Cancelling all running tasks...")
             
@@ -1174,8 +1266,49 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
             
             print("[RESTART] All tasks cancelled")
             
-            # Create and post VHS tape of current run before restarting
-            tape_path, error_msg = _create_death_replay_gif()
+            # Show VHS ejecting sequence WHILE tape is being created
+            eject_msg = await interaction.channel.send(embed=discord.Embed(
+                description="`[STOP]` ⏏️ EJECTING TAPE...",
+                color=VHS_RED
+            ))
+            
+            # Start tape creation in background (runs in executor)
+            loop = asyncio.get_running_loop()
+            tape_task = loop.run_in_executor(None, _create_death_replay_gif)
+            
+            # VHS eject animation sequence (plays while GIF generates)
+            eject_sequence = [
+                (0.8, "`[STOP]` ⏏️\n`REWINDING...`"),
+                (0.8, "`[STOP]` ⏏️\n`[███░░░░░░░]`"),
+                (0.8, "`[STOP]` ⏏️\n`[██████░░░░]`"),
+                (0.8, "`[STOP]` ⏏️\n`[█████████░]`"),
+                (0.8, "`[STOP]` ⏏️\n`FINALIZING...`"),
+                (1.0, "`[STOP]` ⏏️\n`TAPE READY`")
+            ]
+            
+            # Cycle through sequence while tape generates
+            for delay, message in eject_sequence:
+                done, pending = await asyncio.wait([tape_task], timeout=delay)
+                if done:
+                    break  # Tape ready, stop animation
+                try:
+                    await eject_msg.edit(embed=discord.Embed(
+                        description=message,
+                        color=VHS_RED
+                    ))
+                except Exception:
+                    break
+            
+            # Wait for tape generation to complete
+            tape_path, error_msg = await tape_task
+            
+            # Clean up ejecting message
+            try:
+                await eject_msg.delete()
+            except Exception:
+                pass
+            
+            # Send tape or error message
             if tape_path:
                 await interaction.channel.send(embed=discord.Embed(
                     title="📼 VHS TAPE SAVED",
@@ -1936,9 +2069,20 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                     # Process penalty as a choice
                     await asyncio.sleep(2)  # Let them see the penalty
                     
-                    # Trigger the choice processing (simulate clicking a choice)
+                    # === FATE ROLL for timeout penalty ===
+                    # 1. Compute fate instantly (before image generation starts)
+                    fate = compute_fate()
+                    print(f"[COUNTDOWN] 🎰 Fate rolled: {fate}")
+                    
+                    # 2. Start image generation in background (don't block)
                     loop = asyncio.get_running_loop()
-                    phase1_task = loop.run_in_executor(None, engine.advance_turn_image_fast, penalty_choice)
+                    phase1_task = loop.run_in_executor(None, engine.advance_turn_image_fast, penalty_choice, fate)
+                    
+                    # 3. NOW show the fate animation WHILE image generates
+                    await asyncio.sleep(0.1)  # Tiny pause for smoothness
+                    await animate_fate_roll(channel, fate)
+                    
+                    # 4. Wait for image generation to complete
                     phase1_result = await phase1_task
                     
                     # Display dispatch and image
@@ -1980,8 +2124,48 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                         ))
                         await asyncio.sleep(1)
                         
-                        # Create and post VHS tape (death replay GIF)
-                        tape_path, error_msg = _create_death_replay_gif()
+                        # Show VHS ejecting sequence WHILE tape is being created
+                        eject_msg = await channel.send(embed=discord.Embed(
+                            description="`[STOP]` ⏏️ EJECTING TAPE...",
+                            color=VHS_RED
+                        ))
+                        
+                        # Start tape creation in background
+                        loop = asyncio.get_running_loop()
+                        tape_task = loop.run_in_executor(None, _create_death_replay_gif)
+                        
+                        # VHS eject animation (plays while GIF generates)
+                        eject_sequence = [
+                            (0.8, "`[STOP]` ⏏️\n`REWINDING...`"),
+                            (0.8, "`[STOP]` ⏏️\n`[███░░░░░░░]`"),
+                            (0.8, "`[STOP]` ⏏️\n`[██████░░░░]`"),
+                            (0.8, "`[STOP]` ⏏️\n`[█████████░]`"),
+                            (0.8, "`[STOP]` ⏏️\n`FINALIZING...`"),
+                            (1.0, "`[STOP]` ⏏️\n`TAPE READY`")
+                        ]
+                        
+                        for delay, message in eject_sequence:
+                            done, pending = await asyncio.wait([tape_task], timeout=delay)
+                            if done:
+                                break
+                            try:
+                                await eject_msg.edit(embed=discord.Embed(
+                                    description=message,
+                                    color=VHS_RED
+                                ))
+                            except Exception:
+                                break
+                        
+                        # Wait for completion
+                        tape_path, error_msg = await tape_task
+                        
+                        # Clean up animation
+                        try:
+                            await eject_msg.delete()
+                        except Exception:
+                            pass
+                        
+                        # Send tape or error
                         if tape_path:
                             await channel.send(embed=discord.Embed(
                                 title="📼 VHS TAPE RECOVERED",
@@ -2346,8 +2530,48 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
             ))
             await asyncio.sleep(1)
             
-            # Create and post VHS tape (death replay GIF)
-            tape_path, error_msg = _create_death_replay_gif()
+            # Show VHS ejecting sequence WHILE tape is being created
+            eject_msg = await channel.send(embed=discord.Embed(
+                description="`[STOP]` ⏏️ EJECTING TAPE...",
+                color=VHS_RED
+            ))
+            
+            # Start tape creation in background
+            loop = asyncio.get_running_loop()
+            tape_task = loop.run_in_executor(None, _create_death_replay_gif)
+            
+            # VHS eject animation (plays while GIF generates)
+            eject_sequence = [
+                (0.8, "`[STOP]` ⏏️\n`REWINDING...`"),
+                (0.8, "`[STOP]` ⏏️\n`[███░░░░░░░]`"),
+                (0.8, "`[STOP]` ⏏️\n`[██████░░░░]`"),
+                (0.8, "`[STOP]` ⏏️\n`[█████████░]`"),
+                (0.8, "`[STOP]` ⏏️\n`FINALIZING...`"),
+                (1.0, "`[STOP]` ⏏️\n`TAPE READY`")
+            ]
+            
+            for delay, message in eject_sequence:
+                done, pending = await asyncio.wait([tape_task], timeout=delay)
+                if done:
+                    break
+                try:
+                    await eject_msg.edit(embed=discord.Embed(
+                        description=message,
+                        color=VHS_RED
+                    ))
+                except Exception:
+                    break
+            
+            # Wait for completion
+            tape_path, error_msg = await tape_task
+            
+            # Clean up animation
+            try:
+                await eject_msg.delete()
+            except Exception:
+                pass
+            
+            # Send tape or error
             if tape_path:
                 await channel.send(embed=discord.Embed(
                     title="📼 VHS TAPE RECOVERED",
