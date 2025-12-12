@@ -2406,9 +2406,11 @@ def advance_turn_choices_deferred(consequence_img_url: str, dispatch: str, visio
     while len(next_choices) < 3:
         next_choices.append("—")
     
-    # Save to history
+    # Save to history (with custom action flag for permanence tracking)
+    is_custom_action = not any(keyword in choice.lower() for keyword in ["move", "advance", "photograph", "examine", "sprint", "climb", "vault", "crawl"])
     history_entry = {
         "choice": choice,
+        "is_custom_action": is_custom_action,  # Flag for permanence
         "dispatch": dispatch,
         "vision_dispatch": vision_dispatch,
         "vision_analysis": "",
