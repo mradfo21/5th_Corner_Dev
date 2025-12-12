@@ -1750,6 +1750,29 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                 except Exception as e:
                     print(f"[LOG] Could not delete intro message: {e}")
                 
+                # === SHOW LOGO IMMEDIATELY (Frame 0 of VHS tape) ===
+                logo_path = ROOT / "static" / "Logo"
+                global _run_images
+                
+                # Try different logo file extensions
+                logo_file = None
+                for ext in [".jpg", ".jpeg", ".png", ".JPG", ".JPEG", ".PNG"]:
+                    test_path = ROOT / "static" / f"Logo{ext}"
+                    if test_path.exists():
+                        logo_file = test_path
+                        break
+                
+                if logo_file and logo_file.exists():
+                    try:
+                        await interaction.channel.send(file=discord.File(str(logo_file)))
+                        # Track logo as Frame 0 of VHS tape
+                        _run_images.append(f"/static/{logo_file.name}")
+                        print(f"[TAPE] Frame 0 (logo) recorded: {logo_file.name}")
+                    except Exception as e:
+                        print(f"[LOGO] Failed to send logo: {e}")
+                else:
+                    print(f"[LOGO] Logo file not found at {logo_path}")
+                
                 engine.IMAGE_ENABLED = True
                 engine.WORLD_IMAGE_ENABLED = True
                 
@@ -1805,10 +1828,10 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                 
                 # Display the opening image if generated
                 if dispatch_image_path:
-                    # Track intro image for VHS tape
+                    # Track intro image for VHS tape (Frame 1, after logo)
                     global _run_images
                     _run_images.append(dispatch_image_path)
-                    print(f"[TAPE] Frame 1 (intro) recorded")
+                    print(f"[TAPE] Frame 1 (intro) recorded - total frames: {len(_run_images)}")
                     
                     try:
                         full_path = dispatch_image_path.lstrip("/")
