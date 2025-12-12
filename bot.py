@@ -1463,7 +1463,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
             self.parent_view = parent_view
 
         async def callback(self, interaction: discord.Interaction):
-            global auto_play_enabled, auto_advance_task
+            global auto_play_enabled, auto_advance_task, countdown_task
             
             if auto_play_enabled:
                 # Disable auto-play
@@ -1478,6 +1478,28 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                 if auto_advance_task and not auto_advance_task.done():
                     auto_advance_task.cancel()
                     print("[AUTO-PLAY] Timer cancelled")
+                
+                # RESTART COUNTDOWN TIMER (bug fix!)
+                # When auto-play is OFF, countdown should resume
+                if hasattr(self.parent_view, 'last_choices_message') and self.parent_view.last_choices_message:
+                    # Get current game state to restart countdown
+                    import engine
+                    current_state = engine.get_state()
+                    
+                    # Restart countdown timer
+                    if COUNTDOWN_ENABLED:
+                        # Get choices from view
+                        choices = getattr(self.parent_view, 'choices', [])
+                        if choices:
+                            print("[AUTO-PLAY] Restarting countdown timer...")
+                            start_countdown_timer(
+                                interaction.channel,
+                                choices,
+                                self.parent_view,
+                                "",  # dispatch not needed for countdown
+                                "",  # situation not needed
+                                None  # current_image_path not needed
+                            )
                 
                 # Update the view to show new button state
                 try:
