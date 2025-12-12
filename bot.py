@@ -945,9 +945,19 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
             import engine
             world_state = engine.get_state().get('world_prompt', '')
             
+            # Get spatial context from last vision analysis
+            spatial_context = ""
+            try:
+                if engine.history and len(engine.history) > 0:
+                    last_vision = engine.history[-1].get("vision_analysis", "")
+                    if last_vision:
+                        spatial_context = f"\n\nCURRENT LOCATION: {last_vision[:150]}\nThis action MUST happen from player's CURRENT position. Interpret within physical constraints of THIS location."
+            except Exception as e:
+                print(f"[FREE WILL] Could not get spatial context: {e}")
+            
             # Fast LLM call for micro-reaction
             micro_prompt = (
-                "Given the player's custom action: '" + custom_choice + "', and the current world state: '" + world_state + "', "
+                "Given the player's custom action: '" + custom_choice + "', and the current world state: '" + world_state + "'" + spatial_context + ", "
                 "write a 1-sentence immediate world or NPC reaction. Start with a relevant emoji. Be suspenseful, direct, and avoid spoilers."
             )
             try:
