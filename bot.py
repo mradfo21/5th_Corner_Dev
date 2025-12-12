@@ -143,10 +143,11 @@ if DISCORD_ENABLED:
             import os
             print(f"[TAPE] Recording VHS tape from {len(_run_images)} frame paths...")
             
-            # Load all images (logo already cropped to 1024x1024, game images are 1024x1024 from Gemini)
-            # NO scaling/normalization needed - use frames at native resolution!
+            # Load all images and normalize to consistent 16:9 resolution
+            # First pass: detect the most common resolution from Gemini images (skip logo)
             frames = []
             missing_files = []
+            frame_sizes = []
             
             for idx, img_path in enumerate(_run_images):
                 full_path = ROOT / img_path.lstrip("/")
@@ -154,8 +155,9 @@ if DISCORD_ENABLED:
                 if full_path.exists():
                     try:
                         img = Image.open(str(full_path))
-                        frames.append(img.convert("RGB"))
-                        print(f"[TAPE] ✅ Frame {idx+1} loaded successfully ({img.size})")
+                        frame_sizes.append(img.size)
+                        frames.append((img, img.size, idx))
+                        print(f"[TAPE] ✅ Frame {idx+1} loaded: {img.size}")
                     except Exception as e:
                         print(f"[TAPE] ❌ Failed to open frame {idx+1}: {e}")
                         missing_files.append(f"{img_path} (failed to open)")
@@ -167,6 +169,34 @@ if DISCORD_ENABLED:
                 error = f"Not enough valid frames. Found {len(frames)} readable images out of {len(_run_images)} paths. Missing files: {', '.join(missing_files)}"
                 print(f"[TAPE ERROR] {error}")
                 return None, error
+            
+            # Find the target resolution (use the most common Gemini image size, skip frame 0 which is logo)
+            gemini_sizes = [size for size, idx in zip(frame_sizes[1:], range(1, len(frame_sizes)))]
+            if gemini_sizes:
+                # Use the first Gemini image size as the gold standard
+                TARGET_SIZE = gemini_sizes[0]
+            else:
+                # Fallback to first frame
+                TARGET_SIZE = frame_sizes[0]
+            
+            print(f"[TAPE] Target resolution: {TARGET_SIZE} (Gemini gold standard)")
+            
+            # Second pass: normalize all frames to TARGET_SIZE
+            normalized_frames = []
+            for img, original_size, idx in frames:
+                img_rgb = img.convert("RGB")
+                
+                if img_rgb.size != TARGET_SIZE:
+                    # Resize to exactly TARGET_SIZE, stretching if needed to fill frame
+                    img_resized = img_rgb.resize(TARGET_SIZE, Image.Resampling.LANCZOS)
+                    normalized_frames.append(img_resized)
+                    print(f"[TAPE] Frame {idx+1}: {original_size} → {TARGET_SIZE} (resized to match)")
+                else:
+                    normalized_frames.append(img_rgb)
+                    print(f"[TAPE] Frame {idx+1}: {original_size} (already correct size)")
+            
+            frames = normalized_frames
+            print(f"[TAPE] ✅ All {len(frames)} frames normalized to {TARGET_SIZE[0]}x{TARGET_SIZE[1]}")
             
             # Create timestamped tape (they are the memories, never deleted)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

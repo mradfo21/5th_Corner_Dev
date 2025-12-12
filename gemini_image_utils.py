@@ -185,17 +185,21 @@ def generate_with_gemini(
     # Add negative prompt emphasis
     negative_emphasis = "\n\nNEVER INCLUDE: Borders, frames, black bars, white borders, photo edges, polaroid frames, picture frames, matting, letterbox bars, any kind of border or frame element. Person visible, human visible, man visible, character visible, head visible, shoulders visible, back of head, person's back, body parts, hands, arms, legs, feet."
     
-    # PHOTOGRAPHIC ANCHOR - Critical for first frame to set the tone
+    # VHS ANALOG HORROR ANCHOR - Critical for first frame to set the tone
     photographic_anchor = (
-        "\n\n🎬 CRITICAL PHOTOGRAPHIC QUALITY ANCHOR:\n"
-        "This is RAW PHOTOGRAPHIC FOOTAGE captured on PHYSICAL MAGNETIC TAPE in 1993.\n"
-        "NOT: video game, 3D render, CGI, digital art, illustration, game graphics, game engine output\n"
-        "NOT: Unity, Unreal Engine, game screenshot, gameplay footage, virtual environment\n"
-        "NOT: smooth textures, glossy surfaces, perfect lighting, game-like aesthetic, polished rendering\n"
-        "YES: Real camera lens optics, physical film grain, analog tape degradation\n"
-        "YES: Authentic 1993 consumer camcorder footage with natural imperfections\n"
-        "YES: Documentary realism - gritty, raw, unpolished, amateur handheld camerawork\n"
-        "This must look like REAL FOOTAGE from a REAL CAMERA, not a video game or 3D render."
+        "\n\n📼 CRITICAL VHS ANALOG HORROR AESTHETIC:\n"
+        "This is FOUND FOOTAGE captured on DEGRADED VHS MAGNETIC TAPE from the 1980s-1990s.\n"
+        "NOT: video game, 3D render, CGI, digital art, game graphics, clean digital image\n"
+        "NOT: Unity, Unreal Engine, game screenshot, smooth textures, polished rendering\n"
+        "NOT: HD quality, crisp details, perfect exposure, professional photography\n"
+        "YES: Heavy VHS grain and noise throughout the entire image\n"
+        "YES: Overexposed highlights blown to white, crushed shadow detail\n"
+        "YES: Color bleeding, chromatic aberration, analog tape artifacts\n"
+        "YES: Low-resolution NTSC video aesthetic (480i degradation)\n"
+        "YES: Muted desaturated colors from generation loss\n"
+        "YES: Amateur handheld shake, out-of-focus moments, auto-exposure hunting\n"
+        "Think: Blair Witch Project, Paranormal Activity, analog horror found footage\n"
+        "MAXIMUM grain, MAXIMUM degradation, MAXIMUM analog imperfection."
     )
     
     structured_prompt = structured_prompt + negative_emphasis + photographic_anchor
@@ -639,17 +643,22 @@ def generate_gemini_img2img(
     # Add negative prompt emphasis
     negative_emphasis = "\n\nNEVER INCLUDE: Borders, frames, black bars, white borders, photo edges, polaroid frames, picture frames, matting, letterbox bars, any kind of border or frame element. Person visible, human visible, man visible, character visible, head visible, back of head, shoulders visible, person's back, character's back, body parts, hands, arms, legs, feet, torso, silhouette, person from behind."
     
-    # PHOTOGRAPHIC ANCHOR - Prevent video game aesthetic drift over time
+    # VHS ANALOG HORROR ANCHOR - Prevent video game aesthetic drift over time
     photographic_anchor = (
-        "\n\n🎬 CRITICAL PHOTOGRAPHIC QUALITY ANCHOR:\n"
-        "This is RAW PHOTOGRAPHIC FOOTAGE captured on PHYSICAL MAGNETIC TAPE in 1993.\n"
-        "NOT: video game, 3D render, CGI, digital art, illustration, game graphics, game engine output\n"
-        "NOT: Unity, Unreal Engine, game screenshot, gameplay footage, virtual environment\n"
-        "NOT: smooth textures, glossy surfaces, perfect lighting, game-like aesthetic\n"
-        "YES: Real camera lens optics, physical film grain, analog tape degradation\n"
-        "YES: Authentic 1993 consumer camcorder footage with natural imperfections\n"
-        "YES: Documentary realism - gritty, raw, unpolished, amateur handheld camerawork\n"
-        "PRESERVE the photographic analog quality from the reference images. DO NOT drift toward game-like rendering."
+        "\n\n📼 CRITICAL VHS ANALOG HORROR AESTHETIC:\n"
+        "This is FOUND FOOTAGE captured on DEGRADED VHS MAGNETIC TAPE from the 1980s-1990s.\n"
+        "NOT: video game, 3D render, CGI, game graphics, clean digital video, HD quality\n"
+        "NOT: Unity, Unreal Engine, smooth textures, polished rendering, crisp details\n"
+        "NOT: Perfect lighting, professional photography, modern digital camera\n"
+        "YES: Heavy VHS grain and noise throughout the entire image\n"
+        "YES: Overexposed highlights blown to white, crushed shadow detail\n"
+        "YES: Color bleeding, chromatic aberration, analog tape artifacts\n"
+        "YES: Low-resolution NTSC video aesthetic (480i degradation)\n"
+        "YES: Muted desaturated colors from generation loss and tape decay\n"
+        "YES: Amateur handheld shake, out-of-focus moments, auto-exposure hunting\n"
+        "Think: Blair Witch Project, Paranormal Activity, V/H/S, analog horror found footage\n"
+        "PRESERVE the lo-fi VHS analog degradation from reference images. AMPLIFY grain and imperfections.\n"
+        "DO NOT drift toward clean game-like rendering or modern HD video."
     )
     
     full_prompt = structured_prompt + negative_emphasis + photographic_anchor
