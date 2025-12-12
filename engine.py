@@ -680,12 +680,34 @@ def _generate_burn_in(mode: str) -> str:
 # _vision_is_inside removed - was expensive and never used in StoryGen
 
 def is_hard_transition(choice: str, dispatch: str) -> bool:
-    keywords = [
-        'enter', 'inside', 'run into', 'escape', 'wake up', 'thrown', 'move to', 'new location', 'different room', 'facility', 'red biome', 'emerge elsewhere', 'relocated', 'teleport', 'suddenly', 'abruptly', 'scene shifts', 'transition', 'burst into', 'step inside', 'step outdoors', 'exit', 'leave', 'outdoors', 'open air', 'out in the open', 'emerge', 'open door', 'cross into', 'cross over', 'arrive at', 'find yourself in', 'appear in', 'shift to', 'cut to', 'fade to', 'wake up in', 'dragged to', 'carried to', 'transported to', 'relocate', 'relocated', 'new area', 'new scene', 'different area', 'different scene',
-        'retreat', 'flee', 'run away', 'fall back', 'withdraw', 'bolt', 'dash away', 'make a getaway', 'escape to', 'rush out', 'rush away', 'scramble away', 'sprint away', 'break for cover', 'retreat to', 'flee to', 'run for', 'run from', 'run toward', 'run towards', 'run back', 'run off', 'run out', 'run inside', 'run outside', 'run indoors', 'run outdoors', 'run into', 'run through', 'run across', 'run down', 'run up', 'run along', 'run past', 'run behind', 'run ahead', 'run forward', 'run backward', 'run left', 'run right', 'run behind cover', 'run for safety', 'run for shelter', 'run for the exit', 'run for the door', 'run for the truck', 'run for the perimeter', 'run for the fence', 'run for the hills', 'run for the mesa', 'run for the desert', 'run for the facility', 'run for the building', 'run for the shadows', 'run for the light', 'run for the darkness', 'run for the open', 'run for the open air', 'run for the open ground', 'run for the open desert', 'run for the open mesa', 'run for the open facility', 'run for the open building', 'run for the open shadows', 'run for the open light', 'run for the open darkness', 'run for the open perimeter', 'run for the open fence', 'run for the open hills', 'run for the open truck', 'run for the open door', 'run for the open exit', 'run for the open shelter', 'run for the open safety', 'run for the open cover', 'run for the open ground', 'run for the open area', 'run for the open scene', 'run for the open location', 'run for the open place', 'run for the open spot', 'run for the open zone', 'run for the open region', 'run for the open sector', 'run for the open quadrant', 'run for the open sector', 'run for the open quadrant', 'run for the open region', 'run for the open zone', 'run for the open place', 'run for the open spot', 'run for the open area', 'run for the open ground', 'run for the open cover', 'run for the open safety', 'run for the open shelter', 'run for the open exit', 'run for the open door', 'run for the open truck', 'run for the open hills', 'run for the open fence', 'run for the open perimeter', 'run for the open mesa', 'run for the open desert', 'run for the open facility', 'run for the open building', 'run for the open shadows', 'run for the open light', 'run for the open darkness', 'run for the open perimeter', 'run for the open fence', 'run for the open hills', 'run for the open truck', 'run for the open door', 'run for the open exit', 'run for the open shelter', 'run for the open safety', 'run for the open cover', 'run for the open ground', 'run for the open area', 'run for the open scene', 'run for the open location', 'run for the open place', 'run for the open spot', 'run for the open zone', 'run for the open region', 'run for the open sector', 'run for the open quadrant'
+    """
+    Detect if player's CHOICE indicates a location change.
+    ONLY checks the player's choice, NOT the LLM's narrative dispatch.
+    This prevents false positives from dramatic language (fall, crumple, etc.)
+    """
+    # Only check ACTUAL location change keywords (not movement/action keywords)
+    location_keywords = [
+        'enter ', 'step inside', 'go inside', 'walk inside', 'move inside',
+        'step outdoors', 'go outdoors', 'walk outdoors', 'move outdoors',
+        'exit ', 'leave ', 'open door', 'open the door', 'through the door',
+        'cross into', 'cross over', 'cross through',
+        'enter the facility', 'enter facility', 'enter building', 'enter the building',
+        'into the facility', 'into facility', 'into building', 'into the building',
+        'red biome', 'new location', 'different room', 'different area',
+        'teleport', 'wake up in', 'dragged to', 'carried to', 'transported to'
     ]
-    text = f"{choice} {dispatch}".lower()
-    return any(k in text for k in keywords)
+    
+    # ONLY check the player's choice (intentional movement)
+    # DO NOT check dispatch (LLM narrative can contain "fall", "crumple", etc.)
+    choice_lower = choice.lower()
+    
+    # Check for exact keyword matches in player choice
+    has_transition = any(k in choice_lower for k in location_keywords)
+    
+    if has_transition:
+        print(f"[HARD TRANSITION] Detected in choice: '{choice}' - new location (maintaining lighting/aesthetic)")
+    
+    return has_transition
 
 def build_image_prompt(player_choice: str = "", dispatch: str = "", prev_vision_analysis: str = "", hard_transition: bool = False) -> str:
     """
@@ -695,9 +717,14 @@ def build_image_prompt(player_choice: str = "", dispatch: str = "", prev_vision_
     # Start with the player's choice and what happened
     prompt = f"Action taken: {player_choice}. Result: {dispatch}"
     
-    # Add previous vision analysis for visual continuity (unless hard transition)
-    if prev_vision_analysis and not hard_transition:
-        prompt = f"{prompt} Continue from previous scene: {prev_vision_analysis[:200]}"
+    # Add previous vision analysis for visual continuity
+    if prev_vision_analysis:
+        if hard_transition:
+            # Even on location change, maintain lighting/aesthetic continuity
+            prompt = f"{prompt} Maintain similar lighting, time of day, and overall visual aesthetic as before."
+        else:
+            # Same location - full continuity
+            prompt = f"{prompt} Continue from previous scene: {prev_vision_analysis[:200]}"
     
     return prompt
 
@@ -790,10 +817,19 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
             prompt_str += f" World flavor: {world_flavor}."
         if world_summary:
             prompt_str += f" Background context: {world_summary}."
-        if prev_img_paths and not hard_transition:
-            prompt_str = (
-                f"{prompt_str}\nMatch the lighting, time of day, and color palette to the previous image."
-            )
+        # ALWAYS maintain lighting/aesthetic continuity, even during location changes
+        if prev_img_paths:
+            if hard_transition:
+                # Location change - use reference for lighting/aesthetic ONLY (not composition)
+                prompt_str = (
+                    f"{prompt_str}\nMaintain the same lighting, time of day, and color palette as the previous image. "
+                    f"New location, but same world aesthetic and atmospheric conditions."
+                )
+            else:
+                # Same location - full img2img continuity
+                prompt_str = (
+                    f"{prompt_str}\nMatch the lighting, time of day, and color palette to the previous image."
+                )
         # --- LOGGING ---
         print("[IMG LOG] --- IMAGE GENERATION PARAMETERS ---")
         print(f"[IMG LOG] frame_idx: {frame_idx}")
@@ -819,11 +855,19 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
             from gemini_image_utils import generate_with_gemini, generate_gemini_img2img
             
             if use_edit_mode and prev_img_paths_list and frame_idx > 0:
-                print(f"[IMG] Gemini img2img mode with {len(prev_img_paths_list)} reference images")
+                # For hard transitions (location changes), use ONLY 1 reference for lighting/aesthetic
+                # For normal transitions, use full reference set for composition continuity
+                if hard_transition:
+                    ref_images_to_use = prev_img_paths_list[:1]  # Only most recent for lighting
+                    print(f"[IMG] Hard transition - using 1 reference image (lighting/aesthetic only)")
+                else:
+                    ref_images_to_use = prev_img_paths_list  # Full set for continuity
+                    print(f"[IMG] Gemini img2img mode with {len(ref_images_to_use)} reference images")
+                
                 result_path = generate_gemini_img2img(
                     prompt=prompt_str,
                     caption=caption,
-                    reference_image_path=prev_img_paths_list,  # Pass list of recent images
+                    reference_image_path=ref_images_to_use,  # Adjusted based on transition type
                     strength=strength,
                     world_prompt=world_prompt,
                     time_of_day=use_time_of_day,
