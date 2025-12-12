@@ -120,34 +120,51 @@ if DISCORD_ENABLED:
         await asyncio.sleep(1.5)  # Display result
         await msg.delete()
     
-    def _create_death_replay_gif() -> Optional[str]:
-        """Create a VHS tape (GIF) from all images in the current run. Returns tape path or None."""
+    def _create_death_replay_gif() -> tuple[Optional[str], str]:
+        """
+        Create a VHS tape (GIF) from all images in the current run.
+        Returns: (tape_path or None, error_message or empty string)
+        """
+        # Check if we have enough frames
+        print(f"[TAPE] Checking frames... _run_images contains {len(_run_images) if _run_images else 0} entries")
         if not _run_images or len(_run_images) < 2:
-            print(f"[TAPE] Not enough frames ({len(_run_images)}) to record tape")
-            return None
+            error = f"Not enough frames recorded. Need at least 2 frames, but only have {len(_run_images) if _run_images else 0}. Did any images generate during gameplay?"
+            print(f"[TAPE ERROR] {error}")
+            return None, error
         
         try:
             from PIL import Image
             from datetime import datetime
-            print(f"[TAPE] Recording VHS tape from {len(_run_images)} frames...")
+            print(f"[TAPE] Recording VHS tape from {len(_run_images)} frame paths...")
             
             # Load all images
             frames = []
-            for img_path in _run_images:
+            missing_files = []
+            for idx, img_path in enumerate(_run_images):
                 full_path = ROOT / img_path.lstrip("/")
+                print(f"[TAPE] Loading frame {idx+1}/{len(_run_images)}: {full_path}")
                 if full_path.exists():
-                    img = Image.open(str(full_path))
-                    frames.append(img.convert("RGB"))
+                    try:
+                        img = Image.open(str(full_path))
+                        frames.append(img.convert("RGB"))
+                        print(f"[TAPE] ✅ Frame {idx+1} loaded successfully ({img.size})")
+                    except Exception as e:
+                        print(f"[TAPE] ❌ Failed to open frame {idx+1}: {e}")
+                        missing_files.append(f"{img_path} (failed to open)")
                 else:
-                    print(f"[TAPE] Missing frame: {img_path}")
+                    print(f"[TAPE] ❌ Frame {idx+1} not found: {full_path}")
+                    missing_files.append(str(img_path))
             
             if len(frames) < 2:
-                print("[TAPE] Not enough valid frames after loading")
-                return None
+                error = f"Not enough valid frames. Found {len(frames)} readable images out of {len(_run_images)} paths. Missing files: {', '.join(missing_files)}"
+                print(f"[TAPE ERROR] {error}")
+                return None, error
             
             # Create timestamped tape (they are the memories, never deleted)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             tape_path = TAPES_DIR / f"tape_{timestamp}.gif"
+            
+            print(f"[TAPE] Saving GIF with {len(frames)} frames to: {tape_path}")
             
             # Record tape with 0.5 seconds per frame (twice as fast)
             frames[0].save(
@@ -159,13 +176,20 @@ if DISCORD_ENABLED:
             )
             
             print(f"[TAPE] ▶ VHS tape recorded: {tape_path.name} ({len(frames)} frames)")
-            return str(tape_path)
+            return str(tape_path), ""
         
-        except Exception as e:
-            print(f"[TAPE] Failed to record tape: {e}")
+        except ImportError as e:
+            error = f"PIL/Pillow library not installed! Cannot create GIF. Install with: pip install Pillow"
+            print(f"[TAPE ERROR] {error}")
             import traceback
             traceback.print_exc()
-            return None
+            return None, error
+        except Exception as e:
+            error = f"Unexpected error creating tape: {str(e)}"
+            print(f"[TAPE ERROR] {error}")
+            import traceback
+            traceback.print_exc()
+            return None, error
 
     # ───────── image helper ─────────────────────────────────────────────────────
     def _attach(image_path: Optional[str], caption: str = "") -> Tuple[Optional[discord.File], Optional[str]]:
@@ -576,7 +600,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                 await asyncio.sleep(1)
                 
                 # Create and post VHS tape (death replay GIF)
-                tape_path = _create_death_replay_gif()
+                tape_path, error_msg = _create_death_replay_gif()
                 if tape_path:
                     await interaction.channel.send(embed=discord.Embed(
                         title="📼 VHS TAPE RECOVERED",
@@ -588,6 +612,17 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                         print("[DEATH] 📼 Tape uploaded - waiting for player to download...")
                     except Exception as e:
                         print(f"[DEATH] Failed to send tape: {e}")
+                        await interaction.channel.send(embed=discord.Embed(
+                            title="⚠️ Tape Upload Failed",
+                            description=f"Tape created but upload failed: {e}",
+                            color=VHS_RED
+                        ))
+                else:
+                    await interaction.channel.send(embed=discord.Embed(
+                        title="⚠️ No Tape Created",
+                        description=f"**Reason:** {error_msg}",
+                        color=VHS_RED
+                    ))
                 
                 # Create Play Again button (independent of disabled view)
                 manual_restart_done = asyncio.Event()  # Flag to prevent double restart
@@ -884,7 +919,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                 await asyncio.sleep(1)
                 
                 # Create and post VHS tape (death replay GIF)
-                tape_path = _create_death_replay_gif()
+                tape_path, error_msg = _create_death_replay_gif()
                 if tape_path:
                     await interaction.channel.send(embed=discord.Embed(
                         title="📼 VHS TAPE RECOVERED",
@@ -896,6 +931,17 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                         print("[DEATH] 📼 Tape uploaded - waiting for player to download...")
                     except Exception as e:
                         print(f"[DEATH] Failed to send tape: {e}")
+                        await interaction.channel.send(embed=discord.Embed(
+                            title="⚠️ Tape Upload Failed",
+                            description=f"Tape created but upload failed: {e}",
+                            color=VHS_RED
+                        ))
+                else:
+                    await interaction.channel.send(embed=discord.Embed(
+                        title="⚠️ No Tape Created",
+                        description=f"**Reason:** {error_msg}",
+                        color=VHS_RED
+                    ))
                 
                 # Create Play Again button (independent of disabled view)
                 manual_restart_done = asyncio.Event()  # Flag to prevent double restart
@@ -1081,7 +1127,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
             print("[RESTART] All tasks cancelled")
             
             # Create and post VHS tape of current run before restarting
-            tape_path = _create_death_replay_gif()
+            tape_path, error_msg = _create_death_replay_gif()
             if tape_path:
                 await interaction.channel.send(embed=discord.Embed(
                     title="📼 VHS TAPE SAVED",
@@ -1093,6 +1139,19 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                     print(f"[RESTART] Tape saved: {tape_path}")
                 except Exception as e:
                     print(f"[RESTART] Failed to send tape: {e}")
+                    await interaction.channel.send(embed=discord.Embed(
+                        title="⚠️ Tape Upload Failed",
+                        description=f"Tape was created but failed to upload: {e}",
+                        color=VHS_RED
+                    ))
+            else:
+                # Tape creation failed - tell the user why
+                await interaction.channel.send(embed=discord.Embed(
+                    title="⚠️ No Tape Created",
+                    description=f"Could not create VHS tape.\n\n**Reason:** {error_msg}",
+                    color=VHS_RED
+                ))
+                print(f"[RESTART] No tape created: {error_msg}")
             
             # 1. Show the welcome embed and Play button
             await send_intro_tutorial(interaction.channel)
@@ -1874,7 +1933,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                         await asyncio.sleep(1)
                         
                         # Create and post VHS tape (death replay GIF)
-                        tape_path = _create_death_replay_gif()
+                        tape_path, error_msg = _create_death_replay_gif()
                         if tape_path:
                             await channel.send(embed=discord.Embed(
                                 title="📼 VHS TAPE RECOVERED",
@@ -1886,6 +1945,17 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                                 print("[COUNTDOWN DEATH] 📼 Tape uploaded - waiting for player to download...")
                             except Exception as e:
                                 print(f"[COUNTDOWN DEATH] Failed to send tape: {e}")
+                                await channel.send(embed=discord.Embed(
+                                    title="⚠️ Tape Upload Failed",
+                                    description=f"Tape created but upload failed: {e}",
+                                    color=VHS_RED
+                                ))
+                        else:
+                            await channel.send(embed=discord.Embed(
+                                title="⚠️ No Tape Created",
+                                description=f"**Reason:** {error_msg}",
+                                color=VHS_RED
+                            ))
                         
                         # Create Play Again button (independent of disabled view)
                         manual_restart_done = asyncio.Event()  # Flag to prevent double restart
@@ -2229,7 +2299,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
             await asyncio.sleep(1)
             
             # Create and post VHS tape (death replay GIF)
-            tape_path = _create_death_replay_gif()
+            tape_path, error_msg = _create_death_replay_gif()
             if tape_path:
                 await channel.send(embed=discord.Embed(
                     title="📼 VHS TAPE RECOVERED",
@@ -2241,6 +2311,17 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                     print("[AUTO-PLAY DEATH] 📼 Tape uploaded - waiting for player to download...")
                 except Exception as e:
                     print(f"[AUTO-PLAY] Failed to send tape: {e}")
+                    await channel.send(embed=discord.Embed(
+                        title="⚠️ Tape Upload Failed",
+                        description=f"Tape created but upload failed: {e}",
+                        color=VHS_RED
+                    ))
+            else:
+                await channel.send(embed=discord.Embed(
+                    title="⚠️ No Tape Created",
+                    description=f"**Reason:** {error_msg}",
+                    color=VHS_RED
+                ))
             
             # Create Play Again button (independent of disabled view)
             manual_restart_done = asyncio.Event()  # Flag to prevent double restart
