@@ -11,6 +11,7 @@ logs/
 tapes/
 world_state.json
 history.json
+static/Logo_normalized.jpg
 *.gif
 *.mp4
 .env

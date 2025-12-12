@@ -143,17 +143,34 @@ if DISCORD_ENABLED:
             import os
             print(f"[TAPE] Recording VHS tape from {len(_run_images)} frame paths...")
             
-            # Load all images
+            # Load all images and normalize to same size (1024x1024)
+            TARGET_SIZE = (1024, 1024)
             frames = []
             missing_files = []
+            
             for idx, img_path in enumerate(_run_images):
                 full_path = ROOT / img_path.lstrip("/")
                 print(f"[TAPE] Loading frame {idx+1}/{len(_run_images)}: {full_path}")
                 if full_path.exists():
                     try:
                         img = Image.open(str(full_path))
-                        frames.append(img.convert("RGB"))
-                        print(f"[TAPE] ✅ Frame {idx+1} loaded successfully ({img.size})")
+                        original_size = img.size
+                        img_rgb = img.convert("RGB")
+                        
+                        # Normalize ALL frames to TARGET_SIZE (fixes cropping issue)
+                        if img_rgb.size != TARGET_SIZE:
+                            # Resize to fit within target size while maintaining aspect ratio
+                            img_rgb.thumbnail(TARGET_SIZE, Image.Resampling.LANCZOS)
+                            # Create black canvas and paste centered
+                            normalized = Image.new("RGB", TARGET_SIZE, (0, 0, 0))
+                            paste_x = (TARGET_SIZE[0] - img_rgb.width) // 2
+                            paste_y = (TARGET_SIZE[1] - img_rgb.height) // 2
+                            normalized.paste(img_rgb, (paste_x, paste_y))
+                            frames.append(normalized)
+                            print(f"[TAPE] ✅ Frame {idx+1}: {original_size} → {TARGET_SIZE} (normalized)")
+                        else:
+                            frames.append(img_rgb)
+                            print(f"[TAPE] ✅ Frame {idx+1}: {original_size} (already correct size)")
                     except Exception as e:
                         print(f"[TAPE] ❌ Failed to open frame {idx+1}: {e}")
                         missing_files.append(f"{img_path} (failed to open)")
@@ -165,6 +182,8 @@ if DISCORD_ENABLED:
                 error = f"Not enough valid frames. Found {len(frames)} readable images out of {len(_run_images)} paths. Missing files: {', '.join(missing_files)}"
                 print(f"[TAPE ERROR] {error}")
                 return None, error
+            
+            print(f"[TAPE] ✅ All {len(frames)} frames normalized to {TARGET_SIZE[0]}x{TARGET_SIZE[1]}")
             
             # Create timestamped tape (they are the memories, never deleted)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1765,12 +1784,30 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                 
                 if logo_file and logo_file.exists():
                     try:
-                        await interaction.channel.send(file=discord.File(str(logo_file)))
-                        # Track logo as Frame 0 of VHS tape
-                        _run_images.append(f"/static/{logo_file.name}")
-                        print(f"[TAPE] Frame 0 (logo) recorded: {logo_file.name}")
+                        # Crop/resize logo to 1024x1024 to match game images (prevents GIF cropping)
+                        from PIL import Image
+                        logo_img = Image.open(str(logo_file))
+                        
+                        # Center crop to square, then resize to 1024x1024
+                        min_dimension = min(logo_img.size)
+                        left = (logo_img.width - min_dimension) // 2
+                        top = (logo_img.height - min_dimension) // 2
+                        right = left + min_dimension
+                        bottom = top + min_dimension
+                        logo_cropped = logo_img.crop((left, top, right, bottom))
+                        logo_resized = logo_cropped.resize((1024, 1024), Image.Resampling.LANCZOS)
+                        
+                        # Save normalized logo to temp file
+                        normalized_logo_path = ROOT / "static" / "Logo_normalized.jpg"
+                        logo_resized.save(str(normalized_logo_path), "JPEG", quality=95)
+                        
+                        # Send the normalized logo
+                        await interaction.channel.send(file=discord.File(str(normalized_logo_path)))
+                        # Track normalized logo as Frame 0 of VHS tape
+                        _run_images.append(f"/static/Logo_normalized.jpg")
+                        print(f"[TAPE] Frame 0 (logo) recorded: Logo_normalized.jpg (1024x1024)")
                     except Exception as e:
-                        print(f"[LOGO] Failed to send logo: {e}")
+                        print(f"[LOGO] Failed to process/send logo: {e}")
                 else:
                     print(f"[LOGO] Logo file not found at {logo_path}")
                 
@@ -2438,7 +2475,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
     
     # --- Countdown Timer ---
     COUNTDOWN_ENABLED = True  # Enable/disable countdown timer
-    COUNTDOWN_DURATION = 15  # seconds per choice - EXTREMELY INTENSE!
+    COUNTDOWN_DURATION = 30  # seconds per choice
     COUNTDOWN_UPDATE_INTERVAL = 1  # update display every 1 second (smooth countdown)
     countdown_task = None  # Track active countdown
     countdown_message = None  # Message showing countdown
