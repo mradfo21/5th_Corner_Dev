@@ -979,19 +979,38 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
             last_imgs = []
             # Use 2 reference images for better stability
             num_images_to_collect = 2
-            print(f"[IMG2IMG] Collecting up to {num_images_to_collect} reference images for continuity")
+            print(f"\n{'='*70}")
+            print(f"[IMG2IMG COLLECT] Frame {frame_idx} - Starting reference collection")
+            print(f"[IMG2IMG COLLECT] History has {len(history)} entries")
+            print(f"[IMG2IMG COLLECT] Collecting up to {num_images_to_collect} reference images")
+            print(f"{'='*70}\n")
             
-            for entry in reversed(history):
+            for idx, entry in enumerate(reversed(history)):
+                has_image = bool(entry.get("image"))
+                has_vision = bool(entry.get("vision_dispatch"))
+                print(f"[IMG2IMG COLLECT] History[{idx}]: image={has_image}, vision={has_vision}")
+                if has_image:
+                    print(f"[IMG2IMG COLLECT]   → Image path: {entry.get('image')}")
+                
                 if entry.get("image") and entry.get("vision_dispatch"):
                     last_imgs.append((
                         entry["image"],
                         entry["vision_dispatch"],
                         entry.get("vision_analysis", "")  # Pull vision analysis
                     ))
+                    print(f"[IMG2IMG COLLECT]   → ✅ Added to reference list (total: {len(last_imgs)})")
+                
                 if len(last_imgs) == num_images_to_collect:
+                    print(f"[IMG2IMG COLLECT] ✅ Collected {num_images_to_collect} references, stopping search")
                     break
             
+            print(f"\n[IMG2IMG COLLECT] RESULT: Found {len(last_imgs)} reference images in history")
+            if len(last_imgs) == 0:
+                print(f"[IMG2IMG COLLECT] ⚠️ WARNING: NO REFERENCE IMAGES FOUND!")
+                print(f"[IMG2IMG COLLECT] This will generate a text-to-image (no continuity)")
+            
             if len(last_imgs) >= 1:
+                print(f"[IMG2IMG COLLECT] Processing {len(last_imgs)} references for img2img...")
                 # Get most recent image for time/color extraction
                 img, cap, vis_analysis = last_imgs[0]
                 prev_vision_analysis = vis_analysis
@@ -1033,7 +1052,10 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                 elif not USE_FRAME_0_ANCHOR and frame_idx > 1:
                     print(f"[IMG2IMG] ⚠️ Frame 0 anchor DISABLED (toggle at line ~798)")
                 
-                print(f"[IMG2IMG] Frame {frame_idx}: Using {len(prev_img_paths_list)} reference image(s) for continuity")
+                print(f"\n[IMG2IMG SUMMARY] Frame {frame_idx}: Final reference list:")
+                for i, path in enumerate(prev_img_paths_list):
+                    print(f"[IMG2IMG SUMMARY]   Ref {i+1}: {os.path.basename(path)}")
+                print(f"[IMG2IMG SUMMARY] Total: {len(prev_img_paths_list)} reference image(s)\n")
                 
                 # Skip time extraction - we maintain it in state already
                 prev_time_of_day = ""
@@ -1096,15 +1118,27 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
             print(f"[IMG] Using Google Gemini (Nano Banana) provider")
             from gemini_image_utils import generate_with_gemini, generate_gemini_img2img
             
-            if use_edit_mode and prev_img_paths_list and frame_idx > 0:
+            # Use img2img if we have reference images collected from history
+            if prev_img_paths_list and frame_idx > 0:
                 # For hard transitions (location changes), use ONLY 1 reference for lighting/aesthetic
                 # For normal transitions, use full reference set for composition continuity
+                print(f"\n{'='*70}")
+                print(f"[IMG GENERATION] ✅ USING IMG2IMG MODE (CONTINUITY ENABLED)")
+                print(f"[IMG GENERATION] frame_idx={frame_idx}")
+                print(f"[IMG GENERATION] hard_transition={hard_transition}")
+                print(f"[IMG GENERATION] Available references: {len(prev_img_paths_list)}")
+                
                 if hard_transition:
                     ref_images_to_use = prev_img_paths_list[:1]  # Only most recent for lighting
-                    print(f"[IMG] Hard transition - using 1 reference image (lighting/aesthetic only)")
+                    print(f"[IMG GENERATION] Hard transition - using 1 reference image (lighting/aesthetic only)")
                 else:
                     ref_images_to_use = prev_img_paths_list  # Full set for continuity
-                    print(f"[IMG] Gemini img2img mode with {len(ref_images_to_use)} reference images")
+                    print(f"[IMG GENERATION] Normal transition - using {len(ref_images_to_use)} reference images")
+                
+                print(f"[IMG GENERATION] References being passed to API:")
+                for i, ref in enumerate(ref_images_to_use):
+                    print(f"[IMG GENERATION]   {i+1}. {os.path.basename(ref)}")
+                print(f"{'='*70}\n")
                 
                 result_path = generate_gemini_img2img(
                     prompt=prompt_str,
@@ -1117,7 +1151,15 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                     hd_mode=HD_MODE  # Use global HD mode setting
                 )
             else:
-                print(f"[IMG] Gemini text-to-image mode")
+                print(f"\n{'='*70}")
+                print(f"[IMG GENERATION] ⚠️ USING TEXT-TO-IMAGE MODE (NO CONTINUITY)")
+                print(f"[IMG GENERATION] Reasons:")
+                print(f"[IMG GENERATION]   - prev_img_paths_list has {len(prev_img_paths_list)} items")
+                print(f"[IMG GENERATION]   - frame_idx={frame_idx}")
+                if len(prev_img_paths_list) == 0:
+                    print(f"[IMG GENERATION] ⚠️ NO REFERENCE IMAGES FOUND IN HISTORY!")
+                    print(f"[IMG GENERATION] This will cause visual discontinuity!")
+                print(f"{'='*70}\n")
                 result_path = generate_with_gemini(
                     prompt=prompt_str,
                     caption=caption,
