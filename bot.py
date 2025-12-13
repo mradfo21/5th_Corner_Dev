@@ -1866,13 +1866,11 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                     discord.SelectOption(
                         label="Gemini",
                         value="gemini",
-                        description="Flash (text) + NanoBanna Pro (images)",
                         default=True
                     ),
                     discord.SelectOption(
                         label="OpenAI",
-                        value="openai",
-                        description="GPT-4o-mini (text) + gpt-image-1 (images)"
+                        value="openai"
                     )
                 ]
                 super().__init__(

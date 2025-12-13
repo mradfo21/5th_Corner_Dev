@@ -40,7 +40,7 @@ else:
     print(f"[GEMINI INIT] Ready to generate images")
 
 # Google Gemini models
-GEMINI_FLASH_IMAGE = "gemini-2.5-flash-image"  # Fast, 1-2 seconds
+GEMINI_FLASH_IMAGE = "gemini-3-pro-image-preview"  # Nano Banana Pro - professional asset production, 4K support
 GEMINI_PRO_IMAGE = "gemini-3-pro-image-preview"  # Advanced, 4K support
 
 # Track last corrected image for continuity
@@ -126,7 +126,7 @@ def generate_with_gemini(
     prompt: str,
     caption: str,
     world_prompt: str = None,
-    aspect_ratio: str = "16:9",
+    aspect_ratio: str = "4:3",
     model: str = GEMINI_FLASH_IMAGE,
     time_of_day: str = "",
     is_first_frame: bool = False,

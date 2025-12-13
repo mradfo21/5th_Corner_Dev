@@ -69,6 +69,23 @@ def save_ai_config(config: Dict[str, Any]) -> None:
         _cache_timestamp = datetime.now(timezone.utc).timestamp()
         print(f"[AI CONFIG] Saved: {config['text_provider']}/{config['text_model']} (text), {config['image_provider']}/{config['image_model']} (image)")
 
+# Lazy initialization flag
+_initialized = False
+
+def _ensure_initialized():
+    """Lazy initialization - only loads config when first accessed."""
+    global _initialized
+    if not _initialized:
+        # Force initial load to create default config if needed
+        try:
+            config = load_ai_config()
+            print(f"[AI PROVIDER MANAGER] Initialized: {config.get('text_provider')}/{config.get('text_model')} (text), {config.get('image_provider')}/{config.get('image_model')} (image)", flush=True)
+            _initialized = True
+        except Exception as e:
+            print(f"[AI PROVIDER MANAGER] Error during initialization: {e}", flush=True)
+            # Set to True anyway to avoid repeated errors
+            _initialized = True
+
 def get_text_provider() -> str:
     """Get current text generation provider."""
     _ensure_initialized()
