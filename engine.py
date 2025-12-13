@@ -29,7 +29,7 @@ from PIL import Image
 import io
 from flask_cors import CORS
 
-import choices # Import the choices module
+# Note: choices module imported locally in functions to avoid circular dependency
 from evolve_prompt_file import evolve_world_state, set_current_beat, generate_scene_hook, summarize_world_prompt_to_interim_messages
 import ai_provider_manager
 import lore_cache_manager
@@ -1337,7 +1337,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
         # For now, primary world state evolution happens in generate_and_apply_choice and evolve_world_state.
         print(f"DEBUG PRINT: _process_turn_background - Applying choice to world state (via choices.py)...", flush=True)
         try:
-            # from choices import generate_and_apply_choice # Local import removed
+            import choices  # Local import to avoid circular dependency
             choices.generate_and_apply_choice(choice, dispatch_text_from_engine=dispatch_text) # Call via module
             # Reload state after choices.py potentially modified it
             state = _load_state()
@@ -1433,7 +1433,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
         proceed_with_standard_evolution = True
         
         # Call the actual detect_threat function from choices.py
-        # from choices import detect_threat # Local import removed
+        import choices  # Local import to avoid circular dependency
         global FORCE_TEST_THREAT # Access the global flag
         is_threat = choices.detect_threat(dispatch_text, vision=vision_dispatch_text) # Use the broader scoped vision_dispatch_text
         threat_description = "" # Initialize threat_description
@@ -1643,6 +1643,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             if consequence_text and consequence_text.strip():
                 consequence_for_choices = f"{final_choice_prompt_text}\nMost recent consequence: {consequence_text.strip()}"
 
+            import choices  # Local import to avoid circular dependency
             new_choices, choices_meta = choices.generate_choices(
                 client=client, 
                 prompt_tmpl=choice_tmpl,
