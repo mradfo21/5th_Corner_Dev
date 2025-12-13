@@ -662,6 +662,26 @@ def generate_gemini_img2img(
     # Load prompt template from JSON (single source of truth!)
     structured_prompt = PROMPTS["gemini_image_to_image_instructions"].format(prompt=prompt)
     
+    # Add CRITICAL style-only instruction for forward movement
+    style_only_instruction = (
+        "\n\n⚡ CRITICAL - HOW TO USE REFERENCE IMAGES:\n"
+        "The reference images show the PREVIOUS MOMENT in this simulation.\n"
+        "Extract from references:\n"
+        "✅ VISUAL STYLE: Photographic quality, VHS degradation, color palette, lighting type\n"
+        "✅ ENVIRONMENT TYPE: Desert vs facility, outdoor vs indoor, general setting\n"
+        "✅ AESTHETIC: Graininess, overexposure, analog artifacts, tape degradation\n\n"
+        "DO NOT copy from references:\n"
+        "❌ CAMERA POSITION - Move the camera based on the action taken\n"
+        "❌ OBJECT PLACEMENT - Rearrange the scene for the new moment\n"
+        "❌ COMPOSITION - Create new framing for the next beat\n"
+        "❌ DISTANCE - Change how close/far objects appear based on movement\n\n"
+        "Think: The references show WHAT THE TAPE LOOKS LIKE (style).\n"
+        "Your output shows WHERE THE CAMERA MOVED TO (new location/angle).\n"
+        "Same tape quality, completely different view."
+    )
+    
+    structured_prompt = structured_prompt + style_only_instruction
+    
     # Add CRITICAL anti-border instructions
     anti_border = "\n\nCRITICAL - ABSOLUTELY NO BORDERS OR FRAMES:\nThe image MUST fill the ENTIRE canvas edge-to-edge with ZERO borders, frames, or edges of any kind. NO black bars, NO white borders, NO photo frames, NO matting, NO letterboxing. The content fills 100% of the image area. This is RAW FOOTAGE, not a framed photograph."
     
