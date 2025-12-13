@@ -182,6 +182,25 @@ def generate_with_gemini(
     
     structured_prompt = structured_prompt + anti_person
     
+    # Add CRITICAL anti-timecode/text instructions
+    anti_timecode = (
+        "\n\n🚫 CRITICAL - ABSOLUTELY NO TEXT OR TIMECODE OVERLAYS:\n"
+        "This is RAW CAMERA FOOTAGE with NO on-screen displays.\n"
+        "Do NOT add ANY text, numbers, letters, or symbols to the image.\n"
+        "FORBIDDEN:\n"
+        "❌ NO timecode (NO 'DEC 14 1993', NO '14:32:05', NO date/time stamps)\n"
+        "❌ NO 'REC' indicator\n"
+        "❌ NO 'PCC HISS' or any text overlays\n"
+        "❌ NO battery indicators, tape icons, recording symbols\n"
+        "❌ NO numbers, dates, times anywhere in the image\n"
+        "❌ NO text of ANY kind\n\n"
+        "The image is PURE VISUAL FOOTAGE with ZERO on-screen text elements.\n"
+        "This is the RAW tape - no camera UI, no overlays, no burn-ins.\n"
+        "If you see timecode in reference images, DO NOT copy it."
+    )
+    
+    structured_prompt = structured_prompt + anti_timecode
+    
     # Add negative prompt emphasis
     negative_emphasis = "\n\nNEVER INCLUDE: Text overlays, timecode, date stamps, timestamps, time displays, numbers, letters, words, 'DEC 14 1993', '4:32 PM', 'PCC HISS', 'REC', battery indicators, recording icons, ANY TEXT. Borders, frames, black bars, white borders, photo edges, polaroid frames, picture frames, matting, letterbox bars, any kind of border or frame element. Person visible, human visible, man visible, character visible, head visible, shoulders visible, back of head, person's back, body parts, hands, arms, legs, feet."
     
@@ -224,7 +243,8 @@ def generate_with_gemini(
         "Real historical footage - NOT modern recreations or game graphics with filters"
     )
     
-    structured_prompt = structured_prompt + negative_emphasis + photographic_anchor
+    # Put anti-timecode FIRST (highest attention), then the rest
+    structured_prompt = anti_timecode + "\n\n" + structured_prompt + negative_emphasis + photographic_anchor
     
     # Gemini has a 5000 char limit, so truncate if needed
     if len(structured_prompt) > 5000:
@@ -662,6 +682,25 @@ def generate_gemini_img2img(
     
     structured_prompt = structured_prompt + anti_person
     
+    # Add CRITICAL anti-timecode/text instructions
+    anti_timecode = (
+        "\n\n🚫🚫🚫 ABSOLUTELY NO TEXT OR TIMECODE - CRITICAL:\n"
+        "This is RAW UNPROCESSED CAMERA FOOTAGE with NO on-screen displays of ANY kind.\n"
+        "DO NOT GENERATE:\n"
+        "❌ ZERO timecode overlays - NO 'DEC 14 1993', NO '1993 OCT 14', NO dates\n"
+        "❌ ZERO time displays - NO '14:32:05', NO '4:32 PM', NO clock displays\n"
+        "❌ ZERO 'REC' indicator or recording symbols\n"
+        "❌ ZERO 'PCC HISS' or ANY words/text\n"
+        "❌ ZERO battery indicators, tape counter, VCR UI elements\n"
+        "❌ ZERO numbers, letters, words, or symbols ANYWHERE in the image\n\n"
+        "The reference images may contain timecode overlays - YOU MUST REMOVE THEM.\n"
+        "Generate the scene WITHOUT copying any text or UI elements from references.\n"
+        "This is the ACTUAL TAPE IMAGE - no camera interface, no metadata overlays.\n"
+        "PURE VISUAL CONTENT ONLY - zero text elements of any kind."
+    )
+    
+    structured_prompt = structured_prompt + anti_timecode
+    
     # Add negative prompt emphasis
     negative_emphasis = "\n\nNEVER INCLUDE: Text overlays, timecode, date stamps, timestamps, time displays, numbers, letters, words, 'DEC 14 1993', '4:32 PM', 'PCC HISS', 'REC', battery indicators, recording icons, ANY TEXT. Borders, frames, black bars, white borders, photo edges, polaroid frames, picture frames, matting, letterbox bars, any kind of border or frame element. Person visible, human visible, man visible, character visible, head visible, back of head, shoulders visible, person's back, character's back, body parts, hands, arms, legs, feet, torso, silhouette, person from behind."
     
@@ -706,7 +745,8 @@ def generate_gemini_img2img(
         "DO NOT drift toward game-like rendering, geometric shapes, clean digital video, or polygon meshes."
     )
     
-    full_prompt = structured_prompt + negative_emphasis + photographic_anchor
+    # Put anti-timecode FIRST (highest attention), then the rest
+    full_prompt = anti_timecode + "\n\n" + structured_prompt + negative_emphasis + photographic_anchor
     
     # Sanitize to avoid safety blocks
     full_prompt = _sanitize_for_safety(full_prompt)
