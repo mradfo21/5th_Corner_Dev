@@ -8,6 +8,12 @@ engine.py – core story simulator
 """
 
 from __future__ import annotations
+
+# Debug logging (must come AFTER __future__ imports)
+import sys
+print("[ENGINE] engine.py module loading started...", flush=True)
+sys.stdout.flush()
+sys.stderr.flush()
 import base64
 import concurrent.futures
 import json
@@ -21,18 +27,38 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 import logging
+print("[ENGINE] stdlib imports complete", flush=True); sys.stdout.flush()
 
 import openai
+print("[ENGINE] openai imported", flush=True); sys.stdout.flush()
 from openai import OpenAIError
+print("[ENGINE] OpenAIError imported", flush=True); sys.stdout.flush()
 from flask import Flask, send_from_directory, request, jsonify, render_template
+print("[ENGINE] flask imported", flush=True); sys.stdout.flush()
 from PIL import Image
+print("[ENGINE] PIL imported", flush=True); sys.stdout.flush()
 import io
 from flask_cors import CORS
+print("[ENGINE] flask_cors imported", flush=True); sys.stdout.flush()
 
 # Note: choices module imported locally in functions to avoid circular dependency
+print("[ENGINE] About to import evolve_prompt_file...", flush=True)
+import sys; sys.stdout.flush(); sys.stderr.flush()
 from evolve_prompt_file import evolve_world_state, set_current_beat, generate_scene_hook, summarize_world_prompt_to_interim_messages
+print("[ENGINE] evolve_prompt_file imported", flush=True)
+sys.stdout.flush(); sys.stderr.flush()
+
+print("[ENGINE] About to import ai_provider_manager...", flush=True)
+sys.stdout.flush(); sys.stderr.flush()
 import ai_provider_manager
+print("[ENGINE] ai_provider_manager imported", flush=True)
+sys.stdout.flush(); sys.stderr.flush()
+
+print("[ENGINE] About to import lore_cache_manager...", flush=True)
+sys.stdout.flush(); sys.stderr.flush()
 import lore_cache_manager
+print("[ENGINE] lore_cache_manager imported", flush=True)
+sys.stdout.flush(); sys.stderr.flush()
 
 # ───────── OpenAI client loader ──────────────────────────────────────────────
 def _client(api_key: str, base_url: str):
