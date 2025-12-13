@@ -19,10 +19,11 @@ if DISCORD_ENABLED:
 
     import discord
     from discord.ext import commands
-    from discord.ui import View, Button, Modal, TextInput
+    from discord.ui import View, Button, Modal, TextInput, Select
 
     import engine
     from evolve_prompt_file import generate_interim_messages_on_demand
+    import ai_provider_manager
 
     # ───────── configuration ────────────────────────────────────────────────────
     ROOT   = Path(__file__).parent.resolve()
@@ -2086,8 +2087,9 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                 # No auto-advance for regular play mode
                 
         play_view = View(timeout=None)
-        play_view.add_item(PlayButton())
-        play_view.add_item(PlayNoImagesButton())
+        play_view.add_item(AIProviderSelect())  # Row 0: AI Provider dropdown
+        play_view.add_item(PlayButton())  # Row 1: Play button
+        play_view.add_item(PlayNoImagesButton())  # Row 1: Play without images
         await channel.send(embed=rules_embed, view=play_view)
 
     # ───────── startup ─────────────────────────────────────────────────────────
@@ -2872,6 +2874,83 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
         if vision:
             return vision
         return dispatch
+
+    # ───────── AI Provider Management Commands ─────────────────────────────────
+    
+    @bot.tree.command(name="ai_status", description="View current AI model configuration")
+    async def ai_status_command(interaction: discord.Interaction):
+        """Show current AI provider settings."""
+        status = ai_provider_manager.get_status()
+        embed = discord.Embed(
+            title="🤖 AI Configuration",
+            description=status,
+            color=CORNER_TEAL
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+    
+    @bot.tree.command(name="ai_switch", description="Switch AI provider preset")
+    async def ai_switch_command(
+        interaction: discord.Interaction,
+        preset: str
+    ):
+        """Switch to a different AI provider preset."""
+        # Get available presets
+        presets = ai_provider_manager.get_available_presets()
+        
+        if preset not in presets:
+            preset_list = "\n".join([f"• `{name}`" for name in presets.keys()])
+            await interaction.response.send_message(
+                f"❌ Unknown preset: `{preset}`\n\n**Available presets:**\n{preset_list}",
+                ephemeral=True
+            )
+            return
+        
+        # Switch preset
+        success = ai_provider_manager.set_preset(preset)
+        
+        if success:
+            status = ai_provider_manager.get_status()
+            embed = discord.Embed(
+                title=f"✅ Switched to `{preset}`",
+                description=status,
+                color=CORNER_TEAL
+            )
+            await interaction.response.send_message(embed=embed)
+        else:
+            await interaction.response.send_message(
+                f"❌ Failed to switch to preset: `{preset}`",
+                ephemeral=True
+            )
+    
+    @bot.tree.command(name="ai_presets", description="List available AI presets")
+    async def ai_presets_command(interaction: discord.Interaction):
+        """List all available AI provider presets."""
+        presets = ai_provider_manager.get_available_presets()
+        
+        description = ""
+        for name, config in presets.items():
+            description += f"**`{name}`**\n"
+            description += f"  Text: `{config['text_provider']}/{config['text_model']}`\n"
+            description += f"  Image: `{config['image_provider']}/{config['image_model']}`\n\n"
+        
+        embed = discord.Embed(
+            title="🎛️ Available AI Presets",
+            description=description,
+            color=CORNER_GREY
+        )
+        embed.set_footer(text="Use /ai_switch <preset> to switch")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    # ───────── bot lifecycle ────────────────────────────────────────────────────
+    @bot.event
+    async def on_ready():
+        """Sync slash commands when bot is ready."""
+        print(f"[BOT] {bot.user} is ready!")
+        try:
+            synced = await bot.tree.sync()
+            print(f"[BOT] Synced {len(synced)} slash command(s)")
+        except Exception as e:
+            print(f"[BOT] Failed to sync commands: {e}")
 
 if __name__ == "__main__":
     import threading

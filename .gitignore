@@ -12,6 +12,7 @@ tapes/
 world_state.json
 history.json
 static/Logo_normalized.jpg
+ai_config.json
 *.gif
 *.mp4
 .env

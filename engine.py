@@ -31,6 +31,7 @@ from flask_cors import CORS
 
 import choices # Import the choices module
 from evolve_prompt_file import evolve_world_state, set_current_beat, generate_scene_hook, summarize_world_prompt_to_interim_messages
+import ai_provider_manager
 
 # ───────── OpenAI client loader ──────────────────────────────────────────────
 def _client(api_key: str, base_url: str):
@@ -288,11 +289,11 @@ def _call(fn, *a, **kw):
         raise
 
 def _ask(prompt: str, model="gemini", temp=0.8, tokens=90, image_path: str = None) -> str:
-    """Use Gemini Flash for all text generation - much faster than GPT-4o
+    """Flexible text generation supporting multiple AI providers.
     
     Args:
         prompt: Text prompt
-        model: Model to use (default: "gemini")
+        model: Legacy parameter (ignored - uses ai_config.json instead)
         temp: Temperature (0-1)
         tokens: Max output tokens
         image_path: Optional path to image for multimodal input (e.g. "/images/file.png")
@@ -304,18 +305,24 @@ def _ask(prompt: str, model="gemini", temp=0.8, tokens=90, image_path: str = Non
             "The world holds its breath for new directives."
         ])
     
-    # Use Gemini Flash for speed (supports multimodal!)
+    # Get active provider from config
+    provider = ai_provider_manager.get_text_provider()
+    model_name = ai_provider_manager.get_text_model()
+    
+    if provider == "gemini":
+        return _ask_gemini(prompt, model_name, temp, tokens, image_path)
+    elif provider == "openai":
+        return _ask_openai(prompt, model_name, temp, tokens, image_path)
+    else:
+        print(f"[ASK ERROR] Unknown provider: {provider}, falling back to Gemini")
+        return _ask_gemini(prompt, model_name, temp, tokens, image_path)
+
+def _ask_gemini(prompt: str, model_name: str, temp: float, tokens: int, image_path: str = None) -> str:
+    """Gemini text generation implementation."""
     import requests
     import base64
     from pathlib import Path
-    # CRITICAL: Use global variable (reads from env vars), not CONFIG dict
     gemini_api_key = GEMINI_API_KEY
-    
-    # DEBUG: Log API key status
-    if gemini_api_key:
-        print(f"[ASK DEBUG] API key loaded: {gemini_api_key[:20]}...{gemini_api_key[-8:]} (len={len(gemini_api_key)})")
-    else:
-        print(f"[ASK DEBUG] ERROR - API key is EMPTY or None!")
     
     try:
         # Build parts list (text + optional image)
@@ -347,7 +354,7 @@ def _ask(prompt: str, model="gemini", temp=0.8, tokens=90, image_path: str = Non
                 print(f"[GEMINI TEXT+IMG] Including image: {image_path} {size_note}")
         
         response_data = requests.post(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent",
             headers={"x-goog-api-key": gemini_api_key, "Content-Type": "application/json"},
             json={
                 "contents": [{"parts": parts}],
@@ -362,15 +369,69 @@ def _ask(prompt: str, model="gemini", temp=0.8, tokens=90, image_path: str = Non
             if "error" in response_data:
                 error_details = response_data['error']
                 print(f"[ASK GEMINI ERROR] Code: {error_details.get('code')}, Message: {error_details.get('message')}")
-            # Return fallback response (NEVER empty string!)
             return "The transmission wavers... static fills the air as the signal struggles to maintain connection."
         
         result = response_data["candidates"][0]["content"]["parts"][0]["text"].strip()
-        print(f"[GEMINI TEXT] _ask() complete")
-        return result if result else "..."  # Never return empty string
+        return result if result else "..."
     except Exception as e:
         log_error(f"[ASK GEMINI] {e}")
-        return "Signal interrupted..."  # Never return empty string
+        return "Signal interrupted..."
+
+def _ask_openai(prompt: str, model_name: str, temp: float, tokens: int, image_path: str = None) -> str:
+    """OpenAI text generation implementation."""
+    import base64
+    from pathlib import Path
+    
+    try:
+        messages = []
+        
+        # Add image if provided (using GPT-4 Vision)
+        if image_path:
+            if image_path.startswith("/images/"):
+                actual_path = Path("images") / image_path.replace("/images/", "")
+            else:
+                actual_path = Path(image_path)
+            
+            if actual_path.exists():
+                small_path = actual_path.parent / actual_path.name.replace(".png", "_small.png")
+                use_path = small_path if small_path.exists() else actual_path
+                
+                with open(use_path, "rb") as f:
+                    image_data = base64.b64encode(f.read()).decode('utf-8')
+                
+                messages.append({
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{image_data}"
+                            }
+                        },
+                        {
+                            "type": "text",
+                            "text": prompt
+                        }
+                    ]
+                })
+                print(f"[OPENAI TEXT+IMG] Including image: {image_path}")
+            else:
+                messages.append({"role": "user", "content": prompt})
+        else:
+            messages.append({"role": "user", "content": prompt})
+        
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=messages,
+            temperature=temp,
+            max_tokens=tokens
+        )
+        
+        result = response.choices[0].message.content.strip()
+        return result if result else "..."
+    except Exception as e:
+        log_error(f"[ASK OPENAI] {e}")
+        return "Signal interrupted..."
 
 # ───────── vision description helper ────────────────────────────────────────
 def _downscale_for_vision(image_path: str, size=(640, 426)) -> io.BytesIO:
@@ -856,7 +917,8 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
         image_path = IMAGE_DIR / filename
         
         # --- ROUTE TO APPROPRIATE IMAGE PROVIDER ---
-        if IMAGE_PROVIDER == "gemini":
+        active_image_provider = ai_provider_manager.get_image_provider()
+        if active_image_provider == "gemini":
             # Use Google Gemini (Nano Banana) - OFFICIAL API
             print(f"[IMG] Using Google Gemini (Nano Banana) provider")
             from gemini_image_utils import generate_with_gemini, generate_gemini_img2img
@@ -896,7 +958,7 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
             _last_image_path = result_path
             return result_path
         
-        elif IMAGE_PROVIDER == "openai":
+        elif active_image_provider == "openai":
             # Use OpenAI DALL-E (original provider)
             # --- TRUE IMG2IMG/EDIT MODE ---
             if use_edit_mode and prev_img_path and os.path.exists(prev_img_path) and frame_idx > 0:
@@ -933,12 +995,12 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
             return _last_image_path
         
         else:
-            raise ValueError(f"Unknown IMAGE_PROVIDER: {IMAGE_PROVIDER}. Supported: 'openai', 'gemini'")
+            raise ValueError(f"Unknown IMAGE_PROVIDER: {active_image_provider}. Supported: 'openai', 'gemini'")
         # Skip time extraction - we already set time_of_day in state before generation
         # No need to extract it back from the image we just generated!
         return f"/images/{filename}"
     except Exception as e:
-        print(f"[IMG PROVIDER {IMAGE_PROVIDER}] Error:", e)
+        print(f"[IMG PROVIDER {ai_provider_manager.get_image_provider()}] Error:", e)
         return None
 
 # ───────── vision dispatch generator ─────────────────────────────────────────
