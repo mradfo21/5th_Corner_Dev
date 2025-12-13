@@ -2244,25 +2244,40 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
             print(f"[BOT] Failed to sync commands: {e}")
         
         # Send intro to channel
+        print(f"[BOT] Attempting to get channel {CHAN}...", flush=True)
         channel = bot.get_channel(CHAN)
         if channel is not None:
+            print(f"[BOT] Channel found: {channel.name}", flush=True)
             if not RESUME_MODE:
                 # Send intro tutorial with Play buttons
-                await send_intro_tutorial(channel)
-                print(f"[BOT] Sent intro to channel {CHAN}")
+                try:
+                    print("[BOT] Calling send_intro_tutorial...", flush=True)
+                    await send_intro_tutorial(channel)
+                    print(f"[BOT] ✅ Sent intro to channel {CHAN}", flush=True)
+                except Exception as e:
+                    print(f"[BOT ERROR] Failed to send intro: {e}", flush=True)
+                    import traceback
+                    traceback.print_exc()
             else:
                 await channel.send("🟢 Resumed from previous state.")
         else:
-            print("BOT | Channel not found.")
+            print(f"[BOT ERROR] Channel {CHAN} not found. Bot may not have access to this channel.", flush=True)
         # Set owner ID
-        global OWNER_ID
-        app_info = await bot.application_info()
-        OWNER_ID = app_info.owner.id
-        print(f"[BOT] Owner ID: {OWNER_ID}")
+        try:
+            global OWNER_ID
+            print("[BOT] Getting application info...", flush=True)
+            app_info = await bot.application_info()
+            OWNER_ID = app_info.owner.id
+            print(f"[BOT] ✅ Owner ID: {OWNER_ID}", flush=True)
+        except Exception as e:
+            print(f"[BOT ERROR] Failed to get owner ID: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
         
         # Mark bot as running
         global running
         running = True
+        print("[BOT] ✅ Bot fully initialized and ready!", flush=True)
 
     # --- Discord bot startup temporarily disabled for web-only mode ---
     # To re-enable Discord, uncomment the following line:
