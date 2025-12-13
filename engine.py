@@ -744,19 +744,9 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
         
         if frame_idx > 0 and history:
             last_imgs = []
-            # Determine number of reference images based on action type
-            # ACTIONS (movement, interaction) = 1 image (show dramatic change)
-            # STATIONARY (photograph, observe) = 2 images (maintain continuity)
-            action_keywords = ["move", "advance", "run", "sprint", "climb", "vault", "enter", "approach", 
-                             "walk", "crawl", "dash", "jump", "dive", "charge", "rush", "slide",
-                             "kick", "grab", "throw", "punch", "strike", "smash", "pry", "wrench"]
-            is_action = any(kw in choice.lower() for kw in action_keywords)
-            num_images_to_collect = 1 if is_action else 2
-            
-            if is_action:
-                print(f"[IMG2IMG] Action detected - using 1 reference image for dramatic change")
-            else:
-                print(f"[IMG2IMG] Stationary action - using 2 reference images for continuity")
+            # Always use only 1 reference image (most recent frame)
+            num_images_to_collect = 1
+            print(f"[IMG2IMG] Using 1 reference image (most recent frame only)")
             
             for entry in reversed(history):
                 if entry.get("image") and entry.get("vision_dispatch"):
@@ -795,7 +785,7 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                 
                 # EXPERIMENTAL: Always include frame 0 as visual anchor
                 # Toggle: Set USE_FRAME_0_ANCHOR = False to disable
-                USE_FRAME_0_ANCHOR = True  # Set to False to disable frame 0 anchoring
+                USE_FRAME_0_ANCHOR = False  # Set to False to disable frame 0 anchoring
                 
                 if USE_FRAME_0_ANCHOR and len(history) > 0 and frame_idx > 1:
                     frame_0_image = history[0].get("image")
