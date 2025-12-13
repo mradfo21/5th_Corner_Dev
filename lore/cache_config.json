@@ -1,0 +1,9 @@
+{
+  "enabled": true,
+  "ttl_hours": 2,
+  "auto_refresh": true,
+  "check_interval_seconds": 60,
+  "description": "Lore cache configuration. LAZY LOADING: Cache only created when someone plays. $0 cost when idle!",
+  "cost_model": "Storage: ~$0.012/hour ONLY when cache exists. Cache auto-expires after ttl_hours. Set enabled:true when you add lore files.",
+  "file_order": []
+}

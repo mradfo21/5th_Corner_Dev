@@ -24,6 +24,7 @@ if DISCORD_ENABLED:
     import engine
     from evolve_prompt_file import generate_interim_messages_on_demand
     import ai_provider_manager
+    import lore_cache_manager
 
     # ───────── configuration ────────────────────────────────────────────────────
     ROOT   = Path(__file__).parent.resolve()
@@ -1794,9 +1795,57 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
         )
         rules_embed.set_footer(text="Ready? Press ▶️ Play below to begin.")
         import engine
+        class LoreCacheToggle(Button):
+            def __init__(self):
+                # Check current state
+                config = lore_cache_manager.load_config()
+                is_enabled = config.get("enabled", False)
+                
+                if is_enabled:
+                    label = "📚 Lore: ON"
+                    style = discord.ButtonStyle.success
+                else:
+                    label = "📚 Lore: OFF"
+                    style = discord.ButtonStyle.secondary
+                
+                super().__init__(label=label, style=style, row=1)
+            
+            async def callback(self, interaction: discord.Interaction):
+                # Toggle lore cache
+                config = lore_cache_manager.load_config()
+                is_enabled = config.get("enabled", False)
+                
+                # Flip it
+                config["enabled"] = not is_enabled
+                lore_cache_manager.save_config(config)
+                
+                new_state = "ON" if not is_enabled else "OFF"
+                
+                # Update button appearance
+                if not is_enabled:
+                    self.label = "📚 Lore: ON"
+                    self.style = discord.ButtonStyle.success
+                else:
+                    self.label = "📚 Lore: OFF"
+                    self.style = discord.ButtonStyle.secondary
+                
+                # Update the view
+                await interaction.message.edit(view=self.view)
+                
+                # Send ephemeral confirmation
+                status_emoji = "✅" if not is_enabled else "❌"
+                cost_info = "Cache will be created on first turn (~$0.012/hr)" if not is_enabled else "$0 cost (cache disabled)"
+                
+                embed = discord.Embed(
+                    title=f"{status_emoji} Lore Cache: {new_state}",
+                    description=cost_info,
+                    color=CORNER_TEAL if not is_enabled else CORNER_GREY
+                )
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+        
         class PlayButton(Button):
             def __init__(self):
-                super().__init__(label="▶️ Play", style=discord.ButtonStyle.success)
+                super().__init__(label="▶️ Play", style=discord.ButtonStyle.success, row=1)
             async def callback(self, interaction: discord.Interaction):
                 global _run_images  # MUST be at the very top of the function
                 
@@ -2088,6 +2137,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                 
         play_view = View(timeout=None)
         play_view.add_item(AIProviderSelect())  # Row 0: AI Provider dropdown
+        play_view.add_item(LoreCacheToggle())  # Row 1: Lore toggle
         play_view.add_item(PlayButton())  # Row 1: Play button
         play_view.add_item(PlayNoImagesButton())  # Row 1: Play without images
         await channel.send(embed=rules_embed, view=play_view)
@@ -2940,6 +2990,39 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
         )
         embed.set_footer(text="Use /ai_switch <preset> to switch")
         await interaction.response.send_message(embed=embed, ephemeral=True)
+    
+    @bot.tree.command(name="lore_status", description="View lore cache status")
+    async def lore_status_command(interaction: discord.Interaction):
+        """Show current lore cache status."""
+        status_msg = lore_cache_manager.format_status_message()
+        embed = discord.Embed(
+            description=status_msg,
+            color=CORNER_TEAL
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+    
+    @bot.tree.command(name="lore_refresh", description="Force refresh lore cache")
+    async def lore_refresh_command(interaction: discord.Interaction):
+        """Manually refresh the lore cache."""
+        await interaction.response.defer(ephemeral=True)
+        
+        success = lore_cache_manager.refresh_cache()
+        
+        if success:
+            status_msg = lore_cache_manager.format_status_message()
+            embed = discord.Embed(
+                title="✅ Lore Cache Refreshed",
+                description=status_msg,
+                color=CORNER_TEAL
+            )
+        else:
+            embed = discord.Embed(
+                title="❌ Refresh Failed",
+                description="Could not refresh lore cache. Check logs for details.",
+                color=VHS_RED
+            )
+        
+        await interaction.followup.send(embed=embed, ephemeral=True)
 
     # ───────── bot lifecycle ────────────────────────────────────────────────────
     @bot.event

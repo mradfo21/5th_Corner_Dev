@@ -32,6 +32,7 @@ from flask_cors import CORS
 import choices # Import the choices module
 from evolve_prompt_file import evolve_world_state, set_current_beat, generate_scene_hook, summarize_world_prompt_to_interim_messages
 import ai_provider_manager
+import lore_cache_manager
 
 # ───────── OpenAI client loader ──────────────────────────────────────────────
 def _client(api_key: str, base_url: str):
@@ -318,7 +319,7 @@ def _ask(prompt: str, model="gemini", temp=0.8, tokens=90, image_path: str = Non
         return _ask_gemini(prompt, model_name, temp, tokens, image_path)
 
 def _ask_gemini(prompt: str, model_name: str, temp: float, tokens: int, image_path: str = None) -> str:
-    """Gemini text generation implementation."""
+    """Gemini text generation implementation with optional lore cache."""
     import requests
     import base64
     from pathlib import Path
@@ -353,13 +354,24 @@ def _ask_gemini(prompt: str, model_name: str, temp: float, tokens: int, image_pa
                 size_note = "(480x270)" if small_path.exists() else "(full-res)"
                 print(f"[GEMINI TEXT+IMG] Including image: {image_path} {size_note}")
         
+        # Check for lore cache
+        cache_id = lore_cache_manager.get_cache_id()
+        
+        # Build request payload
+        payload = {
+            "contents": [{"parts": parts}],
+            "generationConfig": {"temperature": temp, "maxOutputTokens": tokens}
+        }
+        
+        # Add cached content if available
+        if cache_id:
+            payload["cachedContent"] = cache_id
+            print(f"[GEMINI CACHED] Using lore cache: {cache_id.split('/')[-1][:16]}...")
+        
         response_data = requests.post(
             f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent",
             headers={"x-goog-api-key": gemini_api_key, "Content-Type": "application/json"},
-            json={
-                "contents": [{"parts": parts}],
-                "generationConfig": {"temperature": temp, "maxOutputTokens": tokens}
-            },
+            json=payload,
             timeout=15
         ).json()
         
