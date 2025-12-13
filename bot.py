@@ -31,10 +31,42 @@ if DISCORD_ENABLED:
     print("[STARTUP] Discord imports complete", flush=True)
 
     print("[STARTUP] Loading engine modules...", flush=True)
-    import engine
-    from evolve_prompt_file import generate_interim_messages_on_demand
-    import ai_provider_manager
-    import lore_cache_manager
+    try:
+        import engine
+        print("[STARTUP] - engine imported", flush=True)
+    except Exception as e:
+        print(f"[STARTUP ERROR] Failed to import engine: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        raise
+    
+    try:
+        from evolve_prompt_file import generate_interim_messages_on_demand
+        print("[STARTUP] - evolve_prompt_file imported", flush=True)
+    except Exception as e:
+        print(f"[STARTUP ERROR] Failed to import evolve_prompt_file: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        raise
+    
+    try:
+        import ai_provider_manager
+        print("[STARTUP] - ai_provider_manager imported", flush=True)
+    except Exception as e:
+        print(f"[STARTUP ERROR] Failed to import ai_provider_manager: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        raise
+    
+    try:
+        import lore_cache_manager
+        print("[STARTUP] - lore_cache_manager imported", flush=True)
+    except Exception as e:
+        print(f"[STARTUP ERROR] Failed to import lore_cache_manager: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        raise
+    
     print("[STARTUP] Engine imports complete", flush=True)
 
     # ───────── configuration ────────────────────────────────────────────────────

@@ -125,7 +125,7 @@ _is_inside = False
 
 FORCE_TEST_THREAT = False # Global flag for testing combat trigger
 
-print("ENGINE importing... (vision patch, import fixed)", flush=True)
+print("[ENGINE INIT] Starting engine initialization...", flush=True)
 
 # Initialize a lock for feed item ID generation if not already present
 feed_item_id_lock = threading.Lock()
@@ -209,7 +209,34 @@ def _load_state() -> dict:
             "interim_index": 0 # Initialize interim_index
         }
 
-state = _load_state() # Initial load
+print("[ENGINE INIT] Loading initial state...", flush=True)
+try:
+    state = _load_state() # Initial load
+    print(f"[ENGINE INIT] State loaded successfully", flush=True)
+except Exception as e:
+    print(f"[ENGINE INIT ERROR] Failed to load state: {e}", flush=True)
+    import traceback
+    traceback.print_exc()
+    # Create default state if loading fails
+    state = {
+        "world_prompt": "Jason crouches behind a rusted Horizon vehicle at the edge of the facility.",
+        "current_phase": "normal",
+        "chaos_level": 0,
+        "last_choice": "",
+        "last_saved": datetime.now(timezone.utc).isoformat(),
+        "seen_elements": [],
+        "player_state": {"alive": True},
+        "feed_log": [],
+        "current_image_url": None,
+        "choices": [],
+        "choices_metadata": {},
+        "turn_count": 0,
+        "interim_index": 0,
+        "in_combat": False,
+        "threat_level": 0
+    }
+    print("[ENGINE INIT] Created default state", flush=True)
+
 history_path = ROOT / "history.json"
 if history_path.exists():
     with history_path.open("r", encoding="utf-8") as f:
