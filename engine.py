@@ -818,16 +818,8 @@ def _save_img(b64: str, caption: str) -> str:
     path.write_bytes(base64.b64decode(b64))
     return f"/images/{path.name}"
 
-def _generate_burn_in(mode: str) -> str:
-    prompt = (
-        f"Generate a short, realistic text overlay for a {mode} image in a 1990s/2000s setting. "
-        "Include plausible metadata such as location, camera/operator ID, weather, mission code, or channel name. "
-        "Do NOT use actual dates or times. Keep it under 30 characters."
-    )
-    # Don't use lore - this is just a short VHS description
-    return _ask(prompt, tokens=20, use_lore=False)
-
 # _vision_is_inside removed - was expensive and never used in StoryGen
+# _generate_burn_in removed - was never called and caused timecode overlays
 
 def is_hard_transition(choice: str, dispatch: str) -> bool:
     """
@@ -2455,7 +2447,7 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
         
         # Don't use lore - dispatch is immediate action/consequence (use _ask instead of direct API call)
         import json as json_lib
-        result_raw = _ask(
+        result = _ask(
             json_prompt,
             model="gemini",
             temp=1.0,
@@ -2465,8 +2457,6 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
         )
         
         print("[COMBINED DISPATCH] ✅ Complete")
-        
-        result = response_data["candidates"][0]["content"]["parts"][0]["text"].strip()
         
         # Strip markdown code fences if present
         if result.startswith("```"):

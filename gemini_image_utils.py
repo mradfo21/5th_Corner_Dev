@@ -183,7 +183,7 @@ def generate_with_gemini(
     structured_prompt = structured_prompt + anti_person
     
     # Add negative prompt emphasis
-    negative_emphasis = "\n\nNEVER INCLUDE: Borders, frames, black bars, white borders, photo edges, polaroid frames, picture frames, matting, letterbox bars, any kind of border or frame element. Person visible, human visible, man visible, character visible, head visible, shoulders visible, back of head, person's back, body parts, hands, arms, legs, feet."
+    negative_emphasis = "\n\nNEVER INCLUDE: Text overlays, timecode, date stamps, timestamps, time displays, numbers, letters, words, 'DEC 14 1993', '4:32 PM', 'PCC HISS', 'REC', battery indicators, recording icons, ANY TEXT. Borders, frames, black bars, white borders, photo edges, polaroid frames, picture frames, matting, letterbox bars, any kind of border or frame element. Person visible, human visible, man visible, character visible, head visible, shoulders visible, back of head, person's back, body parts, hands, arms, legs, feet."
     
     # OPTICAL REALITY ANCHOR - Critical for first frame to set the tone
     photographic_anchor = (
@@ -663,7 +663,7 @@ def generate_gemini_img2img(
     structured_prompt = structured_prompt + anti_person
     
     # Add negative prompt emphasis
-    negative_emphasis = "\n\nNEVER INCLUDE: Borders, frames, black bars, white borders, photo edges, polaroid frames, picture frames, matting, letterbox bars, any kind of border or frame element. Person visible, human visible, man visible, character visible, head visible, back of head, shoulders visible, person's back, character's back, body parts, hands, arms, legs, feet, torso, silhouette, person from behind."
+    negative_emphasis = "\n\nNEVER INCLUDE: Text overlays, timecode, date stamps, timestamps, time displays, numbers, letters, words, 'DEC 14 1993', '4:32 PM', 'PCC HISS', 'REC', battery indicators, recording icons, ANY TEXT. Borders, frames, black bars, white borders, photo edges, polaroid frames, picture frames, matting, letterbox bars, any kind of border or frame element. Person visible, human visible, man visible, character visible, head visible, back of head, shoulders visible, person's back, character's back, body parts, hands, arms, legs, feet, torso, silhouette, person from behind."
     
     # OPTICAL REALITY ANCHOR - Prevent video game aesthetic drift over time
     photographic_anchor = (
