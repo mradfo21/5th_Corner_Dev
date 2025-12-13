@@ -1795,6 +1795,57 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
         )
         rules_embed.set_footer(text="Ready? Press ▶️ Play below to begin.")
         import engine
+        
+        class AIProviderSelect(discord.ui.Select):
+            """Dropdown menu for selecting AI provider presets."""
+            def __init__(self):
+                options = [
+                    discord.SelectOption(
+                        label="🧠 Gemini (Fast & Cheap)",
+                        value="gemini_fast",
+                        description="Gemini 2.0 Flash for text + imagen for images",
+                        default=True
+                    ),
+                    discord.SelectOption(
+                        label="🤖 OpenAI",
+                        value="openai",
+                        description="GPT-4o-mini + gpt-image-1 (img2img support)"
+                    ),
+                    discord.SelectOption(
+                        label="⚡ Hybrid (Fast Text + Quality Images)",
+                        value="hybrid_fast",
+                        description="Gemini text + OpenAI DALL-E 3 images"
+                    )
+                ]
+                super().__init__(
+                    placeholder="🎛️ Select AI Model",
+                    options=options,
+                    row=0
+                )
+            
+            async def callback(self, interaction: discord.Interaction):
+                """Handle AI provider selection."""
+                preset_name = self.values[0]
+                
+                # Switch to selected preset
+                success = ai_provider_manager.set_preset(preset_name)
+                
+                if success:
+                    status = ai_provider_manager.get_status()
+                    embed = discord.Embed(
+                        title=f"✅ Switched to `{preset_name}`",
+                        description=status,
+                        color=CORNER_TEAL
+                    )
+                else:
+                    embed = discord.Embed(
+                        title="❌ Switch Failed",
+                        description=f"Could not switch to `{preset_name}`. Check logs.",
+                        color=VHS_RED
+                    )
+                
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+        
         class LoreCacheToggle(Button):
             def __init__(self):
                 # Check current state
@@ -2147,6 +2198,8 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
     async def on_ready():
         global auto_play_enabled, auto_advance_task, countdown_task, custom_action_available, custom_action_turn_counter
         
+        print(f"[BOT] {bot.user} is ready!")
+        
         # Reset auto-play state on bot startup
         auto_play_enabled = False
         if auto_advance_task and not auto_advance_task.done():
@@ -2165,23 +2218,33 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
         custom_action_turn_counter = 0
         print("[STARTUP] Custom action available")
         
-        print(f"BOT | Logged in as {bot.user}")
+        # Sync slash commands
+        try:
+            synced = await bot.tree.sync()
+            print(f"[BOT] Synced {len(synced)} slash command(s)")
+        except Exception as e:
+            print(f"[BOT] Failed to sync commands: {e}")
+        
+        # Send intro to channel
         channel = bot.get_channel(CHAN)
         if channel is not None:
             if not RESUME_MODE:
-                # Only play intro if not resuming
-                await channel.send("🟢 What will you do next?")
-                # Optionally, trigger intro turn logic here if needed
+                # Send intro tutorial with Play buttons
+                await send_intro_tutorial(channel)
+                print(f"[BOT] Sent intro to channel {CHAN}")
             else:
-                await channel.send("[RESUME MODE] Resuming previous session. No intro.")
+                await channel.send("🟢 Resumed from previous state.")
         else:
             print("BOT | Channel not found.")
+        # Set owner ID
         global OWNER_ID
         app_info = await bot.application_info()
         OWNER_ID = app_info.owner.id
-        global running; running=True
-        await channel.send(embed=beginning_simulation_embed())
-        await send_intro_tutorial(channel)
+        print(f"[BOT] Owner ID: {OWNER_ID}")
+        
+        # Mark bot as running
+        global running
+        running = True
 
     # --- Discord bot startup temporarily disabled for web-only mode ---
     # To re-enable Discord, uncomment the following line:
@@ -3025,15 +3088,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
         await interaction.followup.send(embed=embed, ephemeral=True)
 
     # ───────── bot lifecycle ────────────────────────────────────────────────────
-    @bot.event
-    async def on_ready():
-        """Sync slash commands when bot is ready."""
-        print(f"[BOT] {bot.user} is ready!")
-        try:
-            synced = await bot.tree.sync()
-            print(f"[BOT] Synced {len(synced)} slash command(s)")
-        except Exception as e:
-            print(f"[BOT] Failed to sync commands: {e}")
+    # DUPLICATE REMOVED - This was overwriting the first on_ready handler
 
 if __name__ == "__main__":
     import threading

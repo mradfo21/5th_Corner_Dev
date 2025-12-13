@@ -1014,7 +1014,10 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                 finally:
                     # Close all file handles
                     for f in image_files:
-                        f.close()
+                        try:
+                            f.close()
+                        except:
+                            pass
                 
                 print(f"[OPENAI IMG2IMG] ✅ Edit complete with {len(image_files)} reference(s)")
             else:
