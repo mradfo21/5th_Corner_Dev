@@ -146,6 +146,9 @@ _vision_cache = {}
 # Add a global counter for choices since last reset
 _choices_since_edit_reset = 0
 
+# Track detected movement type for Discord display
+_last_movement_type = None
+
 # Add a global flag for interior/exterior state
 _is_inside = False
 
@@ -856,12 +859,69 @@ def is_hard_transition(choice: str, dispatch: str) -> bool:
     
     return has_transition
 
+def get_last_movement_type() -> Optional[str]:
+    """Get the last detected movement type for display purposes."""
+    return _last_movement_type
+
+def _detect_movement_type(player_choice: str) -> str:
+    """
+    Use LLM to intelligently classify action type.
+    Returns: 'forward_movement', 'stationary', 'exploration'
+    """
+    detection_prompt = (
+        f"Classify this player action into ONE category:\n\n"
+        f"ACTION: '{player_choice}'\n\n"
+        f"CATEGORIES:\n"
+        f"- FORWARD_MOVEMENT: Camera moves significantly forward/closer to destination (advance, sprint, climb, enter, cross, approach buildings/structures)\n"
+        f"- EXPLORATION: Camera moves slightly (look around, scan, pan, shift perspective) but stays roughly in place\n"
+        f"- STATIONARY: Camera stays in exact same position (examine object, check item, photograph, crouch in place)\n\n"
+        f"Return ONLY one word: FORWARD_MOVEMENT, EXPLORATION, or STATIONARY"
+    )
+    
+    try:
+        result = _ask(detection_prompt, temp=0.2, tokens=5, use_lore=False).strip().upper()
+        if 'FORWARD' in result:
+            return 'forward_movement'
+        elif 'EXPLORATION' in result:
+            return 'exploration'
+        else:
+            return 'stationary'
+    except Exception as e:
+        print(f"[MOVEMENT DETECTION] Error: {e}, defaulting to exploration")
+        return 'exploration'  # Default to some movement to keep things interesting
+
 def build_image_prompt(player_choice: str = "", dispatch: str = "", prev_vision_analysis: str = "", hard_transition: bool = False, is_timeout_penalty: bool = False) -> str:
     """
     Build image prompt with continuity from previous vision analysis.
     Explicitly includes player choice so the image reflects the action taken.
     """
-    # SIMPLIFIED: Just include the choice and dispatch
+    # TIMEOUT PENALTIES: EXACT same camera position, ZERO movement
+    if is_timeout_penalty:
+        return (
+            f"Result: {dispatch}\n\n"
+            f"CRITICAL: TIMEOUT PENALTY.\n"
+            f"Show the EXACT SAME ANGLE and LOCATION as before.\n"
+            f"ONLY environmental changes (dust, debris, reactions, creatures, gore ,attacks, violence, trouble, danger, etc.) - NO camera movement.\n"
+            f"If outdoor, stay outdoor. If indoor, stay indoor. NO teleportation."
+        )
+    
+    # Intelligently detect movement type
+    global _last_movement_type
+    movement_type = _detect_movement_type(player_choice)
+    _last_movement_type = movement_type  # Store for Discord display
+    
+    # Visual indicators for each type
+    type_emoji = {
+        'forward_movement': '🏃 MOVEMENT',
+        'exploration': '👀 MOVEMENT',
+        'stationary': '🧍 MOVEMENT'
+    }
+    print(f"\n{'='*60}")
+    print(f"[MOVEMENT DETECTION] '{player_choice}'")
+    print(f"  → {type_emoji.get(movement_type, movement_type.upper())}")
+    print(f"{'='*60}\n", flush=True)
+    
+    # Start with the player's choice and what happened
     prompt = f"Action taken: {player_choice}. Result: {dispatch}"
     
     # Add previous vision analysis for visual continuity
@@ -869,9 +929,35 @@ def build_image_prompt(player_choice: str = "", dispatch: str = "", prev_vision_
         if hard_transition:
             # Location change - maintain lighting/aesthetic continuity
             prompt = f"{prompt} Maintain similar lighting, time of day, and overall visual aesthetic as before."
+        elif movement_type == 'forward_movement':
+            # FORWARD MOVEMENT - FORCE dramatic spatial progression
+            prompt = (
+                f"{prompt}\n\n"
+                f"🚨 CRITICAL OVERRIDE: The camera has PHYSICALLY MOVED FORWARD significantly.\n"
+                f"DO NOT maintain the same composition. DO NOT keep the same distance.\n"
+                f"The player chose: '{player_choice}' - this is FORWARD MOVEMENT.\n\n"
+                f"SHOW DRAMATIC SPATIAL CHANGE:\n"
+                f"- Objects in the distance are now MUCH CLOSER and LARGER in frame\n"
+                f"- Camera position has ADVANCED at least 20-30 feet forward\n"
+                f"- NEW ANGLE showing progression toward the destination\n"
+                f"- Perspective shifted - closer viewpoint, things loom larger\n"
+                f"- Ground/terrain in foreground has changed (advanced position)\n\n"
+                f"Previous scene (FOR STYLE ONLY, NOT COMPOSITION): {prev_vision_analysis[:120]}\n"
+                f"Maintain STYLE and ENVIRONMENT, but CHANGE CAMERA POSITION dramatically."
+            )
+        elif movement_type == 'exploration':
+            # EXPLORATION - Subtle camera shift/pan to keep things dynamic
+            prompt = (
+                f"{prompt}\n\n"
+                f"SUBTLE CAMERA SHIFT: The camera adjusts slightly (pan, tilt, or drift).\n"
+                f"- Maintain roughly the same position but show a SLIGHTLY different angle\n"
+                f"- Small perspective shift to keep the scene dynamic and interesting\n"
+                f"- Environmental elements shift naturally with camera movement\n"
+                f"Previous scene for reference: {prev_vision_analysis[:150]}"
+            )
         else:
-            # Same location - full continuity
-            prompt = f"{prompt} Continue from previous scene: {prev_vision_analysis[:200]}"
+            # STATIONARY - Maintain exact position but allow environmental changes
+            prompt = f"{prompt} Same camera position. Only environmental/lighting changes: {prev_vision_analysis[:200]}"
     
     return prompt
 
@@ -891,8 +977,8 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
         
         if frame_idx > 0 and history:
             last_imgs = []
-            # Use 2-3 reference images for better stability (1 was causing wild location/time shifts)
-            num_images_to_collect = 3
+            # Use 2 reference images for better stability
+            num_images_to_collect = 2
             print(f"[IMG2IMG] Collecting up to {num_images_to_collect} reference images for continuity")
             
             for entry in reversed(history):
@@ -1118,7 +1204,7 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
 # ───────── vision dispatch generator ─────────────────────────────────────────
 def _generate_vision_dispatch(narrative_dispatch: str, world_prompt: str = "") -> str:
     prompt = (
-        "You are a visual scene writer for analog horror. Output only the literal, visible scene as Jason would see it, in first-person present tense.\n\n"
+        "You are a visual scene writer. Output only the literal, visible scene as Jason would see it, in first-person present tense.\n\n"
         "Rewrite the following narrative as a first-person, present-tense description of what Jason sees, suitable for a visual scene. "
         "Only describe what is visible. Do not include Jason himself or any internal thoughts. "
         "Do not show Jason. Do not show the protagonist. Do not show any character from behind. Only show what Jason sees from his own eyes. "
@@ -1149,7 +1235,7 @@ def _generate_situation_report(current_image: str = None) -> str:
         )
         # Don't use lore - this is just a summary with visual grounding
         return _ask(prompt, model="gemini", temp=1.0, tokens=40, image_path=current_image, use_lore=False)
-    return "You stand on a rocky outcrop overlooking the Horizon facility, the quarantine fence stretching across the red desert. Patrol lights sweep the landscape as distant thunder rumbles."
+    return "You stand on a rocky outcrop overlooking the Horizon facility, situated in the distance, surrounded by the vast red american southwest."
 
 def begin_tick() -> dict:
     state = _load_state()

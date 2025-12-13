@@ -439,6 +439,19 @@ if DISCORD_ENABLED:
             return text[:MAX_EMBED_DESC_LEN - 15] + '\n...(truncated)'
         return text
     
+    def get_movement_indicator():
+        """Get visual indicator for detected movement type."""
+        movement_type = engine.get_last_movement_type()
+        if not movement_type:
+            return ""
+        
+        indicators = {
+            'forward_movement': '🏃 **MOVEMENT**',
+            'exploration': '👀 **MOVEMENT**',
+            'stationary': '🧍 **MOVEMENT**'
+        }
+        return indicators.get(movement_type, "")
+    
     async def generate_timeout_penalty(dispatch, situation_report, current_image=None):
         """Generate a contextual negative consequence for player inaction using LLM with vision"""
         import requests
@@ -693,8 +706,14 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             # Show dispatch IMMEDIATELY from Phase 1 (what you feel/experience)
             dispatch_text = phase1.get("dispatch", "")
             if dispatch_text:
+                # Add movement type indicator
+                movement_indicator = get_movement_indicator()
+                full_text = dispatch_text.strip()
+                if movement_indicator:
+                    full_text = f"{movement_indicator}\n\n{full_text}"
+                
                 await interaction.channel.send(embed=discord.Embed(
-                    description=safe_embed_desc(dispatch_text.strip()),
+                    description=safe_embed_desc(full_text),
                     color=VHS_RED
                 ))
                 await asyncio.sleep(0.8)  # Brief pause
@@ -1115,7 +1134,12 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             choice_text = custom_choice
             
             # Display dispatch (what you feel/experience)
-            await interaction.channel.send(embed=discord.Embed(description=safe_embed_desc(disp["dispatch"]), color=CORNER_TEAL))
+            movement_indicator = get_movement_indicator()
+            dispatch_text = disp["dispatch"]
+            if movement_indicator:
+                dispatch_text = f"{movement_indicator}\n\n{dispatch_text}"
+            
+            await interaction.channel.send(embed=discord.Embed(description=safe_embed_desc(dispatch_text), color=CORNER_TEAL))
             
             # Display image IMMEDIATELY
             img_path = disp.get("consequence_image")
@@ -2443,8 +2467,14 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     # Display dispatch and image
                     dispatch_text = phase1_result.get("dispatch", "")
                     if dispatch_text:
+                        # Add movement type indicator
+                        movement_indicator = get_movement_indicator()
+                        full_text = dispatch_text.strip()
+                        if movement_indicator:
+                            full_text = f"{movement_indicator}\n\n{full_text}"
+                        
                         await channel.send(embed=discord.Embed(
-                            description=safe_embed_desc(dispatch_text.strip()),
+                            description=safe_embed_desc(full_text),
                             color=VHS_RED
                         ))
                     
@@ -2846,8 +2876,14 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
         # Display dispatch and image immediately
         dispatch_text = phase1_result.get("dispatch", "")
         if dispatch_text:
+            # Add movement type indicator
+            movement_indicator = get_movement_indicator()
+            full_text = dispatch_text.strip()
+            if movement_indicator:
+                full_text = f"{movement_indicator}\n\n{full_text}"
+            
             await channel.send(embed=discord.Embed(
-                description=safe_embed_desc(dispatch_text.strip()),
+                description=safe_embed_desc(full_text),
                 color=VHS_RED
             ))
         
