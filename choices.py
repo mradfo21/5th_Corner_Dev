@@ -103,6 +103,13 @@ def generate_choices(
         "FORMAT: [Verb] [object/target]\n"
         "GOOD: 'Scale the fence', 'Examine door lock', 'Sprint toward building', 'Hide behind truck'\n"
         "BAD: 'Look around', 'Go inside', 'Check it out'\n\n"
+        "CRITICAL GROUNDING RULE - ONLY REFERENCE WHAT'S ACTUALLY VISIBLE:\n"
+        "• Look at the IMAGE carefully\n"
+        "• ONLY suggest actions involving objects/structures YOU CAN SEE in the frame\n"
+        "• If there's NO door visible → DO NOT suggest 'Open door'\n"
+        "• If there's NO vehicle visible → DO NOT suggest 'Hide behind truck'\n"
+        "• If there's NO fence visible → DO NOT suggest 'Climb fence'\n"
+        "• BE SPECIFIC: Use exact descriptors from what's visible (rusted building, distant structure, rocky ground)\n\n"
         "FORWARD MOMENTUM: Jason ALWAYS moves forward or sideways, NEVER backward. Do NOT suggest: retreat, step back, back away, turn around, flee, run away, return.\n\n"
         "VERB VARIETY: Use different verbs each time. Examples:\n"
         "- Movement: Advance, Sprint, Climb, Crawl, Circle, Approach, Push through, Squeeze past\n"
@@ -111,7 +118,7 @@ def generate_choices(
         "- Interaction: Disable, Activate, Trigger, Open, Break, Cut, Pry\n"
         "- Tactical: Cover, Signal, Distract, Secure\n\n"
         "PROGRESS: If an obstacle (fence, door, etc.) is present, offer choices that GET PAST IT, not choices that keep Jason stuck at it.\n\n"
-        "Each choice must be SPECIFIC to what's visible in the image. Never generic."
+        "Each choice must be SPECIFIC to what's ACTUALLY VISIBLE in the image. Never hallucinate objects."
     )}
     if image_url:
         messages = [
@@ -369,9 +376,9 @@ def choice_critic(dispatch, vision, choices, world_prompt, recent_choices=None):
     critic_prompt += f"WORLD: {world_prompt}\n"
     critic_prompt += "CHOICES:\n" + "\n".join(f"- {c}" for c in filtered)
     critic_prompt += "\nReturn only the improved list of choices, no commentary."
-    # Use LLM to review and rewrite choices
+    # Use LLM to review and rewrite choices (don't use lore - this is mechanical choice refinement)
     try:
-        improved = engine._ask(critic_prompt, temp=0.3, tokens=48)
+        improved = engine._ask(critic_prompt, temp=0.3, tokens=48, use_lore=False)
         # Parse as list
         import re
         lines = [l.strip('-* ",') for l in improved.splitlines() if l.strip()]

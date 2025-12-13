@@ -712,7 +712,8 @@ def _world_report() -> str:
         f"{base}\n\n"
         f"[{tone.upper()} TONE] {PROMPTS['situation_report_prompt']}"
     )
-    return _ask(prompt, tokens=60)
+    # Don't use lore - this is just a summary of current state
+    return _ask(prompt, tokens=60, use_lore=False)
 
 # ───────── dispatch helpers ────────────────────────────────────────────────
 def summarize_world_prompt_for_image(world_prompt: str) -> str:
@@ -749,8 +750,8 @@ def _generate_dispatch(choice: str, state: dict, prev_state: dict = None) -> dic
             f"{spatial_context}\n\n"
             "Describe what Jason does and what immediately happens as a result."
         )
-        # Pass previous image for visual continuity
-        result = _ask(prompt, model="gemini", temp=1.0, tokens=250, image_path=prev_image_path)
+        # Don't use lore - dispatch is immediate action/consequence, not world building
+        result = _ask(prompt, model="gemini", temp=1.0, tokens=250, image_path=prev_image_path, use_lore=False)
         
         # Try to parse as JSON first (new format)
         import json
@@ -820,7 +821,8 @@ def _generate_burn_in(mode: str) -> str:
         "Include plausible metadata such as location, camera/operator ID, weather, mission code, or channel name. "
         "Do NOT use actual dates or times. Keep it under 30 characters."
     )
-    return _ask(prompt, tokens=20)
+    # Don't use lore - this is just a short VHS description
+    return _ask(prompt, tokens=20, use_lore=False)
 
 # _vision_is_inside removed - was expensive and never used in StoryGen
 
@@ -854,18 +856,18 @@ def is_hard_transition(choice: str, dispatch: str) -> bool:
     
     return has_transition
 
-def build_image_prompt(player_choice: str = "", dispatch: str = "", prev_vision_analysis: str = "", hard_transition: bool = False) -> str:
+def build_image_prompt(player_choice: str = "", dispatch: str = "", prev_vision_analysis: str = "", hard_transition: bool = False, is_timeout_penalty: bool = False) -> str:
     """
     Build image prompt with continuity from previous vision analysis.
     Explicitly includes player choice so the image reflects the action taken.
     """
-    # Start with the player's choice and what happened
+    # SIMPLIFIED: Just include the choice and dispatch
     prompt = f"Action taken: {player_choice}. Result: {dispatch}"
     
     # Add previous vision analysis for visual continuity
     if prev_vision_analysis:
         if hard_transition:
-            # Even on location change, maintain lighting/aesthetic continuity
+            # Location change - maintain lighting/aesthetic continuity
             prompt = f"{prompt} Maintain similar lighting, time of day, and overall visual aesthetic as before."
         else:
             # Same location - full continuity
@@ -873,7 +875,7 @@ def build_image_prompt(player_choice: str = "", dispatch: str = "", prev_vision_
     
     return prompt
 
-def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optional[str] = None, previous_caption: Optional[str] = None, previous_mode: Optional[str] = None, strength: float = 0.25, image_description: str = "", time_of_day: str = "", use_edit_mode: bool = False, frame_idx: int = 0, dispatch: str = "", world_prompt: str = "", hard_transition: bool = False) -> Optional[str]:
+def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optional[str] = None, previous_caption: Optional[str] = None, previous_mode: Optional[str] = None, strength: float = 0.25, image_description: str = "", time_of_day: str = "", use_edit_mode: bool = False, frame_idx: int = 0, dispatch: str = "", world_prompt: str = "", hard_transition: bool = False, is_timeout_penalty: bool = False) -> Optional[str]:
     global _last_image_path
     import random
     if not (IMAGE_ENABLED and LLM_ENABLED):
@@ -889,9 +891,9 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
         
         if frame_idx > 0 and history:
             last_imgs = []
-            # Always use only 1 reference image (most recent frame)
-            num_images_to_collect = 1
-            print(f"[IMG2IMG] Using 1 reference image (most recent frame only)")
+            # Use 2-3 reference images for better stability (1 was causing wild location/time shifts)
+            num_images_to_collect = 3
+            print(f"[IMG2IMG] Collecting up to {num_images_to_collect} reference images for continuity")
             
             for entry in reversed(history):
                 if entry.get("image") and entry.get("vision_dispatch"):
@@ -962,7 +964,8 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
             player_choice=choice,
             dispatch=caption,
             prev_vision_analysis=prev_vision_analysis,
-            hard_transition=hard_transition
+            hard_transition=hard_transition,
+            is_timeout_penalty=is_timeout_penalty
         )
         # Inject world flavor and location for image model only
         if world_flavor:
@@ -1121,7 +1124,8 @@ def _generate_vision_dispatch(narrative_dispatch: str, world_prompt: str = "") -
         "Do not show Jason. Do not show the protagonist. Do not show any character from behind. Only show what Jason sees from his own eyes. "
         f"\n\nNARRATIVE DISPATCH: {narrative_dispatch}\n\nWORLD CONTEXT: {world_prompt}"
     )
-    result = _ask(prompt, model="gemini", temp=1.0, tokens=100)
+    # Don't use lore - this is just reformatting narrative to visual description
+    result = _ask(prompt, model="gemini", temp=1.0, tokens=100, use_lore=False)
     return result
 
 # ───────── public API (two‑stage) ───────────────────────────────────────────
@@ -1143,8 +1147,8 @@ def _generate_situation_report(current_image: str = None) -> str:
             major_event_nudge +
             "\nDescribe what is happening NOW, after the dispatch, as a concise 1-2 sentence situation. This should set up the next set of choices."
         )
-        # Pass current image for visual grounding
-        return _ask(prompt, model="gemini", temp=1.0, tokens=40, image_path=current_image)
+        # Don't use lore - this is just a summary with visual grounding
+        return _ask(prompt, model="gemini", temp=1.0, tokens=40, image_path=current_image, use_lore=False)
     return "You stand on a rocky outcrop overlooking the Horizon facility, the quarantine fence stretching across the red desert. Patrol lights sweep the landscape as distant thunder rumbles."
 
 def begin_tick() -> dict:
@@ -1260,7 +1264,8 @@ def generate_crisis_choices(dispatch, vision, world_prompt):
         "Do not include exploration or investigation. Only direct, crisis responses.\n"
         f"DISPATCH: {dispatch}\nVISION: {vision}\nWORLD: {world_prompt}"
     )
-    rsp = _ask(crisis_prompt, model="gemini", temp=1.0, tokens=40)
+    # Don't use lore - this is a mechanical crisis detection
+    rsp = _ask(crisis_prompt, model="gemini", temp=1.0, tokens=40, use_lore=False)
     opts = []
     for line in rsp.splitlines():
         line = line.strip().lstrip("-*0123456789. ").strip()
@@ -2318,23 +2323,18 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
                 size_note = "(480x270)" if small_path.exists() else "(full-res)"
                 print(f"[GEMINI TEXT+IMG] Including PREVIOUS timestep image: {current_image} {size_note}")
         
-        import requests
-        response_data = requests.post(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
-            headers={"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"},
-            json={
-                "contents": [{"parts": parts}],
-                "generationConfig": {"temperature": 1.0, "maxOutputTokens": 500},  # Default temp for Gemini 2.x
-                "safetySettings": [
-                    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-                    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-                    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-                    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
-                ]
-            },
-            timeout=15
-        ).json()
-        print("[GEMINI TEXT] ✅ Combined dispatches complete")
+        # Don't use lore - dispatch is immediate action/consequence (use _ask instead of direct API call)
+        import json as json_lib
+        result_raw = _ask(
+            json_prompt,
+            model="gemini",
+            temp=1.0,
+            tokens=350,
+            image_path=current_image,  # Pass current image if available
+            use_lore=False  # Dispatch is mechanical, lore only for world evolution
+        )
+        
+        print("[COMBINED DISPATCH] ✅ Complete")
         
         result = response_data["candidates"][0]["content"]["parts"][0]["text"].strip()
         
@@ -2446,7 +2446,8 @@ def resolve_risky_action(choice, threat_level, dispatch, world_prompt):
         "If success, describe how the player advances or avoids danger. If failure, describe the immediate negative result."
     )
     try:
-        summary = _ask(prompt, model="gemini", temp=1.0, tokens=40)
+        # Don't use lore - this is a mechanical risky action resolution
+        summary = _ask(prompt, model="gemini", temp=1.0, tokens=40, use_lore=False)
         if not summary.strip():
             summary = 'No major consequence.'
         return success, summary
@@ -2455,7 +2456,7 @@ def resolve_risky_action(choice, threat_level, dispatch, world_prompt):
         return success, 'No major consequence.'
 
 # ───────── game loop ──────────────────────────────────────────────────────────
-def advance_turn_image_fast(choice: str, fate: str = "NORMAL") -> dict:
+def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalty: bool = False) -> dict:
     """
     PHASE 1 (FAST): Generate dispatch and image, return immediately.
     Returns image ASAP so bot can display it while choices are generating.
@@ -2463,8 +2464,14 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL") -> dict:
     Args:
         choice: Player's chosen action
         fate: Luck modifier - "LUCKY", "NORMAL", or "UNLUCKY"
+        is_timeout_penalty: If True, maintains EXACT camera position (no movement/teleportation)
     """
     global state, history
+    
+    # CRITICAL: Log everything for Render debugging
+    print(f"[ADVANCE_TURN] Choice: '{choice[:100]}'")
+    print(f"[ADVANCE_TURN] Fate: {fate}")
+    print(f"[ADVANCE_TURN] Is Timeout Penalty: {is_timeout_penalty}")
     try:
         state = _load_state()
         history_path = ROOT / "history.json"
@@ -2512,7 +2519,12 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL") -> dict:
         # Generate image
         mode = state.get("mode", "camcorder")
         frame_idx = len(history) + 1
-        hard_transition = is_hard_transition(choice, dispatch)
+        # CRITICAL: Timeout penalties NEVER change location
+        if is_timeout_penalty:
+            hard_transition = False
+            print(f"[TIMEOUT PENALTY] Forcing NO location change - maintaining exact camera position")
+        else:
+            hard_transition = is_hard_transition(choice, dispatch)
         
         consequence_img_url = None
         try:
@@ -2522,6 +2534,12 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL") -> dict:
                     if entry.get("image"):
                         last_image_path = entry["image"].lstrip("/")
                         break
+            
+            print(f"[IMG GEN] About to generate image:")
+            print(f"  - Choice: '{choice[:80]}'")
+            print(f"  - Is timeout penalty: {is_timeout_penalty}")
+            print(f"  - Hard transition: {hard_transition}")
+            print(f"  - Last image path: {last_image_path}")
             
             consequence_img_url = _gen_image(
                 vision_dispatch,
@@ -2533,7 +2551,8 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL") -> dict:
                 frame_idx=frame_idx,
                 dispatch=dispatch,
                 world_prompt=state.get("world_prompt", ""),
-                hard_transition=hard_transition
+                hard_transition=hard_transition,
+                is_timeout_penalty=is_timeout_penalty  # Pass flag to image generation
             )
             print(f"✅ [IMG FAST] Image ready: {consequence_img_url}")
         except Exception as e:

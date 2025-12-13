@@ -428,9 +428,21 @@ if DISCORD_ENABLED:
         
         image_context = ""
         if current_image:
-            image_context = "\n\n🖼️ CRITICAL: Look at the attached image. This is what's currently visible. Base the penalty on VISIBLE THREATS in the image (guards, helicopters, creatures, environmental hazards)."
+            image_context = (
+                "\n\n🖼️ CRITICAL: Look at the attached image. This is YOUR CURRENT LOCATION.\n"
+                "THE CAMERA HAS NOT MOVED. You are STILL in this EXACT spot.\n"
+                "If indoor, STAY INDOOR. If outdoor, STAY OUTDOOR.\n"
+                "Base the penalty on VISIBLE THREATS in THIS image (structural hazards, debris, environmental danger).\n"
+                "DO NOT invent new locations. DO NOT teleport. DO NOT mention 'fence' if no fence visible."
+            )
         
         prompt = f"""{penalty_instructions}
+
+🚨 CRITICAL RULE: YOU HAVE NOT MOVED. THE CAMERA IS IN THE EXACT SAME LOCATION.
+- If you were in a hallway, you are STILL in that hallway
+- If you were outside, you are STILL outside in the same spot
+- DO NOT mention new locations, structures, or objects not in the current image
+- The penalty happens HERE, where you already are
 
 CURRENT SITUATION:
 {situation_report}
@@ -438,7 +450,7 @@ CURRENT SITUATION:
 WHAT JUST HAPPENED:
 {dispatch}{image_context}
 
-Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST match visible threats in the image."""
+Generate the penalty in valid JSON format. MUST stay in current location. Use 'you/your' only."""
 
         try:
             gemini_api_key = conf.get("GEMINI_API_KEY", "")
@@ -2395,7 +2407,8 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                     
                     # 2. Start image generation in background (don't block)
                     loop = asyncio.get_running_loop()
-                    phase1_task = loop.run_in_executor(None, engine.advance_turn_image_fast, penalty_choice, fate)
+                    # CRITICAL: Mark as timeout penalty to prevent teleportation
+                    phase1_task = loop.run_in_executor(None, lambda: engine.advance_turn_image_fast(penalty_choice, fate, is_timeout_penalty=True))
                     
                     # 3. NOW show the fate animation WHILE image generates
                     await asyncio.sleep(0.1)  # Tiny pause for smoothness
