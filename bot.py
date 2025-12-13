@@ -252,13 +252,36 @@ if DISCORD_ENABLED:
                 img_rgb = img.convert("RGB")
                 
                 if img_rgb.size != TARGET_SIZE:
-                    # Resize to exactly TARGET_SIZE, stretching if needed to fill frame
-                    img_resized = img_rgb.resize(TARGET_SIZE, Image.Resampling.LANCZOS)
-                    normalized_frames.append(img_resized)
-                    print(f"[TAPE] Frame {idx+1}: {original_size} → {TARGET_SIZE} (resized to match)")
+                    # CROP to TARGET_SIZE (don't stretch!) to maintain aspect ratio
+                    target_aspect = TARGET_SIZE[0] / TARGET_SIZE[1]
+                    current_aspect = img_rgb.width / img_rgb.height
+                    
+                    # First, crop to correct aspect ratio
+                    if abs(current_aspect - target_aspect) > 0.01:
+                        if current_aspect > target_aspect:
+                            # Too wide - crop width
+                            new_width = int(img_rgb.height * target_aspect)
+                            left = (img_rgb.width - new_width) // 2
+                            img_cropped = img_rgb.crop((left, 0, left + new_width, img_rgb.height))
+                        else:
+                            # Too tall - crop height
+                            new_height = int(img_rgb.width / target_aspect)
+                            top = (img_rgb.height - new_height) // 2
+                            img_cropped = img_rgb.crop((0, top, img_rgb.width, top + new_height))
+                    else:
+                        img_cropped = img_rgb
+                    
+                    # Then resize to exact TARGET_SIZE (aspect ratio already matches, no stretching)
+                    if img_cropped.size != TARGET_SIZE:
+                        img_resized = img_cropped.resize(TARGET_SIZE, Image.Resampling.LANCZOS)
+                        normalized_frames.append(img_resized)
+                        print(f"[TAPE] Frame {idx+1}: {original_size} → cropped → {TARGET_SIZE}")
+                    else:
+                        normalized_frames.append(img_cropped)
+                        print(f"[TAPE] Frame {idx+1}: {original_size} → cropped (already correct)")
                 else:
                     normalized_frames.append(img_rgb)
-                    print(f"[TAPE] Frame {idx+1}: {original_size} (already correct size)")
+                    print(f"[TAPE] Frame {idx+1}: {original_size} (already matches)")
             
             frames = normalized_frames
             print(f"[TAPE] ✅ All {len(frames)} frames normalized to {TARGET_SIZE[0]}x{TARGET_SIZE[1]}")
