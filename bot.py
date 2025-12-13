@@ -3041,6 +3041,30 @@ if __name__ == "__main__":
     import engine
 
     if DISCORD_ENABLED:
+        # Check if running on Render (needs health check endpoint)
+        if os.getenv("RENDER"):
+            print("[RENDER] Detected Render environment - starting health check server")
+            from flask import Flask
+            health_app = Flask(__name__)
+            
+            @health_app.route("/")
+            def health():
+                return {"status": "ok", "service": "discord_bot"}
+            
+            @health_app.route("/health")
+            def health_check():
+                return {"status": "healthy", "bot": "running"}
+            
+            # Start Flask in background thread
+            def run_health_server():
+                port = int(os.getenv("PORT", 10000))
+                print(f"[RENDER] Health check server starting on port {port}")
+                health_app.run(host="0.0.0.0", port=port, debug=False)
+            
+            health_thread = threading.Thread(target=run_health_server, daemon=True)
+            health_thread.start()
+            print("[RENDER] Health check server started")
+        
         bot.run(TOKEN)
     else:
         print("⚠️ Discord disabled. Running in local web-only mode.")

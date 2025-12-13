@@ -357,10 +357,16 @@ def _ask_gemini(prompt: str, model_name: str, temp: float, tokens: int, image_pa
         # Check for lore cache
         cache_id = lore_cache_manager.get_cache_id()
         
-        # Build request payload
+        # Build request payload with ALL SAFETY FILTERS DISABLED
         payload = {
             "contents": [{"parts": parts}],
-            "generationConfig": {"temperature": temp, "maxOutputTokens": tokens}
+            "generationConfig": {"temperature": temp, "maxOutputTokens": tokens},
+            "safetySettings": [
+                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+            ]
         }
         
         # Add cached content if available
@@ -542,7 +548,13 @@ DESCRIPTION: <detailed description of what is visible, focusing on objects, thre
             "generationConfig": {
                 "temperature": 0.3,
                 "maxOutputTokens": 800
-            }
+            },
+            "safetySettings": [
+                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+            ]
         }
         
         response = requests.post(api_url, headers=headers, json=payload, timeout=30)
@@ -2246,7 +2258,13 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
             headers={"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"},
             json={
                 "contents": [{"parts": parts}],
-                "generationConfig": {"temperature": 0.8, "maxOutputTokens": 500}
+                "generationConfig": {"temperature": 0.8, "maxOutputTokens": 500},
+                "safetySettings": [
+                    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+                ]
             },
             timeout=15
         ).json()
