@@ -196,7 +196,14 @@ if DISCORD_ENABLED:
         SAFE_MAX_SIZE = 7.5 * 1024 * 1024   # 7.5 MB safety margin
         
         # Check if we have enough frames
-        print(f"[TAPE] Checking frames... _run_images contains {len(_run_images) if _run_images else 0} entries")
+        print(f"\n{'='*70}")
+        print(f"[TAPE GIF CREATE] Starting GIF creation...")
+        print(f"[TAPE GIF CREATE] _run_images contains {len(_run_images) if _run_images else 0} entries")
+        print(f"[TAPE GIF CREATE] Frame list:")
+        for i, frame_path in enumerate(_run_images if _run_images else []):
+            print(f"[TAPE GIF CREATE]   Frame {i}: {frame_path}")
+        print(f"{'='*70}\n")
+        
         if not _run_images or len(_run_images) < 2:
             error = f"Not enough frames recorded. Need at least 2 frames, but only have {len(_run_images) if _run_images else 0}. Did any images generate during gameplay?"
             print(f"[TAPE ERROR] {error}")
@@ -723,9 +730,15 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             
             # Track image for VHS tape
             global _run_images
+            print(f"[TAPE RECORDING] Checking if image should be recorded...")
+            print(f"[TAPE RECORDING]   image_path = {image_path}")
+            print(f"[TAPE RECORDING]   Current tape has {len(_run_images)} frames")
             if image_path:
                 _run_images.append(image_path)
-                print(f"[TAPE] Frame {len(_run_images)} recorded")
+                print(f"[TAPE] ✅ Frame {len(_run_images)} recorded: {image_path}")
+                print(f"[TAPE] Total frames in memory: {_run_images}")
+            else:
+                print(f"[TAPE] ❌ NO IMAGE PATH - Frame NOT recorded!")
             
             if image_path:
                 file, name = _attach(image_path, phase1.get("vision_dispatch", ""))
@@ -1146,9 +1159,14 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             
             # Track image for VHS tape
             global _run_images
+            print(f"[TAPE RECORDING CUSTOM] Checking if image should be recorded...")
+            print(f"[TAPE RECORDING CUSTOM]   img_path = {img_path}")
+            print(f"[TAPE RECORDING CUSTOM]   Current tape has {len(_run_images)} frames")
             if img_path:
                 _run_images.append(img_path)
-                print(f"[TAPE] Frame {len(_run_images)} recorded")
+                print(f"[TAPE] ✅ Frame {len(_run_images)} recorded: {img_path}")
+            else:
+                print(f"[TAPE] ❌ NO IMAGE PATH - Frame NOT recorded!")
             
             if img_path:
                 print(f"[BOT] ✅ Image displayed immediately (before choices)!")
@@ -2482,9 +2500,12 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     
                     # Track image for VHS tape
                     global _run_images
+                    print(f"[TAPE RECORDING COUNTDOWN] img = {consequence_image_path}, frames = {len(_run_images)}")
                     if consequence_image_path:
                         _run_images.append(consequence_image_path)
-                        print(f"[TAPE] Frame {len(_run_images)} recorded")
+                        print(f"[TAPE] ✅ Frame {len(_run_images)} recorded: {consequence_image_path}")
+                    else:
+                        print(f"[TAPE] ❌ NO IMAGE from countdown penalty")
                     
                     if consequence_image_path:
                         full_path = ROOT / consequence_image_path.lstrip("/")
@@ -2891,9 +2912,12 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
         
         # Track image for VHS tape
         global _run_images
+        print(f"[TAPE RECORDING AUTO] img = {consequence_image_path}, frames = {len(_run_images)}")
         if consequence_image_path:
             _run_images.append(consequence_image_path)
-            print(f"[TAPE] Frame {len(_run_images)} recorded")
+            print(f"[TAPE] ✅ Frame {len(_run_images)} recorded: {consequence_image_path}")
+        else:
+            print(f"[TAPE] ❌ NO IMAGE from auto-advance")
         
         if consequence_image_path:
             full_path = ROOT / consequence_image_path.lstrip("/")

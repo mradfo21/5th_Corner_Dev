@@ -1024,12 +1024,6 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                     if not os.path.exists(img_path):
                         img_path = os.path.join("images", os.path.basename(img_path))
                     if os.path.exists(img_path):
-                        # Verify the _small version exists too
-                        small_path = img_path.replace(".png", "_small.png")
-                        if os.path.exists(small_path):
-                            print(f"[IMG2IMG DEBUG] Ref {idx+1}: {os.path.basename(img_path)} (small: {os.path.exists(small_path)})")
-                        else:
-                            print(f"[IMG2IMG WARNING] Ref {idx+1}: {os.path.basename(img_path)} - NO SMALL VERSION!")
                         prev_img_paths_list.append(img_path)
                         prev_img_captions.append(cap)
                     else:
@@ -1118,13 +1112,17 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
             print(f"[IMG] Using Google Gemini (Nano Banana) provider")
             from gemini_image_utils import generate_with_gemini, generate_gemini_img2img
             
-            # Use img2img if we have reference images collected from history
-            if prev_img_paths_list and frame_idx > 0:
+            # CRITICAL: For forward movement, use text-to-image (not img2img) for dramatic change
+            # Only use img2img for stationary/exploration actions
+            use_img2img = prev_img_paths_list and frame_idx > 0 and _last_movement_type != 'forward_movement'
+            
+            if use_img2img:
                 # For hard transitions (location changes), use ONLY 1 reference for lighting/aesthetic
                 # For normal transitions, use full reference set for composition continuity
                 print(f"\n{'='*70}")
-                print(f"[IMG GENERATION] ✅ USING IMG2IMG MODE (CONTINUITY ENABLED)")
+                print(f"[IMG GENERATION] ✅ USING IMG2IMG MODE (CONTINUITY)")
                 print(f"[IMG GENERATION] frame_idx={frame_idx}")
+                print(f"[IMG GENERATION] movement_type={_last_movement_type} (stationary/exploration)")
                 print(f"[IMG GENERATION] hard_transition={hard_transition}")
                 print(f"[IMG GENERATION] Available references: {len(prev_img_paths_list)}")
                 
@@ -1152,13 +1150,17 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                 )
             else:
                 print(f"\n{'='*70}")
-                print(f"[IMG GENERATION] ⚠️ USING TEXT-TO-IMAGE MODE (NO CONTINUITY)")
-                print(f"[IMG GENERATION] Reasons:")
-                print(f"[IMG GENERATION]   - prev_img_paths_list has {len(prev_img_paths_list)} items")
-                print(f"[IMG GENERATION]   - frame_idx={frame_idx}")
-                if len(prev_img_paths_list) == 0:
-                    print(f"[IMG GENERATION] ⚠️ NO REFERENCE IMAGES FOUND IN HISTORY!")
-                    print(f"[IMG GENERATION] This will cause visual discontinuity!")
+                if _last_movement_type == 'forward_movement':
+                    print(f"[IMG GENERATION] 🚀 USING TEXT-TO-IMAGE FOR FORWARD MOVEMENT")
+                    print(f"[IMG GENERATION] This allows DRAMATIC scene changes (not img2img)")
+                    print(f"[IMG GENERATION] Movement type: {_last_movement_type}")
+                else:
+                    print(f"[IMG GENERATION] ⚠️ USING TEXT-TO-IMAGE MODE (NO CONTINUITY)")
+                    print(f"[IMG GENERATION] Reasons:")
+                    print(f"[IMG GENERATION]   - prev_img_paths_list has {len(prev_img_paths_list)} items")
+                    print(f"[IMG GENERATION]   - frame_idx={frame_idx}")
+                    if len(prev_img_paths_list) == 0:
+                        print(f"[IMG GENERATION] ⚠️ NO REFERENCE IMAGES FOUND IN HISTORY!")
                 print(f"{'='*70}\n")
                 result_path = generate_with_gemini(
                     prompt=prompt_str,

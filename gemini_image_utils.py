@@ -253,7 +253,7 @@ def generate_with_gemini(
         "generationConfig": {
             "responseModalities": ["IMAGE"],  # Image only, no text
             "imageConfig": {
-                "aspectRatio": "16:9"  # Authentic found footage aspect ratio
+                "aspectRatio": "4:3"  # Nano Banana Pro standard for this project
             }
         }
     }
@@ -415,7 +415,7 @@ def _apply_fps_hands_compositing(corrected_path, small_corrected_path, action_co
             "generationConfig": {
                 "responseModalities": ["IMAGE"],
                 "imageConfig": {
-                    "aspectRatio": "16:9"
+                    "aspectRatio": "4:3"
                 }
             }
         }
@@ -528,7 +528,7 @@ def _apply_pov_correction(original_path, small_path, previous_corrected_path=Non
             "generationConfig": {
                 "responseModalities": ["IMAGE"],
                 "imageConfig": {
-                    "aspectRatio": "16:9"
+                    "aspectRatio": "4:3"
                 }
             }
         }
@@ -730,8 +730,8 @@ def generate_gemini_img2img(
         "Content-Type": "application/json"
     }
     
-    # Build parts array: text prompt + all reference images
-    parts = [{"text": full_prompt}] + image_parts
+    # Build parts array: reference images FIRST, then text prompt (Gemini 2.x/3.x requirement)
+    parts = image_parts + [{"text": full_prompt}]
     
     payload = {
         "contents": [{
@@ -740,7 +740,7 @@ def generate_gemini_img2img(
         "generationConfig": {
             "responseModalities": ["IMAGE"],
             "imageConfig": {
-                "aspectRatio": "16:9"  # Authentic found footage aspect ratio
+                "aspectRatio": "4:3"  # Nano Banana Pro standard for this project
             }
         }
     }
