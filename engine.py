@@ -316,7 +316,7 @@ def _call(fn, *a, **kw):
             print("LLM disabled:", e, file=sys.stderr, flush=True)
         raise
 
-def _ask(prompt: str, model="gemini", temp=1.0, tokens=90, image_path: str = None) -> str:
+def _ask(prompt: str, model="gemini", temp=1.0, tokens=90, image_path: str = None, use_lore: bool = True) -> str:
     """Flexible text generation supporting multiple AI providers.
     
     Args:
@@ -325,6 +325,7 @@ def _ask(prompt: str, model="gemini", temp=1.0, tokens=90, image_path: str = Non
         temp: Temperature (0-1)
         tokens: Max output tokens
         image_path: Optional path to image for multimodal input (e.g. "/images/file.png")
+        use_lore: Whether to include lore cache (default True). Set False for mechanical/vision tasks.
     """
     if not LLM_ENABLED:
         return random.choice([
@@ -338,14 +339,14 @@ def _ask(prompt: str, model="gemini", temp=1.0, tokens=90, image_path: str = Non
     model_name = ai_provider_manager.get_text_model()
     
     if provider == "gemini":
-        return _ask_gemini(prompt, model_name, temp, tokens, image_path)
+        return _ask_gemini(prompt, model_name, temp, tokens, image_path, use_lore)
     elif provider == "openai":
         return _ask_openai(prompt, model_name, temp, tokens, image_path)
     else:
         print(f"[ASK ERROR] Unknown provider: {provider}, falling back to Gemini")
-        return _ask_gemini(prompt, model_name, temp, tokens, image_path)
+        return _ask_gemini(prompt, model_name, temp, tokens, image_path, use_lore)
 
-def _ask_gemini(prompt: str, model_name: str, temp: float, tokens: int, image_path: str = None) -> str:
+def _ask_gemini(prompt: str, model_name: str, temp: float, tokens: int, image_path: str = None, use_lore: bool = True) -> str:
     """Gemini text generation implementation with optional lore cache."""
     import requests
     import base64
@@ -381,8 +382,10 @@ def _ask_gemini(prompt: str, model_name: str, temp: float, tokens: int, image_pa
                 size_note = "(480x270)" if small_path.exists() else "(full-res)"
                 print(f"[GEMINI TEXT+IMG] Including image: {image_path} {size_note}")
         
-        # Check for lore cache
-        cache_id = lore_cache_manager.get_cache_id()
+        # Check for lore cache (only if use_lore=True)
+        cache_id = None
+        if use_lore:
+            cache_id = lore_cache_manager.get_cache_id()
         
         # Build request payload with ALL SAFETY FILTERS DISABLED
         payload = {
@@ -400,6 +403,8 @@ def _ask_gemini(prompt: str, model_name: str, temp: float, tokens: int, image_pa
         if cache_id:
             payload["cachedContent"] = cache_id
             print(f"[GEMINI CACHED] Using lore cache: {cache_id.split('/')[-1][:16]}...")
+        elif use_lore:
+            print(f"[GEMINI] Lore requested but cache not available")
         
         response_data = requests.post(
             f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent",
@@ -689,7 +694,8 @@ def summarize_world_prompt_for_image(world_prompt: str) -> str:
     prompt = (
         "Summarize the following world context in 1-2 vivid, scene-specific sentences, focusing only on details relevant to the current visual environment. Omit backstory and generalities.\n\nWORLD PROMPT: " + world_prompt
     )
-    return _ask(prompt, model="gemini", temp=1.0, tokens=48)
+    # Don't use lore - just summarizing existing text
+    return _ask(prompt, model="gemini", temp=1.0, tokens=48, use_lore=False)
 
 def _generate_dispatch(choice: str, state: dict, prev_state: dict = None) -> dict:
     """Generate dispatch with death detection. Returns dict with 'dispatch' and 'player_alive' keys."""
@@ -1169,7 +1175,8 @@ def check_player_death(dispatch: str, world_prompt: str, choice: str) -> bool:
         f'WORLD STATE: {world_prompt}\n'
         f'PLAYER CHOICE: {choice}'
     )
-    result = _ask(prompt, model="gemini", temp=0, tokens=2).strip().lower()
+    # Don't use lore - this is a binary mechanical check
+    result = _ask(prompt, model="gemini", temp=0, tokens=2, use_lore=False).strip().lower()
     return result == "dead"
 
 def combat_hook(state, dispatch, vision_dispatch):
@@ -1255,7 +1262,8 @@ def generate_consequence_summary(dispatch_text: str, prev_state: dict, current_s
             f"PREVIOUS STATE: {json.dumps(prev_state, ensure_ascii=False)}\n"
             f"CURRENT STATE: {json.dumps(current_state, ensure_ascii=False)}\n"
         )
-        result = _ask(prompt, model="gemini", temp=1.0, tokens=48)
+        # Don't use lore - just detecting state changes
+        result = _ask(prompt, model="gemini", temp=1.0, tokens=48, use_lore=False)
         if result and result.strip():
             return result.strip()
     except Exception as e:

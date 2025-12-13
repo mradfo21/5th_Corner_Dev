@@ -30,12 +30,18 @@ if DISCORD_ENABLED:
     
     print("[STARTUP] Discord imports complete", flush=True)
 
+    import sys
     print("[STARTUP] Loading engine modules...", flush=True)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    
     try:
         import engine
         print("[STARTUP] - engine imported", flush=True)
+        sys.stdout.flush()
     except Exception as e:
         print(f"[STARTUP ERROR] Failed to import engine: {e}", flush=True)
+        sys.stdout.flush()
         import traceback
         traceback.print_exc()
         raise
@@ -43,8 +49,10 @@ if DISCORD_ENABLED:
     try:
         from evolve_prompt_file import generate_interim_messages_on_demand
         print("[STARTUP] - evolve_prompt_file imported", flush=True)
+        sys.stdout.flush()
     except Exception as e:
         print(f"[STARTUP ERROR] Failed to import evolve_prompt_file: {e}", flush=True)
+        sys.stdout.flush()
         import traceback
         traceback.print_exc()
         raise
@@ -52,8 +60,10 @@ if DISCORD_ENABLED:
     try:
         import ai_provider_manager
         print("[STARTUP] - ai_provider_manager imported", flush=True)
+        sys.stdout.flush()
     except Exception as e:
         print(f"[STARTUP ERROR] Failed to import ai_provider_manager: {e}", flush=True)
+        sys.stdout.flush()
         import traceback
         traceback.print_exc()
         raise
@@ -61,13 +71,16 @@ if DISCORD_ENABLED:
     try:
         import lore_cache_manager
         print("[STARTUP] - lore_cache_manager imported", flush=True)
+        sys.stdout.flush()
     except Exception as e:
         print(f"[STARTUP ERROR] Failed to import lore_cache_manager: {e}", flush=True)
+        sys.stdout.flush()
         import traceback
         traceback.print_exc()
         raise
     
     print("[STARTUP] Engine imports complete", flush=True)
+    sys.stdout.flush()
 
     # ───────── configuration ────────────────────────────────────────────────────
     ROOT   = Path(__file__).parent.resolve()
