@@ -5,26 +5,37 @@ bot.py – single definitive version
 • Updated: Extended death tape + FIXED Gemini API key loading from env vars (CRITICAL)
 """
 
+print("[STARTUP] bot.py loading...", flush=True)
+
 import os
 import json
 from pathlib import Path
 import random
 
+print("[STARTUP] Basic imports complete", flush=True)
+
 DISCORD_ENABLED = os.getenv("DISCORD_ENABLED", "1") == "1"
 RESUME_MODE = os.getenv("RESUME_MODE", "0") == "1"
 
+print(f"[STARTUP] DISCORD_ENABLED={DISCORD_ENABLED}, RESUME_MODE={RESUME_MODE}", flush=True)
+
 if DISCORD_ENABLED:
+    print("[STARTUP] Loading Discord libraries...", flush=True)
     import asyncio, logging, random
     from typing import Optional, Tuple
 
     import discord
     from discord.ext import commands
     from discord.ui import View, Button, Modal, TextInput, Select
+    
+    print("[STARTUP] Discord imports complete", flush=True)
 
+    print("[STARTUP] Loading engine modules...", flush=True)
     import engine
     from evolve_prompt_file import generate_interim_messages_on_demand
     import ai_provider_manager
     import lore_cache_manager
+    print("[STARTUP] Engine imports complete", flush=True)
 
     # ───────── configuration ────────────────────────────────────────────────────
     ROOT   = Path(__file__).parent.resolve()
@@ -42,9 +53,14 @@ if DISCORD_ENABLED:
     
     # Reset game state on bot startup (unless RESUME_MODE is enabled)
     if not RESUME_MODE:
-        print("[STARTUP] Resetting game state (fresh simulation)...")
-        engine.reset_state()
-        print("[STARTUP] Game state cleared. Starting fresh.")
+        print("[STARTUP] Resetting game state (fresh simulation)...", flush=True)
+        try:
+            engine.reset_state()
+            print("[STARTUP] Game state cleared. Starting fresh.", flush=True)
+        except Exception as e:
+            print(f"[STARTUP ERROR] Failed to reset state: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
 
     EMOJI = ["1️⃣", "2️⃣", "3️⃣"]
 
@@ -52,9 +68,11 @@ if DISCORD_ENABLED:
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", conf.get("OPENAI_API_KEY"))
 
     # ───────── discord init ─────────────────────────────────────────────────────
+    print("[STARTUP] Initializing Discord bot...", flush=True)
     logging.basicConfig(level=logging.INFO, format="BOT | %(message)s")
     intents = discord.Intents.default(); intents.message_content = True
     bot     = commands.Bot(command_prefix="/", intents=intents)
+    print(f"[STARTUP] Bot initialized. TOKEN={'SET' if TOKEN else 'MISSING'}, CHAN={CHAN}", flush=True)
 
     running = False
     OWNER_ID = None
@@ -3091,14 +3109,17 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
     # DUPLICATE REMOVED - This was overwriting the first on_ready handler
 
 if __name__ == "__main__":
+    print("[MAIN] Entering main block", flush=True)
     import threading
     import time
     import engine
 
     if DISCORD_ENABLED:
+        print("[MAIN] Discord enabled - starting bot", flush=True)
+        
         # Check if running on Render (needs health check endpoint)
         if os.getenv("RENDER"):
-            print("[RENDER] Detected Render environment - starting health check server")
+            print("[RENDER] Detected Render environment - starting health check server", flush=True)
             from flask import Flask
             health_app = Flask(__name__)
             
@@ -3113,14 +3134,20 @@ if __name__ == "__main__":
             # Start Flask in background thread
             def run_health_server():
                 port = int(os.getenv("PORT", 10000))
-                print(f"[RENDER] Health check server starting on port {port}")
-                health_app.run(host="0.0.0.0", port=port, debug=False)
+                print(f"[RENDER] Health check server starting on port {port}", flush=True)
+                health_app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
             
             health_thread = threading.Thread(target=run_health_server, daemon=True)
             health_thread.start()
-            print("[RENDER] Health check server started")
+            print("[RENDER] Health check server started in background thread", flush=True)
         
-        bot.run(TOKEN)
+        print(f"[MAIN] Starting bot.run() with TOKEN={'SET' if TOKEN else 'MISSING'}", flush=True)
+        try:
+            bot.run(TOKEN)
+        except Exception as e:
+            print(f"[MAIN ERROR] Bot crashed: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
     else:
         print("⚠️ Discord disabled. Running in local web-only mode.")
 

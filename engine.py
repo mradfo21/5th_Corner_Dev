@@ -289,7 +289,7 @@ def _call(fn, *a, **kw):
             print("LLM disabled:", e, file=sys.stderr, flush=True)
         raise
 
-def _ask(prompt: str, model="gemini", temp=0.8, tokens=90, image_path: str = None) -> str:
+def _ask(prompt: str, model="gemini", temp=1.0, tokens=90, image_path: str = None) -> str:
     """Flexible text generation supporting multiple AI providers.
     
     Args:
@@ -536,17 +536,18 @@ DESCRIPTION: <detailed description of what is visible, focusing on objects, thre
         payload = {
             "contents": [{
                 "parts": [
-                    {"text": vision_prompt},
+                    # IMAGE FIRST per Gemini best practices for single-image prompts
                     {
                         "inlineData": {
                             "mimeType": mime_type,
                             "data": image_b64
                         }
-                    }
+                    },
+                    {"text": vision_prompt}
                 ]
             }],
             "generationConfig": {
-                "temperature": 0.3,
+                "temperature": 1.0,  # Default for Gemini 2.x/3.x per guidelines
                 "maxOutputTokens": 800
             },
             "safetySettings": [
@@ -661,7 +662,7 @@ def summarize_world_prompt_for_image(world_prompt: str) -> str:
     prompt = (
         "Summarize the following world context in 1-2 vivid, scene-specific sentences, focusing only on details relevant to the current visual environment. Omit backstory and generalities.\n\nWORLD PROMPT: " + world_prompt
     )
-    return _ask(prompt, model="gemini", temp=0.4, tokens=48)
+    return _ask(prompt, model="gemini", temp=1.0, tokens=48)
 
 def _generate_dispatch(choice: str, state: dict, prev_state: dict = None) -> dict:
     """Generate dispatch with death detection. Returns dict with 'dispatch' and 'player_alive' keys."""
@@ -1061,7 +1062,7 @@ def _generate_vision_dispatch(narrative_dispatch: str, world_prompt: str = "") -
         "Do not show Jason. Do not show the protagonist. Do not show any character from behind. Only show what Jason sees from his own eyes. "
         f"\n\nNARRATIVE DISPATCH: {narrative_dispatch}\n\nWORLD CONTEXT: {world_prompt}"
     )
-    result = _ask(prompt, model="gemini", temp=0.4, tokens=100)
+    result = _ask(prompt, model="gemini", temp=1.0, tokens=100)
     return result
 
 # ───────── public API (two‑stage) ───────────────────────────────────────────
@@ -1084,7 +1085,7 @@ def _generate_situation_report(current_image: str = None) -> str:
             "\nDescribe what is happening NOW, after the dispatch, as a concise 1-2 sentence situation. This should set up the next set of choices."
         )
         # Pass current image for visual grounding
-        return _ask(prompt, model="gemini", temp=0.7, tokens=40, image_path=current_image)
+        return _ask(prompt, model="gemini", temp=1.0, tokens=40, image_path=current_image)
     return "You stand on a rocky outcrop overlooking the Horizon facility, the quarantine fence stretching across the red desert. Patrol lights sweep the landscape as distant thunder rumbles."
 
 def begin_tick() -> dict:
@@ -1199,7 +1200,7 @@ def generate_crisis_choices(dispatch, vision, world_prompt):
         "Do not include exploration or investigation. Only direct, crisis responses.\n"
         f"DISPATCH: {dispatch}\nVISION: {vision}\nWORLD: {world_prompt}"
     )
-    rsp = _ask(crisis_prompt, model="gemini", temp=0.7, tokens=40)
+    rsp = _ask(crisis_prompt, model="gemini", temp=1.0, tokens=40)
     opts = []
     for line in rsp.splitlines():
         line = line.strip().lstrip("-*0123456789. ").strip()
@@ -1227,7 +1228,7 @@ def generate_consequence_summary(dispatch_text: str, prev_state: dict, current_s
             f"PREVIOUS STATE: {json.dumps(prev_state, ensure_ascii=False)}\n"
             f"CURRENT STATE: {json.dumps(current_state, ensure_ascii=False)}\n"
         )
-        result = _ask(prompt, model="gemini", temp=0.4, tokens=48)
+        result = _ask(prompt, model="gemini", temp=1.0, tokens=48)
         if result and result.strip():
             return result.strip()
     except Exception as e:
@@ -2261,7 +2262,7 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
             headers={"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"},
             json={
                 "contents": [{"parts": parts}],
-                "generationConfig": {"temperature": 0.8, "maxOutputTokens": 500},
+                "generationConfig": {"temperature": 1.0, "maxOutputTokens": 500},  # Default temp for Gemini 2.x
                 "safetySettings": [
                     {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
                     {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
