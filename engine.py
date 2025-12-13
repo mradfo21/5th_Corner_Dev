@@ -959,38 +959,60 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
             return result_path
         
         elif active_image_provider == "openai":
-            # Use OpenAI DALL-E (original provider)
-            # --- TRUE IMG2IMG/EDIT MODE ---
-            if use_edit_mode and prev_img_path and os.path.exists(prev_img_path) and frame_idx > 0:
-                print(f"[IMG EDIT] Using previous image as reference: {prev_img_path}")
-                with open(prev_img_path, "rb") as imgf:
+            # Use OpenAI gpt-image-1
+            # Supports img2img via /images/edits endpoint (up to 16 reference images!)
+            
+            if prev_img_paths_list and len(prev_img_paths_list) > 0 and frame_idx > 0:
+                # IMG2IMG MODE - Use /images/edits with previous frames as reference
+                print(f"[OPENAI IMG2IMG] Using {len(prev_img_paths_list)} reference image(s)")
+                
+                # Open all reference images (gpt-image-1 supports up to 16!)
+                image_files = []
+                for img_path in prev_img_paths_list[:16]:  # Cap at 16 (API limit)
+                    if os.path.exists(img_path):
+                        image_files.append(open(img_path, "rb"))
+                
+                try:
+                    # Use single image or array based on count
+                    if len(image_files) == 1:
+                        image_param = image_files[0]
+                    else:
+                        image_param = image_files
+                    
                     response = client.images.edit(
                         model="gpt-image-1",
-                        image=imgf,
+                        image=image_param,
                         prompt=prompt_str,
                         n=1,
-                        size="1536x1024",
-                        quality="medium"
+                        size="1536x1024",  # Landscape for continuity
+                        quality="auto"  # Let API choose best quality
                     )
-                b64_data = response.data[0].b64_json
-                img_data = base64.b64decode(b64_data)
-                with open(image_path, "wb") as f:
-                    f.write(img_data)
-                print(f"[EDIT] Image saved to: {image_path}")
+                finally:
+                    # Close all file handles
+                    for f in image_files:
+                        f.close()
+                
+                print(f"[OPENAI IMG2IMG] ✅ Edit complete with {len(image_files)} reference(s)")
             else:
-                print(f"[IMG] Generating first frame or no reference image (text-to-image)")
+                # TEXT-TO-IMAGE MODE - Generate from scratch
+                print(f"[OPENAI TEXT2IMG] Generating fresh image")
+                
                 response = client.images.generate(
                     model="gpt-image-1",
                     prompt=prompt_str,
                     n=1,
-                    size="1536x1024",
-                    quality="medium"
+                    size="1536x1024",  # Landscape (matches our VHS aspect)
+                    quality="auto"
                 )
-                b64_data = response.data[0].b64_json
-                img_data = base64.b64decode(b64_data)
-                with open(image_path, "wb") as f:
-                    f.write(img_data)
-                print(f"Image saved to: {image_path}")
+            
+            # gpt-image-1 always returns b64_json (no URL option)
+            b64_data = response.data[0].b64_json
+            img_data = base64.b64decode(b64_data)
+            
+            with open(image_path, "wb") as f:
+                f.write(img_data)
+            print(f"[OPENAI IMG] Image saved to: {image_path}")
+            
             _last_image_path = f"/images/{filename}"
             return _last_image_path
         

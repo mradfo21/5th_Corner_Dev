@@ -50,9 +50,10 @@ Image: gemini/gemini-2.0-flash-exp-imagen
 ### **`openai`**
 ```
 Text: openai/gpt-4o-mini
-Image: openai/dall-e-3
+Image: openai/gpt-image-1
 ```
-**Best for:** Highest quality output
+**Best for:** OpenAI's latest image model
+**Features:** Full img2img support (up to 16 reference images!)
 
 ### **`hybrid_fast`**
 ```
