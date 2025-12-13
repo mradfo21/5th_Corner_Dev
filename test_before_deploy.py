@@ -215,6 +215,29 @@ else:
     print("[OK]")
 
 # ============================================================================
+# TEST 5: Critical Configuration Files
+# ============================================================================
+print("\n[TEST 5] Critical Configuration Files...")
+print("  Checking ai_config.json exists...", end=" ")
+from pathlib import Path
+import json
+config_path = Path(__file__).parent / "ai_config.json"
+if not config_path.exists():
+    print("[FAIL]")
+    failed_tests.append("ai_config.json missing")
+else:
+    # Verify correct model
+    with open(config_path, 'r') as f:
+        config = json.load(f)
+    image_model = config.get('image_model', '')
+    if image_model != 'gemini-3-pro-image-preview':
+        print("[FAIL]")
+        print(f"    Expected: gemini-3-pro-image-preview, Got: {image_model}")
+        failed_tests.append("ai_config.json wrong model")
+    else:
+        print("[OK]")
+
+# ============================================================================
 # RESULTS
 # ============================================================================
 print("\n" + "=" * 70)

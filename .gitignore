@@ -12,7 +12,7 @@ tapes/
 world_state.json
 history.json
 static/Logo_normalized.jpg
-ai_config.json
+# ai_config.json - MUST be deployed to production!
 lore/text/*
 !lore/text/00_README.md
 !lore/text/EXAMPLE_*

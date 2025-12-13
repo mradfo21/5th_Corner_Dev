@@ -1973,20 +1973,7 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                 except Exception as e:
                     print(f"[LOG] Could not delete intro message: {e}")
                 
-                # === DRAMATIC INTRO ===
-                intro_embed = discord.Embed(
-                    title="📼 RECOVERED VHS TAPE - 1993",
-                    description=(
-                        "Horizon Industries\n"
-                        "Four Corners Facility\n\n"
-                        "⚠️ WARNING: Disturbing Content"
-                    ),
-                    color=VHS_RED
-                )
-                await interaction.channel.send(embed=intro_embed)
-                await asyncio.sleep(2)  # Let it sink in
-                
-                # === SHOW LOGO IMMEDIATELY (Frame 0 of VHS tape) ===
+                # === SHOW LOGO FIRST (Frame 0 of VHS tape) ===
                 logo_path = ROOT / "static" / "Logo"
                 
                 # Try different logo file extensions
@@ -1999,16 +1986,15 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                 
                 if logo_file and logo_file.exists():
                     try:
-                        # Crop and resize logo to match Gemini's exact 16:9 output
+                        # Crop and resize logo to match Gemini's 4:3 output
                         # Gemini is the GOLD STANDARD - logo must match its resolution exactly
                         from PIL import Image
                         logo_img = Image.open(str(logo_file))
                         
-                        # Target: 16:9 aspect ratio (Gemini's standard)
-                        # We'll determine exact resolution from first Gemini image, but use 16:9 for now
-                        target_aspect = 16 / 9
+                        # Target: 4:3 aspect ratio (Nano Banana Pro's standard for our use case)
+                        target_aspect = 4 / 3
                         
-                        # Crop logo to 16:9 if needed
+                        # Crop logo to 4:3 if needed
                         current_aspect = logo_img.width / logo_img.height
                         if abs(current_aspect - target_aspect) > 0.01:
                             if current_aspect > target_aspect:
@@ -2022,10 +2008,10 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                                 top = (logo_img.height - new_height) // 2
                                 logo_cropped = logo_img.crop((0, top, logo_img.width, top + new_height))
                         else:
-                            # Already 16:9!
+                            # Already 4:3!
                             logo_cropped = logo_img
                         
-                        # Save at native 16:9 resolution (will match Gemini output naturally)
+                        # Save at native 4:3 resolution (will match Gemini output naturally)
                         normalized_logo_path = ROOT / "static" / "Logo_normalized.jpg"
                         logo_cropped.save(str(normalized_logo_path), "JPEG", quality=95)
                         
@@ -2033,11 +2019,26 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
                         await interaction.channel.send(file=discord.File(str(normalized_logo_path)))
                         # Track normalized logo as Frame 0 of VHS tape
                         _run_images.append(f"/static/Logo_normalized.jpg")
-                        print(f"[TAPE] Frame 0 (logo) recorded: Logo_normalized.jpg ({logo_cropped.width}x{logo_cropped.height}, 16:9)")
+                        print(f"[TAPE] Frame 0 (logo) recorded: Logo_normalized.jpg ({logo_cropped.width}x{logo_cropped.height}, 4:3)")
                     except Exception as e:
                         print(f"[LOGO] Failed to process/send logo: {e}")
                 else:
                     print(f"[LOGO] Logo file not found at {logo_path}")
+                
+                await asyncio.sleep(1.5)  # Let logo display
+                
+                # === DRAMATIC INTRO TEXT ===
+                intro_embed = discord.Embed(
+                    title="📼 RECOVERED VHS TAPE - 1993",
+                    description=(
+                        "Horizon Industries\n"
+                        "Four Corners Facility\n\n"
+                        "⚠️ WARNING: Disturbing Content"
+                    ),
+                    color=VHS_RED
+                )
+                await interaction.channel.send(embed=intro_embed)
+                await asyncio.sleep(2)  # Let it sink in
                 
                 engine.IMAGE_ENABLED = True
                 engine.WORLD_IMAGE_ENABLED = True

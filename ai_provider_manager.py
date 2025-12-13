@@ -44,8 +44,22 @@ def load_ai_config() -> Dict[str, Any]:
                 "text_provider": "gemini",
                 "text_model": "gemini-2.0-flash",
                 "image_provider": "gemini",
-                "image_model": "gemini-2.0-flash-exp-imagen",
-                "last_updated": datetime.now(timezone.utc).isoformat()
+                "image_model": "gemini-3-pro-image-preview",
+                "last_updated": datetime.now(timezone.utc).isoformat(),
+                "available_configs": {
+                    "gemini": {
+                        "text_provider": "gemini",
+                        "text_model": "gemini-2.0-flash",
+                        "image_provider": "gemini",
+                        "image_model": "gemini-3-pro-image-preview"
+                    },
+                    "openai": {
+                        "text_provider": "openai",
+                        "text_model": "gpt-4o-mini",
+                        "image_provider": "openai",
+                        "image_model": "gpt-image-1"
+                    }
+                }
             }
             try:
                 save_ai_config(default_config)

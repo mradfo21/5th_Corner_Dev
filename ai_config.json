@@ -1,0 +1,22 @@
+{
+  "text_provider": "gemini",
+  "text_model": "gemini-2.0-flash",
+  "image_provider": "gemini",
+  "image_model": "gemini-3-pro-image-preview",
+  "last_updated": "2025-12-12T00:00:00Z",
+  "available_configs": {
+    "gemini": {
+      "text_provider": "gemini",
+      "text_model": "gemini-2.0-flash",
+      "image_provider": "gemini",
+      "image_model": "gemini-3-pro-image-preview"
+    },
+    "openai": {
+      "text_provider": "openai",
+      "text_model": "gpt-4o-mini",
+      "image_provider": "openai",
+      "image_model": "gpt-image-1"
+    }
+  }
+}
+
