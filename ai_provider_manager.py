@@ -30,13 +30,16 @@ def load_ai_config() -> Dict[str, Any]:
     
     with CONFIG_LOCK:
         try:
+            print("[AI CONFIG] Loading ai_config.json...", flush=True)
             with AI_CONFIG_PATH.open("r", encoding="utf-8") as f:
                 config = json.load(f)
+            print("[AI CONFIG] Loaded successfully", flush=True)
             _cached_config = config
             _cache_timestamp = current_time
             return config
         except FileNotFoundError:
             # Create default config if missing
+            print("[AI CONFIG] File not found, creating default...", flush=True)
             default_config = {
                 "text_provider": "gemini",
                 "text_model": "gemini-2.0-flash",
@@ -44,7 +47,14 @@ def load_ai_config() -> Dict[str, Any]:
                 "image_model": "gemini-2.0-flash-exp-imagen",
                 "last_updated": datetime.now(timezone.utc).isoformat()
             }
-            save_ai_config(default_config)
+            try:
+                save_ai_config(default_config)
+                print("[AI CONFIG] Default config saved", flush=True)
+            except Exception as e:
+                print(f"[AI CONFIG WARN] Could not save default config: {e}", flush=True)
+                # Continue anyway with in-memory config
+                _cached_config = default_config
+                _cache_timestamp = current_time
             return default_config
 
 def save_ai_config(config: Dict[str, Any]) -> None:
