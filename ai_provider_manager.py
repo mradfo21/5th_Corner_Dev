@@ -71,18 +71,22 @@ def save_ai_config(config: Dict[str, Any]) -> None:
 
 def get_text_provider() -> str:
     """Get current text generation provider."""
+    _ensure_initialized()
     return load_ai_config().get("text_provider", "gemini")
 
 def get_text_model() -> str:
     """Get current text generation model."""
+    _ensure_initialized()
     return load_ai_config().get("text_model", "gemini-2.0-flash")
 
 def get_image_provider() -> str:
     """Get current image generation provider."""
+    _ensure_initialized()
     return load_ai_config().get("image_provider", "gemini")
 
 def get_image_model() -> str:
     """Get current image generation model."""
+    _ensure_initialized()
     return load_ai_config().get("image_model", "gemini-2.0-flash-exp-imagen")
 
 def set_preset(preset_name: str) -> bool:
@@ -149,7 +153,6 @@ def get_available_presets() -> Dict[str, Dict[str, str]]:
     config = load_ai_config()
     return config.get("available_configs", {})
 
-# Initialize on import
-load_ai_config()
-print(f"[AI PROVIDER MANAGER] Initialized: {get_text_provider()}/{get_text_model()} (text), {get_image_provider()}/{get_image_model()} (image)")
+# Module loaded - lazy initialization avoids file I/O at import time
+print("[AI PROVIDER MANAGER] Module loaded (lazy init - config loaded on first use)", flush=True)
 
