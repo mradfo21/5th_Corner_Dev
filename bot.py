@@ -1864,20 +1864,15 @@ Generate the penalty in valid JSON format with 'you/your' only. The penalty MUST
             def __init__(self):
                 options = [
                     discord.SelectOption(
-                        label="🧠 Gemini (Fast & Cheap)",
-                        value="gemini_fast",
-                        description="Gemini 2.0 Flash for text + imagen for images",
+                        label="Gemini",
+                        value="gemini",
+                        description="Flash (text) + NanoBanna Pro (images)",
                         default=True
                     ),
                     discord.SelectOption(
-                        label="🤖 OpenAI",
+                        label="OpenAI",
                         value="openai",
-                        description="GPT-4o-mini + gpt-image-1 (img2img support)"
-                    ),
-                    discord.SelectOption(
-                        label="⚡ Hybrid (Fast Text + Quality Images)",
-                        value="hybrid_fast",
-                        description="Gemini text + OpenAI DALL-E 3 images"
+                        description="GPT-4o-mini (text) + gpt-image-1 (images)"
                     )
                 ]
                 super().__init__(
