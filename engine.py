@@ -2396,9 +2396,9 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
         # Build fate modifier text
         fate_modifier = ""
         if fate == "LUCKY":
-            fate_modifier = "\n\n🎰 FATE MODIFIER: Something fortunate happens. A small detail goes in the character's favor. Not a major change, but a subtle positive twist.\n"
+            fate_modifier = "\n\n🎰 FATE INTERVENTION - LUCKY:\nSomething breaks your way. Add ONE concrete benefit:\n• Equipment works better than expected\n• Guard patrol turns away at the right moment\n• You find something useful (ammo, cover, distraction)\n• Environmental timing favors you (door unlocked, light goes out)\n• A threat misses or hesitates\nMake it TANGIBLE and HELPFUL, not just flavor text.\n"
         elif fate == "UNLUCKY":
-            fate_modifier = "\n\n🎰 FATE MODIFIER: Something unfortunate happens. A small complication or minor setback occurs. Not catastrophic, but a subtle negative twist.\n"
+            fate_modifier = "\n\n🎰 FATE INTERVENTION - UNLUCKY:\nSomething goes wrong. Add ONE concrete complication:\n• Equipment fails or malfunctions\n• You make unexpected noise (stumble, knock something)\n• Guard patrol appears or changes route toward you\n• Environmental timing works against you (light turns on, alarm sensitive)\n• Injury is slightly worse than expected (cut deeper, fall harder)\nMake it TANGIBLE and COSTLY, not just flavor text.\n"
         # NORMAL = no modifier, outcome is purely based on choice
         
         # Use JUST the dispatch_sys instructions (which has JSON format)

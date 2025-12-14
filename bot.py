@@ -459,6 +459,47 @@ if DISCORD_ENABLED:
         }
         return indicators.get(movement_type, "")
     
+    def get_tension_beat(fate: str, movement_type: str) -> str:
+        """
+        Generate a post-image tension beat based on fate and movement.
+        These appear AFTER the image to build atmosphere without blocking generation.
+        """
+        import random
+        
+        # LUCKY beats - something helps you
+        lucky_beats = [
+            "🍀 The facility seems quieter than expected.",
+            "🍀 No patrols visible in your immediate area.",
+            "🍀 Equipment here looks functional.",
+            "🍀 Cover is plentiful if you need it.",
+            "🍀 The path ahead seems clear for now.",
+        ]
+        
+        # UNLUCKY beats - something complicates
+        unlucky_beats = [
+            "⚠️ You hear distant mechanical sounds.",
+            "⚠️ Something shifts in the shadows nearby.",
+            "⚠️ The air feels wrong here.",
+            "⚠️ You notice fresh boot prints in the dust.",
+            "⚠️ Equipment hums to life in the distance.",
+        ]
+        
+        # NORMAL beats - neutral tension
+        normal_beats = [
+            "🎬 The facility holds its breath.",
+            "🎬 Silence stretches across the desert.",
+            "🎬 Time passes. The sun continues its arc.",
+            "🎬 The red mesa looms in the distance.",
+            "🎬 Nothing moves in your immediate view.",
+        ]
+        
+        if fate == "LUCKY":
+            return random.choice(lucky_beats)
+        elif fate == "UNLUCKY":
+            return random.choice(unlucky_beats)
+        else:
+            return random.choice(normal_beats)
+    
     async def generate_timeout_penalty(dispatch, situation_report, current_image=None):
         """Generate a contextual negative consequence for player inaction using LLM with vision"""
         import requests
@@ -692,14 +733,8 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             # Start Phase 1 immediately with fate modifier (image generation in background)
             phase1_task = loop.run_in_executor(None, engine.advance_turn_image_fast, self.label, fate)
             
-            # WHILE image is generating, show fate animation (fills wait time!)
-            await asyncio.sleep(0.1)  # Tiny breath, then action!
-            await animate_fate_roll(interaction.channel, fate)
-            
-            # Wait for Phase 1 to complete (should be done or almost done by now)
-            phase1 = await phase1_task
-
-            # Clean up interim messages
+            # WHILE image is generating, show atmospheric beats (fills wait time!)
+            # Clean up interim messages first
             try:
                 await micro_msg.delete()
             except Exception:
@@ -709,11 +744,41 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     await action_msg.delete()
             except Exception:
                 pass
+            
+            await asyncio.sleep(0.3)  # Brief breath
+            
+            # BEAT 1: Fate animation (rolling the dice)
+            await animate_fate_roll(interaction.channel, fate)
+            
+            # BEAT 2: Atmospheric pause (generic tension building)
+            tension_cues = [
+                "⏳ The moment unfolds...",
+                "⏳ Time slows...",
+                "⏳ Reality shifts...",
+                "⏳ The world reacts...",
+                "⏳ Consequences ripple forward..."
+            ]
+            import random
+            await interaction.channel.send(embed=discord.Embed(
+                description=random.choice(tension_cues),
+                color=CORNER_GREY
+            ))
+            await asyncio.sleep(0.7)
+            
+            # BEAT 3: Fate flavor (Lucky/Unlucky hint - no movement_type yet as we don't have dispatch)
+            fate_flavor = get_tension_beat(fate, "")  # Empty movement type for now
+            await interaction.channel.send(embed=discord.Embed(
+                description=fate_flavor,
+                color=CORNER_GREY if fate == "NORMAL" else (CORNER_TEAL if fate == "LUCKY" else VHS_RED)
+            ))
+            await asyncio.sleep(0.6)
+            
+            # NOW wait for Phase 1 to complete (should be done or close by now)
+            phase1 = await phase1_task
 
-            # Show dispatch IMMEDIATELY from Phase 1 (what you feel/experience)
+            # BEAT 4: Show the dispatch (what actually happened)
             dispatch_text = phase1.get("dispatch", "")
             if dispatch_text:
-                # Add movement type indicator
                 movement_indicator = get_movement_indicator()
                 full_text = dispatch_text.strip()
                 if movement_indicator:
@@ -723,7 +788,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     description=safe_embed_desc(full_text),
                     color=VHS_RED
                 ))
-                await asyncio.sleep(0.8)  # Brief pause
+                await asyncio.sleep(0.5)  # Brief pause before image reveal
             
             # Show IMAGE IMMEDIATELY from Phase 1
             image_path = phase1.get("consequence_image")
@@ -1125,14 +1190,8 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             # Start Phase 1 immediately with fate modifier (image generation in background)
             phase1_task = loop.run_in_executor(None, engine.advance_turn_image_fast, custom_choice, fate)
             
-            # WHILE image is generating, show fate animation (fills wait time!)
-            await asyncio.sleep(0.1)  # Tiny breath, then action!
-            await animate_fate_roll(interaction.channel, fate)
-            
-            # Wait for Phase 1 to complete (should be done or almost done by now)
-            phase1 = await phase1_task
-            
-            # Clean up interim messages
+            # WHILE image is generating, show atmospheric beats (fills wait time!)
+            # Clean up interim messages first
             try:
                 await micro_msg.delete()
             except Exception:
@@ -1142,19 +1201,50 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             except Exception:
                 pass
             
+            await asyncio.sleep(0.3)  # Brief breath
+            
+            # BEAT 1: Fate animation (rolling the dice)
+            await animate_fate_roll(interaction.channel, fate)
+            
+            # BEAT 2: Atmospheric pause (generic tension building)
+            tension_cues = [
+                "⏳ The moment unfolds...",
+                "⏳ Time slows...",
+                "⏳ Reality shifts...",
+                "⏳ The world reacts...",
+                "⏳ Consequences ripple forward..."
+            ]
+            import random
+            await interaction.channel.send(embed=discord.Embed(
+                description=random.choice(tension_cues),
+                color=CORNER_GREY
+            ))
+            await asyncio.sleep(0.7)
+            
+            # BEAT 3: Fate flavor (Lucky/Unlucky hint)
+            fate_flavor = get_tension_beat(fate, "")  # Empty movement type for now
+            await interaction.channel.send(embed=discord.Embed(
+                description=fate_flavor,
+                color=CORNER_GREY if fate == "NORMAL" else (CORNER_TEAL if fate == "LUCKY" else VHS_RED)
+            ))
+            await asyncio.sleep(0.6)
+            
+            # NOW wait for Phase 1 to complete (should be done or close by now)
+            phase1 = await phase1_task
+            
             disp = phase1
-            # Extract the choice text without emoji (handle custom action)
             choice_text = custom_choice
             
-            # Display dispatch (what you feel/experience)
+            # BEAT 4: Display dispatch (what actually happened)
             movement_indicator = get_movement_indicator()
             dispatch_text = disp["dispatch"]
             if movement_indicator:
                 dispatch_text = f"{movement_indicator}\n\n{dispatch_text}"
             
             await interaction.channel.send(embed=discord.Embed(description=safe_embed_desc(dispatch_text), color=CORNER_TEAL))
+            await asyncio.sleep(0.5)  # Brief pause before image reveal
             
-            # Display image IMMEDIATELY
+            # Display image
             img_path = disp.get("consequence_image")
             
             # Track image for VHS tape
@@ -1171,6 +1261,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             if img_path:
                 print(f"[BOT] ✅ Image displayed immediately (before choices)!")
                 await interaction.channel.send(file=discord.File(img_path.lstrip("/")))
+                await asyncio.sleep(0.5)
             
             # CHECK FOR DEATH - Read FRESH state
             import engine
