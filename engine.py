@@ -461,6 +461,12 @@ def _ask_openai(prompt: str, model_name: str, temp: float, tokens: int, image_pa
     import base64
     from pathlib import Path
     
+    # Validate API key
+    if not OPENAI_API_KEY:
+        print("[OPENAI TEXT] ❌ OPENAI_API_KEY not set! Cannot generate text.")
+        print("[OPENAI TEXT] Set environment variable OPENAI_API_KEY or add to config.json")
+        raise ValueError("OPENAI_API_KEY not configured")
+    
     try:
         messages = []
         
@@ -1216,6 +1222,12 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
             # Use OpenAI gpt-image-1
             # Supports img2img via /images/edits endpoint (up to 16 reference images!)
             
+            # Validate API key
+            if not OPENAI_API_KEY:
+                print("[OPENAI IMG] ❌ OPENAI_API_KEY not set! Cannot generate image.")
+                print("[OPENAI IMG] Set environment variable OPENAI_API_KEY or add to config.json")
+                return None
+            
             if prev_img_paths_list and len(prev_img_paths_list) > 0 and frame_idx > 0:
                 # IMG2IMG MODE - Use /images/edits with previous frames as reference
                 print(f"[OPENAI IMG2IMG] Using {len(prev_img_paths_list)} reference image(s)")
@@ -1245,8 +1257,9 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                         image=image_param,
                         prompt=vhs_prompt,  # ← Now using VHS-wrapped prompt!
                         n=1,
-                        size="1200x900",  # 4:3 aspect ratio (matches Gemini)
-                        quality="auto"  # Let API choose best quality
+                        size="1536x1024",  # Landscape (closer to 4:3)
+                        quality="low",  # VHS quality should be low fidelity
+                        moderation="low"  # Less restrictive for horror content
                     )
                 finally:
                     # Close all file handles
@@ -1269,8 +1282,9 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                     model="gpt-image-1",
                     prompt=vhs_prompt,  # ← Now using VHS-wrapped prompt!
                     n=1,
-                    size="1200x900",  # 4:3 aspect ratio (matches Gemini)
-                    quality="auto"
+                    size="1536x1024",  # Landscape (closer to 4:3)
+                    quality="low",  # VHS quality should be low fidelity
+                    moderation="low"  # Less restrictive for horror content
                 )
             
             # gpt-image-1 always returns b64_json (no URL option)

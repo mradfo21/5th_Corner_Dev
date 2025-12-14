@@ -2051,6 +2051,15 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 """Handle AI provider selection."""
                 preset_name = self.values[0]
                 
+                # Validate API keys before switching
+                import engine
+                if preset_name == "openai" and not engine.OPENAI_API_KEY:
+                    await interaction.response.send_message(
+                        "❌ **OpenAI API key not configured!**\nCannot switch to OpenAI provider.",
+                        ephemeral=True
+                    )
+                    return
+                
                 # Switch to selected preset
                 success = ai_provider_manager.set_preset(preset_name)
                 
