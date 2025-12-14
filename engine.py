@@ -126,6 +126,11 @@ IMAGE_ENABLED       = True  # ENABLED for production
 WORLD_IMAGE_ENABLED = True  # ENABLED for production
 HD_MODE             = True  # HD mode for high-quality images (slower)
 
+# OpenAI img2img consistency settings
+OPENAI_IMG2IMG_ENABLED = True  # Set to False to always use text-to-image (more variation, less consistency)
+OPENAI_IMG2IMG_REFERENCE_COUNT = 2  # Set to 1 if consistency is poor with 2 frames
+OPENAI_IMG2IMG_QUALITY = 'medium'  # 'low', 'medium', or 'high' - higher = better consistency but less VHS degradation
+
 DEFAULT_BASE = "https://api.openai.com/v1"
 API_BASE     = (os.getenv("OPENAI_BASE_URL") or DEFAULT_BASE).strip() or DEFAULT_BASE
 
@@ -1174,7 +1179,12 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                 print(f"[IMG GENERATION] Movement instructions will override composition")
                 print(f"[IMG GENERATION] Available references: {len(prev_img_paths_list)}")
                 
-                if hard_transition:
+                # SPECIAL CASE: Frame 1 always uses Frame 0 strongly (no hard transition)
+                if frame_idx == 1:
+                    ref_images_to_use = prev_img_paths_list  # Use all references (Frame 0)
+                    print(f"[IMG GENERATION] 🎬 FRAME 1 SPECIAL CASE - Using ALL references from intro (strong continuity)")
+                    print(f"[IMG GENERATION] This ensures color/lighting consistency from Frame 0 → Frame 1")
+                elif hard_transition:
                     ref_images_to_use = prev_img_paths_list[:1]  # Only most recent for lighting
                     print(f"[IMG GENERATION] Hard transition - using 1 reference image (lighting/aesthetic only)")
                 else:
@@ -1229,8 +1239,8 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                 print("[OPENAI IMG] Set environment variable OPENAI_API_KEY or add to config.json")
                 return None
             
-            # Try IMG2IMG if we have reference images
-            use_img2img = (prev_img_paths_list and len(prev_img_paths_list) > 0 and frame_idx > 0)
+            # Try IMG2IMG if we have reference images AND it's enabled
+            use_img2img = (OPENAI_IMG2IMG_ENABLED and prev_img_paths_list and len(prev_img_paths_list) > 0 and frame_idx > 0)
             img2img_success = False
             
             if use_img2img:
@@ -1244,7 +1254,7 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                 
                 # Build multipart form-data with multiple images
                 files = []
-                for idx, img_path in enumerate(prev_img_paths_list[:2]):  # Use up to 2 images
+                for idx, img_path in enumerate(prev_img_paths_list[:OPENAI_IMG2IMG_REFERENCE_COUNT]):
                     if os.path.exists(img_path):
                         try:
                             files.append(('image[]', (os.path.basename(img_path), open(img_path, 'rb'), 'image/png')))
@@ -1269,7 +1279,8 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                             'prompt': vhs_prompt,
                             'n': '1',
                             'size': '1536x1024',
-                            'quality': 'low',
+                            'quality': OPENAI_IMG2IMG_QUALITY,  # Configurable: 'low', 'medium', 'high'
+                            'input_fidelity': 'high',  # CRITICAL: Stick closer to reference images
                             'moderation': 'low'
                         }
                         
@@ -1351,7 +1362,7 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                     prompt=vhs_prompt,  # ← Now using VHS-wrapped prompt!
                     n=1,
                     size="1536x1024",  # Landscape (closer to 4:3)
-                    quality="low",  # VHS quality should be low fidelity
+                    quality=OPENAI_IMG2IMG_QUALITY,  # Use same quality as img2img for consistency
                     moderation="low"  # Less restrictive for horror content
                 )
                 
