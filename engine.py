@@ -1031,12 +1031,12 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
         
         if frame_idx > 0 and history:
             last_imgs = []
-            # Use 2 reference images for better stability
-            num_images_to_collect = 2
+            # Use 1 reference image (most recent frame only)
+            num_images_to_collect = 1
             print(f"\n{'='*70}")
             print(f"[IMG2IMG COLLECT] Frame {frame_idx} - Starting reference collection")
             print(f"[IMG2IMG COLLECT] History has {len(history)} entries")
-            print(f"[IMG2IMG COLLECT] Collecting up to {num_images_to_collect} reference images")
+            print(f"[IMG2IMG COLLECT] Collecting up to {num_images_to_collect} reference image(s)")
             print(f"{'='*70}\n")
             
             for idx, entry in enumerate(reversed(history)):
