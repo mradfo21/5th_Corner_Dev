@@ -38,6 +38,7 @@ print("[ENGINE] flask imported", flush=True); sys.stdout.flush()
 from PIL import Image
 print("[ENGINE] PIL imported", flush=True); sys.stdout.flush()
 import io
+import requests  # For OpenAI multipart form-data img2img
 from flask_cors import CORS
 print("[ENGINE] flask_cors imported", flush=True); sys.stdout.flush()
 
@@ -1228,50 +1229,117 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                 print("[OPENAI IMG] Set environment variable OPENAI_API_KEY or add to config.json")
                 return None
             
-            if prev_img_paths_list and len(prev_img_paths_list) > 0 and frame_idx > 0:
+            # Try IMG2IMG if we have reference images
+            use_img2img = (prev_img_paths_list and len(prev_img_paths_list) > 0 and frame_idx > 0)
+            img2img_success = False
+            
+            if use_img2img:
                 # IMG2IMG MODE - Use /images/edits with previous frames as reference
-                print(f"[OPENAI IMG2IMG] Using {len(prev_img_paths_list)} reference image(s)")
+                # Using raw requests because Python SDK doesn't support multiple images properly
+                print(f"[OPENAI IMG2IMG] Attempting img2img with {len(prev_img_paths_list)} reference image(s)")
                 print(f"[OPENAI IMG2IMG] Wrapping prompt with VHS aesthetic instructions...")
                 
                 # Wrap with VHS styling (same as Gemini)
                 vhs_prompt = _build_vhs_prompt(prompt_str, use_img2img=True)
                 
-                # Open all reference images (gpt-image-1 supports up to 16!)
-                image_files = []
-                for img_path in prev_img_paths_list[:16]:  # Cap at 16 (API limit)
+                # Build multipart form-data with multiple images
+                files = []
+                for idx, img_path in enumerate(prev_img_paths_list[:2]):  # Use up to 2 images
                     if os.path.exists(img_path):
-                        image_files.append(open(img_path, "rb"))
-                        print(f"[OPENAI IMG2IMG] Added reference: {os.path.basename(img_path)}")
-                
-                print(f"[OPENAI IMG2IMG] Total references: {len(image_files)}")
-                
-                try:
-                    # Use single image or array based on count
-                    if len(image_files) == 1:
-                        image_param = image_files[0]
-                    else:
-                        image_param = image_files
-                    
-                    response = client.images.edit(
-                        model="gpt-image-1",
-                        image=image_param,
-                        prompt=vhs_prompt,  # ← Now using VHS-wrapped prompt!
-                        n=1,
-                        size="1536x1024",  # Landscape (closer to 4:3)
-                        quality="low",  # VHS quality should be low fidelity
-                        moderation="low"  # Less restrictive for horror content
-                    )
-                finally:
-                    # Close all file handles
-                    for f in image_files:
                         try:
-                            f.close()
-                        except:
-                            pass
+                            files.append(('image[]', (os.path.basename(img_path), open(img_path, 'rb'), 'image/png')))
+                            print(f"[OPENAI IMG2IMG] Added reference {idx+1}: {os.path.basename(img_path)}")
+                        except Exception as e:
+                            print(f"[OPENAI IMG2IMG] ⚠️ Failed to open {img_path}: {e}")
                 
-                print(f"[OPENAI IMG2IMG] ✅ Edit complete with {len(image_files)} reference(s)")
-            else:
-                # TEXT-TO-IMAGE MODE - Generate from scratch
+                # If no files could be opened, fall back to text-to-image
+                if len(files) == 0:
+                    print(f"[OPENAI IMG2IMG] ⚠️ No reference images available, falling back to TEXT-TO-IMAGE")
+                else:
+                    print(f"[OPENAI IMG2IMG] Total references: {len(files)}")
+                    
+                if len(files) > 0:
+                    try:
+                        # Use raw requests library for multipart form-data
+                        headers = {
+                            "Authorization": f"Bearer {OPENAI_API_KEY}"
+                        }
+                        data = {
+                            'model': 'gpt-image-1',
+                            'prompt': vhs_prompt,
+                            'n': '1',
+                            'size': '1536x1024',
+                            'quality': 'low',
+                            'moderation': 'low'
+                        }
+                        
+                        response = requests.post(
+                            "https://api.openai.com/v1/images/edits",
+                            headers=headers,
+                            data=data,
+                            files=files,
+                            timeout=60  # 60 second timeout
+                        )
+                        
+                        if response.status_code != 200:
+                            print(f"[OPENAI IMG2IMG] ❌ HTTP {response.status_code}: {response.text}")
+                            raise Exception(f"OpenAI API error: {response.status_code}")
+                        
+                        # Parse JSON response with error handling
+                        try:
+                            result = response.json()
+                        except json.JSONDecodeError as e:
+                            print(f"[OPENAI IMG2IMG] ❌ Failed to parse JSON response: {e}")
+                            raise Exception(f"Invalid JSON response from OpenAI: {e}")
+                        
+                        # Extract image data with error handling
+                        if 'data' not in result or len(result['data']) == 0:
+                            print(f"[OPENAI IMG2IMG] ❌ No image data in response")
+                            raise Exception("OpenAI response missing 'data' field")
+                        
+                        if 'b64_json' not in result['data'][0]:
+                            print(f"[OPENAI IMG2IMG] ❌ No b64_json in response data")
+                            raise Exception("OpenAI response missing 'b64_json' field")
+                        
+                        b64_data = result['data'][0]['b64_json']
+                        
+                        # Decode and save the image with error handling
+                        try:
+                            img_data = base64.b64decode(b64_data)
+                        except Exception as e:
+                            print(f"[OPENAI IMG2IMG] ❌ Failed to decode base64: {e}")
+                            raise Exception(f"Base64 decode error: {e}")
+                        
+                        try:
+                            with open(image_path, "wb") as f:
+                                f.write(img_data)
+                        except Exception as e:
+                            print(f"[OPENAI IMG2IMG] ❌ Failed to write image file: {e}")
+                            raise Exception(f"File write error: {e}")
+                        
+                        print(f"[OPENAI IMG2IMG] ✅ Edit complete with {len(files)} reference(s)")
+                        print(f"[OPENAI IMG2IMG] Image saved to: {image_path}")
+                        
+                        img2img_success = True
+                        _last_image_path = f"/images/{filename}"
+                        return _last_image_path
+                        
+                    except Exception as e:
+                        print(f"[OPENAI IMG2IMG] ❌ Error during img2img: {e}")
+                        print(f"[OPENAI IMG2IMG] Will fall back to TEXT-TO-IMAGE")
+                        # Don't re-raise - let it fall through to text-to-image fallback
+                        
+                    finally:
+                        # Close all file handles
+                        for field_name, file_tuple in files:
+                            try:
+                                # file_tuple is (filename, file_obj, mime_type)
+                                file_tuple[1].close()
+                            except Exception as e:
+                                print(f"[OPENAI IMG2IMG] Warning: Failed to close file handle: {e}")
+            
+            # TEXT-TO-IMAGE MODE - Either img2img failed or no reference images
+            if not img2img_success:
                 print(f"[OPENAI TEXT2IMG] Generating fresh image")
                 print(f"[OPENAI TEXT2IMG] Wrapping prompt with VHS aesthetic instructions...")
                 
@@ -1286,17 +1354,17 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                     quality="low",  # VHS quality should be low fidelity
                     moderation="low"  # Less restrictive for horror content
                 )
-            
-            # gpt-image-1 always returns b64_json (no URL option)
-            b64_data = response.data[0].b64_json
-            img_data = base64.b64decode(b64_data)
-            
-            with open(image_path, "wb") as f:
-                f.write(img_data)
-            print(f"[OPENAI IMG] Image saved to: {image_path}")
-            
-            _last_image_path = f"/images/{filename}"
-            return _last_image_path
+                
+                # gpt-image-1 always returns b64_json (no URL option)
+                b64_data = response.data[0].b64_json
+                img_data = base64.b64decode(b64_data)
+                
+                with open(image_path, "wb") as f:
+                    f.write(img_data)
+                print(f"[OPENAI TEXT2IMG] Image saved to: {image_path}")
+                
+                _last_image_path = f"/images/{filename}"
+                return _last_image_path
         
         else:
             raise ValueError(f"Unknown IMAGE_PROVIDER: {active_image_provider}. Supported: 'openai', 'gemini'")
@@ -1344,6 +1412,8 @@ def _generate_situation_report(current_image: str = None) -> str:
     return "You stand on a rocky outcrop overlooking the Horizon facility, situated in the distance, surrounded by the vast red american southwest."
 
 def begin_tick() -> dict:
+    from choices import generate_choices  # Local import to avoid circular dependency
+    
     state = _load_state()
     # If at intro/prologue, return generate_intro_turn result (with choices)
     if not history or (state.get('last_choice', '') == '' and state.get('world_prompt', '').startswith('Jason crouches behind a rusted Horizon vehicle')):
