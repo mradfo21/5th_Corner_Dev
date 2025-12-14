@@ -631,14 +631,14 @@ def generate_gemini_img2img(
     
     print(f"🔷 [GOOGLE GEMINI] Image editing mode with {len(image_paths)} reference image(s)")
     
-    # Read and encode all reference images (use downsampled versions if available)
+    # Read and encode all reference images (ALWAYS use full-res for img2img quality)
     image_parts = []
     for img_path in image_paths:
-        # Use pre-downsampled version if available (faster upload!)
+        # ALWAYS use full-res for img2img to prevent artifact compounding
+        # Small versions (480x270, quality=85) cause degradation after ~6 frames
         from pathlib import Path
         img_path_obj = Path(img_path)
-        small_path = img_path_obj.parent / img_path_obj.name.replace(".png", "_small.png")
-        use_path = small_path if small_path.exists() else img_path_obj
+        use_path = img_path_obj  # Always use full-res, never small compressed version
         
         with open(use_path, "rb") as f:
             image_bytes = f.read()
@@ -649,8 +649,7 @@ def generate_gemini_img2img(
         if str(use_path).endswith(('.jpg', '.jpeg')):
             mime_type = "image/jpeg"
         
-        size_note = "(480x270)" if small_path.exists() else "(full-res)"
-        print(f"🔷 [GOOGLE GEMINI] Reference image {len(image_parts)+1}: {img_path_obj.name} {size_note}")
+        print(f"🔷 [GOOGLE GEMINI] Reference image {len(image_parts)+1}: {img_path_obj.name} (full-res for quality)")
         
         image_parts.append({
             "inlineData": {
