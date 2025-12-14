@@ -953,6 +953,56 @@ def build_image_prompt(player_choice: str = "", dispatch: str = "", prev_vision_
     
     return prompt
 
+def _build_vhs_prompt(base_prompt: str, use_img2img: bool = False) -> str:
+    """
+    Wrap any image generation prompt with VHS aesthetic instructions.
+    This ensures Gemini and OpenAI both generate the same gritty analog look.
+    
+    Args:
+        base_prompt: The scene description (what's happening)
+        use_img2img: If True, use img2img instructions; else text-to-image
+    
+    Returns:
+        Full prompt with VHS aesthetic styling
+    """
+    # Load the appropriate template from simulation_prompts.json
+    if use_img2img:
+        template_key = "gemini_image_to_image_instructions"
+    else:
+        template_key = "gemini_text_to_image_instructions"
+    
+    structured_prompt = PROMPTS[template_key].format(prompt=base_prompt)
+    
+    # Add CRITICAL anti-border instructions
+    anti_border = "\n\nCRITICAL - ABSOLUTELY NO BORDERS OR FRAMES:\nThe image MUST fill the ENTIRE canvas edge-to-edge with ZERO borders, frames, or edges of any kind. NO black bars, NO white borders, NO photo frames, NO matting, NO letterboxing. The content fills 100% of the image area. This is RAW FOOTAGE, not a framed photograph."
+    
+    # Add CRITICAL anti-person instructions
+    anti_person = "\n\nCRITICAL - ABSOLUTELY NO PERSON/PLAYER VISIBLE:\nThis is a FIXED CAMERA VIEW mounted to a wall or tripod. The camera operator does NOT exist in this image. NEVER show ANY part of a human body - no head, no back of head, no shoulders, no arms, no hands, no legs, no feet, no torso, no silhouette. Show ONLY the environment - walls, floor, ceiling, objects, debris, sky, ground. Think: security camera footage, dashboard cam, surveillance view - PURE environmental shot with ZERO human presence in frame."
+    
+    # Add CRITICAL anti-timecode/text instructions
+    anti_timecode = (
+        "\n\n🚫 CRITICAL - ABSOLUTELY NO TEXT OR TIMECODE OVERLAYS:\n"
+        "This is RAW CAMERA FOOTAGE with NO on-screen displays.\n"
+        "Do NOT add ANY text, numbers, letters, or symbols to the image.\n"
+        "FORBIDDEN:\n"
+        "❌ NO timecode (NO 'DEC 14 1993', NO '14:32:05', NO date/time stamps)\n"
+        "❌ NO 'REC' indicator\n"
+        "❌ NO 'PCC HISS' or any text overlays\n"
+        "❌ NO battery indicators, recording icons, or UI elements\n"
+        "❌ NO scanline overlays or grid patterns\n"
+        "The image is PURE FOOTAGE with ZERO on-screen text of any kind."
+    )
+    
+    full_prompt = structured_prompt + anti_border + anti_person + anti_timecode
+    
+    # Add negative prompt for extra safety (used by some providers)
+    negative_prompt_text = PROMPTS.get("image_negative_prompt", "")
+    if negative_prompt_text:
+        full_prompt += f"\n\nNEGATIVE PROMPT (avoid these): {negative_prompt_text}"
+    
+    return full_prompt
+
+
 def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optional[str] = None, previous_caption: Optional[str] = None, previous_mode: Optional[str] = None, strength: float = 0.25, image_description: str = "", time_of_day: str = "", use_edit_mode: bool = False, frame_idx: int = 0, dispatch: str = "", world_prompt: str = "", hard_transition: bool = False, is_timeout_penalty: bool = False) -> Optional[str]:
     global _last_image_path
     import random
@@ -1169,12 +1219,19 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
             if prev_img_paths_list and len(prev_img_paths_list) > 0 and frame_idx > 0:
                 # IMG2IMG MODE - Use /images/edits with previous frames as reference
                 print(f"[OPENAI IMG2IMG] Using {len(prev_img_paths_list)} reference image(s)")
+                print(f"[OPENAI IMG2IMG] Wrapping prompt with VHS aesthetic instructions...")
+                
+                # Wrap with VHS styling (same as Gemini)
+                vhs_prompt = _build_vhs_prompt(prompt_str, use_img2img=True)
                 
                 # Open all reference images (gpt-image-1 supports up to 16!)
                 image_files = []
                 for img_path in prev_img_paths_list[:16]:  # Cap at 16 (API limit)
                     if os.path.exists(img_path):
                         image_files.append(open(img_path, "rb"))
+                        print(f"[OPENAI IMG2IMG] Added reference: {os.path.basename(img_path)}")
+                
+                print(f"[OPENAI IMG2IMG] Total references: {len(image_files)}")
                 
                 try:
                     # Use single image or array based on count
@@ -1186,9 +1243,9 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                     response = client.images.edit(
                         model="gpt-image-1",
                         image=image_param,
-                        prompt=prompt_str,
+                        prompt=vhs_prompt,  # ← Now using VHS-wrapped prompt!
                         n=1,
-                        size="1536x1024",  # Landscape for continuity
+                        size="1200x900",  # 4:3 aspect ratio (matches Gemini)
                         quality="auto"  # Let API choose best quality
                     )
                 finally:
@@ -1203,12 +1260,16 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
             else:
                 # TEXT-TO-IMAGE MODE - Generate from scratch
                 print(f"[OPENAI TEXT2IMG] Generating fresh image")
+                print(f"[OPENAI TEXT2IMG] Wrapping prompt with VHS aesthetic instructions...")
+                
+                # Wrap with VHS styling (same as Gemini)
+                vhs_prompt = _build_vhs_prompt(prompt_str, use_img2img=False)
                 
                 response = client.images.generate(
                     model="gpt-image-1",
-                    prompt=prompt_str,
+                    prompt=vhs_prompt,  # ← Now using VHS-wrapped prompt!
                     n=1,
-                    size="1536x1024",  # Landscape (matches our VHS aspect)
+                    size="1200x900",  # 4:3 aspect ratio (matches Gemini)
                     quality="auto"
                 )
             
