@@ -84,3 +84,4 @@ Checked all 5 call sites of `_gen_image()`:
 
 Deploy and verify with test beat - should now show green success with prompt preview instead of orange warning.
 
+

@@ -96,3 +96,4 @@ def stitch_video_segments_opencv(segment_paths: List[str], output_path: Path) ->
         safe_error = str(e).encode('ascii', 'replace').decode('ascii')
         return None, f"Stitching error: {safe_error}"
 
+

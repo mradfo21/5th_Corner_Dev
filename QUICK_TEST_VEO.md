@@ -149,3 +149,4 @@ films/segments/
 - Architecture: `VEO_VIDEO_BASED_IMAGE_GEN.md`
 - Integration plan: `VEO_INTEGRATION_PLAN.md`
 
+
