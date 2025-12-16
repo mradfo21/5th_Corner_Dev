@@ -1,5 +1,11 @@
 # 🧪 Image Prompt Storage Test Beat
 
+## Status: ✅ Fixed and Working
+
+**Bug Found:** `consequence_img_prompt` was undefined in `advance_turn_image_fast`, causing prompts to fail storage.  
+**Fix Applied:** Variable properly initialized and result checked before unpacking.  
+**See:** `PROMPT_STORAGE_FIX.md` for technical details.
+
 ## What Was Added
 
 A **test beat** has been injected into the Discord bot flow to prove that image prompts are being stored correctly in `history.json`.

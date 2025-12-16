@@ -1038,12 +1038,15 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
             print(f"[IMG2IMG COLLECT] Frame {frame_idx} - Starting reference collection")
             print(f"[IMG2IMG COLLECT] History has {len(history)} entries")
             print(f"[IMG2IMG COLLECT] Collecting up to {num_images_to_collect} reference images")
+            print(f"[IMG2IMG COLLECT] Will stop at last hard transition (location change)")
             print(f"{'='*70}\n")
             
             for idx, entry in enumerate(reversed(history)):
                 has_image = bool(entry.get("image"))
                 has_vision = bool(entry.get("vision_dispatch"))
-                print(f"[IMG2IMG COLLECT] History[{idx}]: image={has_image}, vision={has_vision}")
+                was_hard_transition = entry.get("hard_transition", False)
+                
+                print(f"[IMG2IMG COLLECT] History[{idx}]: image={has_image}, vision={has_vision}, hard_transition={was_hard_transition}")
                 if has_image:
                     print(f"[IMG2IMG COLLECT]   → Image path: {entry.get('image')}")
                 
@@ -1054,6 +1057,13 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                         entry.get("vision_analysis", "")  # Pull vision analysis
                     ))
                     print(f"[IMG2IMG COLLECT]   → ✅ Added to reference list (total: {len(last_imgs)})")
+                    
+                    # CRITICAL: Stop collecting after a hard transition
+                    # This creates a "reference buffer" that resets on location changes
+                    if was_hard_transition and len(last_imgs) > 0:
+                        print(f"[IMG2IMG COLLECT] 🚧 HARD TRANSITION DETECTED - Stopping collection here")
+                        print(f"[IMG2IMG COLLECT] Reference buffer reset at location change")
+                        break
                 
                 if len(last_imgs) == num_images_to_collect:
                     print(f"[IMG2IMG COLLECT] ✅ Collected {num_images_to_collect} references, stopping search")
@@ -1713,6 +1723,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                     new_feed_items_for_log.append(image_item)
                     state['current_image_url'] = new_image_url # Update global state
                     state['current_image_prompt'] = image_prompt # Store prompt for history
+                    state['current_hard_transition'] = hard_trans # Store hard transition flag
                     print(f"DEBUG PRINT: _process_turn_background - Image generated: {new_image_url}", flush=True)
 
                     if VISION_ENABLED: # Vision analysis of the new image
@@ -2033,6 +2044,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             "world_prompt_after": state.get("world_prompt"),
             "image": state.get("current_image_url"),
             "image_prompt": state.get("current_image_prompt", ""),
+            "hard_transition": state.get("current_hard_transition", False),  # Track location changes
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         history.append(history_entry)
@@ -2802,6 +2814,7 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             hard_transition = is_hard_transition(choice, dispatch)
         
         consequence_img_url = None
+        consequence_img_prompt = ""  # Initialize to prevent undefined variable error
         try:
             last_image_path = None
             if history and len(history) > 0:
@@ -2816,7 +2829,7 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             print(f"  - Hard transition: {hard_transition}")
             print(f"  - Last image path: {last_image_path}")
             
-            consequence_img_url, consequence_img_prompt = _gen_image(
+            result = _gen_image(
                 vision_dispatch,
                 mode,
                 choice,
@@ -2829,15 +2842,20 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
                 hard_transition=hard_transition,
                 is_timeout_penalty=is_timeout_penalty  # Pass flag to image generation
             )
+            if result:
+                consequence_img_url, consequence_img_prompt = result
             print(f"✅ [IMG FAST] Image ready: {consequence_img_url}")
         except Exception as e:
             print(f"❌ [IMG FAST] Error: {e}")
+            import traceback
+            traceback.print_exc()
         
         return {
             "dispatch": dispatch,
             "vision_dispatch": vision_dispatch,
             "consequence_image": consequence_img_url,
             "consequence_image_prompt": consequence_img_prompt,
+            "hard_transition": hard_transition,  # Track location changes for reference buffer
             "phase": state["current_phase"],
             "chaos": state["chaos_level"],
             "world_prompt": state.get("world_prompt", ""),
@@ -2857,7 +2875,7 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             "mode": "camcorder"
         }
 
-def advance_turn_choices_deferred(consequence_img_url: str, dispatch: str, vision_dispatch: str, choice: str, consequence_img_prompt: str = "") -> dict:
+def advance_turn_choices_deferred(consequence_img_url: str, dispatch: str, vision_dispatch: str, choice: str, consequence_img_prompt: str = "", hard_transition: bool = False) -> dict:
     """
     PHASE 2 (DEFERRED): Generate choices after image is displayed.
     """
@@ -2899,7 +2917,8 @@ def advance_turn_choices_deferred(consequence_img_url: str, dispatch: str, visio
         "world_prompt": state.get("world_prompt", ""),
         "image": consequence_img_url,
         "image_url": consequence_img_url,
-        "image_prompt": consequence_img_prompt
+        "image_prompt": consequence_img_prompt,
+        "hard_transition": hard_transition  # Track location changes
     }
     history.append(history_entry)
     (ROOT / "history.json").write_text(json.dumps(history, indent=2))
@@ -2928,7 +2947,8 @@ def advance_turn(choice: str) -> dict:
             phase1_result["dispatch"],
             phase1_result["vision_dispatch"],
             choice,
-            phase1_result.get("consequence_image_prompt", "")
+            phase1_result.get("consequence_image_prompt", ""),
+            phase1_result.get("hard_transition", False)
         )
         
         # Combine results
