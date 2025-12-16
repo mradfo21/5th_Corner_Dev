@@ -71,7 +71,7 @@ def generate_choices(
     beat_nudge: str = "",
     pacing: str = None,
     world_prompt: str = "",
-    temperature: float = 0.7,
+    temperature: float = 1.2,
     situation_summary: str = ""
 ) -> List[str]:
     """
@@ -99,26 +99,31 @@ def generate_choices(
         situation_summary=""  # IGNORE world state - use only image + dispatch to prevent stale/hallucinated data
     )
     system_prompt = {"role": "system", "content": (
-        "Generate 3 SHORT ACTION CHOICES (2-4 words each). ALWAYS START WITH A STRONG VERB.\n\n"
-        "FORMAT: [Verb] [object/target]\n"
-        "GOOD: 'Scale the fence', 'Examine door lock', 'Sprint toward building', 'Hide behind truck'\n"
-        "BAD: 'Look around', 'Go inside', 'Check it out'\n\n"
-        "CRITICAL GROUNDING RULE - ONLY REFERENCE WHAT'S ACTUALLY VISIBLE:\n"
-        "• Look at the IMAGE carefully\n"
-        "• ONLY suggest actions involving objects/structures YOU CAN SEE in the frame\n"
-        "• If there's NO door visible -> DO NOT suggest 'Open door'\n"
-        "• If there's NO vehicle visible -> DO NOT suggest 'Hide behind truck'\n"
-        "• If there's NO fence visible -> DO NOT suggest 'Climb fence'\n"
-        "• BE SPECIFIC: Use exact descriptors from what's visible (rusted building, distant structure, rocky ground)\n\n"
-        "FORWARD MOMENTUM: Jason ALWAYS moves forward or sideways, NEVER backward. Do NOT suggest: retreat, step back, back away, turn around, flee, run away, return.\n\n"
-        "VERB VARIETY: Use different verbs each time. Examples:\n"
-        "- Movement: Advance, Sprint, Climb, Crawl, Circle, Approach, Push through, Squeeze past\n"
-        "- Investigation: Examine, Scan, Photograph, Inspect, Search, Analyze\n"
-        "- Stealth: Hide, Crouch, Evade, Bypass, Slip past\n"
-        "- Interaction: Disable, Activate, Trigger, Open, Break, Cut, Pry\n"
-        "- Tactical: Cover, Signal, Distract, Secure\n\n"
-        "PROGRESS: If an obstacle (fence, door, etc.) is present, offer choices that GET PAST IT, not choices that keep Jason stuck at it.\n\n"
-        "Each choice must be SPECIFIC to what's ACTUALLY VISIBLE in the image. Never hallucinate objects."
+        "Generate 3 VISCERAL, PHYSICAL ACTION CHOICES (3-6 words each). Emphasize BODILY movement and physical risk.\n\n"
+        "CRITICAL: Use VIVID, PHYSICAL VERBS that emphasize what Jason's BODY does:\n\n"
+        "PHYSICAL BODY VERBS (PRIORITIZE THESE):\n"
+        "- LEGS/FEET: Sprint, Vault, Leap, Scramble, Slide, Dive, Kick, Stomp, Brace, Plant, Launch\n"
+        "- ARMS/HANDS: Grab, Yank, Wrench, Hurl, Smash, Rip, Pry, Claw, Shove, Swing, Heave\n"
+        "- TORSO: Slam, Throw yourself, Barrel through, Roll, Twist, Duck, Drop, Lunge, Charge\n"
+        "- FULL BODY: Hurl yourself, Fling yourself, Propel forward, Burst through, Crash into\n\n"
+        "EXAMPLES OF EXCITING CHOICES:\n"
+        "✅ 'Vault over chain-link fence'\n"
+        "✅ 'Hurl yourself through window'\n"
+        "✅ 'Sprint full-tilt toward shed'\n"
+        "✅ 'Yank open rusted blast door'\n"
+        "✅ 'Scramble up rocky slope'\n"
+        "✅ 'Dive behind concrete barrier'\n"
+        "✅ 'Wrench free the metal grate'\n"
+        "✅ 'Barrel through the doorway'\n\n"
+        "❌ BORING (DO NOT USE):\n"
+        "- 'Look around'\n"
+        "- 'Go inside'\n"
+        "- 'Move forward'\n"
+        "- 'Check it out'\n"
+        "- 'Approach carefully'\n\n"
+        "GROUNDING: Only reference what's VISIBLE in the image, but use EXCITING physical language.\n\n"
+        "MOMENTUM: Jason is ALWAYS aggressive and forward-moving. Even 'safe' choices should feel ACTIVE and DECISIVE.\n\n"
+        "Make every choice feel like an ACTION MOVIE. Use words that make you FEEL the physical exertion."
     )}
     if image_url:
         messages = [
@@ -339,15 +344,9 @@ def filter_choices_strict(choices, dispatch, vision, world_prompt, recent_choice
 
 # --- Contextual risk assessment ---
 def filter_risky_choices(choices, dispatch, vision):
-    if not detect_threat(dispatch, vision):
-        return choices
-    # If threat detected, filter out aggressive/risky choices unless contextually justified
-    risky_keywords = [
-        'attack', 'fight', 'confront', 'photograph the guards', 'photograph guards', 'photograph the tactical figures', 'photograph the enemy', 'shoot', 'fire', 'ambush', 'charge', 'rush', 'tackle', 'sabotage', 'destroy', 'kill', 'murder', 'assault', 'counter', 'parry', 'evade', 'sprint', 'swing', 'slash', 'bite', 'burn', 'poison', 'shoot at', 'fire at', 'aim at', 'threaten', 'challenge', 'face off', 'stand off', 'resist', 'survive', 'risk', 'danger', 'hazard', 'peril', 'bleed', 'bleeding', 'hurt', 'injury', 'wound', 'damage', 'dangerous', 'perilous', 'hazardous'
-    ]
-    filtered = [c for c in choices if not any(rk in c.lower() for rk in risky_keywords)]
-    # If all choices are filtered out, fallback to original
-    return filtered if filtered else choices
+    # DISABLED - We WANT risky, daring choices!
+    # Let the player make bold, dangerous decisions
+    return choices
 
 def choice_critic(dispatch, vision, choices, world_prompt, recent_choices=None):
     # Remove placeholders and duplicates first
