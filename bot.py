@@ -790,6 +790,62 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 ))
                 await asyncio.sleep(0.5)  # Brief pause before image reveal
             
+            # 🧪 TEST BEAT: Verify image prompt storage is working
+            # Query PREVIOUS turn's stored prompt to prove the system works
+            try:
+                import json
+                history_path = ROOT / "history.json"
+                if history_path.exists():
+                    with open(history_path, "r", encoding="utf-8") as f:
+                        history_data = json.load(f)
+                    
+                    # Get the PREVIOUS entry (before this turn)
+                    if history_data and len(history_data) > 0:
+                        last_entry = history_data[-1]  # Most recent completed turn
+                        stored_choice = last_entry.get("choice", "N/A")
+                        stored_prompt = last_entry.get("image_prompt", "")
+                        stored_image = last_entry.get("image", "N/A")
+                        
+                        if stored_prompt:
+                            # Truncate for display (show first 150 chars)
+                            prompt_preview = stored_prompt[:150] + "..." if len(stored_prompt) > 150 else stored_prompt
+                            
+                            test_msg = (
+                                f"**📊 Previous Turn Data Retrieved:**\n"
+                                f"**Choice:** {stored_choice}\n"
+                                f"**Image:** {stored_image}\n"
+                                f"**Prompt (first 150 chars):**\n```{prompt_preview}```"
+                            )
+                            
+                            await interaction.channel.send(embed=discord.Embed(
+                                title="🧪 TEST: Image Prompt Storage System",
+                                description=test_msg,
+                                color=0x00FF00  # Green for success
+                            ))
+                            print(f"[TEST] ✅ Retrieved previous turn's prompt: {stored_prompt[:80]}...")
+                        else:
+                            await interaction.channel.send(embed=discord.Embed(
+                                title="🧪 TEST: Image Prompt Storage",
+                                description=f"⚠️ No image_prompt found in previous turn\n**Choice:** {stored_choice}",
+                                color=0xFFA500  # Orange for warning
+                            ))
+                    else:
+                        await interaction.channel.send(embed=discord.Embed(
+                            title="🧪 TEST: Image Prompt Storage",
+                            description="⚠️ History is empty (this is the first turn)",
+                            color=0xFFA500
+                        ))
+                await asyncio.sleep(1.2)  # Let user read the test result
+            except Exception as e:
+                print(f"[TEST] ❌ Error retrieving image prompt: {e}")
+                import traceback
+                traceback.print_exc()
+                await interaction.channel.send(embed=discord.Embed(
+                    title="🧪 TEST: Image Prompt Storage",
+                    description=f"❌ Error: {str(e)[:200]}",
+                    color=0xFF0000  # Red for error
+                ))
+            
             # Show IMAGE IMMEDIATELY from Phase 1
             image_path = phase1.get("consequence_image")
             
@@ -1243,6 +1299,62 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             
             await interaction.channel.send(embed=discord.Embed(description=safe_embed_desc(dispatch_text), color=CORNER_TEAL))
             await asyncio.sleep(0.5)  # Brief pause before image reveal
+            
+            # 🧪 TEST BEAT: Verify image prompt storage is working (Custom Action path)
+            # Query PREVIOUS turn's stored prompt to prove the system works
+            try:
+                import json
+                history_path = ROOT / "history.json"
+                if history_path.exists():
+                    with open(history_path, "r", encoding="utf-8") as f:
+                        history_data = json.load(f)
+                    
+                    # Get the PREVIOUS entry (before this turn)
+                    if history_data and len(history_data) > 0:
+                        last_entry = history_data[-1]  # Most recent completed turn
+                        stored_choice = last_entry.get("choice", "N/A")
+                        stored_prompt = last_entry.get("image_prompt", "")
+                        stored_image = last_entry.get("image", "N/A")
+                        
+                        if stored_prompt:
+                            # Truncate for display (show first 150 chars)
+                            prompt_preview = stored_prompt[:150] + "..." if len(stored_prompt) > 150 else stored_prompt
+                            
+                            test_msg = (
+                                f"**📊 Previous Turn Data Retrieved:**\n"
+                                f"**Choice:** {stored_choice}\n"
+                                f"**Image:** {stored_image}\n"
+                                f"**Prompt (first 150 chars):**\n```{prompt_preview}```"
+                            )
+                            
+                            await interaction.channel.send(embed=discord.Embed(
+                                title="🧪 TEST: Image Prompt Storage System",
+                                description=test_msg,
+                                color=0x00FF00  # Green for success
+                            ))
+                            print(f"[TEST CUSTOM] ✅ Retrieved previous turn's prompt: {stored_prompt[:80]}...")
+                        else:
+                            await interaction.channel.send(embed=discord.Embed(
+                                title="🧪 TEST: Image Prompt Storage",
+                                description=f"⚠️ No image_prompt found in previous turn\n**Choice:** {stored_choice}",
+                                color=0xFFA500  # Orange for warning
+                            ))
+                    else:
+                        await interaction.channel.send(embed=discord.Embed(
+                            title="🧪 TEST: Image Prompt Storage",
+                            description="⚠️ History is empty (this is the first turn)",
+                            color=0xFFA500
+                        ))
+                await asyncio.sleep(1.2)  # Let user read the test result
+            except Exception as e:
+                print(f"[TEST CUSTOM] ❌ Error retrieving image prompt: {e}")
+                import traceback
+                traceback.print_exc()
+                await interaction.channel.send(embed=discord.Embed(
+                    title="🧪 TEST: Image Prompt Storage",
+                    description=f"❌ Error: {str(e)[:200]}",
+                    color=0xFF0000  # Red for error
+                ))
             
             # Display image
             img_path = disp.get("consequence_image")

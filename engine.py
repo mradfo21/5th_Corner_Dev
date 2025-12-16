@@ -283,38 +283,38 @@ def _save_state(st: dict):
     # CRITICAL FIX: Always acquire lock to prevent concurrent write race conditions
     with WORLD_STATE_LOCK:
         st["last_saved"] = datetime.now(timezone.utc).isoformat()
-    temp_state_file = STATE_PATH.with_suffix(".json.tmp")
-    max_retries = 3
-    retry_delay = 0.1 # seconds
+        temp_state_file = STATE_PATH.with_suffix(".json.tmp")
+        max_retries = 3
+        retry_delay = 0.1 # seconds
 
-    for attempt in range(max_retries):
-        try:
-            temp_state_file.write_text(json.dumps(st, indent=2, ensure_ascii=False), encoding='utf-8')
-            os.replace(temp_state_file, STATE_PATH)
-            return # Success
-        except OSError as e_os:
-            logging.warning(f"Attempt {attempt + 1} to save state to {STATE_PATH} failed with OSError: {e_os}")
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay)
-            else:
-                logging.error(f"All {max_retries} attempts to save state to {STATE_PATH} failed due to OSError: {e_os}")
-        except Exception as e:
-            logging.error(f"Failed to save state to {STATE_PATH} on attempt {attempt + 1}: {e}")
-            if attempt == max_retries - 1 or not isinstance(e, OSError):
-                try:
-                    logging.error(f"State content that failed to save: {json.dumps(st, indent=2, default=str, ensure_ascii=False)}")
-                except Exception as e_log_state:
-                    logging.error(f"Could not even serialize state for error logging: {e_log_state}")
+        for attempt in range(max_retries):
+            try:
+                temp_state_file.write_text(json.dumps(st, indent=2, ensure_ascii=False), encoding='utf-8')
+                os.replace(temp_state_file, STATE_PATH)
+                return # Success
+            except OSError as e_os:
+                logging.warning(f"Attempt {attempt + 1} to save state to {STATE_PATH} failed with OSError: {e_os}")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                else:
+                    logging.error(f"All {max_retries} attempts to save state to {STATE_PATH} failed due to OSError: {e_os}")
+            except Exception as e:
+                logging.error(f"Failed to save state to {STATE_PATH} on attempt {attempt + 1}: {e}")
+                if attempt == max_retries - 1 or not isinstance(e, OSError):
+                    try:
+                        logging.error(f"State content that failed to save: {json.dumps(st, indent=2, default=str, ensure_ascii=False)}")
+                    except Exception as e_log_state:
+                        logging.error(f"Could not even serialize state for error logging: {e_log_state}")
             if attempt == max_retries - 1:
                 break 
             time.sleep(retry_delay)
 
-            logging.error(f"Persistently failed to save state to {STATE_PATH} after {max_retries} attempts.")
-        if temp_state_file.exists():
-            try:
-                os.remove(temp_state_file)
-            except Exception as e_remove:
-                logging.error(f"Error removing temporary state file {temp_state_file} after failed save: {e_remove}")
+    logging.error(f"Persistently failed to save state to {STATE_PATH} after {max_retries} attempts.")
+    if temp_state_file.exists():
+        try:
+            os.remove(temp_state_file)
+        except Exception as e_remove:
+            logging.error(f"Error removing temporary state file {temp_state_file} after failed save: {e_remove}")
 
 def summarize_world_state(state: dict) -> str:
     """
@@ -1015,12 +1015,13 @@ def _build_vhs_prompt(base_prompt: str, use_img2img: bool = False) -> str:
     return full_prompt
 
 
-def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optional[str] = None, previous_caption: Optional[str] = None, previous_mode: Optional[str] = None, strength: float = 0.25, image_description: str = "", time_of_day: str = "", use_edit_mode: bool = False, frame_idx: int = 0, dispatch: str = "", world_prompt: str = "", hard_transition: bool = False, is_timeout_penalty: bool = False) -> Optional[str]:
+def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optional[str] = None, previous_caption: Optional[str] = None, previous_mode: Optional[str] = None, strength: float = 0.25, image_description: str = "", time_of_day: str = "", use_edit_mode: bool = False, frame_idx: int = 0, dispatch: str = "", world_prompt: str = "", hard_transition: bool = False, is_timeout_penalty: bool = False) -> Optional[tuple[str, str]]:
+    """Generate image and return (image_path, prompt_used)."""
     global _last_image_path
     import random
     if not (IMAGE_ENABLED and LLM_ENABLED):
         print("[IMG] Image or LLM disabled, returning None")
-        return None
+        return (None, "")
     try:
         prev_time_of_day, prev_color = "", ""
         prev_img_paths = []
@@ -1227,7 +1228,7 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                     hd_mode=HD_MODE  # Use global HD mode setting
                 )
             _last_image_path = result_path
-            return result_path
+            return (result_path, prompt_str)
         
         elif active_image_provider == "openai":
             # Use OpenAI gpt-image-1
@@ -1237,7 +1238,7 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
             if not OPENAI_API_KEY:
                 print("[OPENAI IMG] ❌ OPENAI_API_KEY not set! Cannot generate image.")
                 print("[OPENAI IMG] Set environment variable OPENAI_API_KEY or add to config.json")
-                return None
+                return (None, "")
             
             # Try IMG2IMG if we have reference images AND it's enabled
             use_img2img = (OPENAI_IMG2IMG_ENABLED and prev_img_paths_list and len(prev_img_paths_list) > 0 and frame_idx > 0)
@@ -1333,7 +1334,7 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                         
                         img2img_success = True
                         _last_image_path = f"/images/{filename}"
-                        return _last_image_path
+                        return (_last_image_path, vhs_prompt)
                         
                     except Exception as e:
                         print(f"[OPENAI IMG2IMG] ❌ Error during img2img: {e}")
@@ -1375,16 +1376,16 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                 print(f"[OPENAI TEXT2IMG] Image saved to: {image_path}")
                 
                 _last_image_path = f"/images/{filename}"
-                return _last_image_path
+                return (_last_image_path, vhs_prompt)
         
         else:
             raise ValueError(f"Unknown IMAGE_PROVIDER: {active_image_provider}. Supported: 'openai', 'gemini'")
         # Skip time extraction - we already set time_of_day in state before generation
         # No need to extract it back from the image we just generated!
-        return f"/images/{filename}"
+        return (f"/images/{filename}", prompt_str)
     except Exception as e:
         print(f"[IMG PROVIDER {ai_provider_manager.get_image_provider()}] Error:", e)
-        return None
+        return (None, "")
 
 # ───────── vision dispatch generator ─────────────────────────────────────────
 def _generate_vision_dispatch(narrative_dispatch: str, world_prompt: str = "") -> str:
@@ -1697,7 +1698,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             print(f"DEBUG PRINT: _process_turn_background - Generating image...", flush=True)
             try:
                 hard_trans = is_hard_transition(choice, dispatch_text)
-                new_image_url = _gen_image(
+                new_image_url, image_prompt = _gen_image(
                     caption=vision_dispatch_for_image,
                     mode=state.get("current_phase", "normal"), # Use current_phase for mode
                     choice=choice,
@@ -1711,6 +1712,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                     image_item = create_feed_item(type="scene_image", content="The scene shifts...", image_url=new_image_url)
                     new_feed_items_for_log.append(image_item)
                     state['current_image_url'] = new_image_url # Update global state
+                    state['current_image_prompt'] = image_prompt # Store prompt for history
                     print(f"DEBUG PRINT: _process_turn_background - Image generated: {new_image_url}", flush=True)
 
                     if VISION_ENABLED: # Vision analysis of the new image
@@ -2030,6 +2032,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             "world_prompt_before": prev_state_snapshot.get("world_prompt"),
             "world_prompt_after": state.get("world_prompt"),
             "image": state.get("current_image_url"),
+            "image_prompt": state.get("current_image_prompt", ""),
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
         history.append(history_entry)
@@ -2116,7 +2119,7 @@ def generate_intro_turn_feed_items() -> List[Dict[str, Any]]:
         try:
             vision_dispatch_for_intro_image = _generate_vision_dispatch(initial_narrative_content, state.get("world_prompt", "Initialization sequence."))
             if vision_dispatch_for_intro_image:
-                initial_image_url = _gen_image(
+                initial_image_url, initial_image_prompt = _gen_image(
                     caption=vision_dispatch_for_intro_image, 
                     mode="normal",
                     choice="Initialize Simulation",
@@ -2128,6 +2131,7 @@ def generate_intro_turn_feed_items() -> List[Dict[str, Any]]:
                     image_item = create_feed_item(type="scene_image", content="Initialising environment...", image_url=initial_image_url)
                     intro_items.append(image_item)
                     state['current_image_url'] = initial_image_url # This is fine, updates a different part of state
+                    state['current_image_prompt'] = initial_image_prompt # Store prompt
         except Exception as e_img:
             log_error(f"Error generating intro image: {e_img}")
             error_image_item = create_feed_item(type="error_event", content=f"Error generating initial visual: {e_img}")
@@ -2812,7 +2816,7 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             print(f"  - Hard transition: {hard_transition}")
             print(f"  - Last image path: {last_image_path}")
             
-            consequence_img_url = _gen_image(
+            consequence_img_url, consequence_img_prompt = _gen_image(
                 vision_dispatch,
                 mode,
                 choice,
@@ -2833,6 +2837,7 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             "dispatch": dispatch,
             "vision_dispatch": vision_dispatch,
             "consequence_image": consequence_img_url,
+            "consequence_image_prompt": consequence_img_prompt,
             "phase": state["current_phase"],
             "chaos": state["chaos_level"],
             "world_prompt": state.get("world_prompt", ""),
@@ -2852,7 +2857,7 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             "mode": "camcorder"
         }
 
-def advance_turn_choices_deferred(consequence_img_url: str, dispatch: str, vision_dispatch: str, choice: str) -> dict:
+def advance_turn_choices_deferred(consequence_img_url: str, dispatch: str, vision_dispatch: str, choice: str, consequence_img_prompt: str = "") -> dict:
     """
     PHASE 2 (DEFERRED): Generate choices after image is displayed.
     """
@@ -2893,7 +2898,8 @@ def advance_turn_choices_deferred(consequence_img_url: str, dispatch: str, visio
         "vision_analysis": "",
         "world_prompt": state.get("world_prompt", ""),
         "image": consequence_img_url,
-        "image_url": consequence_img_url
+        "image_url": consequence_img_url,
+        "image_prompt": consequence_img_prompt
     }
     history.append(history_entry)
     (ROOT / "history.json").write_text(json.dumps(history, indent=2))
@@ -2921,7 +2927,8 @@ def advance_turn(choice: str) -> dict:
             phase1_result["consequence_image"],
             phase1_result["dispatch"],
             phase1_result["vision_dispatch"],
-            choice
+            choice,
+            phase1_result.get("consequence_image_prompt", "")
         )
         
         # Combine results
@@ -3067,9 +3074,10 @@ def generate_intro_image_fast():
     
     # Generate opening image ONLY
     dispatch_img_url = None
+    dispatch_img_prompt = ""
     try:
         print("[INTRO FAST] Generating opening image...")
-        dispatch_img_url = _gen_image(
+        dispatch_img_url, dispatch_img_prompt = _gen_image(
             vision_dispatch,
             mode,
             "Intro",
@@ -3084,6 +3092,7 @@ def generate_intro_image_fast():
         if dispatch_img_url:
             print(f"✅ [INTRO FAST] Image ready for display: {dispatch_img_url}")
             _last_image_path = dispatch_img_url
+            state['current_image_prompt'] = dispatch_img_prompt
     except Exception as e:
         print(f"❌ [INTRO FAST] Image generation error: {e}")
     
@@ -3198,10 +3207,11 @@ def generate_intro_turn():
     
     # Generate opening image to establish the scene
     dispatch_img_url = None
+    dispatch_img_prompt = ""
     image_description = ""
     try:
         print("[INTRO] Generating opening image...")
-        dispatch_img_url = _gen_image(
+        dispatch_img_url, dispatch_img_prompt = _gen_image(
             vision_dispatch,  # Visual description of the opening scene
             mode,
             "Intro",
@@ -3216,6 +3226,7 @@ def generate_intro_turn():
         if dispatch_img_url:
             print(f"✅ [INTRO] Opening image generated: {dispatch_img_url}")
             _last_image_path = dispatch_img_url
+            state['current_image_prompt'] = dispatch_img_prompt
             image_description = ""  # Not needed anymore
         else:
             print("[INTRO] ⚠️ Image generation returned None")
