@@ -5,4 +5,5 @@ Pillow
 discord.py
 requests
 replicate
-imageio-ffmpeg 
+imageio-ffmpeg
+opencv-python 
