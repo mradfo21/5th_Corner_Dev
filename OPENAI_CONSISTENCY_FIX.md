@@ -174,3 +174,4 @@ If it's **still** inconsistent after this fix, the model itself might just not b
 **Status:** ✅ Fix deployed, ready to test
 **Next Step:** Play 3-5 turns with OpenAI and observe consistency
 
+

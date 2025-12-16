@@ -122,3 +122,4 @@ When Frame 1 generates, you should now see:
 **Date:** 2025-12-13
 **Applies to:** Gemini image generation only
 
+

@@ -46,6 +46,15 @@ GEMINI_PRO_IMAGE = "gemini-3-pro-image-preview"  # Advanced, 4K support
 # Track last corrected image for continuity
 _last_corrected_image = None
 
+# ============================================================================
+# FORWARD MOMENTUM ZOOM - Experimental feature to combat img2img staleness
+# ============================================================================
+# By cropping center and scaling up, we force AI to interpret rather than copy pixels
+# This creates a subtle "stepping forward" effect and reduces compression artifacts
+ENABLE_FORWARD_ZOOM = True   # Toggle zoom preprocessing on/off
+ZOOM_FACTOR = 1.35            # 35% zoom = crop center 74%, scale back to full size
+# ============================================================================
+
 def _sanitize_for_safety(prompt: str) -> str:
     """
     Sanitize prompts to avoid Gemini safety blocks while keeping creative intent.
@@ -597,6 +606,47 @@ def _apply_pov_correction(original_path, small_path, previous_corrected_path=Non
         return None
 
 
+def _apply_forward_zoom(image_path: str, zoom_factor: float = 1.35) -> bytes:
+    """
+    Apply dramatic zoom (crop center + scale up) to create forward momentum.
+    
+    Crops the center region of the image and scales it back to original size,
+    simulating a "camera moving forward" effect. This forces the AI to interpret
+    and extend the scene rather than pixel-perfect copying, reducing staleness.
+    
+    Args:
+        image_path: Path to the reference image
+        zoom_factor: How much to zoom (1.35 = 35% zoom, uses center 74% of frame)
+    
+    Returns:
+        PNG bytes of the zoomed image (full resolution, LANCZOS resampling)
+    """
+    from PIL import Image
+    import io
+    
+    with Image.open(image_path) as img:
+        width, height = img.size
+        
+        # Calculate crop box for center region
+        # zoom_factor=1.35 means we keep 1/1.35 = 74% of the frame
+        crop_width = int(width / zoom_factor)
+        crop_height = int(height / zoom_factor)
+        
+        left = (width - crop_width) // 2
+        top = (height - crop_height) // 2
+        right = left + crop_width
+        bottom = top + crop_height
+        
+        # Crop center and scale back to original size
+        cropped = img.crop((left, top, right, bottom))
+        zoomed = cropped.resize((width, height), Image.Resampling.LANCZOS)
+        
+        # Convert to PNG bytes (no compression to preserve quality)
+        buffer = io.BytesIO()
+        zoomed.save(buffer, format='PNG', optimize=False)
+        return buffer.getvalue()
+
+
 def generate_gemini_img2img(
     prompt: str,
     caption: str,
@@ -640,8 +690,14 @@ def generate_gemini_img2img(
         img_path_obj = Path(img_path)
         use_path = img_path_obj  # Always use full-res, never small compressed version
         
-        with open(use_path, "rb") as f:
-            image_bytes = f.read()
+        # Apply forward zoom preprocessing if enabled
+        if ENABLE_FORWARD_ZOOM:
+            image_bytes = _apply_forward_zoom(str(use_path), zoom_factor=ZOOM_FACTOR)
+            print(f"🔷 [FORWARD ZOOM] Applied {ZOOM_FACTOR}x zoom to {img_path_obj.name} (center {int(100/ZOOM_FACTOR)}% → full frame)")
+        else:
+            with open(use_path, "rb") as f:
+                image_bytes = f.read()
+        
         image_b64 = base64.b64encode(image_bytes).decode('utf-8')
         
         # Determine MIME type
@@ -649,7 +705,7 @@ def generate_gemini_img2img(
         if str(use_path).endswith(('.jpg', '.jpeg')):
             mime_type = "image/jpeg"
         
-        print(f"🔷 [GOOGLE GEMINI] Reference image {len(image_parts)+1}: {img_path_obj.name} (full-res for quality)")
+        print(f"🔷 [GOOGLE GEMINI] Reference image {len(image_parts)+1}: {img_path_obj.name} (full-res)")
         
         image_parts.append({
             "inlineData": {
