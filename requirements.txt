@@ -6,4 +6,5 @@ discord.py
 requests
 replicate
 imageio-ffmpeg
-opencv-python 
+opencv-python
+google-genai 
