@@ -1,9 +1,9 @@
 {
   "text_provider": "gemini",
   "text_model": "gemini-2.0-flash",
-  "image_provider": "gemini",
-  "image_model": "gemini-3-pro-image-preview",
-  "last_updated": "2025-12-12T00:00:00Z",
+  "image_provider": "veo",
+  "image_model": "veo-3.1-generate-preview",
+  "last_updated": "2025-12-16T19:55:00.590254+00:00",
   "available_configs": {
     "gemini": {
       "text_provider": "gemini",
@@ -16,7 +16,14 @@
       "text_model": "gpt-4o-mini",
       "image_provider": "openai",
       "image_model": "gpt-image-1"
+    },
+    "veo": {
+      "text_provider": "gemini",
+      "text_model": "gemini-2.0-flash",
+      "image_provider": "veo",
+      "image_model": "veo-3.1-generate-preview",
+      "description": "Video-based image generation - generates 8s videos, extracts last frame. Natural consistency!"
     }
-  }
+  },
+  "description": "Video-based image generation - generates 8s videos, extracts last frame. Natural consistency!"
 }
-

@@ -1,5 +1,5 @@
 {
-  "enabled": true,
+  "enabled": false,
   "ttl_hours": 2,
   "auto_refresh": true,
   "check_interval_seconds": 60,

@@ -35,7 +35,7 @@ def get_latest_dispatch_image(state_file="world_state.json"):
         if img_path:
             return "http://127.0.0.1:8000" + img_path
     except Exception as e:
-        print(f"❌ Failed to get dispatch image: {e}")
+        print(f"[ERROR] Failed to get dispatch image: {e}")
     return None
 
 # --- Helper to condense history for prompt injection --- #
@@ -50,7 +50,7 @@ def build_evolution_prompt(current_world_prompt, dispatches, latest_phase, choic
     """Create a prompt to evolve the world based on phase and recent dispatches, now focused on Jason Fleece's perspective and local changes only."""
     # Defensive: ensure dispatches is a list of dicts
     if not isinstance(dispatches, list):
-        print("⚠️ dispatches is not a list! Value:", dispatches)
+        print("[WARNING] dispatches is not a list! Value:", dispatches)
         dispatches = []
     # Read last_character and seen_elements from state file
     try:
@@ -59,7 +59,7 @@ def build_evolution_prompt(current_world_prompt, dispatches, latest_phase, choic
         seen_elements = state.get("seen_elements", [])
         current_beat_idx = state.get("current_beat", 0)
     except Exception as e:
-        print(f"❌ Failed to read or parse {state_file} for seen_elements: {e}")
+        print(f"[ERROR] Failed to read or parse {state_file} for seen_elements: {e}")
         seen_elements = []
         current_beat_idx = 0
     # Load story beats for beat nudge
@@ -68,7 +68,7 @@ def build_evolution_prompt(current_world_prompt, dispatches, latest_phase, choic
         beat = beats[current_beat_idx] if 0 <= current_beat_idx < len(beats) else beats[0]
         beat_nudge = f"Current story beat: {beat.split('•')[0].strip()}. Focus: {beat.split('•')[1].strip()}"
     except Exception as e:
-        print(f"❌ Failed to load story beats for beat nudge: {e}")
+        print(f"[ERROR] Failed to load story beats for beat nudge: {e}")
         beat_nudge = ""
     # Only use the last 5 dispatches (or fewer)
     trimmed_dispatches = condense_history(dispatches)
@@ -86,13 +86,13 @@ def evolve_world_state(dispatches, consequence_summary=None, state_file="world_s
     """Evolve the world prompt based on dispatch history, phase, and consequence summary."""
     # Defensive: ensure dispatches is a list
     if not isinstance(dispatches, list):
-        print("⚠️ dispatches is not a list! Value:", dispatches)
+        print("[WARNING] dispatches is not a list! Value:", dispatches)
         dispatches = []
     try:
         with open(state_file, "r", encoding="utf-8") as f:
             state = json.load(f)
     except Exception as e:
-        print(f"❌ Failed to read {state_file}: {e}")
+        print(f"[ERROR] Failed to read {state_file}: {e}")
         return False
 
     # --- TURN COUNTER --- #
@@ -232,7 +232,7 @@ def evolve_world_state(dispatches, consequence_summary=None, state_file="world_s
             },
             timeout=30
         ).json()
-        print("[GEMINI TEXT] ✅ World evolution complete")
+        print("[GEMINI TEXT] World evolution complete")
         
         # Extract text from Gemini response
         new_world_prompt = response_data["candidates"][0]["content"]["parts"][0]["text"].strip()
@@ -245,7 +245,7 @@ def evolve_world_state(dispatches, consequence_summary=None, state_file="world_s
             logf.write(f"[WORLD EVOLUTION]\nPROMPT:\n{prompt}\n\nDISPATCHES:\n{json.dumps(dispatches[-12:], ensure_ascii=False, indent=2)}\n\nOLD:\n{old_world}\n---\nNEW:\n{new_world_prompt}\n\n")
 
         if not new_world_prompt or new_world_prompt == old_world:
-            print("⚠️ No meaningful change in world_prompt — skipping update.")
+            print("No meaningful change in world_prompt - skipping update.")
             # Nudge chaos_level upward if nothing new happens
             state["chaos_level"] = int(state.get("chaos_level", 0)) + 1
             # TODO: Penalize repeat dispatches (e.g., check for repeated phrases and rewrite)
@@ -270,7 +270,7 @@ def evolve_world_state(dispatches, consequence_summary=None, state_file="world_s
 
         return True
     except Exception as e:
-        print(f"❌ OpenAI evolution failed: {e}")
+        print(f"[ERROR] OpenAI evolution failed: {e}")
         return False
 
 def generate_scene_hook(state_file="world_state.json", prompt_file="prompts/simulation_prompts.json"):
@@ -345,7 +345,7 @@ def get_last_image_path(state_file="world_state.json"):
             if img_path:
                 return img_path
     except Exception as e:
-        print(f"❌ Failed to get last image: {e}")
+        print(f"[ERROR] Failed to get last image: {e}")
     return None
 
 def describe_image_with_vision(image_path):

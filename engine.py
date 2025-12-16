@@ -125,6 +125,7 @@ WORLD_STATE_LOCK = threading.Lock() # Global lock for world_state.json access
 IMAGE_ENABLED       = True  # ENABLED for production
 WORLD_IMAGE_ENABLED = True  # ENABLED for production
 HD_MODE             = True  # HD mode for high-quality images (slower)
+VEO_MODE_ENABLED    = False # DISABLED by default - use video generation instead of images
 
 # OpenAI img2img consistency settings
 OPENAI_IMG2IMG_ENABLED = True  # Set to False to always use text-to-image (more variation, less consistency)
@@ -305,11 +306,11 @@ def _save_state(st: dict):
                         logging.error(f"State content that failed to save: {json.dumps(st, indent=2, default=str, ensure_ascii=False)}")
                     except Exception as e_log_state:
                         logging.error(f"Could not even serialize state for error logging: {e_log_state}")
-            if attempt == max_retries - 1:
-                break 
-            time.sleep(retry_delay)
+                if attempt == max_retries - 1:
+                    break 
+                time.sleep(retry_delay)
 
-    logging.error(f"Persistently failed to save state to {STATE_PATH} after {max_retries} attempts.")
+        logging.error(f"Persistently failed to save state to {STATE_PATH} after {max_retries} attempts.")
     if temp_state_file.exists():
         try:
             os.remove(temp_state_file)
@@ -469,7 +470,7 @@ def _ask_openai(prompt: str, model_name: str, temp: float, tokens: int, image_pa
     
     # Validate API key
     if not OPENAI_API_KEY:
-        print("[OPENAI TEXT] ❌ OPENAI_API_KEY not set! Cannot generate text.")
+        print("[OPENAI TEXT] ERROR: OPENAI_API_KEY not set! Cannot generate text.")
         print("[OPENAI TEXT] Set environment variable OPENAI_API_KEY or add to config.json")
         raise ValueError("OPENAI_API_KEY not configured")
     
@@ -859,7 +860,8 @@ def is_hard_transition(choice: str, dispatch: str) -> bool:
     has_transition = any(k in choice_lower for k in location_keywords)
     
     if has_transition:
-        print(f"[HARD TRANSITION] Detected in choice: '{choice}' - new location (maintaining lighting/aesthetic)")
+        safe_choice = choice.encode('ascii', 'replace').decode('ascii')
+        print(f"[HARD TRANSITION] Detected in choice: '{safe_choice}' - new location (maintaining lighting/aesthetic)")
     
     return has_transition
 
@@ -916,13 +918,14 @@ def build_image_prompt(player_choice: str = "", dispatch: str = "", prev_vision_
     
     # Visual indicators for each type
     type_emoji = {
-        'forward_movement': '🏃 MOVEMENT',
-        'exploration': '👀 MOVEMENT',
-        'stationary': '🧍 MOVEMENT'
+        'forward_movement': 'FORWARD MOVEMENT',
+        'exploration': 'EXPLORATION',
+        'stationary': 'STATIONARY'
     }
     print(f"\n{'='*60}")
-    print(f"[MOVEMENT DETECTION] '{player_choice}'")
-    print(f"  → {type_emoji.get(movement_type, movement_type.upper())}")
+    safe_choice = player_choice.encode('ascii', 'replace').decode('ascii')
+    print(f"[MOVEMENT DETECTION] '{safe_choice}'")
+    print(f"  -> {type_emoji.get(movement_type, movement_type.upper())}")
     print(f"{'='*60}\n", flush=True)
     
     # Start with the player's choice and what happened
@@ -993,15 +996,15 @@ def _build_vhs_prompt(base_prompt: str, use_img2img: bool = False) -> str:
     
     # Add CRITICAL anti-timecode/text instructions
     anti_timecode = (
-        "\n\n🚫 CRITICAL - ABSOLUTELY NO TEXT OR TIMECODE OVERLAYS:\n"
+        "\n\n CRITICAL - ABSOLUTELY NO TEXT OR TIMECODE OVERLAYS:\n"
         "This is RAW CAMERA FOOTAGE with NO on-screen displays.\n"
         "Do NOT add ANY text, numbers, letters, or symbols to the image.\n"
         "FORBIDDEN:\n"
-        "❌ NO timecode (NO 'DEC 14 1993', NO '14:32:05', NO date/time stamps)\n"
-        "❌ NO 'REC' indicator\n"
-        "❌ NO 'PCC HISS' or any text overlays\n"
-        "❌ NO battery indicators, recording icons, or UI elements\n"
-        "❌ NO scanline overlays or grid patterns\n"
+        "ERROR: NO timecode (NO 'DEC 14 1993', NO '14:32:05', NO date/time stamps)\n"
+        "ERROR: NO 'REC' indicator\n"
+        "ERROR: NO 'PCC HISS' or any text overlays\n"
+        "ERROR: NO battery indicators, recording icons, or UI elements\n"
+        "ERROR: NO scanline overlays or grid patterns\n"
         "The image is PURE FOOTAGE with ZERO on-screen text of any kind."
     )
     
@@ -1015,13 +1018,16 @@ def _build_vhs_prompt(base_prompt: str, use_img2img: bool = False) -> str:
     return full_prompt
 
 
-def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optional[str] = None, previous_caption: Optional[str] = None, previous_mode: Optional[str] = None, strength: float = 0.25, image_description: str = "", time_of_day: str = "", use_edit_mode: bool = False, frame_idx: int = 0, dispatch: str = "", world_prompt: str = "", hard_transition: bool = False, is_timeout_penalty: bool = False) -> Optional[tuple[str, str]]:
-    """Generate image and return (image_path, prompt_used)."""
+def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optional[str] = None, previous_caption: Optional[str] = None, previous_mode: Optional[str] = None, strength: float = 0.25, image_description: str = "", time_of_day: str = "", use_edit_mode: bool = False, frame_idx: int = 0, dispatch: str = "", world_prompt: str = "", hard_transition: bool = False, is_timeout_penalty: bool = False) -> Optional[tuple[str, str, Optional[str]]]:
+    """Generate image and return (image_path, prompt_used, video_path).
+    
+    video_path is None for non-Veo providers or when video generation fails/disabled.
+    """
     global _last_image_path
     import random
     if not (IMAGE_ENABLED and LLM_ENABLED):
         print("[IMG] Image or LLM disabled, returning None")
-        return (None, "")
+        return (None, "", None)
     try:
         prev_time_of_day, prev_color = "", ""
         prev_img_paths = []
@@ -1048,7 +1054,7 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                 
                 print(f"[IMG2IMG COLLECT] History[{idx}]: image={has_image}, vision={has_vision}, hard_transition={was_hard_transition}")
                 if has_image:
-                    print(f"[IMG2IMG COLLECT]   → Image path: {entry.get('image')}")
+                    print(f"[IMG2IMG COLLECT]   Image path: {entry.get('image')}")
                 
                 if entry.get("image") and entry.get("vision_dispatch"):
                     last_imgs.append((
@@ -1056,22 +1062,22 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                         entry["vision_dispatch"],
                         entry.get("vision_analysis", "")  # Pull vision analysis
                     ))
-                    print(f"[IMG2IMG COLLECT]   → ✅ Added to reference list (total: {len(last_imgs)})")
+                    print(f"[IMG2IMG COLLECT]   -> Added to reference list (total: {len(last_imgs)})")
                     
                     # CRITICAL: Stop collecting after a hard transition
                     # This creates a "reference buffer" that resets on location changes
                     if was_hard_transition and len(last_imgs) > 0:
-                        print(f"[IMG2IMG COLLECT] 🚧 HARD TRANSITION DETECTED - Stopping collection here")
+                        print(f"[IMG2IMG COLLECT] HARD TRANSITION DETECTED - Stopping collection here")
                         print(f"[IMG2IMG COLLECT] Reference buffer reset at location change")
                         break
                 
                 if len(last_imgs) == num_images_to_collect:
-                    print(f"[IMG2IMG COLLECT] ✅ Collected {num_images_to_collect} references, stopping search")
+                    print(f"[IMG2IMG COLLECT] Collected {num_images_to_collect} references, stopping search")
                     break
             
             print(f"\n[IMG2IMG COLLECT] RESULT: Found {len(last_imgs)} reference images in history")
             if len(last_imgs) == 0:
-                print(f"[IMG2IMG COLLECT] ⚠️ WARNING: NO REFERENCE IMAGES FOUND!")
+                print(f"[IMG2IMG COLLECT] WARNING: NO REFERENCE IMAGES FOUND!")
                 print(f"[IMG2IMG COLLECT] This will generate a text-to-image (no continuity)")
             
             if len(last_imgs) >= 1:
@@ -1107,9 +1113,9 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                         if os.path.exists(frame_0_path):
                             # Prepend frame 0 as the "visual constitution"
                             prev_img_paths_list.insert(0, frame_0_path)
-                            print(f"[IMG2IMG] ✅ Frame 0 anchor ENABLED - Added: {os.path.basename(frame_0_path)}")
+                            print(f"[IMG2IMG] Frame 0 anchor ENABLED - Added: {os.path.basename(frame_0_path)}")
                 elif not USE_FRAME_0_ANCHOR and frame_idx > 1:
-                    print(f"[IMG2IMG] ⚠️ Frame 0 anchor DISABLED (toggle at line ~798)")
+                    print(f"[IMG2IMG] Frame 0 anchor DISABLED")
                 
                 print(f"\n[IMG2IMG SUMMARY] Frame {frame_idx}: Final reference list:")
                 for i, path in enumerate(prev_img_paths_list):
@@ -1156,11 +1162,15 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
         print("[IMG LOG] --- IMAGE GENERATION PARAMETERS ---")
         print(f"[IMG LOG] frame_idx: {frame_idx}")
         print(f"[IMG LOG] mode: {mode}")
-        print(f"[IMG LOG] choice: {choice}")
-        print(f"[IMG LOG] caption (vision_dispatch): {caption}")
-        print(f"[IMG LOG] dispatch (narrative): {dispatch}")
+        safe_choice = str(choice).encode('ascii', 'replace').decode('ascii')
+        print(f"[IMG LOG] choice: {safe_choice}")
+        safe_caption = str(caption).encode('ascii', 'replace').decode('ascii')
+        print(f"[IMG LOG] caption (vision_dispatch): {safe_caption}")
+        safe_dispatch = str(dispatch).encode('ascii', 'replace').decode('ascii')
+        print(f"[IMG LOG] dispatch (narrative): {safe_dispatch}")
         print(f"[IMG LOG] time_of_day: {use_time_of_day}")
-        print(f"[IMG LOG] prompt_str (full): {prompt_str}")
+        safe_prompt = str(prompt_str).encode('ascii', 'replace').decode('ascii')
+        print(f"[IMG LOG] prompt_str (full): {safe_prompt}")
         print(f"[IMG LOG] previous_image_path (actual): {prev_img_path if prev_img_path else 'None'}")
         print(f"[IMG LOG] reference_images_list: {len(prev_img_paths_list)} images")
         print(f"[IMG LOG] use_edit_mode: {use_edit_mode}")
@@ -1172,7 +1182,51 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
         
         # --- ROUTE TO APPROPRIATE IMAGE PROVIDER ---
         active_image_provider = ai_provider_manager.get_image_provider()
-        if active_image_provider == "gemini":
+        print(f"[IMG DEBUG] active_image_provider = {active_image_provider}", flush=True)
+        
+        if active_image_provider == "veo":
+            print(f"[IMG DEBUG] Entering Veo branch", flush=True)
+            try:
+                # Use Veo 3.1 for video-based image generation
+                # Generates video from previous frame, extracts last frame as "image"
+                print(f"[IMG] Using Veo 3.1 video generation (last frame extraction)", flush=True)
+                from veo_video_utils import generate_frame_via_video, _session_costs, MAX_SESSION_COST
+                print(f"[IMG] Veo module imported, session_cost=${_session_costs['total_cost']:.2f}/${MAX_SESSION_COST:.2f}", flush=True)
+                
+                # No frame limit - only budget limit
+                print(f"[IMG] Calling generate_frame_via_video with frame_idx={frame_idx}", flush=True)
+                
+                # Pass reference frames for visual continuity (like img2img)
+                # Use the same reference frames we collected for img2img
+                reference_frames_for_veo = prev_img_paths_list if prev_img_paths_list else []
+                if reference_frames_for_veo:
+                    print(f"[IMG] Passing {len(reference_frames_for_veo)} reference frames to Veo for continuity", flush=True)
+                
+                result_path, veo_prompt, video_path = generate_frame_via_video(
+                    prompt=prompt_str,
+                    first_frame_path=prev_img_paths_list[0] if prev_img_paths_list else None,
+                    caption=caption,
+                    frame_idx=frame_idx,
+                    world_prompt=world_prompt,
+                    action_context=choice,
+                    reference_frames=reference_frames_for_veo[1:] if len(reference_frames_for_veo) > 1 else []  # Skip first (used as starting frame)
+                )
+                print(f"[IMG] generate_frame_via_video returned: {result_path}", flush=True)
+                if video_path:
+                    print(f"[IMG] Video available for playback: {video_path}", flush=True)
+                
+                if result_path:
+                    _last_image_path = result_path
+                    return (result_path, veo_prompt, video_path)
+                else:
+                    print(f"[IMG] Veo returned None - budget limit reached or error, falling back to Gemini", flush=True)
+                    # Fall through to Gemini below
+            except Exception as veo_error:
+                print(f"[IMG] Veo error: {veo_error}", flush=True)
+                import traceback
+                traceback.print_exc()
+        
+        elif active_image_provider == "gemini":
             # Use Google Gemini (Nano Banana) - OFFICIAL API
             print(f"[IMG] Using Google Gemini (Nano Banana) provider")
             from gemini_image_utils import generate_with_gemini, generate_gemini_img2img
@@ -1182,7 +1236,7 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                 # For hard transitions (location changes), use ONLY 1 reference for lighting/aesthetic
                 # For normal transitions, use full reference set for composition continuity
                 print(f"\n{'='*70}")
-                print(f"[IMG GENERATION] ✅ USING IMG2IMG MODE (STYLE CONTINUITY)")
+                print(f"[IMG GENERATION] USING IMG2IMG MODE (STYLE CONTINUITY)")
                 print(f"[IMG GENERATION] frame_idx={frame_idx}")
                 print(f"[IMG GENERATION] movement_type={_last_movement_type}")
                 print(f"[IMG GENERATION] hard_transition={hard_transition}")
@@ -1193,8 +1247,8 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                 # SPECIAL CASE: Frame 1 always uses Frame 0 strongly (no hard transition)
                 if frame_idx == 1:
                     ref_images_to_use = prev_img_paths_list  # Use all references (Frame 0)
-                    print(f"[IMG GENERATION] 🎬 FRAME 1 SPECIAL CASE - Using ALL references from intro (strong continuity)")
-                    print(f"[IMG GENERATION] This ensures color/lighting consistency from Frame 0 → Frame 1")
+                    print(f"[IMG GENERATION] FRAME 1 SPECIAL CASE - Using ALL references from intro (strong continuity)")
+                    print(f"[IMG GENERATION] This ensures color/lighting consistency from Frame 0 to Frame 1")
                 elif hard_transition:
                     ref_images_to_use = prev_img_paths_list[:1]  # Only most recent for lighting
                     print(f"[IMG GENERATION] Hard transition - using 1 reference image (lighting/aesthetic only)")
@@ -1219,12 +1273,12 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                 )
             else:
                 print(f"\n{'='*70}")
-                print(f"[IMG GENERATION] ⚠️ USING TEXT-TO-IMAGE MODE (NO STYLE ANCHOR)")
+                print(f"[IMG GENERATION] USING TEXT-TO-IMAGE MODE (NO STYLE ANCHOR)")
                 print(f"[IMG GENERATION] Reasons:")
                 print(f"[IMG GENERATION]   - prev_img_paths_list has {len(prev_img_paths_list)} items")
                 print(f"[IMG GENERATION]   - frame_idx={frame_idx}")
                 if len(prev_img_paths_list) == 0:
-                    print(f"[IMG GENERATION] ⚠️ NO REFERENCE IMAGES IN HISTORY")
+                    print(f"[IMG GENERATION] NO REFERENCE IMAGES IN HISTORY")
                     print(f"[IMG GENERATION] This may cause style/aesthetic discontinuity")
                 print(f"{'='*70}\n")
                 result_path = generate_with_gemini(
@@ -1238,7 +1292,7 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                     hd_mode=HD_MODE  # Use global HD mode setting
                 )
             _last_image_path = result_path
-            return (result_path, prompt_str)
+            return (result_path, prompt_str, None)  # Gemini doesn't generate videos
         
         elif active_image_provider == "openai":
             # Use OpenAI gpt-image-1
@@ -1246,9 +1300,9 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
             
             # Validate API key
             if not OPENAI_API_KEY:
-                print("[OPENAI IMG] ❌ OPENAI_API_KEY not set! Cannot generate image.")
+                print("[OPENAI IMG] ERROR: OPENAI_API_KEY not set! Cannot generate image.")
                 print("[OPENAI IMG] Set environment variable OPENAI_API_KEY or add to config.json")
-                return (None, "")
+                return (None, "", None)
             
             # Try IMG2IMG if we have reference images AND it's enabled
             use_img2img = (OPENAI_IMG2IMG_ENABLED and prev_img_paths_list and len(prev_img_paths_list) > 0 and frame_idx > 0)
@@ -1271,11 +1325,11 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                             files.append(('image[]', (os.path.basename(img_path), open(img_path, 'rb'), 'image/png')))
                             print(f"[OPENAI IMG2IMG] Added reference {idx+1}: {os.path.basename(img_path)}")
                         except Exception as e:
-                            print(f"[OPENAI IMG2IMG] ⚠️ Failed to open {img_path}: {e}")
+                            print(f"[OPENAI IMG2IMG] Failed to open {img_path}: {e}")
                 
                 # If no files could be opened, fall back to text-to-image
                 if len(files) == 0:
-                    print(f"[OPENAI IMG2IMG] ⚠️ No reference images available, falling back to TEXT-TO-IMAGE")
+                    print(f"[OPENAI IMG2IMG] No reference images available, falling back to TEXT-TO-IMAGE")
                 else:
                     print(f"[OPENAI IMG2IMG] Total references: {len(files)}")
                     
@@ -1304,23 +1358,23 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                         )
                         
                         if response.status_code != 200:
-                            print(f"[OPENAI IMG2IMG] ❌ HTTP {response.status_code}: {response.text}")
+                            print(f"[OPENAI IMG2IMG] HTTP ERROR {response.status_code}: {response.text}")
                             raise Exception(f"OpenAI API error: {response.status_code}")
                         
                         # Parse JSON response with error handling
                         try:
                             result = response.json()
                         except json.JSONDecodeError as e:
-                            print(f"[OPENAI IMG2IMG] ❌ Failed to parse JSON response: {e}")
+                            print(f"[OPENAI IMG2IMG] Failed to parse JSON response: {e}")
                             raise Exception(f"Invalid JSON response from OpenAI: {e}")
                         
                         # Extract image data with error handling
                         if 'data' not in result or len(result['data']) == 0:
-                            print(f"[OPENAI IMG2IMG] ❌ No image data in response")
+                            print(f"[OPENAI IMG2IMG] No image data in response")
                             raise Exception("OpenAI response missing 'data' field")
                         
                         if 'b64_json' not in result['data'][0]:
-                            print(f"[OPENAI IMG2IMG] ❌ No b64_json in response data")
+                            print(f"[OPENAI IMG2IMG] No b64_json in response data")
                             raise Exception("OpenAI response missing 'b64_json' field")
                         
                         b64_data = result['data'][0]['b64_json']
@@ -1329,25 +1383,25 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                         try:
                             img_data = base64.b64decode(b64_data)
                         except Exception as e:
-                            print(f"[OPENAI IMG2IMG] ❌ Failed to decode base64: {e}")
+                            print(f"[OPENAI IMG2IMG] Failed to decode base64: {e}")
                             raise Exception(f"Base64 decode error: {e}")
                         
                         try:
                             with open(image_path, "wb") as f:
                                 f.write(img_data)
                         except Exception as e:
-                            print(f"[OPENAI IMG2IMG] ❌ Failed to write image file: {e}")
+                            print(f"[OPENAI IMG2IMG] Failed to write image file: {e}")
                             raise Exception(f"File write error: {e}")
                         
-                        print(f"[OPENAI IMG2IMG] ✅ Edit complete with {len(files)} reference(s)")
+                        print(f"[OPENAI IMG2IMG] Edit complete with {len(files)} reference(s)")
                         print(f"[OPENAI IMG2IMG] Image saved to: {image_path}")
                         
                         img2img_success = True
                         _last_image_path = f"/images/{filename}"
-                        return (_last_image_path, vhs_prompt)
+                        return (_last_image_path, vhs_prompt, None)  # OpenAI doesn't generate videos
                         
                     except Exception as e:
-                        print(f"[OPENAI IMG2IMG] ❌ Error during img2img: {e}")
+                        print(f"[OPENAI IMG2IMG] Error during img2img: {e}")
                         print(f"[OPENAI IMG2IMG] Will fall back to TEXT-TO-IMAGE")
                         # Don't re-raise - let it fall through to text-to-image fallback
                         
@@ -1385,17 +1439,20 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                     f.write(img_data)
                 print(f"[OPENAI TEXT2IMG] Image saved to: {image_path}")
                 
-                _last_image_path = f"/images/{filename}"
-                return (_last_image_path, vhs_prompt)
+            _last_image_path = f"/images/{filename}"
+            return (_last_image_path, vhs_prompt, None)  # OpenAI doesn't generate videos
         
         else:
-            raise ValueError(f"Unknown IMAGE_PROVIDER: {active_image_provider}. Supported: 'openai', 'gemini'")
+            raise ValueError(f"Unknown IMAGE_PROVIDER: {active_image_provider}. Supported: 'openai', 'gemini', 'veo'")
         # Skip time extraction - we already set time_of_day in state before generation
         # No need to extract it back from the image we just generated!
-        return (f"/images/{filename}", prompt_str)
+        return (f"/images/{filename}", prompt_str, None)
     except Exception as e:
-        print(f"[IMG PROVIDER {ai_provider_manager.get_image_provider()}] Error:", e)
-        return (None, "")
+        safe_error = str(e).encode('ascii', 'replace').decode('ascii')
+        print(f"[IMG PROVIDER {ai_provider_manager.get_image_provider()}] Error: {safe_error}")
+        import traceback
+        traceback.print_exc()
+        return (None, "", None)
 
 # ───────── vision dispatch generator ─────────────────────────────────────────
 def _generate_vision_dispatch(narrative_dispatch: str, world_prompt: str = "") -> str:
@@ -1708,7 +1765,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             print(f"DEBUG PRINT: _process_turn_background - Generating image...", flush=True)
             try:
                 hard_trans = is_hard_transition(choice, dispatch_text)
-                new_image_url, image_prompt = _gen_image(
+                new_image_url, image_prompt, video_url = _gen_image(
                     caption=vision_dispatch_for_image,
                     mode=state.get("current_phase", "normal"), # Use current_phase for mode
                     choice=choice,
@@ -1718,6 +1775,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                     hard_transition=hard_trans,
                     frame_idx=state.get("turn_count", 0) + 1 # Approximate frame index
                 )
+                # Note: video_url not used in this code path (old multiplayer mode)
                 if new_image_url:
                     image_item = create_feed_item(type="scene_image", content="The scene shifts...", image_url=new_image_url)
                     new_feed_items_for_log.append(image_item)
@@ -2131,7 +2189,7 @@ def generate_intro_turn_feed_items() -> List[Dict[str, Any]]:
         try:
             vision_dispatch_for_intro_image = _generate_vision_dispatch(initial_narrative_content, state.get("world_prompt", "Initialization sequence."))
             if vision_dispatch_for_intro_image:
-                initial_image_url, initial_image_prompt = _gen_image(
+                initial_image_url, initial_image_prompt, initial_video_url = _gen_image(
                     caption=vision_dispatch_for_intro_image, 
                     mode="normal",
                     choice="Initialize Simulation",
@@ -2139,6 +2197,7 @@ def generate_intro_turn_feed_items() -> List[Dict[str, Any]]:
                     world_prompt=state.get("world_prompt", "Initialization sequence."),
                     frame_idx=0 
                 )
+                # Note: initial_video_url not used in this code path (intro sequence)
                 if initial_image_url:
                     image_item = create_feed_item(type="scene_image", content="Initialising environment...", image_url=initial_image_url)
                     intro_items.append(image_item)
@@ -2623,7 +2682,7 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
             use_lore=False  # Dispatch is mechanical, lore only for world evolution
         )
         
-        print("[COMBINED DISPATCH] ✅ Complete")
+        print("[COMBINED DISPATCH] Complete")
         
         # Strip markdown code fences if present
         if result.startswith("```"):
@@ -2681,10 +2740,10 @@ def summarize_world_state_diff(prev_state: dict, state: dict) -> str:
             diffs.append(f"World event: {state.get('world_prompt', '')}")
     # Chaos level
     if prev_state.get('chaos_level', 0) != state.get('chaos_level', 0):
-        diffs.append(f"Chaos level: {prev_state.get('chaos_level', 0)} → {state.get('chaos_level', 0)}")
+        diffs.append(f"Chaos level: {prev_state.get('chaos_level', 0)} -> {state.get('chaos_level', 0)}")
     # Phase
     if prev_state.get('current_phase', 'normal') != state.get('current_phase', 'normal'):
-        diffs.append(f"Phase: {prev_state.get('current_phase', 'normal')} → {state.get('current_phase', 'normal')}")
+        diffs.append(f"Phase: {prev_state.get('current_phase', 'normal')} -> {state.get('current_phase', 'normal')}")
     # Player state
     if prev_state.get('player_state', {}) != state.get('player_state', {}):
         prev_alive = prev_state.get('player_state', {}).get('alive', True)
@@ -2756,7 +2815,8 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
     global state, history
     
     # CRITICAL: Log everything for Render debugging
-    print(f"[ADVANCE_TURN] Choice: '{choice[:100]}'")
+    safe_choice = choice[:100].encode('ascii', 'replace').decode('ascii')
+    print(f"[ADVANCE_TURN] Choice: '{safe_choice}'")
     print(f"[ADVANCE_TURN] Fate: {fate}")
     print(f"[ADVANCE_TURN] Is Timeout Penalty: {is_timeout_penalty}")
     try:
@@ -2824,7 +2884,8 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
                         break
             
             print(f"[IMG GEN] About to generate image:")
-            print(f"  - Choice: '{choice[:80]}'")
+            safe_choice = choice[:80].encode('ascii', 'replace').decode('ascii')
+            print(f"  - Choice: '{safe_choice}'")
             print(f"  - Is timeout penalty: {is_timeout_penalty}")
             print(f"  - Hard transition: {hard_transition}")
             print(f"  - Last image path: {last_image_path}")
@@ -2834,7 +2895,7 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
                 mode,
                 choice,
                 image_description="",
-                time_of_day="",  # Removed - prevents outdoor lighting forcing indoor→outdoor teleports
+                time_of_day="",  # Removed - prevents outdoor lighting forcing indoor->outdoor teleports
                 use_edit_mode=(last_image_path and os.path.exists(last_image_path)),
                 frame_idx=frame_idx,
                 dispatch=dispatch,
@@ -2842,11 +2903,14 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
                 hard_transition=hard_transition,
                 is_timeout_penalty=is_timeout_penalty  # Pass flag to image generation
             )
+            consequence_video_url = None
             if result:
-                consequence_img_url, consequence_img_prompt = result
-            print(f"✅ [IMG FAST] Image ready: {consequence_img_url}")
+                consequence_img_url, consequence_img_prompt, consequence_video_url = result
+            print(f"[IMG FAST] Image ready: {consequence_img_url}")
+            if consequence_video_url:
+                print(f"[IMG FAST] Video ready: {consequence_video_url}")
         except Exception as e:
-            print(f"❌ [IMG FAST] Error: {e}")
+            print(f"[IMG FAST] Error: {e}")
             import traceback
             traceback.print_exc()
         
@@ -2855,6 +2919,7 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             "vision_dispatch": vision_dispatch,
             "consequence_image": consequence_img_url,
             "consequence_image_prompt": consequence_img_prompt,
+            "consequence_video": consequence_video_url,  # Video path for HD mode playback
             "hard_transition": hard_transition,  # Track location changes for reference buffer
             "phase": state["current_phase"],
             "chaos": state["chaos_level"],
@@ -2862,7 +2927,7 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             "mode": state.get("mode", "camcorder")
         }
     except Exception as e:
-        print(f"❌ [IMG FAST] Fatal error: {e}")
+        print(f"[IMG FAST] Fatal error: {e}")
         import traceback
         traceback.print_exc()
         return {
@@ -3097,7 +3162,7 @@ def generate_intro_image_fast():
     dispatch_img_prompt = ""
     try:
         print("[INTRO FAST] Generating opening image...")
-        dispatch_img_url, dispatch_img_prompt = _gen_image(
+        dispatch_img_url, dispatch_img_prompt, dispatch_video_url = _gen_image(
             vision_dispatch,
             mode,
             "Intro",
@@ -3109,12 +3174,15 @@ def generate_intro_image_fast():
             world_prompt=prologue,
             hard_transition=False
         )
+        # Note: dispatch_video_url not used in intro sequence (Frame 0 is always static image)
         if dispatch_img_url:
-            print(f"✅ [INTRO FAST] Image ready for display: {dispatch_img_url}")
+            print(f"[INTRO FAST] Image ready for display: {dispatch_img_url}", flush=True)
             _last_image_path = dispatch_img_url
             state['current_image_prompt'] = dispatch_img_prompt
     except Exception as e:
-        print(f"❌ [INTRO FAST] Image generation error: {e}")
+        import traceback
+        print(f"[INTRO FAST] Image generation error: {e}", flush=True)
+        traceback.print_exc()
     
     return {
         "dispatch": prologue,
@@ -3231,7 +3299,7 @@ def generate_intro_turn():
     image_description = ""
     try:
         print("[INTRO] Generating opening image...")
-        dispatch_img_url, dispatch_img_prompt = _gen_image(
+        dispatch_img_url, dispatch_img_prompt, dispatch_video_url = _gen_image(
             vision_dispatch,  # Visual description of the opening scene
             mode,
             "Intro",
@@ -3243,15 +3311,16 @@ def generate_intro_turn():
             world_prompt=prologue,
             hard_transition=False
         )
+        # Note: dispatch_video_url not used in intro sequence (Frame 0 is always static image)
         if dispatch_img_url:
-            print(f"✅ [INTRO] Opening image generated: {dispatch_img_url}")
+            print(f"[INTRO] Opening image generated: {dispatch_img_url}")
             _last_image_path = dispatch_img_url
             state['current_image_prompt'] = dispatch_img_prompt
             image_description = ""  # Not needed anymore
         else:
-            print("[INTRO] ⚠️ Image generation returned None")
+            print("[INTRO] Image generation returned None")
     except Exception as e:
-        print(f"❌ [INTRO] Error generating opening image: {e}")
+        print(f"[INTRO] Error generating opening image: {e}")
         import traceback
         traceback.print_exc()
     

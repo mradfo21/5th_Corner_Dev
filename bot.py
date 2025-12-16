@@ -185,6 +185,56 @@ if DISCORD_ENABLED:
         await asyncio.sleep(1.5)  # Display result
         await msg.delete()
     
+    def _create_death_replay_tape() -> tuple[Optional[str], str]:
+        """
+        Create a VHS tape from the current run.
+        In HD mode: Creates stitched video with audio from Veo segments
+        In normal mode: Creates GIF from images
+        Returns: (tape_path or None, error_message or empty string)
+        """
+        import engine
+        
+        # Check if we're in HD mode (Veo)
+        if hasattr(engine, 'VEO_MODE_ENABLED') and engine.VEO_MODE_ENABLED:
+            print(f"[TAPE] HD MODE detected - attempting to stitch video segments...")
+            
+            # Try to stitch videos first
+            try:
+                from veo_video_utils import stitch_video_segments
+                from pathlib import Path
+                
+                # Collect video segments from this session
+                segments_dir = ROOT / "films" / "segments"
+                if segments_dir.exists():
+                    # Get all .mp4 files, sorted by name (which includes timestamp)
+                    video_files = sorted(segments_dir.glob("seg_*.mp4"))
+                    
+                    if len(video_files) > 0:
+                        print(f"[TAPE HD] Found {len(video_files)} video segments to stitch")
+                        video_paths = [str(f) for f in video_files]
+                        
+                        stitched_video, error = stitch_video_segments(video_paths, output_name="HD_tape")
+                        
+                        if stitched_video:
+                            print(f"[TAPE HD] Successfully stitched HD video: {stitched_video}")
+                            return (stitched_video, "")
+                        else:
+                            print(f"[TAPE HD] Stitching failed: {error}")
+                            print(f"[TAPE HD] Falling back to GIF...")
+                    else:
+                        print(f"[TAPE HD] No video segments found, falling back to GIF")
+                else:
+                    print(f"[TAPE HD] Segments directory not found, falling back to GIF")
+                    
+            except Exception as e:
+                print(f"[TAPE HD] Error stitching videos: {e}")
+                import traceback
+                traceback.print_exc()
+                print(f"[TAPE HD] Falling back to GIF...")
+        
+        # Normal mode or fallback: create GIF
+        return _create_death_replay_gif()
+    
     def _create_death_replay_gif() -> tuple[Optional[str], str]:
         """
         Create a VHS tape (GIF) from all images in the current run.
@@ -229,12 +279,12 @@ if DISCORD_ENABLED:
                         img = Image.open(str(full_path))
                         frame_sizes.append(img.size)
                         frames.append((img, img.size, idx))
-                        print(f"[TAPE] ✅ Frame {idx+1} loaded: {img.size}")
+                        print(f"[TAPE] Frame {idx+1} loaded: {img.size}")
                     except Exception as e:
-                        print(f"[TAPE] ❌ Failed to open frame {idx+1}: {e}")
+                        print(f"[TAPE] ERROR: Failed to open frame {idx+1}: {e}")
                         missing_files.append(f"{img_path} (failed to open)")
                 else:
-                    print(f"[TAPE] ❌ Frame {idx+1} not found: {full_path}")
+                    print(f"[TAPE] ERROR: Frame {idx+1} not found: {full_path}")
                     missing_files.append(str(img_path))
             
             if len(frames) < 2:
@@ -282,16 +332,16 @@ if DISCORD_ENABLED:
                     if img_cropped.size != TARGET_SIZE:
                         img_resized = img_cropped.resize(TARGET_SIZE, Image.Resampling.LANCZOS)
                         normalized_frames.append(img_resized)
-                        print(f"[TAPE] Frame {idx+1}: {original_size} → cropped → {TARGET_SIZE}")
+                        print(f"[TAPE] Frame {idx+1}: {original_size} -> cropped -> {TARGET_SIZE}")
                     else:
                         normalized_frames.append(img_cropped)
-                        print(f"[TAPE] Frame {idx+1}: {original_size} → cropped (already correct)")
+                        print(f"[TAPE] Frame {idx+1}: {original_size} -> cropped (already correct)")
                 else:
                     normalized_frames.append(img_rgb)
                     print(f"[TAPE] Frame {idx+1}: {original_size} (already matches)")
             
             frames = normalized_frames
-            print(f"[TAPE] ✅ All {len(frames)} frames normalized to {TARGET_SIZE[0]}x{TARGET_SIZE[1]}")
+            print(f"[TAPE] All {len(frames)} frames normalized to {TARGET_SIZE[0]}x{TARGET_SIZE[1]}")
             
             # Create timestamped tape (they are the memories, never deleted)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -321,10 +371,10 @@ if DISCORD_ENABLED:
                 
                 # Save with optimization - ALL frames preserved
                 scaled_frames[0].save(
-                    str(tape_path),
-                    save_all=True,
+                str(tape_path),
+                save_all=True,
                     append_images=scaled_frames[1:],
-                    duration=500,  # 0.5 seconds per frame
+                duration=500,  # 0.5 seconds per frame
                     loop=0,
                     optimize=True,  # Enable GIF optimization
                     colors=strategy["colors"]  # Reduce color palette progressively
@@ -336,11 +386,11 @@ if DISCORD_ENABLED:
                 print(f"[TAPE] Generated: {file_size_mb:.2f} MB ({len(scaled_frames)} frames, {scaled_frames[0].size[0]}x{scaled_frames[0].size[1]})")
                 
                 if file_size <= SAFE_MAX_SIZE:
-                    print(f"[TAPE] ✅ Success! Tape under Discord limit with {strategy['description']}")
-                    print(f"[TAPE] ▶ VHS tape recorded: {tape_path.name} ({len(scaled_frames)} frames, {file_size_mb:.2f} MB)")
+                    print(f"[TAPE] Success! Tape under Discord limit with {strategy['description']}")
+                    print(f"[TAPE] VHS tape recorded: {tape_path.name} ({len(scaled_frames)} frames, {file_size_mb:.2f} MB)")
                     return str(tape_path), ""
                 else:
-                    print(f"[TAPE] ⚠️ Still too large ({file_size_mb:.2f} MB > 7.5 MB), trying next strategy...")
+                    print(f"[TAPE] Still too large ({file_size_mb:.2f} MB > 7.5 MB), trying next strategy...")
             
             # If we exhausted all strategies, return the last attempt with a warning
             file_size = os.path.getsize(tape_path)
@@ -350,7 +400,7 @@ if DISCORD_ENABLED:
                 print(f"[TAPE ERROR] {error}")
                 return str(tape_path), error  # Return path anyway, let user try
             else:
-                print(f"[TAPE] ⚠️ Tape is large but under limit: {file_size_mb:.2f} MB")
+                print(f"[TAPE] WARNING: Tape is large but under limit: {file_size_mb:.2f} MB")
                 return str(tape_path), ""
         
         except ImportError as e:
@@ -378,6 +428,40 @@ if DISCORD_ENABLED:
         if local.exists():
             return discord.File(local, filename=local.name), local.name
         return None, None
+    
+    # ───────── video helper (HD mode) ────────────────────────────────────────────
+    def _attach_video(video_path: Optional[str]) -> Tuple[Optional[discord.File], Optional[str]]:
+        """Attach a video file for HD mode playback. Returns (File, filename) or (None, None).
+        
+        Respects Discord's file size limits (8 MB for non-Nitro, 25 MB for Nitro).
+        """
+        if not video_path:
+            return None, None
+        
+        # Discord file size limits
+        DISCORD_FILE_SIZE_LIMIT_MB = 8  # Conservative limit for non-Nitro servers
+        
+        # Handle both relative and absolute paths
+        if Path(video_path).is_absolute():
+            local = Path(video_path)
+        else:
+            # Try relative to ROOT
+            local = ROOT / video_path
+        
+        if local.exists():
+            file_size_mb = local.stat().st_size / 1024 / 1024
+            print(f"[VIDEO ATTACH] Found video: {local} ({file_size_mb:.1f} MB)")
+            
+            # Check file size against Discord limit
+            if file_size_mb > DISCORD_FILE_SIZE_LIMIT_MB:
+                print(f"[VIDEO ATTACH] WARNING: Video too large ({file_size_mb:.1f} MB > {DISCORD_FILE_SIZE_LIMIT_MB} MB limit)")
+                print(f"[VIDEO ATTACH] Skipping video, will show image only")
+                return None, None
+            
+            return discord.File(local, filename=local.name), local.name
+        else:
+            print(f"[VIDEO ATTACH] Video not found: {local}")
+            return None, None
 
     # ───────── embed builders ───────────────────────────────────────────────────
     def snap_embed(d: dict, img_name: Optional[str]) -> discord.Embed:
@@ -428,12 +512,12 @@ if DISCORD_ENABLED:
         explore_keywords = ["explore", "search", "look", "scan", "investigate", "inspect", "trace", "survey", "observe", "peek", "scout"]
         new_scene_keywords = ["enter", "leave", "exit", "advance", "proceed", "move on", "set out", "start", "begin", "new scene", "next area", "go to", "return"]
         if any(k in choice_lower for k in explore_keywords):
-            return ("explore", "🏃‍♂️")
+            return ("explore", "‍♂️")
         if any(k in choice_lower for k in action_keywords):
             return ("action", "⚡")
         if any(k in choice_lower for k in new_scene_keywords):
-            return ("new scene", "🎬")
-        return ("explore", "🏃‍♂️")
+            return ("new scene", "")
+        return ("explore", "‍♂️")
 
     MAX_BUTTON_LABEL_LENGTH = 80
     def safe_label(label):
@@ -453,9 +537,9 @@ if DISCORD_ENABLED:
             return ""
         
         indicators = {
-            'forward_movement': '🏃 **MOVEMENT**',
-            'exploration': '👀 **MOVEMENT**',
-            'stationary': '🧍 **MOVEMENT**'
+            'forward_movement': ' **MOVEMENT**',
+            'exploration': ' **MOVEMENT**',
+            'stationary': ' **MOVEMENT**'
         }
         return indicators.get(movement_type, "")
     
@@ -477,20 +561,20 @@ if DISCORD_ENABLED:
         
         # UNLUCKY beats - something complicates
         unlucky_beats = [
-            "⚠️ You hear distant mechanical sounds.",
-            "⚠️ Something shifts in the shadows nearby.",
-            "⚠️ The air feels wrong here.",
-            "⚠️ You notice fresh boot prints in the dust.",
-            "⚠️ Equipment hums to life in the distance.",
+            "WARNING: You hear distant mechanical sounds.",
+            "WARNING: Something shifts in the shadows nearby.",
+            "WARNING: The air feels wrong here.",
+            "WARNING: You notice fresh boot prints in the dust.",
+            "WARNING: Equipment hums to life in the distance.",
         ]
         
         # NORMAL beats - neutral tension
         normal_beats = [
-            "🎬 The facility holds its breath.",
-            "🎬 Silence stretches across the desert.",
-            "🎬 Time passes. The sun continues its arc.",
-            "🎬 The red mesa looms in the distance.",
-            "🎬 Nothing moves in your immediate view.",
+            " The facility holds its breath.",
+            " Silence stretches across the desert.",
+            " Time passes. The sun continues its arc.",
+            " The red mesa looms in the distance.",
+            " Nothing moves in your immediate view.",
         ]
         
         if fate == "LUCKY":
@@ -693,7 +777,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 try:
                     if hasattr(view, 'last_choices_message') and view.last_choices_message:
                         await view.last_choices_message.edit(view=view)
-                        print("[CHOICE] ✅ Buttons disabled to prevent double-click")
+                        print("[CHOICE] Buttons disabled to prevent double-click")
                 except Exception as e:
                     print(f"[CHOICE] Warning: Could not disable buttons: {e}")
             
@@ -710,7 +794,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     None, lambda: engine._ask(micro_prompt, model="gpt-4o-mini", temp=0.4, tokens=50)
                 )
             except Exception:
-                micro_reaction = "👀 The world holds its breath."
+                micro_reaction = " The world holds its breath."
             micro_msg = await interaction.channel.send(embed=discord.Embed(
                 description=safe_embed_desc(micro_reaction),
                 color=CORNER_TEAL  # blue for anticipation
@@ -822,50 +906,73 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                                 description=test_msg,
                                 color=0x00FF00  # Green for success
                             ))
-                            print(f"[TEST] ✅ Retrieved previous turn's prompt: {stored_prompt[:80]}...")
+                            print(f"[TEST] Retrieved previous turn's prompt: {stored_prompt[:80]}...")
                         else:
                             await interaction.channel.send(embed=discord.Embed(
                                 title="🧪 TEST: Image Prompt Storage",
-                                description=f"⚠️ No image_prompt found in previous turn\n**Choice:** {stored_choice}",
+                                description=f"WARNING: No image_prompt found in previous turn\n**Choice:** {stored_choice}",
                                 color=0xFFA500  # Orange for warning
                             ))
                     else:
                         await interaction.channel.send(embed=discord.Embed(
                             title="🧪 TEST: Image Prompt Storage",
-                            description="⚠️ History is empty (this is the first turn)",
+                            description="WARNING: History is empty (this is the first turn)",
                             color=0xFFA500
                         ))
                 await asyncio.sleep(1.2)  # Let user read the test result
             except Exception as e:
-                print(f"[TEST] ❌ Error retrieving image prompt: {e}")
+                print(f"[TEST] ERROR: Error retrieving image prompt: {e}")
                 import traceback
                 traceback.print_exc()
                 await interaction.channel.send(embed=discord.Embed(
                     title="🧪 TEST: Image Prompt Storage",
-                    description=f"❌ Error: {str(e)[:200]}",
+                    description=f"ERROR: Error: {str(e)[:200]}",
                     color=0xFF0000  # Red for error
                 ))
             
-            # Show IMAGE IMMEDIATELY from Phase 1
+            # Show IMAGE and/or VIDEO IMMEDIATELY from Phase 1
             image_path = phase1.get("consequence_image")
+            video_path = phase1.get("consequence_video")
             
             # Track image for VHS tape
             global _run_images
             print(f"[TAPE RECORDING] Checking if image should be recorded...")
             print(f"[TAPE RECORDING]   image_path = {image_path}")
+            print(f"[TAPE RECORDING]   video_path = {video_path}")
             print(f"[TAPE RECORDING]   Current tape has {len(_run_images)} frames")
             if image_path:
                 _run_images.append(image_path)
-                print(f"[TAPE] ✅ Frame {len(_run_images)} recorded: {image_path}")
+                print(f"[TAPE] Frame {len(_run_images)} recorded: {image_path}")
                 print(f"[TAPE] Total frames in memory: {_run_images}")
             else:
-                print(f"[TAPE] ❌ NO IMAGE PATH - Frame NOT recorded!")
+                print(f"[TAPE] ERROR: NO IMAGE PATH - Frame NOT recorded!")
             
+            # HD MODE: If video available, send video (with auto-play)
+            # Always send image as fallback/thumbnail
+            if video_path:
+                print(f"[HD MODE] Video available, displaying video player...")
+                video_file, video_name = _attach_video(video_path)
+                if video_file:
+                    # Send video - Discord auto-plays MP4 files!
+                    await interaction.channel.send(
+                        content="🎬 **HD VIDEO**",
+                        file=video_file
+                    )
+                    print(f"[BOT] Video displayed with auto-play: {video_name}")
+                else:
+                    print(f"[HD MODE] Video file not found, falling back to image only")
+            
+            # Always send the last frame image (for game logic and as fallback)
             if image_path:
                 file, name = _attach(image_path, phase1.get("vision_dispatch", ""))
                 if file:
-                    await interaction.channel.send(file=file)
-                    print(f"[BOT] ✅ Image displayed immediately (before choices)!")
+                    if not video_path:
+                        # Normal mode: just the image
+                        await interaction.channel.send(file=file)
+                        print(f"[BOT] Image displayed immediately (before choices)!")
+                    else:
+                        # HD mode: image already sent with video, skip duplicate
+                        print(f"[BOT] Image skipped (video already displayed)")
                 await asyncio.sleep(0.5)
             
             # Show "Generating choices..." while Phase 2 runs
@@ -940,7 +1047,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 
                 # Start tape creation in background
                 loop = asyncio.get_running_loop()
-                tape_task = loop.run_in_executor(None, _create_death_replay_gif)
+                tape_task = loop.run_in_executor(None, _create_death_replay_tape)
                 
                 # VHS eject animation (plays while GIF generates)
                 eject_sequence = [
@@ -976,23 +1083,23 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 # Send tape or error
                 if tape_path:
                     await interaction.channel.send(embed=discord.Embed(
-                        title="📼 VHS TAPE RECOVERED",
+                        title=" VHS TAPE RECOVERED",
                         description="Camera footage retrieved from scene.",
                         color=CORNER_GREY
                     ))
                     try:
                         await interaction.channel.send(file=discord.File(tape_path))
-                        print("[DEATH] 📼 Tape uploaded - waiting for player to download...")
+                        print("[DEATH]  Tape uploaded - waiting for player to download...")
                     except Exception as e:
                         print(f"[DEATH] Failed to send tape: {e}")
                         await interaction.channel.send(embed=discord.Embed(
-                            title="⚠️ Tape Upload Failed",
+                            title="WARNING: Tape Upload Failed",
                             description=f"Tape created but upload failed: {e}",
                             color=VHS_RED
                         ))
                 else:
                     await interaction.channel.send(embed=discord.Embed(
-                        title="⚠️ No Tape Created",
+                        title="WARNING: No Tape Created",
                         description=f"**Reason:** {error_msg}",
                         color=VHS_RED
                     ))
@@ -1002,7 +1109,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 
                 class PlayAgainButton(Button):
                     def __init__(self):
-                        super().__init__(label="▶️ Play Again", style=discord.ButtonStyle.success)
+                        super().__init__(label="️ Play Again", style=discord.ButtonStyle.success)
                     
                     async def callback(self, button_interaction: discord.Interaction):
                         global auto_advance_task, countdown_task, auto_play_enabled
@@ -1100,7 +1207,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             # 5.7. Show danger/combat indicator if present
             if disp.get('danger'):
                 await interaction.channel.send(embed=discord.Embed(
-                    description=safe_embed_desc('⚠️ **Danger! Threat detected in the scene.**'),
+                    description=safe_embed_desc('WARNING: **Danger! Threat detected in the scene.**'),
                     color=VHS_RED
                 ))
                 await asyncio.sleep(random.uniform(1.5, 2.5))
@@ -1155,7 +1262,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             
             custom_choice = self.action.value.strip()
             if not custom_choice:
-                await interaction.response.send_message("❌ Please enter an action!", ephemeral=True)
+                await interaction.response.send_message("ERROR: Please enter an action!", ephemeral=True)
                 return
             
             print(f"[CUSTOM ACTION] Player entered: {custom_choice}")
@@ -1191,7 +1298,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                         for item in component.children:
                             item.disabled = True
                     await message.edit(view=discord.ui.View.from_message(message))
-                    print("[CUSTOM ACTION] ✅ Buttons disabled to prevent concurrent actions")
+                    print("[CUSTOM ACTION] Buttons disabled to prevent concurrent actions")
             except Exception as e:
                 print(f"[CUSTOM ACTION] Warning: Could not disable buttons: {e}")
             
@@ -1219,10 +1326,10 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 )
                 # Ensure we never have empty string for Discord embed
                 if not micro_reaction or not micro_reaction.strip():
-                    micro_reaction = "👀 The world holds its breath."
+                    micro_reaction = " The world holds its breath."
             except Exception as e:
                 print(f"[CUSTOM ACTION] Micro reaction failed: {e}")
-                micro_reaction = "👀 The world holds its breath."
+                micro_reaction = " The world holds its breath."
             
             micro_msg = await interaction.channel.send(embed=discord.Embed(
                 description=safe_embed_desc(micro_reaction),
@@ -1332,47 +1439,68 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                                 description=test_msg,
                                 color=0x00FF00  # Green for success
                             ))
-                            print(f"[TEST CUSTOM] ✅ Retrieved previous turn's prompt: {stored_prompt[:80]}...")
+                            print(f"[TEST CUSTOM] Retrieved previous turn's prompt: {stored_prompt[:80]}...")
                         else:
                             await interaction.channel.send(embed=discord.Embed(
                                 title="🧪 TEST: Image Prompt Storage",
-                                description=f"⚠️ No image_prompt found in previous turn\n**Choice:** {stored_choice}",
+                                description=f"WARNING: No image_prompt found in previous turn\n**Choice:** {stored_choice}",
                                 color=0xFFA500  # Orange for warning
                             ))
                     else:
                         await interaction.channel.send(embed=discord.Embed(
                             title="🧪 TEST: Image Prompt Storage",
-                            description="⚠️ History is empty (this is the first turn)",
+                            description="WARNING: History is empty (this is the first turn)",
                             color=0xFFA500
                         ))
                 await asyncio.sleep(1.2)  # Let user read the test result
             except Exception as e:
-                print(f"[TEST CUSTOM] ❌ Error retrieving image prompt: {e}")
+                print(f"[TEST CUSTOM] ERROR: Error retrieving image prompt: {e}")
                 import traceback
                 traceback.print_exc()
                 await interaction.channel.send(embed=discord.Embed(
                     title="🧪 TEST: Image Prompt Storage",
-                    description=f"❌ Error: {str(e)[:200]}",
+                    description=f"ERROR: Error: {str(e)[:200]}",
                     color=0xFF0000  # Red for error
                 ))
             
-            # Display image
+            # Display image and/or video
             img_path = disp.get("consequence_image")
+            video_path = disp.get("consequence_video")
             
             # Track image for VHS tape
             global _run_images
             print(f"[TAPE RECORDING CUSTOM] Checking if image should be recorded...")
             print(f"[TAPE RECORDING CUSTOM]   img_path = {img_path}")
+            print(f"[TAPE RECORDING CUSTOM]   video_path = {video_path}")
             print(f"[TAPE RECORDING CUSTOM]   Current tape has {len(_run_images)} frames")
             if img_path:
                 _run_images.append(img_path)
-                print(f"[TAPE] ✅ Frame {len(_run_images)} recorded: {img_path}")
+                print(f"[TAPE] Frame {len(_run_images)} recorded: {img_path}")
             else:
-                print(f"[TAPE] ❌ NO IMAGE PATH - Frame NOT recorded!")
+                print(f"[TAPE] ERROR: NO IMAGE PATH - Frame NOT recorded!")
             
+            # HD MODE: If video available, send video (with auto-play)
+            if video_path:
+                print(f"[HD MODE CUSTOM] Video available, displaying video player...")
+                video_file, video_name = _attach_video(video_path)
+                if video_file:
+                    await interaction.channel.send(
+                        content="🎬 **HD VIDEO**",
+                        file=video_file
+                    )
+                    print(f"[BOT CUSTOM] Video displayed with auto-play: {video_name}")
+                else:
+                    print(f"[HD MODE CUSTOM] Video file not found, falling back to image only")
+            
+            # Always send the last frame image (for game logic and as fallback)
             if img_path:
-                print(f"[BOT] ✅ Image displayed immediately (before choices)!")
-                await interaction.channel.send(file=discord.File(img_path.lstrip("/")))
+                if not video_path:
+                    # Normal mode: just the image
+                    print(f"[BOT] Image displayed immediately (before choices)!")
+                    await interaction.channel.send(file=discord.File(img_path.lstrip("/")))
+                else:
+                    # HD mode: image already sent with video, skip duplicate
+                    print(f"[BOT CUSTOM] Image skipped (video already displayed)")
                 await asyncio.sleep(0.5)
             
             # CHECK FOR DEATH - Read FRESH state
@@ -1401,7 +1529,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 
                 # Start tape creation in background
                 loop = asyncio.get_running_loop()
-                tape_task = loop.run_in_executor(None, _create_death_replay_gif)
+                tape_task = loop.run_in_executor(None, _create_death_replay_tape)
                 
                 # VHS eject animation (plays while GIF generates)
                 eject_sequence = [
@@ -1437,23 +1565,23 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 # Send tape or error
                 if tape_path:
                     await interaction.channel.send(embed=discord.Embed(
-                        title="📼 VHS TAPE RECOVERED",
+                        title=" VHS TAPE RECOVERED",
                         description="Camera footage retrieved from scene.",
                         color=CORNER_GREY
                     ))
                     try:
                         await interaction.channel.send(file=discord.File(tape_path))
-                        print("[DEATH] 📼 Tape uploaded - waiting for player to download...")
+                        print("[DEATH]  Tape uploaded - waiting for player to download...")
                     except Exception as e:
                         print(f"[DEATH] Failed to send tape: {e}")
                         await interaction.channel.send(embed=discord.Embed(
-                            title="⚠️ Tape Upload Failed",
+                            title="WARNING: Tape Upload Failed",
                             description=f"Tape created but upload failed: {e}",
                             color=VHS_RED
                         ))
                 else:
                     await interaction.channel.send(embed=discord.Embed(
-                        title="⚠️ No Tape Created",
+                        title="WARNING: No Tape Created",
                         description=f"**Reason:** {error_msg}",
                         color=VHS_RED
                     ))
@@ -1463,7 +1591,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 
                 class PlayAgainButton(Button):
                     def __init__(self):
-                        super().__init__(label="▶️ Play Again", style=discord.ButtonStyle.success)
+                        super().__init__(label="️ Play Again", style=discord.ButtonStyle.success)
                     
                     async def callback(self, button_interaction: discord.Interaction):
                         global auto_advance_task, countdown_task, auto_play_enabled
@@ -1631,7 +1759,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 try:
                     if hasattr(view, 'last_choices_message') and view.last_choices_message:
                         await view.last_choices_message.edit(view=view)
-                        print("[RESTART] ✅ Buttons disabled immediately")
+                        print("[RESTART] Buttons disabled immediately")
                 except Exception as e:
                     print(f"[RESTART] Warning: Could not disable buttons: {e}")
             
@@ -1661,7 +1789,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             
             # Start tape creation in background (runs in executor)
             loop = asyncio.get_running_loop()
-            tape_task = loop.run_in_executor(None, _create_death_replay_gif)
+            tape_task = loop.run_in_executor(None, _create_death_replay_tape)
             
             # VHS eject animation sequence (plays while GIF generates)
             eject_sequence = [
@@ -1698,7 +1826,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             # Send tape or error message
             if tape_path:
                 await interaction.channel.send(embed=discord.Embed(
-                    title="📼 VHS TAPE SAVED",
+                    title=" VHS TAPE SAVED",
                     description="Recording saved before restart.",
                     color=CORNER_GREY
                 ))
@@ -1708,14 +1836,14 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 except Exception as e:
                     print(f"[RESTART] Failed to send tape: {e}")
                     await interaction.channel.send(embed=discord.Embed(
-                        title="⚠️ Tape Upload Failed",
+                        title="WARNING: Tape Upload Failed",
                         description=f"Tape was created but failed to upload: {e}",
                         color=VHS_RED
                     ))
             else:
                 # Tape creation failed - tell the user why
                 await interaction.channel.send(embed=discord.Embed(
-                    title="⚠️ No Tape Created",
+                    title="WARNING: No Tape Created",
                     description=f"Could not create VHS tape.\n\n**Reason:** {error_msg}",
                     color=VHS_RED
                 ))
@@ -1775,7 +1903,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 # Parse the delay value
                 delay = int(self.delay_input.value)
                 if delay < 1:
-                    await interaction.response.send_message("⚠️ Delay must be at least 1 second!", ephemeral=True)
+                    await interaction.response.send_message("WARNING: Delay must be at least 1 second!", ephemeral=True)
                     return
                 
                 AUTO_PLAY_DELAY = delay
@@ -1820,7 +1948,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     print("[AUTO-PLAY] No choices available yet - will start on next turn")
                 
             except ValueError:
-                await interaction.response.send_message("⚠️ Please enter a valid number!", ephemeral=True)
+                await interaction.response.send_message("WARNING: Please enter a valid number!", ephemeral=True)
 
     class AutoPlayToggleButton(Button):
         def __init__(self, parent_view):
@@ -1886,7 +2014,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
     class HDToggleButton(Button):
         def __init__(self, parent_view):
             global hd_mode_enabled
-            label = "🎬 HD: ON" if hd_mode_enabled else "🎬 HD: OFF"
+            label = " HD: ON" if hd_mode_enabled else " HD: OFF"
             style = discord.ButtonStyle.success if hd_mode_enabled else discord.ButtonStyle.secondary
             super().__init__(label=label, style=style, row=1)
             self.parent_view = parent_view
@@ -1901,11 +2029,11 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             
             # Update button appearance
             if hd_mode_enabled:
-                self.label = "🎬 HD: ON"
+                self.label = " HD: ON"
                 self.style = discord.ButtonStyle.success
                 print("[HD MODE] Enabled - High quality images (slower)")
             else:
-                self.label = "🎬 HD: OFF"
+                self.label = " HD: OFF"
                 self.style = discord.ButtonStyle.secondary
                 print("[HD MODE] Disabled - Fast images (lower quality)")
             
@@ -2113,7 +2241,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
     # --- Helper to send intro tutorial (rules embed + Play button) ---
     async def send_intro_tutorial(channel):
         rules_embed = discord.Embed(
-            title="📼 Welcome to SOMEWHERE: An Analog Horror Story",
+            title=" Welcome to SOMEWHERE: An Analog Horror Story",
             color=CORNER_TEAL
         )
         rules_embed.add_field(
@@ -2128,7 +2256,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
         )
         rules_embed.add_field(
             name="Controls",
-            value="▶️ Press Play to continue the story.\n🔘 Click buttons to choose your action.",
+            value="️ Press Play to continue the story.\n🔘 Click buttons to choose your action.",
             inline=False
         )
         rules_embed.add_field(
@@ -2136,7 +2264,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             value="🕰️ Story escalates slowly — pay attention to details!\n🧭 Your choices shape Jason's fate.",
             inline=False
         )
-        rules_embed.set_footer(text="Ready? Press ▶️ Play below to begin.")
+        rules_embed.set_footer(text="Ready? Press ️ Play below to begin.")
         import engine
         
         class AIProviderSelect(discord.ui.Select):
@@ -2167,7 +2295,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 import engine
                 if preset_name == "openai" and not engine.OPENAI_API_KEY:
                     await interaction.response.send_message(
-                        "❌ **OpenAI API key not configured!**\nCannot switch to OpenAI provider.",
+                        "ERROR: **OpenAI API key not configured!**\nCannot switch to OpenAI provider.",
                         ephemeral=True
                     )
                     return
@@ -2178,13 +2306,13 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 if success:
                     status = ai_provider_manager.get_status()
                     embed = discord.Embed(
-                        title=f"✅ Switched to `{preset_name}`",
+                        title=f" Switched to `{preset_name}`",
                         description=status,
                         color=CORNER_TEAL
                     )
                 else:
                     embed = discord.Embed(
-                        title="❌ Switch Failed",
+                        title="ERROR: Switch Failed",
                         description=f"Could not switch to `{preset_name}`. Check logs.",
                         color=VHS_RED
                     )
@@ -2229,7 +2357,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 await interaction.message.edit(view=self.view)
                 
                 # Send ephemeral confirmation
-                status_emoji = "✅" if not is_enabled else "❌"
+                status_emoji = "" if not is_enabled else "ERROR:"
                 cost_info = "Cache will be created on first turn (~$0.012/hr)" if not is_enabled else "$0 cost (cache disabled)"
                 
                 embed = discord.Embed(
@@ -2241,7 +2369,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
         
         class PlayButton(Button):
             def __init__(self):
-                super().__init__(label="▶️ Play", style=discord.ButtonStyle.success, row=1)
+                super().__init__(label="️ Play", style=discord.ButtonStyle.success, row=1)
             async def callback(self, interaction: discord.Interaction):
                 global _run_images  # MUST be at the very top of the function
                 
@@ -2318,11 +2446,11 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 
                 # === DRAMATIC INTRO TEXT ===
                 intro_embed = discord.Embed(
-                    title="📼 RECOVERED VHS TAPE - 1993",
+                    title=" RECOVERED VHS TAPE - 1993",
                     description=(
                         "Horizon Industries\n"
                         "Four Corners Facility\n\n"
-                        "⚠️ WARNING: Disturbing Content"
+                        "WARNING: WARNING: Disturbing Content"
                     ),
                     color=VHS_RED
                 )
@@ -2393,7 +2521,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                         full_path = dispatch_image_path.lstrip("/")
                         if os.path.exists(full_path):
                             await interaction.channel.send(file=discord.File(full_path))
-                            print(f"[BOT INTRO] ✅ Image displayed immediately!")
+                            print(f"[BOT INTRO] Image displayed immediately!")
                         else:
                             print(f"[BOT INTRO] Image not found: {full_path}")
                     except Exception as e:
@@ -2440,7 +2568,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 
         class PlayNoImagesButton(Button):
             def __init__(self):
-                super().__init__(label="▶️ Play (No Images)", style=discord.ButtonStyle.secondary)
+                super().__init__(label="️ Play (No Images)", style=discord.ButtonStyle.secondary)
             async def callback(self, interaction: discord.Interaction):
                 try:
                     if not interaction.response.is_done():
@@ -2531,12 +2659,222 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 )
                 
                 # No auto-advance for regular play mode
+        
+        class PlayCinematicButton(Button):
+            """ HD mode - Uses Veo video generation (expensive but beautiful)"""
+            def __init__(self):
+                super().__init__(label=" Play HD", style=discord.ButtonStyle.danger, row=2)
+            
+            async def callback(self, interaction: discord.Interaction):
+                global _run_images
+                
+                try:
+                    if not interaction.response.is_done():
+                        await interaction.response.defer()
+                except Exception as e:
+                    print(f"[LOG] PlayCinematicButton defer failed: {e}")
+                    try:
+                        await interaction.channel.send("This button is no longer active. Please refresh.")
+                    except Exception:
+                        pass
+                    return
+                
+                # Delete the intro message
+                try:
+                    await interaction.message.delete()
+                except Exception as e:
+                    print(f"[LOG] Could not delete intro message: {e}")
+                
+                # SET VEO AS THE IMAGE PROVIDER
+                import ai_provider_manager
+                ai_provider_manager.set_preset("veo")
+                print("[CINEMATIC] Veo mode enabled - video-based image generation")
+                
+                # Reset Veo session costs for fresh run
+                try:
+                    from veo_video_utils import _session_costs, MAX_SESSION_COST
+                    _session_costs["veo_calls"] = 0
+                    _session_costs["total_cost"] = 0.0
+                    _session_costs["videos_generated"] = []
+                    _session_costs["frames_skipped"] = 0
+                    _session_costs["total_frames_generated"] = 0
+                    print(f"[CINEMATIC] Session reset - budget limit: ${MAX_SESSION_COST:.2f}")
+                except Exception as e:
+                    print(f"[CINEMATIC] Could not reset session: {e}")
+                
+                engine.IMAGE_ENABLED = True
+                engine.WORLD_IMAGE_ENABLED = True
+                engine.VEO_MODE_ENABLED = True
+                
+                # Show Veo warning
+                from veo_video_utils import MAX_SESSION_COST, ESTIMATED_COST_PER_VIDEO
+                max_videos = int(MAX_SESSION_COST / ESTIMATED_COST_PER_VIDEO)
+                await interaction.channel.send(embed=discord.Embed(
+                    title=" HD MODE",
+                    description=(
+                        "**High-definition video generation**\n\n"
+                        f"WARNING: This mode is expensive (~${ESTIMATED_COST_PER_VIDEO:.2f} per scene)\n"
+                        "Each image is the last frame of a 4s video\n"
+                        f"Budget limit: ${MAX_SESSION_COST:.2f} (~{max_videos} videos max)\n\n"
+                        "*For beautiful visual consistency*"
+                    ),
+                    color=discord.Color.red()
+                ))
+                await asyncio.sleep(2)
+                
+                # === SHOW LOGO (Frame 0) ===
+                logo_file = None
+                for ext in [".jpg", ".jpeg", ".png", ".JPG", ".JPEG", ".PNG"]:
+                    test_path = ROOT / "static" / f"Logo{ext}"
+                    if test_path.exists():
+                        logo_file = test_path
+                        break
+                
+                if logo_file and logo_file.exists():
+                    try:
+                        from PIL import Image
+                        logo_img = Image.open(str(logo_file))
+                        target_aspect = 16 / 9  # Veo uses 16:9
+                        current_aspect = logo_img.width / logo_img.height
+                        if abs(current_aspect - target_aspect) > 0.01:
+                            if current_aspect > target_aspect:
+                                new_width = int(logo_img.height * target_aspect)
+                                left = (logo_img.width - new_width) // 2
+                                logo_cropped = logo_img.crop((left, 0, left + new_width, logo_img.height))
+                            else:
+                                new_height = int(logo_img.width / target_aspect)
+                                top = (logo_img.height - new_height) // 2
+                                logo_cropped = logo_img.crop((0, top, logo_img.width, top + new_height))
+                        else:
+                            logo_cropped = logo_img
+                        
+                        normalized_logo_path = ROOT / "static" / "Logo_normalized_16x9.jpg"
+                        logo_cropped.save(str(normalized_logo_path), "JPEG", quality=95)
+                        await interaction.channel.send(file=discord.File(str(normalized_logo_path)))
+                        _run_images.append(f"/static/Logo_normalized_16x9.jpg")
+                        print(f"[CINEMATIC] Frame 0 (logo) recorded")
+                    except Exception as e:
+                        print(f"[CINEMATIC] Logo processing failed: {e}")
+                
+                await asyncio.sleep(1.5)
+                
+                # === DRAMATIC INTRO TEXT ===
+                intro_embed = discord.Embed(
+                    title=" RECOVERED VHS TAPE - 1993",
+                    description=(
+                        "Horizon Industries\n"
+                        "Four Corners Facility\n\n"
+                        "WARNING: WARNING: Disturbing Content"
+                    ),
+                    color=VHS_RED
+                )
+                await interaction.channel.send(embed=intro_embed)
+                await asyncio.sleep(2)
+                
+                # PHASE 1: Generate first image (Veo will generate video + extract frame)
+                loop = asyncio.get_running_loop()
+                image_task = loop.run_in_executor(None, engine.generate_intro_image_fast)
+                
+                # Show Veo loading sequence
+                vhs_msg = await interaction.channel.send(embed=discord.Embed(
+                    description="`[00:00:00]`  HD MODE\n`GENERATING VIDEO...`",
+                    color=discord.Color.red()
+                ))
+                
+                vhs_sequence = [
+                    (5, "`[00:00:05]` VEO 3.1\n`INITIALIZING...`"),
+                    (10, "`[00:00:15]` VIDEO FRAMES\n`GENERATING...`"),
+                    (10, "`[00:00:25]` INTERPOLATION\n`IN PROGRESS...`"),
+                    (10, "`[00:00:35]` FINAL FRAME\n`EXTRACTING...`"),
+                    (10, "`[00:00:45]` PLAYBACK\n`STARTING...`")
+                ]
+                
+                for delay, message in vhs_sequence:
+                    done, pending = await asyncio.wait([image_task], timeout=delay)
+                    if done:
+                        break
+                    try:
+                        await vhs_msg.edit(embed=discord.Embed(
+                            description=message,
+                            color=discord.Color.red()
+                        ))
+                    except Exception:
+                        break
+                
+                intro_phase1 = await image_task
+                
+                try:
+                    await vhs_msg.delete()
+                except Exception:
+                    pass
+                
+                # Send the intro text
+                dispatch_text = intro_phase1.get("dispatch", "")
+                dispatch_image_path = intro_phase1.get("dispatch_image")
+                
+                if dispatch_text:
+                    await interaction.channel.send(embed=discord.Embed(
+                        description=safe_embed_desc(dispatch_text.strip()),
+                        color=VHS_RED
+                    ))
+                
+                # Display the opening image
+                if dispatch_image_path:
+                    _run_images.append(dispatch_image_path)
+                    print(f"[CINEMATIC] Frame 1 recorded - total frames: {len(_run_images)}")
+                    
+                    try:
+                        full_path = dispatch_image_path.lstrip("/")
+                        if os.path.exists(full_path):
+                            await interaction.channel.send(file=discord.File(full_path))
+                            print(f"[CINEMATIC] First frame displayed!")
+                        else:
+                            print(f"[CINEMATIC] Image not found: {full_path}")
+                    except Exception as e:
+                        print(f"[CINEMATIC] Failed to send opening image: {e}")
+                
+                # Show choices generation
+                choices_msg = await interaction.channel.send(embed=discord.Embed(
+                    description=safe_embed_desc("⚙️ Generating choices..."),
+                    color=CORNER_GREY
+                ))
+                
+                # PHASE 2: Generate choices
+                choices_task = loop.run_in_executor(
+                    None, 
+                    engine.generate_intro_choices_deferred,
+                    dispatch_image_path,
+                    intro_phase1["prologue"],
+                    intro_phase1["vision_dispatch"]
+                )
+                intro_phase2 = await choices_task
+                
+                try:
+                    await choices_msg.delete()
+                except Exception:
+                    pass
+                
+                # Send choices
+                await interaction.channel.send("🟢 What will you do next?")
+                view = ChoiceView(intro_phase2["choices"], owner_id=OWNER_ID)
+                await send_choices(interaction.channel, intro_phase2["choices"], view, None)
+                
+                # Start countdown timer
+                start_countdown_timer(
+                    interaction.channel,
+                    intro_phase2["choices"],
+                    view,
+                    intro_phase2.get("dispatch", intro_phase1.get("dispatch", "")),
+                    intro_phase2.get("situation_report", ""),
+                    intro_phase1.get("consequence_image")
+                )
                 
         play_view = View(timeout=None)
         play_view.add_item(AIProviderSelect())  # Row 0: AI Provider dropdown
         play_view.add_item(LoreCacheToggle())  # Row 1: Lore toggle
         play_view.add_item(PlayButton())  # Row 1: Play button
         play_view.add_item(PlayNoImagesButton())  # Row 1: Play without images
+        play_view.add_item(PlayCinematicButton())  # Row 2: Cinematic mode (Veo)
         await channel.send(embed=rules_embed, view=play_view)
 
     # ───────── startup ─────────────────────────────────────────────────────────
@@ -2581,7 +2919,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 try:
                     print("[BOT] Calling send_intro_tutorial...", flush=True)
                     await send_intro_tutorial(channel)
-                    print(f"[BOT] ✅ Sent intro to channel {CHAN}", flush=True)
+                    print(f"[BOT] Sent intro to channel {CHAN}", flush=True)
                 except Exception as e:
                     print(f"[BOT ERROR] Failed to send intro: {e}", flush=True)
                     import traceback
@@ -2596,7 +2934,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             print("[BOT] Getting application info...", flush=True)
             app_info = await bot.application_info()
             OWNER_ID = app_info.owner.id
-            print(f"[BOT] ✅ Owner ID: {OWNER_ID}", flush=True)
+            print(f"[BOT] Owner ID: {OWNER_ID}", flush=True)
         except Exception as e:
             print(f"[BOT ERROR] Failed to get owner ID: {e}", flush=True)
             import traceback
@@ -2605,7 +2943,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
         # Mark bot as running
         global running
         running = True
-        print("[BOT] ✅ Bot fully initialized and ready!", flush=True)
+        print("[BOT] Bot fully initialized and ready!", flush=True)
 
     # --- Discord bot startup temporarily disabled for web-only mode ---
     # To re-enable Discord, uncomment the following line:
@@ -2642,7 +2980,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     try:
                         if view.last_choices_message:
                             await view.last_choices_message.edit(view=view)
-                            print("[COUNTDOWN] ✅ Buttons disabled immediately")
+                            print("[COUNTDOWN] Buttons disabled immediately")
                     except Exception as e:
                         print(f"[COUNTDOWN] Failed to disable buttons: {e}")
                     
@@ -2652,7 +2990,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                             await countdown_message.edit(
                                 content=None,
                                 embed=discord.Embed(
-                                    description="⏱️ **Time's up!** Generating consequence...",
+                                    description=" **Time's up!** Generating consequence...",
                                     color=VHS_RED
                                 )
                             )
@@ -2680,7 +3018,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     # === FATE ROLL for timeout penalty ===
                     # 1. Compute fate instantly (before image generation starts)
                     fate = compute_fate()
-                    print(f"[COUNTDOWN] 🎰 Fate rolled: {fate}")
+                    print(f"[COUNTDOWN] Fate rolled: {fate}")
                     
                     # 2. Start image generation in background (don't block)
                     loop = asyncio.get_running_loop()
@@ -2715,9 +3053,9 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     print(f"[TAPE RECORDING COUNTDOWN] img = {consequence_image_path}, frames = {len(_run_images)}")
                     if consequence_image_path:
                         _run_images.append(consequence_image_path)
-                        print(f"[TAPE] ✅ Frame {len(_run_images)} recorded: {consequence_image_path}")
+                        print(f"[TAPE] Frame {len(_run_images)} recorded: {consequence_image_path}")
                     else:
-                        print(f"[TAPE] ❌ NO IMAGE from countdown penalty")
+                        print(f"[TAPE] ERROR: NO IMAGE from countdown penalty")
                     
                     if consequence_image_path:
                         full_path = ROOT / consequence_image_path.lstrip("/")
@@ -2750,7 +3088,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                         
                         # Start tape creation in background
                         loop = asyncio.get_running_loop()
-                        tape_task = loop.run_in_executor(None, _create_death_replay_gif)
+                        tape_task = loop.run_in_executor(None, _create_death_replay_tape)
                         
                         # VHS eject animation (plays while GIF generates)
                         eject_sequence = [
@@ -2786,23 +3124,23 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                         # Send tape or error
                         if tape_path:
                             await channel.send(embed=discord.Embed(
-                                title="📼 VHS TAPE RECOVERED",
+                                title=" VHS TAPE RECOVERED",
                                 description="Camera footage retrieved from scene.",
                                 color=CORNER_GREY
                             ))
                             try:
                                 await channel.send(file=discord.File(tape_path))
-                                print("[COUNTDOWN DEATH] 📼 Tape uploaded - waiting for player to download...")
+                                print("[COUNTDOWN DEATH]  Tape uploaded - waiting for player to download...")
                             except Exception as e:
                                 print(f"[COUNTDOWN DEATH] Failed to send tape: {e}")
                                 await channel.send(embed=discord.Embed(
-                                    title="⚠️ Tape Upload Failed",
+                                    title="WARNING: Tape Upload Failed",
                                     description=f"Tape created but upload failed: {e}",
                                     color=VHS_RED
                                 ))
                         else:
                             await channel.send(embed=discord.Embed(
-                                title="⚠️ No Tape Created",
+                                title="WARNING: No Tape Created",
                                 description=f"**Reason:** {error_msg}",
                                 color=VHS_RED
                             ))
@@ -2812,7 +3150,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                         
                         class PlayAgainButton(Button):
                             def __init__(self):
-                                super().__init__(label="▶️ Play Again", style=discord.ButtonStyle.success)
+                                super().__init__(label="️ Play Again", style=discord.ButtonStyle.success)
                             
                             async def callback(self, button_interaction: discord.Interaction):
                                 global auto_advance_task, countdown_task, auto_play_enabled
@@ -2862,20 +3200,20 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                         # Only auto-restart if player didn't click button
                         if not manual_restart_done.is_set():
                             print("[COUNTDOWN DEATH] Auto-restarting game...")
-                            
-                            # Cancel all running tasks
-                            if auto_advance_task and not auto_advance_task.done():
-                                auto_advance_task.cancel()
-                                print("[COUNTDOWN DEATH] Cancelled auto-play task")
-                            if countdown_task and not countdown_task.done():
-                                countdown_task.cancel()
-                                print("[COUNTDOWN DEATH] Cancelled countdown task")
-                            auto_play_enabled = False
-                            
-                            # Reset game
-                            loop = asyncio.get_running_loop()
-                            await loop.run_in_executor(None, ChoiceButton._do_reset_static)
-                            await send_intro_tutorial(channel)
+                        
+                        # Cancel all running tasks
+                        if auto_advance_task and not auto_advance_task.done():
+                            auto_advance_task.cancel()
+                            print("[COUNTDOWN DEATH] Cancelled auto-play task")
+                        if countdown_task and not countdown_task.done():
+                            countdown_task.cancel()
+                            print("[COUNTDOWN DEATH] Cancelled countdown task")
+                        auto_play_enabled = False
+                        
+                        # Reset game
+                        loop = asyncio.get_running_loop()
+                        await loop.run_in_executor(None, ChoiceButton._do_reset_static)
+                        await send_intro_tutorial(channel)
                         
                         break  # Exit countdown loop
                     
@@ -2933,9 +3271,9 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 empty = "░" * (10 - len(bars))
                 
                 if remaining > 30:
-                    emoji = "⏱️"
+                    emoji = ""
                 elif remaining > 10:
-                    emoji = "⚠️"
+                    emoji = "WARNING:"
                 else:
                     emoji = "🚨"
                 
@@ -2998,7 +3336,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
         global countdown_message
         
         # Create countdown message
-        countdown_message = await channel.send(content=f"⏱️ **{COUNTDOWN_DURATION}s** [██████████]")
+        countdown_message = await channel.send(content=f" **{COUNTDOWN_DURATION}s** [██████████]")
         
         # Run the actual countdown
         await countdown_timer_task(channel, choices, view, dispatch, situation)
@@ -3127,16 +3465,16 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
         print(f"[TAPE RECORDING AUTO] img = {consequence_image_path}, frames = {len(_run_images)}")
         if consequence_image_path:
             _run_images.append(consequence_image_path)
-            print(f"[TAPE] ✅ Frame {len(_run_images)} recorded: {consequence_image_path}")
+            print(f"[TAPE] Frame {len(_run_images)} recorded: {consequence_image_path}")
         else:
-            print(f"[TAPE] ❌ NO IMAGE from auto-advance")
+            print(f"[TAPE] ERROR: NO IMAGE from auto-advance")
         
         if consequence_image_path:
             full_path = ROOT / consequence_image_path.lstrip("/")
             if full_path.exists():
                 try:
                     await channel.send(file=discord.File(str(full_path)))
-                    print(f"[AUTO-PLAY] ✅ Image displayed immediately!")
+                    print(f"[AUTO-PLAY] Image displayed immediately!")
                 except Exception as e:
                     print(f"[AUTO-PLAY] Image send failed: {e}")
         
@@ -3165,7 +3503,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             
             # Start tape creation in background
             loop = asyncio.get_running_loop()
-            tape_task = loop.run_in_executor(None, _create_death_replay_gif)
+            tape_task = loop.run_in_executor(None, _create_death_replay_tape)
             
             # VHS eject animation (plays while GIF generates)
             eject_sequence = [
@@ -3201,23 +3539,23 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             # Send tape or error
             if tape_path:
                 await channel.send(embed=discord.Embed(
-                    title="📼 VHS TAPE RECOVERED",
+                    title=" VHS TAPE RECOVERED",
                     description="Camera footage retrieved from scene.",
                     color=CORNER_GREY
                 ))
                 try:
                     await channel.send(file=discord.File(tape_path))
-                    print("[AUTO-PLAY DEATH] 📼 Tape uploaded - waiting for player to download...")
+                    print("[AUTO-PLAY DEATH]  Tape uploaded - waiting for player to download...")
                 except Exception as e:
                     print(f"[AUTO-PLAY] Failed to send tape: {e}")
                     await channel.send(embed=discord.Embed(
-                        title="⚠️ Tape Upload Failed",
+                        title="WARNING: Tape Upload Failed",
                         description=f"Tape created but upload failed: {e}",
                         color=VHS_RED
                     ))
             else:
                 await channel.send(embed=discord.Embed(
-                    title="⚠️ No Tape Created",
+                    title="WARNING: No Tape Created",
                     description=f"**Reason:** {error_msg}",
                     color=VHS_RED
                 ))
@@ -3227,7 +3565,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             
             class PlayAgainButton(Button):
                 def __init__(self):
-                    super().__init__(label="▶️ Play Again", style=discord.ButtonStyle.success)
+                    super().__init__(label="️ Play Again", style=discord.ButtonStyle.success)
                 
                 async def callback(self, button_interaction: discord.Interaction):
                     global auto_advance_task, countdown_task, auto_play_enabled
@@ -3393,7 +3731,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
         if preset not in presets:
             preset_list = "\n".join([f"• `{name}`" for name in presets.keys()])
             await interaction.response.send_message(
-                f"❌ Unknown preset: `{preset}`\n\n**Available presets:**\n{preset_list}",
+                f"ERROR: Unknown preset: `{preset}`\n\n**Available presets:**\n{preset_list}",
                 ephemeral=True
             )
             return
@@ -3404,14 +3742,14 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
         if success:
             status = ai_provider_manager.get_status()
             embed = discord.Embed(
-                title=f"✅ Switched to `{preset}`",
+                title=f" Switched to `{preset}`",
                 description=status,
                 color=CORNER_TEAL
             )
             await interaction.response.send_message(embed=embed)
         else:
             await interaction.response.send_message(
-                f"❌ Failed to switch to preset: `{preset}`",
+                f"ERROR: Failed to switch to preset: `{preset}`",
                 ephemeral=True
             )
     
@@ -3454,13 +3792,13 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
         if success:
             status_msg = lore_cache_manager.format_status_message()
             embed = discord.Embed(
-                title="✅ Lore Cache Refreshed",
+                title=" Lore Cache Refreshed",
                 description=status_msg,
                 color=CORNER_TEAL
             )
         else:
             embed = discord.Embed(
-                title="❌ Refresh Failed",
+                title="ERROR: Refresh Failed",
                 description="Could not refresh lore cache. Check logs for details.",
                 color=VHS_RED
             )
@@ -3511,11 +3849,11 @@ if __name__ == "__main__":
             import traceback
             traceback.print_exc()
     else:
-        print("⚠️ Discord disabled. Running in local web-only mode.")
+        print("WARNING: Discord disabled. Running in local web-only mode.")
 
         # Start the simulation loop once
         def local_loop():
-            print("🌀 Starting local simulation tick...")
+            print("Starting local simulation tick...")
             while True:
                 try:
                     engine.begin_tick()

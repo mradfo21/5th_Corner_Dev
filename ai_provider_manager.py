@@ -141,7 +141,7 @@ def set_preset(preset_name: str) -> bool:
     preset = presets[preset_name]
     config.update(preset)
     save_ai_config(config)
-    print(f"[AI CONFIG] ✅ Switched to preset: {preset_name}")
+    print(f"[AI CONFIG] Switched to preset: {preset_name}")
     return True
 
 def set_custom(text_provider: str = None, text_model: str = None, 

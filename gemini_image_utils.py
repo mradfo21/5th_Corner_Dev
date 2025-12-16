@@ -165,7 +165,7 @@ def generate_with_gemini(
         return None
     if not GEMINI_API_KEY or not GEMINI_API_KEY.strip():
         raise ValueError(
-            "❌ Google Gemini API key not configured!\n"
+            "ERROR: Google Gemini API key not configured!\n"
             "Get your key at: https://aistudio.google.com/apikey\n"
             "Add it to config.json as GEMINI_API_KEY"
         )
@@ -173,10 +173,10 @@ def generate_with_gemini(
     # Override model based on HD mode
     if hd_mode:
         model = GEMINI_PRO_IMAGE
-        print(f"🔷 [GOOGLE GEMINI] HD MODE ON: Using {model} for high quality (slower)")
+        print(f"[GOOGLE GEMINI] HD MODE ON: Using {model} for high quality (slower)")
     else:
         model = GEMINI_FLASH_IMAGE
-        print(f"🔷 [GOOGLE GEMINI] HD MODE OFF: Using {model} for speed (lower quality)")
+        print(f"[GOOGLE GEMINI] HD MODE OFF: Using {model} for speed (lower quality)")
     
     # Load prompt template from JSON (single source of truth!)
     structured_prompt = PROMPTS["gemini_text_to_image_instructions"].format(prompt=prompt)
@@ -193,16 +193,16 @@ def generate_with_gemini(
     
     # Add CRITICAL anti-timecode/text instructions
     anti_timecode = (
-        "\n\n🚫 CRITICAL - ABSOLUTELY NO TEXT OR TIMECODE OVERLAYS:\n"
+        "\n\n CRITICAL - ABSOLUTELY NO TEXT OR TIMECODE OVERLAYS:\n"
         "This is RAW CAMERA FOOTAGE with NO on-screen displays.\n"
         "Do NOT add ANY text, numbers, letters, or symbols to the image.\n"
         "FORBIDDEN:\n"
-        "❌ NO timecode (NO 'DEC 14 1993', NO '14:32:05', NO date/time stamps)\n"
-        "❌ NO 'REC' indicator\n"
-        "❌ NO 'PCC HISS' or any text overlays\n"
-        "❌ NO battery indicators, tape icons, recording symbols\n"
-        "❌ NO numbers, dates, times anywhere in the image\n"
-        "❌ NO text of ANY kind\n\n"
+        "ERROR: NO timecode (NO 'DEC 14 1993', NO '14:32:05', NO date/time stamps)\n"
+        "ERROR: NO 'REC' indicator\n"
+        "ERROR: NO 'PCC HISS' or any text overlays\n"
+        "ERROR: NO battery indicators, tape icons, recording symbols\n"
+        "ERROR: NO numbers, dates, times anywhere in the image\n"
+        "ERROR: NO text of ANY kind\n\n"
         "The image is PURE VISUAL FOOTAGE with ZERO on-screen text elements.\n"
         "This is the RAW tape - no camera UI, no overlays, no burn-ins.\n"
         "If you see timecode in reference images, DO NOT copy it."
@@ -262,8 +262,10 @@ def generate_with_gemini(
     # Sanitize to avoid safety blocks
     full_prompt = _sanitize_for_safety(structured_prompt)
     
-    print(f"🔷 [GOOGLE GEMINI] Generating with {model}...")
-    print(f"🔷 [GOOGLE GEMINI] Prompt: {full_prompt[:200]}...")
+    print(f"[GOOGLE GEMINI] Generating with {model}...")
+    # Safe print - encode to ASCII, replace non-ASCII chars
+    safe_prompt = full_prompt[:200].encode('ascii', 'replace').decode('ascii')
+    print(f"[GOOGLE GEMINI] Prompt: {safe_prompt}...")
     
     # Official Google Gemini API endpoint
     api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -298,10 +300,10 @@ def generate_with_gemini(
                 break
             except requests.exceptions.Timeout:
                 if attempt < max_retries - 1:
-                    print(f"⏱️ [GOOGLE GEMINI] Timeout on attempt {attempt + 1}, retrying...")
+                    print(f"[GOOGLE GEMINI] Timeout on attempt {attempt + 1}, retrying...")
                     continue
                 else:
-                    print(f"❌ [GOOGLE GEMINI] TIMEOUT after 30s - Gemini API not responding!")
+                    print(f"[GOOGLE GEMINI] ERROR: TIMEOUT after 30s - Gemini API not responding!")
                     return None  # Graceful fallback instead of crash
         
         result = response.json()
@@ -345,30 +347,30 @@ def generate_with_gemini(
             img = img.convert("RGB")
             img = img.resize((480, 270), PILImage.LANCZOS)  # 16:9 aspect ratio for API calls
             img.save(small_path, format="PNG", optimize=True, quality=85)
-            print(f"✅ [GOOGLE GEMINI] Image saved: {image_path} ({len(image_bytes)} bytes)")
-            print(f"✅ [GOOGLE GEMINI] Downsampled saved: {small_path} (480x270 for API calls)")
+            print(f"[GOOGLE GEMINI] Image saved: {image_path} ({len(image_bytes)} bytes)")
+            print(f"[GOOGLE GEMINI] Downsampled saved: {small_path} (480x270 for API calls)")
         except Exception as e:
-            print(f"⚠️ [GOOGLE GEMINI] Downsample failed: {e}")
+            print(f"[GOOGLE GEMINI] WARNING: Downsample failed: {e}")
         
-        return f"/images/{filename}"
+        return str(Path("images") / filename)
         
     except requests.exceptions.HTTPError as e:
         # If Pro model is overloaded and this is the first frame, fallback to Flash
         if e.response.status_code == 503 and is_first_frame and model == GEMINI_PRO_IMAGE:
-            print(f"⚠️ [GOOGLE GEMINI] Pro model overloaded, falling back to Flash for first frame...")
+            print(f"[GOOGLE GEMINI] WARNING: Pro model overloaded, falling back to Flash for first frame...")
             return generate_with_gemini(prompt, caption, world_prompt, aspect_ratio, GEMINI_FLASH_IMAGE, time_of_day, is_first_frame=False)
         
         if e.response.status_code == 401 or e.response.status_code == 403:
-            print(f"❌ [GOOGLE GEMINI] Authentication failed! Check your API key.")
+            print(f"[GOOGLE GEMINI] ERROR: Authentication failed! Check your API key.")
             print(f"   Get your key at: https://aistudio.google.com/apikey")
         elif e.response.status_code == 429:
-            print(f"❌ [GOOGLE GEMINI] Rate limit exceeded!")
+            print(f"[GOOGLE GEMINI] ERROR: Rate limit exceeded!")
         else:
-            print(f"❌ [GOOGLE GEMINI] HTTP Error {e.response.status_code}: {e.response.text}")
+            print(f"[GOOGLE GEMINI] ERROR: HTTP Error {e.response.status_code}: {e.response.text}")
         raise
     except Exception as e:
-        print(f"❌ [GOOGLE GEMINI] Unexpected error: {e}")
-        print(f"❌ [GOOGLE GEMINI] Returning None to allow game to continue")
+        print(f"[GOOGLE GEMINI] ERROR: Unexpected error: {e}")
+        print(f"[GOOGLE GEMINI] ERROR: Returning None to allow game to continue")
         return None  # Graceful fallback - don't crash the death sequence!
 
 
@@ -454,14 +456,14 @@ def _apply_fps_hands_compositing(corrected_path, small_corrected_path, action_co
         
         result = response.json()
         if "candidates" not in result or not result["candidates"]:
-            print("⚠️ [FPS COMPOSITING] No result, using corrected image")
+            print("[FPS COMPOSITING] No result, using corrected image")
             return None
         
         # Safely access parts with error handling
         try:
             image_b64 = result["candidates"][0]["content"]["parts"][0]["inlineData"]["data"]
         except (KeyError, IndexError) as e:
-            print(f"⚠️ [FPS COMPOSITING] Error extracting image: {e}, response: {result}")
+            print(f"[FPS COMPOSITING] Error extracting image: {e}, response: {result}")
             return None
         composited_bytes = base64.b64decode(image_b64)
         
@@ -485,11 +487,11 @@ def _apply_fps_hands_compositing(corrected_path, small_corrected_path, action_co
         small_fps_path = corrected_pathobj.parent / small_fps_filename
         img.save(small_fps_path, format="PNG", optimize=True, quality=85)
         
-        print(f"✅ [FPS COMPOSITING] Added hands: {fps_filename}")
-        return f"/images/{fps_filename}"
+        print(f"[FPS COMPOSITING] Added hands: {fps_filename}")
+        return str(Path("images") / fps_filename)
         
     except Exception as e:
-        print(f"⚠️ [FPS COMPOSITING] Failed: {e}, using corrected image")
+        print(f"[FPS COMPOSITING] Failed: {e}, using corrected image")
         return None
 
 
@@ -567,14 +569,14 @@ def _apply_pov_correction(original_path, small_path, previous_corrected_path=Non
         
         result = response.json()
         if "candidates" not in result or not result["candidates"]:
-            print("⚠️ [POV CORRECTION] No result, using original")
+            print("[POV CORRECTION] No result, using original")
             return None
         
         # Safely access parts with error handling
         try:
             image_b64 = result["candidates"][0]["content"]["parts"][0]["inlineData"]["data"]
         except (KeyError, IndexError) as e:
-            print(f"⚠️ [POV CORRECTION] Error extracting image: {e}, response: {result}")
+            print(f"[POV CORRECTION] Error extracting image: {e}, response: {result}")
             return None
         corrected_bytes = base64.b64decode(image_b64)
         
@@ -598,11 +600,11 @@ def _apply_pov_correction(original_path, small_path, previous_corrected_path=Non
         small_corrected_path = original_pathobj.parent / small_corrected_filename
         img.save(small_corrected_path, format="PNG", optimize=True, quality=85)
         
-        print(f"✅ [POV CORRECTION] Applied: {corrected_filename}")
-        return f"/images/{corrected_filename}"
+        print(f"[POV CORRECTION] Applied: {corrected_filename}")
+        return str(Path("images") / corrected_filename)
         
     except Exception as e:
-        print(f"⚠️ [POV CORRECTION] Failed: {e}, using original")
+        print(f"[POV CORRECTION] Failed: {e}, using original")
         return None
 
 
@@ -679,7 +681,7 @@ def generate_gemini_img2img(
     else:
         image_paths = reference_image_path[:6]  # Max 6 reference images
     
-    print(f"🔷 [GOOGLE GEMINI] Image editing mode with {len(image_paths)} reference image(s)")
+    print(f"[GOOGLE GEMINI] Image editing mode with {len(image_paths)} reference image(s)")
     
     # Read and encode all reference images (ALWAYS use full-res for img2img quality)
     image_parts = []
@@ -693,7 +695,7 @@ def generate_gemini_img2img(
         # Apply forward zoom preprocessing if enabled
         if ENABLE_FORWARD_ZOOM:
             image_bytes = _apply_forward_zoom(str(use_path), zoom_factor=ZOOM_FACTOR)
-            print(f"🔷 [FORWARD ZOOM] Applied {ZOOM_FACTOR}x zoom to {img_path_obj.name} (center {int(100/ZOOM_FACTOR)}% → full frame)")
+            print(f"[FORWARD ZOOM] Applied {ZOOM_FACTOR}x zoom to {img_path_obj.name} (center {int(100/ZOOM_FACTOR)}% to full frame)")
         else:
             with open(use_path, "rb") as f:
                 image_bytes = f.read()
@@ -705,7 +707,7 @@ def generate_gemini_img2img(
         if str(use_path).endswith(('.jpg', '.jpeg')):
             mime_type = "image/jpeg"
         
-        print(f"🔷 [GOOGLE GEMINI] Reference image {len(image_parts)+1}: {img_path_obj.name} (full-res)")
+        print(f"[GOOGLE GEMINI] Reference image {len(image_parts)+1}: {img_path_obj.name} (full-res)")
         
         image_parts.append({
             "inlineData": {
@@ -722,14 +724,14 @@ def generate_gemini_img2img(
         "\n\n⚡ CRITICAL - HOW TO USE REFERENCE IMAGES:\n"
         "The reference images show the PREVIOUS MOMENT in this simulation.\n"
         "Extract from references:\n"
-        "✅ VISUAL STYLE: Photographic quality, VHS degradation, color palette, lighting type\n"
-        "✅ ENVIRONMENT TYPE: Desert vs facility, outdoor vs indoor, general setting\n"
-        "✅ AESTHETIC: Graininess, overexposure, analog artifacts, tape degradation\n\n"
+        " VISUAL STYLE: Photographic quality, VHS degradation, color palette, lighting type\n"
+        " ENVIRONMENT TYPE: Desert vs facility, outdoor vs indoor, general setting\n"
+        " AESTHETIC: Graininess, overexposure, analog artifacts, tape degradation\n\n"
         "DO NOT copy from references:\n"
-        "❌ CAMERA POSITION - Move the camera based on the action taken\n"
-        "❌ OBJECT PLACEMENT - Rearrange the scene for the new moment\n"
-        "❌ COMPOSITION - Create new framing for the next beat\n"
-        "❌ DISTANCE - Change how close/far objects appear based on movement\n\n"
+        "ERROR: CAMERA POSITION - Move the camera based on the action taken\n"
+        "ERROR: OBJECT PLACEMENT - Rearrange the scene for the new moment\n"
+        "ERROR: COMPOSITION - Create new framing for the next beat\n"
+        "ERROR: DISTANCE - Change how close/far objects appear based on movement\n\n"
         "Think: The references show WHAT THE TAPE LOOKS LIKE (style).\n"
         "Your output shows WHERE THE CAMERA MOVED TO (new location/angle).\n"
         "Same tape quality, completely different view."
@@ -759,15 +761,15 @@ def generate_gemini_img2img(
     
     # Add CRITICAL anti-timecode/text instructions
     anti_timecode = (
-        "\n\n🚫🚫🚫 ABSOLUTELY NO TEXT OR TIMECODE - CRITICAL:\n"
+        "\n\n ABSOLUTELY NO TEXT OR TIMECODE - CRITICAL:\n"
         "This is RAW UNPROCESSED CAMERA FOOTAGE with NO on-screen displays of ANY kind.\n"
         "DO NOT GENERATE:\n"
-        "❌ ZERO timecode overlays - NO 'DEC 14 1993', NO '1993 OCT 14', NO dates\n"
-        "❌ ZERO time displays - NO '14:32:05', NO '4:32 PM', NO clock displays\n"
-        "❌ ZERO 'REC' indicator or recording symbols\n"
-        "❌ ZERO 'PCC HISS' or ANY words/text\n"
-        "❌ ZERO battery indicators, tape counter, VCR UI elements\n"
-        "❌ ZERO numbers, letters, words, or symbols ANYWHERE in the image\n\n"
+        "ERROR: ZERO timecode overlays - NO 'DEC 14 1993', NO '1993 OCT 14', NO dates\n"
+        "ERROR: ZERO time displays - NO '14:32:05', NO '4:32 PM', NO clock displays\n"
+        "ERROR: ZERO 'REC' indicator or recording symbols\n"
+        "ERROR: ZERO 'PCC HISS' or ANY words/text\n"
+        "ERROR: ZERO battery indicators, tape counter, VCR UI elements\n"
+        "ERROR: ZERO numbers, letters, words, or symbols ANYWHERE in the image\n\n"
         "The reference images may contain timecode overlays - YOU MUST REMOVE THEM.\n"
         "Generate the scene WITHOUT copying any text or UI elements from references.\n"
         "This is the ACTUAL TAPE IMAGE - no camera interface, no metadata overlays.\n"
@@ -833,9 +835,10 @@ def generate_gemini_img2img(
     selected_model = GEMINI_PRO_IMAGE if hd_mode else GEMINI_FLASH_IMAGE
     mode_name = "HD MODE" if hd_mode else "FAST MODE"
     
-    print(f"🔷 [GOOGLE GEMINI {mode_name}] Editing image to show next moment...")
-    print(f"🔷 [GOOGLE GEMINI {mode_name}] Using model: {selected_model}")
-    print(f"🔷 [GOOGLE GEMINI {mode_name}] Edit instructions: {prompt[:100]}...")
+    print(f"[GOOGLE GEMINI {mode_name}] Editing image to show next moment...")
+    print(f"[GOOGLE GEMINI {mode_name}] Using model: {selected_model}")
+    safe_prompt = prompt[:100].encode('ascii', 'replace').decode('ascii')
+    print(f"[GOOGLE GEMINI {mode_name}] Edit instructions: {safe_prompt}...")
     
     # Use selected model based on HD mode
     api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{selected_model}:generateContent"
@@ -864,7 +867,7 @@ def generate_gemini_img2img(
         # Dynamic timeout based on number of reference images
         # More images = more processing time needed (img2img with multiple refs is slow)
         timeout_seconds = 30 + (len(image_paths) * 10)  # 30s base + 10s per extra image
-        print(f"⏱️ [GOOGLE GEMINI IMG2IMG] Using {timeout_seconds}s timeout for {len(image_paths)} reference image(s)")
+        print(f"[GOOGLE GEMINI IMG2IMG] Using {timeout_seconds}s timeout for {len(image_paths)} reference image(s)")
         
         max_retries = 1  # Don't waste time retrying slow calls
         for attempt in range(max_retries):
@@ -874,20 +877,20 @@ def generate_gemini_img2img(
                 break
             except requests.exceptions.Timeout:
                 if attempt < max_retries - 1:
-                    print(f"⏱️ [GOOGLE GEMINI] Timeout on attempt {attempt + 1}, retrying...")
+                    print(f"[GOOGLE GEMINI] Timeout on attempt {attempt + 1}, retrying...")
                     continue
                 else:
-                    print(f"❌ [GOOGLE GEMINI] TIMEOUT after {timeout_seconds}s - Gemini API not responding!")
+                    print(f"[GOOGLE GEMINI] ERROR: TIMEOUT after {timeout_seconds}s - Gemini API not responding!")
                     return None  # Graceful fallback instead of crash
         
         result = response.json()
         
         # Check for API errors first
         if "candidates" not in result:
-            print(f"❌ [GOOGLE GEMINI] API error response: {result}")
+            print(f"[GOOGLE GEMINI] ERROR: API error response: {result}")
             if "error" in result:
                 error_details = result['error']
-                print(f"❌ [GOOGLE GEMINI] Error code: {error_details.get('code')}, Message: {error_details.get('message')}")
+                print(f"[GOOGLE GEMINI] ERROR: Error code: {error_details.get('code')}, Message: {error_details.get('message')}")
             raise RuntimeError(f"Gemini image API error: {result.get('error', {}).get('message', 'Unknown error')}")
         
         # Extract image data
@@ -924,15 +927,15 @@ def generate_gemini_img2img(
             img = img.convert("RGB")
             img = img.resize((480, 270), PILImage.LANCZOS)  # 16:9 aspect ratio for API calls
             img.save(small_path, format="PNG", optimize=True, quality=85)
-            print(f"✅ [GOOGLE GEMINI] Edited image saved: {image_path}")
-            print(f"✅ [GOOGLE GEMINI] Downsampled saved: {small_path} (480x270 for API calls)")
+            print(f"[GOOGLE GEMINI] Edited image saved: {image_path}")
+            print(f"[GOOGLE GEMINI] Downsampled saved: {small_path} (480x270 for API calls)")
         except Exception as e:
-            print(f"⚠️ [GOOGLE GEMINI] Downsample failed: {e}")
+            print(f"[GOOGLE GEMINI] WARNING: Downsample failed: {e}")
         
-        return f"/images/{filename}"
+        return str(Path("images") / filename)
         
     except Exception as e:
-        print(f"❌ [GOOGLE GEMINI] Edit error: {e}")
-        print(f"❌ [GOOGLE GEMINI] Returning None to allow game to continue")
+        print(f"[GOOGLE GEMINI] ERROR: Edit error: {e}")
+        print(f"[GOOGLE GEMINI] ERROR: Returning None to allow game to continue")
         return None  # Graceful fallback - don't crash the death sequence!
 

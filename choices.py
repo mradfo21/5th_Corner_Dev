@@ -106,9 +106,9 @@ def generate_choices(
         "CRITICAL GROUNDING RULE - ONLY REFERENCE WHAT'S ACTUALLY VISIBLE:\n"
         "• Look at the IMAGE carefully\n"
         "• ONLY suggest actions involving objects/structures YOU CAN SEE in the frame\n"
-        "• If there's NO door visible → DO NOT suggest 'Open door'\n"
-        "• If there's NO vehicle visible → DO NOT suggest 'Hide behind truck'\n"
-        "• If there's NO fence visible → DO NOT suggest 'Climb fence'\n"
+        "• If there's NO door visible -> DO NOT suggest 'Open door'\n"
+        "• If there's NO vehicle visible -> DO NOT suggest 'Hide behind truck'\n"
+        "• If there's NO fence visible -> DO NOT suggest 'Climb fence'\n"
         "• BE SPECIFIC: Use exact descriptors from what's visible (rusted building, distant structure, rocky ground)\n\n"
         "FORWARD MOMENTUM: Jason ALWAYS moves forward or sideways, NEVER backward. Do NOT suggest: retreat, step back, back away, turn around, flee, run away, return.\n\n"
         "VERB VARIETY: Use different verbs each time. Examples:\n"
@@ -205,7 +205,7 @@ def generate_choices(
         },
         timeout=15
     ).json()
-    print("[GEMINI TEXT] ✅ Choice generation complete")
+    print("[GEMINI TEXT] Choice generation complete")
     
     # Create a mock OpenAI response object
     class GeminiResp:
@@ -441,5 +441,5 @@ def categorize_choice(choice: str) -> tuple[str, str]:
     if any(k in choice_lower for k in action_keywords):
         return ("action", "⚡")
     if any(k in choice_lower for k in new_scene_keywords):
-        return ("new scene", "🎬")
+        return ("new scene", "")
     return ("explore", "🧭")
