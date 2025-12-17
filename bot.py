@@ -185,7 +185,7 @@ if DISCORD_ENABLED:
             description=f"`[██████████]`\n**{fate}**",
             color=fate_colors[fate]
         ))
-        await asyncio.sleep(1.5)  # Display result
+        await asyncio.sleep(2.2)  # Display result LONGER - let it sink in
         await msg.delete()
     
     def _create_death_replay_tape_with_lock() -> tuple[Optional[str], str]:
@@ -857,6 +857,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             
             # BEAT 1: Fate animation (rolling the dice) - KEEP ORIGINAL
             await animate_fate_roll(interaction.channel, fate)
+            await asyncio.sleep(0.5)  # Let the fate result sink in before continuing
             
             # BEAT 2: Anticipation based on CHOICE (not outcome - so no wait needed!)
             choice_lower = self.label.lower()
@@ -904,16 +905,6 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     color=VHS_RED
                 ))
                 await asyncio.sleep(2.5)  # LONGER - let them actually read it!
-            
-            # BEAT 5: Show vision dispatch (what you see) - NEW
-            vision_dispatch_text = phase1.get("vision_dispatch", "")
-            if vision_dispatch_text and vision_dispatch_text != dispatch_text:
-                await interaction.channel.send(embed=discord.Embed(
-                    title="👁️ What You See",
-                    description=safe_embed_desc(vision_dispatch_text[:400]),
-                    color=CORNER_TEAL_DARK
-                ))
-                await asyncio.sleep(1.8)
             
             # Show IMAGE and/or VIDEO IMMEDIATELY from Phase 1
             image_path = phase1.get("consequence_image")
@@ -1130,43 +1121,19 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                         # Show intro
                         await send_intro_tutorial(button_interaction.channel)
                 
-                # Show Play Again button immediately
+                # Show Play Again button and leave it (no auto-restart)
                 play_again_view = View(timeout=None)
                 play_again_view.add_item(PlayAgainButton())
                 await interaction.channel.send(
                     embed=discord.Embed(
-                        description="💾 **Save the tape!** Press Play Again to restart.",
+                        description="💾 **Save the tape!** Press Play Again when ready.",
                         color=CORNER_GREY
                     ),
                     view=play_again_view
                 )
                 
-                # Wait 30s for manual restart (check every second if button was clicked)
-                print("[DEATH] Waiting 30s for manual restart or auto-restart...")
-                for _ in range(30):
-                    if manual_restart_done.is_set():
-                        print("[DEATH] Manual restart detected - skipping auto-restart")
-                        return  # Player clicked button, don't auto-restart
-                    await asyncio.sleep(1)
-                
-                # Auto-restart the game (fallback if player didn't click)
-                print("[DEATH] Auto-restarting game...")
-                
-                # Cancel all running tasks
-                if auto_advance_task and not auto_advance_task.done():
-                    auto_advance_task.cancel()
-                    print("[DEATH] Cancelled auto-play task")
-                if countdown_task and not countdown_task.done():
-                    countdown_task.cancel()
-                    print("[DEATH] Cancelled countdown task")
-                auto_play_enabled = False
-                
-                loop = asyncio.get_running_loop()
-                await loop.run_in_executor(None, self._do_reset_static)
-                
-                # Show intro tutorial
-                await send_intro_tutorial(interaction.channel)
-                return  # End turn here
+                print("[DEATH] Play Again button ready - waiting for manual restart (no auto-restart)")
+                return  # End turn here - button will handle restart when clicked
             
             # Show world evolution context (skip generic defaults)
             world_context = disp.get("world_prompt", "")
@@ -1361,6 +1328,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             
             # BEAT 1: Fate animation (rolling the dice) - KEEP ORIGINAL
             await animate_fate_roll(interaction.channel, fate)
+            await asyncio.sleep(0.5)  # Let the fate result sink in before continuing
             
             # BEAT 2: Anticipation based on CHOICE (not outcome - so no wait needed!)
             choice_lower = custom_choice.lower()
@@ -1409,16 +1377,6 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 color=VHS_RED
             ))
             await asyncio.sleep(2.5)  # LONGER - let them actually read it!
-            
-            # BEAT 5: Show vision dispatch (what you see) - NEW
-            vision_dispatch_text = disp.get("vision_dispatch", "")
-            if vision_dispatch_text and vision_dispatch_text != dispatch_text:
-                await interaction.channel.send(embed=discord.Embed(
-                    title="👁️ What You See",
-                    description=safe_embed_desc(vision_dispatch_text[:400]),
-                    color=CORNER_TEAL_DARK
-                ))
-                await asyncio.sleep(1.8)
             
             # Display image and/or video
             img_path = disp.get("consequence_image")
@@ -1576,37 +1534,19 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                         # Show intro
                         await send_intro_tutorial(button_interaction.channel)
                 
-                # Show Play Again button immediately
+                # Show Play Again button and leave it (no auto-restart)
                 play_again_view = View(timeout=None)
                 play_again_view.add_item(PlayAgainButton())
                 await interaction.channel.send(
                     embed=discord.Embed(
-                        description="💾 **Save the tape!** Press Play Again to restart.",
+                        description="💾 **Save the tape!** Press Play Again when ready.",
                         color=CORNER_GREY
                     ),
                     view=play_again_view
                 )
                 
-                # Wait 30s for manual restart (check every second if button was clicked)
-                print("[DEATH CUSTOM] Waiting 30s for manual restart or auto-restart...")
-                for _ in range(30):
-                    if manual_restart_done.is_set():
-                        print("[DEATH CUSTOM] Manual restart detected - skipping auto-restart")
-                        return  # Player clicked button, don't auto-restart
-                    await asyncio.sleep(1)
-                
-                # Cancel all running tasks
-                if auto_advance_task and not auto_advance_task.done():
-                    auto_advance_task.cancel()
-                    print("[DEATH] Cancelled auto-play task")
-                if countdown_task and not countdown_task.done():
-                    countdown_task.cancel()
-                    print("[DEATH] Cancelled countdown task")
-                auto_play_enabled = False
-                
-                await loop.run_in_executor(None, ChoiceButton._do_reset_static)
-                await send_intro_tutorial(interaction.channel)
-                return
+                print("[DEATH CUSTOM] Play Again button ready - waiting for manual restart (no auto-restart)")
+                return  # End turn here - button will handle restart when clicked
             
             # Phase 2: Generate choices (deferred)
             print(f"[BOT DEBUG] Passing to Phase 2: image={img_path}, dispatch={disp['dispatch'][:50]}...")
