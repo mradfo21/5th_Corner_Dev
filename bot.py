@@ -126,6 +126,9 @@ if DISCORD_ENABLED:
     TAPES_DIR = ROOT / "tapes"
     TAPES_DIR.mkdir(exist_ok=True)
     _run_images = []  # Track all images from current run for VHS tape
+    import threading
+    _tape_creation_lock = threading.Lock()  # Prevent duplicate tape creation (thread-safe)
+    _tape_creation_in_progress = False  # Flag to track if tape is being created
     
     # ───────── 5th Corner VHS Color Palette ─────────────────────────────────────
     # Based on 5th Corner brand logo - teal surveillance camera aesthetic
@@ -184,6 +187,27 @@ if DISCORD_ENABLED:
         ))
         await asyncio.sleep(1.5)  # Display result
         await msg.delete()
+    
+    def _create_death_replay_tape_with_lock() -> tuple[Optional[str], str]:
+        """
+        Thread-safe wrapper for tape creation with duplicate prevention.
+        Returns: (tape_path or None, error_message or empty string)
+        """
+        global _tape_creation_in_progress
+        
+        with _tape_creation_lock:
+            if _tape_creation_in_progress:
+                print("[TAPE] WARNING: Duplicate tape creation prevented")
+                return None, "Tape creation already in progress"
+            
+            _tape_creation_in_progress = True
+        
+        try:
+            result = _create_death_replay_tape()
+            return result
+        finally:
+            with _tape_creation_lock:
+                _tape_creation_in_progress = False
     
     def _create_death_replay_tape() -> tuple[Optional[str], str]:
         """
@@ -831,36 +855,42 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             
             await asyncio.sleep(0.3)  # Brief breath
             
-            # BEAT 1: Fate animation (rolling the dice)
+            # BEAT 1: Fate animation (rolling the dice) - KEEP ORIGINAL
             await animate_fate_roll(interaction.channel, fate)
             
-            # BEAT 2: Atmospheric pause (generic tension building)
-            tension_cues = [
-                "⏳ The moment unfolds...",
-                "⏳ Time slows...",
-                "⏳ Reality shifts...",
-                "⏳ The world reacts...",
-                "⏳ Consequences ripple forward..."
-            ]
-            import random
+            # BEAT 2: Anticipation based on CHOICE (not outcome - so no wait needed!)
+            choice_lower = self.label.lower()
+            if any(word in choice_lower for word in ["sprint", "run", "dash", "bolt", "charge"]):
+                anticipation = "💨 Movement registered..."
+            elif any(word in choice_lower for word in ["smash", "break", "destroy", "kick", "bash"]):
+                anticipation = "💥 Impact imminent..."
+            elif any(word in choice_lower for word in ["hide", "crouch", "duck", "flatten"]):
+                anticipation = "🤫 Concealment attempt..."
+            elif any(word in choice_lower for word in ["climb", "vault", "scramble", "ascend"]):
+                anticipation = "🧗 Vertical movement..."
+            elif any(word in choice_lower for word in ["grab", "take", "pick up", "snatch"]):
+                anticipation = "🤲 Interaction detected..."
+            else:
+                anticipation = "⏳ Action processing..."
+            
             await interaction.channel.send(embed=discord.Embed(
-                description=random.choice(tension_cues),
+                description=anticipation,
                 color=CORNER_GREY
             ))
-            await asyncio.sleep(0.7)
+            await asyncio.sleep(0.8)
             
-            # BEAT 3: Fate flavor (Lucky/Unlucky hint - no movement_type yet as we don't have dispatch)
+            # BEAT 3: Fate flavor (Lucky/Unlucky hint) - KEEP ORIGINAL
             fate_flavor = get_tension_beat(fate, "")  # Empty movement type for now
             await interaction.channel.send(embed=discord.Embed(
                 description=fate_flavor,
                 color=CORNER_GREY if fate == "NORMAL" else (CORNER_TEAL if fate == "LUCKY" else VHS_RED)
             ))
-            await asyncio.sleep(0.6)
+            await asyncio.sleep(0.8)
             
-            # NOW wait for Phase 1 to complete (should be done or close by now)
+            # NOW wait for Phase 1 to complete (image + dispatch generation)
             phase1 = await phase1_task
-
-            # BEAT 4: Show the dispatch (what actually happened)
+            
+            # BEAT 4: Show dispatch (what happened) - LONGER DISPLAY TIME
             dispatch_text = phase1.get("dispatch", "")
             if dispatch_text:
                 movement_indicator = get_movement_indicator()
@@ -869,66 +899,21 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     full_text = f"{movement_indicator}\n\n{full_text}"
                 
                 await interaction.channel.send(embed=discord.Embed(
+                    title="⚡ Consequence",
                     description=safe_embed_desc(full_text),
                     color=VHS_RED
                 ))
-                await asyncio.sleep(0.5)  # Brief pause before image reveal
+                await asyncio.sleep(2.5)  # LONGER - let them actually read it!
             
-            # 🧪 TEST BEAT: Verify image prompt storage is working
-            # Query PREVIOUS turn's stored prompt to prove the system works
-            try:
-                import json
-                history_path = ROOT / "history.json"
-                if history_path.exists():
-                    with open(history_path, "r", encoding="utf-8") as f:
-                        history_data = json.load(f)
-                    
-                    # Get the PREVIOUS entry (before this turn)
-                    if history_data and len(history_data) > 0:
-                        last_entry = history_data[-1]  # Most recent completed turn
-                        stored_choice = last_entry.get("choice", "N/A")
-                        stored_prompt = last_entry.get("image_prompt", "")
-                        stored_image = last_entry.get("image", "N/A")
-                        
-                        if stored_prompt:
-                            # Truncate for display (show first 150 chars)
-                            prompt_preview = stored_prompt[:150] + "..." if len(stored_prompt) > 150 else stored_prompt
-                            
-                            test_msg = (
-                                f"**📊 Previous Turn Data Retrieved:**\n"
-                                f"**Choice:** {stored_choice}\n"
-                                f"**Image:** {stored_image}\n"
-                                f"**Prompt (first 150 chars):**\n```{prompt_preview}```"
-                            )
-                            
-                            await interaction.channel.send(embed=discord.Embed(
-                                title="🧪 TEST: Image Prompt Storage System",
-                                description=test_msg,
-                                color=0x00FF00  # Green for success
-                            ))
-                            print(f"[TEST] Retrieved previous turn's prompt: {stored_prompt[:80]}...")
-                        else:
-                            await interaction.channel.send(embed=discord.Embed(
-                                title="🧪 TEST: Image Prompt Storage",
-                                description=f"WARNING: No image_prompt found in previous turn\n**Choice:** {stored_choice}",
-                                color=0xFFA500  # Orange for warning
-                            ))
-                    else:
-                        await interaction.channel.send(embed=discord.Embed(
-                            title="🧪 TEST: Image Prompt Storage",
-                            description="WARNING: History is empty (this is the first turn)",
-                            color=0xFFA500
-                        ))
-                await asyncio.sleep(1.2)  # Let user read the test result
-            except Exception as e:
-                print(f"[TEST] ERROR: Error retrieving image prompt: {e}")
-                import traceback
-                traceback.print_exc()
+            # BEAT 5: Show vision dispatch (what you see) - NEW
+            vision_dispatch_text = phase1.get("vision_dispatch", "")
+            if vision_dispatch_text and vision_dispatch_text != dispatch_text:
                 await interaction.channel.send(embed=discord.Embed(
-                    title="🧪 TEST: Image Prompt Storage",
-                    description=f"ERROR: Error: {str(e)[:200]}",
-                    color=0xFF0000  # Red for error
+                    title="👁️ What You See",
+                    description=safe_embed_desc(vision_dispatch_text[:400]),
+                    color=CORNER_TEAL_DARK
                 ))
+                await asyncio.sleep(1.8)
             
             # Show IMAGE and/or VIDEO IMMEDIATELY from Phase 1
             image_path = phase1.get("consequence_image")
@@ -973,6 +958,14 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     else:
                         # HD mode: image already sent with video, skip duplicate
                         print(f"[BOT] Image skipped (video already displayed)")
+                await asyncio.sleep(0.5)
+            else:
+                # Image generation blocked (safety filter or API error)
+                await interaction.channel.send(embed=discord.Embed(
+                    title="⚠️ SIGNAL DISRUPTED",
+                    description="Visual feed blocked. Content filtered by safety systems.\nNarrative continues...",
+                    color=VHS_RED
+                ))
                 await asyncio.sleep(0.5)
             
             # Show "Generating choices..." while Phase 2 runs
@@ -1047,7 +1040,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 
                 # Start tape creation in background
                 loop = asyncio.get_running_loop()
-                tape_task = loop.run_in_executor(None, _create_death_replay_tape)
+                tape_task = loop.run_in_executor(None, _create_death_replay_tape_with_lock)
                 
                 # VHS eject animation (plays while GIF generates)
                 eject_sequence = [
@@ -1366,102 +1359,66 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             
             await asyncio.sleep(0.3)  # Brief breath
             
-            # BEAT 1: Fate animation (rolling the dice)
+            # BEAT 1: Fate animation (rolling the dice) - KEEP ORIGINAL
             await animate_fate_roll(interaction.channel, fate)
             
-            # BEAT 2: Atmospheric pause (generic tension building)
-            tension_cues = [
-                "⏳ The moment unfolds...",
-                "⏳ Time slows...",
-                "⏳ Reality shifts...",
-                "⏳ The world reacts...",
-                "⏳ Consequences ripple forward..."
-            ]
-            import random
+            # BEAT 2: Anticipation based on CHOICE (not outcome - so no wait needed!)
+            choice_lower = custom_choice.lower()
+            if any(word in choice_lower for word in ["sprint", "run", "dash", "bolt", "charge"]):
+                anticipation = "💨 Movement registered..."
+            elif any(word in choice_lower for word in ["smash", "break", "destroy", "kick", "bash"]):
+                anticipation = "💥 Impact imminent..."
+            elif any(word in choice_lower for word in ["hide", "crouch", "duck", "flatten"]):
+                anticipation = "🤫 Concealment attempt..."
+            elif any(word in choice_lower for word in ["climb", "vault", "scramble", "ascend"]):
+                anticipation = "🧗 Vertical movement..."
+            elif any(word in choice_lower for word in ["grab", "take", "pick up", "snatch"]):
+                anticipation = "🤲 Interaction detected..."
+            else:
+                anticipation = "⏳ Action processing..."
+            
             await interaction.channel.send(embed=discord.Embed(
-                description=random.choice(tension_cues),
+                description=anticipation,
                 color=CORNER_GREY
             ))
-            await asyncio.sleep(0.7)
+            await asyncio.sleep(0.8)
             
-            # BEAT 3: Fate flavor (Lucky/Unlucky hint)
+            # BEAT 3: Fate flavor (Lucky/Unlucky hint) - KEEP ORIGINAL
             fate_flavor = get_tension_beat(fate, "")  # Empty movement type for now
             await interaction.channel.send(embed=discord.Embed(
                 description=fate_flavor,
                 color=CORNER_GREY if fate == "NORMAL" else (CORNER_TEAL if fate == "LUCKY" else VHS_RED)
             ))
-            await asyncio.sleep(0.6)
+            await asyncio.sleep(0.8)
             
-            # NOW wait for Phase 1 to complete (should be done or close by now)
+            # NOW wait for Phase 1 to complete (image + dispatch generation)
             phase1 = await phase1_task
             
             disp = phase1
             choice_text = custom_choice
             
-            # BEAT 4: Display dispatch (what actually happened)
+            # BEAT 4: Display dispatch (what happened) - LONGER DISPLAY TIME
             movement_indicator = get_movement_indicator()
             dispatch_text = disp["dispatch"]
             if movement_indicator:
                 dispatch_text = f"{movement_indicator}\n\n{dispatch_text}"
             
-            await interaction.channel.send(embed=discord.Embed(description=safe_embed_desc(dispatch_text), color=CORNER_TEAL))
-            await asyncio.sleep(0.5)  # Brief pause before image reveal
+            await interaction.channel.send(embed=discord.Embed(
+                title="⚡ Consequence",
+                description=safe_embed_desc(dispatch_text),
+                color=VHS_RED
+            ))
+            await asyncio.sleep(2.5)  # LONGER - let them actually read it!
             
-            # 🧪 TEST BEAT: Verify image prompt storage is working (Custom Action path)
-            # Query PREVIOUS turn's stored prompt to prove the system works
-            try:
-                import json
-                history_path = ROOT / "history.json"
-                if history_path.exists():
-                    with open(history_path, "r", encoding="utf-8") as f:
-                        history_data = json.load(f)
-                    
-                    # Get the PREVIOUS entry (before this turn)
-                    if history_data and len(history_data) > 0:
-                        last_entry = history_data[-1]  # Most recent completed turn
-                        stored_choice = last_entry.get("choice", "N/A")
-                        stored_prompt = last_entry.get("image_prompt", "")
-                        stored_image = last_entry.get("image", "N/A")
-                        
-                        if stored_prompt:
-                            # Truncate for display (show first 150 chars)
-                            prompt_preview = stored_prompt[:150] + "..." if len(stored_prompt) > 150 else stored_prompt
-                            
-                            test_msg = (
-                                f"**📊 Previous Turn Data Retrieved:**\n"
-                                f"**Choice:** {stored_choice}\n"
-                                f"**Image:** {stored_image}\n"
-                                f"**Prompt (first 150 chars):**\n```{prompt_preview}```"
-                            )
-                            
-                            await interaction.channel.send(embed=discord.Embed(
-                                title="🧪 TEST: Image Prompt Storage System",
-                                description=test_msg,
-                                color=0x00FF00  # Green for success
-                            ))
-                            print(f"[TEST CUSTOM] Retrieved previous turn's prompt: {stored_prompt[:80]}...")
-                        else:
-                            await interaction.channel.send(embed=discord.Embed(
-                                title="🧪 TEST: Image Prompt Storage",
-                                description=f"WARNING: No image_prompt found in previous turn\n**Choice:** {stored_choice}",
-                                color=0xFFA500  # Orange for warning
-                            ))
-                    else:
-                        await interaction.channel.send(embed=discord.Embed(
-                            title="🧪 TEST: Image Prompt Storage",
-                            description="WARNING: History is empty (this is the first turn)",
-                            color=0xFFA500
-                        ))
-                await asyncio.sleep(1.2)  # Let user read the test result
-            except Exception as e:
-                print(f"[TEST CUSTOM] ERROR: Error retrieving image prompt: {e}")
-                import traceback
-                traceback.print_exc()
+            # BEAT 5: Show vision dispatch (what you see) - NEW
+            vision_dispatch_text = disp.get("vision_dispatch", "")
+            if vision_dispatch_text and vision_dispatch_text != dispatch_text:
                 await interaction.channel.send(embed=discord.Embed(
-                    title="🧪 TEST: Image Prompt Storage",
-                    description=f"ERROR: Error: {str(e)[:200]}",
-                    color=0xFF0000  # Red for error
+                    title="👁️ What You See",
+                    description=safe_embed_desc(vision_dispatch_text[:400]),
+                    color=CORNER_TEAL_DARK
                 ))
+                await asyncio.sleep(1.8)
             
             # Display image and/or video
             img_path = disp.get("consequence_image")
@@ -1529,7 +1486,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 
                 # Start tape creation in background
                 loop = asyncio.get_running_loop()
-                tape_task = loop.run_in_executor(None, _create_death_replay_tape)
+                tape_task = loop.run_in_executor(None, _create_death_replay_tape_with_lock)
                 
                 # VHS eject animation (plays while GIF generates)
                 eject_sequence = [
@@ -3088,7 +3045,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                         
                         # Start tape creation in background
                         loop = asyncio.get_running_loop()
-                        tape_task = loop.run_in_executor(None, _create_death_replay_tape)
+                        tape_task = loop.run_in_executor(None, _create_death_replay_tape_with_lock)
                         
                         # VHS eject animation (plays while GIF generates)
                         eject_sequence = [

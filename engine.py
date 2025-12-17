@@ -2955,7 +2955,13 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             consequence_video_url = None
             if result:
                 consequence_img_url, consequence_img_prompt, consequence_video_url = result
-            print(f"[IMG FAST] Image ready: {consequence_img_url}")
+                print(f"[IMG FAST] Image ready: {consequence_img_url}")
+            else:
+                # Image generation failed (safety block, API error, etc.) - provide graceful fallback
+                print(f"[IMG FAST] WARNING: Image generation returned None (likely safety block or API error)")
+                print(f"[IMG FAST] Providing fallback 'static' image message")
+                consequence_img_url = None  # Explicitly None - bot will show text-only
+                consequence_img_prompt = "[Image blocked - content filtered]"
             if consequence_video_url:
                 print(f"[IMG FAST] Video ready: {consequence_video_url}")
         except Exception as e:
