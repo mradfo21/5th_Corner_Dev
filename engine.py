@@ -1209,7 +1209,7 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                     frame_idx=frame_idx,
                     world_prompt=world_prompt,
                     action_context=choice,
-                    reference_frames=reference_frames_for_veo[1:] if len(reference_frames_for_veo) > 1 else []  # Skip first (used as starting frame)
+                    reference_frames=reference_frames_for_veo  # Pass ALL frames (including starting frame) for style continuity
                 )
                 print(f"[IMG] generate_frame_via_video returned: {result_path}", flush=True)
                 if video_path:
@@ -1246,15 +1246,15 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                 
                 # SPECIAL CASE: Frame 1 always uses Frame 0 strongly (no hard transition)
                 if frame_idx == 1:
-                    ref_images_to_use = prev_img_paths_list  # Use all references (Frame 0)
-                    print(f"[IMG GENERATION] FRAME 1 SPECIAL CASE - Using ALL references from intro (strong continuity)")
+                    ref_images_to_use = prev_img_paths_list[:1]  # Use ONLY most recent (Frame 0)
+                    print(f"[IMG GENERATION] FRAME 1 SPECIAL CASE - Using most recent reference from intro")
                     print(f"[IMG GENERATION] This ensures color/lighting consistency from Frame 0 to Frame 1")
                 elif hard_transition:
                     ref_images_to_use = prev_img_paths_list[:1]  # Only most recent for lighting
                     print(f"[IMG GENERATION] Hard transition - using 1 reference image (lighting/aesthetic only)")
                 else:
-                    ref_images_to_use = prev_img_paths_list  # Full set for continuity
-                    print(f"[IMG GENERATION] Normal transition - using {len(ref_images_to_use)} reference images")
+                    ref_images_to_use = prev_img_paths_list[:1]  # ONLY most recent for strongest continuity
+                    print(f"[IMG GENERATION] Normal transition - using 1 reference image (most recent frame)")
                 
                 print(f"[IMG GENERATION] References being passed to API:")
                 for i, ref in enumerate(ref_images_to_use):
