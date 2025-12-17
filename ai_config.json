@@ -1,8 +1,8 @@
 {
   "text_provider": "gemini",
   "text_model": "gemini-2.0-flash",
-  "image_provider": "veo",
-  "image_model": "veo-3.1-generate-preview",
+  "image_provider": "gemini",
+  "image_model": "gemini-2.5-flash-image",
   "last_updated": "2025-12-16T19:55:00.590254+00:00",
   "available_configs": {
     "gemini": {
@@ -25,5 +25,5 @@
       "description": "Video-based image generation - generates 8s videos, extracts last frame. Natural consistency!"
     }
   },
-  "description": "Video-based image generation - generates 8s videos, extracts last frame. Natural consistency!"
+  "description": "Using Gemini Flash for fast image generation (toggle Quality mode in Discord for Gemini Pro)"
 }

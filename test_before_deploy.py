@@ -226,16 +226,57 @@ if not config_path.exists():
     print("[FAIL]")
     failed_tests.append("ai_config.json missing")
 else:
-    # Verify correct model
+    # Verify correct provider and model
     with open(config_path, 'r') as f:
         config = json.load(f)
+    image_provider = config.get('image_provider', '')
     image_model = config.get('image_model', '')
-    if image_model != 'gemini-3-pro-image-preview':
+    
+    # Should be using Gemini (not Veo) by default
+    if image_provider != 'gemini':
         print("[FAIL]")
-        print(f"    Expected: gemini-3-pro-image-preview, Got: {image_model}")
+        print(f"    Expected provider: gemini, Got: {image_provider}")
+        failed_tests.append("ai_config.json wrong provider")
+    # Should be using Flash model for fast mode by default
+    elif image_model != 'gemini-2.5-flash-image':
+        print("[FAIL]")
+        print(f"    Expected model: gemini-2.5-flash-image, Got: {image_model}")
         failed_tests.append("ai_config.json wrong model")
     else:
         print("[OK]")
+
+# ============================================================================
+# TEST 6: Quality Mode Configuration
+# ============================================================================
+print("\n[TEST 6] Quality Mode Configuration...")
+print("  Checking QUALITY_MODE default...", end=" ")
+
+try:
+    with open("engine.py", "r", encoding="utf-8") as f:
+        lines = f.readlines()
+    
+    quality_mode_line = None
+    for line in lines:
+        if "QUALITY_MODE" in line and "=" in line and not line.strip().startswith("#"):
+            quality_mode_line = line
+            break
+    
+    if quality_mode_line:
+        # Should be False for fast mode by default
+        if "= False" in quality_mode_line or "=False" in quality_mode_line:
+            print("[OK]")
+        else:
+            print("[FAIL]")
+            print(f"    QUALITY_MODE should be False by default for fast mode")
+            print(f"    Found: {quality_mode_line.strip()}")
+            failed_tests.append("QUALITY_MODE default")
+    else:
+        print("[FAIL]")
+        print("    QUALITY_MODE not found in engine.py")
+        failed_tests.append("QUALITY_MODE missing")
+except Exception as e:
+    print(f"[FAIL] {e}")
+    failed_tests.append("QUALITY_MODE check")
 
 # ============================================================================
 # RESULTS

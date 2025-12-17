@@ -127,7 +127,7 @@ WORLD_STATE_LOCK = threading.Lock() # Global lock for world_state.json access
 
 IMAGE_ENABLED       = True  # ENABLED for production
 WORLD_IMAGE_ENABLED = True  # ENABLED for production
-HD_MODE             = True  # HD mode for high-quality images (slower)
+QUALITY_MODE        = False  # Quality mode: False=Gemini Flash (fast), True=Gemini Pro (high quality, slower)
 VEO_MODE_ENABLED    = False # DISABLED by default - use video generation instead of images
 
 # OpenAI img2img consistency settings
@@ -1294,7 +1294,7 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                     world_prompt=world_prompt,
                     time_of_day=use_time_of_day,
                     action_context=choice,  # Pass action for FPS hands context
-                    hd_mode=HD_MODE  # Use global HD mode setting
+                    hd_mode=QUALITY_MODE  # Use global quality mode setting
                 )
             else:
                 print(f"\n{'='*70}")
@@ -1314,7 +1314,7 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                     time_of_day=use_time_of_day,
                     is_first_frame=(frame_idx == 0),  # Use Pro for first frame
                     action_context=choice,  # Pass action for FPS hands context
-                    hd_mode=HD_MODE  # Use global HD mode setting
+                    hd_mode=QUALITY_MODE  # Use global quality mode setting
                 )
             _last_image_path = result_path
             return (result_path, prompt_str, None)  # Gemini doesn't generate videos

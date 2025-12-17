@@ -737,9 +737,9 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             autoplay_btn = AutoPlayToggleButton(self)
             autoplay_btn.view = self  # Already has parent_view, add view too
             self.add_item(autoplay_btn)
-            hd_btn = HDToggleButton(self)
-            hd_btn.view = self
-            self.add_item(hd_btn)
+            quality_btn = QualityToggleButton(self)
+            quality_btn.view = self
+            self.add_item(quality_btn)
             regen_btn = RegenerateChoicesButton(self)
             regen_btn.view = self
             self.add_item(regen_btn)
@@ -1982,11 +1982,11 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 modal = AutoPlayDelayModal(self.parent_view)
                 await interaction.response.send_modal(modal)
     
-    class HDToggleButton(Button):
+    class QualityToggleButton(Button):
         def __init__(self, parent_view):
-            global hd_mode_enabled
-            label = " HD: ON" if hd_mode_enabled else " HD: OFF"
-            style = discord.ButtonStyle.success if hd_mode_enabled else discord.ButtonStyle.secondary
+            global quality_mode_enabled
+            label = "⚡ Quality: HQ" if quality_mode_enabled else "⚡ Quality: FAST"
+            style = discord.ButtonStyle.success if quality_mode_enabled else discord.ButtonStyle.secondary
             super().__init__(label=label, style=style, row=1)
             self.parent_view = parent_view
         
@@ -1995,27 +1995,27 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             if hasattr(self, 'view') and self.view and hasattr(self.view, 'owner_id'):
                 if not check_authorization(interaction, self.view.owner_id):
                     await interaction.response.send_message(
-                        "🔒 Only the game owner can toggle HD mode.",
+                        "🔒 Only the game owner can toggle quality mode.",
                         ephemeral=True
                     )
                     return
             
-            global hd_mode_enabled
+            global quality_mode_enabled
             import engine
             
-            # Toggle HD mode
-            hd_mode_enabled = not hd_mode_enabled
-            engine.HD_MODE = hd_mode_enabled
+            # Toggle quality mode
+            quality_mode_enabled = not quality_mode_enabled
+            engine.QUALITY_MODE = quality_mode_enabled
             
             # Update button appearance
-            if hd_mode_enabled:
-                self.label = " HD: ON"
+            if quality_mode_enabled:
+                self.label = "⚡ Quality: HQ"
                 self.style = discord.ButtonStyle.success
-                print("[HD MODE] Enabled - High quality images (slower)")
+                print("[QUALITY MODE] HQ - Using Gemini Pro (slower, higher quality)")
             else:
-                self.label = " HD: OFF"
+                self.label = "⚡ Quality: FAST"
                 self.style = discord.ButtonStyle.secondary
-                print("[HD MODE] Disabled - Fast images (lower quality)")
+                print("[QUALITY MODE] FAST - Using Gemini Flash (faster, lower quality)")
             
             # Update the view to show new button state
             try:
@@ -3383,9 +3383,10 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
     auto_advance_task = None
     AUTO_PLAY_DELAY = 45  # seconds between auto choices
     
-    # --- HD mode ---
-    # HD mode uses high-resolution Gemini image generation (slower but better quality)
-    hd_mode_enabled = True  # Default to HD mode ON
+    # --- Quality mode ---
+    # Quality mode toggles between Gemini Flash (fast) and Gemini Pro (high quality)
+    # NOTE: This is separate from "HD Mode" (Veo cinematic video generation)
+    quality_mode_enabled = False  # Default to FAST mode (Flash) for speed
     current_choices = []  # Track current available choices
     current_view = None  # Track current view for auto-advance
     
