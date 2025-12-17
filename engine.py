@@ -251,7 +251,7 @@ def _load_state() -> dict:
 
 print("[ENGINE INIT] Loading initial state...", flush=True)
 try:
-state = _load_state() # Initial load
+    state = _load_state() # Initial load
     print(f"[ENGINE INIT] State loaded successfully", flush=True)
 except Exception as e:
     print(f"[ENGINE INIT ERROR] Failed to load state: {e}", flush=True)
@@ -288,39 +288,39 @@ else:
 def _save_state(st: dict):
     # CRITICAL FIX: Always acquire lock to prevent concurrent write race conditions
     with WORLD_STATE_LOCK:
-    st["last_saved"] = datetime.now(timezone.utc).isoformat()
-    temp_state_file = STATE_PATH.with_suffix(".json.tmp")
-    max_retries = 3
-    retry_delay = 0.1 # seconds
+        st["last_saved"] = datetime.now(timezone.utc).isoformat()
+        temp_state_file = STATE_PATH.with_suffix(".json.tmp")
+        max_retries = 3
+        retry_delay = 0.1 # seconds
 
-    for attempt in range(max_retries):
-        try:
-            temp_state_file.write_text(json.dumps(st, indent=2, ensure_ascii=False), encoding='utf-8')
-            os.replace(temp_state_file, STATE_PATH)
-            return # Success
-        except OSError as e_os:
-            logging.warning(f"Attempt {attempt + 1} to save state to {STATE_PATH} failed with OSError: {e_os}")
-            if attempt < max_retries - 1:
+        for attempt in range(max_retries):
+            try:
+                temp_state_file.write_text(json.dumps(st, indent=2, ensure_ascii=False), encoding='utf-8')
+                os.replace(temp_state_file, STATE_PATH)
+                return # Success
+            except OSError as e_os:
+                logging.warning(f"Attempt {attempt + 1} to save state to {STATE_PATH} failed with OSError: {e_os}")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                else:
+                    logging.error(f"All {max_retries} attempts to save state to {STATE_PATH} failed due to OSError: {e_os}")
+            except Exception as e:
+                logging.error(f"Failed to save state to {STATE_PATH} on attempt {attempt + 1}: {e}")
+                if attempt == max_retries - 1 or not isinstance(e, OSError):
+                    try:
+                        logging.error(f"State content that failed to save: {json.dumps(st, indent=2, default=str, ensure_ascii=False)}")
+                    except Exception as e_log_state:
+                        logging.error(f"Could not even serialize state for error logging: {e_log_state}")
+                if attempt == max_retries - 1:
+                    break 
                 time.sleep(retry_delay)
-            else:
-                logging.error(f"All {max_retries} attempts to save state to {STATE_PATH} failed due to OSError: {e_os}")
-        except Exception as e:
-            logging.error(f"Failed to save state to {STATE_PATH} on attempt {attempt + 1}: {e}")
-            if attempt == max_retries - 1 or not isinstance(e, OSError):
-                try:
-                    logging.error(f"State content that failed to save: {json.dumps(st, indent=2, default=str, ensure_ascii=False)}")
-                except Exception as e_log_state:
-                    logging.error(f"Could not even serialize state for error logging: {e_log_state}")
-            if attempt == max_retries - 1:
-                break 
-            time.sleep(retry_delay)
 
-    logging.error(f"Persistently failed to save state to {STATE_PATH} after {max_retries} attempts.")
-    if temp_state_file.exists():
-        try:
-            os.remove(temp_state_file)
-        except Exception as e_remove:
-            logging.error(f"Error removing temporary state file {temp_state_file} after failed save: {e_remove}")
+        logging.error(f"Persistently failed to save state to {STATE_PATH} after {max_retries} attempts.")
+        if temp_state_file.exists():
+            try:
+                os.remove(temp_state_file)
+            except Exception as e_remove:
+                logging.error(f"Error removing temporary state file {temp_state_file} after failed save: {e_remove}")
 
 def summarize_world_state(state: dict) -> str:
     """
@@ -1406,14 +1406,14 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                         
                         # Decode and save the image with error handling
                         try:
-                img_data = base64.b64decode(b64_data)
+                            img_data = base64.b64decode(b64_data)
                         except Exception as e:
                             print(f"[OPENAI IMG2IMG] Failed to decode base64: {e}")
                             raise Exception(f"Base64 decode error: {e}")
                         
                         try:
-                with open(image_path, "wb") as f:
-                    f.write(img_data)
+                            with open(image_path, "wb") as f:
+                                f.write(img_data)
                         except Exception as e:
                             print(f"[OPENAI IMG2IMG] Failed to write image file: {e}")
                             raise Exception(f"File write error: {e}")
@@ -3025,7 +3025,7 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             hard_transition = False
             print(f"[TIMEOUT PENALTY] Forcing NO location change - maintaining exact camera position")
         else:
-        hard_transition = is_hard_transition(choice, dispatch)
+            hard_transition = is_hard_transition(choice, dispatch)
         
         consequence_img_url = None
         consequence_img_prompt = ""  # Initialize to prevent undefined variable error
