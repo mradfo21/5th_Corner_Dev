@@ -99,6 +99,9 @@ print(f"[ENGINE INIT] Source: os.getenv={bool(os.getenv('GEMINI_API_KEY'))}, con
 # Load prompts
 PROMPTS = json.load((ROOT/"prompts"/"simulation_prompts.json").open(encoding="utf-8"))
 
+# Game constants - Structured time/atmosphere tracking
+INITIAL_TIME_OF_DAY = "6:30pm | weather: clear, warm light | mood: tense anticipation"  # Start time matching world_initial_state
+
 app = Flask(__name__)
 CORS(app)  # Allow all origins for testing
 
@@ -242,7 +245,8 @@ def _load_state() -> dict:
             "current_image_url": None,
             "choices": [],
             "turn_count": 0, # Initialize turn_count
-            "interim_index": 0 # Initialize interim_index
+            "interim_index": 0, # Initialize interim_index
+            "time_of_day": INITIAL_TIME_OF_DAY
         }
 
 print("[ENGINE INIT] Loading initial state...", flush=True)
@@ -269,7 +273,8 @@ except Exception as e:
         "turn_count": 0,
         "interim_index": 0,
         "in_combat": False,
-        "threat_level": 0
+        "threat_level": 0,
+        "time_of_day": INITIAL_TIME_OF_DAY
     }
     print("[ENGINE INIT] Created default state", flush=True)
 
@@ -1018,10 +1023,12 @@ def _build_vhs_prompt(base_prompt: str, use_img2img: bool = False) -> str:
     return full_prompt
 
 
-def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optional[str] = None, previous_caption: Optional[str] = None, previous_mode: Optional[str] = None, strength: float = 0.25, image_description: str = "", time_of_day: str = "", use_edit_mode: bool = False, frame_idx: int = 0, dispatch: str = "", world_prompt: str = "", hard_transition: bool = False, is_timeout_penalty: bool = False) -> Optional[tuple[str, str, Optional[str]]]:
+def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optional[str] = None, previous_caption: Optional[str] = None, previous_mode: Optional[str] = None, strength: float = 0.25, image_description: str = "", time_of_day: Optional[str] = None, use_edit_mode: bool = False, frame_idx: int = 0, dispatch: str = "", world_prompt: str = "", hard_transition: bool = False, is_timeout_penalty: bool = False) -> Optional[tuple[str, str, Optional[str]]]:
     """Generate image and return (image_path, prompt_used, video_path).
     
     video_path is None for non-Veo providers or when video generation fails/disabled.
+    
+    time_of_day: If None, will use state['time_of_day'] for consistency
     """
     global _last_image_path
     import random
@@ -1125,7 +1132,17 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                 # Skip time extraction - we maintain it in state already
                 prev_time_of_day = ""
                 prev_color = ""
-        use_time_of_day = time_of_day or prev_time_of_day or (state.get('time_of_day', '') if 'state' in globals() else '')
+        
+        # Use provided time_of_day, or fall back to state (persistent across frames)
+        # Check for None explicitly (not just falsy) to handle empty string vs None
+        if time_of_day is None:
+            use_time_of_day = state.get('time_of_day', '') if 'state' in globals() else ''
+            if use_time_of_day:
+                print(f"[TIME] Using time_of_day from state: {use_time_of_day}")
+        else:
+            use_time_of_day = time_of_day
+            if use_time_of_day:
+                print(f"[TIME] Using explicitly provided time_of_day: {use_time_of_day}")
         use_color = prev_color
         # --- Inject world summary as background context ---
         world_summary = summarize_world_state(state) if 'state' in globals() else ""
@@ -1516,7 +1533,6 @@ def begin_tick() -> dict:
         recent_choices='',
         caption=situation_report,
         image_description='',
-        time_of_day="",  # Removed - prevents outdoor lighting descriptions
         world_prompt=state.get('world_prompt', ''),
         temperature=0.2,
         situation_summary=situation_summary
@@ -2029,7 +2045,6 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                 recent_choices=recent_choices_str, # Corrected to be a string
                 caption=state.get("current_image_caption", ""),
                 image_description=state.get("current_image_description", ""), # Keep for now, as it is in the signature
-                time_of_day="",  # Removed - prevents outdoor lighting descriptions
                 beat_nudge=state.get("beat_nudge", ""),
                 pacing=state.get("pacing", "normal"),
                 world_prompt=state.get("world_prompt"),
@@ -2267,7 +2282,8 @@ def _perform_game_reset() -> List[Dict[str, Any]]:
         "turn_count": 0,
         "interim_index": 0,
         "in_combat": False,
-        "threat_level": 0
+        "threat_level": 0,
+        "time_of_day": INITIAL_TIME_OF_DAY
         # Add any other essential keys that should be present from a fresh state
     }
     logging.info(f"_perform_game_reset: New state object created. New state id: {id(state)}. Its feed_log (len {len(state['feed_log'])}) id: {id(state['feed_log'])}")
@@ -2508,7 +2524,6 @@ def api_regenerate_choices():
             world_prompt=world_prompt_context,
             image_description=image_desc_context,
             situation_summary=situation_summary, # Use general summary
-            time_of_day="",  # Removed - prevents outdoor lighting descriptions
             n=3,
             temperature=0.7 # Slightly higher temp for variety
         )
@@ -2895,7 +2910,6 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
                 mode,
                 choice,
                 image_description="",
-                time_of_day="",  # Removed - prevents outdoor lighting forcing indoor->outdoor teleports
                 use_edit_mode=(last_image_path and os.path.exists(last_image_path)),
                 frame_idx=frame_idx,
                 dispatch=dispatch,
@@ -2959,7 +2973,6 @@ def advance_turn_choices_deferred(consequence_img_url: str, dispatch: str, visio
         recent_choices='',
         caption="",
         image_description="",
-        time_of_day="",  # Removed - prevents outdoor lighting descriptions
         world_prompt=state.get('world_prompt', ''),
         temperature=0.7,
         situation_summary=situation_summary
@@ -3167,7 +3180,6 @@ def generate_intro_image_fast():
             mode,
             "Intro",
             image_description="",
-            time_of_day="",  # Removed - reference images handle lighting continuity
             use_edit_mode=False,
             frame_idx=0,
             dispatch=prologue,
@@ -3213,7 +3225,6 @@ def generate_intro_choices_deferred(image_url: str, prologue: str, vision_dispat
         recent_choices='',
         caption="",  # Let Gemini look at image, not stale text
         image_description="",  # Let Gemini look at image, not stale text
-        time_of_day="",  # Removed - prevents outdoor lighting descriptions
         world_prompt=prologue,
         temperature=0.7,
         situation_summary=situation_summary
@@ -3304,7 +3315,6 @@ def generate_intro_turn():
             mode,
             "Intro",
             image_description="",
-            time_of_day="",  # Removed - reference images handle lighting continuity
             use_edit_mode=False,  # No previous image
             frame_idx=0,  # First frame
             dispatch=dispatch,
