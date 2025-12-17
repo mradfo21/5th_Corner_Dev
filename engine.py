@@ -1554,6 +1554,38 @@ def _extract_time_and_color(image_path: str) -> tuple[str, str]:
     result = _vision_analyze_all(image_path)
     return result["time_of_day"], result["color_palette"]
 
+def _generate_random_starting_time() -> str:
+    """
+    Use LLM to generate a randomized starting time/weather/mood for each game session.
+    Format: "6:30pm | weather: clear, warm light | mood: tense anticipation"
+    """
+    prompt = f"""Generate a starting time/weather/mood for a horror game set in the American Southwest desert at a mysterious facility.
+
+Use EXACTLY this format: "TIME | weather: DESCRIPTION | mood: DESCRIPTION"
+
+Example: "{INITIAL_TIME_OF_DAY}"
+
+Requirements:
+- TIME: Evening hours only (6:00pm - 8:00pm range, use exact time like 6:45pm or 7:22pm)
+- WEATHER: Desert weather + lighting description (clear/cloudy/dusty/overcast + lighting type)
+- MOOD: Horror/suspense mood (2-3 words describing emotional tone)
+
+Generate ONE random variation. Return ONLY the formatted string, no explanation."""
+    
+    try:
+        result = _ask(prompt, model="gemini", temp=1.2, tokens=40, use_lore=False).strip()
+        
+        # Validate format roughly (has | separators and pm)
+        if '|' in result and 'pm' in result.lower() and 'weather:' in result and 'mood:' in result:
+            print(f"[INIT] Generated starting time: {result}")
+            return result
+        else:
+            print(f"[INIT] LLM returned invalid format, using default")
+            return INITIAL_TIME_OF_DAY
+    except Exception as e:
+        print(f"[INIT] Error generating time: {e}, using default")
+        return INITIAL_TIME_OF_DAY
+
 # --- LLM-based player death check ---
 def check_player_death(dispatch: str, world_prompt: str, choice: str) -> bool:
     prompt = (
@@ -2266,6 +2298,9 @@ def _perform_game_reset() -> List[Dict[str, Any]]:
     current_state_at_reset_start = _load_state() 
     logging.info(f"_perform_game_reset: After _load_state. Loaded state id: {id(current_state_at_reset_start)}. Its feed_log (len {len(current_state_at_reset_start.get('feed_log',[]))}) id: {id(current_state_at_reset_start.get('feed_log')) if current_state_at_reset_start.get('feed_log') is not None else 'None'}")
     
+    # Generate random starting time/weather/mood for this session
+    starting_time = _generate_random_starting_time()
+    
     # Explicitly create a new dictionary for the state to ensure no shared references for critical parts
     state = {
         "world_prompt": PROMPTS.get("world_prompt", "Default world starting point."),
@@ -2283,7 +2318,7 @@ def _perform_game_reset() -> List[Dict[str, Any]]:
         "interim_index": 0,
         "in_combat": False,
         "threat_level": 0,
-        "time_of_day": INITIAL_TIME_OF_DAY
+        "time_of_day": starting_time
         # Add any other essential keys that should be present from a fresh state
     }
     logging.info(f"_perform_game_reset: New state object created. New state id: {id(state)}. Its feed_log (len {len(state['feed_log'])}) id: {id(state['feed_log'])}")
@@ -3093,16 +3128,11 @@ def reset_state():
     with (ROOT / "history.json").open("w", encoding="utf-8") as f:
         json.dump([], f)
     history = []
+    
+    # Generate random starting time/weather/mood for this session
+    initial_time = _generate_random_starting_time()
+    
     # Recreate world_state.json with intro prompt
-    import random
-    time_options = [
-        "golden hour (late afternoon warm light)",
-        "midday (harsh overhead sunlight)",
-        "early morning (soft blue-tinted light)",
-        "late afternoon (long shadows)",
-        "overcast daylight (diffuse gray light)"
-    ]
-    initial_time = random.choice(time_options)
     intro_state = {
         "world_prompt": PROMPTS["world_initial_state"],
         "current_phase": "normal",
