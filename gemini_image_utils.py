@@ -189,6 +189,11 @@ def generate_with_gemini(
     # Load prompt template from JSON (single source of truth!)
     structured_prompt = PROMPTS["gemini_text_to_image_instructions"].format(prompt=prompt)
     
+    # Inject time/weather/mood if provided
+    if time_of_day:
+        time_injection = f"\n\n⏰ CRITICAL TIME/ATMOSPHERE CONSTRAINTS:\n{time_of_day}\nThe lighting, weather, and atmosphere MUST match these exact conditions. This is non-negotiable.\n"
+        structured_prompt = structured_prompt + time_injection
+    
     # Add CRITICAL anti-border instructions
     anti_border = "\n\nCRITICAL - ABSOLUTELY NO BORDERS OR FRAMES:\nThe image MUST fill the ENTIRE canvas edge-to-edge with ZERO borders, frames, or edges of any kind. NO black bars, NO white borders, NO photo frames, NO matting, NO letterboxing. The content fills 100% of the image area. This is RAW FOOTAGE, not a framed photograph."
     
@@ -734,6 +739,11 @@ def generate_gemini_img2img(
     
     # Load prompt template from JSON (single source of truth!)
     structured_prompt = PROMPTS["gemini_image_to_image_instructions"].format(prompt=prompt)
+    
+    # Inject time/weather/mood if provided
+    if time_of_day:
+        time_injection = f"\n\n⏰ CRITICAL TIME/ATMOSPHERE CONSTRAINTS:\n{time_of_day}\nThe lighting, weather, and atmosphere MUST match these exact conditions. This is non-negotiable.\n"
+        structured_prompt = structured_prompt + time_injection
     
     # Add CRITICAL style-only instruction for forward movement
     style_only_instruction = (
