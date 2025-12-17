@@ -1286,6 +1286,11 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                     print(f"[IMG GENERATION]   {i+1}. {os.path.basename(ref)}")
                 print(f"{'='*70}\n")
                 
+                # ALWAYS use HQ for first image, then respect quality toggle
+                use_hq_for_this_frame = True if frame_idx == 0 else QUALITY_MODE
+                if frame_idx == 0:
+                    print(f"[QUALITY MODE] Frame 0 (intro) - FORCING HQ (Gemini Pro) for visual consistency")
+                
                 result_path = generate_gemini_img2img(
                     prompt=prompt_str,
                     caption=caption,
@@ -1294,7 +1299,7 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                     world_prompt=world_prompt,
                     time_of_day=use_time_of_day,
                     action_context=choice,  # Pass action for FPS hands context
-                    hd_mode=QUALITY_MODE  # Use global quality mode setting
+                    hd_mode=use_hq_for_this_frame  # Frame 0 always HQ, others respect quality toggle
                 )
             else:
                 print(f"\n{'='*70}")
@@ -1306,15 +1311,21 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                     print(f"[IMG GENERATION] NO REFERENCE IMAGES IN HISTORY")
                     print(f"[IMG GENERATION] This may cause style/aesthetic discontinuity")
                 print(f"{'='*70}\n")
+                
+                # ALWAYS use HQ for first image, then respect quality toggle
+                use_hq_for_this_frame = True if frame_idx == 0 else QUALITY_MODE
+                if frame_idx == 0:
+                    print(f"[QUALITY MODE] Frame 0 (intro) - FORCING HQ (Gemini Pro) for visual consistency")
+                
                 result_path = generate_with_gemini(
                     prompt=prompt_str,
                     caption=caption,
                     world_prompt=world_prompt,
                     aspect_ratio="4:3",  # Faster generation, smaller files (1184x864)
                     time_of_day=use_time_of_day,
-                    is_first_frame=(frame_idx == 0),  # Use Pro for first frame
+                    is_first_frame=(frame_idx == 0),  # Keep for fallback logic
                     action_context=choice,  # Pass action for FPS hands context
-                    hd_mode=QUALITY_MODE  # Use global quality mode setting
+                    hd_mode=use_hq_for_this_frame  # Frame 0 always HQ, others respect quality toggle
                 )
             _last_image_path = result_path
             return (result_path, prompt_str, None)  # Gemini doesn't generate videos

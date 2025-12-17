@@ -279,6 +279,36 @@ except Exception as e:
     failed_tests.append("QUALITY_MODE check")
 
 # ============================================================================
+# TEST 7: First Frame Quality Override
+# ============================================================================
+print("\n[TEST 7] First Frame Quality Override...")
+print("  Checking frame 0 always uses HQ...", end=" ")
+
+try:
+    with open("engine.py", "r", encoding="utf-8") as f:
+        content = f.read()
+    
+    # Look for the quality override logic
+    has_frame_0_check = "frame_idx == 0" in content
+    has_quality_override = "use_hq_for_this_frame" in content
+    has_force_message = "FORCING HQ" in content
+    
+    if has_frame_0_check and has_quality_override and has_force_message:
+        print("[OK]")
+    else:
+        print("[FAIL]")
+        if not has_frame_0_check:
+            print("    Missing frame_idx == 0 check")
+        if not has_quality_override:
+            print("    Missing use_hq_for_this_frame logic")
+        if not has_force_message:
+            print("    Missing quality override logging")
+        failed_tests.append("First frame quality override")
+except Exception as e:
+    print(f"[FAIL] {e}")
+    failed_tests.append("First frame quality override check")
+
+# ============================================================================
 # RESULTS
 # ============================================================================
 print("\n" + "=" * 70)

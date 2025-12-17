@@ -729,24 +729,18 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     continue
                 _, emoji = categorize_choice(choice)
                 btn = ChoiceButton(label=safe_label(f"{emoji} {choice}"), idx=i)
-                btn.view = self  # Pass view reference for auth check
-                self.add_item(btn)
+                self.add_item(btn)  # Discord.py automatically sets btn.view = self
             custom_btn = CustomActionButton()
-            custom_btn.view = self  # Pass view reference for auth check
-            self.add_item(custom_btn)
+            self.add_item(custom_btn)  # Discord.py automatically sets view
             autoplay_btn = AutoPlayToggleButton(self)
-            autoplay_btn.view = self  # Already has parent_view, add view too
-            self.add_item(autoplay_btn)
+            self.add_item(autoplay_btn)  # Discord.py automatically sets view
             quality_btn = QualityToggleButton(self)
-            quality_btn.view = self
-            self.add_item(quality_btn)
+            self.add_item(quality_btn)  # Discord.py automatically sets view
             regen_btn = RegenerateChoicesButton(self)
-            regen_btn.view = self
-            self.add_item(regen_btn)
+            self.add_item(regen_btn)  # Discord.py automatically sets view
             # Row 2 buttons
             restart_btn = RestartButton()
-            restart_btn.view = self  # Pass view reference for auth check
-            self.add_item(restart_btn)
+            self.add_item(restart_btn)  # Discord.py automatically sets view
 
     def check_authorization(interaction: discord.Interaction, owner_id) -> bool:
         """Check if user is authorized to use buttons. Returns True if authorized."""
@@ -758,7 +752,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
         def __init__(self, label, idx):
             super().__init__(label=label, style=discord.ButtonStyle.primary)
             self.idx = idx
-            self.view = None  # Will be set by ChoiceView
+            # Note: self.view is automatically set by Discord.py when button is added to a View
         
         @staticmethod
         def _do_reset_static():
