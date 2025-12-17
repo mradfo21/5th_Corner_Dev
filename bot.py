@@ -3380,7 +3380,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
     # --- Quality mode ---
     # Quality mode toggles between Gemini Flash (fast) and Gemini Pro (high quality)
     # NOTE: This is separate from "HD Mode" (Veo cinematic video generation)
-    quality_mode_enabled = False  # Default to FAST mode (Flash) for speed
+    quality_mode_enabled = True  # Default to HQ mode (Pro) for quality
     current_choices = []  # Track current available choices
     current_view = None  # Track current view for auto-advance
     

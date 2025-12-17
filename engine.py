@@ -127,7 +127,7 @@ WORLD_STATE_LOCK = threading.Lock() # Global lock for world_state.json access
 
 IMAGE_ENABLED       = True  # ENABLED for production
 WORLD_IMAGE_ENABLED = True  # ENABLED for production
-QUALITY_MODE        = False  # Quality mode: False=Gemini Flash (fast), True=Gemini Pro (high quality, slower)
+QUALITY_MODE        = True  # Quality mode: False=Gemini Flash (fast), True=Gemini Pro (high quality, slower)
 VEO_MODE_ENABLED    = False # DISABLED by default - use video generation instead of images
 
 # OpenAI img2img consistency settings

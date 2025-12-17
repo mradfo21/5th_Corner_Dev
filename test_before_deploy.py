@@ -262,12 +262,12 @@ try:
             break
     
     if quality_mode_line:
-        # Should be False for fast mode by default
-        if "= False" in quality_mode_line or "=False" in quality_mode_line:
+        # Should be True for HQ mode by default
+        if "= True" in quality_mode_line or "=True" in quality_mode_line:
             print("[OK]")
         else:
             print("[FAIL]")
-            print(f"    QUALITY_MODE should be False by default for fast mode")
+            print(f"    QUALITY_MODE should be True by default for HQ mode")
             print(f"    Found: {quality_mode_line.strip()}")
             failed_tests.append("QUALITY_MODE default")
     else:
