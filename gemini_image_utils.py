@@ -55,6 +55,14 @@ ENABLE_FORWARD_ZOOM = True   # Toggle zoom preprocessing on/off
 ZOOM_FACTOR = 1.35            # 35% zoom = crop center 74%, scale back to full size
 # ============================================================================
 
+# ============================================================================
+# IMG2IMG REFERENCE IMAGE QUALITY - Toggle between full-res and downsampled
+# ============================================================================
+# True  = Use downsampled (480x360) - Faster, less bandwidth, MAY reduce quality
+# False = Use full-res (1184x864) - Slower, more bandwidth, preserves quality
+USE_DOWNSAMPLED_FOR_IMG2IMG = True   # Set to False to use full-res references
+# ============================================================================
+
 def _sanitize_for_safety(prompt: str) -> str:
     """
     Sanitize prompts to avoid Gemini safety blocks while keeping creative intent.
@@ -335,7 +343,7 @@ def generate_with_gemini(
         with open(image_path, "wb") as f:
             f.write(image_bytes)
         
-        # Downsample for API calls (maintain 16:9 aspect ratio) - do this ONCE, not per API call
+        # Downsample for API calls (maintain 4:3 aspect ratio) - do this ONCE, not per API call
         # Smaller = faster uploads, and Gemini Flash doesn't need high-res for text/vision tasks
         from PIL import Image as PILImage
         import io
@@ -345,10 +353,10 @@ def generate_with_gemini(
         try:
             img = PILImage.open(io.BytesIO(image_bytes))
             img = img.convert("RGB")
-            img = img.resize((480, 270), PILImage.LANCZOS)  # 16:9 aspect ratio for API calls
+            img = img.resize((480, 360), PILImage.LANCZOS)  # 4:3 aspect ratio (matches full-size)
             img.save(small_path, format="PNG", optimize=True, quality=85)
             print(f"[GOOGLE GEMINI] Image saved: {image_path} ({len(image_bytes)} bytes)")
-            print(f"[GOOGLE GEMINI] Downsampled saved: {small_path} (480x270 for API calls)")
+            print(f"[GOOGLE GEMINI] Downsampled saved: {small_path} (480x360, 4:3 for API calls)")
         except Exception as e:
             print(f"[GOOGLE GEMINI] WARNING: Downsample failed: {e}")
         
@@ -481,7 +489,7 @@ def _apply_fps_hands_compositing(corrected_path, small_corrected_path, action_co
         import io
         img = PILImage.open(io.BytesIO(composited_bytes))
         img = img.convert("RGB")
-        img = img.resize((480, 270), PILImage.LANCZOS)
+        img = img.resize((480, 360), PILImage.LANCZOS)  # 4:3 aspect ratio
         
         small_fps_filename = fps_filename.replace(".png", "_small.png")
         small_fps_path = corrected_pathobj.parent / small_fps_filename
@@ -594,7 +602,7 @@ def _apply_pov_correction(original_path, small_path, previous_corrected_path=Non
         import io
         img = PILImage.open(io.BytesIO(corrected_bytes))
         img = img.convert("RGB")
-        img = img.resize((480, 270), PILImage.LANCZOS)
+        img = img.resize((480, 360), PILImage.LANCZOS)  # 4:3 aspect ratio
         
         small_corrected_filename = corrected_filename.replace(".png", "_small.png")
         small_corrected_path = original_pathobj.parent / small_corrected_filename
@@ -683,14 +691,22 @@ def generate_gemini_img2img(
     
     print(f"[GOOGLE GEMINI] Image editing mode with {len(image_paths)} reference image(s)")
     
-    # Read and encode all reference images (ALWAYS use full-res for img2img quality)
+    # Read and encode all reference images
     image_parts = []
     for img_path in image_paths:
-        # ALWAYS use full-res for img2img to prevent artifact compounding
-        # Small versions (480x270, quality=85) cause degradation after ~6 frames
+        # Choose between downsampled or full-res based on USE_DOWNSAMPLED_FOR_IMG2IMG toggle
         from pathlib import Path
         img_path_obj = Path(img_path)
-        use_path = img_path_obj  # Always use full-res, never small compressed version
+        
+        if USE_DOWNSAMPLED_FOR_IMG2IMG:
+            # Try to use downsampled version (faster, less bandwidth)
+            small_path = img_path_obj.parent / img_path_obj.name.replace(".png", "_small.png")
+            use_path = small_path if small_path.exists() else img_path_obj
+            quality_note = "downsampled 480x360" if small_path.exists() else "full-res (no downsample found)"
+        else:
+            # Force full-res (preserves quality, prevents artifact compounding)
+            use_path = img_path_obj
+            quality_note = "full-res"
         
         # Apply forward zoom preprocessing if enabled
         if ENABLE_FORWARD_ZOOM:
@@ -707,7 +723,7 @@ def generate_gemini_img2img(
         if str(use_path).endswith(('.jpg', '.jpeg')):
             mime_type = "image/jpeg"
         
-        print(f"[GOOGLE GEMINI] Reference image {len(image_parts)+1}: {img_path_obj.name} (full-res)")
+        print(f"[GOOGLE GEMINI] Reference image {len(image_parts)+1}: {img_path_obj.name} ({quality_note})")
         
         image_parts.append({
             "inlineData": {
@@ -916,7 +932,7 @@ def generate_gemini_img2img(
         with open(image_path, "wb") as f:
             f.write(image_bytes)
         
-        # Downsample for API calls (maintain 16:9 aspect ratio) - do this ONCE, not per API call
+        # Downsample for API calls (maintain 4:3 aspect ratio) - do this ONCE, not per API call
         from PIL import Image as PILImage
         import io
         small_filename = filename.replace(".png", "_small.png")
@@ -925,10 +941,10 @@ def generate_gemini_img2img(
         try:
             img = PILImage.open(io.BytesIO(image_bytes))
             img = img.convert("RGB")
-            img = img.resize((480, 270), PILImage.LANCZOS)  # 16:9 aspect ratio for API calls
+            img = img.resize((480, 360), PILImage.LANCZOS)  # 4:3 aspect ratio (matches full-size)
             img.save(small_path, format="PNG", optimize=True, quality=85)
             print(f"[GOOGLE GEMINI] Edited image saved: {image_path}")
-            print(f"[GOOGLE GEMINI] Downsampled saved: {small_path} (480x270 for API calls)")
+            print(f"[GOOGLE GEMINI] Downsampled saved: {small_path} (480x360, 4:3 for API calls)")
         except Exception as e:
             print(f"[GOOGLE GEMINI] WARNING: Downsample failed: {e}")
         

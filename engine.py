@@ -415,7 +415,7 @@ def _ask_gemini(prompt: str, model_name: str, temp: float, tokens: int, image_pa
                         "data": image_data
                     }
                 })
-                size_note = "(480x270)" if small_path.exists() else "(full-res)"
+                size_note = "(480x360, 4:3)" if small_path.exists() else "(full-res)"
                 print(f"[GEMINI TEXT+IMG] Including image: {image_path} {size_note}")
         
         # Check for lore cache (only if use_lore=True)
@@ -584,7 +584,7 @@ def _vision_analyze_all(image_path: str) -> dict:
         image_b64 = base64.b64encode(image_bytes).decode('utf-8')
         
         if small_path.exists():
-            print(f"[VISION] Using pre-downsampled image (480x270)")
+            print(f"[VISION] Using pre-downsampled image (480x360, 4:3)")
         
         # Determine MIME type
         mime_type = "image/png"
@@ -2629,7 +2629,7 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
         if fate == "LUCKY":
             fate_modifier = "\n\n🎰 FATE INTERVENTION - LUCKY:\nSomething breaks your way. Add ONE concrete benefit:\n• Equipment works better than expected\n• Guard patrol turns away at the right moment\n• You find something useful (ammo, cover, distraction)\n• Environmental timing favors you (door unlocked, light goes out)\n• A threat misses or hesitates\nMake it TANGIBLE and HELPFUL, not just flavor text.\n"
         elif fate == "UNLUCKY":
-            fate_modifier = "\n\n🎰 FATE INTERVENTION - UNLUCKY:\nSomething goes seriously wrong. Add ONE concrete severe complication:\n• Equipment fails catastrophically (gun jams, rope snaps, ladder breaks)\n• You make loud noise attracting multiple threats (stumble, knock over equipment, trigger alarm)\n• Guard patrol or creature appears IMMEDIATELY at your location\n• Environmental hazard triggers (structural collapse, chemical spill, explosive ignition)\n• Injury is SEVERE (deep arterial cut, broken bone, concussion, burns)\n• Hidden threat reveals itself (trap, ambush, creature lair)\nMake it DANGEROUS and IMPACTFUL. This should significantly worsen the player's situation.\n"
+            fate_modifier = "\n\n🎰 FATE INTERVENTION - UNLUCKY:\nFate turns VICIOUSLY against you. Add ONE concrete HORRIFYING complication:\n\n**PRIORITIZE GRIM BODILY HARM** (Choose physical trauma when plausible):\n• Body is IMPALED (rebar through leg, glass shard in shoulder, metal spike in abdomen)\n• Limb is CRUSHED or BROKEN (concrete slab on foot, bone snaps audibly, compound fracture)\n• Flesh is BURNED (caustic chemical splash, electrical arc across chest, scalding steam)\n• Tissue is LACERATED (barbed wire rips forearm open, jagged metal severs calf muscle)\n• Skull trauma (head strikes concrete, severe concussion, vision blurs)\n• Arterial bleeding (deep cut spurting blood, femoral artery compromised)\n• Red biome INFECTION (spores inhaled, flesh begins corrupting, tendril fuses with skin)\n• Creature MAULS you (claws rake ribs, teeth puncture shoulder, crushing bite)\n\n**OR Catastrophic Equipment/Environment Failure** (If bodily harm doesn't fit):\n• Equipment FAILS violently (rope snaps mid-climb, ladder rung breaks, catwalk collapses)\n• Structure COLLAPSES (ceiling caves in, floor gives way, wall crumbles)\n• Chemical/Biological CONTAMINATION (toxic gas exposure, corrosive spill, infection vector)\n• Multiple threats converge (guards AND creature, patrol plus structural collapse)\n• Hidden lethal trap springs (pressurized explosive, electrical grid, biological specimen breaks containment)\n\n**CRITICAL RULE**: UNLUCKY should cause SEVERE PHYSICAL CONSEQUENCES.\nThis is not \"bad luck\" - this is the world MUTILATING you.\nDescribe injuries with VISCERAL DETAIL: what breaks, what tears, what burns, what bleeds.\n\nThe player's situation should become DRASTICALLY worse - injury, discovery, or imminent death.\n"
         # NORMAL = no modifier, outcome is purely based on choice
         
         # Use JUST the dispatch_sys instructions (which has JSON format)
@@ -2668,7 +2668,7 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
                         "data": image_data
                     }
                 })
-                size_note = "(480x270)" if small_path.exists() else "(full-res)"
+                size_note = "(480x360, 4:3)" if small_path.exists() else "(full-res)"
                 print(f"[GEMINI TEXT+IMG] Including PREVIOUS timestep image: {current_image} {size_note}")
         
         # Don't use lore - dispatch is immediate action/consequence (use _ask instead of direct API call)
