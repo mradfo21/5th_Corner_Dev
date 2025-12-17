@@ -251,7 +251,7 @@ def _load_state() -> dict:
 
 print("[ENGINE INIT] Loading initial state...", flush=True)
 try:
-    state = _load_state() # Initial load
+state = _load_state() # Initial load
     print(f"[ENGINE INIT] State loaded successfully", flush=True)
 except Exception as e:
     print(f"[ENGINE INIT ERROR] Failed to load state: {e}", flush=True)
@@ -288,34 +288,34 @@ else:
 def _save_state(st: dict):
     # CRITICAL FIX: Always acquire lock to prevent concurrent write race conditions
     with WORLD_STATE_LOCK:
-        st["last_saved"] = datetime.now(timezone.utc).isoformat()
-        temp_state_file = STATE_PATH.with_suffix(".json.tmp")
-        max_retries = 3
-        retry_delay = 0.1 # seconds
+    st["last_saved"] = datetime.now(timezone.utc).isoformat()
+    temp_state_file = STATE_PATH.with_suffix(".json.tmp")
+    max_retries = 3
+    retry_delay = 0.1 # seconds
 
-        for attempt in range(max_retries):
-            try:
-                temp_state_file.write_text(json.dumps(st, indent=2, ensure_ascii=False), encoding='utf-8')
-                os.replace(temp_state_file, STATE_PATH)
-                return # Success
-            except OSError as e_os:
-                logging.warning(f"Attempt {attempt + 1} to save state to {STATE_PATH} failed with OSError: {e_os}")
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay)
-                else:
-                    logging.error(f"All {max_retries} attempts to save state to {STATE_PATH} failed due to OSError: {e_os}")
-            except Exception as e:
-                logging.error(f"Failed to save state to {STATE_PATH} on attempt {attempt + 1}: {e}")
-                if attempt == max_retries - 1 or not isinstance(e, OSError):
-                    try:
-                        logging.error(f"State content that failed to save: {json.dumps(st, indent=2, default=str, ensure_ascii=False)}")
-                    except Exception as e_log_state:
-                        logging.error(f"Could not even serialize state for error logging: {e_log_state}")
-                if attempt == max_retries - 1:
-                    break 
+    for attempt in range(max_retries):
+        try:
+            temp_state_file.write_text(json.dumps(st, indent=2, ensure_ascii=False), encoding='utf-8')
+            os.replace(temp_state_file, STATE_PATH)
+            return # Success
+        except OSError as e_os:
+            logging.warning(f"Attempt {attempt + 1} to save state to {STATE_PATH} failed with OSError: {e_os}")
+            if attempt < max_retries - 1:
                 time.sleep(retry_delay)
+            else:
+                logging.error(f"All {max_retries} attempts to save state to {STATE_PATH} failed due to OSError: {e_os}")
+        except Exception as e:
+            logging.error(f"Failed to save state to {STATE_PATH} on attempt {attempt + 1}: {e}")
+            if attempt == max_retries - 1 or not isinstance(e, OSError):
+                try:
+                    logging.error(f"State content that failed to save: {json.dumps(st, indent=2, default=str, ensure_ascii=False)}")
+                except Exception as e_log_state:
+                    logging.error(f"Could not even serialize state for error logging: {e_log_state}")
+            if attempt == max_retries - 1:
+                break 
+            time.sleep(retry_delay)
 
-        logging.error(f"Persistently failed to save state to {STATE_PATH} after {max_retries} attempts.")
+    logging.error(f"Persistently failed to save state to {STATE_PATH} after {max_retries} attempts.")
     if temp_state_file.exists():
         try:
             os.remove(temp_state_file)
@@ -1035,6 +1035,14 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
     if not (IMAGE_ENABLED and LLM_ENABLED):
         print("[IMG] Image or LLM disabled, returning None")
         return (None, "", None)
+    
+    # SANITIZE caption for image generation (narrative text stays grim!)
+    # This prevents content filter blocks while keeping the story dark
+    original_caption = caption
+    caption = _sanitize_for_image_generation(caption)
+    if original_caption != caption:
+        print(f"[SANITIZE] Image prompt cleaned to avoid content filters")
+    
     try:
         prev_time_of_day, prev_color = "", ""
         prev_img_paths = []
@@ -1398,14 +1406,14 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                         
                         # Decode and save the image with error handling
                         try:
-                            img_data = base64.b64decode(b64_data)
+                img_data = base64.b64decode(b64_data)
                         except Exception as e:
                             print(f"[OPENAI IMG2IMG] Failed to decode base64: {e}")
                             raise Exception(f"Base64 decode error: {e}")
                         
                         try:
-                            with open(image_path, "wb") as f:
-                                f.write(img_data)
+                with open(image_path, "wb") as f:
+                    f.write(img_data)
                         except Exception as e:
                             print(f"[OPENAI IMG2IMG] Failed to write image file: {e}")
                             raise Exception(f"File write error: {e}")
@@ -1470,6 +1478,102 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
         import traceback
         traceback.print_exc()
         return (None, "", None)
+
+# ───────── image prompt sanitization ─────────────────────────────────────────
+def _sanitize_for_image_generation(text: str) -> str:
+    """
+    Sanitize visual descriptions to avoid content filters while keeping dramatic tension.
+    Only affects IMAGE prompts - narrative text stays intact!
+    """
+    import re
+    
+    # Explicit gore/violence keywords to soften
+    replacements = {
+        # Blood and injuries
+        r'\b(blood|bleeding|bloody)\b': 'dark stains',
+        r'\bgushes?\b': 'flows',
+        r'\bsoaked?\b': 'dampened',
+        r'\bsoaking\b': 'wetting',
+        r'\bbleeding\b': 'injured',
+        r'\bhemorrhag(e|ing)\b': 'severe injury',
+        
+        # Wounds and gore
+        r'\bwound(s)?\b': 'injury',
+        r'\bgash(es)?\b': 'tear',
+        r'\bgaping\b': 'deep',
+        r'\bopen wound\b': 'injury',
+        r'\brip(s|ped|ping)?\b': 'tear',
+        r'\bsever(ed|ing)?\b': 'separated',
+        r'\bgore\b': 'injury',
+        r'\bgory\b': 'disturbing',
+        r'\bviscera\b': 'internal damage',
+        r'\bentrails\b': 'remains',
+        r'\bguts\b': 'interior',
+        
+        # Body parts and trauma
+        r'\bflesh\b': 'tissue',
+        r'\bimpale(d|s|ment)?\b': 'pierce',
+        r'\bpiercing through\b': 'penetrating',
+        r'\bpuncture(d|s)?\b': 'penetrate',
+        r'\bmaul(ed|ing)?\b': 'attacked severely',
+        r'\bmutilate(d|s)?\b': 'damaged severely',
+        r'\bdismember(ed|ing|ment)?\b': 'torn apart',
+        r'\bshredded\b': 'torn',
+        r'\bslashed\b': 'cut',
+        
+        # Explicit damage descriptions
+        r'\btearing (through|into)\b': 'damaging',
+        r'\bripping through\b': 'tearing into',
+        r'\bembedded in\b': 'stuck in',
+        r'\blodged in\b': 'caught in',
+        r'\bpulled free\b': 'removed',
+        r'\byanked out\b': 'extracted',
+        
+        # Violence and pain
+        r'\bagony\b': 'severe pain',
+        r'\bscreaming\b': 'crying out',
+        r'\bshriek(ing|s)?\b': 'calling out',
+        r'\btorture(d)?\b': 'extreme discomfort',
+        r'\bthrobbing\b': 'pulsing',
+        r'\bburning pain\b': 'intense sensation',
+        
+        # Body horror
+        r'\bbone fragments?\b': 'debris',
+        r'\bexposed bone\b': 'structural damage',
+        r'\bfractured?\b': 'broken',
+        r'\bshattered\b': 'broken badly',
+        r'\bcrushed\b': 'compressed',
+        r'\bpulp\b': 'mush',
+        r'\bmangled\b': 'damaged',
+        r'\brotting\b': 'decaying',
+        r'\bdecompos(ing|ed)\b': 'deteriorating',
+        
+        # Death and corpses
+        r'\bcorpse(s)?\b': 'remains',
+        r'\bdead bod(y|ies)\b': 'remains',
+        r'\bcadaver(s)?\b': 'remains',
+        r'\bskull(s)?\b': 'cranium',
+    }
+    
+    # Apply replacements (case-insensitive)
+    sanitized = text
+    for pattern, replacement in replacements.items():
+        sanitized = re.sub(pattern, replacement, sanitized, flags=re.IGNORECASE)
+    
+    # Remove intensifiers that make it more graphic
+    sanitized = re.sub(r'\b(violently|brutally|viciously|savagely|horrifically)\s+', '', sanitized, flags=re.IGNORECASE)
+    
+    # Soften extreme descriptors
+    sanitized = re.sub(r'\b(profusely|heavily)\s+(bleeding|damaged)', r'significantly injured', sanitized, flags=re.IGNORECASE)
+    
+    # Remove redundant graphic details
+    sanitized = re.sub(r'\s+stained (with blood|red)', ' stained darkly', sanitized, flags=re.IGNORECASE)
+    
+    print(f"[SANITIZE] Original length: {len(text)}, Sanitized length: {len(sanitized)}")
+    if text != sanitized:
+        print(f"[SANITIZE] Changes applied to image prompt (narrative text unchanged)")
+    
+    return sanitized
 
 # ───────── vision dispatch generator ─────────────────────────────────────────
 def _generate_vision_dispatch(narrative_dispatch: str, world_prompt: str = "") -> str:
@@ -2921,7 +3025,7 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             hard_transition = False
             print(f"[TIMEOUT PENALTY] Forcing NO location change - maintaining exact camera position")
         else:
-            hard_transition = is_hard_transition(choice, dispatch)
+        hard_transition = is_hard_transition(choice, dispatch)
         
         consequence_img_url = None
         consequence_img_prompt = ""  # Initialize to prevent undefined variable error

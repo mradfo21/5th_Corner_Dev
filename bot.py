@@ -721,24 +721,44 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
         def __init__(self, choices, owner_id=None):
             super().__init__(timeout=None)
             self.choices = choices
+            self.owner_id = owner_id  # Store for authorization checks
             self.last_choices_message = None  # Track the last choices message
             for i, choice in enumerate(choices):
                 # Skip placeholder choices (—)
                 if choice.strip() in ["—", "–", "-", ""]:
                     continue
                 _, emoji = categorize_choice(choice)
-                self.add_item(ChoiceButton(label=safe_label(f"{emoji} {choice}"), idx=i))
-            self.add_item(CustomActionButton())  # Custom action button (row 1)
-            self.add_item(AutoPlayToggleButton(self))  # Auto-play toggle (row 1)
-            self.add_item(HDToggleButton(self))  # HD mode toggle (row 1)
-            self.add_item(RegenerateChoicesButton(self))  # Regenerate (row 1)
+                btn = ChoiceButton(label=safe_label(f"{emoji} {choice}"), idx=i)
+                btn.view = self  # Pass view reference for auth check
+                self.add_item(btn)
+            custom_btn = CustomActionButton()
+            custom_btn.view = self  # Pass view reference for auth check
+            self.add_item(custom_btn)
+            autoplay_btn = AutoPlayToggleButton(self)
+            autoplay_btn.view = self  # Already has parent_view, add view too
+            self.add_item(autoplay_btn)
+            hd_btn = HDToggleButton(self)
+            hd_btn.view = self
+            self.add_item(hd_btn)
+            regen_btn = RegenerateChoicesButton(self)
+            regen_btn.view = self
+            self.add_item(regen_btn)
             # Row 2 buttons
-            self.add_item(RestartButton())  # Restart (row 2)
+            restart_btn = RestartButton()
+            restart_btn.view = self  # Pass view reference for auth check
+            self.add_item(restart_btn)
 
+    def check_authorization(interaction: discord.Interaction, owner_id) -> bool:
+        """Check if user is authorized to use buttons. Returns True if authorized."""
+        if owner_id is None:
+            return True  # No restriction if owner_id not set
+        return interaction.user.id == owner_id
+    
     class ChoiceButton(Button):
         def __init__(self, label, idx):
             super().__init__(label=label, style=discord.ButtonStyle.primary)
             self.idx = idx
+            self.view = None  # Will be set by ChoiceView
         
         @staticmethod
         def _do_reset_static():
@@ -768,6 +788,15 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 print(f"[DEATH] Reset error: {e}")
 
         async def callback(self, interaction: discord.Interaction):
+            # Authorization check
+            if hasattr(self, 'view') and self.view and hasattr(self.view, 'owner_id'):
+                if not check_authorization(interaction, self.view.owner_id):
+                    await interaction.response.send_message(
+                        "🔒 Only the game owner can make choices.",
+                        ephemeral=True
+                    )
+                    return
+            
             global auto_advance_task, countdown_task, auto_play_enabled
             
             # Cancel auto-play timer when user manually makes a choice
@@ -891,22 +920,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             # NOW wait for Phase 1 to complete (image + dispatch generation)
             phase1 = await phase1_task
             
-            # BEAT 4: Show dispatch (what happened) - LONGER DISPLAY TIME
-            dispatch_text = phase1.get("dispatch", "")
-            if dispatch_text:
-                movement_indicator = get_movement_indicator()
-                full_text = dispatch_text.strip()
-                if movement_indicator:
-                    full_text = f"{movement_indicator}\n\n{full_text}"
-                
-                await interaction.channel.send(embed=discord.Embed(
-                    title="⚡ Consequence",
-                    description=safe_embed_desc(full_text),
-                    color=VHS_RED
-                ))
-                await asyncio.sleep(2.5)  # LONGER - let them actually read it!
-            
-            # Show IMAGE and/or VIDEO IMMEDIATELY from Phase 1
+            # BEAT 4: Show IMAGE FIRST (immediately, no delay)
             image_path = phase1.get("consequence_image")
             video_path = phase1.get("consequence_video")
             
@@ -959,6 +973,23 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 ))
                 await asyncio.sleep(0.5)
             
+            # BEAT 5: Show consequence text AFTER image (appears underneath)
+            dispatch_text = phase1.get("dispatch", "")
+            if dispatch_text:
+                movement_indicator = get_movement_indicator()
+                full_text = dispatch_text.strip()
+                if movement_indicator:
+                    full_text = f"{movement_indicator}\n\n{full_text}"
+                
+                await interaction.channel.send(embed=discord.Embed(
+                    title="⚡ Consequence",
+                    description=safe_embed_desc(full_text),
+                    color=VHS_RED
+                ))
+                await asyncio.sleep(0.3)  # Brief pause so they can read it
+            else:
+                dispatch_text = ""  # Ensure dispatch_text is defined
+            
             # Show "Generating choices..." while Phase 2 runs
             choices_msg = await interaction.channel.send(embed=discord.Embed(
                 description="⚙️ Analyzing scene...",
@@ -966,7 +997,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             ))
             
             # PHASE 2: Generate choices in background
-            print(f"[BOT DEBUG] Passing to Phase 2: image={image_path}, dispatch={dispatch_text[:30]}...")
+            print(f"[BOT DEBUG] Passing to Phase 2: image={image_path}, dispatch={dispatch_text[:30] if dispatch_text else 'N/A'}...")
             
             # Make sure image_path is not None
             if not image_path:
@@ -1096,6 +1127,14 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                         super().__init__(label="️ Play Again", style=discord.ButtonStyle.success)
                     
                     async def callback(self, button_interaction: discord.Interaction):
+                        # Authorization check
+                        if not check_authorization(button_interaction, OWNER_ID):
+                            await button_interaction.response.send_message(
+                                "🔒 Only the game owner can restart.",
+                                ephemeral=True
+                            )
+                            return
+                        
                         global auto_advance_task, countdown_task, auto_play_enabled
                         print("[DEATH] Play Again button pressed - manual restart")
                         
@@ -1365,20 +1404,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             disp = phase1
             choice_text = custom_choice
             
-            # BEAT 4: Display dispatch (what happened) - LONGER DISPLAY TIME
-            movement_indicator = get_movement_indicator()
-            dispatch_text = disp["dispatch"]
-            if movement_indicator:
-                dispatch_text = f"{movement_indicator}\n\n{dispatch_text}"
-            
-            await interaction.channel.send(embed=discord.Embed(
-                title="⚡ Consequence",
-                description=safe_embed_desc(dispatch_text),
-                color=VHS_RED
-            ))
-            await asyncio.sleep(2.5)  # LONGER - let them actually read it!
-            
-            # Display image and/or video
+            # BEAT 4: Display IMAGE FIRST (immediately, no delay)
             img_path = disp.get("consequence_image")
             video_path = disp.get("consequence_video")
             
@@ -1417,6 +1443,19 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     # HD mode: image already sent with video, skip duplicate
                     print(f"[BOT CUSTOM] Image skipped (video already displayed)")
                 await asyncio.sleep(0.5)
+            
+            # BEAT 5: Show consequence text AFTER image (appears underneath)
+            movement_indicator = get_movement_indicator()
+            dispatch_text = disp["dispatch"]
+            if movement_indicator:
+                dispatch_text = f"{movement_indicator}\n\n{dispatch_text}"
+            
+            await interaction.channel.send(embed=discord.Embed(
+                title="⚡ Consequence",
+                description=safe_embed_desc(dispatch_text),
+                color=VHS_RED
+            ))
+            await asyncio.sleep(0.3)  # Brief pause so they can read it
             
             # CHECK FOR DEATH - Read FRESH state
             import engine
@@ -1509,6 +1548,14 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                         super().__init__(label="️ Play Again", style=discord.ButtonStyle.success)
                     
                     async def callback(self, button_interaction: discord.Interaction):
+                        # Authorization check
+                        if not check_authorization(button_interaction, OWNER_ID):
+                            await button_interaction.response.send_message(
+                                "🔒 Only the game owner can restart.",
+                                ephemeral=True
+                            )
+                            return
+                        
                         global auto_advance_task, countdown_task, auto_play_enabled
                         print("[DEATH CUSTOM] Play Again button pressed - manual restart")
                         
@@ -1629,6 +1676,15 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 )
         
         async def callback(self, interaction: discord.Interaction):
+            # Authorization check
+            if hasattr(self, 'view') and self.view and hasattr(self.view, 'owner_id'):
+                if not check_authorization(interaction, self.view.owner_id):
+                    await interaction.response.send_message(
+                        "🔒 Only the game owner can use Free Will.",
+                        ephemeral=True
+                    )
+                    return
+            
             print("[LOG] CustomActionButton callback triggered")
             modal = CustomActionModal()
             await interaction.response.send_modal(modal)
@@ -1639,6 +1695,15 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             self.label = None  # Emoji only - VHS eject button
 
         async def callback(self, interaction: discord.Interaction):
+            # Authorization check
+            if hasattr(self, 'view') and self.view and hasattr(self.view, 'owner_id'):
+                if not check_authorization(interaction, self.view.owner_id):
+                    await interaction.response.send_message(
+                        "🔒 Only the game owner can restart the game.",
+                        ephemeral=True
+                    )
+                    return
+            
             global auto_advance_task, countdown_task, auto_play_enabled
             
             print("[LOG] RestartButton callback triggered")
@@ -1856,6 +1921,15 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             self.parent_view = parent_view
 
         async def callback(self, interaction: discord.Interaction):
+            # Authorization check
+            if hasattr(self, 'view') and self.view and hasattr(self.view, 'owner_id'):
+                if not check_authorization(interaction, self.view.owner_id):
+                    await interaction.response.send_message(
+                        "🔒 Only the game owner can toggle auto-play.",
+                        ephemeral=True
+                    )
+                    return
+            
             global auto_play_enabled, auto_advance_task, countdown_task
             
             if auto_play_enabled:
@@ -1917,6 +1991,15 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             self.parent_view = parent_view
         
         async def callback(self, interaction: discord.Interaction):
+            # Authorization check
+            if hasattr(self, 'view') and self.view and hasattr(self.view, 'owner_id'):
+                if not check_authorization(interaction, self.view.owner_id):
+                    await interaction.response.send_message(
+                        "🔒 Only the game owner can toggle HD mode.",
+                        ephemeral=True
+                    )
+                    return
+            
             global hd_mode_enabled
             import engine
             
@@ -1991,6 +2074,15 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             self.parent_view = parent_view
 
         async def callback(self, interaction: discord.Interaction):
+            # Authorization check
+            if hasattr(self, 'view') and self.view and hasattr(self.view, 'owner_id'):
+                if not check_authorization(interaction, self.view.owner_id):
+                    await interaction.response.send_message(
+                        "🔒 Only the game owner can regenerate choices.",
+                        ephemeral=True
+                    )
+                    return
+            
             print("[LOG] RegenerateChoicesButton callback triggered")
             try:
                 await interaction.response.defer()
@@ -2268,6 +2360,14 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             def __init__(self):
                 super().__init__(label="️ Play", style=discord.ButtonStyle.success, row=1)
             async def callback(self, interaction: discord.Interaction):
+                # Authorization check
+                if not check_authorization(interaction, OWNER_ID):
+                    await interaction.response.send_message(
+                        "🔒 Only the game owner can start the game.",
+                        ephemeral=True
+                    )
+                    return
+                
                 global _run_images  # MUST be at the very top of the function
                 
                 try:
@@ -2467,6 +2567,14 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             def __init__(self):
                 super().__init__(label="️ Play (No Images)", style=discord.ButtonStyle.secondary)
             async def callback(self, interaction: discord.Interaction):
+                # Authorization check
+                if not check_authorization(interaction, OWNER_ID):
+                    await interaction.response.send_message(
+                        "🔒 Only the game owner can start the game.",
+                        ephemeral=True
+                    )
+                    return
+                
                 try:
                     if not interaction.response.is_done():
                         await interaction.response.defer()
@@ -2563,6 +2671,14 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 super().__init__(label=" Play HD", style=discord.ButtonStyle.danger, row=2)
             
             async def callback(self, interaction: discord.Interaction):
+                # Authorization check
+                if not check_authorization(interaction, OWNER_ID):
+                    await interaction.response.send_message(
+                        "🔒 Only the game owner can start the game.",
+                        ephemeral=True
+                    )
+                    return
+                
                 global _run_images
                 
                 try:
@@ -3050,6 +3166,14 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                                 super().__init__(label="️ Play Again", style=discord.ButtonStyle.success)
                             
                             async def callback(self, button_interaction: discord.Interaction):
+                                # Authorization check
+                                if not check_authorization(button_interaction, OWNER_ID):
+                                    await button_interaction.response.send_message(
+                                        "🔒 Only the game owner can restart.",
+                                        ephemeral=True
+                                    )
+                                    return
+                                
                                 global auto_advance_task, countdown_task, auto_play_enabled
                                 print("[COUNTDOWN DEATH] Play Again button pressed - manual restart")
                                 
@@ -3465,6 +3589,14 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     super().__init__(label="️ Play Again", style=discord.ButtonStyle.success)
                 
                 async def callback(self, button_interaction: discord.Interaction):
+                    # Authorization check
+                    if not check_authorization(button_interaction, OWNER_ID):
+                        await button_interaction.response.send_message(
+                            "🔒 Only the game owner can restart.",
+                            ephemeral=True
+                        )
+                        return
+                    
                     global auto_advance_task, countdown_task, auto_play_enabled
                     print("[AUTO-PLAY DEATH] Play Again button pressed - manual restart")
                     

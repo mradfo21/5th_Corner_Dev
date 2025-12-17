@@ -40,8 +40,8 @@ else:
     print(f"[GEMINI INIT] Ready to generate images")
 
 # Google Gemini models
-GEMINI_FLASH_IMAGE = "gemini-3-pro-image-preview"  # Nano Banana Pro - professional asset production, 4K support
-GEMINI_PRO_IMAGE = "gemini-3-pro-image-preview"  # Advanced, 4K support
+GEMINI_FLASH_IMAGE = "gemini-2.5-flash-image"  # Fast, cost-effective image generation
+GEMINI_PRO_IMAGE = "gemini-3-pro-image-preview"  # Slower, higher quality, 4K support
 
 # Track last corrected image for continuity
 _last_corrected_image = None
@@ -705,8 +705,8 @@ def generate_gemini_img2img(
         
         if USE_DOWNSAMPLED_FOR_IMG2IMG:
             # Try to use downsampled version (faster, less bandwidth)
-            small_path = img_path_obj.parent / img_path_obj.name.replace(".png", "_small.png")
-            use_path = small_path if small_path.exists() else img_path_obj
+        small_path = img_path_obj.parent / img_path_obj.name.replace(".png", "_small.png")
+        use_path = small_path if small_path.exists() else img_path_obj
             quality_note = "downsampled 480x360" if small_path.exists() else "full-res (no downsample found)"
         else:
             # Force full-res (preserves quality, prevents artifact compounding)
@@ -718,8 +718,8 @@ def generate_gemini_img2img(
             image_bytes = _apply_forward_zoom(str(use_path), zoom_factor=ZOOM_FACTOR)
             print(f"[FORWARD ZOOM] Applied {ZOOM_FACTOR}x zoom to {img_path_obj.name} (center {int(100/ZOOM_FACTOR)}% to full frame)")
         else:
-            with open(use_path, "rb") as f:
-                image_bytes = f.read()
+        with open(use_path, "rb") as f:
+            image_bytes = f.read()
         
         image_b64 = base64.b64encode(image_bytes).decode('utf-8')
         
