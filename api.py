@@ -858,14 +858,22 @@ def internal_error(e):
 # ═══════════════════════════════════════════════════════════════════════════
 
 if __name__ == '__main__':
+    import os
+    
+    # Get port from environment (Render sets this) or default to 5001
+    port = int(os.getenv('PORT', 5001))
+    
     print("=" * 70)
     print("SOMEWHERE Game Engine API")
     print("=" * 70)
-    print("Starting API server on http://0.0.0.0:5001")
-    print("API Info: http://localhost:5001/api/info")
-    print("Health Check: http://localhost:5001/api/health")
+    print(f"Starting API server on http://0.0.0.0:{port}")
+    print(f"API Info: http://localhost:{port}/api/info")
+    print(f"Health Check: http://localhost:{port}/api/health")
+    print(f"Dashboard: http://localhost:{port}/admin")
     print("=" * 70)
     
-    app.run(debug=True, host='0.0.0.0', port=5001)
+    # Use debug=False in production
+    debug_mode = os.getenv('FLASK_ENV') != 'production'
+    app.run(debug=debug_mode, host='0.0.0.0', port=port)
 
 

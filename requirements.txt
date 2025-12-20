@@ -1,6 +1,7 @@
 openai
 flask
 flask-cors
+gunicorn
 Pillow
 discord.py
 requests
