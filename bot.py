@@ -315,7 +315,12 @@ if DISCORD_ENABLED:
             frame_sizes = []
             
             for idx, img_path in enumerate(_run_images):
-                full_path = ROOT / img_path.lstrip("/")
+                # Handle absolute paths (session images) properly
+                if Path(img_path).is_absolute():
+                    full_path = Path(img_path)
+                else:
+                    # Legacy relative paths
+                    full_path = ROOT / img_path.lstrip("/")
                 print(f"[TAPE] Loading frame {idx+1}/{len(_run_images)}: {full_path}")
                 if full_path.exists():
                     try:
@@ -683,7 +688,11 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 if current_image.startswith("/images/"):
                     actual_path = ROOT / "images" / current_image.replace("/images/", "")
                 else:
-                    actual_path = ROOT / current_image.lstrip("/")
+                    # Handle absolute paths (session images)
+                    if Path(current_image).is_absolute():
+                        actual_path = Path(current_image)
+                    else:
+                        actual_path = ROOT / current_image.lstrip("/")
                 
                 # Try to use small version first
                 small_path = actual_path.parent / (actual_path.stem + "_small" + actual_path.suffix)
@@ -1455,7 +1464,9 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 if not video_path:
                     # Normal mode: just the image
                     print(f"[BOT] Image displayed immediately (before choices)!")
-                    await interaction.channel.send(file=discord.File(img_path.lstrip("/")))
+                    # Handle absolute paths properly
+                    display_path = Path(img_path) if Path(img_path).is_absolute() else Path(img_path.lstrip("/"))
+                    await interaction.channel.send(file=discord.File(display_path))
                 else:
                     # HD mode: image already sent with video, skip duplicate
                     print(f"[BOT CUSTOM] Image skipped (video already displayed)")
@@ -3086,7 +3097,11 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                         print(f"[TAPE] ERROR: NO IMAGE from countdown penalty")
                     
                     if consequence_image_path:
-                        full_path = ROOT / consequence_image_path.lstrip("/")
+                        # Handle absolute paths (session images)
+                        if Path(consequence_image_path).is_absolute():
+                            full_path = Path(consequence_image_path)
+                        else:
+                            full_path = ROOT / consequence_image_path.lstrip("/")
                         if full_path.exists():
                             try:
                                 await channel.send(file=discord.File(str(full_path)))
@@ -3507,7 +3522,11 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             print(f"[TAPE] ERROR: NO IMAGE from auto-advance")
         
         if consequence_image_path:
-            full_path = ROOT / consequence_image_path.lstrip("/")
+            # Handle absolute paths (session images)
+            if Path(consequence_image_path).is_absolute():
+                full_path = Path(consequence_image_path)
+            else:
+                full_path = ROOT / consequence_image_path.lstrip("/")
             if full_path.exists():
                 try:
                     await channel.send(file=discord.File(str(full_path)))

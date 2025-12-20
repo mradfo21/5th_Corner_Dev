@@ -778,11 +778,49 @@ def _ask_openai(prompt: str, model_name: str, temp: float, tokens: int, image_pa
         log_error(f"[ASK OPENAI] {e}")
         return "Signal interrupted..."
 
+# ───────── path resolution helper ───────────────────────────────────────────
+def _resolve_image_path(image_path: str) -> Path:
+    """
+    Resolve image path to actual filesystem location.
+    Handles both absolute (session-specific) and relative (legacy) paths.
+    
+    Args:
+        image_path: Path like "/opt/.../sessions/default/images/file.png" 
+                    or "/images/file.png"
+                    or "images/file.png"
+    
+    Returns:
+        Path object pointing to actual file location
+    """
+    if not image_path:
+        return None
+    
+    path = Path(image_path)
+    
+    # If already absolute and exists, use it
+    if path.is_absolute():
+        if path.exists():
+            return path
+        # Absolute but doesn't exist - maybe it's a different session
+        # Try to find it in images directory
+        return ROOT / "images" / path.name
+    
+    # Relative path handling
+    if image_path.startswith("/images/"):
+        # Legacy format: "/images/filename.png"
+        return ROOT / "images" / path.name
+    elif image_path.startswith("images/"):
+        # Another legacy format: "images/filename.png"
+        return ROOT / image_path
+    else:
+        # Just a filename
+        return ROOT / "images" / path.name
+
 # ───────── vision description helper ────────────────────────────────────────
 def _downscale_for_vision(image_path: str, size=(640, 426)) -> io.BytesIO:
-    full = IMAGE_DIR / image_path.lstrip("/")
+    full = _resolve_image_path(image_path)
     buf = io.BytesIO()
-    if not full.exists():
+    if not full or not full.exists():
         return None
     try:
         img = Image.open(full)
@@ -818,9 +856,9 @@ def _vision_analyze_all(image_path: str) -> dict:
     try:
         
         # Handle path - ensure it's accessible
-        full_path = image_path.lstrip("/")
-        if not os.path.exists(full_path):
-            full_path = os.path.join("images", os.path.basename(image_path))
+        full_path = _resolve_image_path(image_path)
+        if not full_path or not full_path.exists():
+            return ""
         
         if not os.path.exists(full_path):
             print(f"[VISION ERROR] Image file not found: {image_path}")
@@ -1351,15 +1389,15 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                 # Get most recent image for time/color extraction
                 img, cap, vis_analysis = last_imgs[0]
                 prev_vision_analysis = vis_analysis
-                prev_img_path = img.lstrip("/")
+                prev_img_path = str(_resolve_image_path(img))
                 if not os.path.exists(prev_img_path):
-                    prev_img_path = os.path.join("images", os.path.basename(prev_img_path))
+                    prev_img_path = None
                 
                 # Collect all recent image paths for multi-reference img2img
                 for idx, (img, cap, _) in enumerate(last_imgs):
-                    img_path = img.lstrip("/")
+                    img_path = str(_resolve_image_path(img))
                     if not os.path.exists(img_path):
-                        img_path = os.path.join("images", os.path.basename(img_path))
+                        continue  # Skip missing images
                     if os.path.exists(img_path):
                         prev_img_paths_list.append(img_path)
                         prev_img_captions.append(cap)
@@ -1373,9 +1411,9 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                 if USE_FRAME_0_ANCHOR and len(history) > 0 and frame_idx > 1:
                     frame_0_image = history[0].get("image")
                     if frame_0_image and frame_0_image not in prev_img_paths_list:
-                        frame_0_path = frame_0_image.lstrip("/")
+                        frame_0_path = str(_resolve_image_path(frame_0_image))
                         if not os.path.exists(frame_0_path):
-                            frame_0_path = os.path.join("images", os.path.basename(frame_0_path))
+                            frame_0_path = None
                         if os.path.exists(frame_0_path):
                             # Prepend frame 0 as the "visual constitution"
                             prev_img_paths_list.insert(0, frame_0_path)
