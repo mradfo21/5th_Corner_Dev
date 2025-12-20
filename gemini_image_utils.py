@@ -148,7 +148,8 @@ def generate_with_gemini(
     time_of_day: str = "",
     is_first_frame: bool = False,
     action_context: str = "",
-    hd_mode: bool = True
+    hd_mode: bool = True,
+    output_dir: Path = None
 ) -> str:
     """
     Generate an image using Google Gemini (Nano Banana).
@@ -339,11 +340,13 @@ def generate_with_gemini(
         # Decode base64 image
         image_bytes = base64.b64decode(image_data_b64)
         
-        # Save to local storage
-        IMAGE_DIR.mkdir(exist_ok=True)
+        # Save to local storage - use provided output_dir or fall back to IMAGE_DIR
+        save_dir = output_dir if output_dir is not None else IMAGE_DIR
+        save_dir.mkdir(parents=True, exist_ok=True)
+        
         safe_caption = "".join(c if c.isalnum() or c in "_-" else "_" for c in caption[:48])
         filename = f"{hash(caption) & 0xFFFFFFFF}_{safe_caption}.png"
-        image_path = IMAGE_DIR / filename
+        image_path = save_dir / filename
         
         with open(image_path, "wb") as f:
             f.write(image_bytes)
@@ -353,7 +356,7 @@ def generate_with_gemini(
         from PIL import Image as PILImage
         import io
         small_filename = filename.replace(".png", "_small.png")
-        small_path = IMAGE_DIR / small_filename
+        small_path = save_dir / small_filename
         
         try:
             img = PILImage.open(io.BytesIO(image_bytes))
@@ -365,7 +368,8 @@ def generate_with_gemini(
         except Exception as e:
             print(f"[GOOGLE GEMINI] WARNING: Downsample failed: {e}")
         
-        return str(Path("images") / filename)
+        # Return full path (will be made relative by caller if needed)
+        return str(image_path)
         
     except requests.exceptions.HTTPError as e:
         # If Pro model is overloaded and this is the first frame, fallback to Flash
@@ -670,7 +674,8 @@ def generate_gemini_img2img(
     world_prompt: str = None,
     time_of_day: str = "",
     action_context: str = "",
-    hd_mode: bool = True
+    hd_mode: bool = True,
+    output_dir: Path = None
 ) -> str:
     """
     Edit an image using Google Gemini (image-to-image).
@@ -934,10 +939,13 @@ def generate_gemini_img2img(
         # Decode and save
         image_bytes = base64.b64decode(image_data_b64)
         
-        IMAGE_DIR.mkdir(exist_ok=True)
+        # Use provided output_dir or fall back to IMAGE_DIR
+        save_dir = output_dir if output_dir is not None else IMAGE_DIR
+        save_dir.mkdir(parents=True, exist_ok=True)
+        
         safe_caption = "".join(c if c.isalnum() or c in "_-" else "_" for c in caption[:48])
         filename = f"{hash(caption) & 0xFFFFFFFF}_{safe_caption}.png"
-        image_path = IMAGE_DIR / filename
+        image_path = save_dir / filename
         
         with open(image_path, "wb") as f:
             f.write(image_bytes)
@@ -946,7 +954,7 @@ def generate_gemini_img2img(
         from PIL import Image as PILImage
         import io
         small_filename = filename.replace(".png", "_small.png")
-        small_path = IMAGE_DIR / small_filename
+        small_path = save_dir / small_filename
         
         try:
             img = PILImage.open(io.BytesIO(image_bytes))
@@ -958,7 +966,8 @@ def generate_gemini_img2img(
         except Exception as e:
             print(f"[GOOGLE GEMINI] WARNING: Downsample failed: {e}")
         
-        return str(Path("images") / filename)
+        # Return relative path from session root
+        return str(image_path)
         
     except Exception as e:
         print(f"[GOOGLE GEMINI] ERROR: Edit error: {e}")

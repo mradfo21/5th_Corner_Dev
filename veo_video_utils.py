@@ -56,11 +56,8 @@ VEO_MODEL = "veo-3.1-generate-preview"
 VEO_FAST_MODEL = "veo-3.1-fast-generate-preview"
 
 # Directories
-IMAGE_DIR = Path("images")
-VIDEO_SEGMENTS_DIR = Path("films/segments")
-VIDEO_SEGMENTS_DIR.mkdir(parents=True, exist_ok=True)
-VIDEO_FILMS_DIR = Path("films/final")
-VIDEO_FILMS_DIR.mkdir(parents=True, exist_ok=True)
+# Note: VIDEO_SEGMENTS_DIR and VIDEO_FILMS_DIR are now passed as parameters
+# to support session-specific storage
 
 # ============================================================================
 # COST CONTROL SETTINGS
@@ -193,7 +190,9 @@ def generate_frame_via_video(
     frame_idx: int,
     world_prompt: str = "",
     action_context: str = "",
-    reference_frames: Optional[List[str]] = None
+    reference_frames: Optional[List[str]] = None,
+    video_segments_dir: Optional[Path] = None,
+    video_films_dir: Optional[Path] = None
 ) -> Tuple[Optional[str], str, Optional[str]]:
     """
     Generate a new frame by creating a video from the previous frame.
@@ -206,11 +205,26 @@ def generate_frame_via_video(
         world_prompt: World context
         action_context: Player action
         reference_frames: List of previous frame paths to use as visual references (1-2 frames)
+        video_segments_dir: Directory for video segments (session-specific)
+        video_films_dir: Directory for final stitched films (session-specific)
     
     Returns:
         Tuple of (frame_path, prompt_used, video_path)
         video_path is None for Frame 0 (static image) or if video generation fails
     """
+    # Use provided directories or create defaults
+    if video_segments_dir is None:
+        video_segments_dir = Path("films/segments")
+        video_segments_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        video_segments_dir.mkdir(parents=True, exist_ok=True)
+    
+    if video_films_dir is None:
+        video_films_dir = Path("films/final")
+        video_films_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        video_films_dir.mkdir(parents=True, exist_ok=True)
+    
     print(f"\n{'='*70}")
     print(f"[VEO] Generating frame {frame_idx} via video interpolation")
     print(f"{'='*70}")
@@ -269,7 +283,8 @@ def generate_frame_via_video(
             prompt=veo_prompt,
             frame_idx=frame_idx,
             caption=caption,
-            reference_frames=reference_frames  # Pass previous frames as references
+            reference_frames=reference_frames,  # Pass previous frames as references
+            video_segments_dir=video_segments_dir  # Pass session-specific directory
         )
         
         safe_video_path = str(video_path).encode('ascii', 'replace').decode('ascii') if video_path else "None"
@@ -351,7 +366,8 @@ def _generate_video_and_extract_frame(
     prompt: str,
     frame_idx: int,
     caption: str,
-    reference_frames: Optional[List[str]] = None
+    reference_frames: Optional[List[str]] = None,
+    video_segments_dir: Optional[Path] = None
 ) -> Tuple[str, str, any]:
     """
     Generate video using Veo 3.1 API and extract last frame.
@@ -363,6 +379,11 @@ def _generate_video_and_extract_frame(
     from google.genai import types
     from PIL import Image
     import base64
+    
+    # Use provided directory or create default
+    if video_segments_dir is None:
+        video_segments_dir = Path("films/segments")
+        video_segments_dir.mkdir(parents=True, exist_ok=True)
     
     if not GEMINI_API_KEY:
         raise Exception("GEMINI_API_KEY not set")
@@ -512,7 +533,7 @@ def _generate_video_and_extract_frame(
     
     # Download and save video using SDK
     video_filename = f"seg_{frame_idx-1}_{frame_idx}_{int(time.time())}.mp4"
-    video_path = VIDEO_SEGMENTS_DIR / video_filename
+    video_path = video_segments_dir / video_filename
     
     print(f"[VEO API] Downloading video...")
     
@@ -593,7 +614,7 @@ def _extract_last_frame(video_path: Path, frame_idx: int, caption: str) -> str:
     return str(output_path)
 
 
-def stitch_video_segments(segment_paths: List[str], output_name: str = "tape") -> Tuple[Optional[str], str]:
+def stitch_video_segments(segment_paths: List[str], output_name: str = "tape", video_segments_dir: Optional[Path] = None, video_films_dir: Optional[Path] = None) -> Tuple[Optional[str], str]:
     """
     Stitch multiple video segments into a single video file.
     Uses moviepy (with audio) if available, falls back to OpenCV (no audio).
@@ -601,10 +622,20 @@ def stitch_video_segments(segment_paths: List[str], output_name: str = "tape") -
     Args:
         segment_paths: List of paths to video segment files (in order)
         output_name: Base name for output file
+        video_segments_dir: Directory for video segments (session-specific)
+        video_films_dir: Directory for final stitched films (session-specific)
     
     Returns:
         Tuple of (output_path or None, error_message or empty string)
     """
+    # Use provided directories or create defaults
+    if video_segments_dir is None:
+        video_segments_dir = Path("films/segments")
+        video_segments_dir.mkdir(parents=True, exist_ok=True)
+    
+    if video_films_dir is None:
+        video_films_dir = Path("films/final")
+        video_films_dir.mkdir(parents=True, exist_ok=True)
     if not segment_paths:
         return None, "No video segments provided"
     
@@ -620,14 +651,14 @@ def stitch_video_segments(segment_paths: List[str], output_name: str = "tape") -
     # Create output path
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_filename = f"{output_name}_{timestamp}.mp4"
-    output_path = VIDEO_FILMS_DIR / output_filename
+    output_path = video_films_dir / output_filename
     
     # Try ffmpeg first (preserves audio)
     if FFMPEG_AVAILABLE:
         print(f"[VIDEO STITCH] Stitching {len(segment_paths)} segments using ffmpeg (with audio)...")
         try:
             # Create a text file listing all segments
-            concat_file = VIDEO_SEGMENTS_DIR / f"concat_list_{timestamp}.txt"
+            concat_file = video_segments_dir / f"concat_list_{timestamp}.txt"
             with open(concat_file, 'w', encoding='utf-8') as f:
                 for seg_path in segment_paths:
                     # Use forward slashes for ffmpeg compatibility
@@ -771,18 +802,26 @@ def stitch_video_segments(segment_paths: List[str], output_name: str = "tape") -
         return None, f"Stitching error: {safe_error}"
 
 
-def get_video_segments_for_session() -> List[str]:
+def get_video_segments_for_session(video_segments_dir: Optional[Path] = None) -> List[str]:
     """
     Get all video segments generated in the current session.
+    
+    Args:
+        video_segments_dir: Directory for video segments (session-specific)
     
     Returns:
         List of video segment file paths, sorted by frame order
     """
+    # Use provided directory or create default
+    if video_segments_dir is None:
+        video_segments_dir = Path("films/segments")
+        video_segments_dir.mkdir(parents=True, exist_ok=True)
+    
     segments = []
     
     # Get all segment files from the segments directory
-    if VIDEO_SEGMENTS_DIR.exists():
-        segment_files = sorted(VIDEO_SEGMENTS_DIR.glob("seg_*.mp4"))
+    if video_segments_dir.exists():
+        segment_files = sorted(video_segments_dir.glob("seg_*.mp4"))
         
         # Sort by frame indices in filename (seg_0_1_timestamp.mp4)
         def get_frame_indices(path):
@@ -819,4 +858,4 @@ print(f"[VEO INIT] Strategy:")
 print(f"[VEO INIT]   Frame 0: Gemini (seed) - FREE")
 print(f"[VEO INIT]   Frames 1+: Veo (video interpolation) until budget reached")
 print(f"[VEO INIT]   Budget limit: ${MAX_SESSION_COST:.2f} (hard stop)")
-print(f"[VEO INIT] Segments: {VIDEO_SEGMENTS_DIR}")
+print(f"[VEO INIT] Segments stored per session")

@@ -43,9 +43,10 @@ class GameEngineClient:
     Routes to API or direct engine based on USE_API flag
     """
     
-    def __init__(self, use_api: bool = USE_API, api_base: str = API_BASE):
+    def __init__(self, use_api: bool = USE_API, api_base: str = API_BASE, session_id: str = 'default'):
         self.use_api = use_api
         self.api_base = api_base
+        self.session_id = session_id  # Session ID for this client
     
     def _api_call(self, method: str, endpoint: str, json_data: Optional[Dict] = None) -> Any:
         """Make an API call and return the data"""
@@ -80,9 +81,9 @@ class GameEngineClient:
     def get_state(self) -> Dict:
         """Get current game state"""
         if self.use_api:
-            return self._api_call('GET', '/state')
+            return self._api_call('GET', f'/state?session_id={self.session_id}')
         else:
-            return engine.get_state()
+            return engine.get_state(self.session_id)
     
     def reload_state(self) -> Dict:
         """Force reload state from disk"""
@@ -95,9 +96,9 @@ class GameEngineClient:
     def reset_state(self):
         """Reset game state"""
         if self.use_api:
-            self._api_call('POST', '/state/reset')
+            self._api_call('POST', '/state/reset', {'session_id': self.session_id})
         else:
-            engine.reset_state()
+            engine.reset_state(self.session_id)
     
     # ═══════════════════════════════════════════════════════════════════════
     # GAME FLOW
@@ -106,9 +107,9 @@ class GameEngineClient:
     def generate_intro_turn(self) -> Dict:
         """Generate full intro turn"""
         if self.use_api:
-            return self._api_call('POST', '/game/intro')
+            return self._api_call('POST', '/game/intro', {'session_id': self.session_id})
         else:
-            return engine.generate_intro_turn()
+            return engine.generate_intro_turn(self.session_id)
     
     def generate_intro_image_fast(self) -> Dict:
         """Generate intro image (Phase 1)"""
@@ -148,10 +149,11 @@ class GameEngineClient:
             return self._api_call('POST', '/game/action/image', {
                 'choice': choice,
                 'fate': fate,
-                'is_timeout_penalty': is_timeout_penalty
+                'is_timeout_penalty': is_timeout_penalty,
+                'session_id': self.session_id
             })
         else:
-            return engine.advance_turn_image_fast(choice, fate, is_timeout_penalty)
+            return engine.advance_turn_image_fast(choice, fate, is_timeout_penalty, self.session_id)
     
     def advance_turn_choices_deferred(
         self,
@@ -170,7 +172,8 @@ class GameEngineClient:
                 'vision_dispatch': vision_dispatch,
                 'choice': choice,
                 'consequence_img_prompt': consequence_img_prompt,
-                'hard_transition': hard_transition
+                'hard_transition': hard_transition,
+                'session_id': self.session_id
             })
         else:
             return engine.advance_turn_choices_deferred(
@@ -179,7 +182,8 @@ class GameEngineClient:
                 vision_dispatch,
                 choice,
                 consequence_img_prompt,
-                hard_transition
+                hard_transition,
+                self.session_id
             )
     
     # ═══════════════════════════════════════════════════════════════════════

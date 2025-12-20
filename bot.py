@@ -123,8 +123,26 @@ if DISCORD_ENABLED:
     OWNER_ID = None
 
     # ───────── VHS tape recording (death replay GIFs) ──────────────────────────
-    TAPES_DIR = ROOT / "tapes"
-    TAPES_DIR.mkdir(exist_ok=True)
+    # Import api_client to get session_id
+    from api_client import api as api_client
+    
+    # Session-specific directories
+    def _get_tapes_dir():
+        """Get session-specific tapes directory"""
+        import engine
+        session_root = engine._get_session_root(api_client.session_id)
+        tapes_dir = session_root / "tapes"
+        tapes_dir.mkdir(parents=True, exist_ok=True)
+        return tapes_dir
+    
+    def _get_segments_dir():
+        """Get session-specific video segments directory"""
+        import engine
+        session_root = engine._get_session_root(api_client.session_id)
+        segments_dir = session_root / "films" / "segments"
+        segments_dir.mkdir(parents=True, exist_ok=True)
+        return segments_dir
+    
     _run_images = []  # Track all images from current run for VHS tape
     import threading
     _tape_creation_lock = threading.Lock()  # Prevent duplicate tape creation (thread-safe)
@@ -228,7 +246,7 @@ if DISCORD_ENABLED:
                 from pathlib import Path
                 
                 # Collect video segments from this session
-                segments_dir = ROOT / "films" / "segments"
+                segments_dir = _get_segments_dir()
                 if segments_dir.exists():
                     # Get all .mp4 files, sorted by name (which includes timestamp)
                     video_files = sorted(segments_dir.glob("seg_*.mp4"))
@@ -237,7 +255,12 @@ if DISCORD_ENABLED:
                         print(f"[TAPE HD] Found {len(video_files)} video segments to stitch")
                         video_paths = [str(f) for f in video_files]
                         
-                        stitched_video, error = stitch_video_segments(video_paths, output_name="HD_tape")
+                        stitched_video, error = stitch_video_segments(
+                            video_paths, 
+                            output_name="HD_tape",
+                            video_segments_dir=_get_segments_dir(),
+                            video_films_dir=_get_segments_dir().parent / "final"  # films/final directory
+                        )
                         
                         if stitched_video:
                             print(f"[TAPE HD] Successfully stitched HD video: {stitched_video}")
@@ -369,7 +392,7 @@ if DISCORD_ENABLED:
             
             # Create timestamped tape (they are the memories, never deleted)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            tape_path = TAPES_DIR / f"tape_{timestamp}.gif"
+            tape_path = _get_tapes_dir() / f"tape_{timestamp}.gif"
             
             # Try progressively smaller scales with color optimization
             # NEVER skip frames - preserve complete narrative!
@@ -444,14 +467,23 @@ if DISCORD_ENABLED:
     def _attach(image_path: Optional[str], caption: str = "") -> Tuple[Optional[discord.File], Optional[str]]:
         if not image_path:
             return None, None
-        # Always resolve relative to ROOT/images
-        if image_path.startswith("/images/"):
+        
+        # Handle absolute paths (session-specific images)
+        if Path(image_path).is_absolute():
+            local = Path(image_path)
+        # Handle legacy /images/ paths
+        elif image_path.startswith("/images/"):
             local = ROOT / "images" / Path(image_path).name
+        # Handle legacy relative paths
         else:
             local = ROOT / "images" / Path(image_path).name
+        
         if local.exists():
             return discord.File(local, filename=local.name), local.name
-        return None, None
+        else:
+            print(f"[ATTACH ERROR] Image not found: {local}")
+            print(f"[ATTACH ERROR] Original path: {image_path}")
+            return None, None
     
     # ───────── video helper (HD mode) ────────────────────────────────────────────
     def _attach_video(video_path: Optional[str]) -> Tuple[Optional[discord.File], Optional[str]]:

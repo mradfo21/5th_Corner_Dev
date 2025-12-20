@@ -52,11 +52,15 @@ def api_get_state():
     """
     Get current game state
     
+    Query Parameters:
+        session_id (optional): Session ID (defaults to 'default')
+    
     Returns:
         JSON with game state (location, frame_idx, world_prompt, etc.)
     """
     try:
-        state = engine.get_state()
+        session_id = request.args.get('session_id', 'default')
+        state = engine.get_state(session_id)
         return jsonify(success_response(state, "State retrieved"))
     except Exception as e:
         return error_response("Failed to get state", str(e))
@@ -83,12 +87,17 @@ def api_reset_state():
     """
     Reset game state (new game)
     
+    Body Parameters:
+        session_id (optional): Session ID (defaults to 'default')
+    
     Returns:
         Success message
     """
     try:
-        engine.reset_state()
-        return jsonify(success_response(None, "State reset successful"))
+        data = request.json or {}
+        session_id = data.get('session_id', 'default')
+        engine.reset_state(session_id)
+        return jsonify(success_response(None, f"State reset successful for session {session_id}"))
     except Exception as e:
         return error_response("Failed to reset state", str(e))
 
@@ -102,11 +111,16 @@ def api_generate_intro():
     """
     Generate intro turn (full - image + choices)
     
+    Body Parameters:
+        session_id (optional): Session ID (defaults to 'default')
+    
     Returns:
         JSON with intro data (prologue, image, choices, etc.)
     """
     try:
-        result = engine.generate_intro_turn()
+        data = request.json or {}
+        session_id = data.get('session_id', 'default')
+        result = engine.generate_intro_turn(session_id)
         return jsonify(success_response(result, "Intro generated"))
     except Exception as e:
         traceback.print_exc()
@@ -170,7 +184,8 @@ def api_advance_turn_image():
         {
             "choice": "player action text",
             "fate": "LUCKY" | "NORMAL" | "UNLUCKY" (default: "NORMAL"),
-            "is_timeout_penalty": false (default: false)
+            "is_timeout_penalty": false (default: false),
+            "session_id": "default" (optional)
         }
     
     Returns:
@@ -181,11 +196,12 @@ def api_advance_turn_image():
         choice = data.get('choice')
         fate = data.get('fate', 'NORMAL')
         is_timeout_penalty = data.get('is_timeout_penalty', False)
+        session_id = data.get('session_id', 'default')
         
         if not choice:
             return error_response("Missing required parameter: choice", code=400)
         
-        result = engine.advance_turn_image_fast(choice, fate, is_timeout_penalty)
+        result = engine.advance_turn_image_fast(choice, fate, is_timeout_penalty, session_id)
         return jsonify(success_response(result, "Action image generated"))
     except Exception as e:
         traceback.print_exc()
@@ -204,7 +220,8 @@ def api_advance_turn_choices():
             "vision_dispatch": "vision description",
             "choice": "player action that led here",
             "consequence_img_prompt": "image prompt used",
-            "hard_transition": false (default: false)
+            "hard_transition": false (default: false),
+            "session_id": "default" (optional)
         }
     
     Returns:
@@ -218,6 +235,7 @@ def api_advance_turn_choices():
         choice = data.get('choice')
         consequence_img_prompt = data.get('consequence_img_prompt', '')
         hard_transition = data.get('hard_transition', False)
+        session_id = data.get('session_id', 'default')
         
         result = engine.advance_turn_choices_deferred(
             consequence_img_url,
@@ -225,7 +243,8 @@ def api_advance_turn_choices():
             vision_dispatch,
             choice,
             consequence_img_prompt,
-            hard_transition
+            hard_transition,
+            session_id
         )
         return jsonify(success_response(result, "Choices generated"))
     except Exception as e:

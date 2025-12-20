@@ -121,6 +121,60 @@ def add_embed_headers(response):
     )
     return response
 
+# Session-based paths (thread-safe by design - no global state)
+def _get_session_root(session_id='default'):
+    """Get the root directory for a specific session"""
+    if session_id == 'legacy':
+        return ROOT  # Backward compatibility
+    return ROOT / "sessions" / session_id
+
+def _get_state_path(session_id='default'):
+    """Get state file path for a session"""
+    if session_id == 'legacy':
+        return ROOT / "world_state.json"  # Backward compatibility
+    root = _get_session_root(session_id)
+    root.mkdir(parents=True, exist_ok=True)
+    return root / "state.json"
+
+def _get_history_path(session_id='default'):
+    """Get history file path for a session"""
+    if session_id == 'legacy':
+        return ROOT / "history.json"  # Backward compatibility
+    root = _get_session_root(session_id)
+    root.mkdir(parents=True, exist_ok=True)
+    return root / "history.json"
+
+def _get_image_dir(session_id='default'):
+    """Get image directory for a session"""
+    if session_id == 'legacy':
+        img_dir = ROOT / "generated_images"
+    else:
+        img_dir = _get_session_root(session_id) / "images"
+    img_dir.mkdir(parents=True, exist_ok=True)
+    return img_dir
+
+def _get_video_dir(session_id='default'):
+    """Get video directory for a session"""
+    if session_id == 'legacy':
+        vid_dir = ROOT / "generated_videos"
+    else:
+        vid_dir = _get_session_root(session_id) / "videos"
+    vid_dir.mkdir(parents=True, exist_ok=True)
+    return vid_dir
+
+def _get_video_segments_dir(session_id='default'):
+    """Get video segments directory for a session (used by Veo)"""
+    segments_dir = _get_session_root(session_id) / "films" / "segments"
+    segments_dir.mkdir(parents=True, exist_ok=True)
+    return segments_dir
+
+def _get_video_films_dir(session_id='default'):
+    """Get final stitched films directory for a session (used by Veo)"""
+    films_dir = _get_session_root(session_id) / "films" / "final"
+    films_dir.mkdir(parents=True, exist_ok=True)
+    return films_dir
+
+# Legacy constants for backward compatibility
 STATE_PATH = ROOT/"world_state.json"
 IMAGE_DIR = ROOT / "images"
 WORLD_STATE_LOCK = threading.Lock() # Global lock for world_state.json access
@@ -211,12 +265,14 @@ RISKY_ACTION_KEYWORDS = [
 # core_modes = list(image_modes)  # Removed - not used in StoryGen version
 
 # ───────── world‑state helpers ───────────────────────────────────────────────
-def _load_state() -> dict:
+def _load_state(session_id='default') -> dict:
+    """Load state for a specific session"""
+    state_path = _get_state_path(session_id)
     with WORLD_STATE_LOCK:
-        if STATE_PATH.exists():
+        if state_path.exists():
             try:
                 # Explicitly open with utf-8, and ensure file is closed with try/finally or with statement
-                with STATE_PATH.open('r', encoding='utf-8') as f:
+                with state_path.open('r', encoding='utf-8') as f:
                     st = json.load(f)
                 # Ensure essential keys exist after loading
                 st.setdefault('player_state', {'alive': True})
@@ -225,14 +281,14 @@ def _load_state() -> dict:
                 st.setdefault('choices', []) # Ensure choices list is present
                 return st
             except json.JSONDecodeError as e_json:
-                logging.error(f"JSONDecodeError in _load_state for {STATE_PATH}: {e_json}. File might be corrupt or empty.")
+                logging.error(f"JSONDecodeError in _load_state for {state_path}: {e_json}. File might be corrupt or empty.")
                 # Fallback to a default state but log this as a critical issue
             except Exception as e_load:
-                logging.error(f"Unexpected error loading {STATE_PATH} in _load_state: {e_load}")
+                logging.error(f"Unexpected error loading {state_path} in _load_state: {e_load}")
                 # Fallback for other errors too
         
         # Fallback: If file doesn't exist or loading failed, return a clean default state
-        logging.warning(f"{STATE_PATH} not found or failed to load, returning default state.")
+        logging.warning(f"{state_path} not found or failed to load, returning default state.")
         return {
             "world_prompt": PROMPTS.get("world_prompt", "Default world starting point."), # Use .get for safety
             "current_phase": "normal",
@@ -249,12 +305,14 @@ def _load_state() -> dict:
             "time_of_day": INITIAL_TIME_OF_DAY
         }
 
-print("[ENGINE INIT] Loading initial state...", flush=True)
+# Legacy global state (deprecated - use session-based functions instead)
+# These are kept for backward compatibility but should not be used in new code
+print("[ENGINE INIT] Initializing legacy global state for backward compatibility...", flush=True)
 try:
-state = _load_state() # Initial load
-    print(f"[ENGINE INIT] State loaded successfully", flush=True)
+    state = _load_state('legacy') # Initial load for legacy code
+    print(f"[ENGINE INIT] Legacy state loaded successfully", flush=True)
 except Exception as e:
-    print(f"[ENGINE INIT ERROR] Failed to load state: {e}", flush=True)
+    print(f"[ENGINE INIT ERROR] Failed to load legacy state: {e}", flush=True)
     import traceback
     traceback.print_exc()
     # Create default state if loading fails
@@ -276,7 +334,7 @@ except Exception as e:
         "threat_level": 0,
         "time_of_day": INITIAL_TIME_OF_DAY
     }
-    print("[ENGINE INIT] Created default state", flush=True)
+    print("[ENGINE INIT] Created default legacy state", flush=True)
 
 history_path = ROOT / "history.json"
 if history_path.exists():
@@ -285,42 +343,66 @@ if history_path.exists():
 else:
     history = []
 
-def _save_state(st: dict):
+# Session-based history functions
+def _load_history(session_id='default') -> list:
+    """Load history for a specific session"""
+    history_path = _get_history_path(session_id)
+    if history_path.exists():
+        try:
+            with history_path.open("r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            logging.error(f"Failed to load history for session {session_id}: {e}")
+            return []
+    return []
+
+def _save_history(hist: list, session_id='default'):
+    """Save history for a specific session"""
+    history_path = _get_history_path(session_id)
+    try:
+        with history_path.open("w", encoding="utf-8") as f:
+            json.dump(hist, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        logging.error(f"Failed to save history for session {session_id}: {e}")
+
+def _save_state(st: dict, session_id='default'):
+    """Save state for a specific session"""
+    state_path = _get_state_path(session_id)
     # CRITICAL FIX: Always acquire lock to prevent concurrent write race conditions
     with WORLD_STATE_LOCK:
-    st["last_saved"] = datetime.now(timezone.utc).isoformat()
-    temp_state_file = STATE_PATH.with_suffix(".json.tmp")
-    max_retries = 3
-    retry_delay = 0.1 # seconds
+        st["last_saved"] = datetime.now(timezone.utc).isoformat()
+        temp_state_file = state_path.with_suffix(".json.tmp")
+        max_retries = 3
+        retry_delay = 0.1 # seconds
 
-    for attempt in range(max_retries):
-        try:
-            temp_state_file.write_text(json.dumps(st, indent=2, ensure_ascii=False), encoding='utf-8')
-            os.replace(temp_state_file, STATE_PATH)
-            return # Success
-        except OSError as e_os:
-            logging.warning(f"Attempt {attempt + 1} to save state to {STATE_PATH} failed with OSError: {e_os}")
-            if attempt < max_retries - 1:
+        for attempt in range(max_retries):
+            try:
+                temp_state_file.write_text(json.dumps(st, indent=2, ensure_ascii=False), encoding='utf-8')
+                os.replace(temp_state_file, state_path)
+                return # Success
+            except OSError as e_os:
+                logging.warning(f"Attempt {attempt + 1} to save state to {state_path} failed with OSError: {e_os}")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                else:
+                    logging.error(f"All {max_retries} attempts to save state to {state_path} failed due to OSError: {e_os}")
+            except Exception as e:
+                logging.error(f"Failed to save state to {state_path} on attempt {attempt + 1}: {e}")
+                if attempt == max_retries - 1 or not isinstance(e, OSError):
+                    try:
+                        logging.error(f"State content that failed to save: {json.dumps(st, indent=2, default=str, ensure_ascii=False)}")
+                    except Exception as e_log_state:
+                        logging.error(f"Could not even serialize state for error logging: {e_log_state}")
+                if attempt == max_retries - 1:
+                    break 
                 time.sleep(retry_delay)
-            else:
-                logging.error(f"All {max_retries} attempts to save state to {STATE_PATH} failed due to OSError: {e_os}")
-        except Exception as e:
-            logging.error(f"Failed to save state to {STATE_PATH} on attempt {attempt + 1}: {e}")
-            if attempt == max_retries - 1 or not isinstance(e, OSError):
-                try:
-                    logging.error(f"State content that failed to save: {json.dumps(st, indent=2, default=str, ensure_ascii=False)}")
-                except Exception as e_log_state:
-                    logging.error(f"Could not even serialize state for error logging: {e_log_state}")
-            if attempt == max_retries - 1:
-                break 
-            time.sleep(retry_delay)
 
-    logging.error(f"Persistently failed to save state to {STATE_PATH} after {max_retries} attempts.")
-    if temp_state_file.exists():
-        try:
-            os.remove(temp_state_file)
-        except Exception as e_remove:
-            logging.error(f"Error removing temporary state file {temp_state_file} after failed save: {e_remove}")
+        logging.error(f"Persistently failed to save state to {state_path} after {max_retries} attempts.")
+        if temp_state_file.exists():
+            try:
+                os.remove(temp_state_file)
+            except Exception as e_remove:
+                logging.error(f"Error removing temporary state file {temp_state_file} after failed save: {e_remove}")
 
 def summarize_world_state(state: dict) -> str:
     """
@@ -830,11 +912,13 @@ def _slug(s: str) -> str:
     # This is a minor case, get_next_feed_item_id has its own lock.
     return "".join(c for c in s.lower().replace(" ","_") if c.isalnum() or c=="_")[:48] or f"auto_slug_{get_next_feed_item_id()}"
 
-def _save_img(b64: str, caption: str) -> str:
-    IMAGE_DIR.mkdir(exist_ok=True)
-    path = IMAGE_DIR / f"{hash(caption) & 0xFFFFFFFF}_{_slug(caption)}.png"
+def _save_img(b64: str, caption: str, session_id: str = 'default') -> str:
+    """Save image to session-specific directory"""
+    img_dir = _get_image_dir(session_id)
+    path = img_dir / f"{hash(caption) & 0xFFFFFFFF}_{_slug(caption)}.png"
     path.write_bytes(base64.b64decode(b64))
-    return f"/images/{path.name}"
+    # Return relative path from session root
+    return f"images/{path.name}"
 
 # _vision_is_inside removed - was expensive and never used in StoryGen
 # _generate_burn_in removed - was never called and caused timecode overlays
@@ -1023,12 +1107,13 @@ def _build_vhs_prompt(base_prompt: str, use_img2img: bool = False) -> str:
     return full_prompt
 
 
-def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optional[str] = None, previous_caption: Optional[str] = None, previous_mode: Optional[str] = None, strength: float = 0.25, image_description: str = "", time_of_day: Optional[str] = None, use_edit_mode: bool = False, frame_idx: int = 0, dispatch: str = "", world_prompt: str = "", hard_transition: bool = False, is_timeout_penalty: bool = False) -> Optional[tuple[str, str, Optional[str]]]:
+def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optional[str] = None, previous_caption: Optional[str] = None, previous_mode: Optional[str] = None, strength: float = 0.25, image_description: str = "", time_of_day: Optional[str] = None, use_edit_mode: bool = False, frame_idx: int = 0, dispatch: str = "", world_prompt: str = "", hard_transition: bool = False, is_timeout_penalty: bool = False, session_id: str = 'default') -> Optional[tuple[str, str, Optional[str]]]:
     """Generate image and return (image_path, prompt_used, video_path).
     
     video_path is None for non-Veo providers or when video generation fails/disabled.
     
     time_of_day: If None, will use state['time_of_day'] for consistency
+    session_id: Session ID for storing images in correct directory
     """
     global _last_image_path
     import random
@@ -1180,9 +1265,9 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                 )
             else:
                 # Same location - full img2img continuity
-            prompt_str = (
-                f"{prompt_str}\nMatch the lighting, time of day, and color palette to the previous image."
-            )
+                prompt_str = (
+                    f"{prompt_str}\nMatch the lighting, time of day, and color palette to the previous image."
+                )
         # --- LOGGING ---
         print("[IMG LOG] --- IMAGE GENERATION PARAMETERS ---")
         print(f"[IMG LOG] frame_idx: {frame_idx}")
@@ -1200,10 +1285,11 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
         print(f"[IMG LOG] reference_images_list: {len(prev_img_paths_list)} images")
         print(f"[IMG LOG] use_edit_mode: {use_edit_mode}")
         print(f"[IMG LOG] world_prompt: {world_prompt}")
+        print(f"[IMG LOG] session_id: {session_id}")
         print("[IMG LOG] --- END IMAGE GENERATION PARAMETERS ---")
-        IMAGE_DIR.mkdir(exist_ok=True)
+        img_dir = _get_image_dir(session_id)
         filename = f"{hash(caption) & 0xFFFFFFFF}_{_slug(caption)}.png"
-        image_path = IMAGE_DIR / filename
+        image_path = img_dir / filename
         
         # --- ROUTE TO APPROPRIATE IMAGE PROVIDER ---
         active_image_provider = ai_provider_manager.get_image_provider()
@@ -1234,7 +1320,9 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                     frame_idx=frame_idx,
                     world_prompt=world_prompt,
                     action_context=choice,
-                    reference_frames=reference_frames_for_veo  # Pass ALL frames (including starting frame) for style continuity
+                    reference_frames=reference_frames_for_veo,  # Pass ALL frames (including starting frame) for style continuity
+                    video_segments_dir=_get_video_segments_dir(session_id),  # Session-specific segments directory
+                    video_films_dir=_get_video_films_dir(session_id)  # Session-specific films directory
                 )
                 print(f"[IMG] generate_frame_via_video returned: {result_path}", flush=True)
                 if video_path:
@@ -1299,7 +1387,8 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                     world_prompt=world_prompt,
                     time_of_day=use_time_of_day,
                     action_context=choice,  # Pass action for FPS hands context
-                    hd_mode=use_hq_for_this_frame  # Frame 0 always HQ, others respect quality toggle
+                    hd_mode=use_hq_for_this_frame,  # Frame 0 always HQ, others respect quality toggle
+                    output_dir=img_dir  # Session-specific directory
                 )
             else:
                 print(f"\n{'='*70}")
@@ -1325,7 +1414,8 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                     time_of_day=use_time_of_day,
                     is_first_frame=(frame_idx == 0),  # Keep for fallback logic
                     action_context=choice,  # Pass action for FPS hands context
-                    hd_mode=use_hq_for_this_frame  # Frame 0 always HQ, others respect quality toggle
+                    hd_mode=use_hq_for_this_frame,  # Frame 0 always HQ, others respect quality toggle
+                    output_dir=img_dir  # Session-specific directory
                 )
             _last_image_path = result_path
             return (result_path, prompt_str, None)  # Gemini doesn't generate videos
@@ -1417,14 +1507,14 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                         
                         # Decode and save the image with error handling
                         try:
-                img_data = base64.b64decode(b64_data)
+                            img_data = base64.b64decode(b64_data)
                         except Exception as e:
                             print(f"[OPENAI IMG2IMG] Failed to decode base64: {e}")
                             raise Exception(f"Base64 decode error: {e}")
                         
                         try:
-                with open(image_path, "wb") as f:
-                    f.write(img_data)
+                            with open(image_path, "wb") as f:
+                                f.write(img_data)
                         except Exception as e:
                             print(f"[OPENAI IMG2IMG] Failed to write image file: {e}")
                             raise Exception(f"File write error: {e}")
@@ -2867,10 +2957,17 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
             data = json_lib.loads(result)
             dispatch = data.get("dispatch", "")
             player_alive = data.get("player_alive", True)
-            print(f"[DISPATCH] Parsed JSON: dispatch={dispatch[:50]}..., alive={player_alive}")
+            # Safe print with Unicode handling
+            try:
+                print(f"[DISPATCH] Parsed JSON: dispatch={dispatch[:50]}..., alive={player_alive}")
+            except UnicodeEncodeError:
+                print(f"[DISPATCH] Parsed JSON: alive={player_alive} (dispatch contains special characters)")
         except Exception as parse_error:
-            print(f"[DISPATCH] JSON parse failed: {parse_error}")
-            print(f"[DISPATCH] Raw result: {result[:200]}...")
+            try:
+                print(f"[DISPATCH] JSON parse failed: {parse_error}")
+                print(f"[DISPATCH] Raw result: {result[:200]}...")
+            except UnicodeEncodeError:
+                print(f"[DISPATCH] JSON parse failed (output contains special characters)")
             # Fallback: try to extract dispatch text
             dispatch = result.replace('"dispatch":', '').replace('"player_alive":', '').replace('{', '').replace('}', '').strip()
             if ',' in dispatch:
@@ -2886,7 +2983,10 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
         return dispatch, vision_dispatch, player_alive
         
     except Exception as e:
-        print(f"[COMBINED DISPATCH ERROR] {e}")
+        try:
+            print(f"[COMBINED DISPATCH ERROR] {e}")
+        except UnicodeEncodeError:
+            print(f"[COMBINED DISPATCH ERROR] (error contains special characters)")
         import traceback
         traceback.print_exc()
         # Fallback to safe defaults
@@ -2967,9 +3067,12 @@ def resolve_risky_action(choice, threat_level, dispatch, world_prompt):
         return success, 'No major consequence.'
 
 # ───────── game loop ──────────────────────────────────────────────────────────
-def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalty: bool = False) -> dict:
+def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalty: bool = False, session_id: str = 'default') -> dict:
     """
     PHASE 1 (FAST): Generate dispatch and image, return immediately.
+    
+    Args:
+        session_id: Session ID for state management
     Returns image ASAP so bot can display it while choices are generating.
     
     Args:
@@ -2985,17 +3088,13 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
     print(f"[ADVANCE_TURN] Fate: {fate}")
     print(f"[ADVANCE_TURN] Is Timeout Penalty: {is_timeout_penalty}")
     try:
-        state = _load_state()
-        history_path = ROOT / "history.json"
-        if history_path.exists():
-            with history_path.open("r", encoding="utf-8") as f:
-                history = json.load(f)
-        else:
-            history = []
+        # Load session-specific state and history
+        state = _load_state(session_id)
+        history = _load_history(session_id)
         prev_state = state.copy() if isinstance(state, dict) else dict(state)
         from choices import generate_and_apply_choice, generate_choices
         generate_and_apply_choice(choice)
-        state = _load_state()
+        state = _load_state(session_id)
         
         # Get previous vision and image
         prev_vision = ""
@@ -3014,7 +3113,7 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             print(f"[DEATH] Player killed by: {dispatch[:100]}...")
         
         # Save state immediately after death detection
-        _save_state(state)
+        _save_state(state, session_id)
         print(f"[STATE] Saved - alive={player_alive}, health={state['player_state'].get('health', 100)}")
         
         if not dispatch or dispatch.strip().lower() in {"none", "", "[", "[]"}:
@@ -3026,7 +3125,7 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
         from evolve_prompt_file import evolve_world_state
         consequence_summary = summarize_world_state_diff(prev_state, state)
         evolve_world_state(history, consequence_summary, vision_description=vision_dispatch)
-        state = _load_state()
+        state = _load_state(session_id)
         
         # Generate image
         mode = state.get("mode", "camcorder")
@@ -3036,7 +3135,7 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             hard_transition = False
             print(f"[TIMEOUT PENALTY] Forcing NO location change - maintaining exact camera position")
         else:
-        hard_transition = is_hard_transition(choice, dispatch)
+            hard_transition = is_hard_transition(choice, dispatch)
         
         consequence_img_url = None
         consequence_img_prompt = ""  # Initialize to prevent undefined variable error
@@ -3065,7 +3164,8 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
                 dispatch=dispatch,
                 world_prompt=state.get("world_prompt", ""),
                 hard_transition=hard_transition,
-                is_timeout_penalty=is_timeout_penalty  # Pass flag to image generation
+                is_timeout_penalty=is_timeout_penalty,  # Pass flag to image generation
+                session_id=session_id  # Session-specific image directory
             )
             consequence_video_url = None
             if result:
@@ -3110,14 +3210,17 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             "mode": "camcorder"
         }
 
-def advance_turn_choices_deferred(consequence_img_url: str, dispatch: str, vision_dispatch: str, choice: str, consequence_img_prompt: str = "", hard_transition: bool = False) -> dict:
+def advance_turn_choices_deferred(consequence_img_url: str, dispatch: str, vision_dispatch: str, choice: str, consequence_img_prompt: str = "", hard_transition: bool = False, session_id: str = 'default') -> dict:
     """
     PHASE 2 (DEFERRED): Generate choices after image is displayed.
+    
+    Args:
+        session_id: Session ID for state management
     """
     global state, history
     from choices import generate_choices
     
-    state = _load_state()
+    state = _load_state(session_id)
     situation_summary = _generate_situation_report(current_image=consequence_img_url)
     
     next_choices = generate_choices(
@@ -3141,6 +3244,7 @@ def advance_turn_choices_deferred(consequence_img_url: str, dispatch: str, visio
         next_choices.append("—")
     
     # Save to history (with custom action flag for permanence tracking)
+    history = _load_history(session_id)
     is_custom_action = not any(keyword in choice.lower() for keyword in ["move", "advance", "photograph", "examine", "sprint", "climb", "vault", "crawl"])
     history_entry = {
         "choice": choice,
@@ -3155,7 +3259,7 @@ def advance_turn_choices_deferred(consequence_img_url: str, dispatch: str, visio
         "hard_transition": hard_transition  # Track location changes
     }
     history.append(history_entry)
-    (ROOT / "history.json").write_text(json.dumps(history, indent=2))
+    _save_history(history, session_id)
     
     return {
         "choices": next_choices,
@@ -3214,27 +3318,40 @@ def advance_turn(choice: str) -> dict:
 complete_tick = advance_turn
 
 # ───────── state management ──────────────────────────────────────────────────
-def get_state():
-    return _load_state()
+def get_state(session_id='default'):
+    """Get current state for a session"""
+    return _load_state(session_id)
 
-def reset_state():
+def reset_state(session_id='default'):
+    """Reset state for a session"""
     global state, history, _last_image_path, _vision_cache
-    # Forcibly delete history.json and world_state.json if they exist
+    
+    print(f"[RESET] Resetting session: {session_id}")
+    
+    # Delete session-specific files
+    state_path = _get_state_path(session_id)
+    history_path = _get_history_path(session_id)
+    
     try:
-        os.remove(str(ROOT / "history.json"))
-    except FileNotFoundError:
-        pass
+        if state_path.exists():
+            os.remove(str(state_path))
+            print(f"[RESET] Deleted state file: {state_path}")
+    except Exception as e:
+        print(f"[RESET] Failed to delete state: {e}")
+    
     try:
-        os.remove(str(ROOT / "world_state.json"))
-    except FileNotFoundError:
-        pass
+        if history_path.exists():
+            os.remove(str(history_path))
+            print(f"[RESET] Deleted history file: {history_path}")
+    except Exception as e:
+        print(f"[RESET] Failed to delete history: {e}")
     
     # Clear vision cache
     _vision_cache.clear()
     print("[CLEANUP] Cleared vision analysis cache")
     
-    # Clear all images from the images folder
-    image_dir = ROOT / "images"
+    # Clear all images from the session's image folder
+    image_dir = _get_image_dir(session_id)
     if image_dir.exists():
         image_count = 0
         for image_file in image_dir.glob("*.png"):
@@ -3243,17 +3360,19 @@ def reset_state():
                 image_count += 1
             except Exception as e:
                 print(f"[CLEANUP] Failed to delete {image_file.name}: {e}")
-        print(f"[CLEANUP] Deleted {image_count} old images from images/ folder")
+        print(f"[CLEANUP] Deleted {image_count} old images from session {session_id}")
     
-    # Recreate history.json as empty list
-    with (ROOT / "history.json").open("w", encoding="utf-8") as f:
-        json.dump([], f)
-    history = []
+    # Recreate history as empty list
+    _save_history([], session_id)
+    
+    # Update global history if this is the legacy session
+    if session_id == 'legacy':
+        history = []
     
     # Generate random starting time/weather/mood for this session
     initial_time = _generate_random_starting_time()
     
-    # Recreate world_state.json with intro prompt
+    # Recreate state for this session
     intro_state = {
         "world_prompt": PROMPTS["world_initial_state"],
         "current_phase": "normal",
@@ -3266,13 +3385,18 @@ def reset_state():
         "injuries": [],
         "inventory": ["Nikon F3 camera", "notebook", "flashlight"],
         "location": "desert_edge",
-        "environment_type": "desert"
+        "environment_type": "desert",
+        "turn_count": 0,
+        "player_state": {"alive": True}
     }
-    with (ROOT / "world_state.json").open("w", encoding="utf-8") as f:
-        json.dump(intro_state, f, indent=2)
-    state = intro_state
+    _save_state(intro_state, session_id)
+    
+    # Update global state if this is the legacy session
+    if session_id == 'legacy':
+        state = intro_state
+    
     _last_image_path = None
-    print("[STARTUP] Game state cleared. Starting fresh.")
+    print(f"[RESET] Session {session_id} cleared. Starting fresh.")
 
 def generate_intro_image_fast():
     """
@@ -3406,10 +3530,13 @@ def generate_intro_choices_deferred(image_url: str, prologue: str, vision_dispat
         "player_state": state.get('player_state', {})
     }
 
-def generate_intro_turn():
+def generate_intro_turn(session_id: str = 'default'):
     """
     Generate the intro turn: dispatch, vision_dispatch, image, and choices,
     using the prologue as the first dispatch and context.
+    
+    Args:
+        session_id: Session ID for state management
     """
     global state, history, _last_image_path
     import random
@@ -3443,14 +3570,14 @@ def generate_intro_turn():
     prologue = scene["prologue"]
     vision_dispatch = scene["vision"]
     
-    state = _load_state()
+    state = _load_state(session_id)
     state["world_prompt"] = prologue
     state["current_phase"] = "normal"
     state["chaos_level"] = 0
     state["last_choice"] = ""
     state["seen_elements"] = []
     state["player_state"] = {"alive": True, "health": 100}
-    _save_state(state)
+    _save_state(state, session_id)
     
     dispatch = prologue
     mode = state.get("mode", "camcorder")
@@ -3470,7 +3597,8 @@ def generate_intro_turn():
             frame_idx=0,  # First frame
             dispatch=dispatch,
             world_prompt=prologue,
-            hard_transition=False
+            hard_transition=False,
+            session_id=session_id
         )
         # Note: dispatch_video_url not used in intro sequence (Frame 0 is always static image)
         if dispatch_img_url:
@@ -3513,9 +3641,9 @@ def generate_intro_turn():
         "image": dispatch_img_url  # Include opening image
     }
     history = [entry]
-    (ROOT / "history.json").write_text(json.dumps(history, indent=2))
+    _save_history(history, session_id)
     # _last_image_path is already set above if image was generated
-    _save_state(state)
+    _save_state(state, session_id)
     return {
         "dispatch": dispatch,
         "vision_dispatch": vision_dispatch,
