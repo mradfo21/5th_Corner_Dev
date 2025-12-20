@@ -3312,7 +3312,14 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             if history and len(history) > 0:
                 for entry in reversed(history):
                     if entry.get("image"):
-                        last_image_path = entry["image"].lstrip("/")
+                        # DON'T strip leading slash - session images are absolute paths!
+                        last_image_path = entry["image"]
+                        
+                        # Handle both absolute and relative paths
+                        if not Path(last_image_path).is_absolute():
+                            # Relative path like "/images/..." - make it absolute
+                            if last_image_path.startswith("/images/"):
+                                last_image_path = str(ROOT / "images" / Path(last_image_path).name)
                         break
             
             print(f"[IMG GEN] About to generate image:")
@@ -3321,6 +3328,8 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             print(f"  - Is timeout penalty: {is_timeout_penalty}")
             print(f"  - Hard transition: {hard_transition}")
             print(f"  - Last image path: {last_image_path}")
+            print(f"  - Last image EXISTS: {last_image_path and os.path.exists(last_image_path)}", flush=True)
+            print(f"  - Will use img2img: {last_image_path and os.path.exists(last_image_path) and frame_idx > 0}", flush=True)
             
             result = _gen_image(
                 vision_dispatch,
