@@ -1,0 +1,1259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SOMEWHERE - Admin Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            color: #e0e0e0;
+            padding: 20px;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        header {
+            background: rgba(30, 30, 60, 0.8);
+            backdrop-filter: blur(10px);
+            padding: 25px 30px;
+            border-radius: 15px;
+            margin-bottom: 30px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+        }
+
+        h1 {
+            color: #ff6b6b;
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5);
+        }
+
+        .subtitle {
+            color: #b0b0b0;
+            font-size: 1.1em;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            background: rgba(30, 30, 60, 0.6);
+            backdrop-filter: blur(10px);
+            padding: 25px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+
+        .stat-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+        }
+
+        .stat-label {
+            color: #888;
+            font-size: 0.9em;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 10px;
+        }
+
+        .stat-value {
+            font-size: 2.5em;
+            font-weight: bold;
+            color: #4ecdc4;
+        }
+
+        .stat-value.warning {
+            color: #ffd93d;
+        }
+
+        .stat-value.danger {
+            color: #ff6b6b;
+        }
+
+        .sessions-section {
+            background: rgba(30, 30, 60, 0.6);
+            backdrop-filter: blur(10px);
+            padding: 30px;
+            border-radius: 15px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            margin-bottom: 30px;
+        }
+
+        .section-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 25px;
+        }
+
+        .section-title {
+            font-size: 1.8em;
+            color: #fff;
+        }
+
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1em;
+            transition: all 0.3s ease;
+            font-weight: 600;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: scale(1.05);
+            box-shadow: 0 4px 16px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-danger {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+            padding: 8px 16px;
+            font-size: 0.9em;
+        }
+
+        .btn-danger:hover {
+            transform: scale(1.05);
+            box-shadow: 0 4px 16px rgba(245, 87, 108, 0.4);
+        }
+
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.1);
+            color: white;
+            padding: 8px 16px;
+            font-size: 0.9em;
+        }
+
+        .btn-secondary:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        .sessions-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+        }
+
+        .sessions-table th {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 15px;
+            text-align: left;
+            font-weight: 600;
+            color: #4ecdc4;
+            border-bottom: 2px solid rgba(78, 205, 196, 0.3);
+        }
+
+        .sessions-table td {
+            padding: 15px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .sessions-table tr:hover {
+            background: rgba(255, 255, 255, 0.03);
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 0.85em;
+            font-weight: 600;
+        }
+
+        .status-alive {
+            background: rgba(78, 205, 196, 0.2);
+            color: #4ecdc4;
+            border: 1px solid rgba(78, 205, 196, 0.4);
+        }
+
+        .status-dead {
+            background: rgba(255, 107, 107, 0.2);
+            color: #ff6b6b;
+            border: 1px solid rgba(255, 107, 107, 0.4);
+        }
+
+        .session-actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #888;
+            font-size: 1.2em;
+        }
+
+        .error {
+            background: rgba(255, 107, 107, 0.1);
+            border: 1px solid rgba(255, 107, 107, 0.3);
+            color: #ff6b6b;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 20px 0;
+        }
+
+        .success {
+            background: rgba(78, 205, 196, 0.1);
+            border: 1px solid rgba(78, 205, 196, 0.3);
+            color: #4ecdc4;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 20px 0;
+        }
+
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(5px);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal.show {
+            display: flex;
+        }
+
+        .modal-content {
+            background: #1e1e3c;
+            padding: 30px;
+            border-radius: 15px;
+            max-width: 900px;
+            width: 90%;
+            max-height: 85vh;
+            overflow-y: auto;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+        }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .modal-title {
+            font-size: 1.5em;
+            color: #fff;
+        }
+
+        .close-btn {
+            background: none;
+            border: none;
+            color: #888;
+            font-size: 1.5em;
+            cursor: pointer;
+            padding: 0;
+            width: 30px;
+            height: 30px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .close-btn:hover {
+            color: #fff;
+        }
+
+        .detail-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 12px 0;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .detail-label {
+            color: #888;
+            font-weight: 600;
+        }
+
+        .detail-value {
+            color: #fff;
+            text-align: right;
+        }
+
+        .auto-refresh {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: #888;
+        }
+
+        .auto-refresh input[type="checkbox"] {
+            width: 20px;
+            height: 20px;
+            cursor: pointer;
+        }
+
+        .last-updated {
+            color: #666;
+            font-size: 0.9em;
+            margin-top: 10px;
+        }
+
+        .tape-container {
+            margin-top: 20px;
+            padding: 20px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 10px;
+            text-align: center;
+        }
+
+        .tape-container img {
+            max-width: 100%;
+            border-radius: 8px;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+        }
+
+        .tape-list {
+            margin-top: 15px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            justify-content: center;
+        }
+
+        .tape-item {
+            background: rgba(255, 255, 255, 0.05);
+            padding: 10px 15px;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .tape-item:hover {
+            background: rgba(255, 255, 255, 0.1);
+            transform: translateY(-2px);
+        }
+
+        .tape-item.active {
+            background: rgba(78, 205, 196, 0.2);
+            border-color: #4ecdc4;
+        }
+
+        .no-tapes {
+            color: #888;
+            font-style: italic;
+            padding: 20px;
+        }
+
+        /* History Viewer Styles */
+        .history-section {
+            margin-top: 30px;
+            padding-top: 20px;
+            border-top: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .history-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .history-title {
+            color: #fff;
+            font-size: 1.3em;
+        }
+
+        .history-controls {
+            display: flex;
+            gap: 10px;
+        }
+
+        .history-entry {
+            background: rgba(0, 0, 0, 0.3);
+            border-left: 3px solid #4ecdc4;
+            margin-bottom: 15px;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .history-entry-header {
+            padding: 15px;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: rgba(0, 0, 0, 0.2);
+            transition: background 0.2s;
+        }
+
+        .history-entry-header:hover {
+            background: rgba(78, 205, 196, 0.1);
+        }
+
+        .history-entry-title {
+            color: #4ecdc4;
+            font-weight: bold;
+        }
+
+        .history-entry-meta {
+            font-size: 0.9em;
+            color: #888;
+        }
+
+        .history-entry-content {
+            padding: 0 15px;
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease, padding 0.3s ease;
+        }
+
+        .history-entry.expanded .history-entry-content {
+            max-height: 2000px;
+            padding: 15px;
+        }
+
+        .history-entry.expanded .history-entry-header {
+            border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .history-detail {
+            margin-bottom: 15px;
+        }
+
+        .history-detail-label {
+            color: #4ecdc4;
+            font-weight: bold;
+            margin-bottom: 5px;
+            font-size: 0.9em;
+            text-transform: uppercase;
+        }
+
+        .history-detail-value {
+            color: #e0e0e0;
+            background: rgba(0, 0, 0, 0.3);
+            padding: 10px;
+            border-radius: 5px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .history-detail-value.json {
+            max-height: 400px;
+        }
+
+        .history-image-link {
+            color: #4ecdc4;
+            text-decoration: none;
+            font-style: italic;
+        }
+
+        .history-image-link:hover {
+            text-decoration: underline;
+        }
+
+        .history-expand-icon {
+            transition: transform 0.3s;
+            font-size: 1.2em;
+        }
+
+        .history-entry.expanded .history-expand-icon {
+            transform: rotate(90deg);
+        }
+
+        .history-loading {
+            text-align: center;
+            padding: 30px;
+            color: #888;
+        }
+
+        .history-empty {
+            text-align: center;
+            padding: 30px;
+            color: #888;
+            font-style: italic;
+        }
+
+        .btn-small {
+            padding: 6px 12px;
+            font-size: 0.85em;
+        }
+
+        .expand-all-btn, .collapse-all-btn {
+            background: rgba(78, 205, 196, 0.2);
+            border: 1px solid #4ecdc4;
+            color: #4ecdc4;
+            padding: 8px 15px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 0.9em;
+            transition: background 0.2s;
+        }
+
+        .expand-all-btn:hover, .collapse-all-btn:hover {
+            background: rgba(78, 205, 196, 0.3);
+        }
+
+        /* JSON Syntax Highlighting (basic) */
+        .json-key {
+            color: #ff6b6b;
+        }
+
+        .json-string {
+            color: #4ecdc4;
+        }
+
+        .json-number {
+            color: #f9ca24;
+        }
+
+        .json-boolean {
+            color: #6c5ce7;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .refreshing {
+            animation: pulse 1s ease-in-out infinite;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🎮 SOMEWHERE - Admin Dashboard</h1>
+            <p class="subtitle">Real-time game monitoring & session management</p>
+        </header>
+
+        <div id="error-message"></div>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-label">Total Sessions</div>
+                <div class="stat-value" id="total-sessions">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Active Players</div>
+                <div class="stat-value" id="active-players">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Deaths Today</div>
+                <div class="stat-value danger" id="deaths-today">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Total Turns</div>
+                <div class="stat-value" id="total-turns">-</div>
+            </div>
+        </div>
+
+        <div class="sessions-section">
+            <div class="section-header">
+                <div>
+                    <h2 class="section-title">Active Sessions</h2>
+                    <div class="last-updated" id="last-updated">Last updated: Never</div>
+                </div>
+                <div style="display: flex; gap: 15px; align-items: center;">
+                    <div class="auto-refresh">
+                        <input type="checkbox" id="auto-refresh" checked>
+                        <label for="auto-refresh">Auto-refresh (5s)</label>
+                    </div>
+                    <button class="btn btn-primary" onclick="refreshData()">↻ Refresh</button>
+                    <button class="btn btn-primary" onclick="showCreateSession()">+ New Session</button>
+                </div>
+            </div>
+
+            <div id="sessions-loading" class="loading">Loading sessions...</div>
+            <div id="sessions-container"></div>
+        </div>
+    </div>
+
+    <!-- Session Details Modal -->
+    <div id="session-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 class="modal-title">Session Details</h3>
+                <button class="close-btn" onclick="closeModal()">&times;</button>
+            </div>
+            <div id="modal-body"></div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'http://localhost:5001/api';
+        let autoRefreshInterval = null;
+        let sessionsData = [];
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            refreshData();
+            setupAutoRefresh();
+        });
+
+        // Setup auto-refresh
+        function setupAutoRefresh() {
+            const checkbox = document.getElementById('auto-refresh');
+            
+            if (checkbox.checked) {
+                startAutoRefresh();
+            }
+            
+            checkbox.addEventListener('change', (e) => {
+                if (e.target.checked) {
+                    startAutoRefresh();
+                } else {
+                    stopAutoRefresh();
+                }
+            });
+        }
+
+        function startAutoRefresh() {
+            if (autoRefreshInterval) clearInterval(autoRefreshInterval);
+            autoRefreshInterval = setInterval(refreshData, 5000);
+        }
+
+        function stopAutoRefresh() {
+            if (autoRefreshInterval) {
+                clearInterval(autoRefreshInterval);
+                autoRefreshInterval = null;
+            }
+        }
+
+        // Main refresh function
+        async function refreshData() {
+            const refreshBtn = document.querySelector('.btn-primary');
+            if (refreshBtn) refreshBtn.classList.add('refreshing');
+            
+            try {
+                const response = await fetch(`${API_BASE}/sessions`);
+                if (!response.ok) throw new Error('Failed to fetch sessions');
+                
+                const result = await response.json();
+                sessionsData = result.data || [];
+                
+                updateStats(sessionsData);
+                renderSessions(sessionsData);
+                updateLastUpdated();
+                clearError();
+                
+            } catch (error) {
+                showError(`Failed to load sessions: ${error.message}`);
+            } finally {
+                if (refreshBtn) refreshBtn.classList.remove('refreshing');
+            }
+        }
+
+        // Update statistics
+        function updateStats(sessions) {
+            const totalSessions = sessions.length;
+            const activePlayers = sessions.filter(s => s.player_alive).length;
+            const deathsToday = sessions.filter(s => !s.player_alive && isToday(s.last_accessed)).length;
+            const totalTurns = sessions.reduce((sum, s) => sum + (s.turn_count || 0), 0);
+
+            document.getElementById('total-sessions').textContent = totalSessions;
+            document.getElementById('active-players').textContent = activePlayers;
+            document.getElementById('deaths-today').textContent = deathsToday;
+            document.getElementById('total-turns').textContent = totalTurns;
+        }
+
+        // Render sessions table
+        function renderSessions(sessions) {
+            const container = document.getElementById('sessions-container');
+            const loading = document.getElementById('sessions-loading');
+            
+            loading.style.display = 'none';
+            
+            if (sessions.length === 0) {
+                container.innerHTML = '<div class="loading">No active sessions</div>';
+                return;
+            }
+
+            const table = `
+                <table class="sessions-table">
+                    <thead>
+                        <tr>
+                            <th>Session Name</th>
+                            <th>ID</th>
+                            <th>Status</th>
+                            <th>Turns</th>
+                            <th>Last Active</th>
+                            <th>Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${sessions.map(session => renderSessionRow(session)).join('')}
+                    </tbody>
+                </table>
+            `;
+            
+            container.innerHTML = table;
+        }
+
+        // Render single session row
+        function renderSessionRow(session) {
+            const statusClass = session.player_alive ? 'status-alive' : 'status-dead';
+            const statusText = session.player_alive ? 'Alive' : 'Dead';
+            const shortId = session.session_id.substring(0, 8);
+            const timeAgo = getTimeAgo(session.last_accessed);
+
+            return `
+                <tr>
+                    <td><strong>${escapeHtml(session.name || 'Unnamed')}</strong></td>
+                    <td><code>${shortId}...</code></td>
+                    <td><span class="status-badge ${statusClass}">${statusText}</span></td>
+                    <td>${session.turn_count || 0}</td>
+                    <td>${timeAgo}</td>
+                    <td>
+                        <div class="session-actions">
+                            <button class="btn btn-secondary" onclick="viewSession('${session.session_id}')" title="View session details and tapes">
+                                📼 View
+                            </button>
+                            ${session.session_id !== 'default' ? 
+                                `<button class="btn btn-danger" onclick="deleteSession('${session.session_id}', '${escapeHtml(session.name || 'Unnamed')}')">
+                                    Delete
+                                </button>` : 
+                                '<span style="color: #666; font-size: 0.9em;">Protected</span>'
+                            }
+                        </div>
+                    </td>
+                </tr>
+            `;
+        }
+
+        // View session details
+        async function viewSession(sessionId) {
+            try {
+                const response = await fetch(`${API_BASE}/sessions/${sessionId}`);
+                if (!response.ok) throw new Error('Failed to fetch session details');
+                
+                const result = await response.json();
+                const session = result.data;
+                
+                showSessionModal(session);
+            } catch (error) {
+                showError(`Failed to load session details: ${error.message}`);
+            }
+        }
+
+        // Show session modal
+        async function showSessionModal(session) {
+            const meta = session.metadata;
+            const state = session.state;
+            
+            const modalBody = document.getElementById('modal-body');
+            modalBody.innerHTML = `
+                <div class="detail-row">
+                    <span class="detail-label">Session ID</span>
+                    <span class="detail-value"><code>${meta.session_id}</code></span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Name</span>
+                    <span class="detail-value">${escapeHtml(meta.name || 'Unnamed')}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Description</span>
+                    <span class="detail-value">${escapeHtml(meta.description || 'No description')}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Created</span>
+                    <span class="detail-value">${formatDate(meta.created_at)}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Last Accessed</span>
+                    <span class="detail-value">${formatDate(meta.last_accessed)}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Turn Count</span>
+                    <span class="detail-value">${meta.turn_count || 0}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Player Status</span>
+                    <span class="detail-value">
+                        <span class="status-badge ${meta.player_alive ? 'status-alive' : 'status-dead'}">
+                            ${meta.player_alive ? 'Alive' : 'Dead'}
+                        </span>
+                    </span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Location</span>
+                    <span class="detail-value">${state.location || 'Unknown'}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">Time of Day</span>
+                    <span class="detail-value">${state.time_of_day || 'Unknown'}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="detail-label">History Length</span>
+                    <span class="detail-value">${session.history_length || 0} entries</span>
+                </div>
+                <div id="tape-section" style="margin-top: 20px;">
+                    <div style="text-align: center; color: #888;">Loading tapes...</div>
+                </div>
+                <div class="history-section">
+                    <div class="history-header">
+                        <h3 class="history-title">📜 Full History & Prompts</h3>
+                        <div class="history-controls">
+                            <button class="expand-all-btn" onclick="expandAllHistory()">Expand All</button>
+                            <button class="collapse-all-btn" onclick="collapseAllHistory()">Collapse All</button>
+                        </div>
+                    </div>
+                    <div id="history-content">
+                        <div class="history-loading">Loading history...</div>
+                    </div>
+                </div>
+            `;
+            
+            document.getElementById('session-modal').classList.add('show');
+            
+            // Load tapes and history after modal is shown
+            loadTapes(meta.session_id);
+            loadFullHistory(meta.session_id);
+        }
+
+        // Load tapes for a session
+        async function loadTapes(sessionId) {
+            try {
+                // Try to list tapes from the session directory
+                // We'll make a request to check if tapes exist
+                const tapeSection = document.getElementById('tape-section');
+                
+                // For now, we'll try to load a tape directly
+                // In a real implementation, you'd have an endpoint that lists available tapes
+                // Let's try to load common tape filenames
+                const commonTapes = await findTapes(sessionId);
+                
+                if (commonTapes.length === 0) {
+                    tapeSection.innerHTML = '<div class="no-tapes">No tapes available for this session</div>';
+                    return;
+                }
+                
+                // Display tapes
+                let html = '<h3 style="color: #fff; margin-bottom: 15px;">🎬 VHS Tapes</h3>';
+                html += '<div class="tape-list">';
+                
+                commonTapes.forEach((tape, index) => {
+                    html += `<div class="tape-item ${index === 0 ? 'active' : ''}" onclick="viewTape('${sessionId}', '${tape}')">
+                        📼 ${tape}
+                    </div>`;
+                });
+                
+                html += '</div>';
+                html += '<div id="tape-display" class="tape-container"></div>';
+                
+                tapeSection.innerHTML = html;
+                
+                // Auto-load first tape
+                if (commonTapes.length > 0) {
+                    viewTape(sessionId, commonTapes[0]);
+                }
+            } catch (error) {
+                console.error('Error loading tapes:', error);
+                document.getElementById('tape-section').innerHTML = '<div class="no-tapes">Error loading tapes</div>';
+            }
+        }
+
+        // Find available tapes for a session
+        async function findTapes(sessionId) {
+            try {
+                const response = await fetch(`${API_BASE}/sessions/${sessionId}/tapes`);
+                if (!response.ok) {
+                    return [];
+                }
+                
+                const result = await response.json();
+                const tapes = result.data || [];
+                
+                // Return just the filenames
+                return tapes.map(tape => tape.filename);
+            } catch (error) {
+                console.error('Error fetching tapes:', error);
+                return [];
+            }
+        }
+
+        // View a specific tape
+        function viewTape(sessionId, tapeName) {
+            const tapeDisplay = document.getElementById('tape-display');
+            const tapeUrl = `${API_BASE}/sessions/${sessionId}/tapes/${tapeName}`;
+            
+            tapeDisplay.innerHTML = `
+                <h4 style="color: #4ecdc4; margin-bottom: 10px;">📼 ${tapeName}</h4>
+                <img src="${tapeUrl}" alt="VHS Tape" style="max-width: 100%; border-radius: 8px;">
+                <p style="color: #888; margin-top: 10px; font-size: 0.9em;">
+                    <a href="${tapeUrl}" download="${tapeName}" style="color: #4ecdc4; text-decoration: none;">
+                        ⬇️ Download Tape
+                    </a>
+                </p>
+            `;
+            
+            // Update active state
+            document.querySelectorAll('.tape-item').forEach(item => item.classList.remove('active'));
+            event.target.classList.add('active');
+        }
+
+        // Close modal
+        function closeModal() {
+            document.getElementById('session-modal').classList.remove('show');
+        }
+
+        // Delete session
+        async function deleteSession(sessionId, sessionName) {
+            if (!confirm(`Are you sure you want to delete "${sessionName}"?\n\nThis will permanently delete all data for this session.`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_BASE}/sessions/${sessionId}`, {
+                    method: 'DELETE'
+                });
+                
+                if (!response.ok) throw new Error('Failed to delete session');
+                
+                const result = await response.json();
+                showSuccess(`Session "${sessionName}" deleted (${result.data.files_deleted} files removed)`);
+                refreshData();
+            } catch (error) {
+                showError(`Failed to delete session: ${error.message}`);
+            }
+        }
+
+        // Create new session
+        function showCreateSession() {
+            const name = prompt('Enter session name:', 'New Game Session');
+            if (!name) return;
+
+            const description = prompt('Enter description (optional):', '');
+            
+            createSession(name, description);
+        }
+
+        async function createSession(name, description) {
+            try {
+                const response = await fetch(`${API_BASE}/sessions`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, description })
+                });
+                
+                if (!response.ok) throw new Error('Failed to create session');
+                
+                const result = await response.json();
+                showSuccess(`Session "${name}" created successfully!`);
+                refreshData();
+            } catch (error) {
+                showError(`Failed to create session: ${error.message}`);
+            }
+        }
+
+        // Utility functions
+        function isToday(dateString) {
+            const date = new Date(dateString);
+            const today = new Date();
+            return date.toDateString() === today.toDateString();
+        }
+
+        function getTimeAgo(dateString) {
+            const date = new Date(dateString);
+            const seconds = Math.floor((new Date() - date) / 1000);
+            
+            if (seconds < 60) return `${seconds}s ago`;
+            if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+            if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+            return `${Math.floor(seconds / 86400)}d ago`;
+        }
+
+        function formatDate(dateString) {
+            return new Date(dateString).toLocaleString();
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function updateLastUpdated() {
+            const now = new Date().toLocaleTimeString();
+            document.getElementById('last-updated').textContent = `Last updated: ${now}`;
+        }
+
+        function showError(message) {
+            const errorDiv = document.getElementById('error-message');
+            errorDiv.innerHTML = `<div class="error">⚠️ ${message}</div>`;
+            setTimeout(() => errorDiv.innerHTML = '', 5000);
+        }
+
+        function clearError() {
+            document.getElementById('error-message').innerHTML = '';
+        }
+
+        function showSuccess(message) {
+            const errorDiv = document.getElementById('error-message');
+            errorDiv.innerHTML = `<div class="success">✓ ${message}</div>`;
+            setTimeout(() => errorDiv.innerHTML = '', 5000);
+        }
+
+        // =========================================================================
+        // HISTORY INSPECTION
+        // =========================================================================
+
+        // Load full history for a session
+        async function loadFullHistory(sessionId) {
+            try {
+                const response = await fetch(`${API_BASE}/sessions/${sessionId}/history`);
+                if (!response.ok) throw new Error('Failed to fetch history');
+                
+                const result = await response.json();
+                const historyData = result.data;
+                
+                displayHistory(historyData.history, sessionId);
+            } catch (error) {
+                console.error('Error loading history:', error);
+                document.getElementById('history-content').innerHTML = 
+                    '<div class="history-empty">Failed to load history</div>';
+            }
+        }
+
+        // Display history entries
+        function displayHistory(history, sessionId) {
+            const historyContent = document.getElementById('history-content');
+            
+            if (!history || history.length === 0) {
+                historyContent.innerHTML = '<div class="history-empty">No history entries yet</div>';
+                return;
+            }
+            
+            let html = '';
+            
+            // Reverse to show newest first
+            const reversedHistory = [...history].reverse();
+            
+            reversedHistory.forEach((entry, index) => {
+                const turnNum = entry.turn_count || entry.turn || (history.length - index);
+                const entryId = `history-entry-${index}`;
+                
+                html += `
+                    <div class="history-entry" id="${entryId}">
+                        <div class="history-entry-header" onclick="toggleHistoryEntry('${entryId}')">
+                            <div>
+                                <div class="history-entry-title">
+                                    Turn ${turnNum}: ${escapeHtml(entry.choice || entry.action || 'System Event')}
+                                </div>
+                                <div class="history-entry-meta">
+                                    ${entry.timestamp ? formatDate(entry.timestamp) : 'No timestamp'}
+                                </div>
+                            </div>
+                            <span class="history-expand-icon">▶</span>
+                        </div>
+                        <div class="history-entry-content">
+                            ${buildHistoryEntryDetails(entry, sessionId)}
+                        </div>
+                    </div>
+                `;
+            });
+            
+            historyContent.innerHTML = html;
+        }
+
+        // Build detailed view of a history entry
+        function buildHistoryEntryDetails(entry, sessionId) {
+            let html = '';
+            
+            // Player Action
+            if (entry.choice || entry.action) {
+                html += `
+                    <div class="history-detail">
+                        <div class="history-detail-label">Player Action</div>
+                        <div class="history-detail-value">${escapeHtml(entry.choice || entry.action)}</div>
+                    </div>
+                `;
+            }
+            
+            // Narrative Dispatch (AI Response)
+            if (entry.dispatch) {
+                html += `
+                    <div class="history-detail">
+                        <div class="history-detail-label">Narrative (AI Response)</div>
+                        <div class="history-detail-value">${escapeHtml(entry.dispatch)}</div>
+                    </div>
+                `;
+            }
+            
+            // Vision Dispatch (Image Description)
+            if (entry.vision_dispatch) {
+                html += `
+                    <div class="history-detail">
+                        <div class="history-detail-label">Vision Description</div>
+                        <div class="history-detail-value">${escapeHtml(entry.vision_dispatch)}</div>
+                    </div>
+                `;
+            }
+            
+            // Image Prompt
+            if (entry.consequence_img_prompt || entry.image_prompt) {
+                html += `
+                    <div class="history-detail">
+                        <div class="history-detail-label">Image Generation Prompt</div>
+                        <div class="history-detail-value">${escapeHtml(entry.consequence_img_prompt || entry.image_prompt)}</div>
+                    </div>
+                `;
+            }
+            
+            // Generated Image
+            if (entry.consequence_img_url || entry.image_url) {
+                const imageUrl = entry.consequence_img_url || entry.image_url;
+                const imageName = imageUrl.split('/').pop();
+                html += `
+                    <div class="history-detail">
+                        <div class="history-detail-label">Generated Image</div>
+                        <div class="history-detail-value">
+                            <a href="${API_BASE}/sessions/${sessionId}/images/${imageName}" target="_blank" class="history-image-link">
+                                🖼️ ${imageName}
+                            </a>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            // Choices Presented
+            if (entry.choices && entry.choices.length > 0) {
+                html += `
+                    <div class="history-detail">
+                        <div class="history-detail-label">Choices Presented</div>
+                        <div class="history-detail-value">${entry.choices.map((c, i) => `${i + 1}. ${escapeHtml(c)}`).join('\n')}</div>
+                    </div>
+                `;
+            }
+            
+            // Narrative Prompt (what was sent to AI)
+            if (entry.narrative_prompt) {
+                html += `
+                    <div class="history-detail">
+                        <div class="history-detail-label">Narrative Generation Prompt</div>
+                        <div class="history-detail-value">${escapeHtml(entry.narrative_prompt)}</div>
+                    </div>
+                `;
+            }
+            
+            // Choices Prompt
+            if (entry.choices_prompt) {
+                html += `
+                    <div class="history-detail">
+                        <div class="history-detail-label">Choices Generation Prompt</div>
+                        <div class="history-detail-value">${escapeHtml(entry.choices_prompt)}</div>
+                    </div>
+                `;
+            }
+            
+            // Location
+            if (entry.location) {
+                html += `
+                    <div class="history-detail">
+                        <div class="history-detail-label">Location</div>
+                        <div class="history-detail-value">${escapeHtml(entry.location)}</div>
+                    </div>
+                `;
+            }
+            
+            // Time of Day
+            if (entry.time_of_day) {
+                html += `
+                    <div class="history-detail">
+                        <div class="history-detail-label">Time of Day</div>
+                        <div class="history-detail-value">${escapeHtml(entry.time_of_day)}</div>
+                    </div>
+                `;
+            }
+            
+            // Raw JSON (for deep debugging)
+            html += `
+                <div class="history-detail">
+                    <div class="history-detail-label">Raw JSON (Full Entry)</div>
+                    <div class="history-detail-value json">${syntaxHighlightJSON(entry)}</div>
+                </div>
+            `;
+            
+            return html;
+        }
+
+        // Toggle history entry expansion
+        function toggleHistoryEntry(entryId) {
+            const entry = document.getElementById(entryId);
+            entry.classList.toggle('expanded');
+        }
+
+        // Expand all history entries
+        function expandAllHistory() {
+            document.querySelectorAll('.history-entry').forEach(entry => {
+                entry.classList.add('expanded');
+            });
+        }
+
+        // Collapse all history entries
+        function collapseAllHistory() {
+            document.querySelectorAll('.history-entry').forEach(entry => {
+                entry.classList.remove('expanded');
+            });
+        }
+
+        // Simple JSON syntax highlighting
+        function syntaxHighlightJSON(obj) {
+            const json = JSON.stringify(obj, null, 2);
+            
+            // Basic syntax highlighting
+            return json
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"([^"]+)":/g, '<span class="json-key">"$1"</span>:')
+                .replace(/: "([^"]*)"/g, ': <span class="json-string">"$1"</span>')
+                .replace(/: (\d+)/g, ': <span class="json-number">$1</span>')
+                .replace(/: (true|false|null)/g, ': <span class="json-boolean">$1</span>');
+        }
+
+        // Close modal on ESC key
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') closeModal();
+        });
+
+        // Close modal on outside click
+        document.getElementById('session-modal').addEventListener('click', (e) => {
+            if (e.target.id === 'session-modal') closeModal();
+        });
+    </script>
+</body>
+</html>
+

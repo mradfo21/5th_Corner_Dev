@@ -126,6 +126,15 @@ def _get_session_root(session_id='default'):
     """Get the root directory for a specific session"""
     if session_id == 'legacy':
         return ROOT  # Backward compatibility
+    
+    # Validate session ID for security (skip validation for 'default')
+    if session_id != 'default':
+        try:
+            _validate_session_id(session_id)
+        except ValueError as e:
+            print(f"[SECURITY WARNING] Invalid session ID attempted: {session_id}")
+            raise
+    
     return ROOT / "sessions" / session_id
 
 def _get_state_path(session_id='default'):
@@ -173,6 +182,152 @@ def _get_video_films_dir(session_id='default'):
     films_dir = _get_session_root(session_id) / "films" / "final"
     films_dir.mkdir(parents=True, exist_ok=True)
     return films_dir
+
+def _get_meta_path(session_id='default'):
+    """Get metadata file path for a session"""
+    root = _get_session_root(session_id)
+    root.mkdir(parents=True, exist_ok=True)
+    return root / "meta.json"
+
+def _validate_session_id(session_id):
+    """Validate session ID to prevent path traversal and injection attacks"""
+    import re
+    
+    if not session_id or not isinstance(session_id, str):
+        raise ValueError("Session ID must be a non-empty string")
+    
+    # Only allow alphanumeric, hyphens, and underscores (UUID-safe + readable names)
+    # No dots, slashes, backslashes, or other special characters
+    if not re.match(r'^[a-zA-Z0-9_-]+$', session_id):
+        raise ValueError(f"Invalid session ID '{session_id}': Only alphanumeric characters, hyphens, and underscores allowed")
+    
+    # Reasonable length limits
+    if len(session_id) > 100:
+        raise ValueError(f"Session ID too long (max 100 characters)")
+    
+    if len(session_id) < 1:
+        raise ValueError("Session ID cannot be empty")
+    
+    return True
+
+def _create_session_metadata(session_id='default', name=None, description=None):
+    """Create metadata for a new session (Minecraft-style world info)"""
+    from datetime import datetime, timezone
+    
+    meta = {
+        "session_id": session_id,
+        "name": name or f"Game Session {session_id[:8]}",
+        "description": description or "",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "last_accessed": datetime.now(timezone.utc).isoformat(),
+        "turn_count": 0,
+        "player_alive": True,
+        "version": "1.0"
+    }
+    
+    meta_path = _get_meta_path(session_id)
+    with open(meta_path, 'w', encoding='utf-8') as f:
+        json.dump(meta, f, indent=2, ensure_ascii=False)
+    
+    print(f"[SESSION META] Created metadata for session '{session_id}': {name}")
+    return meta
+
+def _load_session_metadata(session_id='default', create_if_missing=True):
+    """Load session metadata (like loading Minecraft world info)"""
+    meta_path = _get_meta_path(session_id)
+    
+    # Check if session directory exists first
+    session_root = _get_session_root(session_id)
+    if not session_root.exists():
+        if create_if_missing:
+            # Create new session
+            return _create_session_metadata(session_id)
+        else:
+            # Session doesn't exist and we shouldn't create it
+            raise FileNotFoundError(f"Session '{session_id}' does not exist")
+    
+    if not meta_path.exists():
+        # Metadata missing but session exists - recreate it
+        if create_if_missing:
+            return _create_session_metadata(session_id)
+        else:
+            raise FileNotFoundError(f"Metadata for session '{session_id}' not found")
+    
+    try:
+        with open(meta_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"[SESSION META] Error loading metadata: {e}")
+        if create_if_missing:
+            return _create_session_metadata(session_id)
+        else:
+            raise
+
+def _update_session_metadata(session_id='default', **updates):
+    """Update session metadata (like updating world stats in Minecraft)"""
+    from datetime import datetime, timezone
+    
+    meta = _load_session_metadata(session_id)
+    
+    # Auto-update last_accessed
+    meta["last_accessed"] = datetime.now(timezone.utc).isoformat()
+    
+    # Apply updates
+    for key, value in updates.items():
+        meta[key] = value
+    
+    # Save
+    meta_path = _get_meta_path(session_id)
+    with open(meta_path, 'w', encoding='utf-8') as f:
+        json.dump(meta, f, indent=2, ensure_ascii=False)
+    
+    return meta
+
+def get_all_sessions():
+    """List all available sessions (like Minecraft's world list)"""
+    sessions_dir = ROOT / "sessions"
+    if not sessions_dir.exists():
+        return []
+    
+    sessions = []
+    for session_path in sessions_dir.iterdir():
+        if session_path.is_dir() and session_path.name != '__pycache__':
+            session_id = session_path.name
+            try:
+                meta = _load_session_metadata(session_id)
+                sessions.append(meta)
+            except Exception as e:
+                print(f"[SESSION LIST] Error loading session {session_id}: {e}")
+                # Include session even if metadata is corrupt
+                sessions.append({
+                    "session_id": session_id,
+                    "name": f"Session {session_id[:8]}",
+                    "error": str(e)
+                })
+    
+    # Sort by last accessed (most recent first)
+    sessions.sort(key=lambda s: s.get('last_accessed', ''), reverse=True)
+    return sessions
+
+def delete_session(session_id):
+    """Delete a session and all its data (like deleting a Minecraft world)"""
+    if session_id == 'default':
+        raise ValueError("Cannot delete the default session. Use reset_state() instead.")
+    
+    session_root = _get_session_root(session_id)
+    if not session_root.exists():
+        raise ValueError(f"Session '{session_id}' does not exist")
+    
+    import shutil
+    
+    # Count files before deletion for logging
+    file_count = sum(1 for _ in session_root.rglob('*') if _.is_file())
+    
+    # Delete the entire session directory
+    shutil.rmtree(session_root)
+    
+    print(f"[SESSION DELETE] Deleted session '{session_id}' ({file_count} files)")
+    return {"session_id": session_id, "files_deleted": file_count}
 
 # Legacy constants for backward compatibility
 STATE_PATH = ROOT/"world_state.json"
@@ -379,6 +534,17 @@ def _save_state(st: dict, session_id='default'):
             try:
                 temp_state_file.write_text(json.dumps(st, indent=2, ensure_ascii=False), encoding='utf-8')
                 os.replace(temp_state_file, state_path)
+                
+                # Update session metadata (Minecraft-style world stats)
+                try:
+                    _update_session_metadata(
+                        session_id,
+                        turn_count=st.get('turn_count', 0),
+                        player_alive=st.get('player_state', {}).get('alive', True)
+                    )
+                except Exception as meta_error:
+                    print(f"[SESSION META] Warning: Failed to update metadata: {meta_error}")
+                
                 return # Success
             except OSError as e_os:
                 logging.warning(f"Attempt {attempt + 1} to save state to {state_path} failed with OSError: {e_os}")
@@ -3322,6 +3488,10 @@ def get_state(session_id='default'):
     """Get current state for a session"""
     return _load_state(session_id)
 
+def get_history(session_id='default'):
+    """Get game history for a session"""
+    return _load_history(session_id)
+
 def reset_state(session_id='default'):
     """Reset state for a session"""
     global state, history, _last_image_path, _vision_cache
@@ -3391,6 +3561,13 @@ def reset_state(session_id='default'):
     }
     _save_state(intro_state, session_id)
     
+    # Create/reset session metadata (Minecraft-style world info)
+    _create_session_metadata(
+        session_id,
+        name=f"New Game {session_id[:8]}" if session_id != 'default' else "Default Session",
+        description="A new game session in the quarantine zone"
+    )
+    
     # Update global state if this is the legacy session
     if session_id == 'legacy':
         state = intro_state
@@ -3398,7 +3575,7 @@ def reset_state(session_id='default'):
     _last_image_path = None
     print(f"[RESET] Session {session_id} cleared. Starting fresh.")
 
-def generate_intro_image_fast():
+def generate_intro_image_fast(session_id='default'):
     """
     PHASE 1 (FAST): Generate ONLY the intro image and basic info.
     Returns immediately so bot can display image while choices are generating.
@@ -3434,14 +3611,14 @@ def generate_intro_image_fast():
     prologue = scene["prologue"]
     vision_dispatch = scene["vision"]
     
-    state = _load_state()
+    state = _load_state(session_id)
     state["world_prompt"] = prologue
     state["current_phase"] = "normal"
     state["chaos_level"] = 0
     state["last_choice"] = ""
     state["seen_elements"] = []
     state["player_state"] = {"alive": True, "health": 100}
-    _save_state(state)
+    _save_state(state, session_id)
     
     mode = state.get("mode", "camcorder")
     
@@ -3459,7 +3636,8 @@ def generate_intro_image_fast():
             frame_idx=0,
             dispatch=prologue,
             world_prompt=prologue,
-            hard_transition=False
+            hard_transition=False,
+            session_id=session_id
         )
         # Note: dispatch_video_url not used in intro sequence (Frame 0 is always static image)
         if dispatch_img_url:
@@ -3476,6 +3654,7 @@ def generate_intro_image_fast():
         "vision_dispatch": vision_dispatch,
         "dispatch_image": dispatch_img_url,
         "prologue": prologue,
+        "world_prompt": prologue,
         "mode": mode
     }
 

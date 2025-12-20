@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard Test - No Auth</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #1a1a2e;
+        }
+
+        .banner {
+            background: linear-gradient(135deg, #4ecdc4 0%, #44a8a0 100%);
+            padding: 20px;
+            text-align: center;
+            color: white;
+        }
+
+        .banner h1 {
+            font-size: 2em;
+            margin-bottom: 10px;
+        }
+
+        .banner p {
+            font-size: 1.1em;
+            margin: 5px 0;
+        }
+
+        .banner code {
+            background: rgba(0, 0, 0, 0.3);
+            padding: 5px 10px;
+            border-radius: 5px;
+            font-family: 'Courier New', monospace;
+        }
+
+        iframe {
+            border: none;
+            width: 100%;
+            height: calc(100vh - 140px);
+            display: block;
+        }
+
+        .success {
+            background: rgba(78, 205, 196, 0.2);
+            border-top: 3px solid #4ecdc4;
+            padding: 15px;
+            text-align: center;
+            color: #4ecdc4;
+            font-weight: bold;
+            font-size: 1.1em;
+        }
+    </style>
+</head>
+<body>
+    <div class="banner">
+        <h1>✅ SIMPLE TEST - NO AUTHENTICATION</h1>
+        <p>Dashboard embedded below (from localhost:5001)</p>
+        <p><code>No token required - direct access!</code></p>
+    </div>
+
+    <div class="success">
+        🎉 If you see the dashboard below, cross-origin embedding works!
+    </div>
+
+    <iframe src="http://localhost:5001/admin"></iframe>
+
+    <script>
+        console.log('✅ Simple embed test loaded');
+        console.log('📍 Dashboard URL: http://localhost:5001/admin');
+        console.log('🔓 No authentication required');
+        console.log('🌐 This proves cross-origin access works!');
+    </script>
+</body>
+</html>
+

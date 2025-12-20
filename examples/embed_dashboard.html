@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Game Admin - Embedded Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #1a1a2e;
+            color: #e0e0e0;
+        }
+
+        .header {
+            background: rgba(30, 30, 60, 0.9);
+            padding: 20px;
+            text-align: center;
+            border-bottom: 2px solid #4ecdc4;
+        }
+
+        .header h1 {
+            color: #ff6b6b;
+            font-size: 2em;
+        }
+
+        .header p {
+            color: #b0b0b0;
+            margin-top: 5px;
+        }
+
+        .dashboard-container {
+            width: 100%;
+            height: calc(100vh - 80px);
+            position: relative;
+        }
+
+        iframe {
+            border: none;
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        .loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            color: #4ecdc4;
+            font-size: 1.5em;
+        }
+
+        .error-message {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(255, 107, 107, 0.2);
+            border: 2px solid #ff6b6b;
+            padding: 30px;
+            border-radius: 10px;
+            text-align: center;
+            max-width: 500px;
+        }
+
+        .error-message h2 {
+            color: #ff6b6b;
+            margin-bottom: 15px;
+        }
+
+        .error-message p {
+            color: #e0e0e0;
+            margin-bottom: 10px;
+        }
+
+        .error-message code {
+            background: rgba(0, 0, 0, 0.5);
+            padding: 5px 10px;
+            border-radius: 5px;
+            display: block;
+            margin-top: 10px;
+            color: #4ecdc4;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🎮 SOMEWHERE - Game Administration</h1>
+        <p>Real-time monitoring & session management</p>
+    </div>
+
+    <div class="dashboard-container">
+        <div class="loading" id="loading">
+            Loading dashboard...
+        </div>
+        <div class="error-message" id="error" style="display: none;">
+            <h2>⚠️ Dashboard Unavailable</h2>
+            <p id="error-text"></p>
+        </div>
+        <iframe 
+            id="dashboard-iframe"
+            src=""
+            allow="fullscreen"
+            sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
+            style="display: none;">
+        </iframe>
+    </div>
+
+    <script>
+        // ===================================================================
+        // CONFIGURATION
+        // ===================================================================
+        
+        // Your API server URL (deployed on Render)
+        const API_URL = 'https://your-api.onrender.com';  // CHANGE THIS
+        
+        // Your admin token (store securely - DO NOT commit to public repo!)
+        // In production, fetch this from your backend or secure key management
+        const ADMIN_TOKEN = 'your-admin-token-here';  // CHANGE THIS
+        
+        // ===================================================================
+        // DASHBOARD LOADING
+        // ===================================================================
+        
+        const iframe = document.getElementById('dashboard-iframe');
+        const loading = document.getElementById('loading');
+        const error = document.getElementById('error');
+        const errorText = document.getElementById('error-text');
+
+        // Build dashboard URL with token
+        const dashboardUrl = `${API_URL}/admin?token=${ADMIN_TOKEN}`;
+
+        // Set iframe source
+        iframe.src = dashboardUrl;
+
+        // Handle iframe load
+        iframe.onload = function() {
+            loading.style.display = 'none';
+            iframe.style.display = 'block';
+        };
+
+        // Handle iframe error
+        iframe.onerror = function() {
+            loading.style.display = 'none';
+            error.style.display = 'block';
+            errorText.innerHTML = `
+                Failed to load dashboard from <code>${API_URL}</code>
+                <br><br>
+                Possible causes:
+                <br>• API server is not running
+                <br>• Invalid admin token
+                <br>• CORS configuration issue
+            `;
+        };
+
+        // Timeout after 10 seconds
+        setTimeout(() => {
+            if (loading.style.display !== 'none') {
+                loading.style.display = 'none';
+                error.style.display = 'block';
+                errorText.innerHTML = `
+                    Dashboard took too long to load
+                    <br><br>
+                    Check that your API server is running at:
+                    <br><code>${API_URL}</code>
+                `;
+            }
+        }, 10000);
+    </script>
+</body>
+</html>
+

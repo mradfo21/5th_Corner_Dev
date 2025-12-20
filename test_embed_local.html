@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Local Test - Dashboard Embed</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #1a1a2e;
+            color: #e0e0e0;
+        }
+
+        .header {
+            background: rgba(30, 30, 60, 0.9);
+            padding: 20px;
+            text-align: center;
+            border-bottom: 2px solid #4ecdc4;
+        }
+
+        .header h1 {
+            color: #ff6b6b;
+            font-size: 2em;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            color: #4ecdc4;
+            margin-bottom: 5px;
+        }
+
+        .header .info {
+            color: #888;
+            font-size: 0.9em;
+            margin-top: 10px;
+        }
+
+        .dashboard-container {
+            width: 100%;
+            height: calc(100vh - 120px);
+            position: relative;
+        }
+
+        iframe {
+            border: none;
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+
+        .success-banner {
+            background: rgba(78, 205, 196, 0.2);
+            border: 2px solid #4ecdc4;
+            padding: 15px;
+            text-align: center;
+            color: #4ecdc4;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>✅ Cross-Origin Test - SUCCESS!</h1>
+        <p>This page simulates your MAIN WEBSITE</p>
+        <p>Dashboard below is embedded from: <code>localhost:5001</code></p>
+        <div class="info">
+            This proves the dashboard can be accessed from any webpage! 🎉
+        </div>
+    </div>
+
+    <div class="success-banner">
+        ✅ If you can see the dashboard below, cross-origin embedding is working!
+    </div>
+
+    <div class="dashboard-container">
+        <iframe 
+            src="http://localhost:5001/admin?token=dev-token-change-in-production"
+            allow="fullscreen"
+            sandbox="allow-same-origin allow-scripts allow-forms allow-popups">
+        </iframe>
+    </div>
+
+    <script>
+        console.log('Cross-origin test page loaded');
+        console.log('Dashboard embedded from: http://localhost:5001/admin');
+        console.log('This simulates embedding from your main website!');
+    </script>
+</body>
+</html>
+
