@@ -594,9 +594,9 @@ if DISCORD_ENABLED:
             return ""
         
         indicators = {
-            'forward_movement': ' **MOVEMENT**',
-            'exploration': ' **MOVEMENT**',
-            'stationary': ' **MOVEMENT**'
+            'forward_movement': '🚶 **MOVEMENT**',
+            'exploration': '🔍 **EXPLORATION**',
+            'stationary': ''  # No label for stationary actions (observing, scanning, etc.)
         }
         return indicators.get(movement_type, "")
     

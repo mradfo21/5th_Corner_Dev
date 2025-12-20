@@ -613,7 +613,13 @@
     </div>
 
     <script>
-        const API_BASE = 'http://localhost:5001/api';
+        // Auto-detect API base URL (use same origin as the dashboard)
+        const API_BASE = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+            ? 'http://localhost:5001/api'  // Local development
+            : `${window.location.protocol}//${window.location.host}/api`;  // Production (Render)
+        
+        console.log('[DASHBOARD] API Base URL:', API_BASE);
+        
         let autoRefreshInterval = null;
         let sessionsData = [];
 
@@ -658,10 +664,20 @@
             if (refreshBtn) refreshBtn.classList.add('refreshing');
             
             try {
+                console.log('[DASHBOARD] Fetching sessions from:', `${API_BASE}/sessions`);
                 const response = await fetch(`${API_BASE}/sessions`);
-                if (!response.ok) throw new Error('Failed to fetch sessions');
+                
+                console.log('[DASHBOARD] Response status:', response.status);
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    console.error('[DASHBOARD] Error response:', errorText);
+                    throw new Error(`HTTP ${response.status}: ${errorText}`);
+                }
                 
                 const result = await response.json();
+                console.log('[DASHBOARD] Sessions loaded:', result.data?.length || 0);
+                
                 sessionsData = result.data || [];
                 
                 updateStats(sessionsData);
@@ -670,6 +686,7 @@
                 clearError();
                 
             } catch (error) {
+                console.error('[DASHBOARD] Failed to load sessions:', error);
                 showError(`Failed to load sessions: ${error.message}`);
             } finally {
                 if (refreshBtn) refreshBtn.classList.remove('refreshing');
