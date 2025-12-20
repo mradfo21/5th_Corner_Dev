@@ -36,11 +36,11 @@ if DISCORD_ENABLED:
     sys.stderr.flush()
     
     try:
-        import engine
-        print("[STARTUP] - engine imported", flush=True)
+        from api_client import api as engine
+        print("[STARTUP] - engine (via api_client) imported", flush=True)
         sys.stdout.flush()
     except Exception as e:
-        print(f"[STARTUP ERROR] Failed to import engine: {e}", flush=True)
+        print(f"[STARTUP ERROR] Failed to import api_client: {e}", flush=True)
         sys.stdout.flush()
         import traceback
         traceback.print_exc()
@@ -123,22 +123,18 @@ if DISCORD_ENABLED:
     OWNER_ID = None
 
     # ───────── VHS tape recording (death replay GIFs) ──────────────────────────
-    # Import api_client to get session_id
-    from api_client import api as api_client
     
     # Session-specific directories
     def _get_tapes_dir():
         """Get session-specific tapes directory"""
-        import engine
-        session_root = engine._get_session_root(api_client.session_id)
+        session_root = engine._get_session_root(engine.session_id)
         tapes_dir = session_root / "tapes"
         tapes_dir.mkdir(parents=True, exist_ok=True)
         return tapes_dir
     
     def _get_segments_dir():
         """Get session-specific video segments directory"""
-        import engine
-        session_root = engine._get_session_root(api_client.session_id)
+        session_root = engine._get_session_root(engine.session_id)
         segments_dir = session_root / "films" / "segments"
         segments_dir.mkdir(parents=True, exist_ok=True)
         return segments_dir
@@ -234,7 +230,7 @@ if DISCORD_ENABLED:
         In normal mode: Creates GIF from images
         Returns: (tape_path or None, error_message or empty string)
         """
-        import engine
+
         
         # Check if we're in HD mode (Veo)
         if hasattr(engine, 'VEO_MODE_ENABLED') and engine.VEO_MODE_ENABLED:
@@ -643,7 +639,6 @@ if DISCORD_ENABLED:
     async def generate_timeout_penalty(dispatch, situation_report, current_image=None):
         """Generate a contextual negative consequence for player inaction using LLM with vision"""
         import requests
-        import engine
         import base64
         from pathlib import Path
         
@@ -793,7 +788,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             try:
                 with open(ROOT / "history.json", "w", encoding="utf-8") as f:
                     f.write("[]")
-                import engine
+
                 intro_prompt = engine.PROMPTS["world_initial_state"]
                 with open(ROOT / "world_state.json", "w", encoding="utf-8") as f:
                     json.dump({
@@ -860,7 +855,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 except Exception as e:
                     print(f"[CHOICE] Warning: Could not disable buttons: {e}")
             
-            import engine
+
             world_state = engine.get_state().get('world_prompt', '')
             choice_text = self.label
             # Fast LLM call for micro-reaction (10-20 tokens, low temp)
@@ -1050,7 +1045,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             disp = {**phase1, **phase2, "dispatch_image": image_path}
 
             # CHECK FOR DEATH - Read FRESH state from file
-            import engine
+
             engine.state = engine._load_state()  # Force reload from disk
             current_state = engine.get_state()
             player_alive = current_state.get("player_state", {}).get("alive", True)
@@ -1323,7 +1318,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             except Exception as e:
                 print(f"[CUSTOM ACTION] Warning: Could not disable buttons: {e}")
             
-            import engine
+
             world_state = engine.get_state().get('world_prompt', '')
             
             # Get spatial context from last vision analysis
@@ -1480,7 +1475,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             await asyncio.sleep(0.3)  # Brief pause so they can read it
             
             # CHECK FOR DEATH - Read FRESH state
-            import engine
+
             engine.state = engine._load_state()  # Force reload from disk
             current_state = engine.get_state()
             player_alive = current_state.get("player_state", {}).get("alive", True)
@@ -1842,7 +1837,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             try:
                 with open(ROOT / "history.json", "w", encoding="utf-8") as f:
                     f.write("[]")
-                import engine
+
                 intro_prompt = engine.PROMPTS["world_initial_state"]
                 with open(ROOT / "world_state.json", "w", encoding="utf-8") as f:
                     json.dump({
@@ -1968,7 +1963,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 # When auto-play is OFF, countdown should resume
                 if hasattr(self.parent_view, 'last_choices_message') and self.parent_view.last_choices_message:
                     # Get current game state to restart countdown
-                    import engine
+
                     current_state = engine.get_state()
                     
                     # Restart countdown timer
@@ -2019,7 +2014,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     return
             
             global quality_mode_enabled
-            import engine
+
             
             # Toggle quality mode
             quality_mode_enabled = not quality_mode_enabled
@@ -2062,7 +2057,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 hub_choice = "Return to your truck on the outskirts of the Horizon military quarantine perimeter"
                 print(f"[LOG] MapButton: sending hub_choice: {hub_choice}")
                 await interaction.followup.send("Returning to hub...", ephemeral=True)
-                import engine
+
                 disp = await asyncio.get_running_loop().run_in_executor(None, engine.complete_tick, hub_choice)
                 print(f"[LOG] MapButton: engine.complete_tick returned: {disp}")
                 file2, name2 = _attach(disp.get("dispatch_image"), disp.get("vision_dispatch", ""))
@@ -2108,7 +2103,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 print(f"[LOG] RegenerateChoicesButton defer failed: {e}")
                 pass
             try:
-                import engine
+
                 from choices import generate_choices
                 last_vision_dispatch = engine.history[-1].get('vision_dispatch', '') if engine.history else ''
                 print(f"[LOG] RegenerateChoicesButton: last_vision_dispatch: {last_vision_dispatch}")
@@ -2207,7 +2202,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             with open(ROOT / "history.json", "w", encoding="utf-8") as f:
                 f.write("[]")
             # Reset world_state.json with the original intro prompt
-            import engine
+
             intro_prompt = engine.PROMPTS["world_initial_state"]
             with open(ROOT / "world_state.json", "w", encoding="utf-8") as f:
                 json.dump({
@@ -2272,7 +2267,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             inline=False
         )
         rules_embed.set_footer(text="Ready? Press ️ Play below to begin.")
-        import engine
+
         
         class AIProviderSelect(discord.ui.Select):
             """Dropdown menu for selecting AI provider presets."""
@@ -2299,7 +2294,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 preset_name = self.values[0]
                 
                 # Validate API keys before switching
-                import engine
+
                 if preset_name == "openai" and not engine.OPENAI_API_KEY:
                     await interaction.response.send_message(
                         "ERROR: **OpenAI API key not configured!**\nCannot switch to OpenAI provider.",
@@ -3097,7 +3092,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                                 print(f"[COUNTDOWN] Image send failed: {e}")
                     
                     # CHECK FOR DEATH after timeout penalty
-                    import engine
+
                     engine.state = engine._load_state()
                     current_state = engine.get_state()
                     player_alive = current_state.get("player_state", {}).get("alive", True)
@@ -3317,7 +3312,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     emoji = "🚨"
                 
                 # Get player health
-                import engine
+
                 current_state = engine.get_state()
                 alive = current_state.get("player_state", {}).get("alive", True)
                 
@@ -3860,7 +3855,7 @@ if __name__ == "__main__":
     print("[MAIN] Entering main block", flush=True)
     import threading
     import time
-    import engine
+
 
     if DISCORD_ENABLED:
         print("[MAIN] Discord enabled - starting bot", flush=True)
