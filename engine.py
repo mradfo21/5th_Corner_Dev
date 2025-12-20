@@ -1460,8 +1460,10 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
         # --- ROUTE TO APPROPRIATE IMAGE PROVIDER ---
         active_image_provider = ai_provider_manager.get_image_provider()
         print(f"[IMG DEBUG] active_image_provider = {active_image_provider}", flush=True)
+        print(f"[IMG DEBUG] About to call image generation API...", flush=True)
         
         if active_image_provider == "veo":
+            print(f"[IMG DEBUG] -> Calling Veo video generation...", flush=True)
             print(f"[IMG DEBUG] Entering Veo branch", flush=True)
             try:
                 # Use Veo 3.1 for video-based image generation

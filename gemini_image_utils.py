@@ -309,7 +309,9 @@ def generate_with_gemini(
         max_retries = 1  # Reduced from 2 - don't waste time retrying slow calls
         for attempt in range(max_retries):
             try:
+                print(f"[GOOGLE GEMINI] Sending API request (attempt {attempt + 1})...", flush=True)
                 response = requests.post(api_url, headers=headers, json=payload, timeout=30)
+                print(f"[GOOGLE GEMINI] Got response, status: {response.status_code}", flush=True)
                 response.raise_for_status()
                 break
             except requests.exceptions.Timeout:
@@ -320,9 +322,11 @@ def generate_with_gemini(
                     print(f"[GOOGLE GEMINI] ERROR: TIMEOUT after 30s - Gemini API not responding!")
                     return None  # Graceful fallback instead of crash
         
+        print(f"[GOOGLE GEMINI] Parsing JSON response...", flush=True)
         result = response.json()
         
         # Extract base64 image data from response
+        print(f"[GOOGLE GEMINI] Extracting image from response...", flush=True)
         if "candidates" not in result or not result["candidates"]:
             raise RuntimeError(f"No candidates in Gemini response: {result}")
         
@@ -338,7 +342,9 @@ def generate_with_gemini(
             raise RuntimeError(f"No image data in Gemini response: {result}")
         
         # Decode base64 image
+        print(f"[GOOGLE GEMINI] Decoding base64 image...", flush=True)
         image_bytes = base64.b64decode(image_data_b64)
+        print(f"[GOOGLE GEMINI] Decoded {len(image_bytes)} bytes", flush=True)
         
         # Save to local storage - use provided output_dir or fall back to IMAGE_DIR
         save_dir = output_dir if output_dir is not None else IMAGE_DIR
