@@ -47,12 +47,13 @@ GEMINI_PRO_IMAGE = "gemini-3-pro-image-preview"  # Slower, higher quality, 4K su
 _last_corrected_image = None
 
 # ============================================================================
-# FORWARD MOMENTUM ZOOM - Experimental feature to combat img2img staleness
+# FORWARD MOMENTUM ZOOM - DISABLED: Was causing visual discontinuity
 # ============================================================================
 # By cropping center and scaling up, we force AI to interpret rather than copy pixels
 # This creates a subtle "stepping forward" effect and reduces compression artifacts
-ENABLE_FORWARD_ZOOM = True   # Toggle zoom preprocessing on/off
-ZOOM_FACTOR = 1.35            # 35% zoom = crop center 74%, scale back to full size
+# DISABLED: Caused jarring composition changes, breaking visual continuity
+ENABLE_FORWARD_ZOOM = False   # Disabled to fix discontinuity issues
+ZOOM_FACTOR = 1.10            # Reduced from 1.35 (if re-enabled, use subtle zoom only)
 # ============================================================================
 
 # ============================================================================
@@ -756,25 +757,30 @@ def generate_gemini_img2img(
         time_injection = f"\n\n⏰ CRITICAL TIME/ATMOSPHERE CONSTRAINTS:\n{time_of_day}\nThe lighting, weather, and atmosphere MUST match these exact conditions. This is non-negotiable.\n"
         structured_prompt = structured_prompt + time_injection
     
-    # Add CRITICAL style-only instruction for forward movement
-    style_only_instruction = (
+    # Add CRITICAL continuity instruction for smooth camera movement
+    continuity_instruction = (
         "\n\n⚡ CRITICAL - HOW TO USE REFERENCE IMAGES:\n"
-        "The reference images show the PREVIOUS MOMENT in this simulation.\n"
-        "Extract from references:\n"
-        " VISUAL STYLE: Photographic quality, VHS degradation, color palette, lighting type\n"
-        " ENVIRONMENT TYPE: Desert vs facility, outdoor vs indoor, general setting\n"
-        " AESTHETIC: Graininess, overexposure, analog artifacts, tape degradation\n\n"
-        "DO NOT copy from references:\n"
-        "ERROR: CAMERA POSITION - Move the camera based on the action taken\n"
-        "ERROR: OBJECT PLACEMENT - Rearrange the scene for the new moment\n"
-        "ERROR: COMPOSITION - Create new framing for the next beat\n"
-        "ERROR: DISTANCE - Change how close/far objects appear based on movement\n\n"
-        "Think: The references show WHAT THE TAPE LOOKS LIKE (style).\n"
-        "Your output shows WHERE THE CAMERA MOVED TO (new location/angle).\n"
-        "Same tape quality, completely different view."
+        "The reference images show the PREVIOUS MOMENT. Show smooth, natural progression.\n"
+        "\n"
+        "COPY from references (maintain continuity):\n"
+        "✅ CAMERA POSITION: Keep roughly the same viewpoint unless action explicitly moves camera\n"
+        "✅ CAMERA HEIGHT: Maintain same eye-level/perspective height\n"
+        "✅ CAMERA ANGLE: Keep similar framing and field of view\n"
+        "✅ COMPOSITION: Similar framing with natural evolution\n"
+        "✅ VISUAL STYLE: VHS quality, grain, color palette, lighting\n"
+        "✅ ENVIRONMENT: Same location, same aesthetic\n"
+        "\n"
+        "CHANGE naturally (show progression):\n"
+        "→ SUBJECT POSITION: Characters/objects move based on the action\n"
+        "→ DETAILS: Environmental changes, reactions, consequences\n"
+        "→ SUBTLE SHIFT: Very slight camera drift/pan for dynamism (not teleportation)\n"
+        "\n"
+        "Think: This is a HANDHELD CAMERA recording continuously.\n"
+        "The camera operator doesn't teleport - they walk/turn naturally.\n"
+        "Show the NEXT MOMENT from a camera that moved smoothly, not a different camera entirely."
     )
     
-    structured_prompt = structured_prompt + style_only_instruction
+    structured_prompt = structured_prompt + continuity_instruction
     
     # Add CRITICAL anti-border instructions
     anti_border = "\n\nCRITICAL - ABSOLUTELY NO BORDERS OR FRAMES:\nThe image MUST fill the ENTIRE canvas edge-to-edge with ZERO borders, frames, or edges of any kind. NO black bars, NO white borders, NO photo frames, NO matting, NO letterboxing. The content fills 100% of the image area. This is RAW FOOTAGE, not a framed photograph."

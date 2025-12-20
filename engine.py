@@ -1167,13 +1167,33 @@ def _detect_movement_type(player_choice: str) -> str:
     Use LLM to intelligently classify action type.
     Returns: 'forward_movement', 'stationary', 'exploration'
     """
+    # Keyword-based classification for common patterns (faster, more reliable)
+    choice_lower = player_choice.lower()
+    
+    # Stationary actions (observing, no camera movement)
+    stationary_keywords = ['photograph', 'examine', 'inspect', 'check', 'observe', 'watch', 'study', 'crouch in place', 'stand still']
+    if any(keyword in choice_lower for keyword in stationary_keywords):
+        return 'stationary'
+    
+    # Exploration actions (subtle movement, turning, panning)
+    exploration_keywords = ['turn', 'look around', 'scan', 'survey', 'glance', 'peer', 'look back', 'turn around', 'rotate', 'pan', 'back away', 'step back', 'retreat']
+    if any(keyword in choice_lower for keyword in exploration_keywords):
+        return 'exploration'
+    
+    # Forward movement actions (significant spatial progression)
+    forward_keywords = ['sprint', 'dash', 'run toward', 'charge', 'advance', 'approach', 'move forward', 'walk toward', 'climb', 'enter', 'cross', 'vault', 'scramble', 'rush']
+    if any(keyword in choice_lower for keyword in forward_keywords):
+        return 'forward_movement'
+    
+    # Fallback to LLM if no keywords match
     detection_prompt = (
         f"Classify this player action into ONE category:\n\n"
         f"ACTION: '{player_choice}'\n\n"
         f"CATEGORIES:\n"
-        f"- FORWARD_MOVEMENT: Camera moves significantly forward/closer to destination (advance, sprint, climb, enter, cross, approach buildings/structures)\n"
-        f"- EXPLORATION: Camera moves slightly (look around, scan, pan, shift perspective) but stays roughly in place\n"
-        f"- STATIONARY: Camera stays in exact same position (examine object, check item, photograph, crouch in place)\n\n"
+        f"- FORWARD_MOVEMENT: Camera moves significantly FORWARD/CLOSER to destination (advance, sprint, climb, enter, cross, approach buildings)\n"
+        f"- EXPLORATION: Camera moves slightly (look around, scan, pan, turn, back away, retreat) but no major spatial progression\n"
+        f"- STATIONARY: Camera stays in exact same position (examine object, photograph, crouch in place)\n\n"
+        f"CRITICAL: 'Turn back', 'retreat', 'back away' are EXPLORATION (slight movement), NOT forward_movement.\n\n"
         f"Return ONLY one word: FORWARD_MOVEMENT, EXPLORATION, or STATIONARY"
     )
     
@@ -1230,20 +1250,18 @@ def build_image_prompt(player_choice: str = "", dispatch: str = "", prev_vision_
             # Location change - maintain lighting/aesthetic continuity
             prompt = f"{prompt} Maintain similar lighting, time of day, and overall visual aesthetic as before."
         elif movement_type == 'forward_movement':
-            # FORWARD MOVEMENT - FORCE dramatic spatial progression
+            # FORWARD MOVEMENT - Show natural spatial progression
             prompt = (
                 f"{prompt}\n\n"
-                f"🚨 CRITICAL OVERRIDE: The camera has PHYSICALLY MOVED FORWARD significantly.\n"
-                f"DO NOT maintain the same composition. DO NOT keep the same distance.\n"
-                f"The player chose: '{player_choice}' - this is FORWARD MOVEMENT.\n\n"
-                f"SHOW DRAMATIC SPATIAL CHANGE:\n"
-                f"- Objects in the distance are now MUCH CLOSER and LARGER in frame\n"
-                f"- Camera position has ADVANCED at least 20-30 feet forward\n"
-                f"- NEW ANGLE showing progression toward the destination\n"
-                f"- Perspective shifted - closer viewpoint, things loom larger\n"
-                f"- Ground/terrain in foreground has changed (advanced position)\n\n"
-                f"Previous scene (FOR STYLE ONLY, NOT COMPOSITION): {prev_vision_analysis[:120]}\n"
-                f"Maintain STYLE and ENVIRONMENT, but CHANGE CAMERA POSITION dramatically."
+                f"FORWARD MOVEMENT: The camera has moved forward naturally.\n"
+                f"The player chose: '{player_choice}'\n\n"
+                f"Show spatial progression:\n"
+                f"- Objects ahead are now closer and larger in frame\n"
+                f"- Camera has advanced naturally (5-15 feet forward)\n"
+                f"- Smooth perspective shift showing forward progress\n"
+                f"- Ground/foreground elements reflect new position\n\n"
+                f"Previous scene for reference: {prev_vision_analysis[:150]}\n"
+                f"Maintain visual continuity while showing forward movement."
             )
         elif movement_type == 'exploration':
             # EXPLORATION - Subtle camera shift/pan to keep things dynamic
