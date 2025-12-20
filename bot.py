@@ -127,14 +127,20 @@ if DISCORD_ENABLED:
     # Session-specific directories
     def _get_tapes_dir():
         """Get session-specific tapes directory"""
-        session_root = engine._get_session_root(engine.session_id)
+        from pathlib import Path
+        # Build path directly without calling internal engine methods
+        session_id = getattr(engine, 'session_id', 'default')
+        session_root = Path("sessions") / session_id
         tapes_dir = session_root / "tapes"
         tapes_dir.mkdir(parents=True, exist_ok=True)
         return tapes_dir
     
     def _get_segments_dir():
         """Get session-specific video segments directory"""
-        session_root = engine._get_session_root(engine.session_id)
+        from pathlib import Path
+        # Build path directly without calling internal engine methods
+        session_id = getattr(engine, 'session_id', 'default')
+        session_root = Path("sessions") / session_id
         segments_dir = session_root / "films" / "segments"
         segments_dir.mkdir(parents=True, exist_ok=True)
         return segments_dir

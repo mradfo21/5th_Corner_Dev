@@ -185,7 +185,8 @@ def api_generate_intro_choices():
             "image_url": "path/to/image.png",
             "prologue": "story text",
             "vision_dispatch": "vision description",
-            "dispatch": "optional dispatch text"
+            "dispatch": "optional dispatch text",
+            "session_id": "default" (optional)
         }
     
     Returns:
@@ -197,9 +198,10 @@ def api_generate_intro_choices():
         prologue = data.get('prologue')
         vision_dispatch = data.get('vision_dispatch')
         dispatch = data.get('dispatch')
+        session_id = data.get('session_id', 'default')
         
         result = engine.generate_intro_choices_deferred(
-            image_url, prologue, vision_dispatch, dispatch
+            image_url, prologue, vision_dispatch, dispatch, session_id
         )
         return jsonify(success_response(result, "Intro choices generated"))
     except Exception as e:

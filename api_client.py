@@ -131,11 +131,12 @@ class GameEngineClient:
                 'image_url': image_url,
                 'prologue': prologue,
                 'vision_dispatch': vision_dispatch,
-                'dispatch': dispatch
+                'dispatch': dispatch,
+                'session_id': self.session_id
             })
         else:
             return engine.generate_intro_choices_deferred(
-                image_url, prologue, vision_dispatch, dispatch
+                image_url, prologue, vision_dispatch, dispatch, self.session_id
             )
     
     def advance_turn_image_fast(

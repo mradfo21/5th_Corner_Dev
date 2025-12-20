@@ -3706,15 +3706,18 @@ def generate_intro_image_fast(session_id='default'):
         "mode": mode
     }
 
-def generate_intro_choices_deferred(image_url: str, prologue: str, vision_dispatch: str, dispatch: str = None):
+def generate_intro_choices_deferred(image_url: str, prologue: str, vision_dispatch: str, dispatch: str = None, session_id: str = 'default'):
     """
     PHASE 2 (DEFERRED): Generate choices after image is displayed.
     Can run in background while user is looking at the image.
+    
+    Args:
+        session_id: Session ID for state management
     """
     global state, history
     from choices import generate_choices
     
-    state = _load_state()
+    state = _load_state(session_id)
     
     # Generate dynamic situation report from LLM based on current world state
     situation_summary = _generate_situation_report(current_image=image_url)
@@ -3736,7 +3739,7 @@ def generate_intro_choices_deferred(image_url: str, prologue: str, vision_dispat
         options = [p.strip() for p in parts if p.strip()][:3]
     # Don't pad with placeholders - just return what we got
     
-    # Save to history
+    # Save to session-specific history
     entry = {
         "choice": "Intro",
         "dispatch": prologue,
@@ -3747,8 +3750,8 @@ def generate_intro_choices_deferred(image_url: str, prologue: str, vision_dispat
         "image_url": image_url
     }
     history = [entry]
-    (ROOT / "history.json").write_text(json.dumps(history, indent=2))
-    _save_state(state)
+    _save_history(history, session_id)  # Use session-specific save!
+    _save_state(state, session_id)  # Pass session_id!
     
     return {
         "choices": options,
