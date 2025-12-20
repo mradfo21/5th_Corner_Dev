@@ -44,23 +44,22 @@ api_process = None
 def main():
     global bot_process, api_process
     
-    print("=" * 60)
-    print("Starting SOMEWHERE Game - Combined Service")
-    print("=" * 60)
+    print("=" * 60, flush=True)
+    print("Starting SOMEWHERE Game - Combined Service", flush=True)
+    print("=" * 60, flush=True)
     
     # Start API server FIRST to bind to port (critical for Render health checks)
-    print("[1/2] Starting API server (api.py) in background...")
+    print("[1/2] Starting API server (api.py) in background...", flush=True)
     port = os.getenv('PORT', '5001')
-    print(f"       API will bind to port {port}")
+    print(f"       API will bind to port {port}", flush=True)
     
     try:
         api_process = subprocess.Popen(
             [sys.executable, 'api.py'],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            universal_newlines=True
+            # Don't redirect stdout/stderr - let logs flow to parent process (Render logs)
+            # Redirecting to PIPE causes deadlock when buffer fills and we don't read it!
         )
-        print(f"       API server started (PID: {api_process.pid})")
+        print(f"       API server started (PID: {api_process.pid})", flush=True)
     except Exception as e:
         print(f"[ERROR] Failed to start API server: {e}")
         return 1
@@ -81,11 +80,10 @@ def main():
     try:
         bot_process = subprocess.Popen(
             [sys.executable, 'bot.py'],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            universal_newlines=True
+            # Don't redirect stdout/stderr - let logs flow to parent process (Render logs)
+            # Redirecting to PIPE causes deadlock when buffer fills and we don't read it!
         )
-        print(f"       Discord bot started (PID: {bot_process.pid})")
+        print(f"       Discord bot started (PID: {bot_process.pid})", flush=True)
     except Exception as e:
         print(f"[ERROR] Failed to start Discord bot: {e}")
         print(f"[INFO] API is still running, service will stay up")
