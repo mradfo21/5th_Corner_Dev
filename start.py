@@ -74,7 +74,7 @@ def main():
         print("[ERROR] API server exited immediately. Check api.py logs.")
         return 1
     
-    print("       ✅ API server is running")
+    print("       [OK] API server is running")
     
     # Now start Discord bot in background
     print("[2/2] Starting Discord bot (bot.py)...")
@@ -92,7 +92,7 @@ def main():
         # Don't return error - API is running
     
     print("=" * 60)
-    print("✅ Both services started successfully!")
+    print("[SUCCESS] Both services started successfully!")
     print(f"   • API: http://0.0.0.0:{port}")
     print(f"   • Dashboard: http://0.0.0.0:{port}/admin")
     print("=" * 60)
