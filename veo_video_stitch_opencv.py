@@ -97,3 +97,4 @@ def stitch_video_segments_opencv(segment_paths: List[str], output_path: Path) ->
         return None, f"Stitching error: {safe_error}"
 
 
+

@@ -417,3 +417,4 @@ Trade-off is higher latency and cost, but for users who want the **best possible
 **To enable:** Simply switch the image provider to "veo" in `ai_config.json` and restart!
 
 
+

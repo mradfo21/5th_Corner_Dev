@@ -1233,10 +1233,6 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             # Start auto-advance timer with new choices
             start_auto_advance_timer(interaction.channel, disp["choices"], view)
 
-            # Reset auto-advance timer on button press
-            if auto_advance_task and not auto_advance_task.done():
-                auto_advance_task.cancel()
-
     # ═══════════════════════════════════════════════════════════════════════════
     # Custom Action Modal and Button
     # ═══════════════════════════════════════════════════════════════════════════
@@ -1641,10 +1637,6 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             
             # Start auto-advance timer
             start_auto_advance_timer(interaction.channel, disp["choices"], view)
-            
-            # Reset auto-advance timer
-            if auto_advance_task and not auto_advance_task.done():
-                auto_advance_task.cancel()
     
     class CustomActionButton(Button):
         def __init__(self):
