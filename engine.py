@@ -3109,16 +3109,15 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
         
         # Add previous timestep image if provided
         if current_image:
-            # Use pre-downsampled version if available
-            if current_image.startswith("/images/"):
-                actual_path = Path("images") / current_image.replace("/images/", "")
+            # Use our centralized path resolution
+            actual_path = _resolve_image_path(current_image)
+            
+            if not actual_path or not actual_path.exists():
+                print(f"[GEMINI TEXT+IMG] WARNING: Could not resolve image path: {current_image}")
             else:
-                actual_path = Path(current_image)
-            
-            small_path = actual_path.parent / actual_path.name.replace(".png", "_small.png")
-            use_path = small_path if small_path.exists() else actual_path
-            
-            if use_path.exists():
+                # Use pre-downsampled version if available
+                small_path = actual_path.parent / actual_path.name.replace(".png", "_small.png")
+                use_path = small_path if small_path.exists() else actual_path
                 with open(use_path, "rb") as f:
                     import base64
                     image_data = base64.b64encode(f.read()).decode('utf-8')

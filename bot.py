@@ -1054,8 +1054,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             disp = {**phase1, **phase2, "dispatch_image": image_path}
 
             # CHECK FOR DEATH - Read FRESH state from file
-
-            engine.state = engine._load_state()  # Force reload from disk
+            # Note: get_state() already reloads from disk via API client
             current_state = engine.get_state()
             player_alive = current_state.get("player_state", {}).get("alive", True)
             player_health = current_state.get("player_state", {}).get("health", 100)
@@ -1486,8 +1485,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             await asyncio.sleep(0.3)  # Brief pause so they can read it
             
             # CHECK FOR DEATH - Read FRESH state
-
-            engine.state = engine._load_state()  # Force reload from disk
+            # Note: get_state() already reloads from disk via API client
             current_state = engine.get_state()
             player_alive = current_state.get("player_state", {}).get("alive", True)
             player_health = current_state.get("player_state", {}).get("health", 100)
@@ -3109,8 +3107,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                                 print(f"[COUNTDOWN] Image send failed: {e}")
                     
                     # CHECK FOR DEATH after timeout penalty
-
-                    engine.state = engine._load_state()
+                    # Note: get_state() already reloads from disk via API client
                     current_state = engine.get_state()
                     player_alive = current_state.get("player_state", {}).get("alive", True)
                     
@@ -3534,9 +3531,9 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 except Exception as e:
                     print(f"[AUTO-PLAY] Image send failed: {e}")
         
-        # CHECK FOR DEATH - Read FRESH state
-        engine.state = engine._load_state()  # Force reload from disk
-        current_state = engine.get_state()
+            # CHECK FOR DEATH - Read FRESH state
+            # Note: get_state() already reloads from disk via API client
+            current_state = engine.get_state()
         player_alive = current_state.get("player_state", {}).get("alive", True)
         player_health = current_state.get("player_state", {}).get("health", 100)
         
