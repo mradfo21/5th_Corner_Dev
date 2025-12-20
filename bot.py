@@ -2528,12 +2528,13 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     print(f"[TAPE] Frame 1 (intro) recorded - total frames: {len(_run_images)}")
                     
                     try:
-                        full_path = dispatch_image_path.lstrip("/")
-                        if os.path.exists(full_path):
-                            await interaction.channel.send(file=discord.File(full_path))
-                            print(f"[BOT INTRO] Image displayed immediately!")
+                        # Use _attach to handle path correctly (absolute or relative)
+                        discord_file, filename = _attach(dispatch_image_path, "Intro frame")
+                        if discord_file:
+                            await interaction.channel.send(file=discord_file)
+                            print(f"[BOT INTRO] Image displayed: {filename}")
                         else:
-                            print(f"[BOT INTRO] Image not found: {full_path}")
+                            print(f"[BOT INTRO] Image not found: {dispatch_image_path}")
                     except Exception as e:
                         print(f"[BOT INTRO] Failed to send opening image: {e}")
                 
@@ -2850,12 +2851,13 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     print(f"[CINEMATIC] Frame 1 recorded - total frames: {len(_run_images)}")
                     
                     try:
-                        full_path = dispatch_image_path.lstrip("/")
-                        if os.path.exists(full_path):
-                            await interaction.channel.send(file=discord.File(full_path))
-                            print(f"[CINEMATIC] First frame displayed!")
+                        # Use _attach to handle path correctly (absolute or relative)
+                        discord_file, filename = _attach(dispatch_image_path, "Cinematic frame")
+                        if discord_file:
+                            await interaction.channel.send(file=discord_file)
+                            print(f"[CINEMATIC] First frame displayed: {filename}")
                         else:
-                            print(f"[CINEMATIC] Image not found: {full_path}")
+                            print(f"[CINEMATIC] Image not found: {dispatch_image_path}")
                     except Exception as e:
                         print(f"[CINEMATIC] Failed to send opening image: {e}")
                 
