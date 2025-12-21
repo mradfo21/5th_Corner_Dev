@@ -3773,23 +3773,23 @@ def generate_intro_image_fast(session_id='default'):
     # Randomize opening scene
     opening_scenes = [
         {
-            "prologue": "Jason surveys the Horizon facility from a rocky outcrop in the desert.",
+            "prologue": "You survey the Horizon facility from a rocky outcrop in the desert.",
             "vision": "The Horizon facility sprawls across the red desert valley below, industrial structures stark against the mesa backdrop."
         },
         {
-            "prologue": "Jason stands at the edge of the quarantine perimeter, watching the facility in the distance.",
+            "prologue": "You stand at the edge of the quarantine perimeter, watching the facility in the distance.",
             "vision": "Beyond the barbed wire fence, the Horizon facility's concrete structures stretch across the arid landscape."
         },
         {
-            "prologue": "Jason approaches the facility compound across the open desert terrain.",
+            "prologue": "You approach the facility compound across the open desert terrain.",
             "vision": "The facility looms ahead across the barren red earth, its angular silhouette cutting through the dusty air."
         },
         {
-            "prologue": "Jason pauses near a warning sign marking the quarantine zone boundary.",
+            "prologue": "You pause near a warning sign marking the quarantine zone boundary.",
             "vision": "Past the weathered quarantine signs, the sprawling Horizon complex dominates the valley floor."
         },
         {
-            "prologue": "Jason observes the facility from a vantage point atop the red mesa.",
+            "prologue": "You observe the facility from a vantage point atop the red mesa.",
             "vision": "From the mesa's edge, the entire Horizon facility layout is visible below—a vast industrial complex in the desert."
         }
     ]
@@ -3929,23 +3929,23 @@ def generate_intro_turn(session_id: str = 'default'):
     # Randomize opening scene for variety - no specific objects that will haunt subsequent generations
     opening_scenes = [
         {
-            "prologue": "Jason surveys the Horizon facility from a rocky outcrop in the desert.",
+            "prologue": "You survey the Horizon facility from a rocky outcrop in the desert.",
             "vision": "The Horizon facility sprawls across the red desert valley below, industrial structures stark against the mesa backdrop."
         },
         {
-            "prologue": "Jason stands at the edge of the quarantine perimeter, watching the facility in the distance.",
+            "prologue": "You stand at the edge of the quarantine perimeter, watching the facility in the distance.",
             "vision": "Beyond the barbed wire fence, the Horizon facility's concrete structures stretch across the arid landscape."
         },
         {
-            "prologue": "Jason approaches the facility compound across the open desert terrain.",
+            "prologue": "You approach the facility compound across the open desert terrain.",
             "vision": "The facility looms ahead across the barren red earth, its angular silhouette cutting through the dusty air."
         },
         {
-            "prologue": "Jason pauses near a warning sign marking the quarantine zone boundary.",
+            "prologue": "You pause near a warning sign marking the quarantine zone boundary.",
             "vision": "Past the weathered quarantine signs, the sprawling Horizon complex dominates the valley floor."
         },
         {
-            "prologue": "Jason observes the facility from a vantage point atop the red mesa.",
+            "prologue": "You observe the facility from a vantage point atop the red mesa.",
             "vision": "From the mesa's edge, the entire Horizon facility layout is visible below—a vast industrial complex in the desert."
         }
     ]

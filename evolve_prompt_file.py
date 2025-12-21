@@ -109,7 +109,7 @@ PLAYER'S LATEST ACTION:
 CONSEQUENCE OF ACTION:
 {consequence_summary}
 
-VISION ANALYSIS (what Jason's camera sees right now):
+VISION ANALYSIS (what your camera sees right now):
 {vision_description if vision_description else "[No visual analysis]"}
 
 YOUR TASK:
