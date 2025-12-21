@@ -779,8 +779,6 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             self.add_item(inventory_btn)  # Discord.py automatically sets view
             autoplay_btn = AutoPlayToggleButton(self)
             self.add_item(autoplay_btn)  # Discord.py automatically sets view
-            quality_btn = QualityToggleButton(self)
-            self.add_item(quality_btn)  # Discord.py automatically sets view
             regen_btn = RegenerateChoicesButton(self)
             self.add_item(regen_btn)  # Discord.py automatically sets view
             # Row 2 buttons
@@ -2105,51 +2103,6 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 modal = AutoPlayDelayModal(self.parent_view)
                 await interaction.response.send_modal(modal)
     
-    class QualityToggleButton(Button):
-        def __init__(self, parent_view):
-            global quality_mode_enabled
-            label = "⚡ Quality: HQ" if quality_mode_enabled else "⚡ Quality: FAST"
-            style = discord.ButtonStyle.success if quality_mode_enabled else discord.ButtonStyle.secondary
-            super().__init__(label=label, style=style, row=1)
-            self.parent_view = parent_view
-        
-        async def callback(self, interaction: discord.Interaction):
-            # Authorization check
-            if hasattr(self, 'view') and self.view and hasattr(self.view, 'owner_id'):
-                if not check_authorization(interaction, self.view.owner_id):
-                    await interaction.response.send_message(
-                        "🔒 Only the game owner can toggle quality mode.",
-                        ephemeral=True
-                    )
-                    return
-            
-            global quality_mode_enabled
-
-            
-            # Toggle quality mode
-            quality_mode_enabled = not quality_mode_enabled
-            engine.QUALITY_MODE = quality_mode_enabled
-            
-            # Update button appearance
-            if quality_mode_enabled:
-                self.label = "⚡ Quality: HQ"
-                self.style = discord.ButtonStyle.success
-                print("[QUALITY MODE] HQ - Using Gemini Pro (slower, higher quality)")
-            else:
-                self.label = "⚡ Quality: FAST"
-                self.style = discord.ButtonStyle.secondary
-                print("[QUALITY MODE] FAST - Using Gemini Flash (faster, lower quality)")
-            
-            # Update the view to show new button state
-            try:
-                await interaction.response.edit_message(view=self.parent_view)
-            except Exception as e:
-                print(f"[HD MODE] Failed to update button: {e}")
-                try:
-                    await interaction.response.defer()
-                except:
-                    pass
-
     class MapButton(Button):
         def __init__(self):
             super().__init__(emoji="🗺️", style=discord.ButtonStyle.secondary, row=1)
@@ -3517,7 +3470,6 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
     # --- Quality mode ---
     # Quality mode toggles between Gemini Flash (fast) and Gemini Pro (high quality)
     # NOTE: This is separate from "HD Mode" (Veo cinematic video generation)
-    quality_mode_enabled = True  # Default to HQ mode (Pro) for quality
     current_choices = []  # Track current available choices
     current_view = None  # Track current view for auto-advance
     
