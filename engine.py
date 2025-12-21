@@ -482,7 +482,7 @@ except Exception as e:
     traceback.print_exc()
     # Create default state if loading fails
     state = {
-        "world_prompt": "Jason crouches behind a rusted Horizon vehicle at the edge of the facility.",
+        "world_prompt": "You crouch behind a rusted Horizon vehicle at the edge of the facility.",
         "current_phase": "normal",
         "chaos_level": 0,
         "last_choice": "",
@@ -584,23 +584,26 @@ def summarize_world_state(state: dict) -> str:
     """
     Return a single, actionable, dynamic sentence summarizing the most important, immediate world state or threat.
     Prioritize: player danger, pursuit, injury, chaos, visible threats, or urgent objectives.
+    
+    NOTE: This function is unused (dead code). Uses third-person "Jason" which breaks immersion.
+    Consider removing entirely.
     """
     chaos = state.get('chaos_level', 0)
     if chaos > 7:
         return "OVERWHELMING CHAOS! Immediate, decisive action is paramount to survive!"
     elif chaos > 5:
-        return "CRITICAL CHAOS! Guards are on high alert and actively hunting for Jason."
+        return "CRITICAL CHAOS! Guards are on high alert and actively hunting."
     
     if not state.get('player_state', {}).get('alive', True):
-        return "Jason is gravely wounded and in danger of dying."
+        return "You are gravely wounded and in danger of dying."
     if 'storm' in state.get('world_prompt', '').lower():
         return "A violent storm is gathering overhead."
     if any(word in state.get('world_prompt', '').lower() for word in ['pursued', 'chased', 'hunted', 'spotted']):
-        return "Jason is being pursued by hostile forces."
+        return "You are being pursued by hostile forces."
     if 'red biome' in state.get('world_prompt', '').lower():
         return "The red biome is dangerously close."
     # Add more as needed for your motifs
-    return "Jason is alone, but danger could strike at any moment."
+    return "You are alone, but danger could strike at any moment."
 
 # ───────── safe OpenAI wrapper ──────────────────────────────────────────────
 def _call(fn, *a, **kw):
@@ -1065,7 +1068,7 @@ def _generate_dispatch(choice: str, state: dict, prev_state: dict = None) -> dic
             f"WORLD CONTEXT: {state['world_prompt']}\n"
             f"PREVIOUS: {prev_state['world_prompt'] if prev_state else ''}"
             f"{spatial_context}\n\n"
-            "Describe what Jason does and what immediately happens as a result."
+            "Describe what you do and what immediately happens as a result."
         )
         # Don't use lore - dispatch is immediate action/consequence, not world building
         result = _ask(prompt, model="gemini", temp=1.0, tokens=250, image_path=prev_image_path, use_lore=False)
@@ -1089,7 +1092,7 @@ def _generate_dispatch(choice: str, state: dict, prev_state: dict = None) -> dic
         # FALLBACK: Plain text (old format) - assume player alive
         # If result is just '[' or '[]' or empty, fallback immediately
         if result.strip() in {"[", "[]", ""}:
-            return {"dispatch": "Jason makes a tense move in the chaos.", "player_alive": True}
+            return {"dispatch": "You make a tense move in the chaos.", "player_alive": True}
         
         # Sanitize: if result looks like a list, extract the text
         if result.startswith("[") or result.startswith("-") or result.startswith("\""):
@@ -1103,7 +1106,7 @@ def _generate_dispatch(choice: str, state: dict, prev_state: dict = None) -> dic
             except Exception:
                 lines = [l.strip('-*[] ",') for l in result.splitlines() if l.strip()]
                 if not lines or all(l in {"[", "[]", ""} for l in lines):
-                    return {"dispatch": "Jason makes a tense move in the chaos.", "player_alive": True}
+                    return {"dispatch": "You make a tense move in the chaos.", "player_alive": True}
                 result = " ".join(lines)
         
         # Hard cap at 400 characters
@@ -1114,7 +1117,7 @@ def _generate_dispatch(choice: str, state: dict, prev_state: dict = None) -> dic
         
     except Exception as e:
         log_error(f"[DISPATCH] LLM error: {e}")
-        return {"dispatch": "Jason makes a tense move in the chaos.", "player_alive": True}
+        return {"dispatch": "You make a tense move in the chaos.", "player_alive": True}
 
 def _generate_caption(dispatch: str, mode: str, is_first_frame: bool = False) -> str:
     # Simplified caption generation - not used in StoryGen version
@@ -1524,14 +1527,8 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
         image_path = img_dir / filename
         
         # --- ROUTE TO APPROPRIATE IMAGE PROVIDER ---
-        active_image_provider = ai_provider_manager.get_image_provider()
-        print(f"[IMG DEBUG] active_image_provider = {active_image_provider}", flush=True)
-        print(f"[IMG DEBUG] About to call image generation API...", flush=True)
-        
-        if active_image_provider == "veo":
-            print(f"[IMG DEBUG] -> Calling Veo video generation...", flush=True)
-            print(f"[IMG DEBUG] Entering Veo branch", flush=True)
-            try:
+        active_image_provider = ai_provider_manager.get_image_provider()        
+        if active_image_provider == "veo":            try:
                 # Use Veo 3.1 for video-based image generation
                 # Generates video from previous frame, extracts last frame as "image"
                 print(f"[IMG] Using Veo 3.1 video generation (last frame extraction)", flush=True)
@@ -1913,10 +1910,10 @@ def _sanitize_for_image_generation(text: str) -> str:
 # ───────── vision dispatch generator ─────────────────────────────────────────
 def _generate_vision_dispatch(narrative_dispatch: str, world_prompt: str = "") -> str:
     prompt = (
-        "You are a visual scene writer. Output only the literal, visible scene as Jason would see it, in first-person present tense.\n\n"
-        "Rewrite the following narrative as a first-person, present-tense description of what Jason sees, suitable for a visual scene. "
-        "Only describe what is visible. Do not include Jason himself or any internal thoughts. "
-        "Do not show Jason. Do not show the protagonist. Do not show any character from behind. Only show what Jason sees from his own eyes. "
+        "You are a visual scene writer. Output only the literal, visible scene as you would see it, in first-person present tense.\n\n"
+        "Rewrite the following narrative as a first-person, present-tense description of what you see, suitable for a visual scene. "
+        "Only describe what is visible. Do not include yourself or any internal thoughts. "
+        "Do not show yourself. Do not show the protagonist. Do not show any character from behind. Only show what you see from your own eyes. "
         f"\n\nNARRATIVE DISPATCH: {narrative_dispatch}\n\nWORLD CONTEXT: {world_prompt}"
     )
     # Don't use lore - this is just reformatting narrative to visual description
@@ -1951,7 +1948,7 @@ def begin_tick() -> dict:
     
     state = _load_state()
     # If at intro/prologue, return generate_intro_turn result (with choices)
-    if not history or (state.get('last_choice', '') == '' and state.get('world_prompt', '').startswith('Jason crouches behind a rusted Horizon vehicle')):
+    if not history or (state.get('last_choice', '') == '' and state.get('world_prompt', '').startswith('You crouch behind a rusted Horizon vehicle')):
         return generate_intro_turn()
     # Generate a world summary (narrative)
     world_summary = state["world_prompt"]
@@ -2087,7 +2084,7 @@ def extract_scene_elements(*args):
 def generate_crisis_choices(dispatch, vision, world_prompt):
     """Generate 2 urgent, high-stakes crisis choices for action mode."""
     crisis_prompt = (
-        "You are in a crisis/action scene. Only present 2 urgent, high-stakes choices for Jason Fleece. "
+        "You are in a crisis/action scene. Only present 2 urgent, high-stakes choices for the player. "
         "Choices must be desperate, risky, or immediate reactions to the current threat (e.g., 'Dodge and run', 'Return fire', 'Drop to the ground and play dead'). "
         "Do not include exploration or investigation. Only direct, crisis responses.\n"
         f"DISPATCH: {dispatch}\nVISION: {vision}\nWORLD: {world_prompt}"
@@ -2145,11 +2142,11 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             # For now, this is just a signal, if it fails, the check in api_choose will show it.
             pass 
             
-    print(f"DEBUG PRINT: _process_turn_background THREAD SPAWNED - VERY FIRST LINE. Choice: '{choice}'", flush=True) # ULTRA-EARLY PRINT
+    if DEBUG_MODE: print(f"[DEBUG] _process_turn_background THREAD SPAWNED - VERY FIRST LINE. Choice: '{choice}'", flush=True) # ULTRA-EARLY PRINT
     global state, history, _last_image_path
     # Add a small delay to simulate processing and allow client to update.
     time.sleep(0.75) # Adjusted as per previous implementation for pacing
-    print(f"DEBUG PRINT: _process_turn_background THREAD ENTERED for choice: '{choice}', originating action ID: {initial_player_action_item_id}", flush=True)
+    if DEBUG_MODE: print(f"[DEBUG] _process_turn_background THREAD ENTERED for choice: '{choice}', originating action ID: {initial_player_action_item_id}", flush=True)
 
     new_feed_items_for_log: List[Dict[str, Any]] = []
     dispatch_text = "Default initial dispatch text" # Initialize dispatch_text
@@ -2166,19 +2163,15 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
         # has already logged the player_action. This thread logs subsequent events.
 
         prev_state_snapshot = current_state_snapshot.copy() # For context to generators
-        print(f"DEBUG PRINT: _process_turn_background - State loaded. Player choice: {choice}", flush=True)
-
         # 1. Generate Narrative Dispatch ("Result" of player action)
         dispatch_text = ""
         try:
-            print(f"DEBUG PRINT: _process_turn_background - Generating narrative dispatch...", flush=True)
+            if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Generating narrative dispatch...", flush=True)
             dispatch_text = _generate_dispatch(choice, current_state_snapshot, prev_state_snapshot)
             if not dispatch_text or dispatch_text.strip().lower() in {"none", "", "[", "[]"}:
                 dispatch_text = "The situation evolves..."
             dispatch_item = create_feed_item(type="narrative_event", content=dispatch_text, metadata={"source": "dispatch"})
-            new_feed_items_for_log.append(dispatch_item)
-            print(f"DEBUG PRINT: _process_turn_background - Narrative dispatch generated: {dispatch_text[:60]}...", flush=True)
-        except Exception as e_dispatch:
+            new_feed_items_for_log.append(dispatch_item)        except Exception as e_dispatch:
             log_error(f"Error during _process_turn_background narrative dispatch generation: {e_dispatch}")
             error_item = create_feed_item(type="error_event", content=f"Error generating dispatch: {e_dispatch}")
             new_feed_items_for_log.append(error_item)
@@ -2194,14 +2187,12 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
         # This was part of generate_and_apply_choice which is now more LLM focused.
         # We might need to re-evaluate if some direct state changes based on choice keywords are needed here.
         # For now, primary world state evolution happens in generate_and_apply_choice and evolve_world_state.
-        print(f"DEBUG PRINT: _process_turn_background - Applying choice to world state (via choices.py)...", flush=True)
+        if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Applying choice to world state (via choices.py)...", flush=True)
         try:
             import choices  # Local import to avoid circular dependency
             choices.generate_and_apply_choice(choice, dispatch_text_from_engine=dispatch_text) # Call via module
             # Reload state after choices.py potentially modified it
-            state = _load_state()
-            print(f"DEBUG PRINT: _process_turn_background - generate_and_apply_choice completed and state reloaded.", flush=True)
-        except Exception as e_apply_choice:
+            state = _load_state()        except Exception as e_apply_choice:
             log_error(f"Error in _process_turn_background calling generate_and_apply_choice: {e_apply_choice}")
             error_item = create_feed_item(type="error_event", content=f"Error processing choice's core impact: {e_apply_choice}")
             new_feed_items_for_log.append(error_item)
@@ -2213,16 +2204,12 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
         # 3. Generate Consequence Summary (based on dispatch and potentially new world state)
         consequence_text = ""
         try:
-            print(f"DEBUG PRINT: _process_turn_background - Generating consequence summary...", flush=True)
+            if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Generating consequence summary...", flush=True)
             # Pass the state *after* generate_and_apply_choice for more accurate consequence
             consequence_text = generate_consequence_summary(dispatch_text, prev_state_snapshot, state, choice)
             if consequence_text and consequence_text.strip().lower() not in ["no major consequence observed.", "no major consequence.", "none", ""]:
                 consequence_item = create_feed_item(type="consequence_event", content=consequence_text)
-                new_feed_items_for_log.append(consequence_item)
-                print(f"DEBUG PRINT: _process_turn_background - Consequence summary generated: {consequence_text[:60]}...", flush=True)
-            else:
-                print(f"DEBUG PRINT: _process_turn_background - No significant consequence generated.", flush=True)
-        except Exception as e_consequence:
+                new_feed_items_for_log.append(consequence_item)            else:        except Exception as e_consequence:
             log_error(f"Error generating consequence summary in _process_turn_background: {e_consequence}")
             error_item = create_feed_item(type="error_event", content=f"Error generating consequence: {e_consequence}")
             new_feed_items_for_log.append(error_item)
@@ -2245,11 +2232,9 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             # This is the primary vision_dispatch_text for the turn's narrative dispatch
             vision_dispatch_text = _generate_vision_dispatch(dispatch_text, world_prompt_for_image) # Assign to the broader scoped variable
             vision_dispatch_for_image = vision_dispatch_text # Also use it for the image gen step
-            print(f"DEBUG PRINT: _process_turn_background - Vision dispatch for image (and general use): {vision_dispatch_for_image[:60]}...", flush=True)
-
         new_image_url = None
         if IMAGE_ENABLED and vision_dispatch_for_image:
-            print(f"DEBUG PRINT: _process_turn_background - Generating image...", flush=True)
+            if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Generating image...", flush=True)
             try:
                 hard_trans = is_hard_transition(choice, dispatch_text)
                 new_image_url, image_prompt, video_url = _gen_image(
@@ -2269,16 +2254,12 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                     state['current_image_url'] = new_image_url # Update global state
                     state['current_image_prompt'] = image_prompt # Store prompt for history
                     state['current_hard_transition'] = hard_trans # Store hard transition flag
-                    print(f"DEBUG PRINT: _process_turn_background - Image generated: {new_image_url}", flush=True)
-
                     if VISION_ENABLED: # Vision analysis of the new image
-                        print(f"DEBUG PRINT: _process_turn_background - Generating vision analysis for new image...", flush=True)
+                        if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Generating vision analysis for new image...", flush=True)
                         vision_text = _vision_describe(new_image_url)
                         if vision_text:
                             vision_item = create_feed_item(type="vision_analysis", content=vision_text, metadata={"source_image_url": new_image_url})
-                            new_feed_items_for_log.append(vision_item)
-                            print(f"DEBUG PRINT: _process_turn_background - Vision analysis generated: {vision_text[:60]}...", flush=True)
-            except Exception as e_img_vision:
+                            new_feed_items_for_log.append(vision_item)            except Exception as e_img_vision:
                 log_error(f"Error during image/vision generation in _process_turn_background: {e_img_vision}")
                 error_item = create_feed_item(type="error_event", content=f"Error generating visual data: {e_img_vision}")
                 new_feed_items_for_log.append(error_item)
@@ -2304,13 +2285,13 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
         if "FORCE_COMBAT_SCENARIO" in choice:
             is_threat = True
             threat_description = "Combat explicitly triggered by test choice text."
-            print(f"DEBUG PRINT: Combat path forced by choice text: '{choice}'", flush=True)
+            if DEBUG_MODE: print(f"[DEBUG] Combat path forced by choice text: '{choice}'", flush=True)
 
         if FORCE_TEST_THREAT: # Existing flag can still be a backup or for other tests
             is_threat = True # Ensure this is also set if flag is true
             # Prioritize more specific description if already set by choice text trigger
             threat_description = threat_description if "Combat explicitly triggered" in threat_description else "Forced test threat triggered by FORCE_TEST_THREAT flag."
-            print(f"DEBUG PRINT: FORCE_TEST_THREAT activated is_threat={is_threat}. Current threat_description: '{threat_description}'", flush=True)
+            if DEBUG_MODE: print(f"[DEBUG] FORCE_TEST_THREAT activated is_threat={is_threat}. Current threat_description: '{threat_description}'", flush=True)
             FORCE_TEST_THREAT = False # Reset after use to prevent affecting subsequent calls in the same test run if any
         elif not ("Combat explicitly triggered" in threat_description) and is_threat:
             # Only set threat_description if is_threat is True from the original call and not forced by choice/flag
@@ -2319,7 +2300,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
         # is_threat, threat_description = False, "" # COMMENTED OUT PLACEHOLDER
         
         if state.get('in_combat', False):
-            print(f"DEBUG PRINT: _process_turn_background - Already in combat. Resolving combat turn for choice: '{choice}'", flush=True)
+            if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Already in combat. Resolving combat turn for choice: '{choice}'", flush=True)
             
             combat_action_item = create_feed_item(type="combat_action", content=f"You chose to: {choice}")
             new_feed_items_for_log.append(combat_action_item)
@@ -2334,7 +2315,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                     outcome_message = "Your decisive action pays off! The threat is neutralized."
                     state['in_combat'] = False
                     combat_ended_this_turn = True
-                    print(f"DEBUG PRINT: _process_turn_background - Combat WIN via specific choice 'Engage the threat directly'.", flush=True)
+                    if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Combat WIN via specific choice 'Engage the threat directly'.", flush=True)
                 else: # Generic attack
                     if random.random() < 0.6: # 60% chance to win other attacks
                         outcome_message = "Your attack connects! The threat is neutralized."
@@ -2368,7 +2349,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
 
             if not state.get('in_combat', False): # Combat ended
                 proceed_with_standard_evolution = True
-                print(f"DEBUG PRINT: _process_turn_background - Combat has ENDED. Proceeding with standard evolution. Outcome: {outcome_message}", flush=True)
+                if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Combat has ENDED. Proceeding with standard evolution. Outcome: {outcome_message}", flush=True)
             else: # Combat continues
                 # Regenerate combat choices
                 current_combat_choices_texts = ["Attack again", "Try to disengage"]
@@ -2379,11 +2360,11 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                 )
                 new_feed_items_for_log.append(combat_choices_item)
                 proceed_with_standard_evolution = False
-                print(f"DEBUG PRINT: _process_turn_background - Combat CONTINUES. New combat choices generated.", flush=True)
-            print(f"DEBUG PRINT: _process_turn_background - Exiting ONGOING COMBAT logic. new_feed_items_for_log count: {len(new_feed_items_for_log)}. Proceed standard: {proceed_with_standard_evolution}", flush=True)
+                if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Combat CONTINUES. New combat choices generated.", flush=True)
+            if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Exiting ONGOING COMBAT logic. new_feed_items_for_log count: {len(new_feed_items_for_log)}. Proceed standard: {proceed_with_standard_evolution}", flush=True)
             # pass # Simplified for now <-- REMOVE THIS
         elif is_threat: # check new threat
-            print(f"DEBUG PRINT: _process_turn_background - ENTERING elif is_threat BLOCK. Threat: {threat_description}", flush=True)
+            if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - ENTERING elif is_threat BLOCK. Threat: {threat_description}", flush=True)
             
             suspense_item = create_feed_item(type="suspense_event", content=f"Threat detected! {threat_description}")
             new_feed_items_for_log.append(suspense_item)
@@ -2395,7 +2376,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             new_feed_items_for_log.append(threat_escalation_item)
             
             state['in_combat'] = True
-            print(f"DEBUG PRINT: _process_turn_background - State in_combat SET TO TRUE.", flush=True)
+            if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - State in_combat SET TO TRUE.", flush=True)
             
             # Generate combat-specific choices
             # For now, using predefined combat choices. Later, this could use generate_crisis_choices or similar.
@@ -2415,17 +2396,17 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             new_feed_items_for_log.append(combat_choices_item)
             
             proceed_with_standard_evolution = False # Prevent normal choice generation
-            print(f"DEBUG PRINT: _process_turn_background - Combat choices generated, proceed_with_standard_evolution SET TO FALSE.", flush=True)
+            if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Combat choices generated, proceed_with_standard_evolution SET TO FALSE.", flush=True)
             
             # new_feed_items_for_log now contains suspense, escalation, and combat choices.
             # These will be saved in the block after the if/elif/else for combat/threat/risky_action.
-            print(f"DEBUG PRINT: _process_turn_background - Exiting elif is_threat BLOCK. new_feed_items_for_log count: {len(new_feed_items_for_log)}", flush=True)
+            if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Exiting elif is_threat BLOCK. new_feed_items_for_log count: {len(new_feed_items_for_log)}", flush=True)
             
         # Risky action check (if not in combat and not an immediate threat)
         elif any(keyword in choice.lower() for keyword in RISKY_ACTION_KEYWORDS) and not state.get('in_combat') and not is_threat:
-            print(f"DEBUG PRINT: _process_turn_background - ENTERING RISKY ACTION BLOCK. Choice: '{choice}'", flush=True)
+            if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - ENTERING RISKY ACTION BLOCK. Choice: '{choice}'", flush=True)
             
-            suspense_content = f"Jason considers the risky action: '{choice}'. The air crackles with uncertainty."
+            suspense_content = f"You consider the risky action: '{choice}'. The air crackles with uncertainty."
             suspense_item = create_feed_item(type="suspense_event", content=suspense_content, metadata={"action_type": "risky"})
             new_feed_items_for_log.append(suspense_item)
             
@@ -2433,10 +2414,10 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             action_succeeded = random.random() < 0.5 
             
             if action_succeeded:
-                outcome_content = f"Against the odds, Jason's risky move ('{choice}') pays off!"
+                outcome_content = f"Against the odds, your risky move ('{choice}') pays off!"
                 state["chaos_level"] = max(0, state.get("chaos_level", 0) - 1) # Decrease chaos slightly
             else:
-                outcome_content = f"Unfortunately, Jason's gamble ('{choice}') backfires, escalating the danger."
+                outcome_content = f"Unfortunately, your gamble ('{choice}') backfires, escalating the danger."
                 state["chaos_level"] = state.get("chaos_level", 0) + 1 # Increase chaos
 
             outcome_item = create_feed_item(
@@ -2446,7 +2427,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             )
             new_feed_items_for_log.append(outcome_item)
             
-            print(f"DEBUG PRINT: _process_turn_background - Risky action outcome: {'Success' if action_succeeded else 'Failure'}. Chaos level: {state.get('chaos_level')}", flush=True)
+            if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Risky action outcome: {'Success' if action_succeeded else 'Failure'}. Chaos level: {state.get('chaos_level')}", flush=True)
             proceed_with_standard_evolution = True # Risky actions usually lead to new standard choices
 
         # If combat items were added, save them
@@ -2458,20 +2439,20 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             
         # 6. Evolve World State (if not in ongoing combat or other non-standard path)
         if proceed_with_standard_evolution:
-            print(f"DEBUG PRINT: _process_turn_background - Evolving world state (evolve_prompt_file.evolve_world_state)...", flush=True)
+            if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Evolving world state (evolve_prompt_file.evolve_world_state)...", flush=True)
             # Removed the potentially problematic simple call: evolve_world_state(state)
             # state = _load_state() # Reloading here might not be necessary if the above was the only modifier
 
             # Evolve world state (LLM call, can be slow)
             if LLM_ENABLED: 
-                print(f"DEBUG PRINT: _process_turn_background - Preparing for LLM-based world state evolution...", flush=True)
+                if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Preparing for LLM-based world state evolution...", flush=True)
                 
                 # Ensure we are getting a list of feed items for dispatches
                 current_feed_log_for_evolution = list(state.get('feed_log', [])) 
                 # Ensure consequence_text is defined; it should be from earlier in the function
                 # vision_dispatch_text should also be defined from earlier
 
-                print(f"DEBUG PRINT: _process_turn_background - Calling evolve_prompt_file.evolve_world_state. Dispatch count: {len(current_feed_log_for_evolution)}, Consequence: '{consequence_text[:50]}...', Vision: '{vision_dispatch_text[:50]}...'", flush=True)
+                if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Calling evolve_prompt_file.evolve_world_state. Dispatch count: {len(current_feed_log_for_evolution)}, Consequence: '{consequence_text[:50]}...', Vision: '{vision_dispatch_text[:50]}...'", flush=True)
 
                 # NOTE: This code path is legacy (web UI), always uses 'legacy' session
                 # For Discord bot, use advance_turn_image_fast which is session-aware
@@ -2481,29 +2462,18 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                     consequence_summary=consequence_text, 
                     state_file=str(legacy_state_path),  # Use session-specific path
                     vision_description=vision_dispatch_text
-                )
-                print(f"DEBUG PRINT: _process_turn_background - World state evolution complete. Reloading state.", flush=True)
-                state = _load_state('legacy') # Reload legacy session state after evolution
+                )                state = _load_state('legacy') # Reload legacy session state after evolution
                 
                 # Store evolution summary for player display
                 if evolution_result and "evolution_summary" in evolution_result:
                     state["evolution_summary"] = evolution_result["evolution_summary"]
                     _save_state(state, 'legacy')
             else:
-                print(f"DEBUG PRINT: _process_turn_background - LLM_ENABLED is False, skipping LLM-based world evolution.", flush=True)
-
         # 7. Generate Next Choices (if not in ongoing combat or other non-standard path that provides its own choices)
         if proceed_with_standard_evolution:
-            print(f"DEBUG PRINT: _process_turn_background - Standard Path: Generating next choices START...", flush=True)
-            
-            print(f"DEBUG PRINT: _process_turn_background - STEP 1: Setting empty prompt for choices...", flush=True)
-            # Set the prompt above choices to empty string (no text)
-            final_choice_prompt_text = ""
-            print(f"DEBUG PRINT: _process_turn_background - STEP 1: final_choice_prompt_text (empty): '{final_choice_prompt_text}'", flush=True)
-            
-            # Call choices.generate_choices
-            print(f"DEBUG PRINT: _process_turn_background - STEP 2: Calling choices.generate_choices...", flush=True)
-            
+            if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Standard Path: Generating next choices START...", flush=True)            # Set the prompt above choices to empty string (no text)
+            final_choice_prompt_text = ""            
+            # Call choices.generate_choices            
             # Prepare recent_choices as a string, from list of dicts
             raw_recent_choices = state.get("choices", [])
             recent_choices_str = "\n".join([rc.get("text", "") for rc in raw_recent_choices if isinstance(rc, dict) and rc.get("text")])
@@ -2530,50 +2500,29 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                 # temperature=0.7, # Optional, let choices.py use its default
                 situation_summary=consequence_for_choices
             )
-            print(f"DEBUG PRINT: _process_turn_background - STEP 2: choices.generate_choices returned (first 2): {new_choices[:2]}", flush=True)
-
             if not new_choices:
                 print("WARNING: choices.generate_choices returned empty list. Using fallback choices.", flush=True)
-                new_choices = ["Investigate further", "Scan the area", "Proceed with caution"]
-            
-            print(f"DEBUG PRINT: _process_turn_background - STEP 3: Calling _structure_choices_for_feed...", flush=True)
-            # Corrected call: removed metadata argument as _structure_choices_for_feed doesn't accept it
-            choice_item = _structure_choices_for_feed(new_choices, final_choice_prompt_text, state.get("current_image_url"))
-            print(f"DEBUG PRINT: _process_turn_background - STEP 3: _structure_choices_for_feed returned item ID: {choice_item.get('id')}", flush=True)
-            
+                new_choices = ["Investigate further", "Scan the area", "Proceed with caution"]            # Corrected call: removed metadata argument as _structure_choices_for_feed doesn't accept it
+            choice_item = _structure_choices_for_feed(new_choices, final_choice_prompt_text, state.get("current_image_url"))            
             new_feed_items_for_log.append(choice_item)
             state["choices"] = choice_item["choices"] # Save new choices to top-level state for compatibility
             state["choices_metadata"] = choices_meta # Save choices_meta separately in state
             
-            # Save state with new choices
-            print(f"DEBUG PRINT: _process_turn_background - STEP 4: Saving state with new choices...", flush=True)
-            with WORLD_STATE_LOCK:
+            # Save state with new choices            with WORLD_STATE_LOCK:
                 state.setdefault('feed_log', []).extend(new_feed_items_for_log)
-                _save_state(state) 
-            print(f"DEBUG PRINT: _process_turn_background - STEP 4: State saved.", flush=True)
-            new_feed_items_for_log.clear()
+                _save_state(state)            new_feed_items_for_log.clear()
 
-        if new_feed_items_for_log: # If choices or error were added
-            print(f"DEBUG PRINT: _process_turn_background - STEP 4: Adding {len(new_feed_items_for_log)} item(s) to feed_log before saving.", flush=True)
-            with WORLD_STATE_LOCK:
+        if new_feed_items_for_log: # If choices or error were added            with WORLD_STATE_LOCK:
                 state.setdefault('feed_log', []).extend(new_feed_items_for_log)
                 _save_state(state) # Save state with new choices
-            new_feed_items_for_log.clear()
-            print(f"DEBUG PRINT: _process_turn_background - STEP 4: New choice item(s) saved to state's feed_log.", flush=True)
-        else:
-            print(f"DEBUG PRINT: _process_turn_background - STEP 4: No new items (e.g. choices) were generated in this cycle to add to feed_log.", flush=True)
+            new_feed_items_for_log.clear()        else:
 
-
-        # Player Death Check - using the main dispatch_text of this turn
-        print(f"DEBUG PRINT: _process_turn_background - About to call check_player_death. Dispatch: '{dispatch_text[:30]}...'", flush=True)
-        player_is_dead = False
+        # Player Death Check - using the main dispatch_text of this turn        player_is_dead = False
         try:
-            player_is_dead = check_player_death(dispatch_text, state.get("world_prompt"), choice)
-            print(f"DEBUG PRINT: _process_turn_background - check_player_death returned: {player_is_dead}", flush=True)
-            if player_is_dead:
-                print(f"DEBUG PRINT: _process_turn_background - Player death detected by check_player_death.", flush=True)
+            player_is_dead = check_player_death(dispatch_text, state.get("world_prompt"), choice)            if player_is_dead:
+                if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Player death detected by check_player_death.", flush=True)
                 state["player_state"]["alive"] = False
-                game_over_item = create_feed_item(type="game_over", content="Jason has succumbed to the horrors. The transmission ends.")
+                game_over_item = create_feed_item(type="game_over", content="You have succumbed to the horrors. The transmission ends.")
                 game_over_choices_item = _structure_choices_for_feed(
                     ["Restart Simulation"], 
                     "GAME OVER",
@@ -2585,11 +2534,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                     _save_state(state)
         except Exception as e_death_check:
             log_error(f"Error during player death check in _process_turn_background: {e_death_check}")
-            print(f"DEBUG PRINT: _process_turn_background - Exception during check_player_death: {e_death_check}", flush=True)
-
-        # Update history.json (simplified)
-        print(f"DEBUG PRINT: _process_turn_background - About to update history.json", flush=True)
-        history_entry = {
+        # Update history.json (simplified)        history_entry = {
             "choice": choice,
             "dispatch": dispatch_text,
             "world_prompt_before": prev_state_snapshot.get("world_prompt"),
@@ -2604,27 +2549,14 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             history.pop(0)
         try:
             with history_path.open("w", encoding="utf-8") as f_hist:
-                json.dump(history, f_hist, indent=2)
-            print(f"DEBUG PRINT: _process_turn_background - history.json updated.", flush=True)
-        except Exception as e_hist_save:
+                json.dump(history, f_hist, indent=2)        except Exception as e_hist_save:
             log_error(f"Error saving history.json: {e_hist_save}")
-            print(f"DEBUG PRINT: _process_turn_background - Exception saving history.json: {e_hist_save}", flush=True)
-
-        # Final prune of feed_log to keep it manageable (e.g., last 50-100 items)
-        print(f"DEBUG PRINT: _process_turn_background - About to prune feed_log. Current length: {len(state.get('feed_log',[]))}", flush=True)
-        MAX_FEED_LOG_ITEMS = 100 
+        # Final prune of feed_log to keep it manageable (e.g., last 50-100 items)        MAX_FEED_LOG_ITEMS = 100 
         if len(state.get("feed_log", [])) > MAX_FEED_LOG_ITEMS:
             with WORLD_STATE_LOCK:
                 state["feed_log"] = state["feed_log"][-MAX_FEED_LOG_ITEMS:]
-                # _save_state(state) # No need to save here, will be saved by turn_count update shortly
-            print(f"DEBUG PRINT: _process_turn_background - feed_log pruned. New length: {len(state.get('feed_log',[]))}", flush=True)
-
-        print(f"DEBUG PRINT: _process_turn_background - About to update turn_count and final save.", flush=True)
-        state['turn_count'] = state.get('turn_count', 0) + 1
-        _save_state(state) # Final save for turn_count and any other latent changes
-        print(f"DEBUG PRINT: _process_turn_background - turn_count updated and final save complete.", flush=True)
-
-        print(f"DEBUG PRINT: _process_turn_background THREAD COMPLETED for choice: '{choice}'.", flush=True)
+                # _save_state(state) # No need to save here, will be saved by turn_count update shortly        _save_state(state) # Final save for turn_count and any other latent changes
+        if DEBUG_MODE: print(f"[DEBUG] _process_turn_background THREAD COMPLETED for choice: '{choice}'.", flush=True)
 
     except Exception as e_critical_thread:
         log_error(f"Critical unhandled error in _process_turn_background thread: {e_critical_thread}")
@@ -2722,7 +2654,7 @@ def generate_intro_turn_feed_items() -> List[Dict[str, Any]]:
             last_dispatch="The simulation has just started.",
             world_prompt=state.get("world_prompt", "System Online."),
             image_description="An initial, establishing scene.",
-            situation_summary="Jason is at the very beginning of his journey.",
+            situation_summary="You are at the very beginning of your journey.",
             n=3
         )
     except Exception as e_choices:
@@ -2850,26 +2782,17 @@ def api_reset():
 def api_feed():
     global state
     since_id_str = request.args.get('since_id')
-    items_to_return = []
-    
-    print(f"DEBUG PRINT /api/feed: since_id_str='{since_id_str}', current total feed_log length={len(state.get('feed_log', []))}", flush=True)
-    if state.get('feed_log'):
-        print(f"DEBUG PRINT /api/feed: Last few item IDs in feed_log: {[item['id'] for item in state['feed_log'][-5:]]}", flush=True)
-
+    items_to_return = []    if state.get('feed_log'):
     with WORLD_STATE_LOCK: # Ensure thread-safe access to state['feed_log']
         feed_log = state.get('feed_log', [])
         if since_id_str:
             try:
                 since_id = int(since_id_str)
-                items_to_return = [item for item in feed_log if item.get('id', 0) > since_id]
-                print(f"DEBUG PRINT /api/feed: since_id={since_id}, found {len(items_to_return)} new items.", flush=True)
-            except ValueError:
+                items_to_return = [item for item in feed_log if item.get('id', 0) > since_id]            except ValueError:
                 log_error(f"/api/feed: Invalid since_id '{since_id_str}'. Returning full feed.")
                 items_to_return = list(feed_log) # Return a copy
         else:
-            items_to_return = list(feed_log) # Return a copy of the full feed log
-            print(f"DEBUG PRINT /api/feed: No since_id_str, returning full feed_log of {len(items_to_return)} items.", flush=True)
-            
+            items_to_return = list(feed_log) # Return a copy of the full feed log            
     return jsonify(items_to_return)
 
 @app.route('/api/choose', methods=['POST'])
@@ -2883,26 +2806,16 @@ def api_choose():
         player_choice_text = data['choice']
         context_item_id = data.get('context_item_id') # Optional, for context
 
-        print(f"DEBUG PRINT: api_choose received choice: '{player_choice_text}', context_id: {context_item_id}. Current state ID: {id(state)}", flush=True)
+        if DEBUG_MODE: print(f"[DEBUG] api_choose received choice: '{player_choice_text}', context_id: {context_item_id}. Current state ID: {id(state)}", flush=True)
 
         # 1. Immediately create and log the Player Action
         player_action_item = create_feed_item(
             type="player_action", 
             content=f"{player_choice_text}", # Display the choice text directly
             metadata={"raw_choice": player_choice_text, "context_id": context_item_id}
-        )
-        
-        print(f"DEBUG PRINT: api_choose - Before WORLD_STATE_LOCK for saving player_action_item. Item ID: {player_action_item['id']}", flush=True)
-        with WORLD_STATE_LOCK:
-            print(f"DEBUG PRINT: api_choose - Acquired WORLD_STATE_LOCK.", flush=True)
-            state.setdefault('feed_log', []).append(player_action_item)
-            state['last_choice'] = player_choice_text
-            print(f"DEBUG PRINT: api_choose - About to call _save_state.", flush=True)
-            _save_state(state)
-            print(f"DEBUG PRINT: api_choose - _save_state completed. Releasing WORLD_STATE_LOCK.", flush=True)
-        print(f"DEBUG PRINT: api_choose - After WORLD_STATE_LOCK block.", flush=True)
-        
-        print(f"DEBUG PRINT: api_choose - Player action item ID {player_action_item['id']} logged. Starting background thread for _process_turn_background.", flush=True)
+        )        with WORLD_STATE_LOCK:            state.setdefault('feed_log', []).append(player_action_item)
+            state['last_choice'] = player_choice_text            _save_state(state)        
+        if DEBUG_MODE: print(f"[DEBUG] api_choose - Player action item ID {player_action_item['id']} logged. Starting background thread for _process_turn_background.", flush=True)
 
         # 2. Start background processing for the rest of the turn
         # Pass the ID of the player_action_item so the background thread can link its logs if needed.
@@ -2912,9 +2825,7 @@ def api_choose():
         try:
             thread = threading.Thread(target=_process_turn_background, args=(player_choice_text, player_action_item['id'], str(temp_signal_file)))
             # thread.daemon = True # Allow main program to exit even if threads are running. Temporarily commenting out for testing.
-            thread.start()
-            print(f"DEBUG PRINT: api_choose - Thread object created and start() called: {thread}", flush=True)
-            
+            thread.start()            
             # Check for signal from thread via temp file
             time.sleep(0.2) # Give thread a moment to write
             signal_received = False
@@ -2925,13 +2836,13 @@ def api_choose():
                         signal_received = True
                     temp_signal_file.unlink() # Clean up
                 except Exception as e_file_read:
-                    print(f"DEBUG PRINT: api_choose - Error reading/deleting signal file: {e_file_read}", flush=True)
+                    if DEBUG_MODE: print(f"[DEBUG] api_choose - Error reading/deleting signal file: {e_file_read}", flush=True)
             
-            print(f"DEBUG PRINT: api_choose - Signal from thread via file: {'RECEIVED' if signal_received else 'NOT RECEIVED'}", flush=True)
+            if DEBUG_MODE: print(f"[DEBUG] api_choose - Signal from thread via file: {'RECEIVED' if signal_received else 'NOT RECEIVED'}", flush=True)
             if not signal_received and thread.is_alive():
-                 print(f"DEBUG PRINT: api_choose - Thread is alive but signal file not as expected.", flush=True)
+                 if DEBUG_MODE: print(f"[DEBUG] api_choose - Thread is alive but signal file not as expected.", flush=True)
             elif not signal_received and not thread.is_alive():
-                 print(f"DEBUG PRINT: api_choose - Thread is NOT alive and signal file not as expected.", flush=True)
+                 if DEBUG_MODE: print(f"[DEBUG] api_choose - Thread is NOT alive and signal file not as expected.", flush=True)
 
         except Exception as e_thread_start:
             print(f"CRITICAL DEBUG PRINT: api_choose - ERROR STARTING THREAD: {e_thread_start}", flush=True)
@@ -2939,7 +2850,7 @@ def api_choose():
             raise # Re-raise to see if it gets caught by the broader handler or stops the test
 
         # 3. Return only the player_action_item immediately to the client
-        print(f"DEBUG PRINT: api_choose - Returning player_action_item (ID: {player_action_item['id']}) to client immediately.", flush=True)
+        if DEBUG_MODE: print(f"[DEBUG] api_choose - Returning player_action_item (ID: {player_action_item['id']}) to client immediately.", flush=True)
         return jsonify([player_action_item])
 
     except Exception as e:
@@ -3112,7 +3023,7 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
         
         image_context = ""
         if current_image:
-            image_context = "🖼️ ATTACHED IMAGE = CURRENT LOCATION. Jason is HERE. Do NOT teleport him.\n\n"
+            image_context = "🖼️ ATTACHED IMAGE = CURRENT LOCATION. You are HERE. Do NOT teleport yourself.\n\n"
         
         # Detect timeout penalties
         is_timeout_penalty = any(phrase in choice.lower() for phrase in [
@@ -3231,7 +3142,7 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
         import traceback
         traceback.print_exc()
         # Fallback to safe defaults
-        return "Jason makes a tense move in the chaos.", "The desert stretches ahead.", True
+        return "You make a tense move in the chaos.", "The desert stretches ahead.", True
 
 def summarize_world_state_diff(prev_state: dict, state: dict) -> str:
     """
@@ -3358,7 +3269,7 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
         print(f"[STATE] Saved - alive={player_alive}, health={state['player_state'].get('health', 100)}")
         
         if not dispatch or dispatch.strip().lower() in {"none", "", "[", "[]"}:
-            dispatch = "Jason makes a tense move in the chaos."
+            dispatch = "You make a tense move in the chaos."
         if not vision_dispatch or vision_dispatch.strip().lower() in {"none", "", "[", "[]"}:
             vision_dispatch = dispatch
         

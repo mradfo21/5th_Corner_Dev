@@ -2277,7 +2277,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
         )
         rules_embed.add_field(
             name="Pro Tips",
-            value="🕰️ Story escalates slowly — pay attention to details!\n🧭 Your choices shape Jason's fate.",
+            value="🕰️ Story escalates slowly — pay attention to details!\n🧭 Your choices shape your fate.",
             inline=False
         )
         rules_embed.set_footer(text="Ready? Press ️ Play below to begin.")
