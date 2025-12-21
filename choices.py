@@ -7,7 +7,8 @@ import re
 from pathlib import Path
 from typing import List, Union
 
-from evolve_prompt_file import generate_interim_messages
+# generate_interim_messages removed in dynamic world evolution rewrite
+# Evolution summaries now stored in state["evolution_summary"]
 import engine
 import difflib
 
