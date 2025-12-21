@@ -120,39 +120,63 @@ def evolve_world_state(dispatches, consequence_summary=None, state_file="world_s
     if turn_count % interval == 0:
         world_event_nudge = nudge_text
 
-    # --- PROMPT MODIFICATION --- #
-    def build_evolution_prompt_with_intrusions(current_world_prompt, dispatches, latest_phase, choice, state_file="world_state.json", vision_description=None):
-        """Enhanced prompt to allow subtle world intrusions and phase-based frequency."""
-        # Get location context from vision description
-        location_context = ""
-        if vision_description:
-            location_context = f"JASON'S CURRENT VIEW: {vision_description[:200]}\n\n"
-            # Determine if inside or outside based on vision
-            vision_lower = vision_description.lower()
-            if any(word in vision_lower for word in ["hallway", "corridor", "room", "interior", "ceiling", "wall", "door", "inside"]):
-                environment_type = "INSIDE A FACILITY"
-            else:
-                environment_type = "OUTSIDE"
-        else:
-            location_context = f"CURRENT LOCATION: {current_world_prompt}\n\n"
-            environment_type = "UNKNOWN LOCATION"
-        
-        # Use simple world evolution instructions from JSON
-        prompt_body = PROMPTS["world_evolution_instructions"]
-        
-        # Add location context
-        prompt_body += f"\n\nCURRENT LOCATION/SCENE: {vision_description if vision_description else current_world_prompt}"
-        prompt_body += f"\n\nLAST ACTION: {choice}"
-        prompt_body += "\n\nGenerate ONE sentence atmospheric change that STAYS IN THE CURRENT ENVIRONMENT."
-        
-        if vision_description:
-            prompt_body += f"\n\nVISION ANALYSIS: {vision_description}"
-        return prompt_body
+    # --- INITIALIZE ACCUMULATIVE STRUCTURE --- #
+    # Check if we need to migrate from old single-string world_prompt to new structure
+    if "current_situation" not in state:
+        # First time using new system - initialize structure
+        print("[WORLD EVOLUTION] Initializing accumulative world state structure")
+        state["current_situation"] = old_world if len(old_world) < 200 else ""
+        state["recent_events"] = []
+        # Restore full world_prompt if it was destroyed by old system
+        if len(old_world) < 100:
+            state["world_prompt"] = PROMPTS["world_initial_state"]
+            old_world = state["world_prompt"]
+    
+    # Get current situation and recent events
+    current_situation = state.get("current_situation", "")
+    recent_events = state.get("recent_events", [])
+    
+    # --- BUILD ACCUMULATIVE EVOLUTION PROMPT --- #
+    location_context = ""
+    if vision_description:
+        location_context = f"JASON'S CURRENT VIEW: {vision_description[:200]}\n\n"
+    else:
+        location_context = f"CURRENT SITUATION: {current_situation if current_situation else 'Exploring facility'}\n\n"
+    
+    # Build accumulative evolution prompt
+    prompt = f"""You are tracking the evolving world state in a survival horror game.
 
-    # Use the enhanced prompt builder
-    prompt = build_evolution_prompt_with_intrusions(old_world, dispatches, current_phase, last_choice, state_file, vision_description=vision_description)
-    if consequence_summary:
-        prompt += f"\n\nIMPORTANT CONSEQUENCE OF LAST ACTION:\n- {consequence_summary}\n"
+CORE WORLD (reference - never changes):
+The Four Corners facility - 1993 desert horror with abandoned Horizon facilities, red biome mutations, military quarantine.
+
+CURRENT SITUATION:
+{current_situation if current_situation else "Player is exploring the facility perimeter"}
+
+RECENT EVENTS (last 3 turns):
+{chr(10).join(f"- {event}" for event in recent_events[-3:]) if recent_events else "- Game just started"}
+
+{location_context}
+
+LAST PLAYER ACTION:
+{last_choice if last_choice else "Starting game"}
+
+CONSEQUENCE OF ACTION:
+{consequence_summary if consequence_summary else "None yet"}
+
+VISION ANALYSIS (what player sees NOW):
+{vision_description if vision_description else "Not available"}
+
+---
+
+Generate a 2-3 sentence update describing:
+1. WHERE the player is now (specific location/environment)
+2. WHAT has changed (new threats, discoveries, environmental shifts)
+3. WHAT is currently happening or building (tension, threats, atmosphere)
+
+This should ACCUMULATE knowledge, not replace it. Include specifics from the vision and consequence.
+Be concrete about location, threats, and discoveries. This is persistent memory.
+
+Format as a natural paragraph, present tense, atmospheric."""
 
     # --- Vision model feedback: include up to 2 previous dispatch images if available --- #
     image_urls = []
@@ -228,50 +252,122 @@ def evolve_world_state(dispatches, consequence_summary=None, state_file="world_s
             headers={"x-goog-api-key": gemini_api_key, "Content-Type": "application/json"},
             json={
                 "contents": [{"parts": parts}],
-                "generationConfig": {"temperature": 0.8, "maxOutputTokens": 60}  # Force brevity!
+                "generationConfig": {"temperature": 0.7, "maxOutputTokens": 150}  # Increased for richer updates
             },
             timeout=30
         ).json()
         print("[GEMINI TEXT] World evolution complete")
         
         # Extract text from Gemini response
-        new_world_prompt = response_data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        new_situation_text = response_data["candidates"][0]["content"]["parts"][0]["text"].strip()
 
-        print(f"[WORLD EVOLUTION] OLD:\n{old_world}\n---\nNEW:\n{new_world_prompt}\n")
-        # Save to persistent log
+        print(f"[WORLD EVOLUTION V2 - ACCUMULATIVE]")
+        print(f"  SITUATION BEFORE: {current_situation[:80] if current_situation else '(none)'}...")
+        print(f"  SITUATION AFTER:  {new_situation_text[:80]}...")
+        
+        # Save to persistent log (old format for compatibility)
         log_path = os.path.join("logs", "world_evolution.log")
         os.makedirs("logs", exist_ok=True)
         with open(log_path, "a", encoding="utf-8") as logf:
-            logf.write(f"[WORLD EVOLUTION]\nPROMPT:\n{prompt}\n\nDISPATCHES:\n{json.dumps(dispatches[-12:], ensure_ascii=False, indent=2)}\n\nOLD:\n{old_world}\n---\nNEW:\n{new_world_prompt}\n\n")
+            logf.write(f"[WORLD EVOLUTION V2 - ACCUMULATIVE]\nPROMPT:\n{prompt}\n\nDISPATCHES:\n{json.dumps(dispatches[-12:], ensure_ascii=False, indent=2)}\n\nSITUATION BEFORE:\n{current_situation}\n---\nSITUATION AFTER:\n{new_situation_text}\n\n")
 
-        if not new_world_prompt or new_world_prompt == old_world:
-            print("No meaningful change in world_prompt - skipping update.")
-            # Nudge chaos_level upward if nothing new happens
-            state["chaos_level"] = int(state.get("chaos_level", 0)) + 1
-            # TODO: Penalize repeat dispatches (e.g., check for repeated phrases and rewrite)
-            with open(state_file, "w", encoding="utf-8") as f:
-                json.dump(state, f, indent=2)
+        if not new_situation_text:
+            print("No situation update generated - skipping.")
             return False
 
-        # Update the world state
-        state["world_prompt"] = new_world_prompt
+        # Update current situation (REPLACES situation, not world_prompt!)
+        state["current_situation"] = new_situation_text
+        
+        # Add to recent events buffer (ACCUMULATES)
+        event_summary = f"Turn {turn_count}: {consequence_summary if consequence_summary else 'Explored area'}"
+        recent_events.append(event_summary)
+        
+        # Keep only last 10 events to prevent bloat
+        if len(recent_events) > 10:
+            recent_events = recent_events[-10:]
+        
+        state["recent_events"] = recent_events
 
-        # --- Update seen_elements with new unique elements from the new world prompt --- #
-        # Simple placeholder: split on commas and periods, add new phrases not already in seen_elements
-        new_elements = [e.strip() for e in re.split(r'[.,\n]', new_world_prompt) if len(e.strip()) > 3]
+        # --- Update seen_elements with new unique elements --- #
+        new_elements = [e.strip() for e in re.split(r'[.,\n]', new_situation_text) if len(e.strip()) > 5]
         for elem in new_elements:
             if elem and elem not in seen_elements:
                 seen_elements.append(elem)
+        
+        # Keep seen_elements manageable (last 50)
+        if len(seen_elements) > 50:
+            seen_elements = seen_elements[-50:]
+        
         state["seen_elements"] = seen_elements
 
         # Save the updated world state to the file
         with open(state_file, "w", encoding="utf-8") as f:
             json.dump(state, f, indent=2)
+        
+        # Log to persistent archive (SURVIVES RESETS)
+        _log_to_evolution_archive(
+            session_id=os.path.basename(os.path.dirname(state_file)) if 'sessions' in state_file else 'legacy',
+            turn=turn_count,
+            world_prompt=old_world[:200] + "...",  # Truncated core world
+            situation_before=current_situation,
+            situation_after=new_situation_text,
+            player_action=last_choice,
+            consequence=consequence_summary,
+            vision=vision_description[:100] + "..." if vision_description and len(vision_description) > 100 else vision_description
+        )
+        
+        print(f"  Recent events: {len(recent_events)}")
+        print(f"  Seen elements: {len(seen_elements)}")
 
         return True
     except Exception as e:
         print(f"[ERROR] OpenAI evolution failed: {e}")
         return False
+
+def _log_to_evolution_archive(session_id, turn, world_prompt, situation_before, situation_after, player_action, consequence, vision):
+    """Log evolution to persistent archive (survives resets)"""
+    from datetime import datetime
+    from pathlib import Path
+    
+    ROOT = Path(__file__).parent
+    archive_path = ROOT / "logs" / "world_evolution_archive.json"
+    
+    entry = {
+        "session_id": session_id,
+        "turn": turn,
+        "timestamp": datetime.now().isoformat(),
+        "world_prompt": world_prompt,
+        "situation_before": situation_before,
+        "situation_after": situation_after,
+        "player_action": player_action,
+        "consequence": consequence,
+        "vision_analysis": vision
+    }
+    
+    # Load existing archive
+    if archive_path.exists():
+        try:
+            with open(archive_path, 'r', encoding='utf-8') as f:
+                archive = json.load(f)
+        except:
+            archive = []
+    else:
+        archive = []
+        os.makedirs(archive_path.parent, exist_ok=True)
+    
+    archive.append(entry)
+    
+    # Keep only last 1000 entries to prevent file bloat
+    if len(archive) > 1000:
+        archive = archive[-1000:]
+    
+    # Save archive
+    try:
+        with open(archive_path, 'w', encoding='utf-8') as f:
+            json.dump(archive, f, indent=2)
+    except Exception as e:
+        print(f"[ARCHIVE ERROR] Failed to log: {e}")
+
 
 def generate_scene_hook(state_file="world_state.json", prompt_file="prompts/simulation_prompts.json"):
     """Generate a one-line cinematic hook for the current beat and save it to world_state.json."""
