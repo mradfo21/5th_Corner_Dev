@@ -907,6 +907,9 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             # Start Phase 1 immediately with fate modifier (image generation in background)
             phase1_task = loop.run_in_executor(None, engine.advance_turn_image_fast, self.label, fate)
             
+            # Let action message display so player can read it
+            await asyncio.sleep(1.5)
+            
             # WHILE image is generating, show atmospheric beats (fills wait time!)
             # Clean up interim messages first
             try:
@@ -1381,6 +1384,9 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             
             # Start Phase 1 immediately with fate modifier (image generation in background)
             phase1_task = loop.run_in_executor(None, engine.advance_turn_image_fast, custom_choice, fate)
+            
+            # Let action message display so player can read it
+            await asyncio.sleep(1.5)
             
             # WHILE image is generating, show atmospheric beats (fills wait time!)
             # Clean up interim messages first
