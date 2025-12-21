@@ -1139,6 +1139,18 @@
                 `;
             }
             
+            // Vision Analysis (Gemini Vision AI sees what's actually in the image)
+            if (entry.vision_analysis) {
+                html += `
+                    <div class="history-detail">
+                        <div class="history-detail-label">🔍 Vision AI Analysis (What Gemini Actually Sees)</div>
+                        <div class="history-detail-value" style="background: rgba(78, 205, 196, 0.1); padding: 12px; border-left: 3px solid #4ecdc4; border-radius: 4px;">
+                            ${escapeHtml(entry.vision_analysis)}
+                        </div>
+                    </div>
+                `;
+            }
+            
             // Image Prompt
             if (entry.consequence_img_prompt || entry.image_prompt) {
                 html += `
@@ -1150,16 +1162,32 @@
             }
             
             // Generated Image
-            if (entry.consequence_img_url || entry.image_url) {
-                const imageUrl = entry.consequence_img_url || entry.image_url;
+            if (entry.consequence_img_url || entry.image_url || entry.image) {
+                const imageUrl = entry.consequence_img_url || entry.image_url || entry.image;
                 const imageName = imageUrl.split('/').pop();
+                const imageApiUrl = `${API_BASE}/sessions/${sessionId}/images/${imageName}`;
                 html += `
                     <div class="history-detail">
                         <div class="history-detail-label">Generated Image</div>
                         <div class="history-detail-value">
-                            <a href="${API_BASE}/sessions/${sessionId}/images/${imageName}" target="_blank" class="history-image-link">
-                                🖼️ ${imageName}
-                            </a>
+                            <div style="margin-top: 10px; text-align: center;">
+                                <img src="${imageApiUrl}" 
+                                     alt="${imageName}" 
+                                     style="max-width: 100%; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.5); cursor: pointer;"
+                                     onclick="window.open('${imageApiUrl}', '_blank')"
+                                     onerror="this.onerror=null; this.style.display='none'; this.nextElementSibling.style.display='block';">
+                                <div style="display: none; color: #888; padding: 20px; background: rgba(0,0,0,0.2); border-radius: 8px; margin-top: 10px;">
+                                    ⚠️ Image not found: ${imageName}<br>
+                                    <a href="${imageApiUrl}" target="_blank" style="color: #4ecdc4; text-decoration: none;">
+                                        Try direct link
+                                    </a>
+                                </div>
+                                <div style="margin-top: 8px; font-size: 0.9em; color: #888;">
+                                    <a href="${imageApiUrl}" download="${imageName}" style="color: #4ecdc4; text-decoration: none;">
+                                        ⬇️ Download Image
+                                    </a>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 `;
