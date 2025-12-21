@@ -1958,7 +1958,7 @@ def begin_tick() -> dict:
         client, choice_tmpl,
         situation_report,
         n=3,
-        seen_elements='',
+        seen_elements=', '.join(state.get('seen_elements', [])[-10:]),  # Last 10 discovered entities
         recent_choices='',
         caption=situation_report,
         image_description='',
@@ -3465,7 +3465,7 @@ def advance_turn_choices_deferred(consequence_img_url: str, dispatch: str, visio
         dispatch,
         n=3,
         image_url=consequence_img_url,
-        seen_elements='',
+        seen_elements=', '.join(state.get('seen_elements', [])[-10:]),  # Last 10 discovered entities
         recent_choices='',
         caption="",
         image_description="",
@@ -3765,7 +3765,7 @@ def generate_intro_choices_deferred(image_url: str, prologue: str, vision_dispat
         prologue,  # What's happening in intro
         n=3,
         image_url=image_url,  # Gemini sees the image directly!
-        seen_elements='',
+        seen_elements=', '.join(state.get('seen_elements', [])[-10:]),  # Last 10 discovered entities
         recent_choices='',
         caption="",  # Let Gemini look at image, not stale text
         image_description="",  # Let Gemini look at image, not stale text
@@ -3903,7 +3903,7 @@ def generate_intro_turn(session_id: str = 'default'):
         dispatch,  # What's happening now
         n=3,
         image_url=dispatch_img_url,  # Opening image - Gemini looks at THIS!
-        seen_elements='',
+        seen_elements=', '.join(state.get('seen_elements', [])[-10:]),  # Last 10 discovered entities
         recent_choices='',
         caption="",  # Let Gemini see the actual image
         image_description="",  # Let Gemini see the actual image
