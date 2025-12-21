@@ -146,6 +146,37 @@
             color: var(--color-warning);
         }
 
+        .tab-button {
+            background: transparent;
+            border: none;
+            border-bottom: 3px solid transparent;
+            color: var(--color-text-dim);
+            padding: 15px 30px;
+            font-family: var(--font-ocr);
+            font-size: 0.75rem;
+            letter-spacing: 0.2em;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .tab-button:hover {
+            color: var(--color-off-white);
+            background: rgba(220, 20, 60, 0.05);
+        }
+
+        .tab-button.active {
+            color: var(--color-blood-red);
+            border-bottom-color: var(--color-blood-red);
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
         .stat-value.danger {
             color: var(--color-blood-red);
         }
@@ -907,24 +938,55 @@
             </div>
         </div>
 
-        <div class="sessions-section">
-            <div class="section-header">
-                <div>
-                    <h2 class="section-title">Active Sessions</h2>
-                    <div class="last-updated" id="last-updated">Last updated: Never</div>
-                </div>
-                <div style="display: flex; gap: 15px; align-items: center;">
-                    <div class="auto-refresh">
-                        <input type="checkbox" id="auto-refresh" checked>
-                        <label for="auto-refresh">Auto-refresh (5s)</label>
-                    </div>
-                    <button class="btn btn-primary" onclick="refreshData()">↻ Refresh</button>
-                    <button class="btn btn-primary" onclick="showCreateSession()">+ New Session</button>
-                </div>
-            </div>
+        <!-- TABS -->
+        <div style="display: flex; gap: 0; border-bottom: 1px solid var(--color-border-red); margin-bottom: 30px;">
+            <button id="tab-sessions" class="tab-button active" onclick="switchTab('sessions')">
+                ACTIVE SESSIONS
+            </button>
+            <button id="tab-archives" class="tab-button" onclick="switchTab('archives')">
+                ARCHIVES
+            </button>
+        </div>
 
-            <div id="sessions-loading" class="loading">Loading sessions...</div>
-            <div id="sessions-container"></div>
+        <!-- ACTIVE SESSIONS TAB -->
+        <div id="tab-content-sessions" class="tab-content active">
+            <div class="sessions-section">
+                <div class="section-header">
+                    <div>
+                        <h2 class="section-title">Active Sessions</h2>
+                        <div class="last-updated" id="last-updated">Last updated: Never</div>
+                    </div>
+                    <div style="display: flex; gap: 15px; align-items: center;">
+                        <div class="auto-refresh">
+                            <input type="checkbox" id="auto-refresh" checked>
+                            <label for="auto-refresh">Auto-refresh (5s)</label>
+                        </div>
+                        <button class="btn btn-primary" onclick="refreshData()">↻ Refresh</button>
+                        <button class="btn btn-primary" onclick="showCreateSession()">+ New Session</button>
+                    </div>
+                </div>
+
+                <div id="sessions-loading" class="loading">Loading sessions...</div>
+                <div id="sessions-container"></div>
+            </div>
+        </div>
+
+        <!-- ARCHIVES TAB -->
+        <div id="tab-content-archives" class="tab-content" style="display: none;">
+            <div class="sessions-section">
+                <div class="section-header">
+                    <div>
+                        <h2 class="section-title">Archived Games</h2>
+                        <div class="last-updated" id="archives-last-updated">Last updated: Never</div>
+                    </div>
+                    <div style="display: flex; gap: 15px; align-items: center;">
+                        <button class="btn btn-primary" onclick="refreshArchives()">↻ Refresh</button>
+                    </div>
+                </div>
+
+                <div id="archives-loading" class="loading">Loading archives...</div>
+                <div id="archives-container"></div>
+            </div>
         </div>
     </div>
 
@@ -1752,6 +1814,487 @@
         document.getElementById('session-modal').addEventListener('click', (e) => {
             if (e.target.id === 'session-modal') closeModal();
         });
+
+        // ═══════════════════════════════════════════════════════════════════
+        // TAB SWITCHING
+        // ═══════════════════════════════════════════════════════════════════
+
+        function switchTab(tabName) {
+            // Update tab buttons
+            document.querySelectorAll('.tab-button').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            document.getElementById(`tab-${tabName}`).classList.add('active');
+
+            // Update tab content
+            document.querySelectorAll('.tab-content').forEach(content => {
+                content.classList.remove('active');
+                content.style.display = 'none';
+            });
+            const activeContent = document.getElementById(`tab-content-${tabName}`);
+            activeContent.classList.add('active');
+            activeContent.style.display = 'block';
+
+            // Load data for the active tab
+            if (tabName === 'archives') {
+                refreshArchives();
+            } else {
+                refreshData();
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // ARCHIVE MANAGEMENT
+        // ═══════════════════════════════════════════════════════════════════
+
+        // Asset cache for images and tapes
+        const assetCache = new Map();
+
+        function getCachedAsset(url) {
+            return assetCache.get(url);
+        }
+
+        function cacheAsset(url, blob) {
+            assetCache.set(url, URL.createObjectURL(blob));
+        }
+
+        async function fetchArchives() {
+            console.log(`[ARCHIVES] Fetching from: ${API_BASE}/archives`);
+            const response = await fetch(`${API_BASE}/archives`);
+            console.log(`[ARCHIVES] Response status: ${response.status}`);
+            
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+            
+            const result = await response.json();
+            return result.data;
+        }
+
+        async function refreshArchives() {
+            console.log('[ARCHIVES] Refreshing archives list...');
+            const loading = document.getElementById('archives-loading');
+            const container = document.getElementById('archives-container');
+            
+            loading.style.display = 'block';
+            container.innerHTML = '';
+
+            try {
+                const archives = await fetchArchives();
+                console.log(`[ARCHIVES] Found ${archives.length} archives`);
+                
+                loading.style.display = 'none';
+
+                if (archives.length === 0) {
+                    container.innerHTML = '<div class="no-sessions">No archived games found</div>';
+                    return;
+                }
+
+                archives.forEach(archive => {
+                    const archiveCard = createArchiveCard(archive);
+                    container.appendChild(archiveCard);
+                });
+
+                const now = new Date().toLocaleTimeString();
+                document.getElementById('archives-last-updated').textContent = `Last updated: ${now}`;
+
+            } catch (error) {
+                console.error('[ARCHIVES] Error:', error);
+                loading.style.display = 'none';
+                showError(`Failed to load archives: ${error.message}`);
+            }
+        }
+
+        function createArchiveCard(archive) {
+            const card = document.createElement('div');
+            card.className = 'session-card';
+            
+            // Parse timestamp
+            const timestamp = archive.archive_timestamp || 'unknown';
+            const date = timestamp !== 'unknown' ? formatArchiveTimestamp(timestamp) : 'Unknown date';
+            
+            // Reason badge
+            const reasonColors = {
+                'reset': 'var(--color-text-dim)',
+                'death': 'var(--color-blood-red)',
+                'manual_deletion': 'var(--color-warning)'
+            };
+            const reasonColor = reasonColors[archive.archive_reason] || 'var(--color-text-dim)';
+            
+            // Status indicator
+            const isDead = archive.player_status === false;
+            const statusClass = isDead ? 'status-dead' : 'status-alive';
+            const statusText = isDead ? 'DEAD' : 'ALIVE';
+            
+            card.innerHTML = `
+                <div class="session-header">
+                    <div class="session-info">
+                        <h3 class="session-id">${escapeHtml(archive.archive_name)}</h3>
+                        <div class="session-meta">
+                            <span style="color: ${reasonColor}; text-transform: uppercase;">
+                                ${escapeHtml(archive.archive_reason.replace(/_/g, ' '))}
+                            </span>
+                            <span>•</span>
+                            <span>${date}</span>
+                            <span>•</span>
+                            <span>${archive.turns_completed || 0} turns</span>
+                        </div>
+                    </div>
+                    <div class="session-status ${statusClass}">${statusText}</div>
+                </div>
+                <div class="session-stats">
+                    <div>
+                        <span class="stat-label">Session:</span>
+                        <span class="stat-value">${escapeHtml(archive.session_id || 'unknown')}</span>
+                    </div>
+                    <div>
+                        <span class="stat-label">Final Location:</span>
+                        <span class="stat-value">${escapeHtml(archive.final_location || 'unknown')}</span>
+                    </div>
+                    <div>
+                        <span class="stat-label">History Entries:</span>
+                        <span class="stat-value">${archive.total_history_entries || 0}</span>
+                    </div>
+                </div>
+                <div class="session-actions">
+                    <button class="btn btn-primary" onclick="viewArchive('${escapeHtml(archive.archive_name)}')">
+                        👁 View Details
+                    </button>
+                    <button class="btn btn-danger" onclick="deleteArchive('${escapeHtml(archive.archive_name)}')">
+                        🗑 Delete Permanently
+                    </button>
+                </div>
+            `;
+            
+            return card;
+        }
+
+        function formatArchiveTimestamp(timestamp) {
+            // Format: YYYYMMDD_HHMMSS
+            if (typeof timestamp === 'string' && timestamp.includes('_')) {
+                const [datePart, timePart] = timestamp.split('_');
+                const year = datePart.substring(0, 4);
+                const month = datePart.substring(4, 6);
+                const day = datePart.substring(6, 8);
+                const hour = timePart.substring(0, 2);
+                const minute = timePart.substring(2, 4);
+                return `${year}-${month}-${day} ${hour}:${minute}`;
+            }
+            return timestamp;
+        }
+
+        async function viewArchive(archiveName) {
+            console.log(`[ARCHIVES] Viewing archive: ${archiveName}`);
+            
+            try {
+                const response = await fetch(`${API_BASE}/archives/${archiveName}`);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                
+                const result = await response.json();
+                const archiveData = result.data;
+                
+                showArchiveModal(archiveName, archiveData);
+                
+            } catch (error) {
+                console.error('[ARCHIVES] Error loading archive:', error);
+                showError(`Failed to load archive: ${error.message}`);
+            }
+        }
+
+        function showArchiveModal(archiveName, data) {
+            const { metadata, state, history, asset_counts } = data;
+            
+            const modalBody = document.getElementById('modal-body');
+            
+            // Build detailed view similar to session modal
+            let html = `
+                <div class="card">
+                    <div class="card-header">ARCHIVE METADATA</div>
+                    <div class="session-stats" style="padding: 15px;">
+                        <div>
+                            <span class="stat-label">Archive Name:</span>
+                            <span class="stat-value">${escapeHtml(archiveName)}</span>
+                        </div>
+                        <div>
+                            <span class="stat-label">Original Session:</span>
+                            <span class="stat-value">${escapeHtml(metadata.session_id || 'unknown')}</span>
+                        </div>
+                        <div>
+                            <span class="stat-label">Archive Reason:</span>
+                            <span class="stat-value">${escapeHtml(metadata.archive_reason || 'unknown')}</span>
+                        </div>
+                        <div>
+                            <span class="stat-label">Archived At:</span>
+                            <span class="stat-value">${formatArchiveTimestamp(metadata.archive_timestamp)}</span>
+                        </div>
+                        <div>
+                            <span class="stat-label">Turns Completed:</span>
+                            <span class="stat-value">${metadata.turns_completed || 0}</span>
+                        </div>
+                        <div>
+                            <span class="stat-label">Player Status:</span>
+                            <span class="stat-value ${metadata.player_status === false ? 'danger' : 'success'}">
+                                ${metadata.player_status === false ? 'DEAD' : 'ALIVE'}
+                            </span>
+                        </div>
+                        <div>
+                            <span class="stat-label">Final Location:</span>
+                            <span class="stat-value">${escapeHtml(metadata.final_location || 'unknown')}</span>
+                        </div>
+                        <div>
+                            <span class="stat-label">Assets:</span>
+                            <span class="stat-value">${asset_counts.images} images, ${asset_counts.tapes} tapes</span>
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            // Death info if player died
+            if (metadata.player_status === false && metadata.death_dispatch) {
+                html += `
+                    <div class="card" style="border-left: 3px solid var(--color-blood-red); margin-top: 20px;">
+                        <div class="card-header" style="color: var(--color-blood-red);">☠ DEATH RECORD</div>
+                        <div class="card-body">
+                            <div style="margin-bottom: 10px;">
+                                <span class="stat-label">Death Turn:</span>
+                                <span class="stat-value">${metadata.death_turn}</span>
+                            </div>
+                            <div style="padding: 15px; background: rgba(220, 20, 60, 0.1); border-radius: 4px;">
+                                ${escapeHtml(metadata.death_dispatch)}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            // Discovered Entities
+            if (metadata.seen_elements && metadata.seen_elements.length > 0) {
+                html += `
+                    <div style="padding: 20px; background: linear-gradient(135deg, rgba(220, 20, 60, 0.08) 0%, rgba(0, 0, 0, 0.3) 100%); border: 2px solid var(--color-blood-red); margin: 20px 0; box-shadow: 0 0 20px rgba(220, 20, 60, 0.3);">
+                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px; border-bottom: 1px solid var(--color-border-red); padding-bottom: 10px;">
+                            <div>
+                                <div style="font-family: var(--font-ocr); color: var(--color-blood-red); font-size: 0.85rem; letter-spacing: 0.2em; text-transform: uppercase; text-shadow: 0 0 10px rgba(220, 20, 60, 0.5);">DISCOVERED ENTITIES</div>
+                                <div style="font-family: var(--font-din); color: var(--color-text-dim); font-size: 0.7rem; margin-top: 4px; letter-spacing: 0.05em;">Significant objects, characters, and landmarks encountered</div>
+                            </div>
+                            <div style="font-family: var(--font-ocr); color: var(--color-blood-red); font-size: 1.5rem; padding: 8px 16px; background: rgba(0, 0, 0, 0.5); border: 1px solid var(--color-border-red);">
+                                ${metadata.seen_elements.length}
+                            </div>
+                        </div>
+                        <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; max-height: 300px; overflow-y: auto; padding: 5px;">
+                            ${metadata.seen_elements.map((elem, idx) => `
+                                <div style="
+                                    background: rgba(0, 0, 0, 0.6); 
+                                    border: 1px solid var(--color-border-red); 
+                                    padding: 12px 14px; 
+                                    font-size: 0.75rem; 
+                                    font-family: var(--font-ocr); 
+                                    color: var(--color-text-primary);
+                                    position: relative;
+                                    transition: all 0.2s ease;
+                                    cursor: default;
+                                    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+                                "
+                                onmouseover="this.style.background='rgba(220, 20, 60, 0.15)'; this.style.borderColor='var(--color-blood-red)'; this.style.boxShadow='0 0 15px rgba(220, 20, 60, 0.4)';"
+                                onmouseout="this.style.background='rgba(0, 0, 0, 0.6)'; this.style.borderColor='var(--color-border-red)'; this.style.boxShadow='0 2px 8px rgba(0, 0, 0, 0.3)';"
+                                >
+                                    <div style="position: absolute; top: 4px; right: 6px; font-size: 0.6rem; color: var(--color-blood-red); opacity: 0.5;">#${idx + 1}</div>
+                                    <div style="line-height: 1.4; padding-top: 8px;">${escapeHtml(elem)}</div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                `;
+            }
+            
+            // Full History
+            html += `
+                <div class="history-section" style="margin-top: 20px;">
+                    <div class="history-header">
+                        <h3 class="history-title">📜 Full History & Prompts</h3>
+                        <div class="history-controls">
+                            <button class="expand-all-btn" onclick="expandAllArchiveHistory()">Expand All</button>
+                            <button class="collapse-all-btn" onclick="collapseAllArchiveHistory()">Collapse All</button>
+                        </div>
+                    </div>
+                    <div id="archive-history-container"></div>
+                </div>
+            `;
+            
+            modalBody.innerHTML = html;
+            document.getElementById('session-modal').classList.add('show');
+            
+            // Load history
+            loadArchiveHistory(archiveName, history);
+        }
+
+        function loadArchiveHistory(archiveName, history) {
+            const container = document.getElementById('archive-history-container');
+            
+            if (!history || history.length === 0) {
+                container.innerHTML = '<div class="no-data">No history available</div>';
+                return;
+            }
+            
+            container.innerHTML = history.map((entry, index) => {
+                const turnNum = entry.turn_count || (index + 1);
+                const isExpanded = index === history.length - 1; // Expand last turn by default
+                
+                return `
+                    <div class="history-entry ${isExpanded ? 'expanded' : ''}">
+                        <div class="history-entry-header" onclick="toggleArchiveHistoryEntry(this)">
+                            <div class="turn-number">Turn ${turnNum}</div>
+                            <div class="history-preview">${escapeHtml((entry.player_choice || entry.dispatch || '').substring(0, 80))}...</div>
+                            <div class="expand-icon">${isExpanded ? '▼' : '▶'}</div>
+                        </div>
+                        <div class="history-entry-body" style="display: ${isExpanded ? 'block' : 'none'};">
+                            ${buildArchiveHistoryEntryDetails(entry, archiveName)}
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function buildArchiveHistoryEntryDetails(entry, archiveName) {
+            let html = '';
+            
+            // Player Choice
+            if (entry.player_choice) {
+                html += `
+                    <div class="history-detail">
+                        <div class="history-detail-label">🎮 Player Choice</div>
+                        <div class="history-detail-value">${escapeHtml(entry.player_choice)}</div>
+                    </div>
+                `;
+            }
+            
+            // AI Response (Dispatch/Consequence)
+            const response = entry.dispatch || entry.consequence || '';
+            if (response) {
+                html += `
+                    <div class="history-detail">
+                        <div class="history-detail-label">🤖 AI Response</div>
+                        <div class="history-detail-value">${escapeHtml(response)}</div>
+                    </div>
+                `;
+            }
+            
+            // Vision AI Analysis
+            if (entry.vision_analysis) {
+                html += `
+                    <div class="history-detail">
+                        <div class="history-detail-label">🔍 Vision AI Analysis</div>
+                        <div class="history-detail-value" style="background: rgba(78, 205, 196, 0.1); padding: 12px; border-left: 3px solid #4ecdc4; border-radius: 4px;">
+                            ${escapeHtml(entry.vision_analysis)}
+                        </div>
+                    </div>
+                `;
+            }
+            
+            // Generated Image (with caching)
+            if (entry.consequence_img_url || entry.image_url || entry.image) {
+                const imageUrl = entry.consequence_img_url || entry.image_url || entry.image;
+                const imageName = imageUrl.split('/').pop();
+                const imageApiUrl = `${API_BASE}/archives/${archiveName}/images/${imageName}`;
+                html += `
+                    <div class="history-detail">
+                        <div class="history-detail-label">Generated Image</div>
+                        <div class="history-detail-value">
+                            <div style="margin-top: 10px; text-align: center;">
+                                <img src="${imageApiUrl}" 
+                                     alt="${imageName}" 
+                                     style="max-width: 100%; border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,0.5); cursor: pointer;"
+                                     onclick="window.open('${imageApiUrl}', '_blank')"
+                                     onerror="this.onerror=null; this.style.display='none'; this.nextElementSibling.style.display='block';">
+                                <div style="display: none; color: #888; padding: 20px; background: rgba(0,0,0,0.2); border-radius: 8px; margin-top: 10px;">
+                                    ⚠️ Image not found: ${imageName}<br>
+                                    <a href="${imageApiUrl}" target="_blank" style="color: #4ecdc4; text-decoration: none;">
+                                        Try direct link
+                                    </a>
+                                </div>
+                                <div style="margin-top: 8px; font-size: 0.9em; color: #888;">
+                                    <a href="${imageApiUrl}" download="${imageName}" style="color: #4ecdc4; text-decoration: none;">
+                                        ⬇️ Download Image
+                                    </a>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            // Choices Presented
+            if (entry.choices && entry.choices.length > 0) {
+                html += `
+                    <div class="history-detail">
+                        <div class="history-detail-label">Choices Presented</div>
+                        <div class="history-detail-value">${entry.choices.map((c, i) => `${i + 1}. ${escapeHtml(c)}`).join('\n')}</div>
+                    </div>
+                `;
+            }
+            
+            // Raw JSON
+            html += `
+                <div class="history-detail">
+                    <div class="history-detail-label">Raw JSON (Full Entry)</div>
+                    <div class="history-detail-value json">${syntaxHighlightJSON(entry)}</div>
+                </div>
+            `;
+            
+            return html;
+        }
+
+        function toggleArchiveHistoryEntry(header) {
+            const entry = header.parentElement;
+            const body = entry.querySelector('.history-entry-body');
+            const icon = entry.querySelector('.expand-icon');
+            
+            if (entry.classList.contains('expanded')) {
+                entry.classList.remove('expanded');
+                body.style.display = 'none';
+                icon.textContent = '▶';
+            } else {
+                entry.classList.add('expanded');
+                body.style.display = 'block';
+                icon.textContent = '▼';
+            }
+        }
+
+        function expandAllArchiveHistory() {
+            document.querySelectorAll('#archive-history-container .history-entry').forEach(entry => {
+                entry.classList.add('expanded');
+                entry.querySelector('.history-entry-body').style.display = 'block';
+                entry.querySelector('.expand-icon').textContent = '▼';
+            });
+        }
+
+        function collapseAllArchiveHistory() {
+            document.querySelectorAll('#archive-history-container .history-entry').forEach(entry => {
+                entry.classList.remove('expanded');
+                entry.querySelector('.history-entry-body').style.display = 'none';
+                entry.querySelector('.expand-icon').textContent = '▶';
+            });
+        }
+
+        async function deleteArchive(archiveName) {
+            if (!confirm(`Are you sure you want to PERMANENTLY delete archive "${archiveName}"?\n\nThis cannot be undone!`)) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`${API_BASE}/archives/${archiveName}`, {
+                    method: 'DELETE'
+                });
+                
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                
+                console.log(`[ARCHIVES] Deleted: ${archiveName}`);
+                refreshArchives();
+                
+            } catch (error) {
+                console.error('[ARCHIVES] Error deleting archive:', error);
+                showError(`Failed to delete archive: ${error.message}`);
+            }
+        }
     </script>
 </body>
 </html>
