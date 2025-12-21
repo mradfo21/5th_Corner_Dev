@@ -2805,17 +2805,19 @@ def api_reset():
 def api_feed():
     global state
     since_id_str = request.args.get('since_id')
-    items_to_return = []    if state.get('feed_log'):
-    with WORLD_STATE_LOCK: # Ensure thread-safe access to state['feed_log']
-        feed_log = state.get('feed_log', [])
-        if since_id_str:
-            try:
-                since_id = int(since_id_str)
-                items_to_return = [item for item in feed_log if item.get('id', 0) > since_id]            except ValueError:
-                log_error(f"/api/feed: Invalid since_id '{since_id_str}'. Returning full feed.")
-                items_to_return = list(feed_log) # Return a copy
-        else:
-            items_to_return = list(feed_log) # Return a copy of the full feed log            
+    items_to_return = []
+    if state.get('feed_log'):
+        with WORLD_STATE_LOCK: # Ensure thread-safe access to state['feed_log']
+            feed_log = state.get('feed_log', [])
+            if since_id_str:
+                try:
+                    since_id = int(since_id_str)
+                    items_to_return = [item for item in feed_log if item.get('id', 0) > since_id]
+                except ValueError:
+                    log_error(f"/api/feed: Invalid since_id '{since_id_str}'. Returning full feed.")
+                    items_to_return = list(feed_log) # Return a copy
+            else:
+                items_to_return = list(feed_log) # Return a copy of the full feed log            
     return jsonify(items_to_return)
 
 @app.route('/api/choose', methods=['POST'])
