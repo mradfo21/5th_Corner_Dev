@@ -327,13 +327,27 @@ def _extract_entities_from_text(text: str) -> List[str]:
     """
     Extract significant physical entities (characters, objects, landmarks, threats)
     from text using LLM.
+    
+    PRIORITY: Characters and threats are MOST important!
     """
     if not text or len(text) < 20:
         return []
     
     prompt = f"""From the following text, extract a list of significant physical entities.
-Focus on characters, objects, landmarks, and explicit threats.
-Exclude abstract concepts, generic descriptions, actions, and the protagonist (Jason/you).
+
+CRITICAL PRIORITY ORDER:
+1. PEOPLE/CHARACTERS (guards, figures, silhouettes, personnel, humans, scientists, etc.) - HIGHEST PRIORITY
+2. CREATURES/THREATS (mutants, infected, animals, hostile entities)
+3. MAJOR OBJECTS (vehicles, equipment, weapons, doors, structures)
+4. LANDMARKS (buildings, towers, unique structures)
+
+EXCLUDE: Abstract concepts, weather, generic descriptions (walls, ground, sand, rock - unless unique)
+
+Focus on NARRATIVE SIGNIFICANCE:
+- Any person, guard, figure, silhouette = CRITICAL to include
+- Any creature, mutant, threat = CRITICAL to include
+- Unique objects = important
+- Generic environment = skip unless unique (e.g. "breached wall" is good, "concrete wall" is generic)
 
 CRITICAL: If NO significant entities are found, return the word "NONE" by itself.
 If entities ARE found, return ONLY the comma-separated list (no labels, no "Entities:" prefix).
@@ -341,10 +355,13 @@ If entities ARE found, return ONLY the comma-separated list (no labels, no "Enti
 Text: "{text[:300]}"
 
 Examples of GOOD responses:
-- "Guard tower, chain-link fence, concrete barriers, two guards"
-- "Rusted pickup truck, east gate structure, warning signs"
-- "Red biome growth, pulsating tendrils, mutated creature"
+- "Guard in doorway, armed figure, concrete barriers"
+- "Silhouetted person, warning signs, guard tower"
+- "Mutated creature, dissection table, specimen jars"
+- "Two guards, patrol vehicle, checkpoint gate"
 - "NONE"
+
+PRIORITIZE CHARACTERS/THREATS OVER ENVIRONMENT!
 
 Return ONLY the entities or "NONE":"""
     
@@ -379,12 +396,30 @@ Return ONLY the entities or "NONE":"""
             # Filter out non-entities and malformed responses
             filtered = [
                 e for e in entities
-                if e.lower() not in ["jason", "you", "player", "the facility", "tension", "air", "none", "entities: none", "entities"]
-                and len(e.split()) > 1  # Prefer multi-word for specificity
+                if e.lower() not in ["jason", "you", "player", "the facility", "tension", "air", "none", "entities: none", "entities", "wall", "ground", "sand", "rock", "dust", "smoke", "concrete", "metal"]
+                and len(e.split()) >= 1  # Allow single-word for characters like "guard", "figure", "creature"
                 and not e.lower().startswith("entities:")  # Remove label prefix
             ]
             
-            return list(dict.fromkeys(filtered))[:7]  # Unique, max 7
+            # CRITICAL: Boost priority for character/threat words
+            character_keywords = ["guard", "figure", "person", "silhouette", "human", "scientist", "soldier", "creature", "mutant", "infected", "patrol", "armed"]
+            
+            # Sort: characters/threats first, then objects
+            def entity_priority(entity: str) -> int:
+                entity_lower = entity.lower()
+                # Highest priority: contains character/threat keywords
+                if any(keyword in entity_lower for keyword in character_keywords):
+                    return 0
+                # Medium priority: multi-word (more specific)
+                elif len(entity.split()) > 2:
+                    return 1
+                # Lower priority: generic single/double word
+                else:
+                    return 2
+            
+            filtered.sort(key=entity_priority)
+            
+            return list(dict.fromkeys(filtered))[:7]  # Unique, max 7, characters first
         
     except Exception as e:
         print(f"[ENTITY EXTRACTION] Failed: {e}")
