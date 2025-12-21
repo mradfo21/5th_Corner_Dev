@@ -6,7 +6,8 @@ You have:
 - **RASTER** (Web Service) → `https://fiveth-corner-operations.onrender.com` → Landing page
 - **5th_Corner_Dev** (Background Worker) → Discord bot (no web interface)
 
-I've been writing docs assuming the admin dashboard is hosted somewhere, but **where is it actually?**
+I've been writing docs assuming the admin dashboard is hosted somewhere, but **whe
+re is it actually?**
 
 ---
 

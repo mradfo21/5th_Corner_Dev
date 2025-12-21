@@ -905,7 +905,7 @@ def _vision_analyze_all(image_path: str) -> dict:
 
 TIME: <time of day - use ONLY: dawn, morning, afternoon, golden hour, dusk, or night>
 COLOR: <dominant color palette>
-DESCRIPTION: <detailed description of what is visible, focusing on objects, threats, exits, and anything Jason could interact with. Be direct and literal. If there are hands, weapons, tools, figures, silhouettes, or creatures visible, mention them explicitly.>"""
+DESCRIPTION: <detailed description of what is visible, focusing on objects, threats, exits, and anything you could interact with. Be direct and literal. If there are hands, weapons, tools, figures, silhouettes, or creatures visible, mention them explicitly.>"""
         
         api_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
         
@@ -2472,13 +2472,16 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                     consequence_summary=consequence_text, 
                     state_file=str(legacy_state_path),  # Use session-specific path
                     vision_description=vision_dispatch_text
-                )                state = _load_state('legacy') # Reload legacy session state after evolution
+                )
+                state = _load_state('legacy') # Reload legacy session state after evolution
                 
                 # Store evolution summary for player display
                 if evolution_result and "evolution_summary" in evolution_result:
                     state["evolution_summary"] = evolution_result["evolution_summary"]
                     _save_state(state, 'legacy')
             else:
+                pass  # Non-legacy sessions use the standard world_prompt evolution
+        
         # 7. Generate Next Choices (if not in ongoing combat or other non-standard path that provides its own choices)
         if proceed_with_standard_evolution:
             if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Standard Path: Generating next choices START...", flush=True)            # Set the prompt above choices to empty string (no text)

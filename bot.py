@@ -2262,7 +2262,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
         )
         rules_embed.add_field(
             name="You Are",
-            value="Jason Fleece — an investigative journalist with a troubled past.",
+            value="An investigative journalist with a troubled past, drawn to the facility by rumors of disturbing medical experiments.",
             inline=False
         )
         rules_embed.add_field(
@@ -2671,7 +2671,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     color=CORNER_TEAL
                 )
                 await interaction.channel.send(embed=embed_dispatch)
-                # 2. Send the vision description as a second embed (what Jason sees)
+                # 2. Send the vision description as a second embed (what you see)
                 embed_vision = discord.Embed(
                     title="What You See",
                     description=intro_result.get("vision_dispatch", ""),
