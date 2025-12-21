@@ -1477,6 +1477,12 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
             if use_time_of_day:
                 print(f"[TIME] Using explicitly provided time_of_day: {use_time_of_day}")
         use_color = prev_color
+        
+        # --- CHECK FLIPBOOK MODE ---
+        flipbook_mode = state.get("flipbook_mode", False) if 'state' in globals() else False
+        if flipbook_mode:
+            print(f"[FLIPBOOK] 🎬 FLIPBOOK MODE ENABLED - Will generate 4-panel sequence")
+        
         # --- Inject world summary as background context ---
         world_summary = summarize_world_state(state) if 'state' in globals() else ""
         # --- Summarize world prompt for image flavor ---
@@ -1490,6 +1496,15 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
             hard_transition=hard_transition,
             is_timeout_penalty=is_timeout_penalty
         )
+        
+        # --- PREPEND FLIPBOOK INSTRUCTIONS IF ENABLED ---
+        if flipbook_mode:
+            flipbook_prefix = PROMPTS.get("gemini_flipbook_4panel_prefix", "")
+            if flipbook_prefix:
+                prompt_str = flipbook_prefix + prompt_str
+                print(f"[FLIPBOOK] Added 4-panel layout instructions to prompt")
+            else:
+                print(f"[FLIPBOOK] WARNING: flipbook_mode enabled but prompt template not found!")
         # Inject world flavor and location for image model only
         if world_flavor:
             prompt_str += f" World flavor: {world_flavor}."
@@ -1654,8 +1669,33 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                     hd_mode=use_hq_for_this_frame,  # Frame 0 always HQ, others respect quality toggle
                     output_dir=img_dir  # Session-specific directory
                 )
-            _last_image_path = result_path
-            return (result_path, prompt_str, None)  # Gemini doesn't generate videos
+            # --- FLIPBOOK PANEL EXTRACTION ---
+            canonical_frame = result_path  # Default: use the generated image as-is
+            display_image = result_path
+            
+            if flipbook_mode and result_path:
+                print(f"[FLIPBOOK] Extracting canonical frame (Panel 4) from 4-panel grid...")
+                from image_utils import extract_panel_from_grid
+                
+                # Extract Panel 4 (bottom-right) as the canonical frame
+                extracted_panel = extract_panel_from_grid(result_path, panel=4)
+                
+                if extracted_panel:
+                    canonical_frame = extracted_panel
+                    display_image = result_path  # Keep full grid for player display
+                    print(f"[FLIPBOOK] Successfully extracted Panel 4: {canonical_frame}")
+                    print(f"[FLIPBOOK] Display image (full grid): {display_image}")
+                    
+                    # Store both paths in state for later use
+                    if 'state' in globals():
+                        state["last_display_image"] = display_image  # Full 4-panel grid
+                        state["last_canonical_frame"] = canonical_frame  # Panel 4 only
+                        print(f"[FLIPBOOK] Stored paths in state")
+                else:
+                    print(f"[FLIPBOOK] WARNING: Panel extraction failed, using full image")
+            
+            _last_image_path = canonical_frame  # Use canonical frame for continuity
+            return (canonical_frame, prompt_str, None)  # Return canonical frame for story logic
         
         elif active_image_provider == "openai":
             # Use OpenAI gpt-image-1

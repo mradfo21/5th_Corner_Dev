@@ -782,6 +782,8 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             regen_btn = RegenerateChoicesButton(self)
             self.add_item(regen_btn)  # Discord.py automatically sets view
             # Row 2 buttons
+            flipbook_btn = FlipbookToggleButton(self)
+            self.add_item(flipbook_btn)  # Discord.py automatically sets view
             restart_btn = RestartButton()
             self.add_item(restart_btn)  # Discord.py automatically sets view
 
@@ -2182,6 +2184,57 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 # Show modal to set delay
                 modal = AutoPlayDelayModal(self.parent_view)
                 await interaction.response.send_modal(modal)
+    
+    class FlipbookToggleButton(Button):
+        def __init__(self, parent_view):
+            # Check if flipbook mode is currently enabled
+            flipbook_mode = engine.state.get("flipbook_mode", False)
+            label = "🎬 Flipbook: ON" if flipbook_mode else "🎬 Flipbook: OFF"
+            style = discord.ButtonStyle.success if flipbook_mode else discord.ButtonStyle.secondary
+            super().__init__(label=label, style=style, row=2)
+            self.parent_view = parent_view
+
+        async def callback(self, interaction: discord.Interaction):
+            # Authorization check
+            if hasattr(self, 'view') and self.view and hasattr(self.view, 'owner_id'):
+                if not check_authorization(interaction, self.view.owner_id):
+                    await interaction.response.send_message(
+                        "🔒 Only the game owner can toggle flipbook mode.",
+                        ephemeral=True
+                    )
+                    return
+            
+            print("[FLIPBOOK] FlipbookToggleButton callback triggered")
+            
+            # Toggle flipbook mode in state
+            current_mode = engine.state.get("flipbook_mode", False)
+            new_mode = not current_mode
+            engine.state["flipbook_mode"] = new_mode
+            engine._save_state(engine.state)
+            
+            # Update button appearance
+            if new_mode:
+                self.label = "🎬 Flipbook: ON"
+                self.style = discord.ButtonStyle.success
+                status_msg = "🎬 **Flipbook Mode ENABLED!**\n\nNext image will be a 4-panel sequential storyboard showing action progression."
+                print(f"[FLIPBOOK] Enabled 4-panel mode")
+            else:
+                self.label = "🎬 Flipbook: OFF"
+                self.style = discord.ButtonStyle.secondary
+                status_msg = "🎬 **Flipbook Mode DISABLED**\n\nReturned to single-frame mode."
+                print(f"[FLIPBOOK] Disabled 4-panel mode, back to single frame")
+            
+            # Update the view
+            try:
+                await interaction.response.edit_message(view=self.parent_view)
+                # Send status message
+                await interaction.followup.send(status_msg, ephemeral=True)
+            except Exception as e:
+                print(f"[FLIPBOOK] Failed to update button: {e}")
+                try:
+                    await interaction.response.defer()
+                except:
+                    pass
     
     class MapButton(Button):
         def __init__(self):
