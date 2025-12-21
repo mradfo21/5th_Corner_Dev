@@ -73,7 +73,8 @@ def generate_choices(
     pacing: str = None,
     world_prompt: str = "",
     temperature: float = 1.2,
-    situation_summary: str = ""
+    situation_summary: str = "",
+    inventory: list = None  # Player inventory items
 ) -> List[str]:
     """
     Ask the model for up to n choices. The template must contain:
@@ -99,9 +100,22 @@ def generate_choices(
         beat_nudge=beat_nudge,
         situation_summary=""  # IGNORE world state - use only image + dispatch to prevent stale/hallucinated data
     )
+    
+    # Format inventory for prompt
+    inventory_text = ""
+    if inventory and len(inventory) > 0:
+        try:
+            from items import ITEMS
+            item_names = [ITEMS[item_id]["display"] for item_id in inventory if item_id in ITEMS]
+            if item_names:
+                inventory_text = f"\n\n**PLAYER INVENTORY:** {', '.join(item_names)}\n- You may generate choices that USE these items when contextually appropriate\n- Format item-using choices as: 'Action description [Item Name]'\n- Example: 'Pry open door [Crowbar]' or 'Illuminate corridor [Flashlight]'\n"
+        except Exception as e:
+            print(f"[CHOICES] Error formatting inventory: {e}")
+    
     system_prompt = {"role": "system", "content": (
         "Generate 3 VISCERAL, PHYSICAL ACTION CHOICES (3-6 words each). Emphasize BODILY movement and physical risk.\n\n"
-        "CRITICAL: Use VIVID, PHYSICAL VERBS that emphasize what Jason's BODY does:\n\n"
+        f"{inventory_text}"
+        "CRITICAL: Use VIVID, PHYSICAL VERBS that emphasize what the player's BODY does:\n\n"
         "PHYSICAL BODY VERBS (PRIORITIZE THESE):\n"
         "- LEGS/FEET: Sprint, Vault, Leap, Scramble, Slide, Dive, Kick, Stomp, Brace, Plant, Launch\n"
         "- ARMS/HANDS: Grab, Yank, Wrench, Hurl, Smash, Rip, Pry, Claw, Shove, Swing, Heave\n"

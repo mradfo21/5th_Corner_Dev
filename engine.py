@@ -464,6 +464,7 @@ def _load_state(session_id='default') -> dict:
             "last_choice": "",
             "last_saved": datetime.now(timezone.utc).isoformat(),
             "seen_elements": [],
+            "inventory": [],  # Player inventory
             "player_state": {"alive": True},
             "feed_log": [],
             "current_image_url": None,
@@ -491,6 +492,7 @@ except Exception as e:
         "last_choice": "",
         "last_saved": datetime.now(timezone.utc).isoformat(),
         "seen_elements": [],
+        "inventory": [],  # Player inventory
         "player_state": {"alive": True},
         "feed_log": [],
         "current_image_url": None,
@@ -2182,9 +2184,37 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             new_feed_items_for_log.append(error_item)
             dispatch_text = "Error in narrative generation. The situation is unstable."
         
+        # ITEM PICKUP DETECTION: Scan dispatch for items
+        try:
+            from items import detect_item_pickups, add_items_to_inventory, ITEMS, format_inventory_display
+            current_inventory = state.get("inventory", [])
+            picked_up_items = detect_item_pickups(dispatch_text, current_inventory)
+            
+            if picked_up_items:
+                updated_inventory, didnt_fit = add_items_to_inventory(current_inventory, picked_up_items)
+                state["inventory"] = updated_inventory
+                
+                # Create pickup notification
+                item_names = [ITEMS[item_id]["display"] for item_id in picked_up_items if item_id in ITEMS]
+                if len(item_names) == 1:
+                    pickup_msg = f"🎒 **Picked up:** {item_names[0]}"
+                else:
+                    pickup_msg = f"🎒 **Picked up:** {', '.join(item_names)}"
+                
+                pickup_item = create_feed_item(type="inventory_pickup", content=pickup_msg)
+                new_feed_items_for_log.append(pickup_item)
+                
+                if didnt_fit:
+                    overflow_names = [ITEMS[item_id]["display"] for item_id in didnt_fit if item_id in ITEMS]
+                    overflow_msg = f"⚠️ Inventory full! Couldn't pick up: {', '.join(overflow_names)}"
+                    overflow_item = create_feed_item(type="inventory_full", content=overflow_msg)
+                    new_feed_items_for_log.append(overflow_item)
+        except Exception as e_pickup:
+            log_error(f"Error detecting item pickups: {e_pickup}")
+        
         # Append dispatch (or error) to global state's feed_log and save
         with WORLD_STATE_LOCK:
-            state.setdefault("feed_log", []).extend(new_feed_items_for_log[-1:]) # append last item (dispatch or error)
+            state.setdefault("feed_log", []).extend(new_feed_items_for_log) # append all items (dispatch, pickup, etc.)
             _save_state(state)
         new_feed_items_for_log.clear() # Clear after saving this part
 
@@ -2511,7 +2541,8 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                 pacing=state.get("pacing", "normal"),
                 world_prompt=state.get("world_prompt"),
                 # temperature=0.7, # Optional, let choices.py use its default
-                situation_summary=consequence_for_choices
+                situation_summary=consequence_for_choices,
+                inventory=state.get("inventory", [])  # Pass inventory for item-aware choices
             )
             if not new_choices:
                 print("WARNING: choices.generate_choices returned empty list. Using fallback choices.", flush=True)

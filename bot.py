@@ -775,6 +775,8 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 self.add_item(btn)  # Discord.py automatically sets btn.view = self
             custom_btn = CustomActionButton()
             self.add_item(custom_btn)  # Discord.py automatically sets view
+            inventory_btn = InventoryButton()
+            self.add_item(inventory_btn)  # Discord.py automatically sets view
             autoplay_btn = AutoPlayToggleButton(self)
             self.add_item(autoplay_btn)  # Discord.py automatically sets view
             quality_btn = QualityToggleButton(self)
@@ -1684,6 +1686,94 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             
             # Start auto-advance timer
             start_auto_advance_timer(interaction.channel, disp["choices"], view)
+    
+    class InventoryButton(Button):
+        def __init__(self):
+            super().__init__(
+                emoji="🎒",
+                label="Inventory",
+                style=discord.ButtonStyle.secondary,
+                row=1
+            )
+        
+        async def callback(self, interaction: discord.Interaction):
+            """Show inventory in ephemeral message with dropdown to drop items"""
+            try:
+                from items import ITEMS, format_inventory_display, get_inventory_summary
+                
+                # Load current inventory
+                inventory = engine.state.get("inventory", [])
+                
+                if not inventory:
+                    await interaction.response.send_message(
+                        "🎒 **Your backpack is empty.**\n\nPick up weapons and tools during your adventure!",
+                        ephemeral=True
+                    )
+                    return
+                
+                # Create inventory display
+                inventory_list = format_inventory_display(inventory)
+                inv_size = len(inventory)
+                max_size = 5
+                
+                embed = discord.Embed(
+                    title=f"🎒 Your Inventory ({inv_size}/{max_size})",
+                    description=inventory_list,
+                    color=CORNER_TEAL
+                )
+                
+                # Create dropdown to drop items
+                options = []
+                for item_id in inventory:
+                    item = ITEMS.get(item_id)
+                    if item:
+                        options.append(discord.SelectOption(
+                            label=f"Drop {item['display']}",
+                            value=item_id,
+                            emoji=item['emoji']
+                        ))
+                
+                select = discord.ui.Select(
+                    placeholder="Drop an item...",
+                    options=options,
+                    custom_id="inventory_drop"
+                )
+                
+                async def drop_callback(select_interaction: discord.Interaction):
+                    """Handle item drop"""
+                    from items import remove_item_from_inventory, ITEMS
+                    
+                    item_id = select.values[0]
+                    item = ITEMS.get(item_id)
+                    
+                    # Remove from inventory
+                    current_inv = engine.state.get("inventory", [])
+                    updated_inv = remove_item_from_inventory(current_inv, item_id)
+                    engine.state["inventory"] = updated_inv
+                    engine._save_state(engine.state)
+                    
+                    await select_interaction.response.send_message(
+                        f"🎒 Dropped: **{item['display']}**",
+                        ephemeral=True
+                    )
+                
+                select.callback = drop_callback
+                
+                view = discord.ui.View()
+                view.add_item(select)
+                
+                await interaction.response.send_message(
+                    embed=embed,
+                    view=view,
+                    ephemeral=True
+                )
+                
+            except Exception as e:
+                print(f"[INVENTORY] Error showing inventory: {e}")
+                await interaction.response.send_message(
+                    f"❌ Error loading inventory: {e}",
+                    ephemeral=True
+                )
     
     class CustomActionButton(Button):
         def __init__(self):
