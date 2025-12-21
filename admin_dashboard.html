@@ -1226,6 +1226,58 @@
                     <span class="detail-value">${session.history_length || 0} entries</span>
                 </div>
                 
+                <!-- INVENTORY - STANDALONE TOP-LEVEL SECTION -->
+                ${state.inventory && state.inventory.length > 0 ? `
+                <div style="margin-top: 20px; margin-bottom: 20px; padding: 20px; background: linear-gradient(135deg, rgba(78, 205, 196, 0.08) 0%, rgba(0, 0, 0, 0.3) 100%); border: 2px solid var(--color-teal); box-shadow: 0 0 20px rgba(78, 205, 196, 0.3);">
+                    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px; border-bottom: 1px solid var(--color-teal); padding-bottom: 10px;">
+                        <div>
+                            <div style="font-family: var(--font-ocr); color: var(--color-teal); font-size: 0.85rem; letter-spacing: 0.2em; text-transform: uppercase; text-shadow: 0 0 10px rgba(78, 205, 196, 0.5);">🎒 PLAYER INVENTORY</div>
+                            <div style="font-family: var(--font-din); color: var(--color-text-dim); font-size: 0.7rem; margin-top: 4px; letter-spacing: 0.05em;">Items and equipment currently carried</div>
+                        </div>
+                        <div style="font-family: var(--font-ocr); color: var(--color-teal); font-size: 1.5rem; padding: 8px 16px; background: rgba(0, 0, 0, 0.5); border: 1px solid var(--color-teal);">
+                            ${state.inventory.length}/5
+                        </div>
+                    </div>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; padding: 5px;">
+                        ${state.inventory.map((itemId, idx) => {
+                            // Define item display names with emojis
+                            const itemNames = {
+                                'crowbar': '⚒️ Crowbar',
+                                'knife': '🔪 Combat Knife',
+                                'pipe': '🔧 Metal Pipe',
+                                'gun': '🔫 Handgun',
+                                'wrench': '🔧 Wrench',
+                                'bat': '⚾ Baseball Bat',
+                                'flashlight': '🔦 Flashlight',
+                                'radio': '📻 Radio',
+                                'medkit': '💊 Medical Kit',
+                                'bolt_cutters': '✂️ Bolt Cutters',
+                                'rope': '🪢 Rope',
+                                'keycard': '🔑 Keycard'
+                            };
+                            const itemDisplay = itemNames[itemId] || itemId;
+                            return `
+                            <div style="
+                                background: rgba(0, 0, 0, 0.6); 
+                                border: 1px solid var(--color-teal); 
+                                padding: 12px 14px; 
+                                font-size: 0.75rem; 
+                                font-family: var(--font-ocr); 
+                                color: var(--color-text-primary);
+                                position: relative;
+                                transition: all 0.2s ease;
+                                cursor: default;
+                                border-left: 3px solid var(--color-teal);
+                                box-shadow: inset 0 0 10px rgba(78, 205, 196, 0.1);
+                            " onmouseover="this.style.background='rgba(78, 205, 196, 0.15)'; this.style.borderColor='var(--color-teal)'; this.style.boxShadow='0 0 15px rgba(78, 205, 196, 0.4)'" onmouseout="this.style.background='rgba(0, 0, 0, 0.6)'; this.style.borderColor='var(--color-teal)'; this.style.boxShadow='inset 0 0 10px rgba(78, 205, 196, 0.1)'">
+                                <div style="position: absolute; top: 2px; right: 5px; font-size: 0.6rem; color: var(--color-teal); opacity: 0.6;">#${idx + 1}</div>
+                                <div style="margin-top: 5px;">${itemDisplay}</div>
+                            </div>
+                        `}).join('')}
+                    </div>
+                </div>
+                ` : ''}
+                
                 <!-- DISCOVERED ENTITIES - STANDALONE TOP-LEVEL SECTION -->
                 ${state.seen_elements && state.seen_elements.length > 0 ? `
                 <div style="margin-top: 20px; margin-bottom: 20px; padding: 20px; background: linear-gradient(135deg, rgba(220, 20, 60, 0.08) 0%, rgba(0, 0, 0, 0.3) 100%); border: 2px solid var(--color-blood-red); box-shadow: 0 0 20px rgba(220, 20, 60, 0.3);">
@@ -2062,6 +2114,55 @@
                             <div style="padding: 15px; background: rgba(220, 20, 60, 0.1); border-radius: 4px;">
                                 ${escapeHtml(metadata.death_dispatch)}
                             </div>
+                        </div>
+                    </div>
+                `;
+            }
+            
+            // Inventory
+            if (metadata.inventory && metadata.inventory.length > 0) {
+                const itemNames = {
+                    'crowbar': '⚒️ Crowbar',
+                    'knife': '🔪 Combat Knife',
+                    'pipe': '🔧 Metal Pipe',
+                    'gun': '🔫 Handgun',
+                    'wrench': '🔧 Wrench',
+                    'bat': '⚾ Baseball Bat',
+                    'flashlight': '🔦 Flashlight',
+                    'radio': '📻 Radio',
+                    'medkit': '💊 Medical Kit',
+                    'bolt_cutters': '✂️ Bolt Cutters',
+                    'rope': '🪢 Rope',
+                    'keycard': '🔑 Keycard'
+                };
+                
+                html += `
+                    <div style="padding: 20px; background: linear-gradient(135deg, rgba(78, 205, 196, 0.08) 0%, rgba(0, 0, 0, 0.3) 100%); border: 2px solid var(--color-teal); margin: 20px 0; box-shadow: 0 0 20px rgba(78, 205, 196, 0.3);">
+                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px; border-bottom: 1px solid var(--color-teal); padding-bottom: 10px;">
+                            <div>
+                                <div style="font-family: var(--font-ocr); color: var(--color-teal); font-size: 0.85rem; letter-spacing: 0.2em; text-transform: uppercase; text-shadow: 0 0 10px rgba(78, 205, 196, 0.5);">PLAYER INVENTORY</div>
+                                <div style="font-family: var(--font-din); color: var(--color-text-dim); font-size: 0.7rem; margin-top: 4px; letter-spacing: 0.05em;">Items and equipment at time of archive</div>
+                            </div>
+                            <div style="font-family: var(--font-ocr); color: var(--color-teal); font-size: 1.5rem; padding: 8px 16px; background: rgba(0, 0, 0, 0.5); border: 1px solid var(--color-teal);">
+                                ${metadata.inventory.length}/5
+                            </div>
+                        </div>
+                        <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; padding: 5px;">
+                            ${metadata.inventory.map((itemId, idx) => {
+                                const itemDisplay = itemNames[itemId] || itemId;
+                                return `
+                                <div style="
+                                    background: rgba(0, 0, 0, 0.6); 
+                                    border: 1px solid var(--color-teal); 
+                                    padding: 12px 14px; 
+                                    font-size: 0.75rem; 
+                                    font-family: var(--font-ocr); 
+                                    color: var(--color-text-primary);
+                                    border-left: 3px solid var(--color-teal);
+                                ">
+                                    <div>${itemDisplay}</div>
+                                </div>
+                            `}).join('')}
                         </div>
                     </div>
                 `;
