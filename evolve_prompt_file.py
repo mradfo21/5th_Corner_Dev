@@ -322,13 +322,76 @@ Output condensed version only:"""
         
         state["recent_events"] = recent_events
 
-        # --- Update seen_elements with new unique elements --- #
-        new_elements = [e.strip() for e in re.split(r'[.,\n]', new_situation_text) if len(e.strip()) > 5]
-        for elem in new_elements:
-            if elem and elem not in seen_elements:
-                seen_elements.append(elem)
+        # --- Extract ENTITIES (physical things) from situation --- #
+        # Only extract when we have meaningful new content
+        if new_situation_text and len(new_situation_text.split()) > 20:
+            try:
+                # Ask LLM to extract physical entities
+                entity_prompt = f"""Extract SPECIFIC physical entities from this text - concrete things you could photograph:
+
+TEXT: {new_situation_text}
+
+Extract ONLY:
+- NPCs (guards, scientists, creatures - NOT the protagonist/Jason/player)
+- Specific objects (rifle, vehicle model, equipment type, barrier style)
+- Distinct landmarks (east gate, tower B, red building)
+- Visible threats (red biome growth, patrol unit, creature)
+- Equipment/items (camera, radio, weapon, tool)
+
+RULES:
+✅ Specific things: "pickup truck", "concrete barrier", "east gate"
+✅ Observable entities: "guard patrol", "security camera", "chain-link fence"
+✅ Distinct NPCs: "tactical guard", "scientist", "creature"
+
+❌ NO protagonist names: "Jason", "player", "you"
+❌ NO setting/world names: "Four Corners facility", "Horizon", "desert"  
+❌ NO generic materials: "concrete", "metal" (unless specific: "metal door")
+❌ NO abstract concepts: "tension", "mystery", "silence", "quarantine zone"
+❌ NO actions/states: "approaching", "watching", "feeling"
+
+Return 3-6 specific noun phrases, comma-separated.
+Example: "guard patrol, concrete barrier, east gate, security camera"
+
+Output only the list:"""
+                
+                import requests
+                response_data = requests.post(
+                    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+                    headers={"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"},
+                    json={
+                        "contents": [{"parts": [{"text": entity_prompt}]}],
+                        "generationConfig": {"temperature": 0.3, "maxOutputTokens": 80}
+                    },
+                    timeout=10
+                ).json()
+                
+                entity_text = response_data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                
+                # Parse comma-separated entities
+                new_entities = [e.strip() for e in entity_text.split(',') if len(e.strip()) > 2]
+                
+                # Add to seen_elements if not already present
+                entities_added = 0
+                for entity in new_entities:
+                    # Clean up the entity (lowercase for matching)
+                    entity_clean = entity.lower().strip()
+                    
+                    # Check if semantically similar entity already exists
+                    already_exists = any(entity_clean in existing.lower() or existing.lower() in entity_clean 
+                                        for existing in seen_elements)
+                    
+                    if not already_exists and entity:
+                        seen_elements.append(entity)
+                        entities_added += 1
+                
+                if entities_added > 0:
+                    print(f"  Added {entities_added} new entities: {new_entities[:3]}{'...' if len(new_entities) > 3 else ''}")
+                
+            except Exception as e:
+                print(f"[ENTITY EXTRACTION] Failed: {e}")
+                # Fallback: don't add anything rather than adding garbage
         
-        # Keep seen_elements manageable (last 50)
+        # Keep seen_elements manageable (last 50 most recent physical things)
         if len(seen_elements) > 50:
             seen_elements = seen_elements[-50:]
         
