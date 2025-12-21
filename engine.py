@@ -309,8 +309,14 @@ def get_all_sessions():
     sessions.sort(key=lambda s: s.get('last_accessed', ''), reverse=True)
     return sessions
 
-def delete_session(session_id):
-    """Delete a session and all its data (like deleting a Minecraft world)"""
+def delete_session(session_id, archive_first=True):
+    """
+    Delete a session and all its data (like deleting a Minecraft world).
+    
+    Args:
+        session_id: Session to delete
+        archive_first: Whether to archive before deletion (default: True)
+    """
     if session_id == 'default':
         raise ValueError("Cannot delete the default session. Use reset_state() instead.")
     
@@ -319,6 +325,10 @@ def delete_session(session_id):
         raise ValueError(f"Session '{session_id}' does not exist")
     
     import shutil
+    
+    # Archive before deletion if requested
+    if archive_first:
+        archive_session(session_id, reason='manual_deletion')
     
     # Count files before deletion for logging
     file_count = sum(1 for _ in session_root.rglob('*') if _.is_file())
@@ -3589,11 +3599,91 @@ def get_history(session_id='default'):
     """Get game history for a session"""
     return _load_history(session_id)
 
+def archive_session(session_id='default', reason='reset'):
+    """
+    Archive a session before deletion for later review.
+    Creates a timestamped archive with all session data.
+    
+    Args:
+        session_id: The session to archive
+        reason: Why it's being archived ('reset', 'death', 'manual')
+    
+    Returns:
+        Path to the archive directory, or None if failed
+    """
+    import shutil
+    from datetime import datetime
+    
+    session_root = ROOT / "sessions" / session_id
+    if not session_root.exists():
+        print(f"[ARCHIVE] Session {session_id} doesn't exist, nothing to archive")
+        return None
+    
+    # Create archives directory
+    archives_root = ROOT / "archives"
+    archives_root.mkdir(exist_ok=True)
+    
+    # Create timestamped archive folder
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    archive_name = f"{session_id}_{timestamp}"
+    archive_path = archives_root / archive_name
+    
+    try:
+        print(f"[ARCHIVE] Creating archive: {archive_name}")
+        
+        # Copy entire session directory
+        shutil.copytree(session_root, archive_path)
+        
+        # Load state and history for metadata
+        state = _load_state(session_id)
+        history = _load_history(session_id)
+        
+        # Create archive metadata
+        metadata = {
+            "session_id": session_id,
+            "archive_timestamp": timestamp,
+            "archive_reason": reason,
+            "turns_completed": state.get('turn_count', 0),
+            "player_status": state.get('player_alive', True),
+            "final_location": state.get('location', 'unknown'),
+            "total_history_entries": len(history),
+            "game_duration": "unknown",  # Could calculate from history timestamps
+            "world_prompt": state.get('world_prompt', ''),
+            "seen_elements": state.get('seen_elements', []),
+        }
+        
+        # Add death info if player died
+        if not state.get('player_alive', True) and history:
+            last_entry = history[-1]
+            metadata["death_turn"] = last_entry.get('turn_count', 0)
+            metadata["death_dispatch"] = last_entry.get('dispatch', '')
+        
+        # Save metadata
+        metadata_path = archive_path / "archive_metadata.json"
+        metadata_path.write_text(json.dumps(metadata, indent=2))
+        
+        print(f"[ARCHIVE] ✓ Archived to: {archive_path}")
+        print(f"[ARCHIVE]   Turns: {metadata['turns_completed']}")
+        print(f"[ARCHIVE]   History entries: {metadata['total_history_entries']}")
+        print(f"[ARCHIVE]   Reason: {reason}")
+        
+        return archive_path
+        
+    except Exception as e:
+        print(f"[ARCHIVE] Failed to create archive: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
 def reset_state(session_id='default'):
     """Reset state for a session"""
     global state, history, _last_image_path, _vision_cache
     
     print(f"[RESET] Resetting session: {session_id}")
+    
+    # Archive before deletion
+    archive_session(session_id, reason='reset')
     
     # Delete session-specific files
     state_path = _get_state_path(session_id)
