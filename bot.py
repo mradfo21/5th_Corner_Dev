@@ -1738,8 +1738,9 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 # Clean up state if there were invalid items
                 if len(valid_inventory) != len(inventory):
                     print(f"[INVENTORY] Cleaned up invalid items: {len(inventory)} -> {len(valid_inventory)}")
-                    engine.state["inventory"] = valid_inventory
-                    engine._save_state(engine.state)
+                    current_state = engine.get_state()
+                    current_state["inventory"] = valid_inventory
+                    engine.save_state(current_state)
                 
                 # Create inventory display
                 inventory_list = format_inventory_display(valid_inventory)
@@ -1784,11 +1785,12 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                             )
                             return
                         
-                        # Remove from inventory
-                        current_inv = engine.state.get("inventory", [])
-                        updated_inv = remove_item_from_inventory(current_inv, item_id)
-                        engine.state["inventory"] = updated_inv
-                        engine._save_state(engine.state)
+                    # Remove from inventory
+                    current_state = engine.get_state()
+                    current_inv = current_state.get("inventory", [])
+                    updated_inv = remove_item_from_inventory(current_inv, item_id)
+                    current_state["inventory"] = updated_inv
+                    engine.save_state(current_state)
                         
                         # Close inventory after drop
                         global inventory_open_users
@@ -2188,7 +2190,8 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
     class FlipbookToggleButton(Button):
         def __init__(self, parent_view):
             # Check if flipbook mode is currently enabled
-            flipbook_mode = engine.state.get("flipbook_mode", False)
+            current_state = engine.get_state()
+            flipbook_mode = current_state.get("flipbook_mode", False)
             label = "🎬 Flipbook: ON" if flipbook_mode else "🎬 Flipbook: OFF"
             style = discord.ButtonStyle.success if flipbook_mode else discord.ButtonStyle.secondary
             super().__init__(label=label, style=style, row=2)
@@ -2207,10 +2210,11 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             print("[FLIPBOOK] FlipbookToggleButton callback triggered")
             
             # Toggle flipbook mode in state
-            current_mode = engine.state.get("flipbook_mode", False)
+            current_state = engine.get_state()
+            current_mode = current_state.get("flipbook_mode", False)
             new_mode = not current_mode
-            engine.state["flipbook_mode"] = new_mode
-            engine._save_state(engine.state)
+            current_state["flipbook_mode"] = new_mode
+            engine.save_state(current_state)
             
             # Update button appearance
             if new_mode:

@@ -206,21 +206,17 @@ def generate_with_gemini(
     
     structured_prompt = structured_prompt + anti_person
     
-    # Add CRITICAL anti-timecode/text instructions
+    # Add CRITICAL anti-timecode/text instructions (ULTRA-STRONG)
     anti_timecode = (
-        "\n\n CRITICAL - ABSOLUTELY NO TEXT OR TIMECODE OVERLAYS:\n"
-        "This is RAW CAMERA FOOTAGE with NO on-screen displays.\n"
-        "Do NOT add ANY text, numbers, letters, or symbols to the image.\n"
-        "FORBIDDEN:\n"
-        "ERROR: NO timecode (NO 'DEC 14 1993', NO '14:32:05', NO date/time stamps)\n"
-        "ERROR: NO 'REC' indicator\n"
-        "ERROR: NO 'PCC HISS' or any text overlays\n"
-        "ERROR: NO battery indicators, tape icons, recording symbols\n"
-        "ERROR: NO numbers, dates, times anywhere in the image\n"
-        "ERROR: NO text of ANY kind\n\n"
-        "The image is PURE VISUAL FOOTAGE with ZERO on-screen text elements.\n"
-        "This is the RAW tape - no camera UI, no overlays, no burn-ins.\n"
-        "If you see timecode in reference images, DO NOT copy it."
+        "🚫🚫🚫 CRITICAL RULE #1 - NO TEXT ANYWHERE 🚫🚫🚫\n\n"
+        "ZERO text. ZERO numbers. ZERO letters. ZERO symbols.\n"
+        "DO NOT GENERATE: 'REC', 'DEC 14 1993', '16:45:22', date stamps, timecode\n"
+        "DO NOT GENERATE: Battery indicators, recording icons, 'PCC HISS'\n"
+        "DO NOT GENERATE: ANY TEXT OF ANY KIND\n\n"
+        "This is PURE RAW FOOTAGE with NO on-screen displays.\n"
+        "The image must be 100% visual with ZERO text overlays.\n"
+        "If reference images have text, REMOVE IT from your output.\n\n"
+        "REPEAT: NO TEXT. NO TIMECODE. NO 'REC'. NO DATES. NO NUMBERS."
     )
     
     structured_prompt = structured_prompt + anti_timecode
@@ -802,21 +798,18 @@ def generate_gemini_img2img(
     
     structured_prompt = structured_prompt + anti_person
     
-    # Add CRITICAL anti-timecode/text instructions
+    # Add CRITICAL anti-timecode/text instructions (ULTRA-STRONG for img2img)
     anti_timecode = (
-        "\n\n ABSOLUTELY NO TEXT OR TIMECODE - CRITICAL:\n"
-        "This is RAW UNPROCESSED CAMERA FOOTAGE with NO on-screen displays of ANY kind.\n"
-        "DO NOT GENERATE:\n"
-        "ERROR: ZERO timecode overlays - NO 'DEC 14 1993', NO '1993 OCT 14', NO dates\n"
-        "ERROR: ZERO time displays - NO '14:32:05', NO '4:32 PM', NO clock displays\n"
-        "ERROR: ZERO 'REC' indicator or recording symbols\n"
-        "ERROR: ZERO 'PCC HISS' or ANY words/text\n"
-        "ERROR: ZERO battery indicators, tape counter, VCR UI elements\n"
-        "ERROR: ZERO numbers, letters, words, or symbols ANYWHERE in the image\n\n"
-        "The reference images may contain timecode overlays - YOU MUST REMOVE THEM.\n"
-        "Generate the scene WITHOUT copying any text or UI elements from references.\n"
-        "This is the ACTUAL TAPE IMAGE - no camera interface, no metadata overlays.\n"
-        "PURE VISUAL CONTENT ONLY - zero text elements of any kind."
+        "🚫🚫🚫 CRITICAL RULE #1 - NO TEXT ANYWHERE 🚫🚫🚫\n\n"
+        "ZERO text. ZERO numbers. ZERO letters. ZERO symbols.\n"
+        "DO NOT GENERATE: 'REC', 'DEC 14 1993', '16:45:22', date stamps, timecode\n"
+        "DO NOT GENERATE: Battery indicators, recording icons, 'PCC HISS'\n"
+        "DO NOT GENERATE: ANY TEXT OF ANY KIND\n\n"
+        "Reference images MAY have text overlays - YOU MUST REMOVE THEM.\n"
+        "DO NOT copy 'REC' or timecode from references.\n"
+        "Your output must be 100% visual with ZERO text overlays.\n"
+        "Strip ALL text. No timecode. No 'REC'. No dates. No UI elements.\n\n"
+        "REPEAT: NO TEXT. NO TIMECODE. NO 'REC'. NO DATES. NO NUMBERS."
     )
     
     structured_prompt = structured_prompt + anti_timecode

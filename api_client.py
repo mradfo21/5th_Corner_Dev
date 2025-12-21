@@ -100,6 +100,15 @@ class GameEngineClient:
         else:
             engine.reset_state(self.session_id)
     
+    def save_state(self, state: Dict):
+        """Save game state to disk"""
+        if self.use_api:
+            # API mode: send state to server
+            self._api_call('POST', '/state/save', {'session_id': self.session_id, 'state': state})
+        else:
+            # Direct mode: save via engine module
+            engine._save_state(state, self.session_id)
+    
     # ═══════════════════════════════════════════════════════════════════════
     # GAME FLOW
     # ═══════════════════════════════════════════════════════════════════════
