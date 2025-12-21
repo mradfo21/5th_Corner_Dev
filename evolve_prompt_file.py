@@ -265,6 +265,9 @@ VISUAL CONTEXT: {vision[:200] if vision else "N/A"}
 PREVIOUS STATE: {old_snippet}...
 CURRENT STATE: {new_snippet}...
 
+CRITICAL: Return ONLY the sentence itself - NO labels, NO prefixes like "Significant Change:", NO "Atmospheric Sentence:", NO preamble.
+Just the raw sentence for the player to read.
+
 Write a tense, atmospheric sentence (15-25 words) describing what's changed:"""
 
     try:
@@ -290,6 +293,19 @@ Write a tense, atmospheric sentence (15-25 words) describing what's changed:"""
             
             # Clean up quotes if present
             summary = summary.strip('"').strip("'")
+            
+            # Remove common LLM labels/prefixes
+            labels_to_remove = [
+                "Significant Change:",
+                "Atmospheric Sentence:",
+                "Evolution Summary:",
+                "Change:",
+                "Summary:",
+                "Update:"
+            ]
+            for label in labels_to_remove:
+                if summary.startswith(label):
+                    summary = summary[len(label):].strip()
             
             # Truncate if too long (aim for ~20 words)
             words = summary.split()
