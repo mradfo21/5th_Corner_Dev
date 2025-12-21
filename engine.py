@@ -3601,7 +3601,7 @@ def archive_session(session_id='default', reason='reset'):
         metadata_path = archive_path / "archive_metadata.json"
         metadata_path.write_text(json.dumps(metadata, indent=2))
         
-        print(f"[ARCHIVE] ✓ Archived to: {archive_path}")
+        print(f"[ARCHIVE] SUCCESS - Archived to: {archive_path}")
         print(f"[ARCHIVE]   Turns: {metadata['turns_completed']}")
         print(f"[ARCHIVE]   History entries: {metadata['total_history_entries']}")
         print(f"[ARCHIVE]   Reason: {reason}")
