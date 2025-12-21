@@ -3347,7 +3347,9 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
         # Evolve world state
         from evolve_prompt_file import evolve_world_state
         consequence_summary = summarize_world_state_diff(prev_state, state)
-        evolve_world_state(history, consequence_summary, vision_description=vision_dispatch)
+        # Pass session-specific state file path
+        state_file_path = _get_state_path(session_id)
+        evolve_world_state(history, consequence_summary, state_file=str(state_file_path), vision_description=vision_dispatch)
         state = _load_state(session_id)
         
         # Generate image
