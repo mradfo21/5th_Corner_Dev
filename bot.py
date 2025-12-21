@@ -1730,9 +1730,18 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 # Mark inventory as open for this user
                 inventory_open_users.add(user_id)
                 
+                # Filter to only valid items (in case state has old/invalid IDs)
+                valid_inventory = [item_id for item_id in inventory if item_id in ITEMS]
+                
+                # Clean up state if there were invalid items
+                if len(valid_inventory) != len(inventory):
+                    print(f"[INVENTORY] Cleaned up invalid items: {len(inventory)} -> {len(valid_inventory)}")
+                    engine.state["inventory"] = valid_inventory
+                    engine._save_state(engine.state)
+                
                 # Create inventory display
-                inventory_list = format_inventory_display(inventory)
-                inv_size = len(inventory)
+                inventory_list = format_inventory_display(valid_inventory)
+                inv_size = len(valid_inventory)
                 max_size = 5
                 
                 embed = discord.Embed(
@@ -1743,7 +1752,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 
                 # Create dropdown to drop items
                 options = []
-                for item_id in inventory:
+                for item_id in valid_inventory:
                     item = ITEMS.get(item_id)
                     if item:
                         options.append(discord.SelectOption(

@@ -1227,7 +1227,12 @@
                 </div>
                 
                 <!-- INVENTORY - STANDALONE TOP-LEVEL SECTION -->
-                ${state.inventory && state.inventory.length > 0 ? `
+                ${state.inventory && state.inventory.length > 0 ? (() => {
+                    // Define valid item IDs
+                    const validItemIds = ['crowbar', 'knife', 'pipe', 'gun', 'wrench', 'bat', 'flashlight', 'radio', 'medkit', 'bolt_cutters', 'rope', 'keycard'];
+                    // Filter to only valid items
+                    const validInventory = state.inventory.filter(id => validItemIds.includes(id));
+                    return validInventory.length > 0 ? `
                 <div style="margin-top: 20px; margin-bottom: 20px; padding: 20px; background: linear-gradient(135deg, rgba(78, 205, 196, 0.08) 0%, rgba(0, 0, 0, 0.3) 100%); border: 2px solid var(--color-teal); box-shadow: 0 0 20px rgba(78, 205, 196, 0.3);">
                     <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px; border-bottom: 1px solid var(--color-teal); padding-bottom: 10px;">
                         <div>
@@ -1235,11 +1240,11 @@
                             <div style="font-family: var(--font-din); color: var(--color-text-dim); font-size: 0.7rem; margin-top: 4px; letter-spacing: 0.05em;">Items and equipment currently carried</div>
                         </div>
                         <div style="font-family: var(--font-ocr); color: var(--color-teal); font-size: 1.5rem; padding: 8px 16px; background: rgba(0, 0, 0, 0.5); border: 1px solid var(--color-teal);">
-                            ${state.inventory.length}/5
+                            ${validInventory.length}/5
                         </div>
                     </div>
                     <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; padding: 5px;">
-                        ${state.inventory.map((itemId, idx) => {
+                        ${validInventory.map((itemId, idx) => {
                             // Define item display names with emojis
                             const itemNames = {
                                 'crowbar': '⚒️ Crowbar',
@@ -1276,7 +1281,8 @@
                         `}).join('')}
                     </div>
                 </div>
-                ` : ''}
+                ` : '';
+                })() : ''}
                 
                 <!-- DISCOVERED ENTITIES - STANDALONE TOP-LEVEL SECTION -->
                 ${state.seen_elements && state.seen_elements.length > 0 ? `
@@ -2136,19 +2142,24 @@
                     'keycard': '🔑 Keycard'
                 };
                 
-                html += `
-                    <div style="padding: 20px; background: linear-gradient(135deg, rgba(78, 205, 196, 0.08) 0%, rgba(0, 0, 0, 0.3) 100%); border: 2px solid var(--color-teal); margin: 20px 0; box-shadow: 0 0 20px rgba(78, 205, 196, 0.3);">
-                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px; border-bottom: 1px solid var(--color-teal); padding-bottom: 10px;">
-                            <div>
-                                <div style="font-family: var(--font-ocr); color: var(--color-teal); font-size: 0.85rem; letter-spacing: 0.2em; text-transform: uppercase; text-shadow: 0 0 10px rgba(78, 205, 196, 0.5);">PLAYER INVENTORY</div>
-                                <div style="font-family: var(--font-din); color: var(--color-text-dim); font-size: 0.7rem; margin-top: 4px; letter-spacing: 0.05em;">Items and equipment at time of archive</div>
+                // Filter to only valid items
+                const validItemIds = Object.keys(itemNames);
+                const validInventory = metadata.inventory.filter(id => validItemIds.includes(id));
+                
+                if (validInventory.length > 0) {
+                    html += `
+                        <div style="padding: 20px; background: linear-gradient(135deg, rgba(78, 205, 196, 0.08) 0%, rgba(0, 0, 0, 0.3) 100%); border: 2px solid var(--color-teal); margin: 20px 0; box-shadow: 0 0 20px rgba(78, 205, 196, 0.3);">
+                            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px; border-bottom: 1px solid var(--color-teal); padding-bottom: 10px;">
+                                <div>
+                                    <div style="font-family: var(--font-ocr); color: var(--color-teal); font-size: 0.85rem; letter-spacing: 0.2em; text-transform: uppercase; text-shadow: 0 0 10px rgba(78, 205, 196, 0.5);">PLAYER INVENTORY</div>
+                                    <div style="font-family: var(--font-din); color: var(--color-text-dim); font-size: 0.7rem; margin-top: 4px; letter-spacing: 0.05em;">Items and equipment at time of archive</div>
+                                </div>
+                                <div style="font-family: var(--font-ocr); color: var(--color-teal); font-size: 1.5rem; padding: 8px 16px; background: rgba(0, 0, 0, 0.5); border: 1px solid var(--color-teal);">
+                                    ${validInventory.length}/5
+                                </div>
                             </div>
-                            <div style="font-family: var(--font-ocr); color: var(--color-teal); font-size: 1.5rem; padding: 8px 16px; background: rgba(0, 0, 0, 0.5); border: 1px solid var(--color-teal);">
-                                ${metadata.inventory.length}/5
-                            </div>
-                        </div>
-                        <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; padding: 5px;">
-                            ${metadata.inventory.map((itemId, idx) => {
+                            <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; padding: 5px;">
+                                ${validInventory.map((itemId, idx) => {
                                 const itemDisplay = itemNames[itemId] || itemId;
                                 return `
                                 <div style="
@@ -2165,7 +2176,8 @@
                             `}).join('')}
                         </div>
                     </div>
-                `;
+                    `;
+                }
             }
             
             // Discovered Entities
