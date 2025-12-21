@@ -1209,13 +1209,11 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 print("[DEATH] Play Again button ready - waiting for manual restart (no auto-restart)")
                 return  # End turn here - button will handle restart when clicked
             
-            # Show world evolution context (skip generic defaults)
-            world_context = disp.get("world_prompt", "")
-            # Skip if it's just the generic default or empty
-            generic_defaults = ["jason is alone", "danger could strike"]
-            if world_context and not any(g in world_context.lower() for g in generic_defaults):
+            # Show current situation (dynamic state, not core world_prompt)
+            current_situation = disp.get("current_situation", "")
+            if current_situation and len(current_situation) > 10:
                 await interaction.channel.send(embed=discord.Embed(
-                    description=safe_embed_desc(f"📍 {world_context.strip()}"),
+                    description=safe_embed_desc(f"📍 {current_situation.strip()}"),
                     color=CORNER_TEAL_DARK  # discord blue
                 ))
                 await asyncio.sleep(0.5)
@@ -3722,11 +3720,11 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
         # Send new choices
         new_choices = phase2_result.get("choices", [])
         if new_choices:
-            # Send world evolution text
-            world_prompt = engine.state.get("world_prompt", "")
-            if world_prompt:
+            # Send current situation (dynamic state, not core world_prompt)
+            current_situation = engine.state.get("current_situation", "")
+            if current_situation and len(current_situation) > 10:
                 await channel.send(embed=discord.Embed(
-                    description=f"📍 {world_prompt}",
+                    description=f"📍 {current_situation}",
                     color=VHS_RED
                 ))
             
