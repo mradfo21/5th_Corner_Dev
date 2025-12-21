@@ -1479,16 +1479,20 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
         use_color = prev_color
         
         # --- CHECK FLIPBOOK MODE ---
-        flipbook_mode = state.get("flipbook_mode", False) if 'state' in globals() else False
+        # Load fresh state to get latest flipbook_mode setting
+        current_state = get_state()
+        flipbook_mode = current_state.get("flipbook_mode", False)
         if flipbook_mode:
             print(f"[FLIPBOOK] 🎬 FLIPBOOK MODE ENABLED - Will generate 4-panel sequence")
+        else:
+            print(f"[FLIPBOOK] Flipbook mode is OFF (standard single-frame generation)")
         
         # --- Inject world summary as background context ---
-        world_summary = summarize_world_state(state) if 'state' in globals() else ""
+        world_summary = summarize_world_state(current_state)
         # --- Summarize world prompt for image flavor ---
         world_flavor = ""
-        if 'state' in globals() and state.get("world_prompt", ""):
-            world_flavor = summarize_world_prompt_for_image(state["world_prompt"])
+        if current_state.get("world_prompt", ""):
+            world_flavor = summarize_world_prompt_for_image(current_state["world_prompt"])
         prompt_str = build_image_prompt(
             player_choice=choice,
             dispatch=caption,
@@ -1687,10 +1691,10 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                     print(f"[FLIPBOOK] Display image (full grid): {display_image}")
                     
                     # Store both paths in state for later use
-                    if 'state' in globals():
-                        state["last_display_image"] = display_image  # Full 4-panel grid
-                        state["last_canonical_frame"] = canonical_frame  # Panel 4 only
-                        print(f"[FLIPBOOK] Stored paths in state")
+                    current_state["last_display_image"] = display_image  # Full 4-panel grid
+                    current_state["last_canonical_frame"] = canonical_frame  # Panel 4 only
+                    _save_state(current_state)
+                    print(f"[FLIPBOOK] Stored paths in state")
                 else:
                     print(f"[FLIPBOOK] WARNING: Panel extraction failed, using full image")
             
