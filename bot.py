@@ -47,8 +47,9 @@ if DISCORD_ENABLED:
         raise
     
     try:
-        from evolve_prompt_file import generate_interim_messages_on_demand
-        print("[STARTUP] - evolve_prompt_file imported", flush=True)
+        # evolve_prompt_file no longer exports interim message functions
+        # Evolution summaries are now stored in state["evolution_summary"]
+        print("[STARTUP] - evolve_prompt_file not needed for interim messages", flush=True)
         sys.stdout.flush()
     except Exception as e:
         print(f"[STARTUP ERROR] Failed to import evolve_prompt_file: {e}", flush=True)
