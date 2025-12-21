@@ -318,16 +318,19 @@ def _extract_entities_from_text(text: str) -> List[str]:
     prompt = f"""From the following text, extract a list of significant physical entities.
 Focus on characters, objects, landmarks, and explicit threats.
 Exclude abstract concepts, generic descriptions, actions, and the protagonist (Jason/you).
-Return a comma-separated list of 3-7 entities.
+
+CRITICAL: If NO significant entities are found, return the word "NONE" by itself.
+If entities ARE found, return ONLY the comma-separated list (no labels, no "Entities:" prefix).
 
 Text: "{text[:300]}"
 
-Examples:
+Examples of GOOD responses:
 - "Guard tower, chain-link fence, concrete barriers, two guards"
 - "Rusted pickup truck, east gate structure, warning signs"
 - "Red biome growth, pulsating tendrils, mutated creature"
+- "NONE"
 
-Entities:"""
+Return ONLY the entities or "NONE":"""
     
     try:
         response = requests.post(
@@ -349,13 +352,20 @@ Entities:"""
         if response.status_code == 200:
             result = response.json()
             entities_str = result["candidates"][0]["content"]["parts"][0]["text"].strip()
+            
+            # Check if response is "NONE" or empty
+            if entities_str.upper() == "NONE" or not entities_str:
+                return []
+            
+            # Split by comma
             entities = [e.strip() for e in entities_str.split(',') if e.strip()]
             
-            # Filter out non-entities
+            # Filter out non-entities and malformed responses
             filtered = [
                 e for e in entities
-                if e.lower() not in ["jason", "you", "player", "the facility", "tension", "air"]
+                if e.lower() not in ["jason", "you", "player", "the facility", "tension", "air", "none", "entities: none", "entities"]
                 and len(e.split()) > 1  # Prefer multi-word for specificity
+                and not e.lower().startswith("entities:")  # Remove label prefix
             ]
             
             return list(dict.fromkeys(filtered))[:7]  # Unique, max 7
