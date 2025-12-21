@@ -79,6 +79,9 @@ def _client(api_key: str, base_url: str):
 # ───────── config & assets ──────────────────────────────────────────────────
 ROOT = Path(__file__).parent.resolve()
 
+# Debug mode (set DEBUG_MODE=1 environment variable to enable verbose logging)
+DEBUG_MODE = os.getenv("DEBUG_MODE", "0") == "1"
+
 # Load config from file if it exists, otherwise use empty dict (for Render deployment)
 try:
     CONFIG = json.load((ROOT/"config.json").open(encoding="utf-8"))
