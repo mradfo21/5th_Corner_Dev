@@ -1530,8 +1530,9 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
         image_path = img_dir / filename
         
         # --- ROUTE TO APPROPRIATE IMAGE PROVIDER ---
-        active_image_provider = ai_provider_manager.get_image_provider()        
-        if active_image_provider == "veo":            try:
+        active_image_provider = ai_provider_manager.get_image_provider()
+        if active_image_provider == "veo":
+            try:
                 # Use Veo 3.1 for video-based image generation
                 # Generates video from previous frame, extracts last frame as "image"
                 print(f"[IMG] Using Veo 3.1 video generation (last frame extraction)", flush=True)
@@ -2174,7 +2175,8 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             if not dispatch_text or dispatch_text.strip().lower() in {"none", "", "[", "[]"}:
                 dispatch_text = "The situation evolves..."
             dispatch_item = create_feed_item(type="narrative_event", content=dispatch_text, metadata={"source": "dispatch"})
-            new_feed_items_for_log.append(dispatch_item)        except Exception as e_dispatch:
+            new_feed_items_for_log.append(dispatch_item)
+        except Exception as e_dispatch:
             log_error(f"Error during _process_turn_background narrative dispatch generation: {e_dispatch}")
             error_item = create_feed_item(type="error_event", content=f"Error generating dispatch: {e_dispatch}")
             new_feed_items_for_log.append(error_item)
@@ -2195,7 +2197,8 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             import choices  # Local import to avoid circular dependency
             choices.generate_and_apply_choice(choice, dispatch_text_from_engine=dispatch_text) # Call via module
             # Reload state after choices.py potentially modified it
-            state = _load_state()        except Exception as e_apply_choice:
+            state = _load_state()
+        except Exception as e_apply_choice:
             log_error(f"Error in _process_turn_background calling generate_and_apply_choice: {e_apply_choice}")
             error_item = create_feed_item(type="error_event", content=f"Error processing choice's core impact: {e_apply_choice}")
             new_feed_items_for_log.append(error_item)
@@ -2212,7 +2215,10 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             consequence_text = generate_consequence_summary(dispatch_text, prev_state_snapshot, state, choice)
             if consequence_text and consequence_text.strip().lower() not in ["no major consequence observed.", "no major consequence.", "none", ""]:
                 consequence_item = create_feed_item(type="consequence_event", content=consequence_text)
-                new_feed_items_for_log.append(consequence_item)            else:        except Exception as e_consequence:
+                new_feed_items_for_log.append(consequence_item)
+            else:
+                pass
+        except Exception as e_consequence:
             log_error(f"Error generating consequence summary in _process_turn_background: {e_consequence}")
             error_item = create_feed_item(type="error_event", content=f"Error generating consequence: {e_consequence}")
             new_feed_items_for_log.append(error_item)
@@ -2262,7 +2268,8 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                         vision_text = _vision_describe(new_image_url)
                         if vision_text:
                             vision_item = create_feed_item(type="vision_analysis", content=vision_text, metadata={"source_image_url": new_image_url})
-                            new_feed_items_for_log.append(vision_item)            except Exception as e_img_vision:
+                            new_feed_items_for_log.append(vision_item)
+            except Exception as e_img_vision:
                 log_error(f"Error during image/vision generation in _process_turn_background: {e_img_vision}")
                 error_item = create_feed_item(type="error_event", content=f"Error generating visual data: {e_img_vision}")
                 new_feed_items_for_log.append(error_item)
@@ -2552,7 +2559,8 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             history.pop(0)
         try:
             with history_path.open("w", encoding="utf-8") as f_hist:
-                json.dump(history, f_hist, indent=2)        except Exception as e_hist_save:
+                json.dump(history, f_hist, indent=2)
+        except Exception as e_hist_save:
             log_error(f"Error saving history.json: {e_hist_save}")
         # Final prune of feed_log to keep it manageable (e.g., last 50-100 items)        MAX_FEED_LOG_ITEMS = 100 
         if len(state.get("feed_log", [])) > MAX_FEED_LOG_ITEMS:
