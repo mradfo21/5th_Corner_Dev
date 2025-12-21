@@ -913,6 +913,10 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 await micro_msg.delete()
             except Exception:
                 pass
+            
+            # Let the action message linger so player can read it
+            await asyncio.sleep(1.8)  # Increased from 0.3s - give time to read the action
+            
             try:
                 if 'action_msg' in locals():
                     await action_msg.delete()
