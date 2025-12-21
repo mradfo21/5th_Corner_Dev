@@ -2519,20 +2519,27 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             choice_item = _structure_choices_for_feed(new_choices, final_choice_prompt_text, state.get("current_image_url"))            
             new_feed_items_for_log.append(choice_item)
             state["choices"] = choice_item["choices"] # Save new choices to top-level state for compatibility
-            state["choices_metadata"] = choices_meta # Save choices_meta separately in state
+            state["choices_metadata"] = choices_meta # Save choices_metadata separately in state
             
-            # Save state with new choices            with WORLD_STATE_LOCK:
+            # Save state with new choices
+            with WORLD_STATE_LOCK:
                 state.setdefault('feed_log', []).extend(new_feed_items_for_log)
-                _save_state(state)            new_feed_items_for_log.clear()
+                _save_state(state)
+            new_feed_items_for_log.clear()
 
-        if new_feed_items_for_log: # If choices or error were added            with WORLD_STATE_LOCK:
+        if new_feed_items_for_log: # If choices or error were added
+            with WORLD_STATE_LOCK:
                 state.setdefault('feed_log', []).extend(new_feed_items_for_log)
                 _save_state(state) # Save state with new choices
-            new_feed_items_for_log.clear()        else:
+            new_feed_items_for_log.clear()
+        else:
+            pass
 
-        # Player Death Check - using the main dispatch_text of this turn        player_is_dead = False
+        # Player Death Check - using the main dispatch_text of this turn
+        player_is_dead = False
         try:
-            player_is_dead = check_player_death(dispatch_text, state.get("world_prompt"), choice)            if player_is_dead:
+            player_is_dead = check_player_death(dispatch_text, state.get("world_prompt"), choice)
+            if player_is_dead:
                 if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Player death detected by check_player_death.", flush=True)
                 state["player_state"]["alive"] = False
                 game_over_item = create_feed_item(type="game_over", content="You have succumbed to the horrors. The transmission ends.")
@@ -2547,7 +2554,9 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                     _save_state(state)
         except Exception as e_death_check:
             log_error(f"Error during player death check in _process_turn_background: {e_death_check}")
-        # Update history.json (simplified)        history_entry = {
+        
+        # Update history.json (simplified)
+        history_entry = {
             "choice": choice,
             "dispatch": dispatch_text,
             "world_prompt_before": prev_state_snapshot.get("world_prompt"),
@@ -2827,8 +2836,11 @@ def api_choose():
             type="player_action", 
             content=f"{player_choice_text}", # Display the choice text directly
             metadata={"raw_choice": player_choice_text, "context_id": context_item_id}
-        )        with WORLD_STATE_LOCK:            state.setdefault('feed_log', []).append(player_action_item)
-            state['last_choice'] = player_choice_text            _save_state(state)        
+        )
+        with WORLD_STATE_LOCK:
+            state.setdefault('feed_log', []).append(player_action_item)
+            state['last_choice'] = player_choice_text
+            _save_state(state)        
         if DEBUG_MODE: print(f"[DEBUG] api_choose - Player action item ID {player_action_item['id']} logged. Starting background thread for _process_turn_background.", flush=True)
 
         # 2. Start background processing for the rest of the turn
