@@ -3478,12 +3478,28 @@ def advance_turn_choices_deferred(consequence_img_url: str, dispatch: str, visio
     # Save to history (with custom action flag for permanence tracking)
     history = _load_history(session_id)
     is_custom_action = not any(keyword in choice.lower() for keyword in ["move", "advance", "photograph", "examine", "sprint", "climb", "vault", "crawl"])
+    
+    # Analyze image with Vision AI for spatial grounding
+    vision_analysis_text = ""
+    if consequence_img_url and VISION_ENABLED:
+        print(f"[VISION] Analyzing generated image for spatial context...")
+        try:
+            vision_result = _vision_analyze_all(consequence_img_url)
+            vision_analysis_text = vision_result.get("description", "")
+            if vision_analysis_text:
+                print(f"[VISION] Analysis complete: {vision_analysis_text[:100]}...")
+            else:
+                print(f"[VISION] No description returned")
+        except Exception as e:
+            print(f"[VISION] Analysis failed: {e}")
+            vision_analysis_text = ""
+    
     history_entry = {
         "choice": choice,
         "is_custom_action": is_custom_action,  # Flag for permanence
         "dispatch": dispatch,
         "vision_dispatch": vision_dispatch,
-        "vision_analysis": "",
+        "vision_analysis": vision_analysis_text,  # Now populated from actual vision AI!
         "world_prompt": state.get("world_prompt", ""),
         "image": consequence_img_url,
         "image_url": consequence_img_url,
@@ -3757,12 +3773,27 @@ def generate_intro_choices_deferred(image_url: str, prologue: str, vision_dispat
         options = [p.strip() for p in parts if p.strip()][:3]
     # Don't pad with placeholders - just return what we got
     
+    # Analyze intro image with Vision AI for spatial grounding
+    vision_analysis_text = ""
+    if image_url and VISION_ENABLED:
+        print(f"[VISION INTRO] Analyzing opening image for spatial context...")
+        try:
+            vision_result = _vision_analyze_all(image_url)
+            vision_analysis_text = vision_result.get("description", "")
+            if vision_analysis_text:
+                print(f"[VISION INTRO] Analysis complete: {vision_analysis_text[:100]}...")
+            else:
+                print(f"[VISION INTRO] No description returned")
+        except Exception as e:
+            print(f"[VISION INTRO] Analysis failed: {e}")
+            vision_analysis_text = ""
+    
     # Save to session-specific history
     entry = {
         "choice": "Intro",
         "dispatch": prologue,
         "vision_dispatch": vision_dispatch,
-        "vision_analysis": "",  # Not needed anymore
+        "vision_analysis": vision_analysis_text,  # Now populated from actual vision AI!
         "world_prompt": prologue,
         "image": image_url,
         "image_url": image_url
@@ -3880,11 +3911,26 @@ def generate_intro_turn(session_id: str = 'default'):
         parts = re.split(r"[\/,\x19\x12\-]|  +", options[0])
         options = [p.strip() for p in parts if p.strip()][:3]
     # Don't pad with placeholders - just return what we got
+    # Analyze intro image with Vision AI for spatial grounding
+    vision_analysis_text = ""
+    if dispatch_img_url and VISION_ENABLED:
+        print(f"[VISION INTRO FULL] Analyzing opening image for spatial context...")
+        try:
+            vision_result = _vision_analyze_all(dispatch_img_url)
+            vision_analysis_text = vision_result.get("description", "")
+            if vision_analysis_text:
+                print(f"[VISION INTRO FULL] Analysis complete: {vision_analysis_text[:100]}...")
+            else:
+                print(f"[VISION INTRO FULL] No description returned")
+        except Exception as e:
+            print(f"[VISION INTRO FULL] Analysis failed: {e}")
+            vision_analysis_text = ""
+    
     entry = {
         "choice": "Intro",
         "dispatch": dispatch,
         "vision_dispatch": vision_dispatch,
-        "vision_analysis": image_description,  # Save vision analysis for first turn continuity
+        "vision_analysis": vision_analysis_text,  # Now populated from actual vision AI!
         "world_prompt": prologue,
         "image": dispatch_img_url  # Include opening image
     }
