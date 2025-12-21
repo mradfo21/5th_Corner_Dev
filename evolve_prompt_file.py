@@ -275,6 +275,40 @@ Format as a natural paragraph, present tense, atmospheric."""
             print("No situation update generated - skipping.")
             return False
 
+        # Check if situation is too long and needs condensation
+        situation_word_count = len(new_situation_text.split())
+        if situation_word_count > 100:
+            print(f"[CONDENSATION] Situation too long ({situation_word_count} words), condensing...")
+            # Ask LLM to condense
+            condense_prompt = f"""Condense this situation description to 2-3 sentences (50-70 words max):
+
+{new_situation_text}
+
+Keep: Location, threats, discoveries, current action/state.
+Remove: Redundant details, flowery language.
+Output condensed version only:"""
+            
+            try:
+                import requests
+                response_data = requests.post(
+                    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+                    headers={"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"},
+                    json={
+                        "contents": [{"parts": [{"text": condense_prompt}]}],
+                        "generationConfig": {"temperature": 0.5, "maxOutputTokens": 100}
+                    },
+                    timeout=15
+                ).json()
+                
+                condensed = response_data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                condensed_words = len(condensed.split())
+                print(f"[CONDENSATION] Reduced from {situation_word_count} to {condensed_words} words")
+                new_situation_text = condensed
+            except Exception as e:
+                print(f"[CONDENSATION] Failed to condense, truncating: {e}")
+                # Fallback: just take first 100 words
+                new_situation_text = ' '.join(new_situation_text.split()[:100])
+
         # Update current situation (REPLACES situation, not world_prompt!)
         state["current_situation"] = new_situation_text
         
@@ -299,6 +333,23 @@ Format as a natural paragraph, present tense, atmospheric."""
             seen_elements = seen_elements[-50:]
         
         state["seen_elements"] = seen_elements
+
+        # Periodic deep condensation every 30 turns
+        if turn_count % 30 == 0 and turn_count > 0:
+            print(f"[DEEP CONDENSATION] Turn {turn_count} - performing periodic cleanup")
+            
+            # Condense recent_events if we have more than 8
+            if len(recent_events) > 8:
+                recent_events = recent_events[-8:]
+                print(f"  Trimmed recent_events to {len(recent_events)}")
+            
+            # Condense seen_elements if we have more than 40
+            if len(seen_elements) > 40:
+                seen_elements = seen_elements[-40:]
+                print(f"  Trimmed seen_elements to {len(seen_elements)}")
+            
+            state["recent_events"] = recent_events
+            state["seen_elements"] = seen_elements
 
         # Save the updated world state to the file
         with open(state_file, "w", encoding="utf-8") as f:
