@@ -879,7 +879,7 @@ def _vision_analyze_all(image_path: str) -> dict:
         
         # Determine MIME type
         mime_type = "image/png"
-        if full_path.endswith(('.jpg', '.jpeg')):
+        if str(full_path).endswith(('.jpg', '.jpeg')):
             mime_type = "image/jpeg"
         
         # Use Gemini vision API - ONE call for everything
