@@ -944,7 +944,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 description=anticipation,
                 color=CORNER_GREY
             ))
-            await asyncio.sleep(0.8)
+            await asyncio.sleep(2.0)  # Increased from 0.8s - let reaction message linger
             
             # BEAT 3: Fate flavor (Lucky/Unlucky hint) - KEEP ORIGINAL
             fate_flavor = get_tension_beat(fate, "")  # Empty movement type for now
@@ -952,7 +952,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 description=fate_flavor,
                 color=CORNER_GREY if fate == "NORMAL" else (CORNER_TEAL if fate == "LUCKY" else VHS_RED)
             ))
-            await asyncio.sleep(0.8)
+            await asyncio.sleep(1.5)  # Increased from 0.8s - let fate hint linger
             
             # NOW wait for Phase 1 to complete (image + dispatch generation)
             phase1 = await phase1_task
@@ -1418,7 +1418,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 description=anticipation,
                 color=CORNER_GREY
             ))
-            await asyncio.sleep(0.8)
+            await asyncio.sleep(2.0)  # Increased from 0.8s - let reaction message linger
             
             # BEAT 3: Fate flavor (Lucky/Unlucky hint) - KEEP ORIGINAL
             fate_flavor = get_tension_beat(fate, "")  # Empty movement type for now
@@ -1426,7 +1426,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 description=fate_flavor,
                 color=CORNER_GREY if fate == "NORMAL" else (CORNER_TEAL if fate == "LUCKY" else VHS_RED)
             ))
-            await asyncio.sleep(0.8)
+            await asyncio.sleep(1.5)  # Increased from 0.8s - let fate hint linger
             
             # NOW wait for Phase 1 to complete (image + dispatch generation)
             phase1 = await phase1_task
