@@ -1685,6 +1685,9 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             # Start auto-advance timer
             start_auto_advance_timer(interaction.channel, disp["choices"], view)
     
+    # Track which users have inventory open (for toggle behavior)
+    inventory_open_users = set()
+    
     class InventoryButton(Button):
         def __init__(self):
             super().__init__(
@@ -1695,7 +1698,21 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             )
         
         async def callback(self, interaction: discord.Interaction):
-            """Show inventory in ephemeral message with dropdown to drop items"""
+            """Toggle inventory display"""
+            global inventory_open_users
+            
+            # Check if inventory is already open for this user
+            user_id = interaction.user.id
+            if user_id in inventory_open_users:
+                # Close inventory
+                inventory_open_users.discard(user_id)
+                await interaction.response.send_message(
+                    "🎒 Inventory closed.",
+                    ephemeral=True
+                )
+                return
+            
+            # Open inventory
             try:
                 from items import ITEMS, format_inventory_display, get_inventory_summary
                 
@@ -1703,11 +1720,15 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 inventory = engine.state.get("inventory", [])
                 
                 if not inventory:
+                    inventory_open_users.discard(user_id)  # Not actually opening anything
                     await interaction.response.send_message(
                         "🎒 **Your backpack is empty.**\n\nPick up weapons and tools during your adventure!",
                         ephemeral=True
                     )
                     return
+                
+                # Mark inventory as open for this user
+                inventory_open_users.add(user_id)
                 
                 # Create inventory display
                 inventory_list = format_inventory_display(inventory)
@@ -1757,8 +1778,28 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 
                 select.callback = drop_callback
                 
+                # Add close button
+                close_button = discord.ui.Button(
+                    label="Close",
+                    style=discord.ButtonStyle.secondary,
+                    emoji="❌"
+                )
+                
+                async def close_callback(close_interaction: discord.Interaction):
+                    """Dismiss the inventory"""
+                    global inventory_open_users
+                    inventory_open_users.discard(user_id)
+                    await close_interaction.response.edit_message(
+                        content="🎒 Inventory closed.",
+                        embed=None,
+                        view=None
+                    )
+                
+                close_button.callback = close_callback
+                
                 view = discord.ui.View()
                 view.add_item(select)
+                view.add_item(close_button)
                 
                 await interaction.response.send_message(
                     embed=embed,
