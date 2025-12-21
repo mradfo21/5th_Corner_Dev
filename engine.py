@@ -2463,14 +2463,17 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
 
                 print(f"DEBUG PRINT: _process_turn_background - Calling evolve_prompt_file.evolve_world_state. Dispatch count: {len(current_feed_log_for_evolution)}, Consequence: '{consequence_text[:50]}...', Vision: '{vision_dispatch_text[:50]}...'", flush=True)
 
+                # NOTE: This code path is legacy (web UI), always uses 'legacy' session
+                # For Discord bot, use advance_turn_image_fast which is session-aware
+                legacy_state_path = _get_state_path('legacy')
                 evolve_world_state(
                     dispatches=current_feed_log_for_evolution, 
                     consequence_summary=consequence_text, 
-                    state_file=str(STATE_PATH),
+                    state_file=str(legacy_state_path),  # Use session-specific path
                     vision_description=vision_dispatch_text
                 )
                 print(f"DEBUG PRINT: _process_turn_background - World state evolution complete. Reloading state.", flush=True)
-                state = _load_state() # Reload state after evolution
+                state = _load_state('legacy') # Reload legacy session state after evolution
             else:
                 print(f"DEBUG PRINT: _process_turn_background - LLM_ENABLED is False, skipping LLM-based world evolution.", flush=True)
 
