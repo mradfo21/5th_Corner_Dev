@@ -3283,8 +3283,15 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             prev_vision = history[-1].get("vision_dispatch", "")
             prev_image = history[-1].get("image_url", None)
         
-        # Generate dispatch using FULL StoryGen version (with fate modifier)
-        dispatch, vision_dispatch, player_alive = _generate_combined_dispatches(choice, state, prev_state, prev_vision, prev_image, fate)
+        # TIMEOUT PENALTIES: Use penalty text AS dispatch (don't generate new one)
+        if is_timeout_penalty:
+            dispatch = choice  # The penalty text IS the consequence
+            vision_dispatch = choice
+            player_alive = True  # Let check_player_death determine this based on penalty severity
+            print(f"[TIMEOUT PENALTY] Using penalty text as dispatch: {dispatch[:100]}")
+        else:
+            # Generate dispatch using FULL StoryGen version (with fate modifier)
+            dispatch, vision_dispatch, player_alive = _generate_combined_dispatches(choice, state, prev_state, prev_vision, prev_image, fate)
         
         # SIMPLE DEATH SYSTEM: Just trust the LLM
         state['player_state']['alive'] = player_alive
