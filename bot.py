@@ -1754,27 +1754,57 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 
                 select = discord.ui.Select(
                     placeholder="Drop an item...",
-                    options=options,
-                    custom_id="inventory_drop"
+                    options=options
                 )
                 
                 async def drop_callback(select_interaction: discord.Interaction):
                     """Handle item drop"""
-                    from items import remove_item_from_inventory, ITEMS
-                    
-                    item_id = select.values[0]
-                    item = ITEMS.get(item_id)
-                    
-                    # Remove from inventory
-                    current_inv = engine.state.get("inventory", [])
-                    updated_inv = remove_item_from_inventory(current_inv, item_id)
-                    engine.state["inventory"] = updated_inv
-                    engine._save_state(engine.state)
-                    
-                    await select_interaction.response.send_message(
-                        f"🎒 Dropped: **{item['display']}**",
-                        ephemeral=True
-                    )
+                    try:
+                        from items import remove_item_from_inventory, ITEMS
+                        
+                        # Get selected item from interaction
+                        item_id = select_interaction.data['values'][0]
+                        item = ITEMS.get(item_id)
+                        
+                        if not item:
+                            await select_interaction.response.send_message(
+                                f"❌ Unknown item: {item_id}",
+                                ephemeral=True
+                            )
+                            return
+                        
+                        # Remove from inventory
+                        current_inv = engine.state.get("inventory", [])
+                        updated_inv = remove_item_from_inventory(current_inv, item_id)
+                        engine.state["inventory"] = updated_inv
+                        engine._save_state(engine.state)
+                        
+                        # Close inventory after drop
+                        global inventory_open_users
+                        inventory_open_users.discard(user_id)
+                        
+                        # Update the original message to show it's closed
+                        await select_interaction.message.edit(
+                            content=f"🎒 Dropped: **{item['display']}**",
+                            embed=None,
+                            view=None
+                        )
+                        
+                        # Acknowledge the interaction
+                        await select_interaction.response.defer()
+                        
+                    except Exception as e:
+                        print(f"[INVENTORY] Drop error: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        
+                        try:
+                            await select_interaction.response.send_message(
+                                f"❌ Error dropping item: {e}",
+                                ephemeral=True
+                            )
+                        except:
+                            pass
                 
                 select.callback = drop_callback
                 

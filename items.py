@@ -61,23 +61,24 @@ def detect_item_pickups(text: str, current_inventory: list) -> list:
         
         item_name = item_data["display"].lower()
         
-        # Check for pickup keywords + item name
+        # Check for pickup keywords + item name (with optional articles)
         for keyword in PICKUP_KEYWORDS:
-            pattern = f"{keyword} {item_name}"
-            if pattern in text_lower:
-                picked_up.append(item_id)
-                print(f"[INVENTORY] Detected pickup: {item_id} (pattern: '{pattern}')")
-                break
-        
-        # Also check for just item name after certain verbs
-        if not picked_up or item_id not in picked_up:
-            # Simple check: "find crowbar", "grab knife", etc.
-            for keyword in ["grab", "pick up", "take", "find", "snatch"]:
-                if f"{keyword} {item_name}" in text_lower:
+            # Try with no article, "a", and "the"
+            patterns = [
+                f"{keyword} {item_name}",
+                f"{keyword} a {item_name}",
+                f"{keyword} the {item_name}"
+            ]
+            
+            for pattern in patterns:
+                if pattern in text_lower:
                     if item_id not in picked_up:
                         picked_up.append(item_id)
-                        print(f"[INVENTORY] Detected pickup: {item_id} (simple pattern)")
-                        break
+                        print(f"[INVENTORY] Detected pickup: {item_id} (pattern: '{pattern}')")
+                    break
+            
+            if item_id in picked_up:
+                break
     
     return picked_up
 
