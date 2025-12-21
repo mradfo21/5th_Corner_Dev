@@ -836,8 +836,37 @@
                     <span class="detail-label">History Length</span>
                     <span class="detail-value">${session.history_length || 0} entries</span>
                 </div>
+                <div class="detail-row" style="grid-column: 1 / -1; margin-top: 20px; padding-top: 20px; border-top: 1px solid rgba(255, 255, 255, 0.1);">
+                    <div style="margin-bottom: 15px;">
+                        <div style="font-weight: bold; color: #4ecdc4; margin-bottom: 10px; font-size: 1.1em;">🧠 Persistent World Memory</div>
+                        <div style="background: rgba(0, 0, 0, 0.2); padding: 15px; border-radius: 8px; border-left: 3px solid #4ecdc4;">
+                            <div style="color: #e0e0e0; line-height: 1.6; white-space: pre-wrap;">
+                                ${escapeHtml(state.world_prompt || 'No world state initialized')}
+                            </div>
+                        </div>
+                    </div>
+                    ${state.seen_elements && state.seen_elements.length > 0 ? `
+                    <div style="margin-top: 15px;">
+                        <div style="font-weight: bold; color: #ffd93d; margin-bottom: 10px;">📦 Accumulated World Elements (${state.seen_elements.length})</div>
+                        <div style="background: rgba(0, 0, 0, 0.2); padding: 10px; border-radius: 8px; max-height: 150px; overflow-y: auto;">
+                            ${state.seen_elements.map(elem => `<span style="display: inline-block; background: rgba(255, 217, 61, 0.1); padding: 4px 8px; border-radius: 4px; margin: 3px; font-size: 0.9em;">${escapeHtml(elem)}</span>`).join('')}
+                        </div>
+                    </div>
+                    ` : ''}
+                </div>
                 <div id="tape-section" style="margin-top: 20px;">
                     <div style="text-align: center; color: #888;">Loading tapes...</div>
+                </div>
+                <div class="history-section" style="margin-bottom: 30px;">
+                    <div class="history-header">
+                        <h3 class="history-title">🌍 World Evolution Buffer</h3>
+                        <div class="history-controls">
+                            <button class="expand-all-btn" onclick="toggleWorldEvolution()">Toggle View</button>
+                        </div>
+                    </div>
+                    <div id="world-evolution-content" style="display: none;">
+                        <div class="history-loading">Loading world evolution...</div>
+                    </div>
                 </div>
                 <div class="history-section">
                     <div class="history-header">
@@ -1057,10 +1086,61 @@
                 const historyData = result.data;
                 
                 displayHistory(historyData.history, sessionId);
+                displayWorldEvolution(historyData.history, sessionId);
             } catch (error) {
                 console.error('Error loading history:', error);
                 document.getElementById('history-content').innerHTML = 
                     '<div class="history-empty">Failed to load history</div>';
+            }
+        }
+
+        // Display world evolution timeline
+        function displayWorldEvolution(history, sessionId) {
+            const worldContent = document.getElementById('world-evolution-content');
+            
+            if (!history || history.length === 0) {
+                worldContent.innerHTML = '<div class="history-empty">No world evolution data yet</div>';
+                return;
+            }
+            
+            let html = '';
+            
+            // Extract world_prompt evolution from history
+            history.forEach((entry, index) => {
+                const turnNum = entry.turn_count || entry.turn || (index + 1);
+                
+                // Show world_prompt_after if available (this is the evolved state)
+                const worldPrompt = entry.world_prompt_after || entry.world_prompt;
+                
+                if (!worldPrompt) return;
+                
+                html += `
+                    <div style="margin-bottom: 25px; padding: 15px; background: rgba(0, 0, 0, 0.2); border-radius: 8px; border-left: 3px solid ${index === history.length - 1 ? '#4ecdc4' : '#666'};">
+                        <div style="display: flex; justify-content: space-between; margin-bottom: 10px;">
+                            <div style="font-weight: bold; color: ${index === history.length - 1 ? '#4ecdc4' : '#888'};">
+                                ${index === history.length - 1 ? '🔴 CURRENT STATE' : '📍 Turn ' + turnNum}
+                            </div>
+                            <div style="font-size: 0.9em; color: #666;">
+                                ${entry.choice ? escapeHtml(entry.choice).substring(0, 40) + '...' : 'System Event'}
+                            </div>
+                        </div>
+                        <div style="color: #e0e0e0; line-height: 1.6; white-space: pre-wrap;">
+                            ${escapeHtml(worldPrompt)}
+                        </div>
+                    </div>
+                `;
+            });
+            
+            worldContent.innerHTML = html || '<div class="history-empty">No world evolution tracked</div>';
+        }
+
+        // Toggle world evolution view
+        function toggleWorldEvolution() {
+            const content = document.getElementById('world-evolution-content');
+            if (content.style.display === 'none') {
+                content.style.display = 'block';
+            } else {
+                content.style.display = 'none';
             }
         }
 
