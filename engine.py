@@ -45,7 +45,7 @@ print("[ENGINE] flask_cors imported", flush=True); sys.stdout.flush()
 # Note: choices module imported locally in functions to avoid circular dependency
 print("[ENGINE] About to import evolve_prompt_file...", flush=True)
 import sys; sys.stdout.flush(); sys.stderr.flush()
-from evolve_prompt_file import evolve_world_state, set_current_beat, generate_scene_hook, summarize_world_prompt_to_interim_messages
+from evolve_prompt_file import evolve_world_state
 print("[ENGINE] evolve_prompt_file imported", flush=True)
 sys.stdout.flush(); sys.stderr.flush()
 
@@ -1947,8 +1947,8 @@ def begin_tick() -> dict:
     world_summary = state["world_prompt"]
     # Use the last dispatch as the situation report
     situation_report = history[-1]["dispatch"]
-    # Use the world prompt to generate interim messages
-    interim_messages = summarize_world_prompt_to_interim_messages(world_summary)
+    # Use evolution summary if available, otherwise fallback
+    interim_messages = state.get("evolution_summary", "World state evolving...")
     loader = interim_messages
     # Generate the narrative update using the narrative prompt
     narrative_update = _world_report()
