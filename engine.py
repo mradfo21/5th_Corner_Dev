@@ -2466,7 +2466,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                 # NOTE: This code path is legacy (web UI), always uses 'legacy' session
                 # For Discord bot, use advance_turn_image_fast which is session-aware
                 legacy_state_path = _get_state_path('legacy')
-                evolve_world_state(
+                evolution_result = evolve_world_state(
                     dispatches=current_feed_log_for_evolution, 
                     consequence_summary=consequence_text, 
                     state_file=str(legacy_state_path),  # Use session-specific path
@@ -2474,6 +2474,11 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                 )
                 print(f"DEBUG PRINT: _process_turn_background - World state evolution complete. Reloading state.", flush=True)
                 state = _load_state('legacy') # Reload legacy session state after evolution
+                
+                # Store evolution summary for player display
+                if evolution_result and "evolution_summary" in evolution_result:
+                    state["evolution_summary"] = evolution_result["evolution_summary"]
+                    _save_state(state, 'legacy')
             else:
                 print(f"DEBUG PRINT: _process_turn_background - LLM_ENABLED is False, skipping LLM-based world evolution.", flush=True)
 
@@ -3352,8 +3357,13 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
         consequence_summary = summarize_world_state_diff(prev_state, state)
         # Pass session-specific state file path
         state_file_path = _get_state_path(session_id)
-        evolve_world_state(history, consequence_summary, state_file=str(state_file_path), vision_description=vision_dispatch)
+        evolution_result = evolve_world_state(history, consequence_summary, state_file=str(state_file_path), vision_description=vision_dispatch)
         state = _load_state(session_id)
+        
+        # Store evolution summary for player display
+        if evolution_result and "evolution_summary" in evolution_result:
+            state["evolution_summary"] = evolution_result["evolution_summary"]
+            _save_state(state, session_id)
         
         # Generate image
         mode = state.get("mode", "camcorder")

@@ -1209,12 +1209,12 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 print("[DEATH] Play Again button ready - waiting for manual restart (no auto-restart)")
                 return  # End turn here - button will handle restart when clicked
             
-            # Show current situation (dynamic state, not core world_prompt)
-            current_situation = disp.get("current_situation", "")
-            if current_situation and len(current_situation) > 10:
+            # Show evolution summary (world state changes)
+            evolution_summary = disp.get("evolution_summary", "")
+            if evolution_summary and len(evolution_summary) > 10:
                 await interaction.channel.send(embed=discord.Embed(
-                    description=safe_embed_desc(f"📍 {current_situation.strip()}"),
-                    color=CORNER_TEAL_DARK  # discord blue
+                    description=safe_embed_desc(f"🌍 {evolution_summary.strip()}"),
+                    color=CORNER_TEAL_DARK  # Atmospheric world update
                 ))
                 await asyncio.sleep(0.5)
 
@@ -3362,7 +3362,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
     
     def start_countdown_timer(channel, choices, view, dispatch, situation, current_image=None):
         """Start the countdown timer"""
-        global countdown_task, countdown_message, current_choices, current_view, current_dispatch, current_situation, current_image_path, auto_play_enabled
+        global countdown_task, countdown_message, current_choices, current_view, current_dispatch, current_image_path, auto_play_enabled
         
         if not COUNTDOWN_ENABLED:
             return
@@ -3380,7 +3380,6 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
         current_choices = choices
         current_view = view
         current_dispatch = dispatch
-        current_situation = situation
         current_image_path = current_image
         
         # Start new countdown
@@ -3432,7 +3431,6 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
     countdown_task = None  # Track active countdown
     countdown_message = None  # Message showing countdown
     current_dispatch = ""  # For penalty generation
-    current_situation = ""  # For penalty generation
     
     # --- Custom Action Cooldown ---
     CUSTOM_ACTION_COOLDOWN = 0  # DEMO MODE: Unlimited Free Will (set to 3 for normal cooldown)
@@ -3720,11 +3718,11 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
         # Send new choices
         new_choices = phase2_result.get("choices", [])
         if new_choices:
-            # Send current situation (dynamic state, not core world_prompt)
-            current_situation = engine.state.get("current_situation", "")
-            if current_situation and len(current_situation) > 10:
+            # Send evolution summary (world state changes)
+            evolution_summary = engine.state.get("evolution_summary", "")
+            if evolution_summary and len(evolution_summary) > 10:
                 await channel.send(embed=discord.Embed(
-                    description=f"📍 {current_situation}",
+                    description=f"🌍 {evolution_summary}",
                     color=VHS_RED
                 ))
             
