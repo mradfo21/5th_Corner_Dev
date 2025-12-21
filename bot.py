@@ -2454,6 +2454,8 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                             logo_cropped = logo_img
                         
                         # Save at native 4:3 resolution (will match Gemini output naturally)
+                        # Ensure static directory exists
+                        (ROOT / "static").mkdir(parents=True, exist_ok=True)
                         normalized_logo_path = ROOT / "static" / "Logo_normalized.jpg"
                         logo_cropped.save(str(normalized_logo_path), "JPEG", quality=95)
                         
@@ -2790,6 +2792,8 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                         else:
                             logo_cropped = logo_img
                         
+                        # Ensure static directory exists
+                        (ROOT / "static").mkdir(parents=True, exist_ok=True)
                         normalized_logo_path = ROOT / "static" / "Logo_normalized_16x9.jpg"
                         logo_cropped.save(str(normalized_logo_path), "JPEG", quality=95)
                         await interaction.channel.send(file=discord.File(str(normalized_logo_path)))
