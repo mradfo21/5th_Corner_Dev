@@ -216,16 +216,33 @@ def generate_choices(
             print(f"[CHOICES ERROR] Image file not found: {use_path}")
     
     print(f"[GEMINI TEXT] Calling {model_name} for choice generation...")
-    response_data = requests.post(
-        f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent",
-        headers={"x-goog-api-key": gemini_api_key, "Content-Type": "application/json"},
-        json={
-            "contents": [{"parts": parts}],
-            "generationConfig": {"temperature": temperature, "maxOutputTokens": 200}
-        },
-        timeout=15
-    ).json()
-    print("[GEMINI TEXT] Choice generation complete")
+    
+    try:
+        response = requests.post(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent",
+            headers={"x-goog-api-key": gemini_api_key, "Content-Type": "application/json"},
+            json={
+                "contents": [{"parts": parts}],
+                "generationConfig": {"temperature": temperature, "maxOutputTokens": 200}
+            },
+            timeout=15
+        )
+        response.raise_for_status()
+        response_data = response.json()
+        print("[GEMINI TEXT] Choice generation complete")
+    except requests.exceptions.Timeout:
+        print(f"[CHOICES ERROR] Gemini API timeout after 15 seconds")
+        return ["Look around", "Move forward", "Wait"]
+    except requests.exceptions.HTTPError as e:
+        print(f"[CHOICES ERROR] Gemini API HTTP error: {e}")
+        if hasattr(e, 'response') and e.response is not None:
+            print(f"[CHOICES ERROR] Response: {e.response.text}")
+        return ["Look around", "Move forward", "Wait"]
+    except Exception as e:
+        print(f"[CHOICES ERROR] Unexpected error calling Gemini API: {e}")
+        import traceback
+        traceback.print_exc()
+        return ["Look around", "Move forward", "Wait"]
     
     # Create a mock OpenAI response object
     class GeminiResp:
