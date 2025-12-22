@@ -1008,6 +1008,14 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                         if current_state.get("flipbook_mode", False):
                             print(f"[FLIPBOOK] Flipbook mode enabled - starting monitor task")
                             
+                            # Send "Recording..." indicator (ephemeral, will be deleted when GIF is ready)
+                            recording_msg = await interaction.channel.send(
+                                embed=discord.Embed(
+                                    description="📹 *Recording sequence...*",
+                                    color=CORNER_GREY
+                                )
+                            )
+                            
                             async def wait_for_flipbook():
                                 """Monitor state for flipbook URL and display when ready"""
                                 try:
@@ -1026,30 +1034,42 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                                         if flipbook_url:
                                             print(f"[FLIPBOOK] Flipbook ready! Displaying: {os.path.basename(flipbook_url)}")
                                             
-                                        # Attach and send the flipbook
-                                        flipbook_file, flipbook_name = _attach(flipbook_url, "")
-                                        if flipbook_file:
-                                            # Check if it's a GIF (animated) or PNG (static grid)
-                                            is_gif = flipbook_url.endswith('.gif')
-                                            content_text = (
-                                                "🎞️ **FLIPBOOK ANIMATION** (16 frames, 4 second loop)" 
-                                                if is_gif else 
-                                                "🎬 **FLIPBOOK SEQUENCE** (4x4 action progression)"
-                                            )
+                                            # Delete the "Recording..." message
+                                            try:
+                                                await recording_msg.delete()
+                                            except Exception:
+                                                pass
                                             
-                                            await interaction.channel.send(
-                                                content=content_text,
-                                                file=flipbook_file
-                                            )
-                                            print(f"[FLIPBOOK] Flipbook displayed: {flipbook_name} ({'animated GIF' if is_gif else 'static grid'})")
-                                            
-                                            # Clear flipbook URL from state (so it doesn't re-display)
-                                            fresh_state['current_flipbook_url'] = None
-                                            engine.save_state(fresh_state)
+                                            # Attach and send the flipbook
+                                            flipbook_file, flipbook_name = _attach(flipbook_url, "")
+                                            if flipbook_file:
+                                                # Check if it's a GIF (animated) or PNG (static grid)
+                                                is_gif = flipbook_url.endswith('.gif')
+                                                
+                                                # Immersive VHS-themed message
+                                                if is_gif:
+                                                    content_text = "📹 **PLAYBACK**"
+                                                else:
+                                                    content_text = "🎬 **RECORDED SEQUENCE**"
+                                                
+                                                await interaction.channel.send(
+                                                    content=content_text,
+                                                    file=flipbook_file
+                                                )
+                                                print(f"[FLIPBOOK] Flipbook displayed: {flipbook_name} ({'animated GIF' if is_gif else 'static grid'})")
+                                                
+                                                # Clear flipbook URL from state (so it doesn't re-display)
+                                                fresh_state['current_flipbook_url'] = None
+                                                engine.save_state(fresh_state)
                                             break
                                     
                                     if elapsed >= max_wait:
                                         print(f"[FLIPBOOK] Timeout waiting for flipbook (30s elapsed)")
+                                        # Clean up recording message on timeout
+                                        try:
+                                            await recording_msg.delete()
+                                        except Exception:
+                                            pass
                                 
                                 except Exception as e:
                                     print(f"[FLIPBOOK] Error in monitor task: {e}")
@@ -1542,6 +1562,14 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     if current_state.get("flipbook_mode", False):
                         print(f"[FLIPBOOK] Flipbook mode enabled - starting monitor task")
                         
+                        # Send "Recording..." indicator (ephemeral, will be deleted when GIF is ready)
+                        recording_msg = await interaction.channel.send(
+                            embed=discord.Embed(
+                                description="📹 *Recording sequence...*",
+                                color=CORNER_GREY
+                            )
+                        )
+                        
                         async def wait_for_flipbook():
                             """Monitor state for flipbook URL and display when ready"""
                             try:
@@ -1560,16 +1588,23 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                                     if flipbook_url:
                                         print(f"[FLIPBOOK] Flipbook ready! Displaying: {os.path.basename(flipbook_url)}")
                                         
+                                        # Delete the "Recording..." message
+                                        try:
+                                            await recording_msg.delete()
+                                        except Exception:
+                                            pass
+                                        
                                         # Attach and send the flipbook
                                         flipbook_file, flipbook_name = _attach(flipbook_url, "")
                                         if flipbook_file:
                                             # Check if it's a GIF (animated) or PNG (static grid)
                                             is_gif = flipbook_url.endswith('.gif')
-                                            content_text = (
-                                                "🎞️ **FLIPBOOK ANIMATION** (16 frames, 4 second loop)" 
-                                                if is_gif else 
-                                                "🎬 **FLIPBOOK SEQUENCE** (4x4 action progression)"
-                                            )
+                                            
+                                            # Immersive VHS-themed message
+                                            if is_gif:
+                                                content_text = "📹 **PLAYBACK**"
+                                            else:
+                                                content_text = "🎬 **RECORDED SEQUENCE**"
                                             
                                             await interaction.channel.send(
                                                 content=content_text,
@@ -1584,6 +1619,11 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                                 
                                 if elapsed >= max_wait:
                                     print(f"[FLIPBOOK] Timeout waiting for flipbook (30s elapsed)")
+                                    # Clean up recording message on timeout
+                                    try:
+                                        await recording_msg.delete()
+                                    except Exception:
+                                        pass
                             
                             except Exception as e:
                                 print(f"[FLIPBOOK] Error in monitor task: {e}")
