@@ -1092,11 +1092,30 @@ def build_flipbook_prompt(player_choice: str, caption: str, time_of_day: str = "
     """
     Build a lean, action-focused prompt specifically for flipbook animation.
     Unlike static images, flipbooks need minimal context and maximum action clarity.
+    
+    Special case: If choice is "Intro", creates an establishing shot instead of an action.
     """
     # Extract the PHYSICAL ACTION from the choice (remove emoji/formatting)
     action = player_choice.strip().lstrip("???").strip()
     
-    # Build minimal, action-focused prompt
+    # SPECIAL CASE: Intro needs an establishing shot, not an action
+    if action.lower() == "intro":
+        prompt = f"ESTABLISHING SHOT: Slow reveal of the scene\n\n"
+        prompt += f"First-person documentary camera. Show a 4-second cinematic establishing shot. "
+        prompt += f"The camera slowly pans/tilts to reveal the environment. "
+        prompt += f"Subtle handheld breathing and natural weight shifts. "
+        prompt += f"Start with a detail (ground, sign, horizon) and gradually reveal the full scene.\n"
+        
+        # For intro, use the FULL caption for rich scene description
+        if caption:
+            prompt += f"\nSCENE TO REVEAL: {caption}"
+        
+        if time_of_day:
+            prompt += f"\n{time_of_day}"
+        
+        return prompt
+    
+    # Build minimal, action-focused prompt for normal turns
     prompt = f"ANIMATE: {action}\n\n"
     prompt += f"First-person body camera view. "
     prompt += f"Show the first 4 seconds of executing this action. "
