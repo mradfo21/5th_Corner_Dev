@@ -1649,14 +1649,15 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                     
                     # CRITICAL: Clear the previous flipbook URL from state BEFORE starting new thread.
                     # This prevents the bot from immediately finding the OLD flipbook URL.
+                    # NOTE: We do NOT clear flipbook_last_grid - the thread needs it as a reference!
                     try:
                         st_init = _load_state(session_id)
                         st_init['current_flipbook_url'] = None
                         st_init['flipbook_last_frame'] = None
                         st_init['flipbook_first_frame'] = None
-                        st_init['flipbook_last_grid'] = None
+                        # DO NOT CLEAR: st_init['flipbook_last_grid'] - thread needs this for continuity!
                         _save_state(st_init, session_id)
-                        print(f"[FLIPBOOK] Reset flipbook data in state for turn.")
+                        print(f"[FLIPBOOK] Reset flipbook URL for new turn (preserving prev grid for continuity).")
                     except Exception as e:
                         print(f"[FLIPBOOK ERROR] Failed to reset data: {e}")
 
@@ -1801,6 +1802,7 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                         st_init['current_flipbook_url'] = None
                         st_init['flipbook_last_frame'] = None
                         st_init['flipbook_first_frame'] = None
+                        # For Turn 0, we CAN clear the grid since there's no previous one to reference
                         st_init['flipbook_last_grid'] = None
                         _save_state(st_init, session_id)
                         print(f"[FLIPBOOK] Reset flipbook data in state for Turn 0.")
