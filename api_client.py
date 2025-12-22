@@ -78,92 +78,117 @@ class GameEngineClient:
     # STATE MANAGEMENT
     # ═══════════════════════════════════════════════════════════════════════
     
-    def get_state(self) -> Dict:
+    def get_state(self, session_id: str = None) -> Dict:
         """Get current game state"""
+        sid = session_id if session_id else self.session_id
         if self.use_api:
-            return self._api_call('GET', f'/state?session_id={self.session_id}')
+            return self._api_call('GET', f'/state?session_id={sid}')
         else:
-            return engine.get_state(self.session_id)
+            return engine.get_state(sid)
     
-    def reload_state(self) -> Dict:
+    def reload_state(self, session_id: str = None) -> Dict:
         """Force reload state from disk"""
+        sid = session_id if session_id else self.session_id
         if self.use_api:
-            return self._api_call('POST', '/state/reload')
+            return self._api_call('POST', '/state/reload', {'session_id': sid})
         else:
-            engine.state = engine._load_state(self.session_id)
-            return engine.get_state(self.session_id)
+            engine.state = engine._load_state(sid)
+            return engine.get_state(sid)
     
-    def reset_state(self):
+    def reset_state(self, session_id: str = None):
         """Reset game state"""
+        sid = session_id if session_id else self.session_id
         if self.use_api:
-            self._api_call('POST', '/state/reset', {'session_id': self.session_id})
+            self._api_call('POST', '/state/reset', {'session_id': sid})
         else:
-            engine.reset_state(self.session_id)
+            engine.reset_state(sid)
     
-    def save_state(self, state: Dict):
+    def save_state(self, state: Dict, session_id: str = None):
         """Save game state to disk"""
+        sid = session_id if session_id else self.session_id
         if self.use_api:
             # API mode: send state to server
-            self._api_call('POST', '/state/save', {'session_id': self.session_id, 'state': state})
+            self._api_call('POST', '/state/save', {'session_id': sid, 'state': state})
         else:
             # Direct mode: save via engine module
-            engine._save_state(state, self.session_id)
+            engine._save_state(state, sid)
+    
+    def _save_state(self, state: Dict, session_id: str = None):
+        """Internal alias for save_state (matches engine API)"""
+        return self.save_state(state, session_id)
+    
+    def _get_state_path(self, session_id: str = None) -> str:
+        """Get the path to the state file for a session"""
+        sid = session_id if session_id else self.session_id
+        if self.use_api:
+            # In API mode, we don't have direct filesystem access
+            # Return a placeholder or request from API
+            result = self._api_call('GET', f'/state/path?session_id={sid}')
+            return result.get('path', f'sessions/{sid}/state.json')
+        else:
+            return str(engine._get_state_path(sid))
     
     # ═══════════════════════════════════════════════════════════════════════
     # GAME FLOW
     # ═══════════════════════════════════════════════════════════════════════
     
-    def generate_intro_turn(self) -> Dict:
+    def generate_intro_turn(self, session_id: str = None) -> Dict:
         """Generate full intro turn"""
+        sid = session_id if session_id else self.session_id
         if self.use_api:
-            return self._api_call('POST', '/game/intro', {'session_id': self.session_id})
+            return self._api_call('POST', '/game/intro', {'session_id': sid})
         else:
-            return engine.generate_intro_turn(self.session_id)
+            return engine.generate_intro_turn(sid)
     
-    def generate_intro_image_fast(self) -> Dict:
+    def generate_intro_image_fast(self, session_id: str = None) -> Dict:
         """Generate intro image (Phase 1)"""
+        sid = session_id if session_id else self.session_id
         if self.use_api:
-            return self._api_call('POST', '/game/intro/image')
+            return self._api_call('POST', '/game/intro/image', {'session_id': sid})
         else:
-            return engine.generate_intro_image_fast(self.session_id)
+            return engine.generate_intro_image_fast(sid)
     
     def generate_intro_choices_deferred(
         self, 
         image_url: str, 
         prologue: str, 
         vision_dispatch: str, 
-        dispatch: Optional[str] = None
+        dispatch: Optional[str] = None,
+        session_id: str = None
     ) -> Dict:
         """Generate intro choices (Phase 2)"""
+        sid = session_id if session_id else self.session_id
         if self.use_api:
             return self._api_call('POST', '/game/intro/choices', {
                 'image_url': image_url,
                 'prologue': prologue,
                 'vision_dispatch': vision_dispatch,
                 'dispatch': dispatch,
-                'session_id': self.session_id
+                'session_id': sid
             })
         else:
             return engine.generate_intro_choices_deferred(
-                image_url, prologue, vision_dispatch, dispatch, self.session_id
+                image_url, prologue, vision_dispatch, dispatch, sid
             )
     
     def advance_turn_image_fast(
         self, 
         choice: str, 
         fate: str = "NORMAL", 
-        is_timeout_penalty: bool = False
+        is_timeout_penalty: bool = False,
+        session_id: str = None
     ) -> Dict:
         """Process action - Phase 1: Generate image"""
+        sid = session_id if session_id else self.session_id
         if self.use_api:
             return self._api_call('POST', '/game/action/image', {
                 'choice': choice,
                 'fate': fate,
                 'is_timeout_penalty': is_timeout_penalty,
-                'session_id': self.session_id
+                'session_id': sid
             })
         else:
-            return engine.advance_turn_image_fast(choice, fate, is_timeout_penalty, self.session_id)
+            return engine.advance_turn_image_fast(choice, fate, is_timeout_penalty, sid)
     
     def advance_turn_choices_deferred(
         self,
@@ -172,9 +197,11 @@ class GameEngineClient:
         vision_dispatch: str,
         choice: str,
         consequence_img_prompt: str = "",
-        hard_transition: bool = False
+        hard_transition: bool = False,
+        session_id: str = None
     ) -> Dict:
         """Process action - Phase 2: Generate choices"""
+        sid = session_id if session_id else self.session_id
         if self.use_api:
             return self._api_call('POST', '/game/action/choices', {
                 'consequence_img_url': consequence_img_url,
@@ -183,7 +210,7 @@ class GameEngineClient:
                 'choice': choice,
                 'consequence_img_prompt': consequence_img_prompt,
                 'hard_transition': hard_transition,
-                'session_id': self.session_id
+                'session_id': sid
             })
         else:
             return engine.advance_turn_choices_deferred(
@@ -193,7 +220,7 @@ class GameEngineClient:
                 choice,
                 consequence_img_prompt,
                 hard_transition,
-                self.session_id
+                sid
             )
     
     # ═══════════════════════════════════════════════════════════════════════
