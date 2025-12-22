@@ -1026,14 +1026,22 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                                         if flipbook_url:
                                             print(f"[FLIPBOOK] Flipbook ready! Displaying: {os.path.basename(flipbook_url)}")
                                             
-                                            # Attach and send the flipbook
-                                            flipbook_file, flipbook_name = _attach(flipbook_url, "")
-                                            if flipbook_file:
-                                                await interaction.channel.send(
-                                                    content="🎬 **FLIPBOOK SEQUENCE** (4x4 action progression)",
-                                                    file=flipbook_file
-                                                )
-                                                print(f"[FLIPBOOK] Flipbook displayed: {flipbook_name}")
+                                        # Attach and send the flipbook
+                                        flipbook_file, flipbook_name = _attach(flipbook_url, "")
+                                        if flipbook_file:
+                                            # Check if it's a GIF (animated) or PNG (static grid)
+                                            is_gif = flipbook_url.endswith('.gif')
+                                            content_text = (
+                                                "🎞️ **FLIPBOOK ANIMATION** (16 frames, 4 second loop)" 
+                                                if is_gif else 
+                                                "🎬 **FLIPBOOK SEQUENCE** (4x4 action progression)"
+                                            )
+                                            
+                                            await interaction.channel.send(
+                                                content=content_text,
+                                                file=flipbook_file
+                                            )
+                                            print(f"[FLIPBOOK] Flipbook displayed: {flipbook_name} ({'animated GIF' if is_gif else 'static grid'})")
                                                 
                                                 # Clear flipbook URL from state (so it doesn't re-display)
                                                 fresh_state['current_flipbook_url'] = None
@@ -1555,11 +1563,19 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                                         # Attach and send the flipbook
                                         flipbook_file, flipbook_name = _attach(flipbook_url, "")
                                         if flipbook_file:
+                                            # Check if it's a GIF (animated) or PNG (static grid)
+                                            is_gif = flipbook_url.endswith('.gif')
+                                            content_text = (
+                                                "🎞️ **FLIPBOOK ANIMATION** (16 frames, 4 second loop)" 
+                                                if is_gif else 
+                                                "🎬 **FLIPBOOK SEQUENCE** (4x4 action progression)"
+                                            )
+                                            
                                             await interaction.channel.send(
-                                                content="🎬 **FLIPBOOK SEQUENCE** (4x4 action progression)",
+                                                content=content_text,
                                                 file=flipbook_file
                                             )
-                                            print(f"[FLIPBOOK] Flipbook displayed: {flipbook_name}")
+                                            print(f"[FLIPBOOK] Flipbook displayed: {flipbook_name} ({'animated GIF' if is_gif else 'static grid'})")
                                             
                                             # Clear flipbook URL from state (so it doesn't re-display)
                                             fresh_state['current_flipbook_url'] = None

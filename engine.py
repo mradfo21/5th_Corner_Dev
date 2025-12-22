@@ -1874,8 +1874,32 @@ async def _gen_flipbook_async(canonical_frame_path: str, prompt_str: str, captio
         )
         
         if flipbook_path:
-            print(f"[FLIPBOOK] ✓ Flipbook generated: {os.path.basename(flipbook_path)}")
-            return flipbook_path
+            print(f"[FLIPBOOK] Grid generated: {os.path.basename(flipbook_path)}")
+            
+            # Convert 4x4 grid to animated GIF flipbook
+            try:
+                print(f"[FLIPBOOK] Converting grid to animated GIF...")
+                from create_flipbook_gif import grid_to_flipbook_gif
+                from pathlib import Path
+                
+                gif_path = grid_to_flipbook_gif(
+                    Path(flipbook_path),
+                    duration_ms=250,  # 250ms per frame = 4 seconds total
+                    loop=0,  # Loop infinitely
+                    save_panels=False  # Don't save individual panels
+                )
+                
+                if gif_path:
+                    print(f"[FLIPBOOK] Animated GIF created: {os.path.basename(gif_path)}")
+                    return str(gif_path)  # Return GIF instead of static grid
+                else:
+                    print(f"[FLIPBOOK] GIF creation failed, returning static grid")
+                    return flipbook_path
+                    
+            except Exception as e:
+                print(f"[FLIPBOOK] GIF conversion error: {e}")
+                print(f"[FLIPBOOK] Falling back to static grid")
+                return flipbook_path
         else:
             print(f"[FLIPBOOK] WARNING: Flipbook generation returned None")
             return None
