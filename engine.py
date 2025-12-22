@@ -1068,6 +1068,32 @@ def summarize_world_prompt_for_image(world_prompt: str) -> str:
     # Don't use lore - just summarizing existing text
     return _ask(prompt, model="gemini", temp=1.0, tokens=48, use_lore=False)
 
+def build_flipbook_prompt(player_choice: str, caption: str, time_of_day: str = "") -> str:
+    """
+    Build a lean, action-focused prompt specifically for flipbook animation.
+    Unlike static images, flipbooks need minimal context and maximum action clarity.
+    """
+    # Extract the PHYSICAL ACTION from the choice (remove emoji/formatting)
+    action = player_choice.strip().lstrip("???").strip()
+    
+    # Build minimal, action-focused prompt
+    prompt = f"ANIMATE: {action}\n\n"
+    prompt += f"First-person body camera view. "
+    prompt += f"Show the first 4 seconds of executing this action. "
+    prompt += f"Natural body movement and camera shake. "
+    
+    # Add ONLY essential context from dispatch (first sentence)
+    if caption:
+        # Get first sentence only
+        first_sentence = caption.split('.')[0] + '.' if '.' in caption else caption
+        prompt += f"\nContext: {first_sentence}"
+    
+    # Add time/lighting if available
+    if time_of_day:
+        prompt += f"\n{time_of_day}"
+    
+    return prompt
+
 def _generate_dispatch(choice: str, state: dict, prev_state: dict = None) -> dict:
     """Generate dispatch with death detection. Returns dict with 'dispatch' and 'player_alive' keys."""
     try:
@@ -1711,7 +1737,14 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                                 flipbook_refs.append(ref_images_to_use[0])
                                 flipbook_prefix = "🎨 MASTER AESTHETIC ATTACHED: Use the provided reference image as your absolute guide for lighting and environment.\n" + flipbook_prefix
 
-                            flipbook_prompt = flipbook_prefix + prompt_str
+                            # BUILD LEAN FLIPBOOK-SPECIFIC PROMPT (not verbose static image prompt!)
+                            flipbook_action_prompt = build_flipbook_prompt(
+                                player_choice=choice,
+                                caption=caption,
+                                time_of_day=use_time_of_day
+                            )
+                            flipbook_prompt = flipbook_prefix + flipbook_action_prompt
+                            print(f"[FLIPBOOK] Built lean action-focused prompt: {flipbook_action_prompt[:100]}...", flush=True)
                             
                             # Use layout template + parent references
                             grid_path = generate_gemini_img2img(
@@ -1823,7 +1856,15 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                             # Add flipbook prefix
                             flipbook_prefix = PROMPTS.get("gemini_flipbook_4panel_prefix", "")
                             flipbook_prefix = "📋 VISUAL TEMPLATE ATTACHED: Match the 4x4 grid layout exactly as shown in the reference template image.\n\n" + flipbook_prefix
-                            flipbook_prompt = flipbook_prefix + prompt_str
+                            
+                            # BUILD LEAN FLIPBOOK-SPECIFIC PROMPT for Turn 0
+                            flipbook_action_prompt = build_flipbook_prompt(
+                                player_choice=choice,
+                                caption=caption,
+                                time_of_day=use_time_of_day
+                            )
+                            flipbook_prompt = flipbook_prefix + flipbook_action_prompt
+                            print(f"[FLIPBOOK T2I] Built lean action-focused prompt: {flipbook_action_prompt[:100]}...", flush=True)
                             
                             # Use ONLY the layout template as reference for Turn 0
                             template_path = str(ROOT / "prompts" / "flipbook_layout_template.png")
@@ -2099,9 +2140,14 @@ async def _gen_flipbook_async(canonical_frame_path: str, prompt_str: str, captio
             print(f"[FLIPBOOK] ERROR: flipbook prompt template not found in prompts!")
             return None
         
-        # Enhance the narrative prompt with flipbook instructions
-        flipbook_prompt = flipbook_prefix + prompt_str
-        print(f"[FLIPBOOK] Enhanced prompt with 4x4 grid instructions")
+        # BUILD LEAN FLIPBOOK-SPECIFIC PROMPT (async path)
+        flipbook_action_prompt = build_flipbook_prompt(
+            player_choice=choice,
+            caption=caption,
+            time_of_day=time_of_day
+        )
+        flipbook_prompt = flipbook_prefix + flipbook_action_prompt
+        print(f"[FLIPBOOK ASYNC] Built lean action-focused prompt: {flipbook_action_prompt[:100]}...")
         
         # Generate flipbook using img2img from the canonical frame
         from gemini_image_utils import generate_gemini_img2img
@@ -2664,12 +2710,14 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                                 
                                 img_dir = _get_image_dir(state.get('session_id', 'default'))
                                 
-                                # Add flipbook prompt instructions
+                                # BUILD LEAN FLIPBOOK-SPECIFIC PROMPT (old code path)
                                 flipbook_prefix = PROMPTS.get("gemini_flipbook_4panel_prefix", "")
-                                if flipbook_prefix:
-                                    flipbook_prompt = flipbook_prefix + image_prompt
-                                else:
-                                    flipbook_prompt = image_prompt
+                                flipbook_action_prompt = build_flipbook_prompt(
+                                    player_choice=choice,
+                                    caption=vision_dispatch_for_image,
+                                    time_of_day=state.get('time_of_day', '')
+                                )
+                                flipbook_prompt = flipbook_prefix + flipbook_action_prompt if flipbook_prefix else flipbook_action_prompt
                                 
                                 # Generate 4x4 grid
                                 grid_path = generate_gemini_img2img(
