@@ -3578,30 +3578,44 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
                 
                 # --- FLIPBOOK GENERATION (if enabled) ---
                 # Run in background thread AFTER canonical image is ready
+                print(f"[FLIPBOOK DEBUG] state.get('flipbook_mode') = {state.get('flipbook_mode', 'NOT SET')}")
+                print(f"[FLIPBOOK DEBUG] consequence_img_url = {consequence_img_url}")
+                print(f"[FLIPBOOK DEBUG] Condition check: flipbook_mode={state.get('flipbook_mode', False)}, has_img={bool(consequence_img_url)}")
                 if state.get("flipbook_mode", False) and consequence_img_url:
-                    print(f"[FLIPBOOK] Flipbook mode enabled - starting background generation")
+                    print(f"[FLIPBOOK] ✓ Flipbook mode enabled - starting background generation")
                     import threading
                     
                     def generate_flipbook_sync():
                         """Synchronous flipbook generation for background thread"""
+                        print(f"[FLIPBOOK THREAD] Thread started!")
                         try:
+                            print(f"[FLIPBOOK THREAD] Importing modules...")
                             from create_flipbook_gif import grid_to_flipbook_gif
                             from pathlib import Path
+                            print(f"[FLIPBOOK THREAD] Modules imported")
                             
                             # Generate 4x4 grid using existing image generation
                             print(f"[FLIPBOOK] Generating 4x4 grid...")
+                            print(f"[FLIPBOOK] Importing gemini_image_utils...")
                             from gemini_image_utils import generate_gemini_img2img
+                            print(f"[FLIPBOOK] Import successful")
                             
                             img_dir = _get_image_dir(session_id)
+                            print(f"[FLIPBOOK] Image dir: {img_dir}")
                             
                             # Add flipbook prompt instructions
                             flipbook_prefix = PROMPTS.get("gemini_flipbook_4panel_prefix", "")
+                            print(f"[FLIPBOOK] Flipbook prefix loaded: {len(flipbook_prefix) if flipbook_prefix else 0} chars")
                             if flipbook_prefix:
                                 flipbook_prompt = flipbook_prefix + consequence_img_prompt
                             else:
                                 flipbook_prompt = consequence_img_prompt
+                            print(f"[FLIPBOOK] Final prompt length: {len(flipbook_prompt)} chars")
                             
                             # Generate 4x4 grid
+                            print(f"[FLIPBOOK] Calling generate_gemini_img2img...")
+                            print(f"[FLIPBOOK]   reference_image: {consequence_img_url}")
+                            print(f"[FLIPBOOK]   output_dir: {img_dir}")
                             grid_path = generate_gemini_img2img(
                                 prompt=flipbook_prompt,
                                 caption=f"{vision_dispatch}_flipbook",
@@ -3613,6 +3627,7 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
                                 hd_mode=False,  # Flipbook doesn't need HQ
                                 output_dir=img_dir
                             )
+                            print(f"[FLIPBOOK] generate_gemini_img2img returned: {grid_path}")
                             
                             if grid_path:
                                 print(f"[FLIPBOOK] 4x4 grid generated: {grid_path}")
@@ -3625,27 +3640,35 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
                                     loop=0,  # Infinite loop
                                     save_panels=False  # Clean up temp panels
                                 )
+                                print(f"[FLIPBOOK] grid_to_flipbook_gif returned: {gif_path}")
                                 
                                 if gif_path:
                                     print(f"[FLIPBOOK] GIF created: {gif_path}")
                                     # Store in state for bot to pick up
+                                    print(f"[FLIPBOOK] Saving to state...")
                                     with WORLD_STATE_LOCK:
                                         current_state = _load_state(session_id)
                                         current_state['current_flipbook_url'] = str(gif_path)
                                         _save_state(current_state, session_id)
-                                    print(f"[FLIPBOOK] Stored flipbook URL in state")
+                                    print(f"[FLIPBOOK] Stored flipbook URL in state: {gif_path}")
                                 else:
-                                    print(f"[FLIPBOOK] Failed to create GIF")
+                                    print(f"[FLIPBOOK ERROR] GIF conversion returned None")
                             else:
-                                print(f"[FLIPBOOK] Failed to generate 4x4 grid")
+                                print(f"[FLIPBOOK ERROR] Grid generation returned None")
                         except Exception as e:
-                            print(f"[FLIPBOOK ERROR] {e}")
+                            print(f"[FLIPBOOK ERROR] Exception caught: {type(e).__name__}: {e}")
                             import traceback
+                            print(f"[FLIPBOOK ERROR] Full traceback:")
                             traceback.print_exc()
+                        finally:
+                            print(f"[FLIPBOOK THREAD] Thread exiting")
                     
                     # Start background thread
-                    threading.Thread(target=generate_flipbook_sync, daemon=True).start()
+                    print(f"[FLIPBOOK] About to start background thread...")
+                    flipbook_thread = threading.Thread(target=generate_flipbook_sync, daemon=True)
+                    flipbook_thread.start()
                     print(f"[FLIPBOOK] Background generation thread started (non-blocking)")
+                    print(f"[FLIPBOOK] Thread is_alive: {flipbook_thread.is_alive()}")
                 
             else:
                 # Image generation failed (safety block, API error, etc.) - provide graceful fallback
