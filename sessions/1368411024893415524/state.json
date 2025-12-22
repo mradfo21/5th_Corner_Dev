@@ -1,0 +1,37 @@
+{
+  "world_prompt": "You observe the facility from a vantage point atop the red mesa.",
+  "current_phase": "normal",
+  "chaos_level": 0,
+  "last_choice": "",
+  "last_saved": "2025-12-22T23:42:36.368086+00:00",
+  "seen_elements": [],
+  "inventory": [],
+  "player_state": {
+    "alive": true,
+    "health": 100
+  },
+  "feed_log": [],
+  "current_image_url": null,
+  "choices": [],
+  "turn_count": 0,
+  "interim_index": 0,
+  "time_of_day": "6:30pm | weather: clear, warm light | mood: tense anticipation",
+  "flipbook_mode": true,
+  "current_flipbook_url": null,
+  "flipbook_last_frame": "C:\\Github\\5th_Corner_Dev\\Working\\5th_Corner_Dev\\sessions\\1368411024893415524\\images\\3536811616_From_the_mesa_s_edge__the_entire_Horizon_facilit_panels\\panel_16.png",
+  "flipbook_first_frame": "C:\\Github\\5th_Corner_Dev\\Working\\5th_Corner_Dev\\sessions\\1368411024893415524\\images\\3536811616_From_the_mesa_s_edge__the_entire_Horizon_facilit_panels\\panel_01.png",
+  "flipbook_last_grid": "C:\\Github\\5th_Corner_Dev\\Working\\5th_Corner_Dev\\sessions\\1368411024893415524\\images\\3536811616_From_the_mesa_s_edge__the_entire_Horizon_facilit.png",
+  "evolution_summary": "The sudden plunge into the facility's depths leaves you wounded and vulnerable, trapped within its ominous embrace.",
+  "recent_events": [
+    "‍♂️ Listen intently for the source of the scraping. -> Chaos level: 3 -> 4",
+    "‍♂️ Check camera. -> Chaos level: 4 -> 5; Player is dead or gravely wounded.",
+    "Intro -> Chaos level: 0 -> 1",
+    "‍♂️ Adjust the screen's static. -> Chaos level: 1 -> 2",
+    "‍♂️ Claw up the reddish cliff. -> Chaos level: 2 -> 3",
+    "Intro -> Chaos level: 0 -> 1",
+    "‍♂️ Look for another way around the gate. -> Chaos level: 1 -> 2",
+    "‍♂️ Pry open section of fence. -> Chaos level: 2 -> 3",
+    "Intro -> Chaos level: 0 -> 1",
+    "‍♂️ Call out to the figure behind the fence. -> Chaos level: 1 -> 2"
+  ]
+}

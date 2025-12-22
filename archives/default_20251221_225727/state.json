@@ -1,0 +1,33 @@
+{
+  "world_prompt": "You stand at the edge of the quarantine perimeter, watching the facility in the distance.",
+  "current_phase": "normal",
+  "chaos_level": 0,
+  "turn": 0,
+  "time_of_day": "7:17pm | weather: overcast, fading sunlight | mood: creeping dread",
+  "last_action": "Initial simulation state",
+  "situation": "You stand at the edge of the restricted zone, camera in hand.",
+  "beat": 0,
+  "injuries": [],
+  "inventory": [
+    "Nikon F3 camera",
+    "notebook",
+    "flashlight"
+  ],
+  "location": "desert_edge",
+  "environment_type": "desert",
+  "turn_count": 0,
+  "player_state": {
+    "alive": true,
+    "health": 100
+  },
+  "last_saved": "2025-12-22T06:57:25.875570+00:00",
+  "feed_log": [],
+  "current_image_url": null,
+  "choices": [],
+  "flipbook_mode": true,
+  "last_choice": "",
+  "seen_elements": [],
+  "current_flipbook_url": "C:\\Github\\5th_Corner_Dev\\Working\\5th_Corner_Dev\\sessions\\default\\images\\3181708130_Beyond_the_barbed_wire_fence__the_Horizon_facili_flipbook.gif",
+  "flipbook_first_frame": "C:\\Github\\5th_Corner_Dev\\Working\\5th_Corner_Dev\\sessions\\default\\images\\3181708130_Beyond_the_barbed_wire_fence__the_Horizon_facili_panels\\panel_01.png",
+  "flipbook_last_frame": "C:\\Github\\5th_Corner_Dev\\Working\\5th_Corner_Dev\\sessions\\default\\images\\3181708130_Beyond_the_barbed_wire_fence__the_Horizon_facili_panels\\panel_16.png"
+}

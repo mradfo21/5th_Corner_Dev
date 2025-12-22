@@ -1,0 +1,12 @@
+{
+  "session_id": "default",
+  "archive_timestamp": "20251221_223825",
+  "archive_reason": "reset",
+  "turns_completed": 0,
+  "player_status": true,
+  "final_location": "desert_edge",
+  "total_history_entries": 1,
+  "game_duration": "unknown",
+  "world_prompt": "You approach the facility compound across the open desert terrain.",
+  "seen_elements": []
+}

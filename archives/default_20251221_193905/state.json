@@ -1,0 +1,36 @@
+{
+  "world_prompt": "WHO: Jason Fleece, a freelance photojournalist driven by a desperate need to prove himself, finds himself on the fringes of something far more sinister than he initially imagined. It’s 1993, and the promise of a career-defining exposé has led him to the desolate Four Corners region. He’s armed with a Minolta camera, a few rolls of film, a half-empty pack of Marlboro Reds, and a gnawing sense of unease that’s only amplified by the oppressive silence of the desert. His motivation: to capture the truth, whatever it may be, and salvage his reputation after a series of botched assignments. He is currently wearing jeans, a t-shirt, and a worn leather jacket.\n\nWHERE: Jason now stands just outside the perimeter fence, on the eastern side of the Four Corners Research Facility. He’s identified a potential entry point – a section of the chain-link fence that has been cut and bent inward near the ground. The wind whips around him, carrying fine dust that stings his eyes and coats his camera. The main facility buildings loom in the distance, their stark, geometric shapes a jarring contrast to the natural landscape.\n\nWHAT'S HAPPENED: Jason has just arrived at the Four Corners Research Facility, drawn by rumors of clandestine experiments and unsettling disappearances. He’s spent the last few days driving through the desolate desert, following vague leads and whispered stories. This is his first glimpse of the facility itself, and the imposing structure, coupled with the unnerving silence, confirms his suspicion that something deeply wrong is happening here. He has not yet entered the facility.\n\nTHREATS: The most immediate threat is the unknown nature of the facility itself. Rumors suggest armed security personnel patrol the grounds. The silence itself feels like a threat, a heavy blanket concealing unknown dangers. The environment presents its own challenges – the harsh desert climate, the isolation, and the potential for getting lost or stranded. The possibility of encountering hostile wildlife, like snakes or scorpions, also exists. The nature of the experiments conducted within the facility is unknown, but the rumors suggest they are unethical and potentially dangerous, hinting at the possibility of mutated creatures or other biohazards. For now, the threats are mostly unseen and implied, fueled by Jason's imagination and the ominous atmosphere. The cut fence suggests a possible breach, which means something could be inside, or outside.\n\nENVIRONMENT: The Four Corners region is a harsh and unforgiving landscape. The desert stretches out in all directions, a seemingly endless expanse of red rock, scrub brush, and sand. The sun beats down relentlessly during the day, and the nights are bitterly cold. The wind is a constant presence, carrying dust and sand that erode everything in its path. The Four Corners Research Facility is a cluster of low-slung, concrete buildings surrounded by a high chain-link fence topped with razor wire. The buildings appear to be windowless and utilitarian, with minimal external markings. A tall radio tower stands near the center of the complex, its red and white stripes a stark contrast to the surrounding landscape. The facility is isolated, with no other signs of civilization visible in any direction. The air is dry and still, except for the constant wind. The bent fence is made of chain-link, rusted in places, and the ground beneath is dusty and cracked. The cut section is roughly two feet wide, enough for a person to crawl through. The landscape beyond the fence is identical to the landscape on Jason’s side. The wind picks up, swirling dust devils across the desert floor.\n\nTONE: The overall tone is one of creeping dread and suspense, reminiscent of a low-budget 1990s horror film shot on VHS. The focus is on grounded realism, with an emphasis on the psychological impact of the environment and the unknown. The descriptions are detailed and visceral, aiming to create a sense of unease and foreboding. Body horror elements are hinted at, suggesting the potential for gruesome discoveries and unsettling transformations. The use of analog technology, such as the Minolta camera and the film rolls, adds to the sense of authenticity and vulnerability. The constant presence of the wind and dust creates a sense of claustrophobia and isolation. The silence is broken only by the wind and the occasional distant sound, amplifying the feeling of unease. The facility itself is a symbol of sterile, inhuman control, a place where the natural world is distorted and corrupted. The color palette is dominated by browns, reds, and grays, reflecting the harshness of the desert landscape and the coldness of the concrete buildings. The overall effect is one of mounting tension, as Jason moves closer to uncovering the secrets of the Four Corners Research Facility. The low budget feel is important, the idea that Jason is not equipped for what he's about to face. This isn't a Hollywood blockbuster, it's a gritty, unsettling descent into madness. The camera is his only weapon, his only witness.",
+  "current_phase": "normal",
+  "chaos_level": 0,
+  "turn": 0,
+  "time_of_day": "7:17pm | weather: dusty, overcast orange glow | mood: ominous dread",
+  "last_action": "Initial simulation state",
+  "situation": "You stand at the edge of the restricted zone, camera in hand.",
+  "beat": 0,
+  "injuries": [],
+  "inventory": [
+    "Nikon F3 camera",
+    "notebook",
+    "flashlight"
+  ],
+  "location": "desert_edge",
+  "environment_type": "desert",
+  "turn_count": 0,
+  "player_state": {
+    "alive": true,
+    "health": 100
+  },
+  "last_saved": "2025-12-22T03:36:27.184760+00:00",
+  "feed_log": [],
+  "current_image_url": null,
+  "choices": [],
+  "flipbook_mode": true,
+  "last_choice": "",
+  "seen_elements": [
+    "Fence"
+  ],
+  "recent_events": [
+    "Intro -> No major world state changes."
+  ],
+  "evolution_summary": "The cut fence whispers of a desperate entry, or perhaps a more sinister escape, on the rising wind."
+}

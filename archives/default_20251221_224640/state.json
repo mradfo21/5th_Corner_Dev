@@ -1,0 +1,40 @@
+{
+  "world_prompt": "WHO: Jason Fleece, a freelance photojournalist driven by a morbid curiosity and a desperate need for a story that will put him back on the map. It's 1993, and the world is obsessed with the sensational. Jason is equipped with a well-worn Canon AE-1, a directional microphone, several tapes, a flashlight, and a growing sense of dread. He's not a soldier, not a scientist, just a man with a camera and a rapidly dwindling sense of self-preservation. He's fueled by lukewarm coffee, nicotine, and the nagging feeling that this story, no matter how dangerous, is his last chance.\n\nWHERE: Jason is currently positioned just outside the perimeter fence of the Horizon Research Facility, specifically near a damaged section of chainlink. He's focused on finding a way inside, his attention drawn to the imposing structure in the distance. The dry desert wind whips around him, carrying the faint scent of dust and something metallic, something acrid. The sun beats down mercilessly, even in the late afternoon, turning the landscape into a shimmering haze. A searing pain radiates from his left wrist, where he's accidentally cut himself on the broken fence. A thin trail of blood snakes down his hand, a stark contrast against the bleached landscape.\n\nWHAT'S HAPPENED: So far, Jason's journey has been one of mounting unease. He received an anonymous tip about strange occurrences at the Horizon Research Facility, whispers of inhumane experiments and a potential outbreak. Drawn by the promise of a career-defining story, he drove for hours through the desolate Four Corners region, arriving at the facility under the cloak of dusk. The initial approach was unsettling, marked by an unnerving silence and a palpable sense of abandonment, despite the presence of armed guards patrolling the inner perimeter. He located a warning sign marking the quarantine zone. Now, distracted by his reconnaissance, he's injured himself on the fence, a painful reminder of the dangers that lie ahead.\n\nTHREATS: The most immediate threat is the unknown creature or anomaly that triggered the quarantine. Its nature remains a mystery, but the severity of the lockdown suggests something far beyond a typical lab accident. Armed security personnel patrol the inner perimeter, their presence a clear indication that unauthorized entry is met with lethal force. The environment itself poses a threat \u2013 the harsh desert climate, the treacherous terrain, and now, the immediate danger of infection from the open wound on Jason's wrist. There is also the lingering, psychological threat \u2013 the oppressive atmosphere of the facility, the feeling of being watched, the growing certainty that he's stumbled into something far bigger and more terrifying than he initially imagined. The broken fence, while providing a potential entry point, is also a source of immediate physical harm. The possibility of secondary infection from the wound is a growing concern, especially given the unknown nature of the facility and its experiments.\n\nENVIRONMENT: The Horizon Research Facility is a sprawling complex of low-slung, concrete buildings baking under the relentless desert sun. The architecture is utilitarian and imposing, designed for functionality rather than aesthetics. Chainlink fences topped with razor wire surround the perimeter, punctuated by guard towers that loom over the landscape. The surrounding terrain is typical of the Four Corners region \u2013 arid, rocky, and sparsely vegetated. Dust devils dance across the horizon, and the air shimmers with heat. The facility itself appears largely abandoned, though the presence of security patrols suggests a skeleton crew remains. The silence is almost deafening, broken only by the occasional gust of wind and the distant hum of machinery. The warning signs posted along the perimeter fence are faded and weathered, but their message is clear: Quarantine Zone \u2013 Do Not Enter. The ground is littered with discarded equipment, empty containers, and other debris, hinting at a hasty evacuation. The scent of dust and metal hangs heavy in the air, mingling with the faint, acrid odor that Jason noticed earlier. The broken section of fence is particularly disturbing, the twisted metal and torn fabric suggesting a violent breach.\n\nTONE: The overall tone is one of creeping dread and mounting tension, filtered through the grainy lens of a 1993 VHS recording. The focus is on grounded realism, emphasizing the vulnerability of the protagonist and the harshness of the environment. Body horror elements are subtly introduced with the injury on Jason's wrist, hinting at the potential for more visceral encounters to come. The pacing is deliberately slow, building suspense through atmosphere and suggestion rather than jump scares. The camera work is shaky and handheld, reflecting Jason's own unease and disorientation. The audio is equally important, capturing the subtle sounds of the desert wind, the distant hum of machinery, and the protagonist's own ragged breathing. The emphasis is on creating a sense of claustrophobia and isolation, even in the vast expanse of the desert. The growing concern over the wound on Jason's wrist adds another layer of tension, highlighting the fragility of the human body in the face of unknown threats. The VHS aesthetic is crucial, adding a layer of authenticity and amplifying the sense of unease. The static, the tracking errors, and the occasional glitches all contribute to the feeling that something is fundamentally wrong, that the world is not as it seems. The blood trickling down Jason's hand is a stark reminder of his mortality, a visual representation of the danger he has willingly walked into. The setting is not just a backdrop, but an active participant in the story, shaping the protagonist's actions and influencing his state of mind. The feeling of being watched is pervasive, creating a sense of paranoia and unease. The silence is often more terrifying than any loud noise, leaving the player to fill in the blanks with their own imagination. The abandoned state of the facility suggests a catastrophic event, raising questions about what happened and why. The combination of physical and psychological threats creates a constant sense of vulnerability, making the player feel as though they are always on the verge of disaster.",
+  "current_phase": "normal",
+  "chaos_level": 0,
+  "turn": 0,
+  "time_of_day": "7:51pm | weather: dusty, overcast dim | mood: creeping dread",
+  "last_action": "Initial simulation state",
+  "situation": "You stand at the edge of the restricted zone, camera in hand.",
+  "beat": 0,
+  "injuries": [],
+  "inventory": [
+    "Nikon F3 camera",
+    "notebook",
+    "flashlight"
+  ],
+  "location": "desert_edge",
+  "environment_type": "desert",
+  "turn_count": 0,
+  "player_state": {
+    "alive": true,
+    "health": 100
+  },
+  "last_saved": "2025-12-22T06:45:29.147035+00:00",
+  "feed_log": [],
+  "current_image_url": null,
+  "choices": [],
+  "flipbook_mode": true,
+  "last_choice": "",
+  "seen_elements": [
+    "Creature",
+    "fence"
+  ],
+  "current_flipbook_url": null,
+  "recent_events": [
+    "Intro -> No major world state changes."
+  ],
+  "evolution_summary": "The razor wire, unseen in the gloom, snags on your jacket, a silent alarm in the dead air.",
+  "flipbook_first_frame": "C:\\Github\\5th_Corner_Dev\\Working\\5th_Corner_Dev\\sessions\\default\\images\\3600135371_Outside_near_the_fence__you_scan_for_a_way_insid_panels\\panel_01.png",
+  "flipbook_last_frame": "C:\\Github\\5th_Corner_Dev\\Working\\5th_Corner_Dev\\sessions\\default\\images\\3600135371_Outside_near_the_fence__you_scan_for_a_way_insid_panels\\panel_16.png"
+}

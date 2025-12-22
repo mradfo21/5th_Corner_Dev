@@ -1,0 +1,12 @@
+{
+  "session_id": "default",
+  "archive_timestamp": "20251221_235022",
+  "archive_reason": "reset",
+  "turns_completed": 0,
+  "player_status": true,
+  "final_location": "desert_edge",
+  "total_history_entries": 1,
+  "game_duration": "unknown",
+  "world_prompt": "You observe the facility from a vantage point atop the red mesa.",
+  "seen_elements": []
+}

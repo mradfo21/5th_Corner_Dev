@@ -1,0 +1,12 @@
+{
+  "session_id": "test_api_client",
+  "archive_timestamp": "20251222_150758",
+  "archive_reason": "manual_deletion",
+  "turns_completed": 0,
+  "player_status": true,
+  "final_location": "unknown",
+  "total_history_entries": 0,
+  "game_duration": "unknown",
+  "world_prompt": "Default world starting point.",
+  "seen_elements": []
+}

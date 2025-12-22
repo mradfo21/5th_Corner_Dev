@@ -81,18 +81,35 @@ Panel 1 of your new grid MUST follow naturally from the bottom-right frame of th
 
 ## **Root Causes**
 
-### **Primary Issue: Strength Too Low**
-`strength=0.25` gives the model too much creative freedom. It can see the previous grid but feels free to:
-- Change lighting dramatically
-- Alter color palette
-- Shift camera angle
-- Reimagine the environment
+### **PRIMARY ISSUE (CRITICAL): History Not Saving Flipbook Frame References** ⚠️🔴
+**Location:** `engine.py` line 3964
 
-### **Secondary Issue: Prompt Lacks Explicit Visual Matching Instructions**
+In flipbook mode, static images are NOT generated, so `consequence_img_url` is `None`.
+This None value gets saved to history, so the NEXT turn can't find any reference images!
+
+**Impact:** Turn 2+ fall back to TEXT-TO-IMAGE mode, completely breaking visual continuity.
+
+**Evidence from logs:**
+```
+[IMG2IMG COLLECT] History[0]: image=False, vision=True, hard_transition=False
+[IMG2IMG COLLECT] RESULT: Found 0 reference images
+[IMG GENERATION] USING TEXT-TO-IMAGE MODE (NO STYLE ANCHOR)
+```
+
+### **Secondary Issue: Not Preserving flipbook_last_grid Between Turns**
+**Location:** `engine.py` lines 1653-1661
+
+Before starting a new flipbook thread, we were clearing `flipbook_last_grid` from state.
+This prevented the thread from accessing the previous grid for continuity!
+
+### **Tertiary Issue: Strength Too Low**
+`strength=0.25` gives the model too much creative freedom when references ARE available.
+
+### **Quaternary Issue: Prompt Lacks Explicit Visual Matching Instructions**
 Current: "Panel 1 should follow naturally from frame 16"
-Needed: "Panel 1 MUST match frame 16's lighting, colors, camera position, and environment EXACTLY. Maintain visual continuity."
+Needed: "Panel 1 MUST match frame 16's lighting, colors, camera position, and environment EXACTLY."
 
-### **Tertiary Issue: Not Using Last Frame as Direct Reference**
+### **Quinary Issue: Not Using Last Frame as Direct Reference**
 Passing the full grid is good for context, but the model needs the LAST FRAME isolated as a strong visual anchor.
 
 ---

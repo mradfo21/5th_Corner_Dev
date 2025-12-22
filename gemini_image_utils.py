@@ -174,8 +174,15 @@ def generate_with_gemini(
     Returns:
         Local path to the saved image (e.g., "/images/filename.png")
     """
-    print(f"[GEMINI IMG] generate_with_gemini() CALLED - caption: {caption[:50]}")
-    print(f"[GEMINI IMG] API key available: {bool(GEMINI_API_KEY)}, length: {len(GEMINI_API_KEY) if GEMINI_API_KEY else 0}")
+    # CRITICAL: Ensure caption is safe for all operations (filename, logging, etc.)
+    try:
+        # Safely encode caption to ASCII to prevent Unicode errors in Windows console
+        caption = caption.encode('ascii', 'ignore').decode('ascii')
+        print(f"[GEMINI IMG] generate_with_gemini() CALLED - caption: {caption[:50]}", flush=True)
+    except:
+        caption = "image"  # Fallback if encoding fails
+        print(f"[GEMINI IMG] generate_with_gemini() CALLED - caption contains special characters", flush=True)
+    print(f"[GEMINI IMG] API key available: {bool(GEMINI_API_KEY)}, length: {len(GEMINI_API_KEY) if GEMINI_API_KEY else 0}", flush=True)
     
     if not GEMINI_API_KEY:
         print("[GEMINI IMG] FATAL: No API key! Cannot generate image!")
@@ -716,13 +723,20 @@ def generate_gemini_img2img(
     Returns:
         Local path to the saved image
     """
+    # CRITICAL: Ensure caption is safe for all operations (filename, logging, etc.)
+    try:
+        # Safely encode caption to ASCII to prevent Unicode errors in Windows console
+        caption = caption.encode('ascii', 'ignore').decode('ascii')
+    except:
+        caption = "image"  # Fallback if encoding fails
+    
     # Handle single path or list of paths
     if isinstance(reference_image_path, str):
         image_paths = [reference_image_path]
     else:
         image_paths = reference_image_path[:6]  # Max 6 reference images
     
-    print(f"[GOOGLE GEMINI] Image editing mode with {len(image_paths)} reference image(s)")
+    print(f"[GOOGLE GEMINI] Image editing mode with {len(image_paths)} reference image(s)", flush=True)
     
     # Read and encode all reference images
     image_parts = []

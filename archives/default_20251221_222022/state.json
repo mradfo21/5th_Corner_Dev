@@ -1,0 +1,34 @@
+{
+  "world_prompt": "Jason Fleece, a name synonymous with forgotten headlines and blurry, evocative photographs, finds himself swallowed by the vast, indifferent maw of the Four Corners desert. It's 1993. The air is thick with the oppressive heat of the day, slowly bleeding into the preternatural chill of the encroaching night. He's a photojournalist, or at least, that's what he tells himself these days. The truth is closer to a trespasser, driven by a morbid curiosity and a paycheck that promises to silence, for a little while longer, the gnawing anxieties that have become his constant companions. He's here for the Horizon Initiative, a shadowy organization whispered about in hushed tones in conspiracy circles and fringe newsgroups. They're supposed to be conducting… research. What kind of research, nobody seems to know for sure. And that's exactly why Jason is here.\n\nHe stands now at the base of the rocky outcrop, the rough sandstone scraping against his worn leather boots. The descent was uneventful, thankfully. He’s trying to keep his movements silent, his presence unnoticed. The air hangs heavy, pregnant with a metallic tang that stings his nostrils. It’s coming from the Horizon facility, a squat, brutalist structure that squats like a concrete toad in the distance.\n\nThe Horizon Initiative facility dominates the landscape – a sprawling complex of concrete and steel, seemingly sunk into the earth as much as it rises from it. Razor wire tops a chain-link fence that stretches as far as the eye can see, punctuated by guard towers that stand sentinel against the empty horizon. The architecture is devoid of any aesthetic consideration, functional to the point of being oppressive. It’s the kind of place that seems designed to contain something, or someone.\n\nJason’s journey began a week ago, fueled by a cryptic message from a source he can no longer fully trust – a former colleague who vanished into the digital ether after sending a single encrypted file. The file contained coordinates, a name – “Project Lazarus” – and a warning: “Do not trust anyone.” He’d sold his beat-up Ford Taurus, packed a bag with the essentials – camera, film, a few changes of clothes, a well-worn copy of Kerouac’s “On the Road” for the long nights, and a Smith & Wesson Model 10 revolver, a relic from his father, tucked away for emergencies.\n\nHe drove for days, the landscape shifting from the neon glow of Los Angeles to the stark, unforgiving beauty of the desert. He followed the coordinates to a forgotten stretch of highway, then navigated a network of dirt roads that seemed to lead nowhere. Finally, he found it – the Horizon facility, its ominous presence a stark contrast to the surrounding desolation.\n\nHe spent the last few days observing the facility from a distance, mapping patrol routes, studying security protocols. The guards are heavily armed, clad in black uniforms and sporting grim expressions. They patrol the perimeter with military precision, their movements predictable, almost robotic. But there's something else, something unsettling in their eyes – a flicker of unease, a hint of fear. They know something, something they're not talking about.\n\nThe immediate threat is obvious: security. Getting caught trespassing would mean, at best, a lengthy interrogation and a one-way ticket back to California. At worst… well, Jason doesn't want to think about the worst. The more insidious threat is the unknown – whatever lurks within the facility walls, whatever \"Project Lazarus\" entails. The metallic scent in the air hints at something unnatural, something chemical. It's not the smell of machinery or industry; it's something else, something… biological.\n\nThe environment itself is a constant adversary. The desert is unforgiving, the sun relentless. Water is a precious commodity, shade a luxury. The nights are cold, the silence deafening. The wind whispers secrets that Jason can't quite decipher, carrying with it the scent of dust and decay.\n\nHe has no allies, no backup. He's alone, armed only with his wits, his camera, and a growing sense of dread. The facility looms before him, a silent monolith promising answers and, perhaps, a fate worse than death.\n\nHe knows, instinctively, that whatever he finds inside will change him forever. The world will never look the same. The faces of those he loves will become distorted, tainted by the horrors he is about to witness. But he can't turn back. He's gone too far. The story, whatever it may be, is calling to him, beckoning him into the darkness.\n\nThe metallic scent grows stronger as he moves closer to the fence. He can hear the hum of machinery, the low thrum of generators. He spots a blind spot in the patrol route, a section of the fence obscured by a cluster of scrub brush. It's a risky move, but it's his only chance. He takes a deep breath, steels his nerves, and begins to move, his footsteps muffled by the sand.\n\nThe immediate vicinity is relatively clear, a flat expanse of sand and gravel leading up to the perimeter fence. To his left, the rocky outcrop he just descended provides some minimal cover, but also exposes him to the guard tower situated on its crest. To his right, the desert stretches out into the distance, an endless expanse of scrub brush and cacti. Directly ahead, the chain-link fence looms, topped with razor wire that glints menacingly in the fading light. He needs to find a way through, or over, without attracting attention. The air is still, the silence broken only by the distant hum of the facility and the pounding of his own heart. He can almost taste the fear, a metallic tang that mingles with the scent emanating from the complex. He’s committed now. There’s no turning back. He is on the edge of the abyss, and he is about to leap.",
+  "current_phase": "normal",
+  "chaos_level": 0,
+  "turn": 0,
+  "time_of_day": "7:48pm | weather: dusty, orange sunset | mood: uneasy dread",
+  "last_action": "Initial simulation state",
+  "situation": "You stand at the edge of the restricted zone, camera in hand.",
+  "beat": 0,
+  "injuries": [],
+  "inventory": [
+    "Nikon F3 camera",
+    "notebook",
+    "flashlight"
+  ],
+  "location": "desert_edge",
+  "environment_type": "desert",
+  "turn_count": 0,
+  "player_state": {
+    "alive": true,
+    "health": 100
+  },
+  "last_saved": "2025-12-22T06:20:07.016385+00:00",
+  "feed_log": [],
+  "current_image_url": null,
+  "choices": [],
+  "flipbook_mode": true,
+  "last_choice": "",
+  "seen_elements": [],
+  "recent_events": [
+    "Intro -> No major world state changes."
+  ],
+  "evolution_summary": "The metallic scent intensifies as the encroaching darkness whispers forgotten names, hinting at a presence beyond the facility."
+}

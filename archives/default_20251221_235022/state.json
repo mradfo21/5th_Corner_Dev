@@ -1,0 +1,34 @@
+{
+  "world_prompt": "You observe the facility from a vantage point atop the red mesa.",
+  "current_phase": "normal",
+  "chaos_level": 0,
+  "turn": 0,
+  "time_of_day": "7:51pm | weather: overcast, dim moonlight | mood: creeping dread",
+  "last_action": "Initial simulation state",
+  "situation": "You stand at the edge of the restricted zone, camera in hand.",
+  "beat": 0,
+  "injuries": [],
+  "inventory": [
+    "Nikon F3 camera",
+    "notebook",
+    "flashlight"
+  ],
+  "location": "desert_edge",
+  "environment_type": "desert",
+  "turn_count": 0,
+  "player_state": {
+    "alive": true,
+    "health": 100
+  },
+  "last_saved": "2025-12-22T07:39:18.423726+00:00",
+  "feed_log": [],
+  "current_image_url": null,
+  "choices": [],
+  "flipbook_mode": true,
+  "last_choice": "",
+  "seen_elements": [],
+  "current_flipbook_url": "C:\\Github\\5th_Corner_Dev\\Working\\5th_Corner_Dev\\sessions\\default\\images\\3960812827_From_the_mesa_s_edge__the_entire_Horizon_facilit_flipbook.gif",
+  "flipbook_last_grid": "C:\\Github\\5th_Corner_Dev\\Working\\5th_Corner_Dev\\sessions\\default\\images\\3960812827_From_the_mesa_s_edge__the_entire_Horizon_facilit.png",
+  "flipbook_first_frame": "C:\\Github\\5th_Corner_Dev\\Working\\5th_Corner_Dev\\sessions\\default\\images\\3960812827_From_the_mesa_s_edge__the_entire_Horizon_facilit_panels\\panel_01.png",
+  "flipbook_last_frame": "C:\\Github\\5th_Corner_Dev\\Working\\5th_Corner_Dev\\sessions\\default\\images\\3960812827_From_the_mesa_s_edge__the_entire_Horizon_facilit_panels\\panel_16.png"
+}

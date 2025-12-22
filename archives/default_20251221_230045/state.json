@@ -1,0 +1,39 @@
+{
+  "world_prompt": "WHO: Jason Fleece, a freelance photojournalist driven by a desperate need to prove himself. It's 1993. He's armed with a Minolta camera, a half-empty backpack containing granola bars and a tattered copy of \"Helter Skelter,\" and a gnawing sense of dread that settles deeper with each passing second. He\u2019s driven by a lead - a whisper of illegal experiments conducted within the Four Corners Bioresearch Facility. He intends to expose them.\n\nWHERE: Jason stands at the outer edge of the facility's quarantine perimeter, concealed behind a cluster of scraggly juniper bushes. The chain-link fence, topped with razor wire glinting under the harsh desert sun, marks the boundary between the known world and the terrifying unknown. He's close enough to make out details: the faded yellow paint peeling from the prefabricated buildings, the security cameras swiveling with unsettling precision, and the lone guard patrolling the entrance gate. The air vibrates with an unnerving hum emanating from deep within the complex.\n\nWHAT'S HAPPENED: Nothing yet. Jason has just arrived, his mission ahead of him. He is still formulating a plan.\n\nTHREATS:\n\n*   **The Guards:** Uniformed security personnel patrol the perimeter and guard the entrance. They are armed, alert, and likely under strict orders to prevent unauthorized access. Their presence is the most immediate and visible threat.\n*   **Surveillance:** Security cameras are strategically positioned throughout the facility, constantly monitoring the area. Even subtle movements could trigger an alarm and alert the guards.\n*   **The Unknown:** The true nature of the experiments conducted within the facility remains a mystery, but the rumors suggest something far more sinister than simple biological research. The potential for encountering unknown creatures or hazardous materials is a constant, lurking danger.\n*   **The Environment:** The harsh desert environment poses its own set of challenges. Extreme temperatures, limited water, and venomous wildlife all contribute to the overall sense of vulnerability.\n*   **The Hum:** A low, resonant hum permeates the air, seemingly emanating from the depths of the facility. It's unsettling, unnatural, and suggests the presence of powerful, potentially dangerous machinery or\u2026 something else.\n\nENVIRONMENT: The Four Corners Bioresearch Facility sits nestled within a desolate stretch of the Arizona desert. The landscape is characterized by sparse vegetation, rocky terrain, and a relentless sun that beats down on everything with merciless intensity. The facility itself is a collection of prefabricated buildings, hastily erected and showing signs of neglect. The buildings are connected by a network of cracked asphalt roads and chain-link fences. The air is dry and carries the scent of dust, diesel, and something else\u2026 something metallic and faintly antiseptic.\n\n*   **The Perimeter Fence:** A high chain-link fence topped with razor wire surrounds the entire facility, serving as the first line of defense against intruders. Warning signs are posted at regular intervals, proclaiming \"RESTRICTED AREA - UNAUTHORIZED PERSONNEL PROHIBITED.\"\n*   **The Entrance Gate:** A heavily guarded gate controls access to the facility. A small guardhouse stands beside the gate, providing shelter for the security personnel on duty. The gate is equipped with a sophisticated locking mechanism and is likely monitored by cameras and sensors.\n*   **The Prefabricated Buildings:** The main buildings of the facility appear to be constructed from prefabricated materials. They are utilitarian in design, lacking any architectural flair or aesthetic appeal. Windows are small and heavily tinted, obscuring the view of the interior.\n*   **The Desert Landscape:** The surrounding desert is a harsh and unforgiving environment. Cacti, scrub brush, and rocky outcroppings dominate the landscape. The temperature fluctuates dramatically between day and night, and water is scarce.\n*   **The Air:** The air is thick with a sense of unease. The low hum that permeates the facility adds to the unsettling atmosphere, creating a feeling of constant tension and anticipation. It seems to vibrate in Jason's teeth.\n\nTONE: The overall tone is one of gritty realism and creeping dread. The year is 1993, and the technology is limited. Jason is armed with a camera and his wits, and he must rely on his instincts to survive. The facility is a place of secrets and hidden dangers, and the deeper he delves, the more terrifying the truth will become. The horror is not always explicit, but rather implied, lurking in the shadows and whispered rumors. Body horror elements are suggested, hinting at the grotesque experiments being conducted within the facility. The VHS aesthetic adds to the sense of unease, with its grainy footage, distorted audio, and occasional tracking errors. The focus is on building suspense and creating a palpable sense of fear and vulnerability. Jason is an ordinary man thrown into an extraordinary situation, and his struggle for survival is both compelling and terrifying. The world reacts to Jason's presence. The world is not waiting for him. The world is indifferent.",
+  "current_phase": "normal",
+  "chaos_level": 0,
+  "turn": 0,
+  "time_of_day": "7:51pm | weather: overcast, dusky orange | mood: creeping dread",
+  "last_action": "Initial simulation state",
+  "situation": "You stand at the edge of the restricted zone, camera in hand.",
+  "beat": 0,
+  "injuries": [],
+  "inventory": [
+    "Nikon F3 camera",
+    "notebook",
+    "flashlight"
+  ],
+  "location": "desert_edge",
+  "environment_type": "desert",
+  "turn_count": 0,
+  "player_state": {
+    "alive": true,
+    "health": 100
+  },
+  "last_saved": "2025-12-22T07:00:06.252917+00:00",
+  "feed_log": [],
+  "current_image_url": null,
+  "choices": [],
+  "flipbook_mode": true,
+  "last_choice": "",
+  "seen_elements": [
+    "Guard"
+  ],
+  "recent_events": [
+    "Intro -> No major world state changes."
+  ],
+  "evolution_summary": "The low hum intensifies, resonating in your bones as the facility's shadowed windows flicker with an unnatural light.",
+  "current_flipbook_url": null,
+  "flipbook_first_frame": "C:\\Github\\5th_Corner_Dev\\Working\\5th_Corner_Dev\\sessions\\default\\images\\2310885665_You_steady_the_camera_and_focus_on_the_compound__panels\\panel_01.png",
+  "flipbook_last_frame": "C:\\Github\\5th_Corner_Dev\\Working\\5th_Corner_Dev\\sessions\\default\\images\\2310885665_You_steady_the_camera_and_focus_on_the_compound__panels\\panel_16.png"
+}

@@ -1,0 +1,10 @@
+{
+  "session_id": "default",
+  "name": "Default Session",
+  "description": "A new game session in the quarantine zone",
+  "created_at": "2025-12-22T06:55:41.605654+00:00",
+  "last_accessed": "2025-12-22T06:57:25.885792+00:00",
+  "turn_count": 0,
+  "player_alive": true,
+  "version": "1.0"
+}

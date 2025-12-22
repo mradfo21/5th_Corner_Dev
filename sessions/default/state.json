@@ -3,7 +3,7 @@
   "current_phase": "normal",
   "chaos_level": 0,
   "turn": 0,
-  "time_of_day": "7:17pm | weather: overcast, dim moonlight | mood: creeping dread",
+  "time_of_day": "7:17pm | weather: hazy, setting sun | mood: uneasy dread",
   "last_action": "Initial simulation state",
   "situation": "You stand at the edge of the restricted zone, camera in hand.",
   "beat": 0,
@@ -19,9 +19,5 @@
   "player_state": {
     "alive": true
   },
-  "last_saved": "2025-12-21T23:51:04.934324+00:00",
-  "feed_log": [],
-  "current_image_url": null,
-  "choices": [],
-  "flipbook_mode": true
+  "last_saved": "2025-12-22T23:41:59.297803+00:00"
 }
