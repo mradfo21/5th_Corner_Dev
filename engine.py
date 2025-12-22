@@ -1696,27 +1696,21 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                                 result_dict = grid_to_flipbook_gif(Path(grid_path))
                                 gif_path = result_dict.get('gif_path')
                                 if gif_path:
-                                    # Save to state (lock-free)
-                                    state_path = _get_state_path(session_id)
-                                    with open(state_path, 'r', encoding='utf-8') as f:
-                                        st = json.load(f)
+                                    # Save to state (SAFE LOCK VERSION)
+                                    st = _load_state(session_id)
                                     st['current_flipbook_url'] = str(gif_path)
                                     st['flipbook_last_grid'] = str(grid_path) # Store the entire 4x4 grid PNG
                                     st['flipbook_first_frame'] = str(result_dict.get('first_frame')) if result_dict.get('first_frame') else None
                                     st['flipbook_last_frame'] = str(result_dict.get('last_frame')) if result_dict.get('last_frame') else None
-                                    with open(state_path, 'w', encoding='utf-8') as f:
-                                        json.dump(st, f, indent=2)
+                                    _save_state(st, session_id)
                                     print(f"[FLIPBOOK] Parallel GIF ready and stored in state: {gif_path}", flush=True)
                                 else:
                                     print(f"[FLIPBOOK ERROR] GIF conversion failed", flush=True)
                             else:
-                                # Signal failure
-                                state_path = _get_state_path(session_id)
-                                with open(state_path, 'r', encoding='utf-8') as f:
-                                    st = json.load(f)
+                                # Signal failure (SAFE LOCK VERSION)
+                                st = _load_state(session_id)
                                 st['current_flipbook_url'] = "FAILED"
-                                with open(state_path, 'w', encoding='utf-8') as f:
-                                    json.dump(st, f, indent=2)
+                                _save_state(st, session_id)
                                 print(f"[FLIPBOOK] Parallel generation blocked/failed", flush=True)
                         except Exception as e:
                             try:
@@ -1806,45 +1800,39 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                                 result_dict = grid_to_flipbook_gif(Path(grid_path))
                                 gif_path = result_dict.get('gif_path')
                                 if gif_path:
-                                    # Save to state (lock-free)
-                                    state_path = _get_state_path(session_id)
-                                    with open(state_path, 'r', encoding='utf-8') as f:
-                                        st = json.load(f)
+                                    # Save to state (SAFE LOCK VERSION)
+                                    st = _load_state(session_id)
                                     st['current_flipbook_url'] = str(gif_path)
                                     st['flipbook_last_grid'] = str(grid_path) # Store intro grid
                                     st['flipbook_first_frame'] = str(result_dict.get('first_frame')) if result_dict.get('first_frame') else None
                                     st['flipbook_last_frame'] = str(result_dict.get('last_frame')) if result_dict.get('last_frame') else None
-                                    with open(state_path, 'w', encoding='utf-8') as f:
-                                        json.dump(st, f, indent=2)
+                                    _save_state(st, session_id)
                                     print(f"[FLIPBOOK] Parallel T2I GIF ready and stored in state: {gif_path}", flush=True)
                                 else:
+                                    # Signal failure (SAFE LOCK VERSION)
+                                    st = _load_state(session_id)
+                                    st['current_flipbook_url'] = "FAILED"
+                                    _save_state(st, session_id)
                                     print(f"[FLIPBOOK ERROR] T2I GIF conversion failed", flush=True)
                             else:
-                                # Signal failure
-                                state_path = _get_state_path(session_id)
-                                with open(state_path, 'r', encoding='utf-8') as f:
-                                    st = json.load(f)
+                                # Signal failure (SAFE LOCK VERSION)
+                                st = _load_state(session_id)
                                 st['current_flipbook_url'] = "FAILED"
-                                with open(state_path, 'w', encoding='utf-8') as f:
-                                    json.dump(st, f, indent=2)
+                                _save_state(st, session_id)
                                 print(f"[FLIPBOOK] Parallel T2I generation blocked/failed", flush=True)
                         except Exception as e:
+                            try:
+                                # Signal failure (SAFE LOCK VERSION)
+                                st = _load_state(session_id)
+                                st['current_flipbook_url'] = "FAILED"
+                                _save_state(st, session_id)
+                            except: pass
+                            
                             try:
                                 safe_e = str(e).encode('ascii', 'replace').decode('ascii')
                                 print(f"[FLIPBOOK ERROR] Parallel T2I exception: {safe_e}", flush=True)
                             except:
                                 print(f"[FLIPBOOK ERROR] Parallel T2I exception (contains special characters)", flush=True)
-                            
-                            # Signal failure to bot so it doesn't hang
-                            try:
-                                state_path = _get_state_path(session_id)
-                                with open(state_path, 'r', encoding='utf-8') as f:
-                                    st = json.load(f)
-                                st['current_flipbook_url'] = "FAILED"
-                                with open(state_path, 'w', encoding='utf-8') as f:
-                                    json.dump(st, f, indent=2)
-                            except:
-                                pass
                     
                     threading.Thread(target=generate_flipbook_parallel_t2i, daemon=True).start()
 
@@ -2237,26 +2225,36 @@ def _generate_vision_dispatch(narrative_dispatch: str, world_prompt: str = "") -
     return result
 
 # ───────── public API (two‑stage) ───────────────────────────────────────────
-def _generate_situation_report(current_image: str = None) -> str:
+def _generate_situation_report(current_image: str = None, current_dispatch: str = None, vision_analysis: str = None) -> str:
     """Generate situation report with optional visual context from current frame."""
-    if history:
-        last_dispatch = history[-1]["dispatch"]
+    if history or current_dispatch:
+        # Use provided dispatch or last one from history
+        last_dispatch = current_dispatch if current_dispatch else (history[-1]["dispatch"] if history else "")
+        
         # Use the updated world state after the simulation tick
-        world_state = _load_state()["world_prompt"]
+        state_data = _load_state()
+        world_state = state_data.get("world_prompt", "")
         turn_count = len(history)
+        
         major_event_nudge = ""
         if turn_count % 5 == 0 and turn_count > 0:
             major_event_nudge = (
                 "\n\nIMPORTANT: This is a turning point. Introduce a major new development, threat, opportunity, or mystery. Shake up the situation in a dramatic way."
             )
+        
         prompt = (
-            PROMPTS["situation_summary_instructions"] +
-            f"\n\nWorld State (after last action):\n{world_state}\nLast Dispatch (player's action):\n{last_dispatch}" +
-            major_event_nudge +
-            "\nDescribe what is happening NOW, after the dispatch, as a concise 1-2 sentence situation. This should set up the next set of choices."
+            PROMPTS.get("situation_summary_instructions", "Describe what is happening NOW.") +
+            f"\n\nWorld State (before current moment):\n{world_state}\n\nNarrative Result of Last Action:\n{last_dispatch}"
         )
+        
+        if vision_analysis:
+            prompt += f"\n\nVisual Reality (what is actually seen):\n{vision_analysis}"
+            
+        prompt += major_event_nudge + "\n\nDescribe what is happening NOW as a concise 1-2 sentence situation report. This should reconcile the narrative text with the visual reality."
+        
         # Don't use lore - this is just a summary with visual grounding
-        return _ask(prompt, model="gemini", temp=1.0, tokens=40, image_path=current_image, use_lore=False)
+        return _ask(prompt, model="gemini", temp=1.0, tokens=60, image_path=current_image, use_lore=False)
+    
     return "You stand on a rocky outcrop overlooking the Horizon facility, situated in the distance, surrounded by the vast red american southwest."
 
 def begin_tick() -> dict:
@@ -3690,7 +3688,9 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
         history = _load_history(session_id)
         prev_state = state.copy() if isinstance(state, dict) else dict(state)
         from choices import generate_and_apply_choice, generate_choices
-        generate_and_apply_choice(choice)
+        # Ensure session-specific state path is passed!
+        state_file_path = _get_state_path(session_id)
+        generate_and_apply_choice(choice, state_path=str(state_file_path))
         state = _load_state(session_id)
         
         # Get previous vision and image
@@ -3853,7 +3853,27 @@ def advance_turn_choices_deferred(consequence_img_url: str, dispatch: str, visio
             print(f"[VISION] Prioritizing flipbook last frame for grounding: {os.path.basename(flipbook_last)}")
             analysis_img_url = flipbook_last
 
-    situation_summary = _generate_situation_report(current_image=analysis_img_url)
+    # --- VISION ANALYSIS (Moved to top for grounding) ---
+    vision_analysis_text = ""
+    if analysis_img_url and VISION_ENABLED:
+        print(f"[VISION] Analyzing image for spatial context (source: {'flipbook' if analysis_img_url != consequence_img_url else 'static'})...")
+        try:
+            vision_result = _vision_analyze_all(analysis_img_url)
+            vision_analysis_text = vision_result.get("description", "")
+            if vision_analysis_text:
+                print(f"[VISION] Analysis complete: {vision_analysis_text[:100]}...")
+            else:
+                print(f"[VISION] No description returned")
+        except Exception as e:
+            print(f"[VISION] Analysis failed: {e}")
+            vision_analysis_text = ""
+
+    # Generate situation summary with BOTH narrative and visual context
+    situation_summary = _generate_situation_report(
+        current_image=analysis_img_url, 
+        current_dispatch=dispatch,
+        vision_analysis=vision_analysis_text
+    )
     
     next_choices = generate_choices(
         client, choice_tmpl,
@@ -3862,8 +3882,8 @@ def advance_turn_choices_deferred(consequence_img_url: str, dispatch: str, visio
         image_url=analysis_img_url,
         seen_elements=', '.join(state.get('seen_elements', [])[-10:]),  # Last 10 discovered entities
         recent_choices='',
-        caption="",
-        image_description="",
+        caption=vision_dispatch,
+        image_description=vision_analysis_text, # Now correctly populated!
         world_prompt=state.get('world_prompt', ''),
         temperature=0.7,
         situation_summary=situation_summary
@@ -3879,27 +3899,12 @@ def advance_turn_choices_deferred(consequence_img_url: str, dispatch: str, visio
     history = _load_history(session_id)
     is_custom_action = not any(keyword in choice.lower() for keyword in ["move", "advance", "photograph", "examine", "sprint", "climb", "vault", "crawl"])
     
-    # Analyze image with Vision AI for spatial grounding
-    vision_analysis_text = ""
-    if analysis_img_url and VISION_ENABLED:
-        print(f"[VISION] Analyzing image for spatial context (source: {'flipbook' if analysis_img_url != consequence_img_url else 'static'})...")
-        try:
-            vision_result = _vision_analyze_all(analysis_img_url)
-            vision_analysis_text = vision_result.get("description", "")
-            if vision_analysis_text:
-                print(f"[VISION] Analysis complete: {vision_analysis_text[:100]}...")
-            else:
-                print(f"[VISION] No description returned")
-        except Exception as e:
-            print(f"[VISION] Analysis failed: {e}")
-            vision_analysis_text = ""
-    
     history_entry = {
         "choice": choice,
         "is_custom_action": is_custom_action,  # Flag for permanence
         "dispatch": dispatch,
         "vision_dispatch": vision_dispatch,
-        "vision_analysis": vision_analysis_text,  # Now populated from actual vision AI!
+        "vision_analysis": vision_analysis_text,
         "world_prompt": state.get("world_prompt", ""),
         "image": consequence_img_url, # Store the canonical static image in history for the tape
         "image_url": consequence_img_url,
@@ -4244,27 +4249,7 @@ def generate_intro_choices_deferred(image_url: str, prologue: str, vision_dispat
             print(f"[VISION INTRO] Prioritizing intro flipbook last frame for grounding: {os.path.basename(flipbook_last)}")
             analysis_img_url = flipbook_last
 
-    # Generate dynamic situation report from LLM based on current world state
-    situation_summary = _generate_situation_report(current_image=analysis_img_url)
-    options = generate_choices(
-        client, choice_tmpl,
-        prologue,  # What's happening in intro
-        n=3,
-        image_url=analysis_img_url,  # Gemini sees the image directly!
-        seen_elements=', '.join(state.get('seen_elements', [])[-10:]),  # Last 10 discovered entities
-        recent_choices='',
-        caption="",  # Let Gemini look at image, not stale text
-        image_description="",  # Let Gemini look at image, not stale text
-        world_prompt=prologue,
-        temperature=0.7,
-        situation_summary=situation_summary
-    )
-    if len(options) == 1:
-        parts = re.split(r"[\/,\x19\x12\-]|  +", options[0])
-        options = [p.strip() for p in parts if p.strip()][:3]
-    # Don't pad with placeholders - just return what we got
-    
-    # Analyze intro image with Vision AI for spatial grounding
+    # --- VISION ANALYSIS (Moved to top for grounding) ---
     vision_analysis_text = ""
     if analysis_img_url and VISION_ENABLED:
         print(f"[VISION INTRO] Analyzing image for spatial context (source: {'flipbook' if analysis_img_url != image_url else 'static'})...")
@@ -4278,6 +4263,32 @@ def generate_intro_choices_deferred(image_url: str, prologue: str, vision_dispat
         except Exception as e:
             print(f"[VISION INTRO] Analysis failed: {e}")
             vision_analysis_text = ""
+
+    # Generate situation report with vision grounding
+    situation_summary = _generate_situation_report(
+        current_image=analysis_img_url,
+        current_dispatch=dispatch or prologue,
+        vision_analysis=vision_analysis_text
+    )
+    
+    options = generate_choices(
+        client, choice_tmpl,
+        prologue,  # What's happening in intro
+        n=3,
+        image_url=analysis_img_url,  # Gemini sees the image directly!
+        seen_elements=', '.join(state.get('seen_elements', [])[-10:]),  # Last 10 discovered entities
+        recent_choices='',
+        caption=vision_dispatch,
+        image_description=vision_analysis_text, # Corrected!
+        world_prompt=prologue,
+        temperature=0.7,
+        situation_summary=situation_summary
+    )
+    
+    if len(options) == 1:
+        parts = re.split(r"[\/,\x19\x12\-]|  +", options[0])
+        options = [p.strip() for p in parts if p.strip()][:3]
+    # Don't pad with placeholders - just return what we got
     
     # Save to session-specific history
     entry = {
@@ -4298,7 +4309,8 @@ def generate_intro_choices_deferred(image_url: str, prologue: str, vision_dispat
         "choices": options,
         "phase": state["current_phase"],
         "chaos": state["chaos_level"],
-        "player_state": state.get('player_state', {})
+        "player_state": state.get('player_state', {}),
+        "vision_analysis": vision_analysis_text
     }
 
 def generate_intro_turn(session_id: str = 'default'):

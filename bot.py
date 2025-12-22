@@ -960,11 +960,11 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             else:
                 anticipation = "⏳ Action processing..."
             
-                await interaction.channel.send(embed=discord.Embed(
+            await interaction.channel.send(embed=discord.Embed(
                 description=anticipation,
                 color=CORNER_GREY
             ))
-            await asyncio.sleep(2.0)  # Increased from 0.8s - let reaction message linger
+            await asyncio.sleep(1.0) # Reduced from 2.0s
             
             # BEAT 3: Fate flavor (Lucky/Unlucky hint) - KEEP ORIGINAL
             fate_flavor = get_tension_beat(fate, "")  # Empty movement type for now
@@ -972,12 +972,27 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 description=fate_flavor,
                 color=CORNER_GREY if fate == "NORMAL" else (CORNER_TEAL if fate == "LUCKY" else VHS_RED)
             ))
-            await asyncio.sleep(1.5)  # Increased from 0.8s - let fate hint linger
+            await asyncio.sleep(0.5) # Reduced from 1.5s
             
             # NOW wait for Phase 1 to complete (image + dispatch generation)
             phase1 = await phase1_task
             
-            # BEAT 4: Show IMAGE FIRST (immediately, no delay)
+            # BEAT 4: Show consequence text IMMEDIATELY (no delay)
+            dispatch_text = phase1.get("dispatch", "")
+            if dispatch_text:
+                movement_indicator = get_movement_indicator()
+                full_text = dispatch_text.strip()
+                if movement_indicator:
+                    full_text = f"{movement_indicator}\n\n{full_text}"
+                
+                await interaction.channel.send(embed=discord.Embed(
+                    title="⚡ Consequence",
+                    description=safe_embed_desc(full_text),
+                    color=VHS_RED
+                ))
+                await asyncio.sleep(0.3)
+            
+            # BEAT 5: Show IMAGE/VIDEO (or wait for flipbook)
             image_path = phase1.get("consequence_image")
             video_path = phase1.get("consequence_video")
             
@@ -987,7 +1002,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             flipbook_url = None
             current_state = engine.get_state()
             if current_state.get("flipbook_mode", False):
-                print(f"[FLIPBOOK] Parallel mode on - waiting for flipbook to arrive before dispatching both...")
+                print(f"[FLIPBOOK] Parallel mode on - waiting for flipbook to arrive before dispatching...")
                 # Send a small hint so player knows why there's a delay
                 coordination_msg = await interaction.channel.send(embed=discord.Embed(
                     description="📹 *Recording sequence...*",
@@ -1089,12 +1104,10 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     
                     # Clear flipbook URL from state
                     try:
-                        state_path = ROOT / "sessions" / "default" / "state.json"
-                        with open(state_path, 'r', encoding='utf-8') as f:
-                            state_data = json.load(f)
-                        state_data['current_flipbook_url'] = None
-                        with open(state_path, 'w', encoding='utf-8') as f:
-                            json.dump(state_data, f, indent=2)
+                        # Use engine's session-specific state handling!
+                        st = engine.get_state('default')
+                        st['current_flipbook_url'] = None
+                        engine._save_state(st, 'default')
                         print(f"[FLIPBOOK] Cleared flipbook URL from state", flush=True)
                     except Exception as e:
                         print(f"[FLIPBOOK ERROR] Failed to clear flipbook URL: {e}", flush=True)
@@ -1112,23 +1125,6 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     await asyncio.sleep(0.5)
                 else:
                     print(f"[BOT] Static image skipped/failed, but flipbook was provided.")
-            
-            # BEAT 5: Show consequence text AFTER image (appears underneath)
-            dispatch_text = phase1.get("dispatch", "")
-            if dispatch_text:
-                movement_indicator = get_movement_indicator()
-                full_text = dispatch_text.strip()
-                if movement_indicator:
-                    full_text = f"{movement_indicator}\n\n{full_text}"
-                
-                await interaction.channel.send(embed=discord.Embed(
-                    title="⚡ Consequence",
-                    description=safe_embed_desc(full_text),
-                    color=VHS_RED
-                ))
-                await asyncio.sleep(0.3)  # Brief pause so they can read it
-            else:
-                dispatch_text = ""  # Ensure dispatch_text is defined
             
             # Show "Generating choices..." while Phase 2 runs
             choices_msg = await interaction.channel.send(embed=discord.Embed(

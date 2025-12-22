@@ -98,7 +98,7 @@ def generate_choices(
         image_description=image_description or "",
         time_of_day=time_of_day or "",
         beat_nudge=beat_nudge,
-        situation_summary=""  # IGNORE world state - use only image + dispatch to prevent stale/hallucinated data
+        situation_summary=situation_summary  # RE-ENABLED: This is now grounded via Vision AI in Phase 2!
     )
     
     # Format inventory for prompt
@@ -121,6 +121,7 @@ def generate_choices(
         "- ARMS/HANDS: Grab, Yank, Wrench, Hurl, Smash, Rip, Pry, Claw, Shove, Swing, Heave\n"
         "- TORSO: Slam, Throw yourself, Barrel through, Roll, Twist, Duck, Drop, Lunge, Charge\n"
         "- FULL BODY: Hurl yourself, Fling yourself, Propel forward, Burst through, Crash into\n\n"
+        "GROUNDING: Base ALL choices on the ATTACHED IMAGE and the provided IMAGE DESCRIPTION. The image and its description are the absolute source of truth for Jason's current position.\n\n"
         "EXAMPLES OF EXCITING CHOICES:\n"
         "✅ 'Vault over chain-link fence'\n"
         "✅ 'Hurl yourself through window'\n"
