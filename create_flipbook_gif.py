@@ -98,7 +98,7 @@ def create_animated_gif(panels: list, output_path: Path, duration_ms: int = 250,
             optimize=False  # Keep quality high, don't optimize
         )
         
-        print(f"[FLIPBOOK GIF] ✓ Created animated GIF: {output_path}")
+        print(f"[FLIPBOOK GIF] [OK] Created animated GIF: {output_path}")
         print(f"[FLIPBOOK GIF] File size: {os.path.getsize(output_path) / 1024:.1f} KB")
         
         return output_path
@@ -184,12 +184,12 @@ if __name__ == "__main__":
     
     if gif_path:
         print("="*70)
-        print(f"✓ SUCCESS! Animated GIF created:")
+        print(f"[SUCCESS] Animated GIF created:")
         print(f"  {gif_path}")
         print("="*70)
     else:
         print("="*70)
-        print("✗ FAILED to create animated GIF")
+        print("[FAILED] Could not create animated GIF")
         print("="*70)
         sys.exit(1)
 
