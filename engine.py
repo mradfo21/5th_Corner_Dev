@@ -2387,33 +2387,79 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                     state['current_image_prompt'] = image_prompt # Store prompt for history
                     state['current_hard_transition'] = hard_trans # Store hard transition flag
                     
-                    # --- ASYNC FLIPBOOK GENERATION (if enabled) ---
+                    # --- FLIPBOOK GENERATION (if enabled) ---
+                    # Run in background thread since this is already a background process
                     if state.get("flipbook_mode", False):
-                        print(f"[FLIPBOOK] Flipbook mode enabled - starting async generation")
-                        import asyncio
+                        print(f"[FLIPBOOK] Flipbook mode enabled - starting background generation")
                         
-                        # Create async task to generate flipbook (non-blocking)
-                        async def generate_and_store_flipbook():
-                            flipbook_url = await _gen_flipbook_async(
-                                canonical_frame_path=new_image_url,
-                                prompt_str=image_prompt,
-                                caption=vision_dispatch_for_image,
-                                world_prompt=world_prompt_for_image,
-                                choice=choice,
-                                time_of_day=state.get('time_of_day', ''),
-                                session_id=state.get('session_id', 'default')
-                            )
-                            if flipbook_url:
-                                # Update state with flipbook URL
-                                with WORLD_STATE_LOCK:
-                                    current_state = get_state()
-                                    current_state['current_flipbook_url'] = flipbook_url
-                                    _save_state(current_state)
-                                print(f"[FLIPBOOK] Stored flipbook URL in state: {os.path.basename(flipbook_url)}")
+                        def generate_flipbook_sync():
+                            """Synchronous flipbook generation for background thread"""
+                            try:
+                                from create_flipbook_gif import grid_to_flipbook_gif
+                                from pathlib import Path
+                                
+                                # Generate 4x4 grid using existing image generation
+                                print(f"[FLIPBOOK] Generating 4x4 grid...")
+                                from gemini_image_utils import generate_gemini_img2img
+                                
+                                img_dir = _get_image_dir(state.get('session_id', 'default'))
+                                
+                                # Add flipbook prompt instructions
+                                flipbook_prefix = PROMPTS.get("gemini_flipbook_4panel_prefix", "")
+                                if flipbook_prefix:
+                                    flipbook_prompt = flipbook_prefix + image_prompt
+                                else:
+                                    flipbook_prompt = image_prompt
+                                
+                                # Generate 4x4 grid
+                                grid_path = generate_gemini_img2img(
+                                    prompt=flipbook_prompt,
+                                    caption=f"{vision_dispatch_for_image}_flipbook",
+                                    reference_image_path=[new_image_url],  # Use canonical as reference
+                                    strength=0.35,
+                                    world_prompt=world_prompt_for_image,
+                                    time_of_day=state.get('time_of_day', ''),
+                                    action_context=choice,
+                                    hd_mode=False,  # Flipbook doesn't need HQ
+                                    output_dir=img_dir
+                                )
+                                
+                                if grid_path:
+                                    print(f"[FLIPBOOK] Grid generated: {os.path.basename(grid_path)}")
+                                    
+                                    # Convert grid to animated GIF
+                                    gif_path = grid_to_flipbook_gif(
+                                        Path(grid_path),
+                                        duration_ms=250,
+                                        loop=0,
+                                        save_panels=False
+                                    )
+                                    
+                                    if gif_path:
+                                        print(f"[FLIPBOOK] GIF created: {os.path.basename(gif_path)}")
+                                        
+                                        # Store in state
+                                        with WORLD_STATE_LOCK:
+                                            current_state = get_state()
+                                            current_state['current_flipbook_url'] = str(gif_path)
+                                            _save_state(current_state)
+                                        
+                                        print(f"[FLIPBOOK] Stored flipbook URL in state")
+                                    else:
+                                        print(f"[FLIPBOOK] GIF conversion failed")
+                                else:
+                                    print(f"[FLIPBOOK] Grid generation failed")
+                            
+                            except Exception as e:
+                                print(f"[FLIPBOOK] Error generating flipbook: {e}")
+                                import traceback
+                                traceback.print_exc()
                         
-                        # Run async task in background (don't block turn processing)
-                        asyncio.create_task(generate_and_store_flipbook())
-                        print(f"[FLIPBOOK] Async generation task created (non-blocking)")
+                        # Start flipbook generation in a separate thread (non-blocking)
+                        import threading
+                        flipbook_thread = threading.Thread(target=generate_flipbook_sync, daemon=True)
+                        flipbook_thread.start()
+                        print(f"[FLIPBOOK] Background thread started")
                     
                     if VISION_ENABLED: # Vision analysis of the new image
                         if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Generating vision analysis for new image...", flush=True)
