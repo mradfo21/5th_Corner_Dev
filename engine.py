@@ -915,7 +915,7 @@ TIME: <time of day - use ONLY: dawn, morning, afternoon, golden hour, dusk, or n
 COLOR: <dominant color palette>
 DESCRIPTION: <detailed description of what is visible, focusing on objects, threats, exits, and anything you could interact with. Be direct and literal. If there are hands, weapons, tools, figures, silhouettes, or creatures visible, mention them explicitly.>"""
         
-        api_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+        api_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent"
         
         # DEBUG: Log API key status for Vision
         if not GEMINI_API_KEY:

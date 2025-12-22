@@ -433,7 +433,7 @@ def generate_and_apply_choice(
     """
     path = Path(state_path)
     if path.exists():
-        state = json.loads(path.read_text())
+        state = json.loads(path.read_text(encoding='utf-8'))
     else:
         state = {
             "world_prompt": "",
@@ -447,7 +447,7 @@ def generate_and_apply_choice(
     # Reset index so we hand out from the top:
     state["interim_index"] = 0
     # Persist the updated world_state
-    path.write_text(json.dumps(state, indent=2))
+    path.write_text(json.dumps(state, indent=2), encoding='utf-8')
 
 def categorize_choice(choice: str) -> tuple[str, str]:
     """Categorize a choice and return (category, emoji)."""
