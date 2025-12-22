@@ -151,7 +151,7 @@ if DISCORD_ENABLED:
     _tape_creation_lock = threading.Lock()  # Prevent duplicate tape creation (thread-safe)
     _tape_creation_in_progress = False  # Flag to track if tape is being created
     
-    def _get_state_no_lock():
+    def _get_state_no_lock(session_id='default'):
         """
         Read state directly from file without blocking on WORLD_STATE_LOCK.
         Used by async tasks to avoid deadlock when flipbook generation holds the lock.
@@ -159,13 +159,13 @@ if DISCORD_ENABLED:
         try:
             import json
             from pathlib import Path
-            state_path = Path("sessions/default/state.json")
+            state_path = engine._get_state_path(session_id)
             if state_path.exists():
                 with open(state_path, 'r', encoding='utf-8') as f:
                     return json.load(f)
             return {}
         except Exception as e:
-            print(f"[BOT] Error reading state without lock: {e}")
+            print(f"[BOT] Error reading state without lock ({session_id}): {e}")
             return {}
     
     # ───────── 5th Corner VHS Color Palette ─────────────────────────────────────
@@ -915,9 +915,10 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             ))
 
             # PHASE 1: Generate dispatch and image FAST
+            session_id = str(interaction.channel_id) if interaction.channel_id else 'default'
             loop = asyncio.get_running_loop()
             fate = compute_fate()
-            phase1_task = loop.run_in_executor(None, engine.advance_turn_image_fast, self.label, fate)
+            phase1_task = loop.run_in_executor(None, engine.advance_turn_image_fast, self.label, fate, False, session_id)
             
             # --- PROGRESSIVE FEEDBACK & RENDERING ---
             # Show "Recording" indicator immediately so it doesn't feel frozen
@@ -943,7 +944,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
 
             # --- WAIT FOR FLIPBOOK RENDER ---
             flipbook_url = None
-            current_state = engine.get_state()
+            current_state = engine.get_state(session_id)
             if current_state.get("flipbook_mode", False):
                 max_wait = 40
                 check_interval = 1.0
@@ -951,7 +952,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 while elapsed < max_wait:
                     await asyncio.sleep(check_interval)
                     elapsed += check_interval
-                    fresh_state = _get_state_no_lock()
+                    fresh_state = _get_state_no_lock(session_id)
                     flipbook_url = fresh_state.get('current_flipbook_url')
                     if flipbook_url == "FAILED":
                         flipbook_url = None
@@ -975,9 +976,9 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     )
                     # Clear from state
                     try:
-                        st = engine.get_state('default')
+                        st = engine.get_state(session_id)
                         st['current_flipbook_url'] = None
-                        engine._save_state(st, 'default')
+                        engine._save_state(st, session_id)
                     except: pass
             elif image_path:
                 # Fallback to static if flipbook failed
@@ -1002,7 +1003,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             global _run_images
             tape_img = image_path
             if not tape_img and current_state.get("flipbook_mode", False):
-                fresh_state = _get_state_no_lock()
+                fresh_state = _get_state_no_lock(session_id)
                 flipbook_last = fresh_state.get('flipbook_last_frame')
                 if flipbook_last and os.path.exists(flipbook_last):
                     tape_img = flipbook_last
@@ -1021,7 +1022,10 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 tape_img,
                 dispatch_text,
                 phase1.get("vision_dispatch", ""),
-                self.label
+                self.label,
+                phase1.get("consequence_image_prompt", ""),
+                phase1.get("hard_transition", False),
+                session_id
             )
             phase2 = await phase2_task
             
@@ -1343,9 +1347,10 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             ))
             
             # Phase 1: Generate dispatch and image FAST
+            session_id = str(interaction.channel_id) if interaction.channel_id else 'default'
             loop = asyncio.get_running_loop()
             fate = compute_fate()
-            phase1_task = loop.run_in_executor(None, engine.advance_turn_image_fast, custom_choice, fate)
+            phase1_task = loop.run_in_executor(None, engine.advance_turn_image_fast, custom_choice, fate, False, session_id)
             
             # --- PROGRESSIVE FEEDBACK & RENDERING ---
             render_msg = await interaction.channel.send(embed=discord.Embed(
@@ -1369,7 +1374,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
 
             # --- WAIT FOR FLIPBOOK RENDER ---
             flipbook_url = None
-            current_state = engine.get_state()
+            current_state = engine.get_state(session_id)
             if current_state.get("flipbook_mode", False):
                 max_wait = 40
                 check_interval = 1.0
@@ -1377,7 +1382,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 while elapsed < max_wait:
                     await asyncio.sleep(check_interval)
                     elapsed += check_interval
-                    fresh_state = _get_state_no_lock()
+                    fresh_state = _get_state_no_lock(session_id)
                     flipbook_url = fresh_state.get('current_flipbook_url')
                     if flipbook_url == "FAILED":
                         flipbook_url = None
@@ -1401,9 +1406,9 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     )
                     # Clear from state
                     try:
-                        st = engine.get_state('default')
+                        st = engine.get_state(session_id)
                         st['current_flipbook_url'] = None
-                        engine._save_state(st, 'default')
+                        engine._save_state(st, session_id)
                     except: pass
             elif img_path:
                 # Fallback to static if flipbook failed
@@ -1429,7 +1434,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             global _run_images
             tape_img = img_path
             if not tape_img and current_state.get("flipbook_mode", False):
-                fresh_state = _get_state_no_lock()
+                fresh_state = _get_state_no_lock(session_id)
                 flipbook_last = fresh_state.get('flipbook_last_frame')
                 if flipbook_last and os.path.exists(flipbook_last):
                     tape_img = flipbook_last
@@ -1448,7 +1453,10 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 tape_img,
                 dispatch_text,
                 phase1.get("vision_dispatch", ""),
-                custom_choice
+                custom_choice,
+                phase1.get("consequence_image_prompt", ""),
+                phase1.get("hard_transition", False),
+                session_id
             )
             phase2 = await phase2_task
             
@@ -2718,8 +2726,9 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                         print(f"[BOT INTRO] Failed to send opening image: {e}")
                 
                 # --- FLIPBOOK MONITORING FOR INTRO ---
+                session_id = str(interaction.channel_id) if interaction.channel_id else 'default'
                 flipbook_url = None
-                current_state = engine.get_state()
+                current_state = engine.get_state(session_id)
                 if current_state.get("flipbook_mode", False):
                     print(f"[FLIPBOOK] Intro flipbook mode enabled - waiting for sequence...")
                     
@@ -2739,7 +2748,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                         await asyncio.sleep(check_interval)
                         elapsed += check_interval
                         
-                        fresh_state = _get_state_no_lock()
+                        fresh_state = _get_state_no_lock(session_id)
                         flipbook_url = fresh_state.get('current_flipbook_url')
                         
                         if flipbook_url == "FAILED":
@@ -2775,12 +2784,9 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
 
                             # Clear flipbook URL from state
                             try:
-                                state_path = ROOT / "sessions" / "default" / "state.json"
-                                with open(state_path, 'r', encoding='utf-8') as f:
-                                    state_data = json.load(f)
-                                state_data['current_flipbook_url'] = None
-                                with open(state_path, 'w', encoding='utf-8') as f:
-                                    json.dump(state_data, f, indent=2)
+                                st = engine.get_state(session_id)
+                                st['current_flipbook_url'] = None
+                                engine._save_state(st, session_id)
                             except Exception as e:
                                 print(f"[FLIPBOOK ERROR] Failed to clear intro flipbook URL: {e}")
                     else:
@@ -2805,7 +2811,9 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     engine.generate_intro_choices_deferred,
                     dispatch_image_path,
                     intro_phase1["prologue"],
-                    intro_phase1["vision_dispatch"]
+                    intro_phase1["vision_dispatch"],
+                    None,
+                    session_id
                 )
                 intro_phase2 = await choices_task
                 
@@ -3301,8 +3309,9 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     await asyncio.sleep(2)  # Let them see the penalty
                     
                     # === FATE ROLL for timeout penalty ===
+                    session_id = 'default' # Penalties are currently global/default
                     fate = compute_fate()
-                    phase1_task = loop.run_in_executor(None, lambda: engine.advance_turn_image_fast(penalty_choice, fate, is_timeout_penalty=True))
+                    phase1_task = loop.run_in_executor(None, lambda: engine.advance_turn_image_fast(penalty_choice, fate, True, session_id))
                     
                     # --- PROGRESSIVE FEEDBACK & RENDERING ---
                     render_msg = await channel.send(embed=discord.Embed(
@@ -3320,7 +3329,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
 
                     # --- WAIT FOR FLIPBOOK RENDER ---
                     flipbook_url = None
-                    current_state = engine.get_state()
+                    current_state = engine.get_state(session_id)
                     if current_state.get("flipbook_mode", False):
                         max_wait = 40
                         check_interval = 1.0
@@ -3328,7 +3337,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                         while elapsed < max_wait:
                             await asyncio.sleep(check_interval)
                             elapsed += check_interval
-                            fresh_state = _get_state_no_lock()
+                            fresh_state = _get_state_no_lock(session_id)
                             flipbook_url = fresh_state.get('current_flipbook_url')
                             if flipbook_url == "FAILED":
                                 flipbook_url = None
@@ -3352,9 +3361,9 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                             )
                             # Clear from state
                             try:
-                                st = engine.get_state('default')
+                                st = engine.get_state(session_id)
                                 st['current_flipbook_url'] = None
-                                engine._save_state(st, 'default')
+                                engine._save_state(st, session_id)
                             except: pass
                     elif image_path:
                         # Fallback to static if flipbook failed
@@ -3379,7 +3388,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     global _run_images
                     tape_img = image_path
                     if not tape_img and current_state.get("flipbook_mode", False):
-                        fresh_state = _get_state_no_lock()
+                        fresh_state = _get_state_no_lock(session_id)
                         flipbook_last = fresh_state.get('flipbook_last_frame')
                         if flipbook_last and os.path.exists(flipbook_last):
                             tape_img = flipbook_last
@@ -3387,7 +3396,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                         _run_images.append(tape_img)
 
                     # CHECK FOR DEATH
-                    current_state = engine.get_state()
+                    current_state = engine.get_state(session_id)
                     player_alive = current_state.get("player_state", {}).get("alive", True)
                     if not player_alive:
                         print("[COUNTDOWN DEATH] Player died from timeout penalty!")
@@ -3807,9 +3816,10 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 print(f"[AUTO-ADVANCE] Could not disable buttons: {e}")
         
         # PHASE 1: Generate image fast with fate modifier
+        session_id = 'default' # Auto-advance is currently global/default
         loop = asyncio.get_running_loop()
         fate = compute_fate()
-        phase1_task = loop.run_in_executor(None, engine.advance_turn_image_fast, chosen, fate)
+        phase1_task = loop.run_in_executor(None, engine.advance_turn_image_fast, chosen, fate, False, session_id)
         
         # --- PROGRESSIVE FEEDBACK & RENDERING ---
         render_msg = await channel.send(embed=discord.Embed(
@@ -3827,7 +3837,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
 
         # --- WAIT FOR FLIPBOOK RENDER ---
         flipbook_url = None
-        current_state = engine.get_state()
+        current_state = engine.get_state(session_id)
         if current_state.get("flipbook_mode", False):
             max_wait = 40
             check_interval = 1.0
@@ -3835,7 +3845,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             while elapsed < max_wait:
                 await asyncio.sleep(check_interval)
                 elapsed += check_interval
-                fresh_state = _get_state_no_lock()
+                fresh_state = _get_state_no_lock(session_id)
                 flipbook_url = fresh_state.get('current_flipbook_url')
                 if flipbook_url == "FAILED":
                     flipbook_url = None
@@ -3859,9 +3869,9 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 )
                 # Clear from state
                 try:
-                    st = engine.get_state('default')
+                    st = engine.get_state(session_id)
                     st['current_flipbook_url'] = None
-                    engine._save_state(st, 'default')
+                    engine._save_state(st, session_id)
                 except: pass
         elif image_path:
             # Fallback to static if flipbook failed
@@ -3886,7 +3896,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
         global _run_images
         tape_img = image_path
         if not tape_img and current_state.get("flipbook_mode", False):
-            fresh_state = _get_state_no_lock()
+            fresh_state = _get_state_no_lock(session_id)
             flipbook_last = fresh_state.get('flipbook_last_frame')
             if flipbook_last and os.path.exists(flipbook_last):
                 tape_img = flipbook_last
@@ -3894,7 +3904,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             _run_images.append(tape_img)
 
         # CHECK FOR DEATH
-        current_state = engine.get_state()
+        current_state = engine.get_state(session_id)
         player_alive = current_state.get("player_state", {}).get("alive", True)
         if not player_alive:
             print("[AUTO-PLAY] Player died!")

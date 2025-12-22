@@ -159,15 +159,14 @@ def generate_choices(
     import base64
     import os
     from pathlib import Path
-    # CRITICAL: Read from env vars first (for Render deployment)
-    gemini_api_key = os.getenv("GEMINI_API_KEY", "")
-    if not gemini_api_key:
-        from engine import CONFIG
-        gemini_api_key = CONFIG.get("GEMINI_API_KEY", "")
+    # CRITICAL: Use the same API key and model as the engine for consistency and 403 prevention
+    from engine import GEMINI_API_KEY as gemini_api_key
+    import ai_provider_manager
+    model_name = ai_provider_manager.get_text_model()
     
     # DEBUG: Log API key status
     if gemini_api_key:
-        print(f"[CHOICES DEBUG] API key loaded: {gemini_api_key[:20]}...{gemini_api_key[-8:]} (len={len(gemini_api_key)})")
+        print(f"[CHOICES DEBUG] API key loaded from engine: {gemini_api_key[:20]}...{gemini_api_key[-8:]} (len={len(gemini_api_key)})")
     else:
         print(f"[CHOICES DEBUG] ERROR - API key is EMPTY or None!")
     
@@ -216,9 +215,9 @@ def generate_choices(
         else:
             print(f"[CHOICES ERROR] Image file not found: {use_path}")
     
-    print("[GEMINI TEXT] Calling Gemini 2.0 Flash for choice generation...")
+    print(f"[GEMINI TEXT] Calling {model_name} for choice generation...")
     response_data = requests.post(
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+        f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent",
         headers={"x-goog-api-key": gemini_api_key, "Content-Type": "application/json"},
         json={
             "contents": [{"parts": parts}],

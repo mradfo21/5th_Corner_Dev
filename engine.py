@@ -916,7 +916,7 @@ DESCRIPTION: <detailed description of what is visible, focusing on objects, thre
         api_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
         
         headers = {
-            "x-goog-api-key": CONFIG.get("GEMINI_API_KEY", ""),
+            "x-goog-api-key": GEMINI_API_KEY,
             "Content-Type": "application/json"
         }
         
@@ -1701,7 +1701,7 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                                 world_prompt=world_prompt,
                                 time_of_day=use_time_of_day,
                                 action_context=choice,
-                                hd_mode=True, # Use Pro model
+                                hd_mode=False, # Use Flash model for 4x4 grid (MUCH faster, avoids timeouts)
                                 output_dir=img_dir,
                                 is_flipbook=True
                             )
@@ -1728,21 +1728,17 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                                 print(f"[FLIPBOOK] Parallel generation blocked/failed", flush=True)
                         except Exception as e:
                             try:
+                                # Signal failure (SAFE LOCK VERSION)
+                                st = _load_state(session_id)
+                                st['current_flipbook_url'] = "FAILED"
+                                _save_state(st, session_id)
+                            except: pass
+
+                            try:
                                 safe_e = str(e).encode('ascii', 'replace').decode('ascii')
                                 print(f"[FLIPBOOK ERROR] Parallel exception: {safe_e}", flush=True)
                             except:
                                 print(f"[FLIPBOOK ERROR] Parallel exception (contains special characters)", flush=True)
-                            
-                            # Signal failure to bot so it doesn't hang
-                            try:
-                                state_path = _get_state_path(session_id)
-                                with open(state_path, 'r', encoding='utf-8') as f:
-                                    st = json.load(f)
-                                st['current_flipbook_url'] = "FAILED"
-                                with open(state_path, 'w', encoding='utf-8') as f:
-                                    json.dump(st, f, indent=2)
-                            except:
-                                pass
                     
                     threading.Thread(target=generate_flipbook_parallel, daemon=True).start()
 
@@ -1818,7 +1814,7 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                                 world_prompt=world_prompt,
                                 time_of_day=use_time_of_day,
                                 action_context=choice,
-                                hd_mode=True,
+                                hd_mode=False, # Use Flash for speed
                                 output_dir=img_dir,
                                 is_flipbook=True
                             )
