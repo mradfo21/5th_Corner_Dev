@@ -471,7 +471,8 @@ def _load_state(session_id='default') -> dict:
             "choices": [],
             "turn_count": 0, # Initialize turn_count
             "interim_index": 0, # Initialize interim_index
-            "time_of_day": INITIAL_TIME_OF_DAY
+            "time_of_day": INITIAL_TIME_OF_DAY,
+            "flipbook_mode": False  # Disabled by default - experimental feature
         }
 
 # Legacy global state (deprecated - use session-based functions instead)
@@ -502,7 +503,8 @@ except Exception as e:
         "interim_index": 0,
         "in_combat": False,
         "threat_level": 0,
-        "time_of_day": INITIAL_TIME_OF_DAY
+        "time_of_day": INITIAL_TIME_OF_DAY,
+        "flipbook_mode": False  # Disabled by default - experimental feature
     }
     print("[ENGINE INIT] Created default legacy state", flush=True)
 
@@ -909,7 +911,7 @@ TIME: <time of day - use ONLY: dawn, morning, afternoon, golden hour, dusk, or n
 COLOR: <dominant color palette>
 DESCRIPTION: <detailed description of what is visible, focusing on objects, threats, exits, and anything you could interact with. Be direct and literal. If there are hands, weapons, tools, figures, silhouettes, or creatures visible, mention them explicitly.>"""
         
-        api_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+        api_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent"
         
         headers = {
             "x-goog-api-key": CONFIG.get("GEMINI_API_KEY", ""),
