@@ -1042,10 +1042,10 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                                                 file=flipbook_file
                                             )
                                             print(f"[FLIPBOOK] Flipbook displayed: {flipbook_name} ({'animated GIF' if is_gif else 'static grid'})")
-                                                
-                                                # Clear flipbook URL from state (so it doesn't re-display)
-                                                fresh_state['current_flipbook_url'] = None
-                                                engine.save_state(fresh_state)
+                                            
+                                            # Clear flipbook URL from state (so it doesn't re-display)
+                                            fresh_state['current_flipbook_url'] = None
+                                            engine.save_state(fresh_state)
                                             break
                                     
                                     if elapsed >= max_wait:
