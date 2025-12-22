@@ -4404,14 +4404,23 @@ def generate_intro_choices_deferred(image_url: str, prologue: str, vision_dispat
     # Don't pad with placeholders - just return what we got
     
     # Save to session-specific history
+    # CRITICAL TEMPORAL CONTINUITY FIX (same as regular turns):
+    # In flipbook mode, static images aren't generated, so image_url is None.
+    # Use flipbook_last_frame as the history image so NEXT turn can reference it for img2img continuity!
+    history_image = image_url
+    if not history_image and state.get("flipbook_mode", False):
+        history_image = state.get("flipbook_last_frame")
+        if history_image:
+            print(f"[INTRO HISTORY] Using intro flipbook_last_frame as reference for Turn 1: {os.path.basename(history_image)}")
+    
     entry = {
         "choice": "Intro",
         "dispatch": prologue,
         "vision_dispatch": vision_dispatch,
         "vision_analysis": vision_analysis_text,  # Now populated from actual vision AI!
         "world_prompt": prologue,
-        "image": image_url, # Store original static in history
-        "image_url": image_url,
+        "image": history_image, # Store reference image for next turn's img2img
+        "image_url": history_image,
         "analysis_image": analysis_img_url # Track which image was actually analyzed
     }
     history = [entry]
