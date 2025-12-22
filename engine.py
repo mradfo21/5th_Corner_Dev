@@ -3954,6 +3954,15 @@ def advance_turn_choices_deferred(consequence_img_url: str, dispatch: str, visio
     history = _load_history(session_id)
     is_custom_action = not any(keyword in choice.lower() for keyword in ["move", "advance", "photograph", "examine", "sprint", "climb", "vault", "crawl"])
     
+    # CRITICAL TEMPORAL CONTINUITY FIX:
+    # In flipbook mode, static images aren't generated, so consequence_img_url is None.
+    # Use flipbook_last_frame as the history image so NEXT turn can reference it for img2img continuity!
+    history_image = consequence_img_url
+    if not history_image and state.get("flipbook_mode", False):
+        history_image = state.get("flipbook_last_frame")
+        if history_image:
+            print(f"[HISTORY] Using flipbook_last_frame as reference for next turn: {os.path.basename(history_image)}")
+    
     history_entry = {
         "choice": choice,
         "is_custom_action": is_custom_action,  # Flag for permanence
@@ -3961,8 +3970,8 @@ def advance_turn_choices_deferred(consequence_img_url: str, dispatch: str, visio
         "vision_dispatch": vision_dispatch,
         "vision_analysis": vision_analysis_text,
         "world_prompt": state.get("world_prompt", ""),
-        "image": consequence_img_url, # Store the canonical static image in history for the tape
-        "image_url": consequence_img_url,
+        "image": history_image, # Store reference image for next turn's img2img
+        "image_url": history_image,
         "analysis_image": analysis_img_url, # Track which image was actually analyzed
         "image_prompt": consequence_img_prompt,
         "hard_transition": hard_transition  # Track location changes
