@@ -447,6 +447,8 @@ def _load_state(session_id='default') -> dict:
                 st.setdefault('feed_log', [])
                 st.setdefault('current_image_url', None)
                 st.setdefault('choices', []) # Ensure choices list is present
+                # STATE MIGRATION: Enable flipbook mode by default for existing sessions
+                st.setdefault('flipbook_mode', True)
                 return st
             except json.JSONDecodeError as e_json:
                 logging.error(f"JSONDecodeError in _load_state for {state_path}: {e_json}. File might be corrupt or empty.")
