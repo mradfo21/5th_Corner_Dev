@@ -1480,16 +1480,8 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                 print(f"[TIME] Using explicitly provided time_of_day: {use_time_of_day}")
         use_color = prev_color
         
-        # --- CHECK FLIPBOOK MODE ---
-        # Load fresh state to get latest flipbook_mode setting
-        current_state = get_state()
-        flipbook_mode = current_state.get("flipbook_mode", False)
-        if flipbook_mode:
-            print(f"[FLIPBOOK] 🎬 FLIPBOOK MODE ENABLED - Will generate 4-panel sequence")
-        else:
-            print(f"[FLIPBOOK] Flipbook mode is OFF (standard single-frame generation)")
-        
         # --- Inject world summary as background context ---
+        current_state = get_state()
         world_summary = summarize_world_state(current_state)
         # --- Summarize world prompt for image flavor ---
         world_flavor = ""
@@ -1503,14 +1495,6 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
             is_timeout_penalty=is_timeout_penalty
         )
         
-        # --- PREPEND FLIPBOOK INSTRUCTIONS IF ENABLED ---
-        if flipbook_mode:
-            flipbook_prefix = PROMPTS.get("gemini_flipbook_4panel_prefix", "")
-            if flipbook_prefix:
-                prompt_str = flipbook_prefix + prompt_str
-                print(f"[FLIPBOOK] Added 4-panel layout instructions to prompt")
-            else:
-                print(f"[FLIPBOOK] WARNING: flipbook_mode enabled but prompt template not found!")
         # Inject world flavor and location for image model only
         if world_flavor:
             prompt_str += f" World flavor: {world_flavor}."
@@ -1675,33 +1659,9 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                     hd_mode=use_hq_for_this_frame,  # Frame 0 always HQ, others respect quality toggle
                     output_dir=img_dir  # Session-specific directory
                 )
-            # --- FLIPBOOK PANEL EXTRACTION ---
-            canonical_frame = result_path  # Default: use the generated image as-is
-            display_image = result_path
-            
-            if flipbook_mode and result_path:
-                print(f"[FLIPBOOK] Extracting canonical frame (Panel 4) from 4-panel grid...")
-                from image_utils import extract_panel_from_grid
-                
-                # Extract Panel 4 (bottom-right) as the canonical frame
-                extracted_panel = extract_panel_from_grid(result_path, panel=4)
-                
-                if extracted_panel:
-                    canonical_frame = extracted_panel
-                    display_image = result_path  # Keep full grid for player display
-                    print(f"[FLIPBOOK] Successfully extracted Panel 4: {canonical_frame}")
-                    print(f"[FLIPBOOK] Display image (full grid): {display_image}")
-                    
-                    # Store both paths in state for later use
-                    current_state["last_display_image"] = display_image  # Full 4-panel grid
-                    current_state["last_canonical_frame"] = canonical_frame  # Panel 4 only
-                    _save_state(current_state)
-                    print(f"[FLIPBOOK] Stored paths in state")
-                else:
-                    print(f"[FLIPBOOK] WARNING: Panel extraction failed, using full image")
-            
-            _last_image_path = canonical_frame  # Use canonical frame for continuity
-            return (canonical_frame, prompt_str, None)  # Return canonical frame for story logic
+            # Return canonical frame (always single image now)
+            _last_image_path = result_path
+            return (result_path, prompt_str, None)  # Return canonical frame for story logic
         
         elif active_image_provider == "openai":
             # Use OpenAI gpt-image-1
@@ -1862,6 +1822,69 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
         import traceback
         traceback.print_exc()
         return (None, "", None)
+
+# ───────── async flipbook generation ─────────────────────────────────────────
+async def _gen_flipbook_async(canonical_frame_path: str, prompt_str: str, caption: str, world_prompt: str, choice: str, time_of_day: str, session_id: str = 'default') -> Optional[str]:
+    """
+    Generate a 4x4 flipbook sequence AFTER the canonical frame is displayed.
+    This runs asynchronously and does NOT block the main turn flow.
+    
+    Args:
+        canonical_frame_path: Path to the canonical frame (used as reference)
+        prompt_str: The narrative prompt (will be enhanced with flipbook instructions)
+        caption: The vision dispatch caption
+        world_prompt: Current world state
+        choice: Player action
+        time_of_day: Current time of day
+        session_id: Session identifier
+    
+    Returns:
+        Path to the generated flipbook image, or None if generation failed
+    """
+    try:
+        print(f"[FLIPBOOK] 🎬 Starting async flipbook generation...")
+        print(f"[FLIPBOOK] Reference frame: {os.path.basename(canonical_frame_path)}")
+        
+        # Build flipbook prompt
+        flipbook_prefix = PROMPTS.get("gemini_flipbook_4panel_prefix", "")
+        if not flipbook_prefix:
+            print(f"[FLIPBOOK] ERROR: flipbook prompt template not found in prompts!")
+            return None
+        
+        # Enhance the narrative prompt with flipbook instructions
+        flipbook_prompt = flipbook_prefix + prompt_str
+        print(f"[FLIPBOOK] Enhanced prompt with 4x4 grid instructions")
+        
+        # Generate flipbook using img2img from the canonical frame
+        from gemini_image_utils import generate_gemini_img2img
+        
+        img_dir = _get_image_dir(session_id)
+        
+        # Use canonical frame as reference for visual continuity
+        flipbook_path = generate_gemini_img2img(
+            prompt=flipbook_prompt,
+            caption=f"{caption}_flipbook",  # Distinguish from canonical
+            reference_image_path=[canonical_frame_path],  # Single reference
+            strength=0.35,  # Allow more variation for sequence
+            world_prompt=world_prompt,
+            time_of_day=time_of_day,
+            action_context=choice,
+            hd_mode=False,  # Flipbook doesn't need HQ (visual flair only)
+            output_dir=img_dir
+        )
+        
+        if flipbook_path:
+            print(f"[FLIPBOOK] ✓ Flipbook generated: {os.path.basename(flipbook_path)}")
+            return flipbook_path
+        else:
+            print(f"[FLIPBOOK] WARNING: Flipbook generation returned None")
+            return None
+            
+    except Exception as e:
+        print(f"[FLIPBOOK] ERROR: Flipbook generation failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
 
 # ───────── image prompt sanitization ─────────────────────────────────────────
 def _sanitize_for_image_generation(text: str) -> str:
@@ -2339,6 +2362,35 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                     state['current_image_url'] = new_image_url # Update global state
                     state['current_image_prompt'] = image_prompt # Store prompt for history
                     state['current_hard_transition'] = hard_trans # Store hard transition flag
+                    
+                    # --- ASYNC FLIPBOOK GENERATION (if enabled) ---
+                    if state.get("flipbook_mode", False):
+                        print(f"[FLIPBOOK] Flipbook mode enabled - starting async generation")
+                        import asyncio
+                        
+                        # Create async task to generate flipbook (non-blocking)
+                        async def generate_and_store_flipbook():
+                            flipbook_url = await _gen_flipbook_async(
+                                canonical_frame_path=new_image_url,
+                                prompt_str=image_prompt,
+                                caption=vision_dispatch_for_image,
+                                world_prompt=world_prompt_for_image,
+                                choice=choice,
+                                time_of_day=state.get('time_of_day', ''),
+                                session_id=state.get('session_id', 'default')
+                            )
+                            if flipbook_url:
+                                # Update state with flipbook URL
+                                with WORLD_STATE_LOCK:
+                                    current_state = get_state()
+                                    current_state['current_flipbook_url'] = flipbook_url
+                                    _save_state(current_state)
+                                print(f"[FLIPBOOK] Stored flipbook URL in state: {os.path.basename(flipbook_url)}")
+                        
+                        # Run async task in background (don't block turn processing)
+                        asyncio.create_task(generate_and_store_flipbook())
+                        print(f"[FLIPBOOK] Async generation task created (non-blocking)")
+                    
                     if VISION_ENABLED: # Vision analysis of the new image
                         if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Generating vision analysis for new image...", flush=True)
                         vision_text = _vision_describe(new_image_url)

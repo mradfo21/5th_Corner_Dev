@@ -1000,8 +1000,57 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 if file:
                     if not video_path:
                         # Normal mode: just the image
-                        await interaction.channel.send(file=file)
+                        canonical_msg = await interaction.channel.send(file=file)
                         print(f"[BOT] Image displayed immediately (before choices)!")
+                        
+                        # --- FLIPBOOK MONITORING (async, non-blocking) ---
+                        current_state = engine.get_state()
+                        if current_state.get("flipbook_mode", False):
+                            print(f"[FLIPBOOK] Flipbook mode enabled - starting monitor task")
+                            
+                            async def wait_for_flipbook():
+                                """Monitor state for flipbook URL and display when ready"""
+                                try:
+                                    max_wait = 30  # seconds
+                                    check_interval = 0.5  # seconds
+                                    elapsed = 0
+                                    
+                                    while elapsed < max_wait:
+                                        await asyncio.sleep(check_interval)
+                                        elapsed += check_interval
+                                        
+                                        # Check if flipbook URL has appeared in state
+                                        fresh_state = engine.get_state()
+                                        flipbook_url = fresh_state.get('current_flipbook_url')
+                                        
+                                        if flipbook_url:
+                                            print(f"[FLIPBOOK] Flipbook ready! Displaying: {os.path.basename(flipbook_url)}")
+                                            
+                                            # Attach and send the flipbook
+                                            flipbook_file, flipbook_name = _attach(flipbook_url, "")
+                                            if flipbook_file:
+                                                await interaction.channel.send(
+                                                    content="🎬 **FLIPBOOK SEQUENCE** (4x4 action progression)",
+                                                    file=flipbook_file
+                                                )
+                                                print(f"[FLIPBOOK] Flipbook displayed: {flipbook_name}")
+                                                
+                                                # Clear flipbook URL from state (so it doesn't re-display)
+                                                fresh_state['current_flipbook_url'] = None
+                                                engine.save_state(fresh_state)
+                                            break
+                                    
+                                    if elapsed >= max_wait:
+                                        print(f"[FLIPBOOK] Timeout waiting for flipbook (30s elapsed)")
+                                
+                                except Exception as e:
+                                    print(f"[FLIPBOOK] Error in monitor task: {e}")
+                                    import traceback
+                                    traceback.print_exc()
+                            
+                            # Create background task (don't await - let it run async)
+                            asyncio.create_task(wait_for_flipbook())
+                            print(f"[FLIPBOOK] Monitor task created")
                     else:
                         # HD mode: image already sent with video, skip duplicate
                         print(f"[BOT] Image skipped (video already displayed)")
@@ -1478,7 +1527,56 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     print(f"[BOT] Image displayed immediately (before choices)!")
                     # Handle absolute paths properly
                     display_path = Path(img_path) if Path(img_path).is_absolute() else Path(img_path.lstrip("/"))
-                    await interaction.channel.send(file=discord.File(display_path))
+                    canonical_msg = await interaction.channel.send(file=discord.File(display_path))
+                    
+                    # --- FLIPBOOK MONITORING (async, non-blocking) ---
+                    current_state = engine.get_state()
+                    if current_state.get("flipbook_mode", False):
+                        print(f"[FLIPBOOK] Flipbook mode enabled - starting monitor task")
+                        
+                        async def wait_for_flipbook():
+                            """Monitor state for flipbook URL and display when ready"""
+                            try:
+                                max_wait = 30  # seconds
+                                check_interval = 0.5  # seconds
+                                elapsed = 0
+                                
+                                while elapsed < max_wait:
+                                    await asyncio.sleep(check_interval)
+                                    elapsed += check_interval
+                                    
+                                    # Check if flipbook URL has appeared in state
+                                    fresh_state = engine.get_state()
+                                    flipbook_url = fresh_state.get('current_flipbook_url')
+                                    
+                                    if flipbook_url:
+                                        print(f"[FLIPBOOK] Flipbook ready! Displaying: {os.path.basename(flipbook_url)}")
+                                        
+                                        # Attach and send the flipbook
+                                        flipbook_file, flipbook_name = _attach(flipbook_url, "")
+                                        if flipbook_file:
+                                            await interaction.channel.send(
+                                                content="🎬 **FLIPBOOK SEQUENCE** (4x4 action progression)",
+                                                file=flipbook_file
+                                            )
+                                            print(f"[FLIPBOOK] Flipbook displayed: {flipbook_name}")
+                                            
+                                            # Clear flipbook URL from state (so it doesn't re-display)
+                                            fresh_state['current_flipbook_url'] = None
+                                            engine.save_state(fresh_state)
+                                        break
+                                
+                                if elapsed >= max_wait:
+                                    print(f"[FLIPBOOK] Timeout waiting for flipbook (30s elapsed)")
+                            
+                            except Exception as e:
+                                print(f"[FLIPBOOK] Error in monitor task: {e}")
+                                import traceback
+                                traceback.print_exc()
+                        
+                        # Create background task (don't await - let it run async)
+                        asyncio.create_task(wait_for_flipbook())
+                        print(f"[FLIPBOOK] Monitor task created")
                 else:
                     # HD mode: image already sent with video, skip duplicate
                     print(f"[BOT CUSTOM] Image skipped (video already displayed)")
