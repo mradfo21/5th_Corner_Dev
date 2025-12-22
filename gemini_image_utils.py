@@ -116,6 +116,13 @@ def _sanitize_for_safety(prompt: str) -> str:
         "skull": "cranial structure",
         "organs": "biological systems",
         "intestines": "digestive tract",
+        "dissected": "anatomically exposed",
+        "mutated": "physically altered",
+        "mutations": "physical alterations",
+        "deformities": "structural irregularities",
+        "tumors": "structural growths",
+        "autopsy": "medical examination",
+        "blood-crusted": "darkly stained",
         
         # Death terms
         "dead body": "motionless figure",
@@ -273,10 +280,15 @@ def generate_with_gemini(
     # Sanitize to avoid safety blocks
     full_prompt = _sanitize_for_safety(structured_prompt)
     
-    print(f"[GOOGLE GEMINI] Generating with {model}...")
-    # Safe print - encode to ASCII, replace non-ASCII chars
-    safe_prompt = full_prompt[:200].encode('ascii', 'replace').decode('ascii')
-    print(f"[GOOGLE GEMINI] Prompt: {safe_prompt}...")
+    try:
+        print(f"[GOOGLE GEMINI] Generating with {model}...")
+        # Safe print - encode to ASCII, replace non-ASCII chars
+        safe_prompt = full_prompt[:200].encode('ascii', 'replace').decode('ascii')
+        print(f"[GOOGLE GEMINI] Prompt: {safe_prompt}...")
+    except UnicodeEncodeError:
+        print(f"[GOOGLE GEMINI] Generating with {model}... (prompt contains special characters)")
+    except Exception as print_err:
+        print(f"[GOOGLE GEMINI] Generating (logging error: {type(print_err).__name__})")
     
     # Official Google Gemini API endpoint
     api_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
@@ -297,7 +309,13 @@ def generate_with_gemini(
             "imageConfig": {
                 "aspectRatio": "4:3"  # Nano Banana Pro standard for this project
             }
-        }
+        },
+        "safetySettings": [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+        ]
     }
     
     try:
@@ -678,7 +696,8 @@ def generate_gemini_img2img(
     time_of_day: str = "",
     action_context: str = "",
     hd_mode: bool = True,
-    output_dir: Path = None
+    output_dir: Path = None,
+    is_flipbook: bool = False
 ) -> str:
     """
     Edit an image using Google Gemini (image-to-image).
@@ -692,6 +711,7 @@ def generate_gemini_img2img(
         world_prompt: Optional world context
         time_of_day: Time of day for lighting consistency
         hd_mode: If True, use Pro model for higher quality (slower). If False, use Flash for speed.
+        is_flipbook: If True, suppress single-image constraints (like NO BORDERS).
         
     Returns:
         Local path to the saved image
@@ -778,10 +798,14 @@ def generate_gemini_img2img(
     
     structured_prompt = structured_prompt + continuity_instruction
     
-    # Add CRITICAL anti-border instructions
-    anti_border = "\n\nCRITICAL - ABSOLUTELY NO BORDERS OR FRAMES:\nThe image MUST fill the ENTIRE canvas edge-to-edge with ZERO borders, frames, or edges of any kind. NO black bars, NO white borders, NO photo frames, NO matting, NO letterboxing. The content fills 100% of the image area. This is RAW FOOTAGE, not a framed photograph."
-    
-    structured_prompt = structured_prompt + anti_border
+    # Add CRITICAL anti-border instructions (only for non-flipbooks)
+    if not is_flipbook:
+        anti_border = "\n\nCRITICAL - ABSOLUTELY NO BORDERS OR FRAMES:\nThe image MUST fill the ENTIRE canvas edge-to-edge with ZERO borders, frames, or edges of any kind. NO black bars, NO white borders, NO photo frames, NO matting, NO letterboxing. The content fills 100% of the image area. This is RAW FOOTAGE, not a framed photograph."
+        structured_prompt = structured_prompt + anti_border
+    else:
+        # For flipbooks, we NEED the grid lines to remain, so we're more relaxed
+        flipbook_grid_note = "\n\nCRITICAL - 4x4 GRID STRUCTURE:\nPreserve the 4x4 grid structure from the layout template. Each panel must show a slightly different moment in time. The output MUST be a 4x4 grid."
+        structured_prompt = structured_prompt + flipbook_grid_note
     
     # Add CRITICAL anti-person instructions WITH REMOVAL DIRECTIVE
     anti_person = "\n\n🚨 CRITICAL - REMOVE ANY PEOPLE FROM REFERENCE IMAGE:\n\n" \
@@ -896,38 +920,76 @@ def generate_gemini_img2img(
             "imageConfig": {
                 "aspectRatio": "4:3"  # Nano Banana Pro standard for this project
             }
-        }
+        },
+        "safetySettings": [
+            {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+        ]
     }
     
     try:
         # Dynamic timeout based on number of reference images
         # More images = more processing time needed (img2img with multiple refs is slow)
         timeout_seconds = 30 + (len(image_paths) * 10)  # 30s base + 10s per extra image
-        print(f"[GOOGLE GEMINI IMG2IMG] Using {timeout_seconds}s timeout for {len(image_paths)} reference image(s)")
+        print(f"[GOOGLE GEMINI IMG2IMG] Using {timeout_seconds}s timeout for {len(image_paths)} reference image(s)", flush=True)
         
         max_retries = 1  # Don't waste time retrying slow calls
         for attempt in range(max_retries):
             try:
+                print(f"[GOOGLE GEMINI IMG2IMG] Calling API NOW (attempt {attempt + 1})...", flush=True)
                 response = requests.post(api_url, headers=headers, json=payload, timeout=timeout_seconds)
+                print(f"[GOOGLE GEMINI IMG2IMG] API returned! Status: {response.status_code}", flush=True)
                 response.raise_for_status()
                 break
             except requests.exceptions.Timeout:
+                print(f"[GOOGLE GEMINI IMG2IMG] TIMEOUT EXCEPTION CAUGHT!", flush=True)
                 if attempt < max_retries - 1:
-                    print(f"[GOOGLE GEMINI] Timeout on attempt {attempt + 1}, retrying...")
+                    print(f"[GOOGLE GEMINI] Timeout on attempt {attempt + 1}, retrying...", flush=True)
                     continue
                 else:
-                    print(f"[GOOGLE GEMINI] ERROR: TIMEOUT after {timeout_seconds}s - Gemini API not responding!")
+                    print(f"[GOOGLE GEMINI] ERROR: TIMEOUT after {timeout_seconds}s - Gemini API not responding!", flush=True)
                     return None  # Graceful fallback instead of crash
         
+        print(f"[GOOGLE GEMINI IMG2IMG] Parsing response JSON...", flush=True)
         result = response.json()
         
         # Check for API errors first
         if "candidates" not in result:
-            print(f"[GOOGLE GEMINI] ERROR: API error response: {result}")
+            print(f"[GOOGLE GEMINI] ERROR: API error response: {result}", flush=True)
             if "error" in result:
                 error_details = result['error']
-                print(f"[GOOGLE GEMINI] ERROR: Error code: {error_details.get('code')}, Message: {error_details.get('message')}")
+                print(f"[GOOGLE GEMINI] ERROR: Error code: {error_details.get('code')}, Message: {error_details.get('message')}", flush=True)
             raise RuntimeError(f"Gemini image API error: {result.get('error', {}).get('message', 'Unknown error')}")
+        
+        print(f"[GOOGLE GEMINI IMG2IMG] Extracting image data...", flush=True)
+        print(f"[GOOGLE GEMINI IMG2IMG] Response has {len(result.get('candidates', []))} candidates", flush=True)
+        
+        # Check for safety blocks
+        if result["candidates"]:
+            candidate = result["candidates"][0]
+            print(f"[GOOGLE GEMINI IMG2IMG] Candidate keys: {list(candidate.keys())}", flush=True)
+            
+            # Check for finishReason (safety block detection)
+            finish_reason = candidate.get("finishReason", "UNKNOWN")
+            finish_message = candidate.get("finishMessage", "")
+            print(f"[GOOGLE GEMINI IMG2IMG] Finish reason: {finish_reason}", flush=True)
+            if finish_message:
+                print(f"[GOOGLE GEMINI IMG2IMG] Finish message: {finish_message}", flush=True)
+            
+            # Check for any safety-related finish reasons
+            if finish_reason in ["SAFETY", "IMAGE_SAFETY", "HARM", "PROHIBITED_CONTENT", "BLOCKED_CONTENT"]:
+                safety_ratings = candidate.get("safetyRatings", [])
+                print(f"[GOOGLE GEMINI IMG2IMG] SAFETY BLOCK! Reason: {finish_reason}", flush=True)
+                print(f"[GOOGLE GEMINI IMG2IMG] Safety ratings: {safety_ratings}", flush=True)
+                if finish_message:
+                    print(f"[GOOGLE GEMINI IMG2IMG] Block message: {finish_message}", flush=True)
+                return None  # Return None for safety blocks
+            
+            if "content" not in candidate:
+                print(f"[GOOGLE GEMINI IMG2IMG] ERROR: No 'content' key in candidate. Full candidate: {candidate}", flush=True)
+                return None
         
         # Extract image data
         parts = result["candidates"][0]["content"]["parts"]
@@ -941,6 +1003,7 @@ def generate_gemini_img2img(
         if not image_data_b64:
             raise RuntimeError("No image data in Gemini edit response")
         
+        print(f"[GOOGLE GEMINI IMG2IMG] Decoding image data...", flush=True)
         # Decode and save
         image_bytes = base64.b64decode(image_data_b64)
         
@@ -952,6 +1015,7 @@ def generate_gemini_img2img(
         filename = f"{hash(caption) & 0xFFFFFFFF}_{safe_caption}.png"
         image_path = save_dir / filename
         
+        print(f"[GOOGLE GEMINI IMG2IMG] Saving to {image_path}...", flush=True)
         with open(image_path, "wb") as f:
             f.write(image_bytes)
         
@@ -966,16 +1030,20 @@ def generate_gemini_img2img(
             img = img.convert("RGB")
             img = img.resize((480, 360), PILImage.LANCZOS)  # 4:3 aspect ratio (matches full-size)
             img.save(small_path, format="PNG", optimize=True, quality=85)
-            print(f"[GOOGLE GEMINI] Edited image saved: {image_path}")
-            print(f"[GOOGLE GEMINI] Downsampled saved: {small_path} (480x360, 4:3 for API calls)")
+            print(f"[GOOGLE GEMINI] Edited image saved: {image_path}", flush=True)
+            print(f"[GOOGLE GEMINI] Downsampled saved: {small_path} (480x360, 4:3 for API calls)", flush=True)
         except Exception as e:
-            print(f"[GOOGLE GEMINI] WARNING: Downsample failed: {e}")
+            print(f"[GOOGLE GEMINI] WARNING: Downsample failed: {e}", flush=True)
         
+        print(f"[GOOGLE GEMINI IMG2IMG] Returning path: {image_path}", flush=True)
         # Return relative path from session root
         return str(image_path)
         
     except Exception as e:
-        print(f"[GOOGLE GEMINI] ERROR: Edit error: {e}")
-        print(f"[GOOGLE GEMINI] ERROR: Returning None to allow game to continue")
+        print(f"[GOOGLE GEMINI] ERROR: Edit error: {type(e).__name__}: {e}", flush=True)
+        import traceback
+        print(f"[GOOGLE GEMINI] ERROR: Full traceback:", flush=True)
+        traceback.print_exc()
+        print(f"[GOOGLE GEMINI] ERROR: Returning None to allow game to continue", flush=True)
         return None  # Graceful fallback - don't crash the death sequence!
 

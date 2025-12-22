@@ -1005,12 +1005,14 @@ DESCRIPTION: <detailed description of what is visible, focusing on objects, thre
         return result_dict
     
     except requests.exceptions.HTTPError as e:
-        print(f"[VISION ERROR] Gemini API HTTP error: {e}")
+        safe_e = str(e).encode('ascii', 'replace').decode('ascii')
+        print(f"[VISION ERROR] Gemini API HTTP error: {safe_e}")
         if e.response is not None:
             print(f"[VISION ERROR] Response: {e.response.text}")
         return {"description": "", "time_of_day": "", "color_palette": ""}
     except Exception as e:
-        print(f"[VISION ERROR] Failed to analyze image: {e}")
+        safe_e = str(e).encode('ascii', 'replace').decode('ascii')
+        print(f"[VISION ERROR] Failed to analyze image: {safe_e}")
         import traceback
         traceback.print_exc()
         return {"description": "", "time_of_day": "", "color_palette": ""}
@@ -1046,9 +1048,14 @@ def _world_report() -> str:
 
 # ───────── dispatch helpers ────────────────────────────────────────────────
 def summarize_world_prompt_for_image(world_prompt: str) -> str:
-    """Summarize the world prompt to 1-2 sentences for image generation."""
+    """Summarize the world prompt to 1-2 sentences for image generation.
+    CRITICAL: Avoid graphic/violent/NSFW terms in the summary to prevent image safety blocks.
+    """
     prompt = (
-        "Summarize the following world context in 1-2 vivid, scene-specific sentences, focusing only on details relevant to the current visual environment. Omit backstory and generalities.\n\nWORLD PROMPT: " + world_prompt
+        "Summarize the following world context in 1-2 vivid, scene-specific sentences for an image generation model. "
+        "Focus only on details relevant to the current visual environment. Omit backstory and generalities. "
+        "CRITICAL: Avoid using graphic or violent words like 'blood', 'gore', 'mutilated', 'viscera', etc. "
+        "Use clinical or atmospheric equivalents if needed.\n\nWORLD PROMPT: " + world_prompt
     )
     # Don't use lore - just summarizing existing text
     return _ask(prompt, model="gemini", temp=1.0, tokens=48, use_lore=False)
@@ -1228,7 +1235,8 @@ def _detect_movement_type(player_choice: str) -> str:
         else:
             return 'stationary'
     except Exception as e:
-        print(f"[MOVEMENT DETECTION] Error: {e}, defaulting to exploration")
+        safe_e = str(e).encode('ascii', 'replace').decode('ascii')
+        print(f"[MOVEMENT DETECTION] Error: {safe_e}, defaulting to exploration")
         return 'exploration'  # Default to some movement to keep things interesting
 
 def build_image_prompt(player_choice: str = "", dispatch: str = "", prev_vision_analysis: str = "", hard_transition: bool = False, is_timeout_penalty: bool = False) -> str:
@@ -1531,7 +1539,8 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
         print(f"[IMG LOG] previous_image_path (actual): {prev_img_path if prev_img_path else 'None'}")
         print(f"[IMG LOG] reference_images_list: {len(prev_img_paths_list)} images")
         print(f"[IMG LOG] use_edit_mode: {use_edit_mode}")
-        print(f"[IMG LOG] world_prompt: {world_prompt}")
+        safe_world = str(world_prompt).encode('ascii', 'replace').decode('ascii')
+        print(f"[IMG LOG] world_prompt: {safe_world}")
         print(f"[IMG LOG] session_id: {session_id}")
         print("[IMG LOG] --- END IMAGE GENERATION PARAMETERS ---")
         img_dir = _get_image_dir(session_id)
@@ -1623,17 +1632,128 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                 if frame_idx == 0:
                     print(f"[QUALITY MODE] Frame 0 (intro) - FORCING HQ (Gemini Pro) for visual consistency")
                 
-                result_path = generate_gemini_img2img(
-                    prompt=prompt_str,
-                    caption=caption,
-                    reference_image_path=ref_images_to_use,  # Adjusted based on transition type
-                    strength=strength,
-                    world_prompt=world_prompt,
-                    time_of_day=use_time_of_day,
-                    action_context=choice,  # Pass action for FPS hands context
-                    hd_mode=use_hq_for_this_frame,  # Frame 0 always HQ, others respect quality toggle
-                    output_dir=img_dir  # Session-specific directory
-                )
+                # --- PARALLEL FLIPBOOK GENERATION (Direct Comparison Mode) ---
+                # Start flipbook generation at the SAME TIME as static image, using SAME parent reference
+                current_state = _load_state(session_id)
+                flipbook_enabled = current_state.get("flipbook_mode", False)
+                if flipbook_enabled:
+                    print(f"[FLIPBOOK] Parallel generation starting - using parent reference: {os.path.basename(ref_images_to_use[0])}")
+                    import threading
+                    
+                    def generate_flipbook_parallel():
+                        print(f"[FLIPBOOK THREAD] Parallel thread started", flush=True)
+                        try:
+                            from create_flipbook_gif import grid_to_flipbook_gif
+                            from gemini_image_utils import generate_gemini_img2img
+                            
+                            # Reload state to get temporal anchors (first/last frames of previous flipbook)
+                            state_path = _get_state_path(session_id)
+                            with open(state_path, 'r', encoding='utf-8') as f:
+                                st_temp = json.load(f)
+                            
+                            prev_grid = st_temp.get('flipbook_last_grid') # Context for the entire previous 16 frames
+                            
+                            # Add flipbook prefix
+                            flipbook_prefix = PROMPTS.get("gemini_flipbook_4panel_prefix", "")
+                            # Add hardened visual template instruction
+                            flipbook_prefix = "📋 VISUAL TEMPLATE ATTACHED: Match the 4x4 grid layout exactly as shown in the reference template image.\n\n" + flipbook_prefix
+                            
+                            # --- EXPERIMENT: ONLY PREVIOUS GRID CONTEXT ---
+                            # We use the ENTIRE previous 16-frame grid as the only reference (plus layout template)
+                            flipbook_refs = []
+                            template_path = str(ROOT / "prompts" / "flipbook_layout_template.png")
+                            flipbook_refs.append(template_path) # Essential for layout
+
+                            if prev_grid and os.path.exists(prev_grid):
+                                # Full 16-frame context
+                                flipbook_refs.append(prev_grid)
+                                flipbook_prefix = f"🎞️ PREVIOUS SEQUENCE ATTACHED: The 4x4 grid reference image shows the 16 sequential frames that JUST HAPPENED. " \
+                                                 f"The scene evolved from frame 1 (top-left) to frame 16 (bottom-right). " \
+                                                 f"Panel 1 of your new grid MUST follow naturally from the bottom-right frame of that previous grid.\n\n" + flipbook_prefix
+                                print(f"[FLIPBOOK] Passing ONLY previous grid for context: {os.path.basename(prev_grid)}", flush=True)
+                            else:
+                                # Fallback to static if no flipbook history (first turn)
+                                flipbook_refs.append(ref_images_to_use[0])
+                                flipbook_prefix = "🎨 MASTER AESTHETIC ATTACHED: Use the provided reference image as your absolute guide for lighting and environment.\n" + flipbook_prefix
+
+                            flipbook_prompt = flipbook_prefix + prompt_str
+                            
+                            # Use layout template + parent references
+                            grid_path = generate_gemini_img2img(
+                                prompt=flipbook_prompt,
+                                caption=f"{caption}_flipbook",
+                                reference_image_path=flipbook_refs,
+                                strength=strength,
+                                world_prompt=world_prompt,
+                                time_of_day=use_time_of_day,
+                                action_context=choice,
+                                hd_mode=True, # Use Pro model
+                                output_dir=img_dir,
+                                is_flipbook=True
+                            )
+                            
+                            if grid_path:
+                                result_dict = grid_to_flipbook_gif(Path(grid_path))
+                                gif_path = result_dict.get('gif_path')
+                                if gif_path:
+                                    # Save to state (lock-free)
+                                    state_path = _get_state_path(session_id)
+                                    with open(state_path, 'r', encoding='utf-8') as f:
+                                        st = json.load(f)
+                                    st['current_flipbook_url'] = str(gif_path)
+                                    st['flipbook_last_grid'] = str(grid_path) # Store the entire 4x4 grid PNG
+                                    st['flipbook_first_frame'] = str(result_dict.get('first_frame')) if result_dict.get('first_frame') else None
+                                    st['flipbook_last_frame'] = str(result_dict.get('last_frame')) if result_dict.get('last_frame') else None
+                                    with open(state_path, 'w', encoding='utf-8') as f:
+                                        json.dump(st, f, indent=2)
+                                    print(f"[FLIPBOOK] Parallel GIF ready and stored in state: {gif_path}", flush=True)
+                                else:
+                                    print(f"[FLIPBOOK ERROR] GIF conversion failed", flush=True)
+                            else:
+                                # Signal failure
+                                state_path = _get_state_path(session_id)
+                                with open(state_path, 'r', encoding='utf-8') as f:
+                                    st = json.load(f)
+                                st['current_flipbook_url'] = "FAILED"
+                                with open(state_path, 'w', encoding='utf-8') as f:
+                                    json.dump(st, f, indent=2)
+                                print(f"[FLIPBOOK] Parallel generation blocked/failed", flush=True)
+                        except Exception as e:
+                            try:
+                                safe_e = str(e).encode('ascii', 'replace').decode('ascii')
+                                print(f"[FLIPBOOK ERROR] Parallel exception: {safe_e}", flush=True)
+                            except:
+                                print(f"[FLIPBOOK ERROR] Parallel exception (contains special characters)", flush=True)
+                            
+                            # Signal failure to bot so it doesn't hang
+                            try:
+                                state_path = _get_state_path(session_id)
+                                with open(state_path, 'r', encoding='utf-8') as f:
+                                    st = json.load(f)
+                                st['current_flipbook_url'] = "FAILED"
+                                with open(state_path, 'w', encoding='utf-8') as f:
+                                    json.dump(st, f, indent=2)
+                            except:
+                                pass
+                    
+                    threading.Thread(target=generate_flipbook_parallel, daemon=True).start()
+
+                # --- STATIC IMAGE GENERATION (Skip if in Flipbook Mode) ---
+                if not flipbook_enabled:
+                    result_path = generate_gemini_img2img(
+                        prompt=prompt_str,
+                        caption=caption,
+                        reference_image_path=ref_images_to_use,  # Adjusted based on transition type
+                        strength=strength,
+                        world_prompt=world_prompt,
+                        time_of_day=use_time_of_day,
+                        action_context=choice,  # Pass action for FPS hands context
+                        hd_mode=use_hq_for_this_frame,  # Frame 0 always HQ, others respect quality toggle
+                        output_dir=img_dir  # Session-specific directory
+                    )
+                else:
+                    print(f"[IMG GENERATION] Skipping static image - Flipbook mode is active.")
+                    result_path = None
             else:
                 print(f"\n{'='*70}")
                 print(f"[IMG GENERATION] USING TEXT-TO-IMAGE MODE (NO STYLE ANCHOR)")
@@ -1645,22 +1765,110 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                     print(f"[IMG GENERATION] This may cause style/aesthetic discontinuity")
                 print(f"{'='*70}\n")
                 
+                # --- PARALLEL FLIPBOOK GENERATION (Direct Comparison Mode for T2I) ---
+                current_state = _load_state(session_id)
+                flipbook_enabled = current_state.get("flipbook_mode", False)
+                if flipbook_enabled:
+                    print(f"[FLIPBOOK] Parallel generation starting for TEXT-TO-IMAGE mode (Turn 0 or no references)")
+                    import threading
+                    
+                    def generate_flipbook_parallel_t2i():
+                        print(f"[FLIPBOOK THREAD] Parallel T2I thread started", flush=True)
+                        try:
+                            from create_flipbook_gif import grid_to_flipbook_gif
+                            # Note: For T2I, we use generate_with_gemini which produces the grid if the prompt asks for it
+                            # OR we can still use img2img with the layout template as the only reference.
+                            # Using img2img with the template is safer for layout consistency.
+                            from gemini_image_utils import generate_gemini_img2img
+                            
+                            # Add flipbook prefix
+                            flipbook_prefix = PROMPTS.get("gemini_flipbook_4panel_prefix", "")
+                            flipbook_prefix = "📋 VISUAL TEMPLATE ATTACHED: Match the 4x4 grid layout exactly as shown in the reference template image.\n\n" + flipbook_prefix
+                            flipbook_prompt = flipbook_prefix + prompt_str
+                            
+                            # Use ONLY the layout template as reference for Turn 0
+                            template_path = str(ROOT / "prompts" / "flipbook_layout_template.png")
+                            
+                            grid_path = generate_gemini_img2img(
+                                prompt=flipbook_prompt,
+                                caption=f"{caption}_flipbook",
+                                reference_image_path=[template_path],
+                                strength=0.35, # Moderate strength to follow template layout but allow scene creation
+                                world_prompt=world_prompt,
+                                time_of_day=use_time_of_day,
+                                action_context=choice,
+                                hd_mode=True,
+                                output_dir=img_dir,
+                                is_flipbook=True
+                            )
+                            
+                            if grid_path:
+                                result_dict = grid_to_flipbook_gif(Path(grid_path))
+                                gif_path = result_dict.get('gif_path')
+                                if gif_path:
+                                    # Save to state (lock-free)
+                                    state_path = _get_state_path(session_id)
+                                    with open(state_path, 'r', encoding='utf-8') as f:
+                                        st = json.load(f)
+                                    st['current_flipbook_url'] = str(gif_path)
+                                    st['flipbook_last_grid'] = str(grid_path) # Store intro grid
+                                    st['flipbook_first_frame'] = str(result_dict.get('first_frame')) if result_dict.get('first_frame') else None
+                                    st['flipbook_last_frame'] = str(result_dict.get('last_frame')) if result_dict.get('last_frame') else None
+                                    with open(state_path, 'w', encoding='utf-8') as f:
+                                        json.dump(st, f, indent=2)
+                                    print(f"[FLIPBOOK] Parallel T2I GIF ready and stored in state: {gif_path}", flush=True)
+                                else:
+                                    print(f"[FLIPBOOK ERROR] T2I GIF conversion failed", flush=True)
+                            else:
+                                # Signal failure
+                                state_path = _get_state_path(session_id)
+                                with open(state_path, 'r', encoding='utf-8') as f:
+                                    st = json.load(f)
+                                st['current_flipbook_url'] = "FAILED"
+                                with open(state_path, 'w', encoding='utf-8') as f:
+                                    json.dump(st, f, indent=2)
+                                print(f"[FLIPBOOK] Parallel T2I generation blocked/failed", flush=True)
+                        except Exception as e:
+                            try:
+                                safe_e = str(e).encode('ascii', 'replace').decode('ascii')
+                                print(f"[FLIPBOOK ERROR] Parallel T2I exception: {safe_e}", flush=True)
+                            except:
+                                print(f"[FLIPBOOK ERROR] Parallel T2I exception (contains special characters)", flush=True)
+                            
+                            # Signal failure to bot so it doesn't hang
+                            try:
+                                state_path = _get_state_path(session_id)
+                                with open(state_path, 'r', encoding='utf-8') as f:
+                                    st = json.load(f)
+                                st['current_flipbook_url'] = "FAILED"
+                                with open(state_path, 'w', encoding='utf-8') as f:
+                                    json.dump(st, f, indent=2)
+                            except:
+                                pass
+                    
+                    threading.Thread(target=generate_flipbook_parallel_t2i, daemon=True).start()
+
                 # ALWAYS use HQ for first image, then respect quality toggle
                 use_hq_for_this_frame = True if frame_idx == 0 else QUALITY_MODE
                 if frame_idx == 0:
                     print(f"[QUALITY MODE] Frame 0 (intro) - FORCING HQ (Gemini Pro) for visual consistency")
                 
-                result_path = generate_with_gemini(
-                    prompt=prompt_str,
-                    caption=caption,
-                    world_prompt=world_prompt,
-                    aspect_ratio="4:3",  # Faster generation, smaller files (1184x864)
-                    time_of_day=use_time_of_day,
-                    is_first_frame=(frame_idx == 0),  # Keep for fallback logic
-                    action_context=choice,  # Pass action for FPS hands context
-                    hd_mode=use_hq_for_this_frame,  # Frame 0 always HQ, others respect quality toggle
-                    output_dir=img_dir  # Session-specific directory
-                )
+                # --- STATIC IMAGE GENERATION (Skip if in Flipbook Mode) ---
+                if not flipbook_enabled:
+                    result_path = generate_with_gemini(
+                        prompt=prompt_str,
+                        caption=caption,
+                        world_prompt=world_prompt,
+                        aspect_ratio="4:3",  # Faster generation, smaller files (1184x864)
+                        time_of_day=use_time_of_day,
+                        is_first_frame=(frame_idx == 0),  # Keep for fallback logic
+                        action_context=choice,  # Pass action for FPS hands context
+                        hd_mode=use_hq_for_this_frame,  # Frame 0 always HQ, others respect quality toggle
+                        output_dir=img_dir  # Session-specific directory
+                    )
+                else:
+                    print(f"[IMG GENERATION] Skipping static T2I image - Flipbook mode is active.")
+                    result_path = None
             # Return canonical frame (always single image now)
             _last_image_path = result_path
             return (result_path, prompt_str, None)  # Return canonical frame for story logic
@@ -1819,10 +2027,15 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
         # No need to extract it back from the image we just generated!
         return (f"/images/{filename}", prompt_str, None)
     except Exception as e:
-        safe_error = str(e).encode('ascii', 'replace').decode('ascii')
-        print(f"[IMG PROVIDER {ai_provider_manager.get_image_provider()}] Error: {safe_error}")
-        import traceback
-        traceback.print_exc()
+        try:
+            safe_error = str(e).encode('ascii', 'replace').decode('ascii')
+            print(f"[IMG PROVIDER {ai_provider_manager.get_image_provider()}] Error: {safe_error}")
+            import traceback
+            traceback.print_exc()
+        except UnicodeEncodeError:
+            # Windows console can't handle Unicode in traceback - print minimal info
+            print(f"[IMG PROVIDER] Error during image generation (traceback contains special characters)")
+            print(f"[IMG PROVIDER] Error type: {type(e).__name__}")
         return (None, "", None)
 
 # ───────── async flipbook generation ─────────────────────────────────────────
@@ -1871,7 +2084,7 @@ async def _gen_flipbook_async(canonical_frame_path: str, prompt_str: str, captio
             world_prompt=world_prompt,
             time_of_day=time_of_day,
             action_context=choice,
-            hd_mode=False,  # Flipbook doesn't need HQ (visual flair only)
+            hd_mode=False,  # Use Flash model for reliability (Pro too sensitive to safety blocks)
             output_dir=img_dir
         )
         
@@ -1899,7 +2112,8 @@ async def _gen_flipbook_async(canonical_frame_path: str, prompt_str: str, captio
                     return flipbook_path
                     
             except Exception as e:
-                print(f"[FLIPBOOK] GIF conversion error: {e}")
+                safe_e = str(e).encode('ascii', 'replace').decode('ascii')
+                print(f"[FLIPBOOK] GIF conversion error: {safe_e}")
                 print(f"[FLIPBOOK] Falling back to static grid")
                 return flipbook_path
         else:
@@ -1907,7 +2121,8 @@ async def _gen_flipbook_async(canonical_frame_path: str, prompt_str: str, captio
             return None
             
     except Exception as e:
-        print(f"[FLIPBOOK] ERROR: Flipbook generation failed: {e}")
+        safe_e = str(e).encode('ascii', 'replace').decode('ascii')
+        print(f"[FLIPBOOK] ERROR: Flipbook generation failed: {safe_e}")
         import traceback
         traceback.print_exc()
         return None
@@ -2422,7 +2637,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                                     world_prompt=world_prompt_for_image,
                                     time_of_day=state.get('time_of_day', ''),
                                     action_context=choice,
-                                    hd_mode=False,  # Flipbook doesn't need HQ
+                                    hd_mode=False,  # Use Flash model for reliability (Pro too sensitive to safety blocks)
                                     output_dir=img_dir
                                 )
                                 
@@ -2775,7 +2990,8 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                 json.dump(history, f_hist, indent=2)
         except Exception as e_hist_save:
             log_error(f"Error saving history.json: {e_hist_save}")
-        # Final prune of feed_log to keep it manageable (e.g., last 50-100 items)        MAX_FEED_LOG_ITEMS = 100 
+        # Final prune of feed_log to keep it manageable (e.g., last 50-100 items)
+        MAX_FEED_LOG_ITEMS = 100 
         if len(state.get("feed_log", [])) > MAX_FEED_LOG_ITEMS:
             with WORLD_STATE_LOCK:
                 state["feed_log"] = state["feed_log"][-MAX_FEED_LOG_ITEMS:]
@@ -3574,108 +3790,14 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             consequence_video_url = None
             if result:
                 consequence_img_url, consequence_img_prompt, consequence_video_url = result
-                print(f"[IMG FAST] Image ready: {consequence_img_url}")
-                
-                # --- FLIPBOOK GENERATION (if enabled) ---
-                # Run in background thread AFTER canonical image is ready
-                print(f"[FLIPBOOK DEBUG] state.get('flipbook_mode') = {state.get('flipbook_mode', 'NOT SET')}")
-                print(f"[FLIPBOOK DEBUG] consequence_img_url = {consequence_img_url}")
-                print(f"[FLIPBOOK DEBUG] Condition check: flipbook_mode={state.get('flipbook_mode', False)}, has_img={bool(consequence_img_url)}")
-                if state.get("flipbook_mode", False) and consequence_img_url:
-                    print(f"[FLIPBOOK] ✓ Flipbook mode enabled - starting background generation")
-                    import threading
-                    
-                    def generate_flipbook_sync():
-                        """Synchronous flipbook generation for background thread"""
-                        print(f"[FLIPBOOK THREAD] Thread started!")
-                        try:
-                            print(f"[FLIPBOOK THREAD] Importing modules...")
-                            from create_flipbook_gif import grid_to_flipbook_gif
-                            from pathlib import Path
-                            print(f"[FLIPBOOK THREAD] Modules imported")
-                            
-                            # Generate 4x4 grid using existing image generation
-                            print(f"[FLIPBOOK] Generating 4x4 grid...")
-                            print(f"[FLIPBOOK] Importing gemini_image_utils...")
-                            from gemini_image_utils import generate_gemini_img2img
-                            print(f"[FLIPBOOK] Import successful")
-                            
-                            img_dir = _get_image_dir(session_id)
-                            print(f"[FLIPBOOK] Image dir: {img_dir}")
-                            
-                            # Add flipbook prompt instructions
-                            flipbook_prefix = PROMPTS.get("gemini_flipbook_4panel_prefix", "")
-                            print(f"[FLIPBOOK] Flipbook prefix loaded: {len(flipbook_prefix) if flipbook_prefix else 0} chars")
-                            if flipbook_prefix:
-                                flipbook_prompt = flipbook_prefix + consequence_img_prompt
-                            else:
-                                flipbook_prompt = consequence_img_prompt
-                            print(f"[FLIPBOOK] Final prompt length: {len(flipbook_prompt)} chars")
-                            
-                            # Generate 4x4 grid
-                            print(f"[FLIPBOOK] Calling generate_gemini_img2img...")
-                            print(f"[FLIPBOOK]   reference_image: {consequence_img_url}")
-                            print(f"[FLIPBOOK]   output_dir: {img_dir}")
-                            grid_path = generate_gemini_img2img(
-                                prompt=flipbook_prompt,
-                                caption=f"{vision_dispatch}_flipbook",
-                                reference_image_path=[consequence_img_url],  # Use canonical as reference
-                                strength=0.35,
-                                world_prompt=state.get("world_prompt", ""),
-                                time_of_day=state.get('time_of_day', ''),
-                                action_context=choice,
-                                hd_mode=False,  # Flipbook doesn't need HQ
-                                output_dir=img_dir
-                            )
-                            print(f"[FLIPBOOK] generate_gemini_img2img returned: {grid_path}")
-                            
-                            if grid_path:
-                                print(f"[FLIPBOOK] 4x4 grid generated: {grid_path}")
-                                
-                                # Convert grid to animated GIF
-                                print(f"[FLIPBOOK] Converting grid to animated GIF...")
-                                gif_path = grid_to_flipbook_gif(
-                                    Path(grid_path),
-                                    duration_ms=250,  # 250ms per frame = 4 FPS
-                                    loop=0,  # Infinite loop
-                                    save_panels=False  # Clean up temp panels
-                                )
-                                print(f"[FLIPBOOK] grid_to_flipbook_gif returned: {gif_path}")
-                                
-                                if gif_path:
-                                    print(f"[FLIPBOOK] GIF created: {gif_path}")
-                                    # Store in state for bot to pick up
-                                    print(f"[FLIPBOOK] Saving to state...")
-                                    with WORLD_STATE_LOCK:
-                                        current_state = _load_state(session_id)
-                                        current_state['current_flipbook_url'] = str(gif_path)
-                                        _save_state(current_state, session_id)
-                                    print(f"[FLIPBOOK] Stored flipbook URL in state: {gif_path}")
-                                else:
-                                    print(f"[FLIPBOOK ERROR] GIF conversion returned None")
-                            else:
-                                print(f"[FLIPBOOK ERROR] Grid generation returned None")
-                        except Exception as e:
-                            print(f"[FLIPBOOK ERROR] Exception caught: {type(e).__name__}: {e}")
-                            import traceback
-                            print(f"[FLIPBOOK ERROR] Full traceback:")
-                            traceback.print_exc()
-                        finally:
-                            print(f"[FLIPBOOK THREAD] Thread exiting")
-                    
-                    # Start background thread
-                    print(f"[FLIPBOOK] About to start background thread...")
-                    flipbook_thread = threading.Thread(target=generate_flipbook_sync, daemon=True)
-                    flipbook_thread.start()
-                    print(f"[FLIPBOOK] Background generation thread started (non-blocking)")
-                    print(f"[FLIPBOOK] Thread is_alive: {flipbook_thread.is_alive()}")
-                
+                print(f"[IMG FAST] Image ready: {consequence_img_url}", flush=True)
             else:
                 # Image generation failed (safety block, API error, etc.) - provide graceful fallback
                 print(f"[IMG FAST] WARNING: Image generation returned None (likely safety block or API error)")
                 print(f"[IMG FAST] Providing fallback 'static' image message")
                 consequence_img_url = None  # Explicitly None - bot will show text-only
                 consequence_img_prompt = "[Image blocked - content filtered]"
+            
             if consequence_video_url:
                 print(f"[IMG FAST] Video ready: {consequence_video_url}")
         except Exception as e:
@@ -3720,13 +3842,24 @@ def advance_turn_choices_deferred(consequence_img_url: str, dispatch: str, visio
     from choices import generate_choices
     
     state = _load_state(session_id)
-    situation_summary = _generate_situation_report(current_image=consequence_img_url)
+    
+    # --- FLIPBOOK GROUNDING ---
+    # If flipbook mode is on, use the LAST frame of the sequence for all vision/choice grounding.
+    # This ensures the AI knows exactly where the player ended up after the 4-second sequence.
+    analysis_img_url = consequence_img_url
+    if state.get("flipbook_mode", False):
+        flipbook_last = state.get('flipbook_last_frame')
+        if flipbook_last and os.path.exists(flipbook_last):
+            print(f"[VISION] Prioritizing flipbook last frame for grounding: {os.path.basename(flipbook_last)}")
+            analysis_img_url = flipbook_last
+
+    situation_summary = _generate_situation_report(current_image=analysis_img_url)
     
     next_choices = generate_choices(
         client, choice_tmpl,
         dispatch,
         n=3,
-        image_url=consequence_img_url,
+        image_url=analysis_img_url,
         seen_elements=', '.join(state.get('seen_elements', [])[-10:]),  # Last 10 discovered entities
         recent_choices='',
         caption="",
@@ -3748,10 +3881,10 @@ def advance_turn_choices_deferred(consequence_img_url: str, dispatch: str, visio
     
     # Analyze image with Vision AI for spatial grounding
     vision_analysis_text = ""
-    if consequence_img_url and VISION_ENABLED:
-        print(f"[VISION] Analyzing generated image for spatial context...")
+    if analysis_img_url and VISION_ENABLED:
+        print(f"[VISION] Analyzing image for spatial context (source: {'flipbook' if analysis_img_url != consequence_img_url else 'static'})...")
         try:
-            vision_result = _vision_analyze_all(consequence_img_url)
+            vision_result = _vision_analyze_all(analysis_img_url)
             vision_analysis_text = vision_result.get("description", "")
             if vision_analysis_text:
                 print(f"[VISION] Analysis complete: {vision_analysis_text[:100]}...")
@@ -3768,8 +3901,9 @@ def advance_turn_choices_deferred(consequence_img_url: str, dispatch: str, visio
         "vision_dispatch": vision_dispatch,
         "vision_analysis": vision_analysis_text,  # Now populated from actual vision AI!
         "world_prompt": state.get("world_prompt", ""),
-        "image": consequence_img_url,
+        "image": consequence_img_url, # Store the canonical static image in history for the tape
         "image_url": consequence_img_url,
+        "analysis_image": analysis_img_url, # Track which image was actually analyzed
         "image_prompt": consequence_img_prompt,
         "hard_transition": hard_transition  # Track location changes
     }
@@ -4100,13 +4234,23 @@ def generate_intro_choices_deferred(image_url: str, prologue: str, vision_dispat
     
     state = _load_state(session_id)
     
+    # --- FLIPBOOK GROUNDING ---
+    # If flipbook mode is on, use the LAST frame of the sequence for all vision/choice grounding.
+    # This ensures Turn 1 starts from where the Turn 0 animation ended.
+    analysis_img_url = image_url
+    if state.get("flipbook_mode", False):
+        flipbook_last = state.get('flipbook_last_frame')
+        if flipbook_last and os.path.exists(flipbook_last):
+            print(f"[VISION INTRO] Prioritizing intro flipbook last frame for grounding: {os.path.basename(flipbook_last)}")
+            analysis_img_url = flipbook_last
+
     # Generate dynamic situation report from LLM based on current world state
-    situation_summary = _generate_situation_report(current_image=image_url)
+    situation_summary = _generate_situation_report(current_image=analysis_img_url)
     options = generate_choices(
         client, choice_tmpl,
         prologue,  # What's happening in intro
         n=3,
-        image_url=image_url,  # Gemini sees the image directly!
+        image_url=analysis_img_url,  # Gemini sees the image directly!
         seen_elements=', '.join(state.get('seen_elements', [])[-10:]),  # Last 10 discovered entities
         recent_choices='',
         caption="",  # Let Gemini look at image, not stale text
@@ -4122,10 +4266,10 @@ def generate_intro_choices_deferred(image_url: str, prologue: str, vision_dispat
     
     # Analyze intro image with Vision AI for spatial grounding
     vision_analysis_text = ""
-    if image_url and VISION_ENABLED:
-        print(f"[VISION INTRO] Analyzing opening image for spatial context...")
+    if analysis_img_url and VISION_ENABLED:
+        print(f"[VISION INTRO] Analyzing image for spatial context (source: {'flipbook' if analysis_img_url != image_url else 'static'})...")
         try:
-            vision_result = _vision_analyze_all(image_url)
+            vision_result = _vision_analyze_all(analysis_img_url)
             vision_analysis_text = vision_result.get("description", "")
             if vision_analysis_text:
                 print(f"[VISION INTRO] Analysis complete: {vision_analysis_text[:100]}...")
@@ -4142,8 +4286,9 @@ def generate_intro_choices_deferred(image_url: str, prologue: str, vision_dispat
         "vision_dispatch": vision_dispatch,
         "vision_analysis": vision_analysis_text,  # Now populated from actual vision AI!
         "world_prompt": prologue,
-        "image": image_url,
-        "image_url": image_url
+        "image": image_url, # Store original static in history
+        "image_url": image_url,
+        "analysis_image": analysis_img_url # Track which image was actually analyzed
     }
     history = [entry]
     _save_history(history, session_id)  # Use session-specific save!

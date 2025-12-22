@@ -110,7 +110,7 @@ def create_animated_gif(panels: list, output_path: Path, duration_ms: int = 250,
         return None
 
 
-def grid_to_flipbook_gif(grid_image_path: Path, output_gif_path: Path = None, duration_ms: int = 250, loop: int = 0, save_panels: bool = False) -> Path:
+def grid_to_flipbook_gif(grid_image_path: Path, output_gif_path: Path = None, duration_ms: int = 250, loop: int = 0, save_panels: bool = False) -> dict:
     """
     Convert a 4x4 grid image into an animated GIF flipbook.
     
@@ -122,7 +122,10 @@ def grid_to_flipbook_gif(grid_image_path: Path, output_gif_path: Path = None, du
         save_panels: If True, save individual panel images for debugging
     
     Returns:
-        Path to the created GIF, or None if failed
+        Dictionary with:
+            'gif_path': Path to the created GIF, or None if failed
+            'first_frame': Path to the first frame panel (if saved)
+            'last_frame': Path to the last frame panel (if saved)
     """
     print(f"[FLIPBOOK GIF] Converting grid to animated GIF")
     print(f"[FLIPBOOK GIF] Input: {grid_image_path}")
@@ -131,23 +134,38 @@ def grid_to_flipbook_gif(grid_image_path: Path, output_gif_path: Path = None, du
     if output_gif_path is None:
         output_gif_path = grid_image_path.parent / f"{grid_image_path.stem}_flipbook.gif"
     
-    # Optional: save individual panels
-    panels_dir = None
-    if save_panels:
-        panels_dir = grid_image_path.parent / f"{grid_image_path.stem}_panels"
-        panels_dir.mkdir(exist_ok=True)
-        print(f"[FLIPBOOK GIF] Saving individual panels to: {panels_dir}")
+    # We ALWAYS save first and last panels now for temporal consistency
+    panels_dir = grid_image_path.parent / f"{grid_image_path.stem}_panels"
+    panels_dir.mkdir(exist_ok=True)
     
     # Extract panels
     panels = extract_panels_from_grid(grid_image_path, output_dir=panels_dir)
     
     if not panels:
-        return None
+        return {'gif_path': None, 'first_frame': None, 'last_frame': None}
     
     # Create animated GIF
     gif_path = create_animated_gif(panels, output_gif_path, duration_ms=duration_ms, loop=loop)
     
-    return gif_path
+    # Determine first and last frame paths
+    first_frame_path = panels_dir / "panel_01.png"
+    last_frame_path = panels_dir / "panel_16.png"
+    
+    # Cleanup intermediate panels if save_panels is False, but KEEP 01 and 16
+    if not save_panels:
+        for i in range(2, 16):
+            try:
+                panel_file = panels_dir / f"panel_{i:02d}.png"
+                if panel_file.exists():
+                    os.remove(panel_file)
+            except:
+                pass
+    
+    return {
+        'gif_path': gif_path,
+        'first_frame': first_frame_path,
+        'last_frame': last_frame_path
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
