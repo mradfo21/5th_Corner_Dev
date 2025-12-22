@@ -719,25 +719,45 @@ def _ask_gemini(prompt: str, model_name: str, temp: float, tokens: int, image_pa
         elif use_lore:
             print(f"[GEMINI] Lore requested but cache not available")
         
-        response_data = requests.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent",
-            headers={"x-goog-api-key": gemini_api_key, "Content-Type": "application/json"},
-            json=payload,
-            timeout=15
-        ).json()
+        print(f"[GEMINI TEXT] Calling {model_name} API...", flush=True)
+        try:
+            response = requests.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent",
+                headers={"x-goog-api-key": gemini_api_key, "Content-Type": "application/json"},
+                json=payload,
+                timeout=15
+            )
+            print(f"[GEMINI TEXT] API returned status: {response.status_code}", flush=True)
+            response.raise_for_status()
+            response_data = response.json()
+            print(f"[GEMINI TEXT] Response parsed successfully", flush=True)
+        except requests.exceptions.Timeout:
+            print(f"[GEMINI TEXT ERROR] API timeout after 15 seconds!", flush=True)
+            return "Signal interrupted due to timeout..."
+        except requests.exceptions.HTTPError as e:
+            print(f"[GEMINI TEXT ERROR] HTTP error: {e}", flush=True)
+            return "Signal interrupted due to API error..."
+        except Exception as e:
+            print(f"[GEMINI TEXT ERROR] Unexpected error: {type(e).__name__}: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+            return "Signal interrupted..."
         
         # Check for error response from Gemini API
         if "candidates" not in response_data:
-            print(f"[ASK GEMINI ERROR] Gemini API error response: {response_data}")
+            print(f"[ASK GEMINI ERROR] Gemini API error response: {response_data}", flush=True)
             if "error" in response_data:
                 error_details = response_data['error']
-                print(f"[ASK GEMINI ERROR] Code: {error_details.get('code')}, Message: {error_details.get('message')}")
+                print(f"[ASK GEMINI ERROR] Code: {error_details.get('code')}, Message: {error_details.get('message')}", flush=True)
             return "The transmission wavers... static fills the air as the signal struggles to maintain connection."
         
         result = response_data["candidates"][0]["content"]["parts"][0]["text"].strip()
         return result if result else "..."
     except Exception as e:
-        log_error(f"[ASK GEMINI] {e}")
+        # Catch any unexpected errors not handled above
+        log_error(f"[ASK GEMINI CRITICAL] Unexpected error: {e}")
+        import traceback
+        traceback.print_exc()
         return "Signal interrupted..."
 
 def _ask_openai(prompt: str, model_name: str, temp: float, tokens: int, image_path: str = None) -> str:
@@ -1744,7 +1764,11 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                                 time_of_day=use_time_of_day
                             )
                             flipbook_prompt = flipbook_prefix + flipbook_action_prompt
-                            print(f"[FLIPBOOK] Built lean action-focused prompt: {flipbook_action_prompt[:100]}...", flush=True)
+                            try:
+                                safe_prompt = flipbook_action_prompt[:100].encode('ascii', 'replace').decode('ascii')
+                                print(f"[FLIPBOOK] Built lean action-focused prompt: {safe_prompt}...", flush=True)
+                            except:
+                                print(f"[FLIPBOOK] Built lean action-focused prompt (contains special characters)", flush=True)
                             
                             # Use layout template + parent references
                             grid_path = generate_gemini_img2img(
@@ -1864,7 +1888,11 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                                 time_of_day=use_time_of_day
                             )
                             flipbook_prompt = flipbook_prefix + flipbook_action_prompt
-                            print(f"[FLIPBOOK T2I] Built lean action-focused prompt: {flipbook_action_prompt[:100]}...", flush=True)
+                            try:
+                                safe_prompt = flipbook_action_prompt[:100].encode('ascii', 'replace').decode('ascii')
+                                print(f"[FLIPBOOK T2I] Built lean action-focused prompt: {safe_prompt}...", flush=True)
+                            except:
+                                print(f"[FLIPBOOK T2I] Built lean action-focused prompt (contains special characters)", flush=True)
                             
                             # Use ONLY the layout template as reference for Turn 0
                             template_path = str(ROOT / "prompts" / "flipbook_layout_template.png")

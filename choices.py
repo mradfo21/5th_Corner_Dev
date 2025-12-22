@@ -215,7 +215,7 @@ def generate_choices(
         else:
             print(f"[CHOICES ERROR] Image file not found: {use_path}")
     
-    print(f"[GEMINI TEXT] Calling {model_name} for choice generation...")
+    print(f"[GEMINI TEXT] Calling {model_name} for choice generation...", flush=True)
     
     try:
         response = requests.post(
@@ -227,19 +227,20 @@ def generate_choices(
             },
             timeout=15
         )
+        print(f"[GEMINI TEXT] API returned status: {response.status_code}", flush=True)
         response.raise_for_status()
         response_data = response.json()
-        print("[GEMINI TEXT] Choice generation complete")
+        print("[GEMINI TEXT] Choice generation complete", flush=True)
     except requests.exceptions.Timeout:
-        print(f"[CHOICES ERROR] Gemini API timeout after 15 seconds")
+        print(f"[CHOICES ERROR] Gemini API timeout after 15 seconds", flush=True)
         return ["Look around", "Move forward", "Wait"]
     except requests.exceptions.HTTPError as e:
-        print(f"[CHOICES ERROR] Gemini API HTTP error: {e}")
+        print(f"[CHOICES ERROR] Gemini API HTTP error: {e}", flush=True)
         if hasattr(e, 'response') and e.response is not None:
-            print(f"[CHOICES ERROR] Response: {e.response.text}")
+            print(f"[CHOICES ERROR] Response: {e.response.text}", flush=True)
         return ["Look around", "Move forward", "Wait"]
     except Exception as e:
-        print(f"[CHOICES ERROR] Unexpected error calling Gemini API: {e}")
+        print(f"[CHOICES ERROR] Unexpected error calling Gemini API: {e}", flush=True)
         import traceback
         traceback.print_exc()
         return ["Look around", "Move forward", "Wait"]

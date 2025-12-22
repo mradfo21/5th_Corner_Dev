@@ -1,10 +1,14 @@
 {
-  "world_prompt": "You observe the facility from a vantage point atop the red mesa.",
+  "world_prompt": "WHO: Jason Fleece. Photojournalist. 38 years old. My Minolta is my only companion now. I came to the Four Corners region in '93 chasing whispers of a clandestine government facility, Horizon, and the unsettling experiments rumored to be conducted within. I wanted a story that would make my career. Now, I just want to survive.\n\nWHERE: Back on the rocky outcrop, overlooking the perimeter fence of the Horizon facility. I’ve retreated after my last… encounter. It feels safer up here, for now. I can see the figure by the fence, and that…thing… with it. I need to figure out what they are, and what they want.\n\nWHAT'S HAPPENED: It all started with blurry maps and hushed conversations in dusty roadside diners. The locals spoke of strange lights, missing livestock, and a facility that wasn't on any official maps. That's what drew me in. I drove for days, the desert stretching endlessly around me, until I found it: Horizon.\n\nThe first sight of the facility was imposing: chain-link fences topped with razor wire, security cameras swiveling mechanically, and armed guards patrolling the perimeter. I tried to get closer, to get a shot, but I was spotted almost immediately. I managed to evade them, scrambling up a reddish cliff face, the loose rock giving way beneath my boots.\n\nI found myself overlooking a section of the fence. I tried to find another way around, but the perimeter seemed impenetrable. Desperate, I pried open a section of the fence, just enough to squeeze through.\n\nThat's when I saw the figure. Standing just beyond the damaged fence, silhouetted against the harsh desert sun. I called out, hoping for answers, for help. But the figure didn't respond. And then I heard it – a low, guttural growl emanating from somewhere behind the fence. Something inhuman.\n\nI tried to check the camera, to see if I had captured anything useful, but all I got was static. The chaos level is rising, I can feel it.\n\nNow, back on the outcrop, I see the figure again. A metallic object clipped to its belt catches the light. What is it? And what is that thing growling behind the fence?\n\nTHREATS:\n\n*   **Horizon Security:** Armed guards patrol the perimeter, alert and hostile. They’re well-equipped and seem to operate with ruthless efficiency. They spotted me almost immediately when I approached the fence.\n*   **The Figure:** Unresponsive, but clearly present. The metallic object could be a weapon, a tool, or something else entirely. Their intentions are unknown, but the growling suggests they are not alone.\n*   **The Creature:** The source of the guttural growl. Unseen, but its presence is undeniable. Its nature is unknown, but the sound is deeply unsettling.\n*   **The Environment:** The desert itself is a threat. Extreme temperatures, lack of water, and treacherous terrain. The rocky cliffs are unstable and easy to fall from.\n*   **The Facility:** The Horizon facility itself is a potential threat. Unknown experiments, hazardous materials, and security systems could all pose a danger. The rising \"chaos level\" suggests something within the facility is becoming increasingly unstable.\n*   **My Sanity:** The isolation, the fear, and the unsettling sights are taking their toll. I need to stay focused, or I’ll lose myself out here.\n\nENVIRONMENT: The Four Corners region. A desolate expanse of mesas, canyons, and scrubland. The sun beats down mercilessly, turning the landscape into a furnace during the day and plunging it into freezing darkness at night.\n\nThe Horizon facility is a stark contrast to the natural landscape. A cluster of low, concrete buildings surrounded by fences, security cameras, and watchtowers. The buildings look old, almost decaying, as if they’ve been abandoned for years. But the security presence suggests otherwise.\n\nThe perimeter fence is made of heavy-gauge chain-link, topped with razor wire. Sections of it are reinforced with concrete barriers. The reddish cliffs are steep and treacherous, composed of loose rock and shale. The ground is littered with debris: discarded equipment, rusted metal, and the occasional bleached bone.\n\nThe air is thick with the smell of dust, diesel, and something else… something acrid and chemical. The wind whispers through the canyons, carrying with it the sounds of the desert: the rustling of unseen creatures, the distant howl of a coyote, and the ever-present hum of the facility's machinery.\n\nTONE: This isn't some action-packed thriller. This is a slow burn. The horror is in the details, in the creeping sense of dread, in the feeling that something is terribly wrong. It's a 1993 VHS tape found in an abandoned gas station, filled with static, glitches, and the faint echoes of unspeakable things.\n\nThe body horror is subtle, but it's there. The way the dust clings to my skin, the way my throat feels parched and raw, the way my muscles ache with exhaustion. It's a reminder that I'm vulnerable, that I'm human, and that this place is actively trying to break me.\n\nI need to be careful. I need to be smart. And I need to get the hell out of here before it's too late. The metallic object on the figure's belt… it’s bothering me. I need to get a better look. But how? And what about that…thing… growling behind the fence? The chaos is rising. I can feel it in my bones.",
   "current_phase": "normal",
-  "chaos_level": 0,
-  "last_choice": "",
-  "last_saved": "2025-12-22T23:42:36.368086+00:00",
-  "seen_elements": [],
+  "chaos_level": 2,
+  "last_choice": "‍♂️ Focus on the metallic object with your camera.",
+  "last_saved": "2025-12-22T23:51:54.052822+00:00",
+  "seen_elements": [
+    "Figure",
+    "metallic object",
+    "growl"
+  ],
   "inventory": [],
   "player_state": {
     "alive": true,
@@ -18,13 +22,11 @@
   "time_of_day": "6:30pm | weather: clear, warm light | mood: tense anticipation",
   "flipbook_mode": true,
   "current_flipbook_url": null,
-  "flipbook_last_frame": "C:\\Github\\5th_Corner_Dev\\Working\\5th_Corner_Dev\\sessions\\1368411024893415524\\images\\3536811616_From_the_mesa_s_edge__the_entire_Horizon_facilit_panels\\panel_16.png",
-  "flipbook_first_frame": "C:\\Github\\5th_Corner_Dev\\Working\\5th_Corner_Dev\\sessions\\1368411024893415524\\images\\3536811616_From_the_mesa_s_edge__the_entire_Horizon_facilit_panels\\panel_01.png",
-  "flipbook_last_grid": "C:\\Github\\5th_Corner_Dev\\Working\\5th_Corner_Dev\\sessions\\1368411024893415524\\images\\3536811616_From_the_mesa_s_edge__the_entire_Horizon_facilit.png",
-  "evolution_summary": "The sudden plunge into the facility's depths leaves you wounded and vulnerable, trapped within its ominous embrace.",
+  "flipbook_last_frame": "C:\\Github\\5th_Corner_Dev\\Working\\5th_Corner_Dev\\sessions\\1368411024893415524\\images\\2488950837_Outside_near_the_fence__you_strain_your_eyes__tr_panels\\panel_16.png",
+  "flipbook_first_frame": "C:\\Github\\5th_Corner_Dev\\Working\\5th_Corner_Dev\\sessions\\1368411024893415524\\images\\2488950837_Outside_near_the_fence__you_strain_your_eyes__tr_panels\\panel_01.png",
+  "flipbook_last_grid": "C:\\Github\\5th_Corner_Dev\\Working\\5th_Corner_Dev\\sessions\\1368411024893415524\\images\\2488950837_Outside_near_the_fence__you_strain_your_eyes__tr.png",
+  "evolution_summary": "The glint off the figure's belt confirms a metallic presence, escalating the threat lurking beyond the fence.",
   "recent_events": [
-    "‍♂️ Listen intently for the source of the scraping. -> Chaos level: 3 -> 4",
-    "‍♂️ Check camera. -> Chaos level: 4 -> 5; Player is dead or gravely wounded.",
     "Intro -> Chaos level: 0 -> 1",
     "‍♂️ Adjust the screen's static. -> Chaos level: 1 -> 2",
     "‍♂️ Claw up the reddish cliff. -> Chaos level: 2 -> 3",
@@ -32,6 +34,8 @@
     "‍♂️ Look for another way around the gate. -> Chaos level: 1 -> 2",
     "‍♂️ Pry open section of fence. -> Chaos level: 2 -> 3",
     "Intro -> Chaos level: 0 -> 1",
-    "‍♂️ Call out to the figure behind the fence. -> Chaos level: 1 -> 2"
+    "‍♂️ Call out to the figure behind the fence. -> Chaos level: 1 -> 2",
+    "Intro -> Chaos level: 0 -> 1",
+    "Intro -> Chaos level: 0 -> 1"
   ]
 }
