@@ -926,7 +926,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             session_id = str(interaction.channel_id) if interaction.channel_id else 'default'
             loop = asyncio.get_running_loop()
             fate = compute_fate()
-            phase1_task = loop.run_in_executor(None, engine.advance_turn_image_fast, self.label, fate, False, session_id)
+            phase1_task = loop.run_in_executor(None, lambda: engine.advance_turn_image_fast(self.label, fate, False, session_id))
             
             # --- PROGRESSIVE FEEDBACK & RENDERING ---
             # Show "Recording" indicator immediately so it doesn't feel frozen
@@ -1364,7 +1364,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             session_id = str(interaction.channel_id) if interaction.channel_id else 'default'
             loop = asyncio.get_running_loop()
             fate = compute_fate()
-            phase1_task = loop.run_in_executor(None, engine.advance_turn_image_fast, custom_choice, fate, False, session_id)
+            phase1_task = loop.run_in_executor(None, lambda: engine.advance_turn_image_fast(custom_choice, fate, False, session_id))
             
             # --- PROGRESSIVE FEEDBACK & RENDERING ---
             render_msg = await interaction.channel.send(embed=discord.Embed(
@@ -2162,8 +2162,8 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
     
     class FlipbookToggleButton(Button):
         def __init__(self, parent_view):
-            # Check if flipbook mode is currently enabled
-            current_state = engine.get_state(session_id)
+            # Check if flipbook mode is currently enabled (default session for now)
+            current_state = engine.get_state('default')
             flipbook_mode = current_state.get("flipbook_mode", False)
             label = "🎬 Flipbook: ON" if flipbook_mode else "🎬 Flipbook: OFF"
             style = discord.ButtonStyle.success if flipbook_mode else discord.ButtonStyle.secondary
@@ -2182,12 +2182,15 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             
             print("[FLIPBOOK] FlipbookToggleButton callback triggered")
             
+            # Determine session ID from interaction
+            session_id = str(interaction.channel_id) if interaction.channel_id else 'default'
+            
             # Toggle flipbook mode in state
             current_state = engine.get_state(session_id)
             current_mode = current_state.get("flipbook_mode", False)
             new_mode = not current_mode
             current_state["flipbook_mode"] = new_mode
-            engine.save_state(current_state)
+            engine.save_state(current_state, session_id)
             
             # Update button appearance
             if new_mode:
@@ -2650,7 +2653,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 
                 # PHASE 1: Generate image FAST (start in background)
                 loop = asyncio.get_running_loop()
-                image_task = loop.run_in_executor(None, engine.generate_intro_image_fast, session_id)
+                image_task = loop.run_in_executor(None, lambda: engine.generate_intro_image_fast(session_id))
                 
                 # Show VHS loading sequence WHILE generating
                 vhs_msg = await interaction.channel.send(embed=discord.Embed(
@@ -2865,7 +2868,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 
                 # Run intro generation in executor (start immediately)
                 loop = asyncio.get_running_loop()
-                intro_task = loop.run_in_executor(None, engine.generate_intro_turn, session_id)
+                intro_task = loop.run_in_executor(None, lambda: engine.generate_intro_turn(session_id))
                 
                 # Show VHS loading sequence WHILE generating
                 vhs_msg = await interaction.channel.send(embed=discord.Embed(
@@ -3059,7 +3062,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 
                 # PHASE 1: Generate first image (Veo will generate video + extract frame)
                 loop = asyncio.get_running_loop()
-                image_task = loop.run_in_executor(None, engine.generate_intro_image_fast, session_id)
+                image_task = loop.run_in_executor(None, lambda: engine.generate_intro_image_fast(session_id))
                 
                 # Show Veo loading sequence
                 vhs_msg = await interaction.channel.send(embed=discord.Embed(
@@ -3764,7 +3767,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             # PHASE 1: Generate image fast with fate modifier
             loop = asyncio.get_running_loop()
             fate = compute_fate()
-            phase1_task = loop.run_in_executor(None, engine.advance_turn_image_fast, chosen, fate, False, session_id)
+            phase1_task = loop.run_in_executor(None, lambda: engine.advance_turn_image_fast(chosen, fate, False, session_id))
         
         # --- PROGRESSIVE FEEDBACK & RENDERING ---
         render_msg = await channel.send(embed=discord.Embed(
