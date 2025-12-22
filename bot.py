@@ -2645,9 +2645,12 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 engine.IMAGE_ENABLED = True
                 engine.WORLD_IMAGE_ENABLED = True
                 
+                # Determine session ID
+                session_id = str(interaction.channel_id) if interaction.channel_id else 'default'
+                
                 # PHASE 1: Generate image FAST (start in background)
                 loop = asyncio.get_running_loop()
-                image_task = loop.run_in_executor(None, engine.generate_intro_image_fast)
+                image_task = loop.run_in_executor(None, engine.generate_intro_image_fast, session_id)
                 
                 # Show VHS loading sequence WHILE generating
                 vhs_msg = await interaction.channel.send(embed=discord.Embed(
@@ -2712,7 +2715,6 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                         print(f"[BOT INTRO] Failed to send opening image: {e}")
                 
                 # --- FLIPBOOK MONITORING FOR INTRO ---
-                session_id = str(interaction.channel_id) if interaction.channel_id else 'default'
                 flipbook_url = None
                 current_state = engine.get_state(session_id)
                 if current_state.get("flipbook_mode", False):
@@ -2858,9 +2860,12 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 engine.IMAGE_ENABLED = False
                 engine.WORLD_IMAGE_ENABLED = False
                 
+                # Determine session ID
+                session_id = str(interaction.channel_id) if interaction.channel_id else 'default'
+                
                 # Run intro generation in executor (start immediately)
                 loop = asyncio.get_running_loop()
-                intro_task = loop.run_in_executor(None, engine.generate_intro_turn)
+                intro_task = loop.run_in_executor(None, engine.generate_intro_turn, session_id)
                 
                 # Show VHS loading sequence WHILE generating
                 vhs_msg = await interaction.channel.send(embed=discord.Embed(
@@ -3049,9 +3054,12 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 await interaction.channel.send(embed=intro_embed)
                 await asyncio.sleep(2)
                 
+                # Determine session ID
+                session_id = str(interaction.channel_id) if interaction.channel_id else 'default'
+                
                 # PHASE 1: Generate first image (Veo will generate video + extract frame)
                 loop = asyncio.get_running_loop()
-                image_task = loop.run_in_executor(None, engine.generate_intro_image_fast)
+                image_task = loop.run_in_executor(None, engine.generate_intro_image_fast, session_id)
                 
                 # Show Veo loading sequence
                 vhs_msg = await interaction.channel.send(embed=discord.Embed(
@@ -3124,7 +3132,9 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     engine.generate_intro_choices_deferred,
                     dispatch_image_path,
                     intro_phase1["prologue"],
-                    intro_phase1["vision_dispatch"]
+                    intro_phase1["vision_dispatch"],
+                    None,
+                    session_id
                 )
                 intro_phase2 = await choices_task
                 
