@@ -18,15 +18,23 @@ from pathlib import Path
 from typing import List, Dict, Optional
 
 # Get config and prompts
-GEMINI_API_KEY = ""
-config_path = Path("config.json")
-if config_path.exists():
-    with open(config_path, 'r', encoding='utf-8') as f:
-        config_data = json.load(f)
-        GEMINI_API_KEY = config_data.get("GEMINI_API_KEY", "")
+def _get_api_key():
+    """Helper to get Gemini API key from environment or config."""
+    key = os.getenv("GEMINI_API_KEY")
+    if key:
+        return key
+    
+    config_path = Path("config.json")
+    if config_path.exists():
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config_data = json.load(f)
+                return config_data.get("GEMINI_API_KEY", "")
+        except:
+            pass
+    return ""
 
-if not GEMINI_API_KEY:
-    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_API_KEY = _get_api_key()
 
 # Load prompts
 prompts_path = Path("prompts/simulation_prompts.json")
@@ -35,7 +43,6 @@ if prompts_path.exists():
         PROMPTS = json.load(f)
 else:
     PROMPTS = {}
-
 
 def evolve_world_state(
     dispatches: List[Dict],
@@ -52,6 +59,11 @@ def evolve_world_state(
             "evolution_summary": str  # 15-25 words player-facing update
         }
     """
+    api_key = _get_api_key()
+    if not api_key:
+        print("[WORLD EVOLUTION V3] ERROR: No API key found!")
+        return {"world_prompt": "", "evolution_summary": ""}
+
     print("[WORLD EVOLUTION V3] Starting dynamic world evolution...")
     
     # Load state
@@ -142,7 +154,7 @@ RETURN ONLY THE NEW WORLD PROMPT TEXT - NO PREAMBLE, NO EXPLANATION, JUST THE EV
         response = requests.post(
             "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
             headers={
-                "x-goog-api-key": GEMINI_API_KEY,
+                "x-goog-api-key": api_key,
                 "Content-Type": "application/json"
             },
             json={
@@ -152,7 +164,7 @@ RETURN ONLY THE NEW WORLD PROMPT TEXT - NO PREAMBLE, NO EXPLANATION, JUST THE EV
                     "maxOutputTokens": 2000  # ~1500 words
                 }
             },
-            timeout=30
+            timeout=25  # Slightly reduced
         )
         
         if response.status_code != 200:
@@ -181,7 +193,8 @@ RETURN ONLY THE NEW WORLD PROMPT TEXT - NO PREAMBLE, NO EXPLANATION, JUST THE EV
         old_world=old_world_prompt,
         new_world=new_world_prompt,
         consequence=consequence_summary,
-        vision=vision_description
+        vision=vision_description,
+        api_key=api_key
     )
     
     # Update state with new world prompt
@@ -194,9 +207,9 @@ RETURN ONLY THE NEW WORLD PROMPT TEXT - NO PREAMBLE, NO EXPLANATION, JUST THE EV
         state["recent_events"] = state["recent_events"][-10:]
     
     # Extract and update seen elements
-    new_entities = _extract_entities_from_text(consequence_summary)
+    new_entities = _extract_entities_from_text(consequence_summary, api_key=api_key)
     if vision_description:
-        new_entities.extend(_extract_entities_from_text(vision_description))
+        new_entities.extend(_extract_entities_from_text(vision_description, api_key=api_key))
     
     if new_entities:
         state["seen_elements"].extend(new_entities)
@@ -206,10 +219,6 @@ RETURN ONLY THE NEW WORLD PROMPT TEXT - NO PREAMBLE, NO EXPLANATION, JUST THE EV
         if len(state["seen_elements"]) > 50:
             state["seen_elements"] = state["seen_elements"][-40:]
         print(f"[WORLD EVOLUTION V3] Added entities: {new_entities}")
-    
-    # Save updated state
-    with open(state_path, 'w', encoding='utf-8') as f:
-        json.dump(state, f, indent=2, ensure_ascii=False)
     
     # Log to archive
     _log_to_archive(
@@ -228,7 +237,9 @@ RETURN ONLY THE NEW WORLD PROMPT TEXT - NO PREAMBLE, NO EXPLANATION, JUST THE EV
     
     return {
         "world_prompt": new_world_prompt,
-        "evolution_summary": evolution_summary
+        "evolution_summary": evolution_summary,
+        "recent_events": state["recent_events"],
+        "seen_elements": state["seen_elements"]
     }
 
 
@@ -236,12 +247,15 @@ def _generate_evolution_summary(
     old_world: str,
     new_world: str,
     consequence: str,
-    vision: str
+    vision: str,
+    api_key: str = ""
 ) -> str:
     """
     Generate a short, atmospheric player-facing summary (15-25 words).
     Fast LLM call to extract most significant change.
     """
+    if not api_key:
+        return ""
     print("[EVOLUTION SUMMARY] Generating player-facing update...")
     
     # Extract first 500 chars of each for comparison
@@ -274,7 +288,7 @@ Write a tense, atmospheric sentence (15-25 words) describing what's changed:"""
         response = requests.post(
             "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
             headers={
-                "x-goog-api-key": GEMINI_API_KEY,
+                "x-goog-api-key": api_key,
                 "Content-Type": "application/json"
             },
             json={
@@ -284,7 +298,7 @@ Write a tense, atmospheric sentence (15-25 words) describing what's changed:"""
                     "maxOutputTokens": 50
                 }
             },
-            timeout=10
+            timeout=8
         )
         
         if response.status_code == 200:
@@ -323,14 +337,14 @@ Write a tense, atmospheric sentence (15-25 words) describing what's changed:"""
         return ""
 
 
-def _extract_entities_from_text(text: str) -> List[str]:
+def _extract_entities_from_text(text: str, api_key: str = "") -> List[str]:
     """
     Extract significant physical entities (characters, objects, landmarks, threats)
     from text using LLM.
     
     PRIORITY: Characters and threats are MOST important!
     """
-    if not text or len(text) < 20:
+    if not text or len(text) < 20 or not api_key:
         return []
     
     prompt = f"""From the following text, extract a list of significant physical entities.
@@ -369,7 +383,7 @@ Return ONLY the entities or "NONE":"""
         response = requests.post(
             "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
             headers={
-                "x-goog-api-key": GEMINI_API_KEY,
+                "x-goog-api-key": api_key,
                 "Content-Type": "application/json"
             },
             json={
@@ -379,7 +393,7 @@ Return ONLY the entities or "NONE":"""
                     "maxOutputTokens": 100
                 }
             },
-            timeout=10
+            timeout=8
         )
         
         if response.status_code == 200:

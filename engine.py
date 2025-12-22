@@ -90,7 +90,9 @@ except FileNotFoundError:
 
 # Read from environment variables first, fall back to config.json
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", CONFIG.get("OPENAI_API_KEY"))
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", CONFIG.get("GEMINI_API_KEY"))
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+if not GEMINI_API_KEY:
+    GEMINI_API_KEY = CONFIG.get("GEMINI_API_KEY", "")
 REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN", CONFIG.get("REPLICATE_API_TOKEN"))
 
 # DEBUG: Log API keys at module initialization
@@ -915,6 +917,12 @@ DESCRIPTION: <detailed description of what is visible, focusing on objects, thre
         
         api_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
         
+        # DEBUG: Log API key status for Vision
+        if not GEMINI_API_KEY:
+            print(f"[VISION ERROR] GEMINI_API_KEY is EMPTY or None!")
+        else:
+            print(f"[VISION DEBUG] Using API key: {GEMINI_API_KEY[:10]}...{GEMINI_API_KEY[-5:]}")
+
         headers = {
             "x-goog-api-key": GEMINI_API_KEY,
             "Content-Type": "application/json"
@@ -1491,7 +1499,7 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
         use_color = prev_color
         
         # --- Inject world summary as background context ---
-        current_state = get_state()
+        current_state = get_state(session_id)
         world_summary = summarize_world_state(current_state)
         # --- Summarize world prompt for image flavor ---
         world_flavor = ""
@@ -3754,12 +3762,21 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
         # Pass session-specific state file path
         state_file_path = _get_state_path(session_id)
         evolution_result = evolve_world_state(history, consequence_summary, state_file=str(state_file_path), vision_description=vision_dispatch)
-        state = _load_state(session_id)
         
-        # Store evolution summary for player display
-        if evolution_result and "evolution_summary" in evolution_result:
-            state["evolution_summary"] = evolution_result["evolution_summary"]
+        # Apply evolution results and SAVE properly with lock
+        state = _load_state(session_id)
+        if evolution_result:
+            if "world_prompt" in evolution_result:
+                state["world_prompt"] = evolution_result["world_prompt"]
+            if "evolution_summary" in evolution_result:
+                state["evolution_summary"] = evolution_result["evolution_summary"]
+            if "recent_events" in evolution_result:
+                state["recent_events"] = evolution_result["recent_events"]
+            if "seen_elements" in evolution_result:
+                state["seen_elements"] = evolution_result["seen_elements"]
+            
             _save_state(state, session_id)
+            print(f"[WORLD EVOLUTION] Applied and saved evolution results for {session_id}")
         
         # Generate image
         mode = state.get("mode", "camcorder")
@@ -3835,6 +3852,7 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             "consequence_image_prompt": consequence_img_prompt,
             "consequence_video": consequence_video_url,  # Video path for HD mode playback
             "hard_transition": hard_transition,  # Track location changes for reference buffer
+            "evolution_summary": state.get("evolution_summary", ""),  # Include world changes
             "phase": state["current_phase"],
             "chaos": state["chaos_level"],
             "world_prompt": state.get("world_prompt", ""),
@@ -3943,6 +3961,7 @@ def advance_turn_choices_deferred(consequence_img_url: str, dispatch: str, visio
         "situation_report": situation_summary,
         "consequences": "",
         "player_state": state.get('player_state', {}),
+        "evolution_summary": state.get('evolution_summary', ""), # Include this here too just in case
         "streak_reward": state.get('streak_reward', None),
         "rare_event": state.get('rare_event', None),
         "danger": False,

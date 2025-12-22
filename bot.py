@@ -150,6 +150,7 @@ if DISCORD_ENABLED:
     import threading
     _tape_creation_lock = threading.Lock()  # Prevent duplicate tape creation (thread-safe)
     _tape_creation_in_progress = False  # Flag to track if tape is being created
+    _turn_processing_lock = asyncio.Lock()  # Prevent concurrent turn processing
     
     def _get_state_no_lock(session_id='default'):
         """
@@ -851,17 +852,22 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     )
                     return
             
-            global auto_advance_task, countdown_task, auto_play_enabled
-            
-            # Cancel auto-play timer when user manually makes a choice
-            if auto_advance_task and not auto_advance_task.done():
-                auto_advance_task.cancel()
-                print("[AUTO-PLAY] Manual choice made - cancelling auto-play timer")
-            
-            # Cancel countdown timer when choice is made
-            if countdown_task and not countdown_task.done():
-                countdown_task.cancel()
-                print("[COUNTDOWN] Choice made - cancelling countdown timer")
+            if _turn_processing_lock.locked():
+                print("[BOT] Choice ignored - turn already being processed")
+                return
+
+            async with _turn_processing_lock:
+                global auto_advance_task, countdown_task, auto_play_enabled
+                
+                # Cancel auto-play timer when user manually makes a choice
+                if auto_advance_task and not auto_advance_task.done():
+                    auto_advance_task.cancel()
+                    print("[AUTO-PLAY] Manual choice made - cancelling auto-play timer")
+                
+                # Cancel countdown timer when choice is made
+                if countdown_task and not countdown_task.done():
+                    countdown_task.cancel()
+                    print("[COUNTDOWN] Choice made - cancelling countdown timer")
             
             # Increment turn counter and check custom action cooldown
             global custom_action_turn_counter, custom_action_available
@@ -889,7 +895,8 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     print(f"[CHOICE] Warning: Could not disable buttons: {e}")
             
 
-            world_state = engine.get_state().get('world_prompt', '')
+            session_id = str(interaction.channel_id) if interaction.channel_id else 'default'
+            world_state = engine.get_state(session_id).get('world_prompt', '')
             choice_text = self.label
             # Fast LLM call for micro-reaction (10-20 tokens, low temp)
             micro_prompt = (
@@ -1036,7 +1043,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
 
             # CHECK FOR DEATH - Read FRESH state from file
             # Note: get_state() already reloads from disk via API client
-            current_state = engine.get_state()
+            current_state = engine.get_state(session_id)
             player_alive = current_state.get("player_state", {}).get("alive", True)
             player_health = current_state.get("player_state", {}).get("health", 100)
             
@@ -1268,22 +1275,27 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 await interaction.response.send_message("ERROR: Please enter an action!", ephemeral=True)
                 return
             
-            print(f"[CUSTOM ACTION] Player entered: {custom_choice}")
-            
-            # Use custom action - put it on cooldown
-            custom_action_available = False
-            custom_action_turn_counter = 0
-            print(f"[CUSTOM ACTION] Used! Now on cooldown for {CUSTOM_ACTION_COOLDOWN} turns")
-            
-            # Cancel countdown timer
-            if countdown_task and not countdown_task.done():
-                countdown_task.cancel()
-                print("[COUNTDOWN] Custom action - cancelling countdown timer")
-            
-            # Cancel auto-play timer
-            if auto_advance_task and not auto_advance_task.done():
-                auto_advance_task.cancel()
-                print("[AUTO-PLAY] Custom action - cancelling auto-play timer")
+            if _turn_processing_lock.locked():
+                await interaction.response.send_message("⚠️ A turn is already being processed. Please wait.", ephemeral=True)
+                return
+
+            async with _turn_processing_lock:
+                print(f"[CUSTOM ACTION] Player entered: {custom_choice}")
+                
+                # Use custom action - put it on cooldown
+                custom_action_available = False
+                custom_action_turn_counter = 0
+                print(f"[CUSTOM ACTION] Used! Now on cooldown for {CUSTOM_ACTION_COOLDOWN} turns")
+                
+                # Cancel countdown timer
+                if countdown_task and not countdown_task.done():
+                    countdown_task.cancel()
+                    print("[COUNTDOWN] Custom action - cancelling countdown timer")
+                
+                # Cancel auto-play timer
+                if auto_advance_task and not auto_advance_task.done():
+                    auto_advance_task.cancel()
+                    print("[AUTO-PLAY] Custom action - cancelling auto-play timer")
             
             # Process exactly like ChoiceButton callback
             try:
@@ -1306,7 +1318,8 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 print(f"[CUSTOM ACTION] Warning: Could not disable buttons: {e}")
             
 
-            world_state = engine.get_state().get('world_prompt', '')
+            session_id = str(interaction.channel_id) if interaction.channel_id else 'default'
+            world_state = engine.get_state(session_id).get('world_prompt', '')
             
             # Get spatial context from last vision analysis
             spatial_context = ""
@@ -1451,8 +1464,8 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 None, 
                 engine.advance_turn_choices_deferred,
                 tape_img,
-                dispatch_text,
-                phase1.get("vision_dispatch", ""),
+                disp["dispatch"],
+                disp.get("vision_dispatch", ""),
                 custom_choice,
                 phase1.get("consequence_image_prompt", ""),
                 phase1.get("hard_transition", False),
@@ -1466,7 +1479,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             disp = {**phase1, **phase2, "dispatch_image": tape_img}
             
             # CHECK FOR DEATH
-            current_state = engine.get_state()
+            current_state = engine.get_state(session_id)
             player_alive = current_state.get("player_state", {}).get("alive", True)
             if not player_alive:
                 print("[DEATH] Player died from custom action!")
@@ -1597,49 +1610,28 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 print("[DEATH CUSTOM] Play Again button ready - waiting for manual restart (no auto-restart)")
                 return  # End turn here - button will handle restart when clicked
             
-            # PHASE 2: Generate choices in background
-            # --- FLIPBOOK COORDINATION FOR CUSTOM ACTION ---
-            flipbook_url = None
-            current_state = engine.get_state()
-            if current_state.get("flipbook_mode", False):
-                print(f"[FLIPBOOK] Custom action - waiting for flipbook before choice generation...")
-                
-                # Wait loop
-                max_wait = 40
-                check_interval = 1.0
-                elapsed = 0
-                while elapsed < max_wait:
-                    await asyncio.sleep(check_interval)
-                    elapsed += check_interval
-                    fresh_state = _get_state_no_lock()
-                    flipbook_url = fresh_state.get('current_flipbook_url')
-                    if flipbook_url == "FAILED":
-                        print(f"[FLIPBOOK] Thread signaled failure - stopping wait loop")
-                        flipbook_url = None
-                        break
-                    if flipbook_url:
-                        break
-                
-                if not flipbook_url:
-                    print(f"[FLIPBOOK] Custom action - timeout waiting for flipbook ({elapsed}s)")
-
-            phase2_task = loop.run_in_executor(
-                None, 
-                engine.advance_turn_choices_deferred,
-                img_path,
-                disp["dispatch"],
-                disp.get("vision_dispatch", ""),
-                choice_text
-            )
-            
-            # Show "analyzing scene..." message
+            # --- PHASE 2: GENERATE NEXT CHOICES ---
             choices_loading_msg = await interaction.channel.send(embed=discord.Embed(
                 description="⚙️ Analyzing scene...",
                 color=CORNER_GREY
             ))
             
-            # Wait for Phase 2
+            phase2_task = loop.run_in_executor(
+                None, 
+                engine.advance_turn_choices_deferred,
+                tape_img,
+                disp["dispatch"],
+                disp.get("vision_dispatch", ""),
+                choice_text,
+                phase1.get("consequence_image_prompt", ""),
+                phase1.get("hard_transition", False),
+                session_id
+            )
             phase2 = await phase2_task
+            
+            try: await choices_loading_msg.delete()
+            except: pass
+            
             disp.update(phase2)  # Merge in the choices
             
             # Delete loading message
@@ -1647,13 +1639,6 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 await choices_loading_msg.delete()
             except Exception:
                 pass
-            
-            # Show situation report (world evolution text)
-            if disp.get("situation_report"):
-                await interaction.channel.send(embed=discord.Embed(
-                    description=safe_embed_desc(f"📍 {disp['situation_report']}"),
-                    color=VHS_RED
-                ))
             
             # Show new choices
             await interaction.channel.send("🟢 What will you do next?")
@@ -1725,7 +1710,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 # Clean up state if there were invalid items
                 if len(valid_inventory) != len(inventory):
                     print(f"[INVENTORY] Cleaned up invalid items: {len(inventory)} -> {len(valid_inventory)}")
-                    current_state = engine.get_state()
+                    current_state = engine.get_state(session_id)
                     current_state["inventory"] = valid_inventory
                     engine.save_state(current_state)
                 
@@ -1773,7 +1758,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                             return
                         
                         # Remove from inventory
-                        current_state = engine.get_state()
+                        current_state = engine.get_state(session_id)
                         current_inv = current_state.get("inventory", [])
                         updated_inv = remove_item_from_inventory(current_inv, item_id)
                         current_state["inventory"] = updated_inv
@@ -1943,7 +1928,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             
             # Start tape creation in background (runs in executor)
             loop = asyncio.get_running_loop()
-            tape_task = loop.run_in_executor(None, _create_death_replay_tape)
+            tape_task = loop.run_in_executor(None, _create_death_replay_tape_with_lock)
             
             # VHS eject animation sequence (plays while GIF generates)
             eject_sequence = [
@@ -2143,7 +2128,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 if hasattr(self.parent_view, 'last_choices_message') and self.parent_view.last_choices_message:
                     # Get current game state to restart countdown
 
-                    current_state = engine.get_state()
+                    current_state = engine.get_state(session_id)
                     
                     # Restart countdown timer
                     if COUNTDOWN_ENABLED:
@@ -2177,7 +2162,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
     class FlipbookToggleButton(Button):
         def __init__(self, parent_view):
             # Check if flipbook mode is currently enabled
-            current_state = engine.get_state()
+            current_state = engine.get_state(session_id)
             flipbook_mode = current_state.get("flipbook_mode", False)
             label = "🎬 Flipbook: ON" if flipbook_mode else "🎬 Flipbook: OFF"
             style = discord.ButtonStyle.success if flipbook_mode else discord.ButtonStyle.secondary
@@ -2197,7 +2182,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             print("[FLIPBOOK] FlipbookToggleButton callback triggered")
             
             # Toggle flipbook mode in state
-            current_state = engine.get_state()
+            current_state = engine.get_state(session_id)
             current_mode = current_state.get("flipbook_mode", False)
             new_mode = not current_mode
             current_state["flipbook_mode"] = new_mode
@@ -3293,25 +3278,30 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     # NOW generate penalty (takes time, but buttons are already disabled)
                     penalty_choice = await generate_timeout_penalty(dispatch, situation, current_image_path)
                     
-                    # Update with final timeout message
-                    timeout_embed = discord.Embed(
-                        description=f"**Hesitation has consequences.**\n\n{penalty_choice}",
-                        color=VHS_RED
-                    )
-                    
-                    try:
-                        if countdown_message:
-                            await countdown_message.edit(content=None, embed=timeout_embed)
-                    except Exception as e:
-                        print(f"[COUNTDOWN] Failed to update timeout message: {e}")
-                    
-                    # Process penalty as a choice
-                    await asyncio.sleep(2)  # Let them see the penalty
-                    
-                    # === FATE ROLL for timeout penalty ===
-                    session_id = 'default' # Penalties are currently global/default
-                    fate = compute_fate()
-                    phase1_task = loop.run_in_executor(None, lambda: engine.advance_turn_image_fast(penalty_choice, fate, True, session_id))
+                    if _turn_processing_lock.locked():
+                        print("[COUNTDOWN] Turn already being processed, skipping penalty...")
+                        break
+
+                    async with _turn_processing_lock:
+                        # Update with final timeout message
+                        timeout_embed = discord.Embed(
+                            description=f"**Hesitation has consequences.**\n\n{penalty_choice}",
+                            color=VHS_RED
+                        )
+                        
+                        try:
+                            if countdown_message:
+                                await countdown_message.edit(content=None, embed=timeout_embed)
+                        except Exception as e:
+                            print(f"[COUNTDOWN] Failed to update timeout message: {e}")
+                        
+                        # Process penalty as a choice
+                        await asyncio.sleep(2)  # Let them see the penalty
+                        
+                        # === FATE ROLL for timeout penalty ===
+                        session_id = str(channel.id) if hasattr(channel, 'id') else 'default'
+                        fate = compute_fate()
+                        phase1_task = loop.run_in_executor(None, lambda: engine.advance_turn_image_fast(penalty_choice, fate, True, session_id))
                     
                     # --- PROGRESSIVE FEEDBACK & RENDERING ---
                     render_msg = await channel.send(embed=discord.Embed(
@@ -3400,6 +3390,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     player_alive = current_state.get("player_state", {}).get("alive", True)
                     if not player_alive:
                         print("[COUNTDOWN DEATH] Player died from timeout penalty!")
+                        # ... (keep death logic) ...
                         await channel.send(embed=discord.Embed(
                             title="💀 YOU DIED",
                             description="The camera stops recording.",
@@ -3552,48 +3543,21 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                         
                         break  # Exit countdown loop
                     
-                    # Show situation report during generation
-                    situation_report = phase1_result.get("situation_report", "")
-                    if situation_report:
-                        await channel.send(embed=discord.Embed(
-                            description=f"📍 {situation_report}",
-                            color=VHS_RED
-                        ))
-                    
-                    # Phase 2: Generate choices
-                    # --- FLIPBOOK COORDINATION FOR COUNTDOWN ---
-                    flipbook_url = None
-                    current_state = engine.get_state()
-                    if current_state.get("flipbook_mode", False):
-                        print(f"[FLIPBOOK] Countdown penalty - waiting for flipbook before choice generation...")
-                        
-                        # Wait loop
-                        max_wait = 40
-                        check_interval = 1.0
-                        elapsed = 0
-                        while elapsed < max_wait:
-                            await asyncio.sleep(check_interval)
-                            elapsed += check_interval
-                            fresh_state = _get_state_no_lock()
-                            flipbook_url = fresh_state.get('current_flipbook_url')
-                            if flipbook_url:
-                                break
-                        
-                        if not flipbook_url:
-                            print(f"[FLIPBOOK] Countdown penalty - timeout waiting for flipbook ({elapsed}s)")
-
                     choices_msg = await channel.send(embed=discord.Embed(
                         description=safe_embed_desc("⚙️ Generating choices..."),
                         color=CORNER_GREY
                     ))
                         
                     phase2_task = loop.run_in_executor(
-                        None,
+                        None, 
                         engine.advance_turn_choices_deferred,
-                        consequence_image_path,
+                        tape_img,
                         dispatch_text,
                         phase1_result.get("vision_dispatch", ""),
-                        penalty_choice
+                        penalty_choice,
+                        phase1_result.get("consequence_image_prompt", ""),
+                        phase1_result.get("hard_transition", False),
+                        session_id
                     )
                     phase2_result = await phase2_task
                     
@@ -3671,41 +3635,6 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             print("[COUNTDOWN] Skipping - auto-play is handling timing")
             return
         
-        # Don't start countdown if flipbook is being generated (wait for playback to complete)
-        state = _get_state_no_lock()
-        if state.get("flipbook_mode", False):
-            print("[COUNTDOWN] Delaying - waiting for flipbook to complete")
-            # Poll for flipbook completion or failure
-            async def delayed_countdown_start():
-                max_wait = 40  # Max 40 seconds for Flash model (faster but more reliable)
-                elapsed = 0
-                check_interval = 1  # Check every second
-                
-                while elapsed < max_wait:
-                    await asyncio.sleep(check_interval)
-                    elapsed += check_interval
-                    
-                    # Check if flipbook completed or failed
-                    current_state = _get_state_no_lock()
-                    flipbook_url = current_state.get('current_flipbook_url')
-                    
-                    if flipbook_url == "FAILED":
-                        print("[COUNTDOWN] Flipbook failed - starting countdown immediately")
-                        break
-                    elif flipbook_url and flipbook_url != "FAILED":
-                        print("[COUNTDOWN] Flipbook ready - starting countdown")
-                        break
-                
-                print("[COUNTDOWN] Flipbook wait period complete - starting countdown now")
-                # Re-check if we should still start countdown
-                if not auto_play_enabled and COUNTDOWN_ENABLED:
-                    global countdown_task
-                    countdown_task = asyncio.create_task(countdown_timer_wrapper(channel, choices, view, dispatch, situation))
-                    print(f"[COUNTDOWN] Started {COUNTDOWN_DURATION}s countdown (after flipbook)")
-            
-            countdown_task = asyncio.create_task(delayed_countdown_start())
-            return
-        
         # Cancel any existing countdown
         if countdown_task and not countdown_task.done():
             countdown_task.cancel()
@@ -3773,6 +3702,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
     async def auto_advance_turn(channel):
         """Automatically pick a random choice and advance the turn (auto-play mode)."""
         global auto_advance_task, countdown_task, auto_play_enabled
+        session_id = str(channel.id) if hasattr(channel, 'id') else 'default'
         
         if not auto_play_enabled:
             return
@@ -3792,34 +3722,38 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
         chosen = random.choice(valid_choices)
         print(f"[AUTO-PLAY] Auto-selecting: {chosen}")
         
-        # Cancel countdown timer when auto-play makes a choice
-        if countdown_task and not countdown_task.done():
-            countdown_task.cancel()
-            print("[AUTO-PLAY] Cancelled countdown timer")
-        
-        # Send notification that auto-play is happening
-        embed = discord.Embed(
-            title="🤖 Auto-Play",
-            description=f"Automatically selecting: **{chosen}**",
-            color=CORNER_TEAL
-        )
-        await channel.send(embed=embed)
-        
-        # Disable all buttons in the current view
-        if current_view:
-            for item in current_view.children:
-                item.disabled = True
-            try:
-                if hasattr(current_view, 'last_choices_message') and current_view.last_choices_message:
-                    await current_view.last_choices_message.edit(view=current_view)
-            except Exception as e:
-                print(f"[AUTO-ADVANCE] Could not disable buttons: {e}")
-        
-        # PHASE 1: Generate image fast with fate modifier
-        session_id = 'default' # Auto-advance is currently global/default
-        loop = asyncio.get_running_loop()
-        fate = compute_fate()
-        phase1_task = loop.run_in_executor(None, engine.advance_turn_image_fast, chosen, fate, False, session_id)
+        if _turn_processing_lock.locked():
+            print("[AUTO-PLAY] Turn already being processed, skipping...")
+            return
+
+        async with _turn_processing_lock:
+            # Cancel countdown timer when auto-play makes a choice
+            if countdown_task and not countdown_task.done():
+                countdown_task.cancel()
+                print("[AUTO-PLAY] Cancelled countdown timer")
+            
+            # Send notification that auto-play is happening
+            embed = discord.Embed(
+                title="🤖 Auto-Play",
+                description=f"Automatically selecting: **{chosen}**",
+                color=CORNER_TEAL
+            )
+            await channel.send(embed=embed)
+            
+            # Disable all buttons in the current view
+            if current_view:
+                for item in current_view.children:
+                    item.disabled = True
+                try:
+                    if hasattr(current_view, 'last_choices_message') and current_view.last_choices_message:
+                        await current_view.last_choices_message.edit(view=current_view)
+                except Exception as e:
+                    print(f"[AUTO-ADVANCE] Could not disable buttons: {e}")
+            
+            # PHASE 1: Generate image fast with fate modifier
+            loop = asyncio.get_running_loop()
+            fate = compute_fate()
+            phase1_task = loop.run_in_executor(None, engine.advance_turn_image_fast, chosen, fate, False, session_id)
         
         # --- PROGRESSIVE FEEDBACK & RENDERING ---
         render_msg = await channel.send(embed=discord.Embed(
@@ -3923,7 +3857,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             
             # Start tape creation in background
             loop = asyncio.get_running_loop()
-            tape_task = loop.run_in_executor(None, _create_death_replay_tape)
+            tape_task = loop.run_in_executor(None, _create_death_replay_tape_with_lock)
             
             # VHS eject animation (plays while GIF generates)
             eject_sequence = [
@@ -4053,41 +3987,21 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             await send_intro_tutorial(channel)
             return
         
-        # Show "Generating choices..." while Phase 2 runs
+        # PHASE 2: Generate choices in background
         choices_msg = await channel.send(embed=discord.Embed(
             description=safe_embed_desc("⚙️ Generating choices..."),
             color=CORNER_GREY
         ))
-        
-        # PHASE 2: Generate choices in background
-        # --- FLIPBOOK COORDINATION FOR AUTO-ADVANCE ---
-        flipbook_url = None
-        current_state = engine.get_state()
-        if current_state.get("flipbook_mode", False):
-            print(f"[FLIPBOOK] Auto-advance - waiting for flipbook before choice generation...")
-            
-            # Wait loop
-            max_wait = 40
-            check_interval = 1.0
-            elapsed = 0
-            while elapsed < max_wait:
-                await asyncio.sleep(check_interval)
-                elapsed += check_interval
-                fresh_state = _get_state_no_lock()
-                flipbook_url = fresh_state.get('current_flipbook_url')
-                if flipbook_url:
-                    break
-            
-            if not flipbook_url:
-                print(f"[FLIPBOOK] Auto-advance - timeout waiting for flipbook ({elapsed}s)")
-
         phase2_task = loop.run_in_executor(
-            None,
+            None, 
             engine.advance_turn_choices_deferred,
-            consequence_image_path,
+            tape_img,
             dispatch_text,
             phase1_result.get("vision_dispatch", ""),
-            chosen
+            chosen,
+            phase1_result.get("consequence_image_prompt", ""),
+            phase1_result.get("hard_transition", False),
+            session_id
         )
         phase2_result = await phase2_task
         
@@ -4101,11 +4015,11 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
         new_choices = phase2_result.get("choices", [])
         if new_choices:
             # Send evolution summary (world state changes)
-            evolution_summary = engine.state.get("evolution_summary", "")
+            evolution_summary = phase2_result.get("evolution_summary", "")
             if evolution_summary and len(evolution_summary) > 10:
                 await channel.send(embed=discord.Embed(
-                    description=f"🌍 {evolution_summary}",
-                    color=VHS_RED
+                    description=f"🌍 {evolution_summary.strip()}",
+                    color=CORNER_TEAL_DARK
                 ))
             
             await channel.send("🟢 What will you do next?")

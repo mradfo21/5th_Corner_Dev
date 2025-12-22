@@ -90,8 +90,8 @@ class GameEngineClient:
         if self.use_api:
             return self._api_call('POST', '/state/reload')
         else:
-            engine.state = engine._load_state()
-            return engine.get_state()
+            engine.state = engine._load_state(self.session_id)
+            return engine.get_state(self.session_id)
     
     def reset_state(self):
         """Reset game state"""
@@ -125,7 +125,7 @@ class GameEngineClient:
         if self.use_api:
             return self._api_call('POST', '/game/intro/image')
         else:
-            return engine.generate_intro_image_fast()
+            return engine.generate_intro_image_fast(self.session_id)
     
     def generate_intro_choices_deferred(
         self, 
