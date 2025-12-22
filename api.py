@@ -417,6 +417,30 @@ def api_get_state():
         return error_response("Failed to get state", str(e))
 
 
+@app.route('/api/state/save', methods=['POST'])
+def api_save_state():
+    """
+    Save game state to disk.
+    Body: { "session_id": "default", "state": {...} }
+    
+    Returns:
+        JSON confirmation
+    """
+    try:
+        data = request.json or {}
+        session_id = data.get('session_id', 'default')
+        state = data.get('state', {})
+        
+        if not state:
+            return error_response("No state provided", code=400)
+        
+        engine._save_state(state, session_id)
+        return jsonify(success_response({"saved": True}, "State saved successfully"))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to save state", str(e))
+
+
 @app.route('/api/state/reset', methods=['POST'])
 def api_reset_state():
     """
