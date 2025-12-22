@@ -1638,6 +1638,20 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                 flipbook_enabled = current_state.get("flipbook_mode", False)
                 if flipbook_enabled:
                     print(f"[FLIPBOOK] Parallel generation starting - using parent reference: {os.path.basename(ref_images_to_use[0])}")
+                    
+                    # CRITICAL: Clear the previous flipbook URL from state BEFORE starting new thread.
+                    # This prevents the bot from immediately finding the OLD flipbook URL.
+                    try:
+                        st_init = _load_state(session_id)
+                        st_init['current_flipbook_url'] = None
+                        st_init['flipbook_last_frame'] = None
+                        st_init['flipbook_first_frame'] = None
+                        st_init['flipbook_last_grid'] = None
+                        _save_state(st_init, session_id)
+                        print(f"[FLIPBOOK] Reset flipbook data in state for turn.")
+                    except Exception as e:
+                        print(f"[FLIPBOOK ERROR] Failed to reset data: {e}")
+
                     import threading
                     
                     def generate_flipbook_parallel():
@@ -1764,6 +1778,19 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                 flipbook_enabled = current_state.get("flipbook_mode", False)
                 if flipbook_enabled:
                     print(f"[FLIPBOOK] Parallel generation starting for TEXT-TO-IMAGE mode (Turn 0 or no references)")
+                    
+                    # CRITICAL: Clear the previous flipbook URL from state BEFORE starting new thread.
+                    try:
+                        st_init = _load_state(session_id)
+                        st_init['current_flipbook_url'] = None
+                        st_init['flipbook_last_frame'] = None
+                        st_init['flipbook_first_frame'] = None
+                        st_init['flipbook_last_grid'] = None
+                        _save_state(st_init, session_id)
+                        print(f"[FLIPBOOK] Reset flipbook data in state for Turn 0.")
+                    except Exception as e:
+                        print(f"[FLIPBOOK ERROR] Failed to reset data: {e}")
+
                     import threading
                     
                     def generate_flipbook_parallel_t2i():
