@@ -1785,12 +1785,12 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                             )
                             return
                         
-                    # Remove from inventory
-                    current_state = engine.get_state()
-                    current_inv = current_state.get("inventory", [])
-                    updated_inv = remove_item_from_inventory(current_inv, item_id)
-                    current_state["inventory"] = updated_inv
-                    engine.save_state(current_state)
+                        # Remove from inventory
+                        current_state = engine.get_state()
+                        current_inv = current_state.get("inventory", [])
+                        updated_inv = remove_item_from_inventory(current_inv, item_id)
+                        current_state["inventory"] = updated_inv
+                        engine.save_state(current_state)
                         
                         # Close inventory after drop
                         global inventory_open_users
