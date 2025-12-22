@@ -1674,14 +1674,15 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                                 st_temp = json.load(f)
                             
                             prev_grid = st_temp.get('flipbook_last_grid') # Context for the entire previous 16 frames
+                            prev_last = st_temp.get('flipbook_last_frame') # Direct visual anchor for frame 16
                             
                             # Add flipbook prefix
                             flipbook_prefix = PROMPTS.get("gemini_flipbook_4panel_prefix", "")
                             # Add hardened visual template instruction
                             flipbook_prefix = "📋 VISUAL TEMPLATE ATTACHED: Match the 4x4 grid layout exactly as shown in the reference template image.\n\n" + flipbook_prefix
                             
-                            # --- EXPERIMENT: ONLY PREVIOUS GRID CONTEXT ---
-                            # We use the ENTIRE previous 16-frame grid as the only reference (plus layout template)
+                            # --- TEMPORAL CONTINUITY: Previous Grid + Last Frame ---
+                            # Pass BOTH the full grid (for context) AND the last frame (for visual matching)
                             flipbook_refs = []
                             template_path = str(ROOT / "prompts" / "flipbook_layout_template.png")
                             flipbook_refs.append(template_path) # Essential for layout
@@ -1689,10 +1690,21 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                             if prev_grid and os.path.exists(prev_grid):
                                 # Full 16-frame context
                                 flipbook_refs.append(prev_grid)
+                                
+                                # CRITICAL: Also pass the LAST FRAME as a direct visual anchor
+                                if prev_last and os.path.exists(prev_last):
+                                    flipbook_refs.append(prev_last)
+                                    print(f"[FLIPBOOK CONTINUITY] Passing grid ({os.path.basename(prev_grid)}) + last frame ({os.path.basename(prev_last)}) for strong temporal continuity", flush=True)
+                                else:
+                                    print(f"[FLIPBOOK CONTINUITY] Passing grid only ({os.path.basename(prev_grid)}) - last frame not available", flush=True)
+                                
+                                # ENHANCED PROMPT: Explicit visual matching instructions
                                 flipbook_prefix = f"🎞️ PREVIOUS SEQUENCE ATTACHED: The 4x4 grid reference image shows the 16 sequential frames that JUST HAPPENED. " \
                                                  f"The scene evolved from frame 1 (top-left) to frame 16 (bottom-right). " \
-                                                 f"Panel 1 of your new grid MUST follow naturally from the bottom-right frame of that previous grid.\n\n" + flipbook_prefix
-                                print(f"[FLIPBOOK] Passing ONLY previous grid for context: {os.path.basename(prev_grid)}", flush=True)
+                                                 f"⚠️ CRITICAL VISUAL CONTINUITY: Panel 1 of your NEW grid MUST match frame 16 of the PREVIOUS grid in ALL visual aspects: " \
+                                                 f"SAME lighting and shadows, SAME color palette and tones, SAME camera angle and framing, SAME environment and atmosphere. " \
+                                                 f"The isolated last frame reference shows EXACTLY what panel 1 should look like visually. " \
+                                                 f"This is a seamless CONTINUATION of the previous sequence - maintain perfect visual flow!\n\n" + flipbook_prefix
                             else:
                                 # Fallback to static if no flipbook history (first turn)
                                 flipbook_refs.append(ref_images_to_use[0])
@@ -1705,7 +1717,7 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                                 prompt=flipbook_prompt,
                                 caption=f"{caption}_flipbook",
                                 reference_image_path=flipbook_refs,
-                                strength=strength,
+                                strength=0.60,  # TEMPORAL CONTINUITY: Strong adherence to reference (was 0.25)
                                 world_prompt=world_prompt,
                                 time_of_day=use_time_of_day,
                                 action_context=choice,
@@ -1818,7 +1830,7 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                                 prompt=flipbook_prompt,
                                 caption=f"{caption}_flipbook",
                                 reference_image_path=[template_path],
-                                strength=0.35, # Moderate strength to follow template layout but allow scene creation
+                                strength=0.50, # Moderate strength to follow template layout but allow scene creation (increased from 0.35)
                                 world_prompt=world_prompt,
                                 time_of_day=use_time_of_day,
                                 action_context=choice,
