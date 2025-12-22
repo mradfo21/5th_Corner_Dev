@@ -160,7 +160,8 @@ if DISCORD_ENABLED:
         try:
             import json
             from pathlib import Path
-            state_path = engine._get_state_path(session_id)
+            state_path_str = engine._get_state_path(session_id)
+            state_path = Path(state_path_str)
             if state_path.exists():
                 with open(state_path, 'r', encoding='utf-8') as f:
                     return json.load(f)
