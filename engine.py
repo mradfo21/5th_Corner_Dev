@@ -472,7 +472,7 @@ def _load_state(session_id='default') -> dict:
             "turn_count": 0, # Initialize turn_count
             "interim_index": 0, # Initialize interim_index
             "time_of_day": INITIAL_TIME_OF_DAY,
-            "flipbook_mode": False  # Disabled by default - experimental feature
+            "flipbook_mode": True  # Enabled by default - 4x4 action sequence
         }
 
 # Legacy global state (deprecated - use session-based functions instead)
@@ -504,7 +504,7 @@ except Exception as e:
         "in_combat": False,
         "threat_level": 0,
         "time_of_day": INITIAL_TIME_OF_DAY,
-        "flipbook_mode": False  # Disabled by default - experimental feature
+        "flipbook_mode": True  # Enabled by default - 4x4 action sequence
     }
     print("[ENGINE INIT] Created default legacy state", flush=True)
 
