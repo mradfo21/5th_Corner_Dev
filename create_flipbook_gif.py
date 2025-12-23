@@ -65,14 +65,14 @@ def extract_panels_from_grid(grid_image_path: Path, output_dir: Path = None) -> 
         return []
 
 
-def create_animated_gif(panels: list, output_path: Path, duration_ms: int = 250, loop: int = 0) -> Path:
+def create_animated_gif(panels: list, output_path: Path, duration_ms: int = 500, loop: int = 0) -> Path:
     """
     Create an animated GIF from a sequence of PIL Image objects.
     
     Args:
         panels: List of PIL Image objects (frames)
         output_path: Path to save the output GIF
-        duration_ms: Duration of each frame in milliseconds (default: 250ms = 4s total for 16 frames)
+        duration_ms: Duration of each frame in milliseconds (default: 500ms = 8s total for 16 frames)
         loop: Number of times to loop (0 = infinite, 1 = play once, 2+ = loop N times)
     
     Returns:
@@ -110,7 +110,7 @@ def create_animated_gif(panels: list, output_path: Path, duration_ms: int = 250,
         return None
 
 
-def grid_to_flipbook_gif(grid_image_path: Path, output_gif_path: Path = None, duration_ms: int = 250, loop: int = 0, save_panels: bool = False) -> dict:
+def grid_to_flipbook_gif(grid_image_path: Path, output_gif_path: Path = None, duration_ms: int = 500, loop: int = 0, save_panels: bool = False) -> dict:
     """
     Convert a 4x4 grid image into an animated GIF flipbook.
     
@@ -182,7 +182,7 @@ if __name__ == "__main__":
         sys.exit(1)
     
     grid_path = Path(sys.argv[1])
-    duration = int(sys.argv[2]) if len(sys.argv) > 2 else 250
+    duration = int(sys.argv[2]) if len(sys.argv) > 3 else 500
     loop_count = int(sys.argv[3]) if len(sys.argv) > 3 else 0
     
     if not grid_path.exists():

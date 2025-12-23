@@ -179,7 +179,28 @@ def generate_choices(
     
     # Add visual context if image is provided
     if image_url:
-        full_prompt = "🖼️ CRITICAL: LOOK AT THE ATTACHED IMAGE FIRST. The image shows the CURRENT scene (what Jason sees RIGHT NOW). Base ALL your choices on what is ACTUALLY, VISIBLY present in this image. Ignore any text descriptions that contradict what you see in the image. The image is the source of truth.\n\n" + full_prompt
+        full_prompt = (
+            "🚨🚨🚨 ABSOLUTE COMMAND - READ THIS FIRST 🚨🚨🚨\n\n"
+            "THE ATTACHED IMAGE IS THE ONLY SOURCE OF TRUTH.\n\n"
+            "⚠️ CRITICAL RULES:\n"
+            "1. The image shows what Jason can ACTUALLY SEE right now from his eyes\n"
+            "2. ONLY generate choices for objects/places VISIBLE in the attached image\n"
+            "3. If the text mentions 'air conditioning unit' but image shows desert -> IGNORE THE TEXT, USE THE IMAGE\n"
+            "4. If the text mentions 'wrench' but image shows hands/ground -> IGNORE THE TEXT, USE THE IMAGE\n"
+            "5. If the text mentions 'access panel' but image shows outdoor scene -> IGNORE THE TEXT, USE THE IMAGE\n\n"
+            "❌ DO NOT generate choices about:\n"
+            "- Objects mentioned in text but NOT visible in image\n"
+            "- Background lore or world context that isn't visually present\n"
+            "- Items from previous turns that aren't in current frame\n\n"
+            "✅ DO generate choices about:\n"
+            "- Terrain/environment visible in image\n"
+            "- Objects clearly shown in image\n"
+            "- Actions possible given what's visually present\n\n"
+            "The 'world_prompt' and 'dispatch' text below are BACKGROUND CONTEXT ONLY.\n"
+            "They describe the overall situation, but YOU MUST PRIORITIZE WHAT'S IN THE IMAGE.\n"
+            "If there's ANY conflict between text and image -> IMAGE WINS.\n\n"
+            "═══════════════════════════════════════════════════════\n\n"
+        ) + full_prompt
     
     # Build parts list (text + optional image)
     parts = [{"text": full_prompt}]

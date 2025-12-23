@@ -1283,20 +1283,11 @@ def build_image_prompt(player_choice: str = "", dispatch: str = "", prev_vision_
             f"If outdoor, stay outdoor. If indoor, stay indoor. NO teleportation."
         )
     
-    # SPECIAL CASE: Intro frame needs establishing shot language, not "action taken"
+    # SPECIAL CASE: Intro frame - simple establishing shot
     if player_choice.lower().strip() == "intro":
-        prompt = (
-            f"⚠️ CRITICAL OVERRIDE: THIS IS AN ENVIRONMENTAL ESTABLISHING SHOT\n\n"
-            f"ESTABLISHING SHOT - Opening scene: {dispatch}\n\n"
-            f"ABSOLUTELY NO PEOPLE, NO CHARACTERS, NO HANDS, NO BODY PARTS VISIBLE.\n"
-            f"Show ONLY the environment: {dispatch}\n"
-            f"Wide landscape shot from an elevated vantage point.\n"
-            f"Camera is stationary, mounted on a tripod or rock.\n"
-            f"Documentary filmmaking style - showing the location BEFORE anyone enters.\n"
-            f"Think: nature documentary establishing shot, surveillance camera view, or scenic overlook photograph."
-        )
+        prompt = f"Opening scene: {dispatch}"
         print(f"\n{'='*60}")
-        print(f"[INTRO MODE] Creating environmental establishing shot (NO CHARACTERS)")
+        print(f"[INTRO MODE] Creating establishing shot")
         print(f"{'='*60}\n", flush=True)
         return prompt
     
@@ -1685,19 +1676,12 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                 if flipbook_enabled:
                     print(f"[FLIPBOOK] Parallel generation starting - using parent reference: {os.path.basename(ref_images_to_use[0])}")
                     
-                    # CRITICAL: Clear the previous flipbook URL from state BEFORE starting new thread.
-                    # This prevents the bot from immediately finding the OLD flipbook URL.
-                    # NOTE: We do NOT clear flipbook_last_grid - the thread needs it as a reference!
-                    try:
-                        st_init = _load_state(session_id)
-                        st_init['current_flipbook_url'] = None
-                        st_init['flipbook_last_frame'] = None
-                        st_init['flipbook_first_frame'] = None
-                        # DO NOT CLEAR: st_init['flipbook_last_grid'] - thread needs this for continuity!
-                        _save_state(st_init, session_id)
-                        print(f"[FLIPBOOK] Reset flipbook URL for new turn (preserving prev grid for continuity).")
-                    except Exception as e:
-                        print(f"[FLIPBOOK ERROR] Failed to reset data: {e}")
+                    # NOTE: We do NOT clear current_flipbook_url here anymore.
+                    # The bot.py display logic clears it AFTER displaying the flipbook.
+                    # This prevents race conditions where flipbooks finish generating
+                    # AFTER choices are displayed, then get cleared before they can be shown.
+                    # We only preserve the previous frames for style continuity.
+                    print(f"[FLIPBOOK] Starting new flipbook generation (preserving previous frames for style continuity).")
 
                     import threading
                     
@@ -1715,42 +1699,179 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                             prev_grid = st_temp.get('flipbook_last_grid') # Context for the entire previous 16 frames
                             prev_last = st_temp.get('flipbook_last_frame') # Direct visual anchor for frame 16
                             
-                            # Add flipbook prefix
-                            flipbook_prefix = PROMPTS.get("gemini_flipbook_4panel_prefix", "")
-                            # Add hardened visual template instruction (this path is for turns AFTER intro, so no special case needed)
-                            flipbook_prefix = "📋 VISUAL TEMPLATE ATTACHED: Match the 4x4 grid layout exactly as shown in the reference template image.\n\n" + flipbook_prefix
+                            # Add MASSIVELY HARDENED flipbook prefix
+                            # This must be so strong the AI cannot ignore it
+                            flipbook_prefix = (
+                                "🚨🚨🚨 ABSOLUTE COMMAND - READ THIS FIRST 🚨🚨🚨\n\n"
+                                "⚠️⚠️⚠️ CRITICAL: COPY THE FIRST REFERENCE IMAGE'S STRUCTURE ⚠️⚠️⚠️\n\n"
+                                "The FIRST reference image attached is a NUMBERED TEMPLATE showing:\n"
+                                "• Size: 1200x896 pixels (4:3 aspect ratio)\n"
+                                "• Layout: 4x4 grid with black lines separating panels\n"
+                                "• Labels: 'FRAME 1' through 'FRAME 16' in each panel\n"
+                                "• Timestamps: 0.00s, 0.25s, 0.50s... up to 3.75s\n\n"
+                                "YOUR OUTPUT MUST EXACTLY MATCH THIS TEMPLATE'S STRUCTURE:\n"
+                                "✓ Same resolution: 1200x896\n"
+                                "✓ Same grid: 4 rows × 4 columns = 16 panels\n"
+                                "✓ Same panel size: 300x224 each\n"
+                                "✓ Same positions: Row 1: Frames 1-4, Row 2: Frames 5-8, etc.\n\n"
+                                "🚫🚫🚫 ABSOLUTELY DO NOT COPY THE TEXT FROM THE TEMPLATE 🚫🚫🚫\n"
+                                "❌ DO NOT include 'FRAME 1', 'FRAME 2', etc. in your output\n"
+                                "❌ DO NOT include '0.00s', '0.25s', '0.50s', etc. in your output\n"
+                                "❌ DO NOT include ANY text, numbers, or labels from the template\n"
+                                "✅ ONLY copy the GRID STRUCTURE (4x4 layout, black lines)\n"
+                                "✅ Fill each panel with CLEAN photorealistic imagery (NO TEXT)\n\n"
+                                "The template shows you WHERE to place each frame in the grid.\n"
+                                "Fill each labeled position with your generated content.\n"
+                                "DO NOT generate one continuous image - generate 16 SEPARATE panels.\n\n"
+                                "=" * 70 + "\n"
+                                "🎥 CAMERA TYPE: VHS CAMCORDER / BODY CAM 🎥\n"
+                                "=" * 70 + "\n\n"
+                                "This is 1993 VHS CAMCORDER footage or BODY CAM footage.\n"
+                                "The camera is STRAPPED TO THE PLAYER'S CHEST/HEAD.\n"
+                                "Think: Police body cam, GoPro, handheld camcorder held at chest level.\n\n"
+                                "📐 FIELD OF VIEW: WIDE ANGLE (28mm-35mm equivalent)\n"
+                                "CRITICAL: Use a WIDE field of view, NOT telephoto/zoomed in.\n"
+                                "• 1993 camcorders had WIDE ANGLE lenses (not zoom)\n"
+                                "• Body cams have WIDE ANGLE lenses (120+ degree FOV)\n"
+                                "• Show MORE of the environment, not less\n"
+                                "• If looking at building, show ENTIRE building + surroundings\n"
+                                "• If in desert, show WIDE landscape, not close-up details\n"
+                                "• MORE sky, MORE ground, MORE peripheral vision\n"
+                                "• Avoid narrow/telephoto/zoomed-in compositions\n\n"
+                                "🚫 ABSOLUTELY FORBIDDEN - ANY OF THESE WILL CAUSE REJECTION:\n"
+                                "❌ 'a person running' - WRONG (3rd person)\n"
+                                "❌ 'a man walking' - WRONG (3rd person)\n"
+                                "❌ 'someone walking away' - WRONG (3rd person)\n"
+                                "❌ 'a figure approaching' - WRONG (3rd person)\n"
+                                "❌ Showing back, legs, body, torso from behind - WRONG\n"
+                                "❌ Profile/side views of player - WRONG\n"
+                                "❌ Camera following a character - WRONG\n"
+                                "❌ Showing player as separate entity - WRONG\n\n"
+                                "IF YOU GENERATE ANY 3RD PERSON SHOTS, THE ENTIRE OUTPUT IS INVALID.\n"
+                                "You CANNOT show the player from outside their body. PERIOD.\n\n"
+                                "✅ CORRECT FIRST-PERSON EXAMPLES:\n"
+                                "• Running: Show GROUND rushing beneath, horizon bouncing, YOUR feet briefly visible at bottom\n"
+                                "• Scrambling: Show HANDS reaching forward, dirt/gravel close-up, ground rushing by\n"
+                                "• Looking around: Show ENVIRONMENT panning left/right as head turns\n"
+                                "• Approaching building: Show BUILDING getting larger, closer, filling frame\n"
+                                "• Examining object: Show OBJECT filling frame as YOU lean in close\n\n"
+                                "CRITICAL: When showing action, show what YOUR EYES SEE while performing that action.\n"
+                                "NOT what an outside observer would see of you performing it.\n\n"
+                                "If the prompt says 'you are running' -> Show ground/horizon from running POV\n"
+                                "If the prompt says 'you scramble' -> Show hands/ground from scrambling POV\n"
+                                "If the prompt says 'you approach' -> Show target getting closer from walking POV\n\n"
+                                "=" * 70 + "\n\n"
+                            )
+                            flipbook_prefix += PROMPTS.get("gemini_flipbook_4panel_prefix", "")
                             
-                            # --- TEMPORAL CONTINUITY: Previous Grid + Last Frame ---
-                            # Pass BOTH the full grid (for context) AND the last frame (for visual matching)
+                            # --- REFERENCE STRATEGY: TEMPLATE FIRST, THEN STYLE REFERENCES ---
+                            # CRITICAL ORDER: The FIRST reference is the PRIMARY structure to copy
+                            # 1. Numbered template (1200x896) - EXACT layout to match
+                            # 2. Previous grid - visual style reference
+                            # 3. Individual frames - continuity reference
                             flipbook_refs = []
-                            template_path = str(ROOT / "prompts" / "flipbook_layout_template.png")
-                            flipbook_refs.append(template_path) # Essential for layout
-
-                            if prev_grid and os.path.exists(prev_grid):
-                                # Full 16-frame context
-                                flipbook_refs.append(prev_grid)
-                                
-                                # CRITICAL: Also pass the LAST FRAME as a direct visual anchor
-                                if prev_last and os.path.exists(prev_last):
-                                    flipbook_refs.append(prev_last)
-                                    print(f"[FLIPBOOK CONTINUITY] Passing grid ({os.path.basename(prev_grid)}) + last frame ({os.path.basename(prev_last)}) for strong temporal continuity", flush=True)
-                                else:
-                                    print(f"[FLIPBOOK CONTINUITY] Passing grid only ({os.path.basename(prev_grid)}) - last frame not available", flush=True)
-                                
-                                # ENHANCED PROMPT: Explicit visual matching instructions
-                                flipbook_prefix = f"🎞️ PREVIOUS SEQUENCE ATTACHED: The 4x4 grid reference image shows the 16 sequential frames that JUST HAPPENED. " \
-                                                 f"The scene evolved from frame 1 (top-left) to frame 16 (bottom-right). " \
-                                                 f"⚠️ CRITICAL VISUAL CONTINUITY: Panel 1 of your NEW grid MUST match frame 16 of the PREVIOUS grid in ALL visual aspects: " \
-                                                 f"SAME lighting and shadows, SAME color palette and tones, SAME camera angle and framing, SAME environment and atmosphere. " \
-                                                 f"The isolated last frame reference shows EXACTLY what panel 1 should look like visually. " \
-                                                 f"This is a seamless CONTINUATION of the previous sequence - maintain perfect visual flow!\n\n" + flipbook_prefix
+                            
+                            # 1. NUMBERED grid template - THIS IS THE PRIMARY STRUCTURE REFERENCE
+                            # Must be FIRST so the AI copies its layout (1200x896, 4x4 grid)
+                            # This template has frame numbers (FRAME 1-16) and time markers
+                            numbered_template_path = str(ROOT / "prompts" / "flipbook_numbered_template.png")
+                            if os.path.exists(numbered_template_path):
+                                flipbook_refs.append(numbered_template_path)
+                                print(f"[FLIPBOOK LAYOUT] Passing NUMBERED template as PRIMARY reference (1200x896)", flush=True)
                             else:
-                                # Fallback to static if no flipbook history (first turn)
-                                flipbook_refs.append(ref_images_to_use[0])
-                                flipbook_prefix = "🎨 MASTER AESTHETIC ATTACHED: Use the provided reference image as your absolute guide for lighting and environment.\n" + flipbook_prefix
+                                # Fallback to blank template if numbered doesn't exist
+                                blank_template_path = str(ROOT / "prompts" / "flipbook_blank_grid_template.png")
+                                if os.path.exists(blank_template_path):
+                                    flipbook_refs.append(blank_template_path)
+                                    print(f"[FLIPBOOK LAYOUT] Passing blank grid template (fallback)", flush=True)
+                                else:
+                                    print(f"[FLIPBOOK WARNING] No grid template found", flush=True)
+                            
+                            # 2. FULL previous flipbook grid (4x4 grid PNG) - reinforces grid structure
+                            if prev_grid and os.path.exists(prev_grid):
+                                flipbook_refs.append(prev_grid)
+                                print(f"[FLIPBOOK CONTINUITY] Passing full previous 4x4 grid: {os.path.basename(prev_grid)}", flush=True)
+                            
+                            # 3. LAST FRAME ONLY from previous flipbook - temporal continuity
+                            # IMPORTANT: Only pass last frame, not first frame (first frame confuses the AI)
+                            if prev_last and os.path.exists(prev_last):
+                                flipbook_refs.append(prev_last)
+                                print(f"[FLIPBOOK CONTINUITY] Passing ONLY last frame for temporal continuity: {os.path.basename(prev_last)}", flush=True)
+                            
+                            if not prev_grid and not prev_last:
+                                print(f"[FLIPBOOK GEN] No previous frames available (first turn after intro)", flush=True)
+                            
+                            print(f"[FLIPBOOK GEN] Using {len(flipbook_refs)} total references (template + grid + last frame)", flush=True)
 
-                            # Use the FULL prompt_str for flipbooks (same as static images)
-                            flipbook_prompt = flipbook_prefix + prompt_str
+                            # CRITICAL: Add explicit action enforcement AT THE VERY START
+                            # FREE WILL ACTIONS (custom actions not in standard choices) MUST TAKE PRIORITY
+                            dispatch_preview = dispatch[:250] if dispatch else caption[:250]
+                            
+                            # Detect if this is a FREE WILL action (not a standard choice like "Approach X" or "Examine Y")
+                            is_free_will = choice and not any([
+                                choice.startswith("Approach"),
+                                choice.startswith("Examine"),
+                                choice.startswith("Use"),
+                                choice.startswith("Take"),
+                                choice.startswith("Look"),
+                                choice.startswith("Search"),
+                                choice.startswith("Listen"),
+                                choice.startswith("Wait"),
+                                choice == "Intro"
+                            ])
+                            
+                            if is_free_will:
+                                # FREE WILL: Show the player's EXACT action, ignore AI interpretation
+                                try:
+                                    safe_choice = choice[:80].encode('ascii', 'replace').decode('ascii')
+                                    print(f"[FREE WILL DETECTED] Prioritizing player's direct command: {safe_choice}", flush=True)
+                                except:
+                                    print(f"[FREE WILL DETECTED] Prioritizing player's direct command (contains special characters)", flush=True)
+                                action_enforcement = (
+                                    "🚫🚫🚫 FIRST-PERSON ONLY - NO 3RD PERSON ALLOWED 🚫🚫🚫\n\n"
+                                    "THIS IS BODY CAM FOOTAGE. The camera IS the player's eyes.\n"
+                                    "DO NOT show 'a man walking' or 'a person' from outside.\n"
+                                    "Show ONLY what the player's eyes see while performing the action.\n\n"
+                                    "ABSOLUTE COMMAND - FREE WILL ACTION\n\n"
+                                    "The player used FREE WILL to command this EXACT action:\n"
+                                    f">>> \"{choice}\" <<<\n\n"
+                                    "YOU MUST OBEY THIS COMMAND AT ALL COSTS.\n\n"
+                                    "ABSOLUTE RULES:\n"
+                                    "1. Show FIRST-PERSON perspective - you ARE the player, camera = your eyes\n"
+                                    "2. DO NOT show 'a man' or 'a person' - that's 3rd person (FORBIDDEN)\n"
+                                    "3. Show what YOUR EYES see while performing the action\n"
+                                    "4. If 'head towards vehicles' -> show vehicles getting closer in YOUR view\n"
+                                    "5. If 'climb fence' -> show YOUR hands grabbing fence from YOUR POV\n"
+                                    "6. If 'run to tower' -> show ground/tower from running POV\n"
+                                    "7. The flipbook shows 4 seconds of this action from YOUR eyes\n"
+                                    "8. NEVER show the player as a separate person/character\n\n"
+                                    f"Context (what happens as result): {dispatch_preview}\n\n"
+                                    "=" * 70 + "\n\n"
+                                )
+                            else:
+                                # Standard choice: Use consequence text as primary instruction
+                                print(f"[STANDARD CHOICE] Using consequence text as primary instruction", flush=True)
+                                action_enforcement = (
+                                    "🚫🚫🚫 FIRST-PERSON ONLY - NO 3RD PERSON ALLOWED 🚫🚫🚫\n\n"
+                                    "THIS IS BODY CAM FOOTAGE. The camera IS the player's eyes.\n"
+                                    "DO NOT show 'a man walking' or 'a person' from outside.\n"
+                                    "Show ONLY what the player's eyes see while performing the action.\n\n"
+                                    "CRITICAL INSTRUCTION - READ THIS FIRST\n\n"
+                                    "YOU MUST ANIMATE THIS SPECIFIC ACTION:\n"
+                                    f">>> {dispatch_preview} <<<\n\n"
+                                    f"Player's choice was: \"{choice}\"\n\n"
+                                    "RULES:\n"
+                                    "1. FIRST-PERSON PERSPECTIVE - Show what YOUR eyes see (NOT a person from outside)\n"
+                                    "2. Show EXACTLY what the text describes from first-person POV\n"
+                                    "3. If text says 'approach' -> show target getting closer in YOUR view\n"
+                                    "4. If text says 'examine' -> show object filling YOUR view\n"
+                                    "5. NEVER show 'a man' or 'a person' - that's 3rd person (FORBIDDEN)\n"
+                                    "6. You ARE the player - camera = your eyes - no external views\n\n"
+                                    "=" * 70 + "\n\n"
+                                )
+                            
+                            # Use the FULL prompt_str for flipbooks with action FIRST
+                            flipbook_prompt = action_enforcement + flipbook_prefix + prompt_str
                             try:
                                 safe_prompt = prompt_str[:100].encode('ascii', 'replace').decode('ascii')
                                 print(f"[FLIPBOOK] Using full prompt with context: {safe_prompt}...", flush=True)
@@ -1762,7 +1883,6 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                                 prompt=flipbook_prompt,
                                 caption=f"{caption}_flipbook",
                                 reference_image_path=flipbook_refs,
-                                strength=0.60,  # TEMPORAL CONTINUITY: Strong adherence to reference (was 0.25)
                                 world_prompt=world_prompt,
                                 time_of_day=use_time_of_day,
                                 action_context=choice,
@@ -1813,7 +1933,6 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                         prompt=prompt_str,
                         caption=caption,
                         reference_image_path=ref_images_to_use,  # Adjusted based on transition type
-                        strength=strength,
                         world_prompt=world_prompt,
                         time_of_day=use_time_of_day,
                         action_context=choice,  # Pass action for FPS hands context
@@ -1840,18 +1959,18 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                 if flipbook_enabled:
                     print(f"[FLIPBOOK] Parallel generation starting for TEXT-TO-IMAGE mode (Turn 0 or no references)")
                     
-                    # CRITICAL: Clear the previous flipbook URL from state BEFORE starting new thread.
+                    # For Turn 0 (intro), clear all flipbook data since there's no previous reference
+                    # NOTE: For subsequent turns, we do NOT clear current_flipbook_url (bot.py clears it after display)
                     try:
                         st_init = _load_state(session_id)
                         st_init['current_flipbook_url'] = None
                         st_init['flipbook_last_frame'] = None
                         st_init['flipbook_first_frame'] = None
-                        # For Turn 0, we CAN clear the grid since there's no previous one to reference
                         st_init['flipbook_last_grid'] = None
                         _save_state(st_init, session_id)
-                        print(f"[FLIPBOOK] Reset flipbook data in state for Turn 0.")
+                        print(f"[FLIPBOOK] Reset all flipbook data for Turn 0 (intro).")
                     except Exception as e:
-                        print(f"[FLIPBOOK ERROR] Failed to reset data: {e}")
+                        print(f"[FLIPBOOK ERROR] Failed to manage flipbook data: {e}")
 
                     import threading
                     
@@ -1867,44 +1986,156 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                             # Add flipbook prefix - SPECIAL CASE for intro
                             flipbook_prefix = PROMPTS.get("gemini_flipbook_4panel_prefix", "")
                             
-                            # INTRO: Use environmental camera prefix, not body camera
-                            if choice and choice.lower().strip() == "intro":
-                                flipbook_prefix = (
-                                    "📋 VISUAL TEMPLATE ATTACHED: Match the 4x4 grid layout exactly as shown in the reference template image.\n\n"
-                                    "🎬 FLIPBOOK MODE - ENVIRONMENTAL ESTABLISHING SHOT\n\n"
-                                    "Create a 4x4 grid showing a SLOW, CINEMATIC reveal of the environment over 4 seconds.\n"
-                                    "NO PEOPLE, NO CHARACTERS, NO BODY PARTS visible.\n"
-                                    "Stationary camera on tripod/rock - only subtle pan or tilt movement.\n"
-                                    "Show the location BEFORE anyone arrives - pure environment.\n\n"
-                                    "Frame 1: Start with a detail (ground, sign, horizon)\n"
-                                    "Frames 2-8: Slowly pan/tilt to reveal more of the scene\n"
-                                    "Frames 9-16: Complete the reveal showing the full landscape\n"
-                                )
-                            else:
-                                flipbook_prefix = "📋 VISUAL TEMPLATE ATTACHED: Match the 4x4 grid layout exactly as shown in the reference template image.\n\n" + flipbook_prefix
+                            # Add standard template instruction
+                            flipbook_prefix = (
+                                "LAYOUT REFERENCE: The attached image is a 4x4 grid template showing STRUCTURAL LAYOUT ONLY.\n\n"
+                                "Use the reference for:\n"
+                                "- Grid arrangement (4 rows, 4 columns, 16 panels total)\n"
+                                "- Panel dimensions and spacing\n\n"
+                                "DO NOT use the reference for:\n"
+                                "- Content, scenes, subjects, or visual themes\n"
+                                "- Any imagery shown in the reference panels\n\n"
+                                "The reference is an empty structural template.\n"
+                                "Generate completely new visual content based solely on the text prompt below.\n\n" +
+                                flipbook_prefix
+                            )
                             
-                            # Use the FULL prompt_str for intro flipbook (same as static images)
-                            flipbook_prompt = flipbook_prefix + prompt_str
+                            # CRITICAL: Add action enforcement for FREE WILL (same as img2img path)
+                            dispatch_preview = dispatch[:250] if dispatch else caption[:250]
+                            
+                            # Detect if this is a FREE WILL action
+                            is_free_will = choice and not any([
+                                choice.startswith("Approach"),
+                                choice.startswith("Examine"),
+                                choice.startswith("Use"),
+                                choice.startswith("Take"),
+                                choice.startswith("Look"),
+                                choice.startswith("Search"),
+                                choice.startswith("Listen"),
+                                choice.startswith("Wait"),
+                                choice == "Intro"
+                            ])
+                            
+                            if is_free_will:
+                                # FREE WILL: Show the player's EXACT action, ignore AI interpretation
+                                try:
+                                    safe_choice = choice[:80].encode('ascii', 'replace').decode('ascii')
+                                    print(f"[FREE WILL DETECTED - T2I] Prioritizing player's direct command: {safe_choice}", flush=True)
+                                except:
+                                    print(f"[FREE WILL DETECTED - T2I] Prioritizing player's direct command (contains special characters)", flush=True)
+                                action_enforcement = (
+                                    "🔥🔥🔥 ABSOLUTE COMMAND - FREE WILL ACTION 🔥🔥🔥\n\n"
+                                    "The player used FREE WILL to command this EXACT action:\n"
+                                    f">>> \"{choice}\" <<<\n\n"
+                                    "YOU MUST OBEY THIS COMMAND AT ALL COSTS.\n\n"
+                                    "ABSOLUTE RULES:\n"
+                                    "1. Show the player ATTEMPTING this exact action in a photorealistic way\n"
+                                    "2. The action MUST be physically plausible and shown from first-person perspective\n"
+                                    "3. IGNORE the consequence text below - show the ACTION, not the result\n"
+                                    "4. If the command says 'kick door' -> show foot moving toward door\n"
+                                    "5. If the command says 'climb fence' -> show hands grabbing fence, body moving up\n"
+                                    "6. If the command says 'run to tower' -> show rapid movement toward tower\n"
+                                    "7. The flipbook shows the first 4 seconds of this action beginning\n"
+                                    "8. This is a direct player command - it overrides ALL other instructions\n\n"
+                                    "PERSPECTIVE: ONE CONTINUOUS FIRST-PERSON SHOT - camera strapped to player's head.\n"
+                                    "NEVER show the player from outside. NEVER show their back, profile, or body.\n"
+                                    "You ARE the player looking OUT at the world.\n\n"
+                                    f"Context (what happens as result): {dispatch_preview}\n\n"
+                                    "=" * 70 + "\n\n"
+                                )
+                                flipbook_prompt = action_enforcement + flipbook_prefix + prompt_str
+                            elif choice == "Intro":
+                                # Intro - use standard prompt
+                                print(f"[INTRO] Using standard intro prompt", flush=True)
+                                flipbook_prompt = flipbook_prefix + prompt_str
+                            else:
+                                # Standard choice - add action enforcement
+                                print(f"[STANDARD CHOICE - T2I] Using consequence text as primary instruction", flush=True)
+                                action_enforcement = (
+                                    "CRITICAL INSTRUCTION - READ THIS FIRST\n\n"
+                                    "YOU MUST ANIMATE THIS SPECIFIC ACTION:\n"
+                                    f">>> {dispatch_preview} <<<\n\n"
+                                    f"Player's choice was: \"{choice}\"\n\n"
+                                    "RULES:\n"
+                                    "1. Show EXACTLY what the text above describes\n"
+                                    "2. DO NOT show climbing ladders, opening boxes, or indoor scenes unless the text says so\n"
+                                    "3. If text says 'outside' -> show outdoor scene\n"
+                                    "4. If text says 'approach' -> show walking toward something\n"
+                                    "5. If text says 'examine' -> show looking at something\n"
+                                    "6. IGNORE any conflicting visual references - follow the TEXT ONLY\n\n"
+                                    "PERSPECTIVE: ONE CONTINUOUS FIRST-PERSON SHOT - camera strapped to player's head.\n"
+                                    "NEVER show the player from outside. NEVER show their back, profile, or body.\n"
+                                    "You ARE the player looking OUT at the world. No cuts, no edits, no perspective changes.\n\n"
+                                    "=" * 70 + "\n\n"
+                                )
+                                flipbook_prompt = action_enforcement + flipbook_prefix + prompt_str
                             try:
                                 safe_prompt = prompt_str[:100].encode('ascii', 'replace').decode('ascii')
                                 print(f"[FLIPBOOK T2I] Using full prompt with context: {safe_prompt}...", flush=True)
                             except:
                                 print(f"[FLIPBOOK T2I] Using full prompt (contains special characters)", flush=True)
                             
-                            # Use ONLY the layout template as reference for Turn 0
-                            template_path = str(ROOT / "prompts" / "flipbook_layout_template.png")
+                            # For intro (Turn 0), use PURE T2I with NO reference images
+                            # ANY reference (even blank template) confuses the AI for intro
+                            print(f"[FLIPBOOK T2I] Using PURE T2I with INTRO-SPECIFIC prefix (no reference)", flush=True)
+                            from gemini_image_utils import generate_with_gemini
                             
-                            grid_path = generate_gemini_img2img(
+                            # INTRO-SPECIFIC flipbook prefix - ENVIRONMENTAL ONLY, NO HANDS/PERSON
+                            intro_flipbook_prefix = (
+                                "🚨🚨🚨 ABSOLUTE COMMAND - READ THIS FIRST 🚨🚨🚨\n\n"
+                                "YOU MUST GENERATE A 4x4 GRID OF 16 SEPARATE IMAGES.\n"
+                                "DO NOT GENERATE ONE CONTINUOUS IMAGE.\n"
+                                "GENERATE 4 ROWS × 4 COLUMNS = 16 SEPARATE PANELS.\n\n"
+                                "🚫🚫🚫 ABSOLUTELY NO TEXT IN THE OUTPUT 🚫🚫🚫\n"
+                                "❌ DO NOT include 'FRAME 1', 'FRAME 2', etc.\n"
+                                "❌ DO NOT include timestamps like '0.00s', '0.25s', etc.\n"
+                                "❌ DO NOT include ANY text, numbers, labels, or overlays\n"
+                                "✅ ONLY generate CLEAN photorealistic imagery (NO TEXT)\n\n"
+                                "EACH PANEL IS A DISTINCT FRAME IN A 16-FRAME ANIMATION.\n"
+                                "Your output MUST show clear visual separation between all 16 panels.\n\n"
+                                "FLIPBOOK MODE - ENVIRONMENTAL ESTABLISHING SHOT\n\n"
+                                "**ALL panels must be the same resolution and arranged in a perfect grid.**\n\n"
+                                "This is an ESTABLISHING SHOT showing a location BEFORE the player enters.\n"
+                                "Think: Opening scene of a documentary or film showing the setting.\n\n"
+                                "📐 FIELD OF VIEW: EXTRA WIDE ANGLE (24mm-28mm equivalent)\n"
+                                "CRITICAL: Use an EXTREMELY WIDE field of view for this establishing shot.\n"
+                                "• Show the ENTIRE facility complex in frame\n"
+                                "• Show MAXIMUM landscape - sky, horizon, distant terrain\n"
+                                "• Think: Wide documentary establishing shot\n"
+                                "• MORE environment visible, NOT close-up details\n"
+                                "• Avoid narrow/telephoto compositions\n\n"
+                                "CRITICAL RULES FOR INTRO:\n"
+                                "• WIDE LANDSCAPE VIEW from an elevated/distant vantage point\n"
+                                "• ABSOLUTELY NO people, NO hands, NO body parts, NO character visible\n"
+                                "• Show ONLY the environment: buildings, landscape, terrain, sky\n"
+                                "• This is a STATIONARY CAMERA on a tripod or mounted position\n"
+                                "• Documentary/observational style - showing the location FROM OUTSIDE\n"
+                                "• The 16 frames show subtle environmental changes over 4 seconds:\n"
+                                "  - Dust blowing, clouds moving, light shifting\n"
+                                "  - NO major camera movement, just ambient atmosphere\n"
+                                "  - Each frame is slightly different but maintains same viewpoint\n\n"
+                                "GRID LAYOUT:\n"
+                                "Row 1: Frames 1-4 (0-1 seconds) - Initial view\n"
+                                "Row 2: Frames 5-8 (1-2 seconds) - Subtle changes\n"
+                                "Row 3: Frames 9-12 (2-3 seconds) - Continued atmosphere\n"
+                                "Row 4: Frames 13-16 (3-4 seconds) - Final establishing view\n\n"
+                                "VHS AESTHETICS:\n"
+                                "• 1993 camcorder footage: grainy, desaturated, analog degradation\n"
+                                "• Heavy color bleed, tracking errors, VHS artifacts\n"
+                                "• NO text overlays, NO timecodes, NO borders\n\n"
+                                "=" * 70 + "\n\n"
+                            )
+                            
+                            flipbook_prompt = intro_flipbook_prefix + prompt_str
+                            
+                            grid_path = generate_with_gemini(
                                 prompt=flipbook_prompt,
                                 caption=f"{caption}_flipbook",
-                                reference_image_path=[template_path],
-                                strength=0.50, # Moderate strength to follow template layout but allow scene creation (increased from 0.35)
                                 world_prompt=world_prompt,
                                 time_of_day=use_time_of_day,
                                 action_context=choice,
                                 hd_mode=True, # Use Pro model for HIGH QUALITY flipbooks
-                                output_dir=img_dir,
-                                is_flipbook=True
+                                output_dir=img_dir
                             )
                             
                             if grid_path:
@@ -2183,7 +2414,6 @@ async def _gen_flipbook_async(canonical_frame_path: str, prompt_str: str, captio
             prompt=flipbook_prompt,
             caption=f"{caption}_flipbook",  # Distinguish from canonical
             reference_image_path=[canonical_frame_path],  # Single reference
-            strength=0.35,  # Allow more variation for sequence
             world_prompt=world_prompt,
             time_of_day=time_of_day,
             action_context=choice,
@@ -2202,7 +2432,7 @@ async def _gen_flipbook_async(canonical_frame_path: str, prompt_str: str, captio
                 
                 gif_path = grid_to_flipbook_gif(
                     Path(flipbook_path),
-                    duration_ms=250,  # 250ms per frame = 4 seconds total
+                    duration_ms=500,  # 500ms per frame = 8 seconds total (2x slower for better viewing)
                     loop=0,  # Loop infinitely
                     save_panels=False  # Don't save individual panels
                 )
@@ -2751,7 +2981,6 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                                     prompt=flipbook_prompt,
                                     caption=f"{vision_dispatch_for_image}_flipbook",
                                     reference_image_path=[new_image_url],  # Use canonical as reference
-                                    strength=0.35,
                                     world_prompt=world_prompt_for_image,
                                     time_of_day=state.get('time_of_day', ''),
                                     action_context=choice,
@@ -2765,7 +2994,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                                     # Convert grid to animated GIF
                                     gif_path = grid_to_flipbook_gif(
                                         Path(grid_path),
-                                        duration_ms=250,
+                                        duration_ms=500,  # 500ms per frame = 8 seconds total
                                         loop=0,
                                         save_panels=False
                                     )
@@ -3595,6 +3824,41 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
             "to torso", "to limb", "trauma", "burns to", "pressure on", "collapses on"
         ])
         
+        # Detect FREE WILL actions (custom actions not in standard choices)
+        is_free_will = choice and not any([
+            choice.startswith("Approach"),
+            choice.startswith("Examine"),
+            choice.startswith("Use"),
+            choice.startswith("Take"),
+            choice.startswith("Look"),
+            choice.startswith("Search"),
+            choice.startswith("Listen"),
+            choice.startswith("Wait"),
+            choice == "Intro"
+        ])
+        
+        # Build FREE WILL emphasis if detected
+        free_will_header = ""
+        if is_free_will:
+            try:
+                safe_choice = choice[:80].encode('ascii', 'replace').decode('ascii')
+                print(f"[FREE WILL ACTION DETECTED] {safe_choice}", flush=True)
+            except:
+                print(f"[FREE WILL ACTION DETECTED] (choice contains special characters)", flush=True)
+            free_will_header = (
+                "\n\n🔥🔥🔥 THIS IS A FREE WILL ACTION 🔥🔥🔥\n\n"
+                f"The player used FREE WILL to command: \"{choice}\"\n\n"
+                "CRITICAL INSTRUCTIONS FOR FREE WILL:\n"
+                "1. The player IS PERFORMING this exact action RIGHT NOW\n"
+                "2. Describe them DOING the action from first-person perspective\n"
+                "3. Show the ATTEMPT - the physical movements, the effort\n"
+                "4. THEN show the immediate consequence/result\n"
+                "5. Example: If they say 'Kick door' → 'You draw back your leg and slam your boot into the door. [result]'\n"
+                "6. Example: If they say 'Climb fence' → 'You grab the chain-link and haul yourself up. [result]'\n"
+                "7. Make their command REAL and VISIBLE in the text\n\n"
+                "Your dispatch MUST start by showing them performing this specific action.\n"
+            )
+        
         # Build fate modifier text
         fate_modifier = ""
         if fate == "LUCKY":
@@ -3606,6 +3870,7 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
         # Use JUST the dispatch_sys instructions (which has JSON format)
         json_prompt = (
             f"{dispatch_sys}\n\n"
+            f"{free_will_header}"
             f"PLAYER CHOICE: '{choice}'\n"
             f"WORLD CONTEXT: {world_prompt}\n\n"
             f"{fate_modifier}"
@@ -3974,29 +4239,63 @@ def advance_turn_choices_deferred(consequence_img_url: str, dispatch: str, visio
     state = _load_state(session_id)
     
     # --- FLIPBOOK GROUNDING ---
-    # If flipbook mode is on, use the LAST frame of the sequence for all vision/choice grounding.
-    # This ensures the AI knows exactly where the player ended up after the 4-second sequence.
+    # If flipbook mode is on, analyze BOTH first and last frames for better context
     analysis_img_url = consequence_img_url
+    flipbook_first = None
+    flipbook_last = None
+    
     if state.get("flipbook_mode", False):
+        flipbook_first = state.get('flipbook_first_frame')
         flipbook_last = state.get('flipbook_last_frame')
         if flipbook_last and os.path.exists(flipbook_last):
-            print(f"[VISION] Prioritizing flipbook last frame for grounding: {os.path.basename(flipbook_last)}")
-            analysis_img_url = flipbook_last
+            print(f"[VISION] Flipbook mode - will analyze first and last frames")
+            analysis_img_url = flipbook_last  # Primary analysis uses last frame
 
     # --- VISION ANALYSIS (Moved to top for grounding) ---
     vision_analysis_text = ""
     if analysis_img_url and VISION_ENABLED:
-        print(f"[VISION] Analyzing image for spatial context (source: {'flipbook' if analysis_img_url != consequence_img_url else 'static'})...")
-        try:
-            vision_result = _vision_analyze_all(analysis_img_url)
-            vision_analysis_text = vision_result.get("description", "")
-            if vision_analysis_text:
-                print(f"[VISION] Analysis complete: {vision_analysis_text[:100]}...")
-            else:
-                print(f"[VISION] No description returned")
-        except Exception as e:
-            print(f"[VISION] Analysis failed: {e}")
-            vision_analysis_text = ""
+        # Analyze BOTH frames if flipbook mode
+        if flipbook_first and flipbook_last and os.path.exists(flipbook_first) and os.path.exists(flipbook_last):
+            print(f"[VISION] Analyzing FIRST frame: {os.path.basename(flipbook_first)}")
+            try:
+                first_result = _vision_analyze_all(flipbook_first)
+                first_desc = first_result.get("description", "")
+                print(f"[VISION] First frame: {first_desc[:80]}...")
+            except Exception as e:
+                print(f"[VISION] First frame analysis failed: {e}")
+                first_desc = ""
+            
+            print(f"[VISION] Analyzing LAST frame: {os.path.basename(flipbook_last)}")
+            try:
+                last_result = _vision_analyze_all(flipbook_last)
+                last_desc = last_result.get("description", "")
+                print(f"[VISION] Last frame: {last_desc[:80]}...")
+            except Exception as e:
+                print(f"[VISION] Last frame analysis failed: {e}")
+                last_desc = ""
+            
+            # Combine both descriptions
+            if first_desc and last_desc:
+                vision_analysis_text = f"ANIMATION CONTEXT:\nStarting position: {first_desc}\nEnding position: {last_desc}"
+            elif last_desc:
+                vision_analysis_text = last_desc
+            elif first_desc:
+                vision_analysis_text = first_desc
+                
+            print(f"[VISION] Combined flipbook analysis complete")
+        else:
+            # Single frame analysis (static image or only last frame available)
+            print(f"[VISION] Analyzing image for spatial context (source: {'flipbook' if analysis_img_url != consequence_img_url else 'static'})...")
+            try:
+                vision_result = _vision_analyze_all(analysis_img_url)
+                vision_analysis_text = vision_result.get("description", "")
+                if vision_analysis_text:
+                    print(f"[VISION] Analysis complete: {vision_analysis_text[:100]}...")
+                else:
+                    print(f"[VISION] No description returned")
+            except Exception as e:
+                print(f"[VISION] Analysis failed: {e}")
+                vision_analysis_text = ""
 
     # Generate situation summary with BOTH narrative and visual context
     situation_summary = _generate_situation_report(
@@ -4380,29 +4679,63 @@ def generate_intro_choices_deferred(image_url: str, prologue: str, vision_dispat
     state = _load_state(session_id)
     
     # --- FLIPBOOK GROUNDING ---
-    # If flipbook mode is on, use the LAST frame of the sequence for all vision/choice grounding.
-    # This ensures Turn 1 starts from where the Turn 0 animation ended.
+    # If flipbook mode is on, analyze BOTH first and last frames for better context
     analysis_img_url = image_url
+    flipbook_first = None
+    flipbook_last = None
+    
     if state.get("flipbook_mode", False):
+        flipbook_first = state.get('flipbook_first_frame')
         flipbook_last = state.get('flipbook_last_frame')
         if flipbook_last and os.path.exists(flipbook_last):
-            print(f"[VISION INTRO] Prioritizing intro flipbook last frame for grounding: {os.path.basename(flipbook_last)}")
-            analysis_img_url = flipbook_last
+            print(f"[VISION INTRO] Flipbook mode - will analyze first and last frames")
+            analysis_img_url = flipbook_last  # Primary analysis uses last frame
 
     # --- VISION ANALYSIS (Moved to top for grounding) ---
     vision_analysis_text = ""
     if analysis_img_url and VISION_ENABLED:
-        print(f"[VISION INTRO] Analyzing image for spatial context (source: {'flipbook' if analysis_img_url != image_url else 'static'})...")
-        try:
-            vision_result = _vision_analyze_all(analysis_img_url)
-            vision_analysis_text = vision_result.get("description", "")
-            if vision_analysis_text:
-                print(f"[VISION INTRO] Analysis complete: {vision_analysis_text[:100]}...")
-            else:
-                print(f"[VISION INTRO] No description returned")
-        except Exception as e:
-            print(f"[VISION INTRO] Analysis failed: {e}")
-            vision_analysis_text = ""
+        # Analyze BOTH frames if flipbook mode
+        if flipbook_first and flipbook_last and os.path.exists(flipbook_first) and os.path.exists(flipbook_last):
+            print(f"[VISION INTRO] Analyzing FIRST frame: {os.path.basename(flipbook_first)}")
+            try:
+                first_result = _vision_analyze_all(flipbook_first)
+                first_desc = first_result.get("description", "")
+                print(f"[VISION INTRO] First frame: {first_desc[:80]}...")
+            except Exception as e:
+                print(f"[VISION INTRO] First frame analysis failed: {e}")
+                first_desc = ""
+            
+            print(f"[VISION INTRO] Analyzing LAST frame: {os.path.basename(flipbook_last)}")
+            try:
+                last_result = _vision_analyze_all(flipbook_last)
+                last_desc = last_result.get("description", "")
+                print(f"[VISION INTRO] Last frame: {last_desc[:80]}...")
+            except Exception as e:
+                print(f"[VISION INTRO] Last frame analysis failed: {e}")
+                last_desc = ""
+            
+            # Combine both descriptions
+            if first_desc and last_desc:
+                vision_analysis_text = f"ANIMATION CONTEXT:\nStarting position: {first_desc}\nEnding position: {last_desc}"
+            elif last_desc:
+                vision_analysis_text = last_desc
+            elif first_desc:
+                vision_analysis_text = first_desc
+                
+            print(f"[VISION INTRO] Combined flipbook analysis complete")
+        else:
+            # Single frame analysis (static image or only last frame available)
+            print(f"[VISION INTRO] Analyzing image for spatial context (source: {'flipbook' if analysis_img_url != image_url else 'static'})...")
+            try:
+                vision_result = _vision_analyze_all(analysis_img_url)
+                vision_analysis_text = vision_result.get("description", "")
+                if vision_analysis_text:
+                    print(f"[VISION INTRO] Analysis complete: {vision_analysis_text[:100]}...")
+                else:
+                    print(f"[VISION INTRO] No description returned")
+            except Exception as e:
+                print(f"[VISION INTRO] Analysis failed: {e}")
+                vision_analysis_text = ""
 
     # Generate situation report with vision grounding
     situation_summary = _generate_situation_report(
