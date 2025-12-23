@@ -1088,50 +1088,6 @@ def summarize_world_prompt_for_image(world_prompt: str) -> str:
     # Don't use lore - just summarizing existing text
     return _ask(prompt, model="gemini", temp=1.0, tokens=48, use_lore=False)
 
-def build_flipbook_prompt(player_choice: str, caption: str, time_of_day: str = "") -> str:
-    """
-    Build a lean, action-focused prompt specifically for flipbook animation.
-    Unlike static images, flipbooks need minimal context and maximum action clarity.
-    
-    Special case: If choice is "Intro", creates an establishing shot instead of an action.
-    """
-    # Extract the PHYSICAL ACTION from the choice (remove emoji/formatting)
-    action = player_choice.strip().lstrip("???").strip()
-    
-    # SPECIAL CASE: Intro needs an establishing shot, not an action
-    if action.lower() == "intro":
-        prompt = f"ESTABLISHING SHOT: Slow reveal of the scene\n\n"
-        prompt += f"First-person documentary camera. Show a 4-second cinematic establishing shot. "
-        prompt += f"The camera slowly pans/tilts to reveal the environment. "
-        prompt += f"Subtle handheld breathing and natural weight shifts. "
-        prompt += f"Start with a detail (ground, sign, horizon) and gradually reveal the full scene.\n"
-        
-        # For intro, use the FULL caption for rich scene description
-        if caption:
-            prompt += f"\nSCENE TO REVEAL: {caption}"
-        
-        if time_of_day:
-            prompt += f"\n{time_of_day}"
-        
-        return prompt
-    
-    # Build minimal, action-focused prompt for normal turns
-    prompt = f"ANIMATE: {action}\n\n"
-    prompt += f"First-person body camera view. "
-    prompt += f"Show the first 4 seconds of executing this action. "
-    prompt += f"Natural body movement and camera shake. "
-    
-    # Add ONLY essential context from dispatch (first sentence)
-    if caption:
-        # Get first sentence only
-        first_sentence = caption.split('.')[0] + '.' if '.' in caption else caption
-        prompt += f"\nContext: {first_sentence}"
-    
-    # Add time/lighting if available
-    if time_of_day:
-        prompt += f"\n{time_of_day}"
-    
-    return prompt
 
 def _generate_dispatch(choice: str, state: dict, prev_state: dict = None) -> dict:
     """Generate dispatch with death detection. Returns dict with 'dispatch' and 'player_alive' keys."""
@@ -1776,18 +1732,13 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                                 flipbook_refs.append(ref_images_to_use[0])
                                 flipbook_prefix = "🎨 MASTER AESTHETIC ATTACHED: Use the provided reference image as your absolute guide for lighting and environment.\n" + flipbook_prefix
 
-                            # BUILD LEAN FLIPBOOK-SPECIFIC PROMPT (not verbose static image prompt!)
-                            flipbook_action_prompt = build_flipbook_prompt(
-                                player_choice=choice,
-                                caption=caption,
-                                time_of_day=use_time_of_day
-                            )
-                            flipbook_prompt = flipbook_prefix + flipbook_action_prompt
+                            # Use the FULL prompt_str for flipbooks (same as static images)
+                            flipbook_prompt = flipbook_prefix + prompt_str
                             try:
-                                safe_prompt = flipbook_action_prompt[:100].encode('ascii', 'replace').decode('ascii')
-                                print(f"[FLIPBOOK] Built lean action-focused prompt: {safe_prompt}...", flush=True)
+                                safe_prompt = prompt_str[:100].encode('ascii', 'replace').decode('ascii')
+                                print(f"[FLIPBOOK] Using full prompt with context: {safe_prompt}...", flush=True)
                             except:
-                                print(f"[FLIPBOOK] Built lean action-focused prompt (contains special characters)", flush=True)
+                                print(f"[FLIPBOOK] Using full prompt (contains special characters)", flush=True)
                             
                             # Use layout template + parent references
                             grid_path = generate_gemini_img2img(
@@ -1900,18 +1851,13 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                             flipbook_prefix = PROMPTS.get("gemini_flipbook_4panel_prefix", "")
                             flipbook_prefix = "📋 VISUAL TEMPLATE ATTACHED: Match the 4x4 grid layout exactly as shown in the reference template image.\n\n" + flipbook_prefix
                             
-                            # BUILD LEAN FLIPBOOK-SPECIFIC PROMPT for Turn 0
-                            flipbook_action_prompt = build_flipbook_prompt(
-                                player_choice=choice,
-                                caption=caption,
-                                time_of_day=use_time_of_day
-                            )
-                            flipbook_prompt = flipbook_prefix + flipbook_action_prompt
+                            # Use the FULL prompt_str for intro flipbook (same as static images)
+                            flipbook_prompt = flipbook_prefix + prompt_str
                             try:
-                                safe_prompt = flipbook_action_prompt[:100].encode('ascii', 'replace').decode('ascii')
-                                print(f"[FLIPBOOK T2I] Built lean action-focused prompt: {safe_prompt}...", flush=True)
+                                safe_prompt = prompt_str[:100].encode('ascii', 'replace').decode('ascii')
+                                print(f"[FLIPBOOK T2I] Using full prompt with context: {safe_prompt}...", flush=True)
                             except:
-                                print(f"[FLIPBOOK T2I] Built lean action-focused prompt (contains special characters)", flush=True)
+                                print(f"[FLIPBOOK T2I] Using full prompt (contains special characters)", flush=True)
                             
                             # Use ONLY the layout template as reference for Turn 0
                             template_path = str(ROOT / "prompts" / "flipbook_layout_template.png")
@@ -2187,14 +2133,13 @@ async def _gen_flipbook_async(canonical_frame_path: str, prompt_str: str, captio
             print(f"[FLIPBOOK] ERROR: flipbook prompt template not found in prompts!")
             return None
         
-        # BUILD LEAN FLIPBOOK-SPECIFIC PROMPT (async path)
-        flipbook_action_prompt = build_flipbook_prompt(
-            player_choice=choice,
-            caption=caption,
-            time_of_day=time_of_day
-        )
-        flipbook_prompt = flipbook_prefix + flipbook_action_prompt
-        print(f"[FLIPBOOK ASYNC] Built lean action-focused prompt: {flipbook_action_prompt[:100]}...")
+        # Use the FULL prompt_str that was already built
+        flipbook_prompt = flipbook_prefix + prompt_str
+        try:
+            safe_prompt = prompt_str[:100].encode('ascii', 'replace').decode('ascii')
+            print(f"[FLIPBOOK ASYNC] Using full prompt with context: {safe_prompt}...", flush=True)
+        except:
+            print(f"[FLIPBOOK ASYNC] Using full prompt (contains special characters)", flush=True)
         
         # Generate flipbook using img2img from the canonical frame
         from gemini_image_utils import generate_gemini_img2img
@@ -2757,14 +2702,17 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                                 
                                 img_dir = _get_image_dir(state.get('session_id', 'default'))
                                 
-                                # BUILD LEAN FLIPBOOK-SPECIFIC PROMPT (old code path)
+                                # Build FULL prompt using same method as main path (old code path)
                                 flipbook_prefix = PROMPTS.get("gemini_flipbook_4panel_prefix", "")
-                                flipbook_action_prompt = build_flipbook_prompt(
+                                full_prompt = build_image_prompt(
                                     player_choice=choice,
-                                    caption=vision_dispatch_for_image,
-                                    time_of_day=state.get('time_of_day', '')
+                                    dispatch=vision_dispatch_for_image,
+                                    prev_vision_analysis="",
+                                    hard_transition=hard_trans,
+                                    is_timeout_penalty=False
                                 )
-                                flipbook_prompt = flipbook_prefix + flipbook_action_prompt if flipbook_prefix else flipbook_action_prompt
+                                flipbook_prompt = flipbook_prefix + full_prompt if flipbook_prefix else full_prompt
+                                print(f"[FLIPBOOK OLD PATH] Using full prompt with context", flush=True)
                                 
                                 # Generate 4x4 grid
                                 grid_path = generate_gemini_img2img(
