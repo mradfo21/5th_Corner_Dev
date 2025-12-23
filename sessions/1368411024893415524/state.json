@@ -1,10 +1,13 @@
 {
-  "world_prompt": "You observe the facility from a vantage point atop the red mesa.",
+  "world_prompt": "WHO: Jason Fleece, a freelance photojournalist driven by a morbid curiosity and a desperate need for a story, finds himself drawn into the unsettling mysteries surrounding the Four Corners Quarantine Facility in 1993. Armed with his trusty Minolta camera, a worn backpack containing spare film and a few meager rations, and a growing sense of dread, Jason is determined to uncover the truth behind the facility's grim purpose, even if it costs him his sanity.\n\nWHERE: Jason now finds himself inside the perimeter of the Four Corners Quarantine Facility. After launching himself over the fence, he landed hard on the uneven ground. The warning sign, now behind him, serves as a stark reminder of the dangers that lie ahead. The immediate area is a desolate stretch of cracked earth and sparse, withered vegetation, typical of the high desert. The imposing structure of the facility looms in the distance, a concrete monolith against the pale sky.\n\nWHAT'S HAPPENED: Jason's journey began with a tip – a hushed rumor of strange occurrences at the Four Corners facility, whispers of experimental treatments and grotesque mutations. Driven by a desire to break a major story, he ignored the warnings and ventured into the restricted zone.\n\nHis initial approach was marked by caution. He first encountered the imposing chain-link fence, topped with razor wire and emblazoned with stark warning signs. He tried to call out to the hooded figure standing motionless behind the fence, but received no response, only an unnerving silence. He observed the figure closely, noting the unsettling stillness and the way the hood obscured its face.\n\nUnable to find a way around, he resorted to brute force, prying open a section of the fence, creating a gap just large enough to squeeze through. Before entering, he scaled a reddish cliff to gain a better vantage point, surveying the landscape beyond the fence.\n\nFinally, he made the leap, launching himself over the fence and into the unknown.\n\nTHREATS: The most immediate threat is the unknown nature of the facility itself. The warning signs suggest a highly contagious and dangerous environment. The hooded figure behind the fence represents an unknown entity, its intentions unclear. The facility is likely guarded, either by security personnel or by something far more sinister. The environment itself is hostile, with the harsh desert climate and the potential for unforeseen hazards adding to the danger. The rapidly escalating \"Chaos Level\" suggests that Jason's actions are attracting unwanted attention, and that the situation is becoming increasingly unstable.\n\nENVIRONMENT: The Four Corners Quarantine Facility sits nestled within the desolate landscape of the high desert. The area is characterized by its sparse vegetation, rocky terrain, and extreme temperature fluctuations. The facility itself is a sprawling complex of concrete buildings, surrounded by fences and security checkpoints. The architecture is utilitarian and imposing, designed to contain and isolate.\n\nThe air is thick with a sense of foreboding, carrying the faint scent of dust and decay. The silence is broken only by the occasional gust of wind and the distant hum of machinery. The sky is a pale, washed-out blue, reflecting the harshness of the environment.\n\nThe fence, now behind him, is a rusted chain-link barrier topped with razor wire. Warning signs are posted at regular intervals, their messages faded and peeling. The ground is littered with debris, including discarded equipment and scraps of metal.\n\nThe reddish cliff he scaled earlier provides a partial view of the surrounding area, revealing the vastness of the desert and the isolated nature of the facility.\n\nTONE: The overall tone is one of mounting dread and suspense. The world is presented through the lens of a 1993 VHS camera, adding a layer of visual distortion and degradation. The focus is on grounded realism, with an emphasis on the gritty details of the environment and the physical and psychological toll on Jason. The possibility of body horror is ever-present, lurking beneath the surface of the narrative.\n\nThe silence is oppressive, broken only by the sounds of Jason's own breathing and the occasional unsettling noise from within the facility. The feeling of isolation is palpable, reinforcing the sense that Jason is completely alone and vulnerable.\n\nThe escalating \"Chaos Level\" creates a sense of urgency, suggesting that time is running out and that the situation is rapidly spiraling out of control. The unknown nature of the threats adds to the sense of paranoia and uncertainty.\n\nThe descriptions are visceral and unsettling, designed to evoke a sense of unease and revulsion. The overall effect is one of a slow-burn horror, gradually building to a crescendo of terror.",
   "current_phase": "normal",
-  "chaos_level": 0,
-  "last_choice": "",
-  "last_saved": "2025-12-23T00:02:24.697047+00:00",
-  "seen_elements": [],
+  "chaos_level": 1,
+  "last_choice": "run toward facility",
+  "last_saved": "2025-12-23T00:08:21.481561+00:00",
+  "seen_elements": [
+    "Fence",
+    "facility"
+  ],
   "inventory": [],
   "player_state": {
     "alive": true,
@@ -18,12 +21,11 @@
   "time_of_day": "6:30pm | weather: clear, warm light | mood: tense anticipation",
   "flipbook_mode": true,
   "current_flipbook_url": null,
-  "flipbook_last_frame": "C:\\Github\\5th_Corner_Dev\\Working\\5th_Corner_Dev\\sessions\\1368411024893415524\\images\\3662269250_From_the_mesa_s_edge__the_entire_Horizon_facilit_panels\\panel_16.png",
-  "flipbook_first_frame": "C:\\Github\\5th_Corner_Dev\\Working\\5th_Corner_Dev\\sessions\\1368411024893415524\\images\\3662269250_From_the_mesa_s_edge__the_entire_Horizon_facilit_panels\\panel_01.png",
-  "flipbook_last_grid": "C:\\Github\\5th_Corner_Dev\\Working\\5th_Corner_Dev\\sessions\\1368411024893415524\\images\\3662269250_From_the_mesa_s_edge__the_entire_Horizon_facilit.png",
-  "evolution_summary": "The growls intensify as the camera's static screams, a chorus of unseen horrors closing in on your exposed position.",
+  "flipbook_last_frame": "C:\\Github\\5th_Corner_Dev\\Working\\5th_Corner_Dev\\sessions\\1368411024893415524\\images\\2224930079_Outside_near_the_fence__you_swing_your_legs__gai_panels\\panel_16.png",
+  "flipbook_first_frame": "C:\\Github\\5th_Corner_Dev\\Working\\5th_Corner_Dev\\sessions\\1368411024893415524\\images\\2224930079_Outside_near_the_fence__you_swing_your_legs__gai_panels\\panel_01.png",
+  "flipbook_last_grid": "C:\\Github\\5th_Corner_Dev\\Working\\5th_Corner_Dev\\sessions\\1368411024893415524\\images\\2224930079_Outside_near_the_fence__you_swing_your_legs__gai.png",
+  "evolution_summary": "The quarantine zone's oppressive silence smothers you as you cross the threshold, a silent promise of unseen horrors.",
   "recent_events": [
-    "‍♂️ Adjust the screen's static. -> Chaos level: 1 -> 2",
     "‍♂️ Claw up the reddish cliff. -> Chaos level: 2 -> 3",
     "Intro -> Chaos level: 0 -> 1",
     "‍♂️ Look for another way around the gate. -> Chaos level: 1 -> 2",
@@ -32,6 +34,7 @@
     "‍♂️ Call out to the figure behind the fence. -> Chaos level: 1 -> 2",
     "Intro -> Chaos level: 0 -> 1",
     "Intro -> Chaos level: 0 -> 1",
-    "‍♂️ Observe the hooded figure and the fence more closely. -> Chaos level: 1 -> 2"
+    "‍♂️ Observe the hooded figure and the fence more closely. -> Chaos level: 1 -> 2",
+    "Intro -> Chaos level: 0 -> 1"
   ]
 }

@@ -1285,9 +1285,18 @@ def build_image_prompt(player_choice: str = "", dispatch: str = "", prev_vision_
     
     # SPECIAL CASE: Intro frame needs establishing shot language, not "action taken"
     if player_choice.lower().strip() == "intro":
-        prompt = f"ESTABLISHING SHOT - Opening scene: {dispatch}\n\nShow a wide, atmospheric view from this vantage point. No character visible - just the environment. Documentary style, observational perspective."
+        prompt = (
+            f"⚠️ CRITICAL OVERRIDE: THIS IS AN ENVIRONMENTAL ESTABLISHING SHOT\n\n"
+            f"ESTABLISHING SHOT - Opening scene: {dispatch}\n\n"
+            f"ABSOLUTELY NO PEOPLE, NO CHARACTERS, NO HANDS, NO BODY PARTS VISIBLE.\n"
+            f"Show ONLY the environment: {dispatch}\n"
+            f"Wide landscape shot from an elevated vantage point.\n"
+            f"Camera is stationary, mounted on a tripod or rock.\n"
+            f"Documentary filmmaking style - showing the location BEFORE anyone enters.\n"
+            f"Think: nature documentary establishing shot, surveillance camera view, or scenic overlook photograph."
+        )
         print(f"\n{'='*60}")
-        print(f"[INTRO MODE] Creating establishing shot")
+        print(f"[INTRO MODE] Creating environmental establishing shot (NO CHARACTERS)")
         print(f"{'='*60}\n", flush=True)
         return prompt
     
@@ -1708,7 +1717,7 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                             
                             # Add flipbook prefix
                             flipbook_prefix = PROMPTS.get("gemini_flipbook_4panel_prefix", "")
-                            # Add hardened visual template instruction
+                            # Add hardened visual template instruction (this path is for turns AFTER intro, so no special case needed)
                             flipbook_prefix = "📋 VISUAL TEMPLATE ATTACHED: Match the 4x4 grid layout exactly as shown in the reference template image.\n\n" + flipbook_prefix
                             
                             # --- TEMPORAL CONTINUITY: Previous Grid + Last Frame ---
@@ -1855,9 +1864,24 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                             # Using img2img with the template is safer for layout consistency.
                             from gemini_image_utils import generate_gemini_img2img
                             
-                            # Add flipbook prefix
+                            # Add flipbook prefix - SPECIAL CASE for intro
                             flipbook_prefix = PROMPTS.get("gemini_flipbook_4panel_prefix", "")
-                            flipbook_prefix = "📋 VISUAL TEMPLATE ATTACHED: Match the 4x4 grid layout exactly as shown in the reference template image.\n\n" + flipbook_prefix
+                            
+                            # INTRO: Use environmental camera prefix, not body camera
+                            if choice and choice.lower().strip() == "intro":
+                                flipbook_prefix = (
+                                    "📋 VISUAL TEMPLATE ATTACHED: Match the 4x4 grid layout exactly as shown in the reference template image.\n\n"
+                                    "🎬 FLIPBOOK MODE - ENVIRONMENTAL ESTABLISHING SHOT\n\n"
+                                    "Create a 4x4 grid showing a SLOW, CINEMATIC reveal of the environment over 4 seconds.\n"
+                                    "NO PEOPLE, NO CHARACTERS, NO BODY PARTS visible.\n"
+                                    "Stationary camera on tripod/rock - only subtle pan or tilt movement.\n"
+                                    "Show the location BEFORE anyone arrives - pure environment.\n\n"
+                                    "Frame 1: Start with a detail (ground, sign, horizon)\n"
+                                    "Frames 2-8: Slowly pan/tilt to reveal more of the scene\n"
+                                    "Frames 9-16: Complete the reveal showing the full landscape\n"
+                                )
+                            else:
+                                flipbook_prefix = "📋 VISUAL TEMPLATE ATTACHED: Match the 4x4 grid layout exactly as shown in the reference template image.\n\n" + flipbook_prefix
                             
                             # Use the FULL prompt_str for intro flipbook (same as static images)
                             flipbook_prompt = flipbook_prefix + prompt_str
@@ -4271,23 +4295,23 @@ def generate_intro_image_fast(session_id='default'):
     opening_scenes = [
         {
             "prologue": "You survey the Horizon facility from a rocky outcrop in the desert.",
-            "vision": "The Horizon facility sprawls across the red desert valley below, industrial structures stark against the mesa backdrop."
-        },
-        {
-            "prologue": "You stand at the edge of the quarantine perimeter, watching the facility in the distance.",
-            "vision": "Beyond the barbed wire fence, the Horizon facility's concrete structures stretch across the arid landscape."
-        },
-        {
-            "prologue": "You approach the facility compound across the open desert terrain.",
-            "vision": "The facility looms ahead across the barren red earth, its angular silhouette cutting through the dusty air."
-        },
-        {
-            "prologue": "You pause near a warning sign marking the quarantine zone boundary.",
-            "vision": "Past the weathered quarantine signs, the sprawling Horizon complex dominates the valley floor."
+            "vision": "Wide landscape: The Horizon facility sprawls across the red desert valley far below, industrial structures stark against distant mesa formations. Camera positioned on high rocky outcrop overlooking the entire complex from above."
         },
         {
             "prologue": "You observe the facility from a vantage point atop the red mesa.",
-            "vision": "From the mesa's edge, the entire Horizon facility layout is visible below—a vast industrial complex in the desert."
+            "vision": "Elevated view from mesa top: The entire Horizon facility layout is visible in the valley below—a vast industrial complex surrounded by desert. Wide establishing shot showing the facility small in the distance, with mesa edge and sky visible."
+        },
+        {
+            "prologue": "You observe the facility from a distant ridge overlooking the valley.",
+            "vision": "Wide panoramic view: The Horizon research complex sits in the center of a vast desert valley, seen from a high ridge. Afternoon sun illuminates the industrial buildings, with empty desert stretching in all directions."
+        },
+        {
+            "prologue": "You survey the facility from an abandoned lookout tower.",
+            "vision": "High vantage point: From the rusted lookout tower platform, the Horizon facility is spread out below in the valley. Wide aerial-style shot showing the full layout of the complex, roads, and surrounding desert terrain."
+        },
+        {
+            "prologue": "You observe the facility from a hilltop to the north.",
+            "vision": "Distant overview from elevated hillside: The Horizon facility complex is visible across the valley, industrial buildings and structures clustered together, surrounded by empty desert. Wide landscape composition with facility in middle distance."
         }
     ]
     
@@ -4454,23 +4478,23 @@ def generate_intro_turn(session_id: str = 'default'):
     opening_scenes = [
         {
             "prologue": "You survey the Horizon facility from a rocky outcrop in the desert.",
-            "vision": "The Horizon facility sprawls across the red desert valley below, industrial structures stark against the mesa backdrop."
-        },
-        {
-            "prologue": "You stand at the edge of the quarantine perimeter, watching the facility in the distance.",
-            "vision": "Beyond the barbed wire fence, the Horizon facility's concrete structures stretch across the arid landscape."
-        },
-        {
-            "prologue": "You approach the facility compound across the open desert terrain.",
-            "vision": "The facility looms ahead across the barren red earth, its angular silhouette cutting through the dusty air."
-        },
-        {
-            "prologue": "You pause near a warning sign marking the quarantine zone boundary.",
-            "vision": "Past the weathered quarantine signs, the sprawling Horizon complex dominates the valley floor."
+            "vision": "Wide landscape: The Horizon facility sprawls across the red desert valley far below, industrial structures stark against distant mesa formations. Camera positioned on high rocky outcrop overlooking the entire complex from above."
         },
         {
             "prologue": "You observe the facility from a vantage point atop the red mesa.",
-            "vision": "From the mesa's edge, the entire Horizon facility layout is visible below—a vast industrial complex in the desert."
+            "vision": "Elevated view from mesa top: The entire Horizon facility layout is visible in the valley below—a vast industrial complex surrounded by desert. Wide establishing shot showing the facility small in the distance, with mesa edge and sky visible."
+        },
+        {
+            "prologue": "You observe the facility from a distant ridge overlooking the valley.",
+            "vision": "Wide panoramic view: The Horizon research complex sits in the center of a vast desert valley, seen from a high ridge. Afternoon sun illuminates the industrial buildings, with empty desert stretching in all directions."
+        },
+        {
+            "prologue": "You survey the facility from an abandoned lookout tower.",
+            "vision": "High vantage point: From the rusted lookout tower platform, the Horizon facility is spread out below in the valley. Wide aerial-style shot showing the full layout of the complex, roads, and surrounding desert terrain."
+        },
+        {
+            "prologue": "You observe the facility from a hilltop to the north.",
+            "vision": "Distant overview from elevated hillside: The Horizon facility complex is visible across the valley, industrial buildings and structures clustered together, surrounded by empty desert. Wide landscape composition with facility in middle distance."
         }
     ]
     
