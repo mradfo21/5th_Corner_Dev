@@ -1283,6 +1283,14 @@ def build_image_prompt(player_choice: str = "", dispatch: str = "", prev_vision_
             f"If outdoor, stay outdoor. If indoor, stay indoor. NO teleportation."
         )
     
+    # SPECIAL CASE: Intro frame needs establishing shot language, not "action taken"
+    if player_choice.lower().strip() == "intro":
+        prompt = f"ESTABLISHING SHOT - Opening scene: {dispatch}\n\nShow a wide, atmospheric view from this vantage point. No character visible - just the environment. Documentary style, observational perspective."
+        print(f"\n{'='*60}")
+        print(f"[INTRO MODE] Creating establishing shot")
+        print(f"{'='*60}\n", flush=True)
+        return prompt
+    
     # Intelligently detect movement type
     global _last_movement_type
     movement_type = _detect_movement_type(player_choice)
@@ -1749,7 +1757,7 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                                 world_prompt=world_prompt,
                                 time_of_day=use_time_of_day,
                                 action_context=choice,
-                                hd_mode=False, # Use Flash model for 4x4 grid (MUCH faster, avoids timeouts)
+                                hd_mode=True, # Use Pro model for HIGH QUALITY flipbooks
                                 output_dir=img_dir,
                                 is_flipbook=True
                             )
@@ -1870,7 +1878,7 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                                 world_prompt=world_prompt,
                                 time_of_day=use_time_of_day,
                                 action_context=choice,
-                                hd_mode=False, # Use Flash for speed
+                                hd_mode=True, # Use Pro model for HIGH QUALITY flipbooks
                                 output_dir=img_dir,
                                 is_flipbook=True
                             )
@@ -2155,7 +2163,7 @@ async def _gen_flipbook_async(canonical_frame_path: str, prompt_str: str, captio
             world_prompt=world_prompt,
             time_of_day=time_of_day,
             action_context=choice,
-            hd_mode=False,  # Use Flash model for reliability (Pro too sensitive to safety blocks)
+            hd_mode=True,  # Use Pro model for HIGH QUALITY flipbooks
             output_dir=img_dir
         )
         
@@ -2723,7 +2731,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                                     world_prompt=world_prompt_for_image,
                                     time_of_day=state.get('time_of_day', ''),
                                     action_context=choice,
-                                    hd_mode=False,  # Use Flash model for reliability (Pro too sensitive to safety blocks)
+                                    hd_mode=True,  # Use Pro model for HIGH QUALITY flipbooks
                                     output_dir=img_dir
                                 )
                                 

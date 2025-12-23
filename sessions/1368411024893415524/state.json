@@ -1,9 +1,9 @@
 {
-  "world_prompt": "You survey the Horizon facility from a rocky outcrop in the desert.",
+  "world_prompt": "You observe the facility from a vantage point atop the red mesa.",
   "current_phase": "normal",
   "chaos_level": 0,
   "last_choice": "",
-  "last_saved": "2025-12-22T23:55:08.424331+00:00",
+  "last_saved": "2025-12-23T00:02:24.697047+00:00",
   "seen_elements": [],
   "inventory": [],
   "player_state": {
@@ -18,9 +18,9 @@
   "time_of_day": "6:30pm | weather: clear, warm light | mood: tense anticipation",
   "flipbook_mode": true,
   "current_flipbook_url": null,
-  "flipbook_last_frame": "C:\\Github\\5th_Corner_Dev\\Working\\5th_Corner_Dev\\sessions\\1368411024893415524\\images\\3326219987_The_Horizon_facility_sprawls_across_the_red_dese_panels\\panel_16.png",
-  "flipbook_first_frame": "C:\\Github\\5th_Corner_Dev\\Working\\5th_Corner_Dev\\sessions\\1368411024893415524\\images\\3326219987_The_Horizon_facility_sprawls_across_the_red_dese_panels\\panel_01.png",
-  "flipbook_last_grid": "C:\\Github\\5th_Corner_Dev\\Working\\5th_Corner_Dev\\sessions\\1368411024893415524\\images\\3326219987_The_Horizon_facility_sprawls_across_the_red_dese.png",
+  "flipbook_last_frame": "C:\\Github\\5th_Corner_Dev\\Working\\5th_Corner_Dev\\sessions\\1368411024893415524\\images\\3662269250_From_the_mesa_s_edge__the_entire_Horizon_facilit_panels\\panel_16.png",
+  "flipbook_first_frame": "C:\\Github\\5th_Corner_Dev\\Working\\5th_Corner_Dev\\sessions\\1368411024893415524\\images\\3662269250_From_the_mesa_s_edge__the_entire_Horizon_facilit_panels\\panel_01.png",
+  "flipbook_last_grid": "C:\\Github\\5th_Corner_Dev\\Working\\5th_Corner_Dev\\sessions\\1368411024893415524\\images\\3662269250_From_the_mesa_s_edge__the_entire_Horizon_facilit.png",
   "evolution_summary": "The growls intensify as the camera's static screams, a chorus of unseen horrors closing in on your exposed position.",
   "recent_events": [
     "‍♂️ Adjust the screen's static. -> Chaos level: 1 -> 2",
