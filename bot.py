@@ -3156,15 +3156,22 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                         pass
                     
                     if flipbook_url:
-                        print(f"[FLIPBOOK] Intro flipbook ready! Displaying...")
+                        print(f"[FLIPBOOK] Intro flipbook ready! Displaying...", flush=True)
                         flipbook_file, flipbook_name = _attach(flipbook_url, "")
                         if flipbook_file:
                             is_gif = flipbook_url.endswith('.gif')
                             content_text = "📹 **PLAYBACK**" if is_gif else "🎬 **RECORDED SEQUENCE**"
-                            await interaction.channel.send(
-                                content=content_text,
-                                file=flipbook_file
-                            )
+                            try:
+                                print(f"[BOT INTRO] Uploading flipbook GIF to Discord...", flush=True)
+                                await asyncio.wait_for(
+                                    interaction.channel.send(content=content_text, file=flipbook_file),
+                                    timeout=90.0
+                                )
+                                print(f"[BOT INTRO] Flipbook GIF sent successfully.", flush=True)
+                            except asyncio.TimeoutError:
+                                print(f"[BOT INTRO ERROR] Flipbook GIF upload timed out (90s)", flush=True)
+                            except Exception as _send_err:
+                                print(f"[BOT INTRO ERROR] Failed to send flipbook GIF: {_send_err}", flush=True)
                             
                             # Track INTRO FLIPBOOK GIF for VHS compilation tape
                             _run_flipbooks.append(flipbook_url)
@@ -3185,7 +3192,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                             except Exception as e:
                                 print(f"[FLIPBOOK ERROR] Failed to clear intro flipbook URL: {e}")
                     else:
-                        print(f"[FLIPBOOK] Intro flipbook timeout or failed ({elapsed}s)")
+                        print(f"[FLIPBOOK] Intro flipbook timeout or failed ({elapsed}s)", flush=True)
                 
                 # Final fallback for intro image error
                 if not dispatch_image_path and (not current_state.get("flipbook_mode", False) or not flipbook_url):
@@ -3195,22 +3202,28 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                         color=VHS_RED
                     ))
                 
-                # --- PHASE 2: Generate choices in background (Deferred) ---
+                # --- PHASE 2: Generate choices ---
                 choices_msg = await interaction.channel.send(embed=discord.Embed(
                     description=safe_embed_desc("⚙️ Generating choices..."),
                     color=CORNER_GREY
                 ))
                 
-                choices_task = loop.run_in_executor(
-                    None, 
-                    engine.generate_intro_choices_deferred,
-                    dispatch_image_path,
-                    intro_phase1["prologue"],
-                    intro_phase1["vision_dispatch"],
-                    None,
-                    session_id
-                )
-                intro_phase2 = await choices_task
+                intro_phase2 = None
+                try:
+                    choices_task = loop.run_in_executor(
+                        None, 
+                        engine.generate_intro_choices_deferred,
+                        dispatch_image_path,
+                        intro_phase1.get("prologue", ""),
+                        intro_phase1.get("vision_dispatch", ""),
+                        None,
+                        session_id
+                    )
+                    intro_phase2 = await choices_task
+                except Exception as _phase2_err:
+                    import traceback
+                    print(f"[PLAY ERROR] Intro Phase 2 (choice gen) failed: {_phase2_err}", flush=True)
+                    traceback.print_exc()
                 
                 # Delete "Generating choices..." message
                 try:
@@ -3218,20 +3231,33 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 except Exception:
                     pass
                 
+                # Extract choices, with fallback if Phase 2 failed
+                _intro_choices = (intro_phase2 or {}).get("choices") or []
+                if not _intro_choices:
+                    _intro_choices = ["Look around carefully", "Move forward slowly", "Wait and observe"]
+                    print(f"[PLAY] Using fallback choices (Phase 2 produced none)", flush=True)
+                
                 # Send choices
-                await interaction.channel.send("🟢 What will you do next?")
-                view = ChoiceView(intro_phase2["choices"], owner_id=OWNER_ID)
-                await send_choices(interaction.channel, intro_phase2["choices"], view, None)
+                try:
+                    await interaction.channel.send("🟢 What will you do next?")
+                    view = ChoiceView(_intro_choices, owner_id=OWNER_ID)
+                    await send_choices(interaction.channel, _intro_choices, view, None)
+                except Exception as _choice_send_err:
+                    print(f"[PLAY ERROR] Failed to send choices: {_choice_send_err}", flush=True)
+                    return
                 
                 # Start countdown timer
-                start_countdown_timer(
-                    interaction.channel,
-                    intro_phase2["choices"],
-                    view,
-                    intro_phase2.get("dispatch", intro_phase1.get("dispatch", "")),
-                    intro_phase2.get("situation_report", ""),
-                    intro_phase1.get("consequence_image")
-                )
+                try:
+                    start_countdown_timer(
+                        interaction.channel,
+                        _intro_choices,
+                        view,
+                        (intro_phase2 or {}).get("dispatch", intro_phase1.get("dispatch", "")),
+                        (intro_phase2 or {}).get("situation_report", ""),
+                        intro_phase1.get("consequence_image")
+                    )
+                except Exception as _timer_err:
+                    print(f"[PLAY] Countdown timer failed to start: {_timer_err}", flush=True)
                 
                 # No auto-advance for regular play mode
                 
@@ -3312,31 +3338,36 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 # 1. Send the intro narrative as an embed
                 embed_dispatch = discord.Embed(
                     title="Prologue",
-                    description=intro_result.get("dispatch", ""),
+                    description=(intro_result or {}).get("dispatch", ""),
                     color=CORNER_TEAL
                 )
                 await interaction.channel.send(embed=embed_dispatch)
                 # 2. Send the vision description as a second embed (what you see)
                 embed_vision = discord.Embed(
                     title="What You See",
-                    description=intro_result.get("vision_dispatch", ""),
+                    description=(intro_result or {}).get("vision_dispatch", ""),
                     color=CORNER_TEAL
                 )
                 await interaction.channel.send(embed=embed_vision)
-                # 3. Send the choices
+                # 3. Send the choices - fallback if generation failed
+                _noi_choices = (intro_result or {}).get("choices") or \
+                    ["Look around carefully", "Move forward slowly", "Wait and observe"]
                 await interaction.channel.send("🟢 What will you do next?")
-                view = ChoiceView(intro_result["choices"], owner_id=OWNER_ID)
-                await send_choices(interaction.channel, intro_result["choices"], view, None)
+                view = ChoiceView(_noi_choices, owner_id=OWNER_ID)
+                await send_choices(interaction.channel, _noi_choices, view, None)
                 
                 # Start countdown timer
-                start_countdown_timer(
-                    interaction.channel,
-                    intro_result["choices"],
-                    view,
-                    intro_result.get("dispatch", ""),
-                    intro_result.get("situation_report", ""),
-                    intro_result.get("consequence_image")
-                )
+                try:
+                    start_countdown_timer(
+                        interaction.channel,
+                        _noi_choices,
+                        view,
+                        (intro_result or {}).get("dispatch", ""),
+                        (intro_result or {}).get("situation_report", ""),
+                        (intro_result or {}).get("consequence_image")
+                    )
+                except Exception as _nt_err:
+                    print(f"[PLAY-NOIMAGES] Countdown timer failed: {_nt_err}", flush=True)
                 
                 # No auto-advance for regular play mode
         
