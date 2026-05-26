@@ -238,32 +238,41 @@ def generate_choices(
     
     print(f"[GEMINI TEXT] Calling {model_name} for choice generation...", flush=True)
     
-    try:
-        response = requests.post(
-            f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent",
-            headers={"x-goog-api-key": gemini_api_key, "Content-Type": "application/json"},
-            json={
-                "contents": [{"parts": parts}],
-                "generationConfig": {"temperature": temperature, "maxOutputTokens": 200}
-            },
-            timeout=15
-        )
-        print(f"[GEMINI TEXT] API returned status: {response.status_code}", flush=True)
-        response.raise_for_status()
-        response_data = response.json()
-        print("[GEMINI TEXT] Choice generation complete", flush=True)
-    except requests.exceptions.Timeout:
-        print(f"[CHOICES ERROR] Gemini API timeout after 15 seconds", flush=True)
-        return ["Look around", "Move forward", "Wait"]
-    except requests.exceptions.HTTPError as e:
-        print(f"[CHOICES ERROR] Gemini API HTTP error: {e}", flush=True)
-        if hasattr(e, 'response') and e.response is not None:
-            print(f"[CHOICES ERROR] Response: {e.response.text}", flush=True)
-        return ["Look around", "Move forward", "Wait"]
-    except Exception as e:
-        print(f"[CHOICES ERROR] Unexpected error calling Gemini API: {e}", flush=True)
-        import traceback
-        traceback.print_exc()
+    import time as _time
+    _choices_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
+    _choices_headers = {"x-goog-api-key": gemini_api_key, "Content-Type": "application/json"}
+    _choices_payload = {
+        "contents": [{"parts": parts}],
+        "generationConfig": {"temperature": temperature, "maxOutputTokens": 200}
+    }
+    response_data = None
+    for _attempt in range(2):  # one retry on 429
+        try:
+            response = requests.post(_choices_url, headers=_choices_headers, json=_choices_payload, timeout=15)
+            print(f"[GEMINI TEXT] API returned status: {response.status_code}", flush=True)
+            if response.status_code == 429 and _attempt == 0:
+                print(f"[CHOICES] Rate limited (429) — retrying in 4s...", flush=True)
+                _time.sleep(4)
+                continue
+            response.raise_for_status()
+            response_data = response.json()
+            print("[GEMINI TEXT] Choice generation complete", flush=True)
+            break
+        except requests.exceptions.Timeout:
+            print(f"[CHOICES ERROR] Gemini API timeout after 15 seconds", flush=True)
+            return ["Look around", "Move forward", "Wait"]
+        except requests.exceptions.HTTPError as e:
+            print(f"[CHOICES ERROR] Gemini API HTTP error: {e}", flush=True)
+            if hasattr(e, 'response') and e.response is not None:
+                print(f"[CHOICES ERROR] Response: {e.response.text}", flush=True)
+            return ["Look around", "Move forward", "Wait"]
+        except Exception as e:
+            print(f"[CHOICES ERROR] Unexpected error calling Gemini API: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+            return ["Look around", "Move forward", "Wait"]
+    if response_data is None:
+        print("[CHOICES ERROR] Gemini API still rate-limited after retry — using fallback", flush=True)
         return ["Look around", "Move forward", "Wait"]
     
     # Create a mock OpenAI response object

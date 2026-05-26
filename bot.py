@@ -4278,25 +4278,31 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                                     engine._save_state(st, session_id)
                                 except: pass
                     
-                    # Send new choices
+                    # Send new choices — always guaranteed to be non-empty.
+                    # advance_turn_choices_deferred returns fallbacks on any
+                    # exception, but guard here too so a botched phase2_result
+                    # dict can never silently leave the channel buttonless.
                     new_choices = phase2_result.get("choices", [])
-                    if new_choices:
-                        await channel.send("🟢 What will you do next?")
-                        new_view = ChoiceView(new_choices, owner_id=OWNER_ID)
-                        msg = await channel.send(content=" ", view=new_view)
-                        new_view.last_choices_message = msg
-                        
-                        # Start new countdown with new choices
-                        start_countdown_timer(
-                            channel, 
-                            new_choices, 
-                            new_view,
-                            phase1_result.get("dispatch", ""),
-                            phase2_result.get("situation_report", ""),
-                            phase1_result.get("consequence_image")
-                        )
-                    
-                    break # Exit the main while loop after penalty sequence
+                    if not new_choices:
+                        print("[COUNTDOWN] phase2 returned empty choices — using hardcoded fallback", flush=True)
+                        new_choices = ["Look around carefully", "Move forward cautiously", "Hold position and observe"]
+
+                    await channel.send("🟢 What will you do next?")
+                    new_view = ChoiceView(new_choices, owner_id=OWNER_ID)
+                    msg = await channel.send(content=" ", view=new_view)
+                    new_view.last_choices_message = msg
+
+                    # Start new countdown with new choices
+                    start_countdown_timer(
+                        channel,
+                        new_choices,
+                        new_view,
+                        phase1_result.get("dispatch", ""),
+                        phase2_result.get("situation_report", ""),
+                        phase1_result.get("consequence_image")
+                    )
+
+                    break  # Exit the main while loop after penalty sequence
                 
                 # Update countdown display
                 bars = "█" * int((remaining / COUNTDOWN_DURATION) * 10)

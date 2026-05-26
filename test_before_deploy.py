@@ -461,9 +461,52 @@ try:
         print("    countdown_timer_task error handler does not post fallback choices")
         failed_tests.append("countdown_timer_task: error handler missing fallback choices")
 
+    # 9d: Post-phase2 choices must always be posted — empty-choices must use
+    #     hardcoded fallback instead of silently leaving the channel buttonless.
+    print("  Checking post-phase2 choices always posted (empty guard)...", end=" ")
+    if 'not new_choices' in bot_content and 'phase2 returned empty choices' in bot_content:
+        print("[OK]")
+    else:
+        print("[FAIL]")
+        print("    countdown path skips choice post when new_choices is empty — channel freezes")
+        failed_tests.append("countdown_timer_task: empty new_choices guard missing")
+
 except Exception as e:
     print(f"[FAIL] {e}")
     failed_tests.append("Countdown timer safety checks")
+
+# ============================================================================
+# TEST 10: API Resilience Checks
+# ============================================================================
+print("\n[TEST 10] API Resilience Checks (429 retry, empty-response guards)...")
+
+try:
+    with open("engine.py", "r", encoding="utf-8") as f:
+        engine_content_r = f.read()
+    with open("choices.py", "r", encoding="utf-8") as f:
+        choices_content_r = f.read()
+
+    # 10a: _ask_gemini should retry once on 429 before returning fallback
+    print("  Checking _ask_gemini retries on 429...", end=" ")
+    if "Rate limited (429)" in engine_content_r and "retrying in" in engine_content_r:
+        print("[OK]")
+    else:
+        print("[FAIL]")
+        print("    _ask_gemini does not retry on 429 — rate limits immediately return fallback text")
+        failed_tests.append("_ask_gemini: no 429 retry")
+
+    # 10b: generate_choices should retry once on 429 before returning fallback
+    print("  Checking generate_choices retries on 429...", end=" ")
+    if "Rate limited (429)" in choices_content_r and "retrying in" in choices_content_r:
+        print("[OK]")
+    else:
+        print("[FAIL]")
+        print("    generate_choices does not retry on 429 — rate limits immediately return fallback choices")
+        failed_tests.append("generate_choices: no 429 retry")
+
+except Exception as e:
+    print(f"[FAIL] {e}")
+    failed_tests.append("API resilience checks")
 
 # ============================================================================
 # RESULTS
