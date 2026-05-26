@@ -158,7 +158,10 @@ if DISCORD_ENABLED:
     print("[STARTUP] Initializing Discord bot...", flush=True)
     logging.basicConfig(level=logging.INFO, format="BOT | %(message)s")
     intents = discord.Intents.default(); intents.message_content = True
-    bot     = commands.Bot(command_prefix="/", intents=intents)
+    # Use "!" not "/" — Discord intercepts "/" for its own slash-command
+    # handling so text-prefix commands with command_prefix="/" are NEVER
+    # delivered to the bot as message events.
+    bot     = commands.Bot(command_prefix="!", intents=intents)
     print(f"[STARTUP] Bot initialized. TOKEN={'SET' if TOKEN else 'MISSING'}, CHAN={CHAN}", flush=True)
 
     running = False
@@ -2703,6 +2706,55 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             await ctx.send(content=" ", view=view)
         except Exception as e:
             await ctx.send(f"Failed to reset game: {e}")
+
+    def _is_server_admin(ctx) -> bool:
+        """Return True if ctx.author is the bot owner or a server admin."""
+        if ctx.author.id == ctx.bot.owner_id:
+            return True
+        if OWNER_ID and ctx.author.id == OWNER_ID:
+            return True
+        perms = getattr(ctx.author, "guild_permissions", None)
+        return bool(perms and (perms.administrator or perms.manage_guild))
+
+    @bot.command(name="reset")
+    async def reset_command(ctx):
+        """Server-admin reset: wipe session and post a fresh intro with Play button.
+
+        Works immediately on startup — no slash-command sync needed.
+        Usage: !reset
+        """
+        if not _is_server_admin(ctx):
+            await ctx.reply("🔒 Only server admins can reset the game.")
+            return
+        try:
+            session_id = str(ctx.channel.id) if ctx.channel else 'default'
+            print(f"[!reset] Resetting session {session_id} (user={ctx.author})", flush=True)
+            engine.reset_state(session_id)
+            try:
+                engine.reset_state('legacy')
+            except Exception:
+                pass
+            _run_images.clear()
+            _run_flipbooks.clear()
+            await ctx.reply("🔄 Game state cleared. Posting fresh intro…")
+            await send_intro_tutorial(ctx.channel)
+        except Exception as e:
+            print(f"[!reset] Error: {e}", flush=True)
+            import traceback; traceback.print_exc()
+            await ctx.reply(f"❌ Reset failed: {e}")
+
+    @bot.command(name="play")
+    async def play_command(ctx):
+        """Post the intro tutorial with the Play button.
+
+        Works immediately on startup — no slash-command sync needed.
+        Usage: !play
+        """
+        try:
+            await send_intro_tutorial(ctx.channel)
+        except Exception as e:
+            print(f"[!play] Error: {e}", flush=True)
+            await ctx.reply(f"❌ Could not post intro: {e}")
 
     def beginning_simulation_embed():
         embed = discord.Embed(
