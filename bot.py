@@ -3958,6 +3958,13 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                         print("[COUNTDOWN] Turn already being processed, skipping penalty...")
                         break
 
+                    # CRITICAL: define loop here so it is available throughout the
+                    # entire penalty sequence (phase1, phase2, death handler).
+                    # Previously this was missing, causing NameError at phase1_task
+                    # creation which silently killed the task and left the channel
+                    # frozen with no new choices.
+                    loop = asyncio.get_running_loop()
+
                     async with _turn_processing_lock:
                         # Update with final timeout message
                         timeout_embed = discord.Embed(
@@ -4271,25 +4278,31 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                                     engine._save_state(st, session_id)
                                 except: pass
                     
-                    # Send new choices
+                    # Send new choices — always guaranteed to be non-empty.
+                    # advance_turn_choices_deferred returns fallbacks on any
+                    # exception, but guard here too so a botched phase2_result
+                    # dict can never silently leave the channel buttonless.
                     new_choices = phase2_result.get("choices", [])
-                    if new_choices:
-                        await channel.send("🟢 What will you do next?")
-                        new_view = ChoiceView(new_choices, owner_id=OWNER_ID)
-                        msg = await channel.send(content=" ", view=new_view)
-                        new_view.last_choices_message = msg
-                        
-                        # Start new countdown with new choices
-                        start_countdown_timer(
-                            channel, 
-                            new_choices, 
-                            new_view,
-                            phase1_result.get("dispatch", ""),
-                            phase2_result.get("situation_report", ""),
-                            phase1_result.get("consequence_image")
-                        )
-                    
-                    break # Exit the main while loop after penalty sequence
+                    if not new_choices:
+                        print("[COUNTDOWN] phase2 returned empty choices — using hardcoded fallback", flush=True)
+                        new_choices = ["Look around carefully", "Move forward cautiously", "Hold position and observe"]
+
+                    await channel.send("🟢 What will you do next?")
+                    new_view = ChoiceView(new_choices, owner_id=OWNER_ID)
+                    msg = await channel.send(content=" ", view=new_view)
+                    new_view.last_choices_message = msg
+
+                    # Start new countdown with new choices
+                    start_countdown_timer(
+                        channel,
+                        new_choices,
+                        new_view,
+                        phase1_result.get("dispatch", ""),
+                        phase2_result.get("situation_report", ""),
+                        phase1_result.get("consequence_image")
+                    )
+
+                    break  # Exit the main while loop after penalty sequence
                 
                 # Update countdown display
                 bars = "█" * int((remaining / COUNTDOWN_DURATION) * 10)
@@ -4327,7 +4340,35 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     await countdown_message.delete()
                 except:
                     pass
-    
+
+        except Exception as _cde:
+            # Catch-all so a crash in the penalty path never permanently freezes
+            # the channel.  Log the full traceback, clean up the countdown message,
+            # and post fallback choices so the player can keep going.
+            import traceback
+            print(f"[COUNTDOWN ERROR] Unhandled exception in countdown_timer_task: {_cde}", flush=True)
+            traceback.print_exc()
+            if countdown_message:
+                try:
+                    await countdown_message.delete()
+                except Exception:
+                    pass
+            try:
+                fallback_choices = ["Look around carefully", "Move forward cautiously", "Hold position and observe"]
+                fallback_view = ChoiceView(fallback_choices, owner_id=OWNER_ID)
+                await channel.send(embed=discord.Embed(
+                    title="⚠️ Consequence Error",
+                    description="Something went wrong processing the consequence. Continuing...",
+                    color=VHS_RED
+                ))
+                await channel.send("🟢 What will you do next?")
+                msg = await channel.send(content=" ", view=fallback_view)
+                fallback_view.last_choices_message = msg
+                session_id = str(channel.id) if hasattr(channel, 'id') else 'default'
+                start_countdown_timer(channel, fallback_choices, fallback_view, "", "")
+            except Exception as _fb_err:
+                print(f"[COUNTDOWN ERROR] Could not post fallback choices: {_fb_err}", flush=True)
+
     def start_countdown_timer(channel, choices, view, dispatch, situation, current_image=None):
         """Start the countdown timer"""
         global countdown_task, countdown_message, current_choices, current_view, current_dispatch, current_image_path, auto_play_enabled

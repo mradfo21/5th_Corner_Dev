@@ -397,6 +397,118 @@ except Exception as e:
     failed_tests.append("Bot safety checks")
 
 # ============================================================================
+# TEST 9: Countdown Timer Safety Checks
+# (This catches the bug that froze the channel after every timeout penalty)
+# ============================================================================
+print("\n[TEST 9] Countdown Timer Safety Checks...")
+
+try:
+    with open("bot.py", "r", encoding="utf-8") as f:
+        bot_content = f.read()
+
+    # 9a: countdown_timer_task must define loop before using loop.run_in_executor.
+    #     Previously 'loop' was undefined in this function, causing a silent
+    #     NameError that killed the task right after showing "Hesitation has
+    #     consequences." — leaving the channel permanently frozen.
+    print("  Checking countdown_timer_task defines 'loop' before run_in_executor...", end=" ")
+    import re
+
+    # Extract the body of countdown_timer_task
+    cdt_match = re.search(
+        r'async def countdown_timer_task\(.*?\n(.*?)(?=\n    (?:async def|def )\w)',
+        bot_content,
+        re.DOTALL
+    )
+    if cdt_match:
+        cdt_body = cdt_match.group(0)
+        # Find first occurrence of loop.run_in_executor and loop = asyncio.get_running_loop()
+        first_use = cdt_body.find("loop.run_in_executor(")
+        first_def = cdt_body.find("loop = asyncio.get_running_loop()")
+        if first_def == -1:
+            print("[FAIL]")
+            print("    countdown_timer_task never defines 'loop = asyncio.get_running_loop()'")
+            failed_tests.append("countdown_timer_task: loop undefined (will crash on every timeout)")
+        elif first_use != -1 and first_def > first_use:
+            print("[FAIL]")
+            print(f"    loop.run_in_executor() used at offset {first_use} BEFORE loop is defined at {first_def}")
+            failed_tests.append("countdown_timer_task: loop used before definition")
+        else:
+            print("[OK]")
+    else:
+        print("[WARN] Could not extract countdown_timer_task body for analysis")
+
+    # 9b: countdown_timer_task must have a general exception handler (not just CancelledError).
+    #     Without this, any crash in the penalty path silently kills the task.
+    print("  Checking countdown_timer_task has general exception handler...", end=" ")
+    if cdt_match:
+        cdt_body = cdt_match.group(0)
+        has_general_except = bool(re.search(r'except\s+Exception\s+as\s+\w+', cdt_body))
+        if has_general_except:
+            print("[OK]")
+        else:
+            print("[FAIL]")
+            print("    countdown_timer_task only catches CancelledError — any other exception silently freezes the channel")
+            failed_tests.append("countdown_timer_task: missing general exception handler")
+    else:
+        print("[WARN] Could not verify exception handler")
+
+    # 9c: The general exception handler must post fallback choices (not just log).
+    print("  Checking countdown_timer_task fallback posts choices on error...", end=" ")
+    if "COUNTDOWN ERROR" in bot_content and "fallback_choices" in bot_content:
+        print("[OK]")
+    else:
+        print("[FAIL]")
+        print("    countdown_timer_task error handler does not post fallback choices")
+        failed_tests.append("countdown_timer_task: error handler missing fallback choices")
+
+    # 9d: Post-phase2 choices must always be posted — empty-choices must use
+    #     hardcoded fallback instead of silently leaving the channel buttonless.
+    print("  Checking post-phase2 choices always posted (empty guard)...", end=" ")
+    if 'not new_choices' in bot_content and 'phase2 returned empty choices' in bot_content:
+        print("[OK]")
+    else:
+        print("[FAIL]")
+        print("    countdown path skips choice post when new_choices is empty — channel freezes")
+        failed_tests.append("countdown_timer_task: empty new_choices guard missing")
+
+except Exception as e:
+    print(f"[FAIL] {e}")
+    failed_tests.append("Countdown timer safety checks")
+
+# ============================================================================
+# TEST 10: API Resilience Checks
+# ============================================================================
+print("\n[TEST 10] API Resilience Checks (429 retry, empty-response guards)...")
+
+try:
+    with open("engine.py", "r", encoding="utf-8") as f:
+        engine_content_r = f.read()
+    with open("choices.py", "r", encoding="utf-8") as f:
+        choices_content_r = f.read()
+
+    # 10a: _ask_gemini should retry once on 429 before returning fallback
+    print("  Checking _ask_gemini retries on 429...", end=" ")
+    if "Rate limited (429)" in engine_content_r and "retrying in" in engine_content_r:
+        print("[OK]")
+    else:
+        print("[FAIL]")
+        print("    _ask_gemini does not retry on 429 — rate limits immediately return fallback text")
+        failed_tests.append("_ask_gemini: no 429 retry")
+
+    # 10b: generate_choices should retry once on 429 before returning fallback
+    print("  Checking generate_choices retries on 429...", end=" ")
+    if "Rate limited (429)" in choices_content_r and "retrying in" in choices_content_r:
+        print("[OK]")
+    else:
+        print("[FAIL]")
+        print("    generate_choices does not retry on 429 — rate limits immediately return fallback choices")
+        failed_tests.append("generate_choices: no 429 retry")
+
+except Exception as e:
+    print(f"[FAIL] {e}")
+    failed_tests.append("API resilience checks")
+
+# ============================================================================
 # RESULTS
 # ============================================================================
 print("\n" + "=" * 70)

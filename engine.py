@@ -791,28 +791,34 @@ def _ask_gemini(prompt: str, model_name: str, temp: float, tokens: int, image_pa
             print(f"[GEMINI] Lore requested but cache not available")
         
         print(f"[GEMINI TEXT] Calling {model_name} API...", flush=True)
-        try:
-            response = requests.post(
-                f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent",
-                headers={"x-goog-api-key": gemini_api_key, "Content-Type": "application/json"},
-                json=payload,
-                timeout=15
-            )
-            print(f"[GEMINI TEXT] API returned status: {response.status_code}", flush=True)
-            response.raise_for_status()
-            response_data = response.json()
-            print(f"[GEMINI TEXT] Response parsed successfully", flush=True)
-        except requests.exceptions.Timeout:
-            print(f"[GEMINI TEXT ERROR] API timeout after 15 seconds!", flush=True)
-            return "Signal interrupted due to timeout..."
-        except requests.exceptions.HTTPError as e:
-            print(f"[GEMINI TEXT ERROR] HTTP error: {e}", flush=True)
-            return "Signal interrupted due to API error..."
-        except Exception as e:
-            print(f"[GEMINI TEXT ERROR] Unexpected error: {type(e).__name__}: {e}", flush=True)
-            import traceback
-            traceback.print_exc()
-            return "Signal interrupted..."
+        _gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
+        _gemini_headers = {"x-goog-api-key": gemini_api_key, "Content-Type": "application/json"}
+        response_data = None
+        for _attempt in range(2):  # one retry on 429
+            try:
+                response = requests.post(_gemini_url, headers=_gemini_headers, json=payload, timeout=15)
+                print(f"[GEMINI TEXT] API returned status: {response.status_code}", flush=True)
+                if response.status_code == 429 and _attempt == 0:
+                    print(f"[GEMINI TEXT] Rate limited (429) — retrying in 4s...", flush=True)
+                    time.sleep(4)
+                    continue
+                response.raise_for_status()
+                response_data = response.json()
+                print(f"[GEMINI TEXT] Response parsed successfully", flush=True)
+                break
+            except requests.exceptions.Timeout:
+                print(f"[GEMINI TEXT ERROR] API timeout after 15 seconds!", flush=True)
+                return "Signal interrupted due to timeout..."
+            except requests.exceptions.HTTPError as e:
+                print(f"[GEMINI TEXT ERROR] HTTP error: {e}", flush=True)
+                return "Signal interrupted due to API error..."
+            except Exception as e:
+                print(f"[GEMINI TEXT ERROR] Unexpected error: {type(e).__name__}: {e}", flush=True)
+                import traceback
+                traceback.print_exc()
+                return "Signal interrupted..."
+        if response_data is None:
+            return "Signal interrupted due to rate limiting..."
         
         # Check for error response from Gemini API
         if "candidates" not in response_data:
