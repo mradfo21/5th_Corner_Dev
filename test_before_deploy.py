@@ -50,7 +50,10 @@ print("\n[TEST 2] Module Import Test...")
 modules_to_test = [
     ("ai_provider_manager", "import ai_provider_manager"),
     ("lore_cache_manager", "import lore_cache_manager"),
-    ("evolve_prompt_file", "from evolve_prompt_file import generate_interim_messages_on_demand"),
+    # generate_interim_messages_on_demand was removed during the dynamic
+    # world evolution rewrite (see choices.py header comment).  Just verify
+    # the module imports + the current public entrypoint exists.
+    ("evolve_prompt_file", "from evolve_prompt_file import evolve_world_state"),
     ("choices", "import choices"),
     ("engine", "import engine"),
 ]
@@ -89,9 +92,11 @@ test_bot_code = """
 import sys
 import os
 
-# Set test mode
+# Set test mode.  IMPORTANT: keep RESUME_MODE=1 so the bot's import path does
+# not call engine.reset_state() and wipe the real session state every time the
+# pre-deploy test is run locally.
 os.environ['DISCORD_ENABLED'] = '1'
-os.environ['RESUME_MODE'] = '0'
+os.environ.setdefault('RESUME_MODE', '1')
 
 # Try to import bot
 try:

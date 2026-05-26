@@ -15,7 +15,19 @@ import random
 print("[STARTUP] Basic imports complete", flush=True)
 
 DISCORD_ENABLED = os.getenv("DISCORD_ENABLED", "1") == "1"
-RESUME_MODE = os.getenv("RESUME_MODE", "0") == "1"
+
+# PRODUCTION HARDENING:
+# The previous default ("0") caused engine.reset_state() to fire on EVERY bot
+# import / Render restart, wiping the active game session. That is the root
+# cause of "the bot keeps losing my game" reports after a deploy or after the
+# Render free-tier service wakes from sleep.
+#
+# In production (Render sets RENDER=true) we default to RESUME so state is
+# preserved across restarts. Operators can still force a fresh game with
+# RESUME_MODE=0 or via the in-bot /reset command.
+_IS_RENDER = bool(os.getenv("RENDER") or os.getenv("RENDER_SERVICE_ID"))
+_RESUME_DEFAULT = "1" if _IS_RENDER else "0"
+RESUME_MODE = os.getenv("RESUME_MODE", _RESUME_DEFAULT) == "1"
 
 print(f"[STARTUP] DISCORD_ENABLED={DISCORD_ENABLED}, RESUME_MODE={RESUME_MODE}", flush=True)
 

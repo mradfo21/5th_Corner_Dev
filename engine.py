@@ -63,8 +63,33 @@ sys.stdout.flush(); sys.stderr.flush()
 
 # ───────── OpenAI client loader ──────────────────────────────────────────────
 def _client(api_key: str, base_url: str):
+    # PRODUCTION HARDENING: The OpenAI SDK raises immediately if no api_key is set.
+    # In Gemini-only deployments this would crash the entire module at import time
+    # and take down the API + bot. Return a stub that fails lazily on first use
+    # instead so the server can still boot and serve other routes.
+    if not api_key:
+        print("[ENGINE INIT] OPENAI_API_KEY not set - OpenAI client disabled (Gemini-only mode).")
+
+        class _MissingKeyClient:
+            def __getattr__(self, name):
+                raise RuntimeError(
+                    "OpenAI client is not configured (OPENAI_API_KEY missing). "
+                    "Set OPENAI_API_KEY or switch the active provider to gemini."
+                )
+
+        return _MissingKeyClient()
+
     if hasattr(openai, "OpenAI"):
-        return openai.OpenAI(api_key=api_key, base_url=base_url)
+        try:
+            return openai.OpenAI(api_key=api_key, base_url=base_url)
+        except Exception as e:
+            print(f"[ENGINE INIT] Failed to create OpenAI client: {e}")
+
+            class _BrokenClient:
+                def __getattr__(self, name):
+                    raise RuntimeError(f"OpenAI client init failed: {e}")
+
+            return _BrokenClient()
     openai.api_key, openai.api_base = api_key, base_url
 
     class _Chat:
@@ -374,8 +399,47 @@ print(f"[ENGINE INIT] IMAGE_PROVIDER: {IMAGE_PROVIDER}")
 # Track the last dispatch image path for vision continuity
 _last_image_path: Optional[str] = None
 
-# Global vision cache to avoid re-analyzing the same image
-_vision_cache = {}
+# Global vision cache to avoid re-analyzing the same image.
+# PRODUCTION HARDENING: bounded LRU to prevent unbounded memory growth
+# during long-running sessions (a frequent source of bot stalls / OOM kills).
+from collections import OrderedDict
+import threading as _vc_threading
+
+_VISION_CACHE_MAX = 256
+_vision_cache_lock = _vc_threading.Lock()
+
+
+class _BoundedLRUCache(OrderedDict):
+    """OrderedDict-based LRU with thread-safe size cap."""
+
+    def __init__(self, maxsize: int = 256):
+        super().__init__()
+        self._maxsize = maxsize
+
+    def __setitem__(self, key, value):
+        with _vision_cache_lock:
+            if key in self:
+                super().move_to_end(key)
+            super().__setitem__(key, value)
+            while len(self) > self._maxsize:
+                self.popitem(last=False)
+
+    def __getitem__(self, key):
+        with _vision_cache_lock:
+            value = super().__getitem__(key)
+            super().move_to_end(key)
+            return value
+
+    def __contains__(self, key):
+        with _vision_cache_lock:
+            return super().__contains__(key)
+
+    def clear(self):
+        with _vision_cache_lock:
+            super().clear()
+
+
+_vision_cache = _BoundedLRUCache(_VISION_CACHE_MAX)
 
 # Add a global counter for choices since last reset
 _choices_since_edit_reset = 0
