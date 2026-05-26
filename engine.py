@@ -1968,7 +1968,13 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                                     _save_state(st, session_id)
                                     print(f"[FLIPBOOK] Parallel GIF ready and stored in state: {gif_path}", flush=True)
                                 else:
-                                    print(f"[FLIPBOOK ERROR] GIF conversion failed", flush=True)
+                                    # PRODUCTION HARDENING: GIF conversion failure must signal FAILED to
+                                    # state, otherwise the bot's wait loop polls for the full 120s timeout
+                                    # holding _turn_processing_lock and the whole channel freezes.
+                                    st = _load_state(session_id)
+                                    st['current_flipbook_url'] = "FAILED"
+                                    _save_state(st, session_id)
+                                    print(f"[FLIPBOOK ERROR] GIF conversion failed - signaled FAILED to unblock bot", flush=True)
                             else:
                                 # Signal failure (SAFE LOCK VERSION)
                                 st = _load_state(session_id)
@@ -3055,30 +3061,54 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                                 if grid_path:
                                     print(f"[FLIPBOOK] Grid generated: {os.path.basename(grid_path)}")
                                     
-                                    # Convert grid to animated GIF
-                                    gif_path = grid_to_flipbook_gif(
+                                    # PRODUCTION HARDENING: grid_to_flipbook_gif returns a DICT
+                                    # ({'gif_path', 'first_frame', 'last_frame'}), not a path.  Before
+                                    # this fix the code stringified the dict and saved it as the
+                                    # flipbook URL, then the bot tried to open it as a file and the
+                                    # display silently failed.
+                                    gif_result = grid_to_flipbook_gif(
                                         Path(grid_path),
-                                        duration_ms=500,  # 500ms per frame = 8 seconds total
+                                        duration_ms=500,
                                         loop=0,
                                         save_panels=False
                                     )
+                                    gif_path = gif_result.get('gif_path') if isinstance(gif_result, dict) else gif_result
                                     
+                                    session_id_for_state = state.get('session_id', 'default')
                                     if gif_path:
-                                        print(f"[FLIPBOOK] GIF created: {os.path.basename(gif_path)}")
-                                        
-                                        # Store in state
-                                        with WORLD_STATE_LOCK:
-                                            current_state = get_state()
-                                            current_state['current_flipbook_url'] = str(gif_path)
-                                            _save_state(current_state)
-                                        
+                                        print(f"[FLIPBOOK] GIF created: {os.path.basename(str(gif_path))}")
+                                        st = _load_state(session_id_for_state)
+                                        st['current_flipbook_url'] = str(gif_path)
+                                        if isinstance(gif_result, dict):
+                                            st['flipbook_last_grid'] = str(grid_path)
+                                            if gif_result.get('first_frame'):
+                                                st['flipbook_first_frame'] = str(gif_result['first_frame'])
+                                            if gif_result.get('last_frame'):
+                                                st['flipbook_last_frame'] = str(gif_result['last_frame'])
+                                        _save_state(st, session_id_for_state)
                                         print(f"[FLIPBOOK] Stored flipbook URL in state")
                                     else:
-                                        print(f"[FLIPBOOK] GIF conversion failed")
+                                        # Must signal FAILED or the bot wait-loop holds the turn lock
+                                        # for the full 120s timeout.
+                                        st = _load_state(session_id_for_state)
+                                        st['current_flipbook_url'] = "FAILED"
+                                        _save_state(st, session_id_for_state)
+                                        print(f"[FLIPBOOK] GIF conversion failed - signaled FAILED")
                                 else:
-                                    print(f"[FLIPBOOK] Grid generation failed")
+                                    session_id_for_state = state.get('session_id', 'default')
+                                    st = _load_state(session_id_for_state)
+                                    st['current_flipbook_url'] = "FAILED"
+                                    _save_state(st, session_id_for_state)
+                                    print(f"[FLIPBOOK] Grid generation failed - signaled FAILED")
                             
                             except Exception as e:
+                                try:
+                                    session_id_for_state = state.get('session_id', 'default')
+                                    st = _load_state(session_id_for_state)
+                                    st['current_flipbook_url'] = "FAILED"
+                                    _save_state(st, session_id_for_state)
+                                except Exception:
+                                    pass
                                 print(f"[FLIPBOOK] Error generating flipbook: {e}")
                                 import traceback
                                 traceback.print_exc()
