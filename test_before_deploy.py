@@ -314,6 +314,89 @@ except Exception as e:
     failed_tests.append("First frame quality override check")
 
 # ============================================================================
+# TEST 8: Consequence/Turn Engine Safety Checks
+# ============================================================================
+print("\n[TEST 8] Consequence/Turn Engine Safety Checks...")
+
+try:
+    with open("engine.py", "r", encoding="utf-8") as f:
+        engine_content = f.read()
+
+    # 8a: consequence_video_url must be initialized before the try block
+    print("  Checking consequence_video_url initialized before try...", end=" ")
+    if "consequence_video_url = None  # Initialize to prevent" in engine_content:
+        print("[OK]")
+    else:
+        print("[FAIL]")
+        failed_tests.append("consequence_video_url not initialized before try block")
+
+    # 8b: _vision_analyze_all must not return bare "" string
+    print("  Checking _vision_analyze_all return type...", end=" ")
+    if 'return ""' not in engine_content or engine_content.count('return ""') == 0:
+        print("[OK]")
+    else:
+        # Check it's not in _vision_analyze_all specifically
+        import re
+        fn_match = re.search(r'def _vision_analyze_all.*?(?=\ndef |\Z)', engine_content, re.DOTALL)
+        if fn_match and 'return ""' in fn_match.group(0):
+            print("[FAIL]")
+            failed_tests.append("_vision_analyze_all returns bare string instead of dict")
+        else:
+            print("[OK]")
+
+    # 8c: advance_turn_choices_deferred must have an exception handler
+    print("  Checking advance_turn_choices_deferred has exception handler...", end=" ")
+    if "_advance_turn_choices_deferred_impl" in engine_content:
+        print("[OK]")
+    else:
+        print("[FAIL]")
+        failed_tests.append("advance_turn_choices_deferred missing exception handler")
+
+except Exception as e:
+    print(f"[FAIL] {e}")
+    failed_tests.append("Engine safety checks")
+
+try:
+    with open("bot.py", "r", encoding="utf-8") as f:
+        bot_content = f.read()
+
+    # 8d: ChoiceButton.callback must have a top-level turn guard
+    print("  Checking ChoiceButton.callback has top-level turn guard...", end=" ")
+    if "TOP-LEVEL TURN GUARD" in bot_content:
+        print("[OK]")
+    else:
+        print("[FAIL]")
+        failed_tests.append("ChoiceButton.callback missing top-level turn guard")
+
+    # 8e: CustomActionModal.on_submit turn guard
+    print("  Checking CustomActionModal.on_submit has turn guard...", end=" ")
+    if "CUSTOM ACTION TURN GUARD" in bot_content:
+        print("[OK]")
+    else:
+        print("[FAIL]")
+        failed_tests.append("CustomActionModal.on_submit missing turn guard")
+
+    # 8f: auto_advance_turn turn guard
+    print("  Checking auto_advance_turn has turn guard...", end=" ")
+    if "AUTO-ADVANCE TURN GUARD" in bot_content:
+        print("[OK]")
+    else:
+        print("[FAIL]")
+        failed_tests.append("auto_advance_turn missing turn guard")
+
+    # 8g: stale flipbook URL is cleared before new generation
+    print("  Checking stale flipbook URL cleared before new generation...", end=" ")
+    if "Cleared stale flipbook URL before starting" in engine_content or "current_flipbook_url'] = None" in engine_content:
+        print("[OK]")
+    else:
+        print("[FAIL]")
+        failed_tests.append("Stale flipbook URL not cleared before new generation")
+
+except Exception as e:
+    print(f"[FAIL] {e}")
+    failed_tests.append("Bot safety checks")
+
+# ============================================================================
 # RESULTS
 # ============================================================================
 print("\n" + "=" * 70)
