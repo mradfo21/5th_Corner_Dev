@@ -161,7 +161,7 @@ if DISCORD_ENABLED:
     # Use "!" not "/" — Discord intercepts "/" for its own slash-command
     # handling so text-prefix commands with command_prefix="/" are NEVER
     # delivered to the bot as message events.
-    bot     = commands.Bot(command_prefix="!", intents=intents)
+    bot     = commands.Bot(command_prefix="!", intents=intents, help_command=None)
     print(f"[STARTUP] Bot initialized. TOKEN={'SET' if TOKEN else 'MISSING'}, CHAN={CHAN}", flush=True)
 
     running = False
@@ -2790,6 +2790,88 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             print(f"[!play] Error: {e}", flush=True)
             await ctx.reply(f"❌ Could not post intro: {e}")
 
+    @bot.command(name="help")
+    async def help_command(ctx):
+        """Show available commands.
+
+        Usage: !help
+        """
+        is_admin = _is_server_admin(ctx)
+        embed = discord.Embed(
+            title="🎮 SOMEWHERE — Available Commands",
+            color=CORNER_TEAL,
+        )
+        embed.add_field(
+            name="Anyone",
+            value=(
+                "`!play` — show the intro / Play button\n"
+                "`!help` — show this message\n"
+                "`/play` — same as `!play` (slash version)"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Server admins",
+            value=(
+                "`!reset` — wipe state and post a fresh intro\n"
+                "`/restart` — same as `!reset` (slash version)\n"
+                "`/restart` typed as plain text also works"
+            ),
+            inline=False,
+        )
+        if not is_admin:
+            embed.set_footer(text="(some commands require server admin)")
+        try:
+            await ctx.reply(embed=embed)
+        except Exception:
+            await ctx.send(embed=embed)
+
+    # ───────── Text fallback for /-prefixed commands ───────────────────────────
+    #
+    # Players often type `/restart` (or `/reset`, `/play`, `/help`) before
+    # Discord has finished propagating slash commands to their client. When
+    # that happens Discord just sends the literal text to the channel and our
+    # bot would ignore it (`command_prefix="!"`). That's the exact symptom we
+    # just hit — the user typed `/restart` and got nothing.
+    #
+    # This handler catches those plain-text `/xxx` messages and runs the
+    # equivalent prefix command, so restarts work the moment the bot is up
+    # regardless of slash-command propagation state. We still call
+    # `bot.process_commands()` so normal `!`-prefix commands keep working.
+    _SLASH_TEXT_ALIASES = {
+        "/restart": "reset",
+        "/reset": "reset",
+        "/play": "play",
+        "/help": "help",
+    }
+
+    @bot.event
+    async def on_message(message: discord.Message):
+        try:
+            if message.author.bot:
+                return
+            content = (message.content or "").strip()
+            if content:
+                first = content.split()[0].lower()
+                aliased = _SLASH_TEXT_ALIASES.get(first)
+                if aliased is not None:
+                    print(
+                        f"[SLASH FALLBACK] Treating text '{first}' as !{aliased} "
+                        f"(slash commands may not have propagated yet)",
+                        flush=True,
+                    )
+                    ctx = await bot.get_context(message)
+                    cmd = bot.get_command(aliased)
+                    if cmd is not None:
+                        ctx.command = cmd
+                        await bot.invoke(ctx)
+                        return
+        except Exception as e:
+            print(f"[SLASH FALLBACK ERROR] {e}", flush=True)
+        # Always fall through to normal command processing for `!`-prefix
+        # commands. Without this, defining on_message disables prefix handling.
+        await bot.process_commands(message)
+
     def beginning_simulation_embed():
         embed = discord.Embed(
             title="🟢 Beginning Simulation",
@@ -3630,18 +3712,73 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
         custom_action_turn_counter = 0
         print("[STARTUP] Custom action available")
         
-        # Sync slash commands. The previous deploy disabled this entirely
-        # because of rate limits during testing, which left players with NO
-        # interactable commands at all (`/restart`, `/play`, `/ai_status`,
-        # etc. weren't registered with Discord). We re-enable it here in a
-        # background task so a transient rate-limit doesn't block the bot
-        # from coming online — the user gets buttons + commands as soon as
-        # Discord ACKs the sync, with a single retry on 429.
+        # Sync slash commands.
+        #
+        # Why guild-specific sync: when we previously synced commands with a
+        # plain `bot.tree.sync()` (global), Discord's documented propagation
+        # delay is "up to 1 hour" and in practice can be 15-60 minutes before
+        # the new commands appear in the picker. That's exactly the symptom
+        # players just hit — they typed `/restart` and Discord didn't know
+        # about it yet, so it sent as a literal text message and the bot
+        # ignored it.
+        #
+        # Guild-scoped sync (`tree.sync(guild=...)`) is **instantaneous** —
+        # commands appear in the picker as soon as the API call returns. We
+        # detect the guild from the configured CHANNEL_ID, copy our globals
+        # into the guild, and sync there. If we can't determine a guild
+        # (e.g. CHANNEL_ID misconfigured) we fall back to a global sync so
+        # the bot still works, just with slower propagation.
         async def _sync_slash_commands():
+            target_guild = None
+            try:
+                guild_env = os.getenv("GUILD_ID") or ""
+                if guild_env.strip().isdigit():
+                    target_guild = discord.Object(id=int(guild_env.strip()))
+                    print(f"[BOT] Slash sync target: guild {guild_env} (from GUILD_ID env)", flush=True)
+                elif CHAN:
+                    ch = bot.get_channel(CHAN)
+                    if ch is not None and getattr(ch, "guild", None) is not None:
+                        target_guild = discord.Object(id=ch.guild.id)
+                        print(f"[BOT] Slash sync target: guild {ch.guild.id} (auto-detected from CHANNEL_ID)", flush=True)
+            except Exception as e:
+                print(f"[BOT] Could not resolve sync guild: {e}", flush=True)
+
             for attempt in range(3):
                 try:
-                    synced = await bot.tree.sync()
-                    print(f"[BOT] Synced {len(synced)} slash command(s)", flush=True)
+                    if target_guild is not None:
+                        # Copy global commands into the guild and sync there
+                        # for instant availability.
+                        try:
+                            bot.tree.copy_global_to(guild=target_guild)
+                        except Exception as e:
+                            print(f"[BOT] copy_global_to failed: {e}", flush=True)
+                        synced = await bot.tree.sync(guild=target_guild)
+                        names = ", ".join(sorted(c.name for c in synced)) or "(none)"
+                        print(
+                            f"[BOT] Synced {len(synced)} guild slash command(s) "
+                            f"to {target_guild.id} (instant): {names}",
+                            flush=True,
+                        )
+                        # Also kick off a background global sync so the bot
+                        # works in DMs / other guilds eventually. This one is
+                        # slow-propagating but harmless.
+                        try:
+                            global_synced = await bot.tree.sync()
+                            print(
+                                f"[BOT] Synced {len(global_synced)} global slash command(s) "
+                                f"(propagation up to ~1 hour)",
+                                flush=True,
+                            )
+                        except Exception as e:
+                            print(f"[BOT] Global slash sync skipped: {e}", flush=True)
+                    else:
+                        synced = await bot.tree.sync()
+                        print(
+                            f"[BOT] Synced {len(synced)} GLOBAL slash command(s) "
+                            f"(no guild detected; propagation up to ~1 hour). "
+                            f"Set GUILD_ID env var for instant sync.",
+                            flush=True,
+                        )
                     return
                 except discord.HTTPException as e:
                     if getattr(e, "status", None) == 429:
@@ -3703,8 +3840,12 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                         try:
                             await channel.send(
                                 embed=discord.Embed(
-                                    description="🟢 **Resumed from previous state.**\n\n"
-                                                "Pick up where you left off:",
+                                    description=(
+                                        "🟢 **Resumed from previous state.**\n\n"
+                                        "Pick up where you left off, or type "
+                                        "`!reset` (admin) / `/restart` to start over.\n"
+                                        "Type `!help` to see all commands."
+                                    ),
                                     color=CORNER_TEAL,
                                 )
                             )
@@ -3722,6 +3863,20 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                             "falling back to intro tutorial.",
                             flush=True,
                         )
+                        try:
+                            await channel.send(
+                                embed=discord.Embed(
+                                    description=(
+                                        "🟢 **Bot is online.** No saved progress — "
+                                        "starting a fresh run.\n"
+                                        "Tip: type `!help` for commands, "
+                                        "`!reset` (admin) / `/restart` to wipe state."
+                                    ),
+                                    color=CORNER_TEAL,
+                                )
+                            )
+                        except Exception:
+                            pass
                         await send_intro_tutorial(channel)
             except Exception as e:
                 print(f"[BOT ERROR] Failed during on_ready channel post: {e}", flush=True)
