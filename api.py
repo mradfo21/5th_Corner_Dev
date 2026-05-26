@@ -624,6 +624,46 @@ def serve_admin_dashboard():
         return jsonify({"error": "Dashboard file not found"}), 404
 
 
+@app.route('/api/admin/reset', methods=['POST'])
+def admin_reset_session():
+    """
+    Emergency-reset the engine state for a session.
+
+    Useful when the Discord UI is stuck (e.g. the bot resumed into a state
+    with no choices and players have nothing to click). Guarded by
+    ADMIN_TOKEN — the same token the dashboard uses. The session id can be
+    passed as `?session=<id>` (defaults to `default`).
+
+    Example:
+        curl -X POST -H "X-Admin-Token: $ADMIN_TOKEN" \
+            "https://<host>/api/admin/reset?session=default"
+    """
+    if not _admin_token_ok():
+        return jsonify({
+            "error": "unauthorized",
+            "message": "Provide ADMIN_TOKEN via ?token=, X-Admin-Token header, or admin_token cookie."
+        }), 401
+
+    from flask import request
+    session_id = (
+        request.args.get('session')
+        or (request.get_json(silent=True) or {}).get('session')
+        or 'default'
+    )
+    try:
+        import engine as _engine
+        _engine.reset_state(session_id)
+        return jsonify({"status": "ok", "session": session_id, "action": "reset"})
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "status": "error",
+            "session": session_id,
+            "error": str(e),
+        }), 500
+
+
 # ═══════════════════════════════════════════════════════════════════
 # INFO & HEALTH ENDPOINTS
 # ═══════════════════════════════════════════════════════════════════

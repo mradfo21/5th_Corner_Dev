@@ -3491,7 +3491,8 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
     @bot.event
     async def on_ready():
         global auto_play_enabled, auto_advance_task, countdown_task, custom_action_available, custom_action_turn_counter
-        
+        global OWNER_ID, running
+
         print(f"[BOT] {bot.user} is ready!")
         
         # Reset auto-play state on bot startup
@@ -3512,36 +3513,107 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
         custom_action_turn_counter = 0
         print("[STARTUP] Custom action available")
         
-        # Sync slash commands (TEMPORARILY DISABLED due to rate limiting)
-        # try:
-        #     synced = await bot.tree.sync()
-        #     print(f"[BOT] Synced {len(synced)} slash command(s)")
-        # except Exception as e:
-        #     print(f"[BOT] Failed to sync commands: {e}")
-        print(f"[BOT] Command sync disabled (rate limited) - bot will start immediately")
+        # Sync slash commands. The previous deploy disabled this entirely
+        # because of rate limits during testing, which left players with NO
+        # interactable commands at all (`/restart`, `/play`, `/ai_status`,
+        # etc. weren't registered with Discord). We re-enable it here in a
+        # background task so a transient rate-limit doesn't block the bot
+        # from coming online — the user gets buttons + commands as soon as
+        # Discord ACKs the sync, with a single retry on 429.
+        async def _sync_slash_commands():
+            for attempt in range(3):
+                try:
+                    synced = await bot.tree.sync()
+                    print(f"[BOT] Synced {len(synced)} slash command(s)", flush=True)
+                    return
+                except discord.HTTPException as e:
+                    if getattr(e, "status", None) == 429:
+                        retry_after = getattr(e, "retry_after", None) or (5 * (2 ** attempt))
+                        print(
+                            f"[BOT] Slash sync rate-limited (429); "
+                            f"retry in {retry_after}s (attempt {attempt + 1}/3)",
+                            flush=True,
+                        )
+                        await asyncio.sleep(min(float(retry_after), 60.0))
+                        continue
+                    print(f"[BOT] Slash sync failed: {e}", flush=True)
+                    return
+                except Exception as e:
+                    print(f"[BOT] Slash sync error: {e}", flush=True)
+                    return
+            print("[BOT] Slash sync gave up after retries", flush=True)
+
+        asyncio.create_task(_sync_slash_commands())
+        print("[BOT] Slash command sync scheduled in background.", flush=True)
         
         # Send intro to channel
         print(f"[BOT] Attempting to get channel {CHAN}...", flush=True)
         channel = bot.get_channel(CHAN)
         if channel is not None:
             print(f"[BOT] Channel found: {channel.name}", flush=True)
-            if not RESUME_MODE:
-                # Send intro tutorial with Play buttons
-                try:
+            try:
+                if not RESUME_MODE:
                     print("[BOT] Calling send_intro_tutorial...", flush=True)
                     await send_intro_tutorial(channel)
                     print(f"[BOT] Sent intro to channel {CHAN}", flush=True)
-                except Exception as e:
-                    print(f"[BOT ERROR] Failed to send intro: {e}", flush=True)
-                    import traceback
-                    traceback.print_exc()
-            else:
-                await channel.send("🟢 Resumed from previous state.")
+                else:
+                    # Resume path. Previously this just posted "Resumed from
+                    # previous state." with no controls, leaving players with
+                    # nothing to click. Instead, try to repost the current
+                    # state's choices so the game is interactable. If there
+                    # are no choices yet (fresh state, intro never finished,
+                    # or post-deploy cold start) fall through to the intro
+                    # tutorial so there's always a Play button.
+                    session_id = str(CHAN) if CHAN else 'default'
+                    saved_choices = []
+                    saved_dispatch = ""
+                    try:
+                        snap = engine.get_state(session_id) or {}
+                        saved_choices = [
+                            c for c in (snap.get('choices') or [])
+                            if isinstance(c, str) and c.strip() not in ("", "—", "–", "-")
+                        ]
+                        saved_dispatch = snap.get('world_prompt') or snap.get('situation') or ""
+                    except Exception as e:
+                        print(f"[BOT RESUME] Could not load session state: {e}", flush=True)
+
+                    if saved_choices:
+                        print(
+                            f"[BOT RESUME] Reposting {len(saved_choices)} pending choices "
+                            f"for session {session_id}",
+                            flush=True,
+                        )
+                        try:
+                            await channel.send(
+                                embed=discord.Embed(
+                                    description="🟢 **Resumed from previous state.**\n\n"
+                                                "Pick up where you left off:",
+                                    color=CORNER_TEAL,
+                                )
+                            )
+                            view = ChoiceView(saved_choices, owner_id=OWNER_ID)
+                            await send_choices(channel, saved_choices, view)
+                        except Exception as e:
+                            print(f"[BOT RESUME ERROR] Failed to repost choices: {e}", flush=True)
+                            import traceback
+                            traceback.print_exc()
+                            # If we couldn't repost, still give the player a way in.
+                            await send_intro_tutorial(channel)
+                    else:
+                        print(
+                            "[BOT RESUME] No pending choices in saved state; "
+                            "falling back to intro tutorial.",
+                            flush=True,
+                        )
+                        await send_intro_tutorial(channel)
+            except Exception as e:
+                print(f"[BOT ERROR] Failed during on_ready channel post: {e}", flush=True)
+                import traceback
+                traceback.print_exc()
         else:
             print(f"[BOT ERROR] Channel {CHAN} not found. Bot may not have access to this channel.", flush=True)
         # Set owner ID
         try:
-            global OWNER_ID
             print("[BOT] Getting application info...", flush=True)
             app_info = await bot.application_info()
             OWNER_ID = app_info.owner.id
@@ -3550,9 +3622,8 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             print(f"[BOT ERROR] Failed to get owner ID: {e}", flush=True)
             import traceback
             traceback.print_exc()
-        
+
         # Mark bot as running
-        global running
         running = True
         print("[BOT] Bot fully initialized and ready!", flush=True)
 
@@ -4460,8 +4531,84 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             return vision
         return dispatch
 
+    # ───────── Game Lifecycle Slash Commands ───────────────────────────────────
+    # These give players a way to start / restart the game from Discord without
+    # an owner-only prefix command (the legacy `!restart_game` requires
+    # `is_owner()` and uses a `/` prefix that conflicts with Discord's slash
+    # command system, so it never actually fired in production).
+
+    @bot.tree.command(name="play", description="Start or restart the SOMEWHERE game in this channel")
+    async def play_slash(interaction: discord.Interaction):
+        """Show the intro tutorial with the Play button."""
+        try:
+            await interaction.response.send_message(
+                "Loading intro…", ephemeral=True
+            )
+        except Exception:
+            pass
+        try:
+            await send_intro_tutorial(interaction.channel)
+        except Exception as e:
+            print(f"[/play] Failed: {e}", flush=True)
+            try:
+                await interaction.followup.send(f"Failed to load intro: {e}", ephemeral=True)
+            except Exception:
+                pass
+
+    @bot.tree.command(
+        name="restart",
+        description="Reset the current game session and start a fresh run",
+    )
+    async def restart_slash(interaction: discord.Interaction):
+        """Reset state for the channel's session and post the intro tutorial."""
+        # Owner-only: gating with a Discord permission instead of is_owner()
+        # so it works for the server admin without needing the bot's
+        # application owner ID.
+        member = interaction.user
+        is_admin = False
+        try:
+            perms = getattr(member, "guild_permissions", None)
+            is_admin = bool(perms and (perms.administrator or perms.manage_guild))
+        except Exception:
+            is_admin = False
+        if OWNER_ID and getattr(member, "id", None) == OWNER_ID:
+            is_admin = True
+        if not is_admin:
+            await interaction.response.send_message(
+                "🔒 Only server admins can restart the game.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        try:
+            session_id = str(interaction.channel_id) if interaction.channel_id else 'default'
+            print(f"[/restart] Resetting session {session_id} (requested by {member})", flush=True)
+            engine.reset_state(session_id)
+            # Also clear the legacy globals so any stale handlers don't keep
+            # acting on the previous run.
+            try:
+                engine.reset_state('legacy')
+            except Exception:
+                pass
+            _run_images.clear()
+            _run_flipbooks.clear()
+            await interaction.followup.send(
+                "Game state cleared. Posting fresh intro now.", ephemeral=True
+            )
+            await send_intro_tutorial(interaction.channel)
+        except Exception as e:
+            print(f"[/restart] Failed: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+            try:
+                await interaction.followup.send(
+                    f"Failed to restart: {e}", ephemeral=True
+                )
+            except Exception:
+                pass
+
     # ───────── AI Provider Management Commands ─────────────────────────────────
-    
+
     @bot.tree.command(name="ai_status", description="View current AI model configuration")
     async def ai_status_command(interaction: discord.Interaction):
         """Show current AI provider settings."""
@@ -4571,29 +4718,59 @@ if __name__ == "__main__":
     if DISCORD_ENABLED:
         print("[MAIN] Discord enabled - starting bot", flush=True)
         
-        # Check if running on Render (needs health check endpoint)
-        if os.getenv("RENDER"):
-            print("[RENDER] Detected Render environment - starting health check server", flush=True)
+        # Health-check server. We only spin up bot.py's own Flask health server
+        # when nothing else is going to bind ${PORT}. In the combined
+        # deployment (start_production.sh / start.py), api.py / gunicorn
+        # already bind ${PORT} and serve /api/health, so a second Flask in
+        # this process just races for the same port and prints the noisy
+        # "Address already in use" + Werkzeug debug-PIN traceback we saw in
+        # production logs.
+        #
+        # Behaviour:
+        #   BOT_HEALTH_SERVER=1  -> always start it (worker-only deploy)
+        #   BOT_HEALTH_SERVER=0  -> never start it (combined deploy, default)
+        #   unset                -> default: skip on Render, start locally
+        _health_default = "0" if os.getenv("RENDER") else "0"
+        _start_health = os.getenv("BOT_HEALTH_SERVER", _health_default) == "1"
+        if _start_health:
+            print("[RENDER] Starting bot-internal health check server", flush=True)
             from flask import Flask
             health_app = Flask(__name__)
-            
+
             @health_app.route("/")
             def health():
                 return {"status": "ok", "service": "discord_bot"}
-            
+
             @health_app.route("/health")
             def health_check():
                 return {"status": "healthy", "bot": "running"}
-            
-            # Start Flask in background thread
+
             def run_health_server():
-                port = int(os.getenv("PORT", 10000))
+                port = int(os.getenv("BOT_HEALTH_PORT", os.getenv("PORT", 10000)))
                 print(f"[RENDER] Health check server starting on port {port}", flush=True)
-                health_app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)
-            
+                try:
+                    health_app.run(
+                        host="0.0.0.0",
+                        port=port,
+                        debug=False,
+                        use_reloader=False,
+                    )
+                except OSError as e:
+                    # Port already bound (api.py is running). Don't crash the
+                    # bot — this is best-effort and Render's health check
+                    # targets api.py's /api/health anyway.
+                    print(f"[RENDER] Health server skipped: {e}", flush=True)
+
             health_thread = threading.Thread(target=run_health_server, daemon=True)
             health_thread.start()
             print("[RENDER] Health check server started in background thread", flush=True)
+        else:
+            print(
+                "[RENDER] Skipping bot-internal health server "
+                "(api.py / gunicorn serves /api/health). "
+                "Set BOT_HEALTH_SERVER=1 to override.",
+                flush=True,
+            )
         
         # Pre-flight token validation. A real Discord bot token is three
         # base64 segments separated by dots and is always longer than ~50
