@@ -1781,30 +1781,27 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                             prev_grid = st_temp.get('flipbook_last_grid') # Context for the entire previous 16 frames
                             prev_last = st_temp.get('flipbook_last_frame') # Direct visual anchor for frame 16
                             
-                            # Add MASSIVELY HARDENED flipbook prefix
-                            # This must be so strong the AI cannot ignore it
+                            # Hardened flipbook prefix — deliberately avoids naming any labels
+                            # (e.g. "FRAME 1", timestamps) because Gemini copies text it's told NOT to use.
+                            # We only describe the STRUCTURE, never the text that was on the numbered template.
                             flipbook_prefix = (
                                 "🚨🚨🚨 ABSOLUTE COMMAND - READ THIS FIRST 🚨🚨🚨\n\n"
-                                "⚠️⚠️⚠️ CRITICAL: COPY THE FIRST REFERENCE IMAGE'S STRUCTURE ⚠️⚠️⚠️\n\n"
-                                "The FIRST reference image attached is a NUMBERED TEMPLATE showing:\n"
+                                "⚠️⚠️⚠️ CRITICAL: COPY THE FIRST REFERENCE IMAGE'S GRID STRUCTURE ⚠️⚠️⚠️\n\n"
+                                "The FIRST reference image shows a BLANK GRID LAYOUT:\n"
                                 "• Size: 1200x896 pixels (4:3 aspect ratio)\n"
-                                "• Layout: 4x4 grid with black lines separating panels\n"
-                                "• Labels: 'FRAME 1' through 'FRAME 16' in each panel\n"
-                                "• Timestamps: 0.00s, 0.25s, 0.50s... up to 3.75s\n\n"
+                                "• Layout: 4x4 grid with black lines separating 16 panels\n"
+                                "• Panels: 16 equal cells arranged in 4 rows × 4 columns\n\n"
                                 "YOUR OUTPUT MUST EXACTLY MATCH THIS TEMPLATE'S STRUCTURE:\n"
                                 "✓ Same resolution: 1200x896\n"
                                 "✓ Same grid: 4 rows × 4 columns = 16 panels\n"
                                 "✓ Same panel size: 300x224 each\n"
-                                "✓ Same positions: Row 1: Frames 1-4, Row 2: Frames 5-8, etc.\n\n"
-                                "🚫🚫🚫 ABSOLUTELY DO NOT COPY THE TEXT FROM THE TEMPLATE 🚫🚫🚫\n"
-                                "❌ DO NOT include 'FRAME 1', 'FRAME 2', etc. in your output\n"
-                                "❌ DO NOT include '0.00s', '0.25s', '0.50s', etc. in your output\n"
-                                "❌ DO NOT include ANY text, numbers, or labels from the template\n"
-                                "✅ ONLY copy the GRID STRUCTURE (4x4 layout, black lines)\n"
-                                "✅ Fill each panel with CLEAN photorealistic imagery (NO TEXT)\n\n"
-                                "The template shows you WHERE to place each frame in the grid.\n"
-                                "Fill each labeled position with your generated content.\n"
-                                "DO NOT generate one continuous image - generate 16 SEPARATE panels.\n\n"
+                                "✓ Same positions: top-left to bottom-right in reading order\n\n"
+                                "🚫🚫🚫 ZERO TEXT ANYWHERE IN ANY PANEL 🚫🚫🚫\n"
+                                "❌ NO text, labels, numbers, or letters in any panel — NONE\n"
+                                "❌ NO overlays, annotations, or UI elements of any kind\n"
+                                "✅ ONLY copy the GRID STRUCTURE (4x4 layout, black dividing lines)\n"
+                                "✅ Fill each panel with CLEAN photorealistic imagery — NO TEXT EVER\n\n"
+                                "DO NOT generate one continuous image — generate 16 SEPARATE panels.\n\n"
                                 "=" * 70 + "\n"
                                 "🎥 CAMERA TYPE: VHS CAMCORDER / BODY CAM 🎥\n"
                                 "=" * 70 + "\n\n"
@@ -1848,26 +1845,26 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                             
                             # --- REFERENCE STRATEGY: TEMPLATE FIRST, THEN STYLE REFERENCES ---
                             # CRITICAL ORDER: The FIRST reference is the PRIMARY structure to copy
-                            # 1. Numbered template (1200x896) - EXACT layout to match
+                            # 1. Blank grid template (no text) - EXACT layout without labels Gemini copies
                             # 2. Previous grid - visual style reference
                             # 3. Individual frames - continuity reference
                             flipbook_refs = []
                             
-                            # 1. NUMBERED grid template - THIS IS THE PRIMARY STRUCTURE REFERENCE
-                            # Must be FIRST so the AI copies its layout (1200x896, 4x4 grid)
-                            # This template has frame numbers (FRAME 1-16) and time markers
+                            # 1. BLANK grid template — preferred over the numbered one.
+                            # The numbered template (FRAME 1-16, timestamps) caused Gemini to copy those
+                            # labels into generated panels even when told not to. The blank template has
+                            # only grid lines, so there is no text for the model to replicate.
+                            blank_template_path = str(ROOT / "prompts" / "flipbook_blank_grid_template.png")
                             numbered_template_path = str(ROOT / "prompts" / "flipbook_numbered_template.png")
-                            if os.path.exists(numbered_template_path):
+                            if os.path.exists(blank_template_path):
+                                flipbook_refs.append(blank_template_path)
+                                print(f"[FLIPBOOK LAYOUT] Passing BLANK grid template as PRIMARY reference (no text labels)", flush=True)
+                            elif os.path.exists(numbered_template_path):
+                                # Last-resort fallback — numbered template still encodes grid dimensions
                                 flipbook_refs.append(numbered_template_path)
-                                print(f"[FLIPBOOK LAYOUT] Passing NUMBERED template as PRIMARY reference (1200x896)", flush=True)
+                                print(f"[FLIPBOOK LAYOUT] Falling back to numbered template (blank not found)", flush=True)
                             else:
-                                # Fallback to blank template if numbered doesn't exist
-                                blank_template_path = str(ROOT / "prompts" / "flipbook_blank_grid_template.png")
-                                if os.path.exists(blank_template_path):
-                                    flipbook_refs.append(blank_template_path)
-                                    print(f"[FLIPBOOK LAYOUT] Passing blank grid template (fallback)", flush=True)
-                                else:
-                                    print(f"[FLIPBOOK WARNING] No grid template found", flush=True)
+                                print(f"[FLIPBOOK WARNING] No grid template found", flush=True)
                             
                             # 2. FULL previous flipbook grid (4x4 grid PNG) - reinforces grid structure
                             if prev_grid and os.path.exists(prev_grid):
