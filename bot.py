@@ -105,9 +105,38 @@ if DISCORD_ENABLED:
         conf = {}
     
     # Read from environment variables first, fall back to config.json
-    TOKEN  = os.getenv("DISCORD_TOKEN", conf.get("DISCORD_TOKEN"))
-    CHAN   = int(os.getenv("CHANNEL_ID", conf.get("CHANNEL_ID", 0)))
-    VOTE_S = int(os.getenv("VOTE_SECONDS", conf.get("VOTE_SECONDS", 120)))
+    def _sanitize_token(raw):
+        """
+        Discord tokens are sometimes copy-pasted into the Render dashboard with
+        surrounding whitespace, quotes, or a stray "Bot " prefix. Any of these
+        produces a `LoginFailure: Improper token has been passed` from
+        discord.py at runtime even though the underlying token is valid.
+
+        We defensively strip whitespace, surrounding quotes, and an optional
+        leading "Bot " prefix. We do NOT mutate the env var if the value is
+        clearly empty / missing — let the loud startup check handle that.
+        """
+        if not raw:
+            return raw
+        cleaned = str(raw).strip()
+        # Strip a single layer of surrounding single or double quotes.
+        if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] and cleaned[0] in ('"', "'"):
+            cleaned = cleaned[1:-1].strip()
+        # discord.py adds the "Bot " prefix internally; remove if present.
+        if cleaned.lower().startswith("bot "):
+            cleaned = cleaned[4:].strip()
+        return cleaned
+
+    TOKEN  = _sanitize_token(os.getenv("DISCORD_TOKEN", conf.get("DISCORD_TOKEN")))
+    try:
+        CHAN = int(os.getenv("CHANNEL_ID", conf.get("CHANNEL_ID", 0)) or 0)
+    except (TypeError, ValueError):
+        print("[STARTUP WARN] CHANNEL_ID is not a valid integer; defaulting to 0.", flush=True)
+        CHAN = 0
+    try:
+        VOTE_S = int(os.getenv("VOTE_SECONDS", conf.get("VOTE_SECONDS", 120)) or 120)
+    except (TypeError, ValueError):
+        VOTE_S = 120
     
     # Reset game state on bot startup (unless RESUME_MODE is enabled)
     if not RESUME_MODE:
@@ -4566,13 +4595,62 @@ if __name__ == "__main__":
             health_thread.start()
             print("[RENDER] Health check server started in background thread", flush=True)
         
-        print(f"[MAIN] Starting bot.run() with TOKEN={'SET' if TOKEN else 'MISSING'}", flush=True)
+        # Pre-flight token validation. A real Discord bot token is three
+        # base64 segments separated by dots and is always longer than ~50
+        # characters. Catching obvious problems here gives a much clearer
+        # error in the Render logs than the generic "Improper token has
+        # been passed" that discord.py raises *after* doing a network call.
+        def _looks_like_discord_token(t):
+            if not t or not isinstance(t, str):
+                return False
+            if len(t) < 50:
+                return False
+            if t.count(".") < 2:
+                return False
+            return all(ch.isprintable() and not ch.isspace() for ch in t)
+
+        if not TOKEN:
+            print(
+                "[MAIN ERROR] DISCORD_TOKEN is not set. "
+                "Add it in Render Dashboard -> Environment, then redeploy.",
+                flush=True,
+            )
+            sys.exit(1)
+
+        if not _looks_like_discord_token(TOKEN):
+            preview = (TOKEN[:4] + "..." + TOKEN[-4:]) if len(TOKEN) >= 8 else "***"
+            print(
+                "[MAIN ERROR] DISCORD_TOKEN is malformed (got %d chars, preview=%s). "
+                "Re-copy the token from the Discord developer portal and paste it "
+                "into Render -> Environment without surrounding quotes or whitespace."
+                % (len(TOKEN), preview),
+                flush=True,
+            )
+            sys.exit(1)
+
+        print(f"[MAIN] Starting bot.run() with TOKEN=SET (len={len(TOKEN)})", flush=True)
         try:
             bot.run(TOKEN)
+        except discord.LoginFailure as e:
+            # 401 from Discord — token was rejected. This usually means the
+            # token was rotated in the Discord developer portal and the env
+            # var on Render is now stale. We exit non-zero so Render marks
+            # the deploy as failed instead of silently leaving a dead bot.
+            print(
+                "[MAIN ERROR] Discord rejected the token (LoginFailure: %s). "
+                "The token is either revoked, regenerated, or for a different "
+                "application. Generate a fresh token in the Discord developer "
+                "portal and update DISCORD_TOKEN on Render." % e,
+                flush=True,
+            )
+            sys.exit(2)
         except Exception as e:
             print(f"[MAIN ERROR] Bot crashed: {e}", flush=True)
             import traceback
             traceback.print_exc()
+            # Exit non-zero so the Render deploy is flagged as failed and the
+            # service is restarted instead of staying "live" with a dead bot.
+            sys.exit(3)
     else:
         print("WARNING: Discord disabled. Running in local web-only mode.")
 

@@ -523,8 +523,15 @@ def _load_state(session_id='default') -> dict:
                 logging.error(f"Unexpected error loading {state_path} in _load_state: {e_load}")
                 # Fallback for other errors too
         
-        # Fallback: If file doesn't exist or loading failed, return a clean default state
-        logging.warning(f"{state_path} not found or failed to load, returning default state.")
+        # Fallback: If file doesn't exist or loading failed, return a clean default state.
+        # First-time runs and brand-new sessions are expected to hit this path,
+        # so log at INFO level when the file simply doesn't exist (and only WARN
+        # if there was an actual load error above — those errors are already
+        # logged separately).
+        if not state_path.exists():
+            logging.info(f"{state_path} does not exist yet; returning default state.")
+        else:
+            logging.warning(f"{state_path} failed to load, returning default state.")
         return {
             "world_prompt": PROMPTS.get("world_prompt", "Default world starting point."), # Use .get for safety
             "current_phase": "normal",
@@ -5033,4 +5040,14 @@ def generate_intro_turn(session_id: str = 'default'):
 if __name__ == '__main__':
     # Setup logging if you want to see Flask's default logs
     # logging.basicConfig(level=logging.INFO)
-    app.run(debug=True, host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
+    # Debug mode opt-in only: enabling it in production exposes the
+    # Werkzeug interactive debugger (arbitrary code execution from the
+    # browser). Defaults to off; set FLASK_DEBUG=1 locally to re-enable.
+    _debug_mode = os.environ.get('FLASK_DEBUG', '0') == '1'
+    app.run(
+        debug=_debug_mode,
+        host='0.0.0.0',
+        port=int(os.environ.get('PORT', 8080)),
+        use_reloader=False,
+        threaded=True,
+    )

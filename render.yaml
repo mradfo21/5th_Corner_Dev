@@ -1,9 +1,23 @@
 services:
-  - type: worker
+  # Single combined service: API + Discord bot.
+  #
+  # NOTE: The previous version of this file declared `type: worker`, which on
+  # Render means no public URL and no inbound HTTP. That is incompatible with
+  # the API server (`api.py`), the `/admin` dashboard, and Render health
+  # checks. We use `type: web` so the API is reachable AND the bot keeps
+  # running alongside it.
+  - type: web
     name: somewhere-discord-bot
     env: python
+    plan: starter
     buildCommand: pip install -r requirements.txt
-    startCommand: python bot.py
+    # `start_production.sh` launches the Discord bot in the background and
+    # serves the Flask API with gunicorn (production WSGI server) instead of
+    # Flask's dev server with debug=True. Don't change this without updating
+    # both processes — Render's health probe targets the API.
+    startCommand: bash start_production.sh
+    healthCheckPath: /api/health
+    autoDeploy: true
     envVars:
       - key: DISCORD_TOKEN
         sync: false
@@ -11,5 +25,17 @@ services:
         sync: false
       - key: OPENAI_API_KEY
         sync: false
+      - key: REPLICATE_API_TOKEN
+        sync: false
       - key: CHANNEL_ID
-        sync: false 
+        sync: false
+      - key: ADMIN_TOKEN
+        sync: false
+      - key: RESUME_MODE
+        value: "1"
+      - key: DISCORD_ENABLED
+        value: "1"
+      - key: FLASK_DEBUG
+        value: "0"
+      - key: PYTHONUNBUFFERED
+        value: "1"
