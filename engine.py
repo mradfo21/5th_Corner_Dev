@@ -973,7 +973,7 @@ def _vision_analyze_all(image_path: str) -> dict:
         # Handle path - ensure it's accessible
         full_path = _resolve_image_path(image_path)
         if not full_path or not full_path.exists():
-            return ""
+            return {"description": "", "time_of_day": "", "color_palette": ""}
         
         if not os.path.exists(full_path):
             print(f"[VISION ERROR] Image file not found: {image_path}")
@@ -1747,11 +1747,16 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                 if flipbook_enabled:
                     print(f"[FLIPBOOK] Parallel generation starting - using parent reference: {os.path.basename(ref_images_to_use[0])}")
                     
-                    # NOTE: We do NOT clear current_flipbook_url here anymore.
-                    # The bot.py display logic clears it AFTER displaying the flipbook.
-                    # This prevents race conditions where flipbooks finish generating
-                    # AFTER choices are displayed, then get cleared before they can be shown.
-                    # We only preserve the previous frames for style continuity.
+                    # Clear any stale flipbook URL from the previous turn so the bot's
+                    # wait loop doesn't immediately pick up an old GIF.  The new URL will
+                    # be written by the thread when it completes (or "FAILED" on error).
+                    try:
+                        _st_clear = _load_state(session_id)
+                        _st_clear['current_flipbook_url'] = None
+                        _save_state(_st_clear, session_id)
+                        print(f"[FLIPBOOK] Cleared stale flipbook URL before starting new generation.")
+                    except Exception as _clear_err:
+                        print(f"[FLIPBOOK] Warning: could not clear stale flipbook URL: {_clear_err}")
                     print(f"[FLIPBOOK] Starting new flipbook generation (preserving previous frames for style continuity).")
 
                     import threading
@@ -4245,6 +4250,7 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
         
         consequence_img_url = None
         consequence_img_prompt = ""  # Initialize to prevent undefined variable error
+        consequence_video_url = None  # Initialize to prevent UnboundLocalError if _gen_image raises before its internal assignment
         try:
             last_image_path = None
             if history and len(history) > 0:
@@ -4334,6 +4340,27 @@ def advance_turn_choices_deferred(consequence_img_url: str, dispatch: str, visio
     Args:
         session_id: Session ID for state management
     """
+    try:
+        return _advance_turn_choices_deferred_impl(consequence_img_url, dispatch, vision_dispatch, choice, consequence_img_prompt, hard_transition, session_id)
+    except Exception as e:
+        import traceback
+        print(f"[PHASE 2] Fatal error in advance_turn_choices_deferred: {e}", flush=True)
+        traceback.print_exc()
+        return {
+            "choices": ["Look around carefully", "Move forward cautiously", "Hold position and observe"],
+            "situation_report": "The situation is tense.",
+            "consequences": "",
+            "player_state": {},
+            "evolution_summary": "",
+            "streak_reward": None,
+            "rare_event": None,
+            "danger": False,
+            "combat": False
+        }
+
+
+def _advance_turn_choices_deferred_impl(consequence_img_url: str, dispatch: str, vision_dispatch: str, choice: str, consequence_img_prompt: str = "", hard_transition: bool = False, session_id: str = 'default') -> dict:
+    """Internal implementation of Phase 2 choice generation."""
     global state, history
     from choices import generate_choices
     

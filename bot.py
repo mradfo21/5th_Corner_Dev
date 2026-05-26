@@ -161,7 +161,7 @@ if DISCORD_ENABLED:
     # Use "!" not "/" — Discord intercepts "/" for its own slash-command
     # handling so text-prefix commands with command_prefix="/" are NEVER
     # delivered to the bot as message events.
-    bot     = commands.Bot(command_prefix="!", intents=intents)
+    bot     = commands.Bot(command_prefix="!", intents=intents, help_command=None)
     print(f"[STARTUP] Bot initialized. TOKEN={'SET' if TOKEN else 'MISSING'}, CHAN={CHAN}", flush=True)
 
     running = False
@@ -1091,427 +1091,445 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     except Exception as e:
                         print(f"[CHOICE] Warning: Could not disable buttons: {e}")
                 
+                try:  # ── TOP-LEVEL TURN GUARD ──────────────────────────────────────────
+                
     
-                session_id = str(interaction.channel_id) if interaction.channel_id else 'default'
-                world_state = engine.get_state(session_id).get('world_prompt', '')
-                choice_text = self.label
-                # Fast LLM call for micro-reaction (10-20 tokens, low temp)
-                micro_prompt = (
-                    "Given the player's choice: '" + choice_text + "', and the current world state: '" + world_state + "', "
-                    "write a 1-sentence immediate world or NPC reaction. Start with a relevant emoji. Be suspenseful, direct, and avoid spoilers."
-                )
-                try:
-                    micro_reaction = await asyncio.get_running_loop().run_in_executor(
-                        None, lambda: engine._ask(micro_prompt, model="gpt-4o-mini", temp=0.4, tokens=50)
+                    session_id = str(interaction.channel_id) if interaction.channel_id else 'default'
+                    world_state = engine.get_state(session_id).get('world_prompt', '')
+                    choice_text = self.label
+                    # Fast LLM call for micro-reaction (10-20 tokens, low temp)
+                    micro_prompt = (
+                        "Given the player's choice: '" + choice_text + "', and the current world state: '" + world_state + "', "
+                        "write a 1-sentence immediate world or NPC reaction. Start with a relevant emoji. Be suspenseful, direct, and avoid spoilers."
                     )
-                except Exception:
-                    micro_reaction = " The world holds its breath."
-                micro_msg = await interaction.channel.send(embed=discord.Embed(
-                    description=safe_embed_desc(micro_reaction),
-                    color=CORNER_TEAL  # blue for anticipation
-                ))
-                
-                # PROGRESSIVE FEEDBACK: Show action taken immediately
-                await asyncio.sleep(0.6)  # Brief pause after micro-reaction
-                action_msg = await interaction.channel.send(embed=discord.Embed(
-                    description=safe_embed_desc(f"**Action:** {choice_text}"),
-                    color=CORNER_TEAL  # purple for action
-                ))
-    
-                # PHASE 1: Generate dispatch and image FAST
-                session_id = str(interaction.channel_id) if interaction.channel_id else 'default'
-                loop = asyncio.get_running_loop()
-                fate = compute_fate()
-                phase1_task = loop.run_in_executor(None, lambda: engine.advance_turn_image_fast(self.label, fate, False, session_id))
-                
-                # --- PROGRESSIVE FEEDBACK & RENDERING ---
-                # Show "Recording" indicator immediately so it doesn't feel frozen
-                render_msg = await interaction.channel.send(embed=discord.Embed(
-                    description="🎬 **RECORDING SEQUENCE...**",
-                    color=CORNER_GREY
-                ))
-    
-                # Clean up micro-reaction and action text
-                try: await micro_msg.delete()
-                except: pass
-                try: await action_msg.delete()
-                except: pass
-    
-                # Show fate roll animation
-                await animate_fate_roll(interaction.channel, fate)
-                
-                # Wait for narrative result (Phase 1)
-                phase1 = await phase1_task
-                dispatch_text = phase1.get("dispatch", "")
-                image_path = phase1.get("consequence_image")
-                video_path = phase1.get("consequence_video")
-    
-                # --- WAIT FOR FLIPBOOK RENDER ---
-                flipbook_url = None
-                current_state = engine.get_state(session_id)
-                if current_state.get("flipbook_mode", False):
-                    print(f"[BOT FLIPBOOK WAIT] Waiting for flipbook to generate...", flush=True)
-                    max_wait = 120  # Increased to 120s - HD flipbooks with 3 refs need 105s API timeout
-                    check_interval = 1.0
-                    elapsed = 0
-                    while elapsed < max_wait:
-                        await asyncio.sleep(check_interval)
-                        elapsed += check_interval
-                        fresh_state = _get_state_no_lock(session_id)
-                        flipbook_url = fresh_state.get('current_flipbook_url')
-                        print(f"[BOT FLIPBOOK WAIT] Elapsed {elapsed}s, flipbook_url: {flipbook_url if flipbook_url else 'None'}", flush=True)
-                        if flipbook_url == "FAILED":
-                            flipbook_url = None
-                            print(f"[BOT FLIPBOOK WAIT] Flipbook FAILED", flush=True)
-                            break
-                        if flipbook_url:
-                            print(f"[BOT FLIPBOOK WAIT] Flipbook ready!", flush=True)
-                            break
-                    if not flipbook_url and elapsed >= max_wait:
-                        print(f"[BOT FLIPBOOK WAIT] Timeout after {max_wait}s", flush=True)
-                
-                # Clean up "Recording" message
-                try: await render_msg.delete()
-                except: pass
-    
-                # --- DISPLAY PHASE ---
-                print(f"[BOT DISPLAY] Entering display phase, flipbook_url: {flipbook_url if flipbook_url else 'None'}", flush=True)
-                
-                # 1. Show Flipbook (PRIORITY)
-                if flipbook_url and flipbook_url != "FAILED":
-                    print(f"[BOT DISPLAY] Preparing to send flipbook: {flipbook_url}", flush=True)
-                    flipbook_file, flipbook_name = _attach(flipbook_url, "")
-                    if flipbook_file:
-                        print(f"[BOT DISPLAY] Sending flipbook to Discord...", flush=True)
-                        await interaction.channel.send(
-                            content="📹 **PLAYBACK**",
-                            file=flipbook_file
+                    try:
+                        micro_reaction = await asyncio.get_running_loop().run_in_executor(
+                            None, lambda: engine._ask(micro_prompt, model="gpt-4o-mini", temp=0.4, tokens=50)
                         )
-                        print(f"[BOT DISPLAY] Flipbook sent successfully!", flush=True)
-                        # Clear from state
-                        try:
-                            st = engine.get_state(session_id)
-                            st['current_flipbook_url'] = None
-                            engine._save_state(st, session_id)
-                            print(f"[BOT DISPLAY] Cleared flipbook URL from state", flush=True)
-                        except Exception as e:
-                            print(f"[BOT DISPLAY ERROR] Failed to clear flipbook URL: {e}", flush=True)
-                elif image_path:
-                    # Fallback to static if flipbook failed
-                    print(f"[BOT DISPLAY] No flipbook, using static image: {image_path}", flush=True)
-                    file, name = _attach(image_path, phase1.get("vision_dispatch", ""))
-                    if file:
-                        await interaction.channel.send(file=file)
-    
-                # 2. Show Consequence Text
-                print(f"[BOT DISPLAY] About to show consequence text, dispatch_text exists: {bool(dispatch_text)}", flush=True)
-                if dispatch_text:
-                    movement_indicator = get_movement_indicator()
-                    full_text = dispatch_text.strip()
-                    if movement_indicator:
-                        full_text = f"{movement_indicator}\n\n{full_text}"
-                    
-                    await interaction.channel.send(embed=discord.Embed(
-                        title="⚡ Consequence",
-                        description=safe_embed_desc(full_text),
-                        color=VHS_RED
+                    except Exception:
+                        micro_reaction = " The world holds its breath."
+                    micro_msg = await interaction.channel.send(embed=discord.Embed(
+                        description=safe_embed_desc(micro_reaction),
+                        color=CORNER_TEAL  # blue for anticipation
+                    ))
+                
+                    # PROGRESSIVE FEEDBACK: Show action taken immediately
+                    await asyncio.sleep(0.6)  # Brief pause after micro-reaction
+                    action_msg = await interaction.channel.send(embed=discord.Embed(
+                        description=safe_embed_desc(f"**Action:** {choice_text}"),
+                        color=CORNER_TEAL  # purple for action
                     ))
     
-                # 3. Track for tape
-                print(f"[BOT DISPLAY] Tracking image for tape...", flush=True)
-                global _run_images, _run_flipbooks
-                tape_img = image_path
+                    # PHASE 1: Generate dispatch and image FAST
+                    session_id = str(interaction.channel_id) if interaction.channel_id else 'default'
+                    loop = asyncio.get_running_loop()
+                    fate = compute_fate()
+                    phase1_task = loop.run_in_executor(None, lambda: engine.advance_turn_image_fast(self.label, fate, False, session_id))
                 
-                # If we displayed a flipbook, track it for the VHS compilation
-                if flipbook_url and flipbook_url != "FAILED":
-                    _run_flipbooks.append(flipbook_url)
-                    print(f"[BOT TAPE] Tracked flipbook GIF: {os.path.basename(flipbook_url)}", flush=True)
-                
-                # Also track last frame as fallback for older code
-                if not tape_img and current_state.get("flipbook_mode", False):
-                    fresh_state = _get_state_no_lock(session_id)
-                    flipbook_last = fresh_state.get('flipbook_last_frame')
-                    if flipbook_last and os.path.exists(flipbook_last):
-                        tape_img = flipbook_last
-                if tape_img:
-                    _run_images.append(tape_img)
-                    print(f"[BOT DISPLAY] Tape image tracked: {os.path.basename(tape_img) if tape_img else 'None'}", flush=True)
+                    # --- PROGRESSIVE FEEDBACK & RENDERING ---
+                    # Show "Recording" indicator immediately so it doesn't feel frozen
+                    render_msg = await interaction.channel.send(embed=discord.Embed(
+                        description="🎬 **RECORDING SEQUENCE...**",
+                        color=CORNER_GREY
+                    ))
     
-                # --- PHASE 2: GENERATE NEXT CHOICES ---
-                print(f"[BOT PHASE 2] Starting choice generation...", flush=True)
-                choices_msg = await interaction.channel.send(embed=discord.Embed(
-                    description="⚙️ Analyzing scene...",
-                    color=CORNER_GREY
-                ))
+                    # Clean up micro-reaction and action text
+                    try: await micro_msg.delete()
+                    except: pass
+                    try: await action_msg.delete()
+                    except: pass
+    
+                    # Show fate roll animation
+                    await animate_fate_roll(interaction.channel, fate)
                 
-                phase2_task = loop.run_in_executor(
-                    None,
-                    engine.advance_turn_choices_deferred,
-                    tape_img,
-                    dispatch_text,
-                    phase1.get("vision_dispatch", ""),
-                    self.label,
-                    phase1.get("consequence_image_prompt", ""),
-                    phase1.get("hard_transition", False),
-                    session_id
-                )
-                print(f"[BOT PHASE 2] Waiting for choices to generate...", flush=True)
-                phase2 = await phase2_task
-                print(f"[BOT PHASE 2] Choices generated! Cleaning up...", flush=True)
+                    # Wait for narrative result (Phase 1)
+                    phase1 = await phase1_task
+                    dispatch_text = phase1.get("dispatch", "")
+                    image_path = phase1.get("consequence_image")
+                    video_path = phase1.get("consequence_video")
+    
+                    # --- WAIT FOR FLIPBOOK RENDER ---
+                    flipbook_url = None
+                    current_state = engine.get_state(session_id)
+                    if current_state.get("flipbook_mode", False):
+                        print(f"[BOT FLIPBOOK WAIT] Waiting for flipbook to generate...", flush=True)
+                        max_wait = 120  # Increased to 120s - HD flipbooks with 3 refs need 105s API timeout
+                        check_interval = 1.0
+                        elapsed = 0
+                        while elapsed < max_wait:
+                            await asyncio.sleep(check_interval)
+                            elapsed += check_interval
+                            fresh_state = _get_state_no_lock(session_id)
+                            flipbook_url = fresh_state.get('current_flipbook_url')
+                            print(f"[BOT FLIPBOOK WAIT] Elapsed {elapsed}s, flipbook_url: {flipbook_url if flipbook_url else 'None'}", flush=True)
+                            if flipbook_url == "FAILED":
+                                flipbook_url = None
+                                print(f"[BOT FLIPBOOK WAIT] Flipbook FAILED", flush=True)
+                                break
+                            if flipbook_url:
+                                print(f"[BOT FLIPBOOK WAIT] Flipbook ready!", flush=True)
+                                break
+                        if not flipbook_url and elapsed >= max_wait:
+                            print(f"[BOT FLIPBOOK WAIT] Timeout after {max_wait}s", flush=True)
                 
-                try: await choices_msg.delete()
-                except: pass
+                    # Clean up "Recording" message
+                    try: await render_msg.delete()
+                    except: pass
+    
+                    # --- DISPLAY PHASE ---
+                    print(f"[BOT DISPLAY] Entering display phase, flipbook_url: {flipbook_url if flipbook_url else 'None'}", flush=True)
                 
-                print(f"[BOT PHASE 2] Combining results...", flush=True)
-                disp = {**phase1, **phase2, "dispatch_image": tape_img}
-                
-                # --- CHECK FOR LATE FLIPBOOK ---
-                # If flipbook finished AFTER Phase 1 completed (during choice generation),
-                # display it now before showing choices
-                late_flipbook_displayed = False
-                if current_state.get("flipbook_mode", False):
-                    fresh_state = _get_state_no_lock(session_id)
-                    late_flipbook_url = fresh_state.get('current_flipbook_url')
-                    if late_flipbook_url and late_flipbook_url != "FAILED":
-                        print(f"[BOT LATE FLIPBOOK] Flipbook finished during Phase 2! Displaying now...", flush=True)
-                        flipbook_file, flipbook_name = _attach(late_flipbook_url, "")
+                    # 1. Show Flipbook (PRIORITY)
+                    if flipbook_url and flipbook_url != "FAILED":
+                        print(f"[BOT DISPLAY] Preparing to send flipbook: {flipbook_url}", flush=True)
+                        flipbook_file, flipbook_name = _attach(flipbook_url, "")
                         if flipbook_file:
+                            print(f"[BOT DISPLAY] Sending flipbook to Discord...", flush=True)
                             await interaction.channel.send(
                                 content="📹 **PLAYBACK**",
                                 file=flipbook_file
                             )
-                            print(f"[BOT LATE FLIPBOOK] Sent successfully!", flush=True)
-                            late_flipbook_displayed = True
+                            print(f"[BOT DISPLAY] Flipbook sent successfully!", flush=True)
                             # Clear from state
                             try:
                                 st = engine.get_state(session_id)
                                 st['current_flipbook_url'] = None
                                 engine._save_state(st, session_id)
-                            except: pass
+                                print(f"[BOT DISPLAY] Cleared flipbook URL from state", flush=True)
+                            except Exception as e:
+                                print(f"[BOT DISPLAY ERROR] Failed to clear flipbook URL: {e}", flush=True)
+                    elif image_path:
+                        # Fallback to static if flipbook failed
+                        print(f"[BOT DISPLAY] No flipbook, using static image: {image_path}", flush=True)
+                        file, name = _attach(image_path, phase1.get("vision_dispatch", ""))
+                        if file:
+                            await interaction.channel.send(file=file)
     
-                # CHECK FOR DEATH - Read FRESH state from file
-                # Note: get_state() already reloads from disk via API client
-                current_state = engine.get_state(session_id)
-                player_alive = current_state.get("player_state", {}).get("alive", True)
-                player_health = current_state.get("player_state", {}).get("health", 100)
-                
-                print(f"[DEATH CHECK] player_alive = {player_alive}, health = {player_health}")
-                
-                if not player_alive:
-                    print("[DEATH] Player has died! Starting death sequence...")
+                    # 2. Show Consequence Text
+                    print(f"[BOT DISPLAY] About to show consequence text, dispatch_text exists: {bool(dispatch_text)}", flush=True)
+                    if dispatch_text:
+                        movement_indicator = get_movement_indicator()
+                        full_text = dispatch_text.strip()
+                        if movement_indicator:
+                            full_text = f"{movement_indicator}\n\n{full_text}"
                     
-                    # Disable all choice buttons immediately
-                    view = self.view
-                    if view and hasattr(view, 'children'):
-                        for item in view.children:
-                            item.disabled = True
-                        try:
-                            if hasattr(view, 'last_choices_message') and view.last_choices_message:
-                                await view.last_choices_message.edit(view=view)
-                        except Exception as e:
-                            print(f"[DEATH] Failed to disable buttons: {e}")
-                    
-                    # Show "YOU DIED" message
-                    await interaction.channel.send(embed=discord.Embed(
-                        title="💀 YOU DIED",
-                        description="The camera stops recording.",
-                        color=VHS_RED
-                    ))
-                    await asyncio.sleep(1)
-                    
-                    # Show VHS ejecting sequence WHILE tape is being created
-                    eject_msg = await interaction.channel.send(embed=discord.Embed(
-                        description="`[STOP]` ⏏️ EJECTING TAPE...",
-                        color=VHS_RED
-                    ))
-                    
-                    # Start tape creation in background
-                    loop = asyncio.get_running_loop()
-                    tape_task = loop.run_in_executor(None, _create_death_replay_tape_with_lock)
-                    
-                    # VHS eject animation (plays while GIF generates)
-                    eject_sequence = [
-                        (0.8, "`[STOP]` ⏏️\n`REWINDING...`"),
-                        (0.8, "`[STOP]` ⏏️\n`[███░░░░░░░]`"),
-                        (0.8, "`[STOP]` ⏏️\n`[██████░░░░]`"),
-                        (0.8, "`[STOP]` ⏏️\n`[█████████░]`"),
-                        (0.8, "`[STOP]` ⏏️\n`FINALIZING...`"),
-                        (1.0, "`[STOP]` ⏏️\n`TAPE READY`")
-                    ]
-                    
-                    for delay, message in eject_sequence:
-                        done, pending = await asyncio.wait([tape_task], timeout=delay)
-                        if done:
-                            break
-                        try:
-                            await eject_msg.edit(embed=discord.Embed(
-                                description=message,
-                                color=VHS_RED
-                            ))
-                        except Exception:
-                            break
-                    
-                    # Wait for completion
-                    tape_path, error_msg = await tape_task
-                    
-                    # Clean up animation
-                    try:
-                        await eject_msg.delete()
-                    except Exception:
-                        pass
-                    
-                    # Send tape or error
-                    if tape_path:
                         await interaction.channel.send(embed=discord.Embed(
-                            title=" VHS TAPE RECOVERED",
-                            description="Camera footage retrieved from scene.",
-                            color=CORNER_GREY
+                            title="⚡ Consequence",
+                            description=safe_embed_desc(full_text),
+                            color=VHS_RED
                         ))
-                        try:
-                            await interaction.channel.send(file=discord.File(tape_path))
-                            print("[DEATH]  Tape uploaded - waiting for player to download...")
-                        except Exception as e:
-                            print(f"[DEATH] Failed to send tape: {e}")
-                            await interaction.channel.send(embed=discord.Embed(
-                                title="WARNING: Tape Upload Failed",
-                                description=f"Tape created but upload failed: {e}",
-                                color=VHS_RED
-                            ))
-                    else:
+    
+                    # 3. Track for tape
+                    print(f"[BOT DISPLAY] Tracking image for tape...", flush=True)
+                    global _run_images, _run_flipbooks
+                    tape_img = image_path
+                
+                    # If we displayed a flipbook, track it for the VHS compilation
+                    if flipbook_url and flipbook_url != "FAILED":
+                        _run_flipbooks.append(flipbook_url)
+                        print(f"[BOT TAPE] Tracked flipbook GIF: {os.path.basename(flipbook_url)}", flush=True)
+                
+                    # Also track last frame as fallback for older code
+                    if not tape_img and current_state.get("flipbook_mode", False):
+                        fresh_state = _get_state_no_lock(session_id)
+                        flipbook_last = fresh_state.get('flipbook_last_frame')
+                        if flipbook_last and os.path.exists(flipbook_last):
+                            tape_img = flipbook_last
+                    if tape_img:
+                        _run_images.append(tape_img)
+                        print(f"[BOT DISPLAY] Tape image tracked: {os.path.basename(tape_img) if tape_img else 'None'}", flush=True)
+    
+                    # --- PHASE 2: GENERATE NEXT CHOICES ---
+                    print(f"[BOT PHASE 2] Starting choice generation...", flush=True)
+                    choices_msg = await interaction.channel.send(embed=discord.Embed(
+                        description="⚙️ Analyzing scene...",
+                        color=CORNER_GREY
+                    ))
+                
+                    phase2_task = loop.run_in_executor(
+                        None,
+                        engine.advance_turn_choices_deferred,
+                        tape_img,
+                        dispatch_text,
+                        phase1.get("vision_dispatch", ""),
+                        self.label,
+                        phase1.get("consequence_image_prompt", ""),
+                        phase1.get("hard_transition", False),
+                        session_id
+                    )
+                    print(f"[BOT PHASE 2] Waiting for choices to generate...", flush=True)
+                    phase2 = await phase2_task
+                    print(f"[BOT PHASE 2] Choices generated! Cleaning up...", flush=True)
+                
+                    try: await choices_msg.delete()
+                    except: pass
+                
+                    print(f"[BOT PHASE 2] Combining results...", flush=True)
+                    disp = {**phase1, **phase2, "dispatch_image": tape_img}
+                
+                    # --- CHECK FOR LATE FLIPBOOK ---
+                    # If flipbook finished AFTER Phase 1 completed (during choice generation),
+                    # display it now before showing choices
+                    late_flipbook_displayed = False
+                    if current_state.get("flipbook_mode", False):
+                        fresh_state = _get_state_no_lock(session_id)
+                        late_flipbook_url = fresh_state.get('current_flipbook_url')
+                        if late_flipbook_url and late_flipbook_url != "FAILED":
+                            print(f"[BOT LATE FLIPBOOK] Flipbook finished during Phase 2! Displaying now...", flush=True)
+                            flipbook_file, flipbook_name = _attach(late_flipbook_url, "")
+                            if flipbook_file:
+                                await interaction.channel.send(
+                                    content="📹 **PLAYBACK**",
+                                    file=flipbook_file
+                                )
+                                print(f"[BOT LATE FLIPBOOK] Sent successfully!", flush=True)
+                                late_flipbook_displayed = True
+                                # Clear from state
+                                try:
+                                    st = engine.get_state(session_id)
+                                    st['current_flipbook_url'] = None
+                                    engine._save_state(st, session_id)
+                                except: pass
+    
+                    # CHECK FOR DEATH - Read FRESH state from file
+                    # Note: get_state() already reloads from disk via API client
+                    current_state = engine.get_state(session_id)
+                    player_alive = current_state.get("player_state", {}).get("alive", True)
+                    player_health = current_state.get("player_state", {}).get("health", 100)
+                
+                    print(f"[DEATH CHECK] player_alive = {player_alive}, health = {player_health}")
+                
+                    if not player_alive:
+                        print("[DEATH] Player has died! Starting death sequence...")
+                    
+                        # Disable all choice buttons immediately
+                        view = self.view
+                        if view and hasattr(view, 'children'):
+                            for item in view.children:
+                                item.disabled = True
+                            try:
+                                if hasattr(view, 'last_choices_message') and view.last_choices_message:
+                                    await view.last_choices_message.edit(view=view)
+                            except Exception as e:
+                                print(f"[DEATH] Failed to disable buttons: {e}")
+                    
+                        # Show "YOU DIED" message
                         await interaction.channel.send(embed=discord.Embed(
-                            title="WARNING: No Tape Created",
-                            description=f"**Reason:** {error_msg}",
+                            title="💀 YOU DIED",
+                            description="The camera stops recording.",
+                            color=VHS_RED
+                        ))
+                        await asyncio.sleep(1)
+                    
+                        # Show VHS ejecting sequence WHILE tape is being created
+                        eject_msg = await interaction.channel.send(embed=discord.Embed(
+                            description="`[STOP]` ⏏️ EJECTING TAPE...",
                             color=VHS_RED
                         ))
                     
-                    # Create Play Again button (independent of disabled view)
-                    manual_restart_done = asyncio.Event()  # Flag to prevent double restart
+                        # Start tape creation in background
+                        loop = asyncio.get_running_loop()
+                        tape_task = loop.run_in_executor(None, _create_death_replay_tape_with_lock)
                     
-                    class PlayAgainButton(Button):
-                        def __init__(self):
-                            super().__init__(label="️ Play Again", style=discord.ButtonStyle.success)
-                        
-                        async def callback(self, button_interaction: discord.Interaction):
-                            # Authorization check
-                            if not check_authorization(button_interaction, OWNER_ID):
-                                await button_interaction.response.send_message(
-                                    "🔒 Only the game owner can restart.",
-                                    ephemeral=True
-                                )
-                                return
-                            
-                            global auto_advance_task, countdown_task, auto_play_enabled
-                            print("[DEATH] Play Again button pressed - manual restart")
-                            
-                            # Mark that manual restart is happening
-                            manual_restart_done.set()
-                            
+                        # VHS eject animation (plays while GIF generates)
+                        eject_sequence = [
+                            (0.8, "`[STOP]` ⏏️\n`REWINDING...`"),
+                            (0.8, "`[STOP]` ⏏️\n`[███░░░░░░░]`"),
+                            (0.8, "`[STOP]` ⏏️\n`[██████░░░░]`"),
+                            (0.8, "`[STOP]` ⏏️\n`[█████████░]`"),
+                            (0.8, "`[STOP]` ⏏️\n`FINALIZING...`"),
+                            (1.0, "`[STOP]` ⏏️\n`TAPE READY`")
+                        ]
+                    
+                        for delay, message in eject_sequence:
+                            done, pending = await asyncio.wait([tape_task], timeout=delay)
+                            if done:
+                                break
                             try:
-                                await button_interaction.response.defer()
+                                await eject_msg.edit(embed=discord.Embed(
+                                    description=message,
+                                    color=VHS_RED
+                                ))
                             except Exception:
-                                pass
+                                break
                     
-                            # Cancel all running tasks
-                            if auto_advance_task and not auto_advance_task.done():
-                                auto_advance_task.cancel()
-                            if countdown_task and not countdown_task.done():
-                                countdown_task.cancel()
-                            auto_play_enabled = False
+                        # Wait for completion
+                        tape_path, error_msg = await tape_task
+                    
+                        # Clean up animation
+                        try:
+                            await eject_msg.delete()
+                        except Exception:
+                            pass
+                    
+                        # Send tape or error
+                        if tape_path:
+                            await interaction.channel.send(embed=discord.Embed(
+                                title=" VHS TAPE RECOVERED",
+                                description="Camera footage retrieved from scene.",
+                                color=CORNER_GREY
+                            ))
+                            try:
+                                await interaction.channel.send(file=discord.File(tape_path))
+                                print("[DEATH]  Tape uploaded - waiting for player to download...")
+                            except Exception as e:
+                                print(f"[DEATH] Failed to send tape: {e}")
+                                await interaction.channel.send(embed=discord.Embed(
+                                    title="WARNING: Tape Upload Failed",
+                                    description=f"Tape created but upload failed: {e}",
+                                    color=VHS_RED
+                                ))
+                        else:
+                            await interaction.channel.send(embed=discord.Embed(
+                                title="WARNING: No Tape Created",
+                                description=f"**Reason:** {error_msg}",
+                                color=VHS_RED
+                            ))
+                    
+                        # Create Play Again button (independent of disabled view)
+                        manual_restart_done = asyncio.Event()  # Flag to prevent double restart
+                    
+                        class PlayAgainButton(Button):
+                            def __init__(self):
+                                super().__init__(label="️ Play Again", style=discord.ButtonStyle.success)
+                        
+                            async def callback(self, button_interaction: discord.Interaction):
+                                # Authorization check
+                                if not check_authorization(button_interaction, OWNER_ID):
+                                    await button_interaction.response.send_message(
+                                        "🔒 Only the game owner can restart.",
+                                        ephemeral=True
+                                    )
+                                    return
                             
-                            # Reset game
-                            loop = asyncio.get_running_loop()
-                            await loop.run_in_executor(None, ChoiceButton._do_reset_static)
+                                global auto_advance_task, countdown_task, auto_play_enabled
+                                print("[DEATH] Play Again button pressed - manual restart")
                             
-                            # Show intro
-                            await send_intro_tutorial(button_interaction.channel)
+                                # Mark that manual restart is happening
+                                manual_restart_done.set()
+                            
+                                try:
+                                    await button_interaction.response.defer()
+                                except Exception:
+                                    pass
                     
-                    # Show Play Again button and leave it (no auto-restart)
-                    play_again_view = View(timeout=None)
-                    play_again_view.add_item(PlayAgainButton())
-                    await interaction.channel.send(
-                        embed=discord.Embed(
-                            description="💾 **Save the tape!** Press Play Again when ready.",
-                            color=CORNER_GREY
-                        ),
-                        view=play_again_view
-                    )
+                                # Cancel all running tasks
+                                if auto_advance_task and not auto_advance_task.done():
+                                    auto_advance_task.cancel()
+                                if countdown_task and not countdown_task.done():
+                                    countdown_task.cancel()
+                                auto_play_enabled = False
+                            
+                                # Reset game
+                                loop = asyncio.get_running_loop()
+                                await loop.run_in_executor(None, ChoiceButton._do_reset_static)
+                            
+                                # Show intro
+                                await send_intro_tutorial(button_interaction.channel)
                     
-                    print("[DEATH] Play Again button ready - waiting for manual restart (no auto-restart)")
-                    return  # End turn here - button will handle restart when clicked
+                        # Show Play Again button and leave it (no auto-restart)
+                        play_again_view = View(timeout=None)
+                        play_again_view.add_item(PlayAgainButton())
+                        await interaction.channel.send(
+                            embed=discord.Embed(
+                                description="💾 **Save the tape!** Press Play Again when ready.",
+                                color=CORNER_GREY
+                            ),
+                            view=play_again_view
+                        )
+                    
+                        print("[DEATH] Play Again button ready - waiting for manual restart (no auto-restart)")
+                        return  # End turn here - button will handle restart when clicked
                 
-                # Show evolution summary (world state changes)
-                evolution_summary = disp.get("evolution_summary", "")
-                if evolution_summary and len(evolution_summary) > 10:
-                    await interaction.channel.send(embed=discord.Embed(
-                        description=safe_embed_desc(f"🌍 {evolution_summary.strip()}"),
-                        color=CORNER_TEAL_DARK  # Atmospheric world update
-                    ))
-                    await asyncio.sleep(0.5)
+                    # Show evolution summary (world state changes)
+                    evolution_summary = disp.get("evolution_summary", "")
+                    if evolution_summary and len(evolution_summary) > 10:
+                        await interaction.channel.send(embed=discord.Embed(
+                            description=safe_embed_desc(f"🌍 {evolution_summary.strip()}"),
+                            color=CORNER_TEAL_DARK  # Atmospheric world update
+                        ))
+                        await asyncio.sleep(0.5)
     
-                # 5.5. Show rare event if present
-                rare_event = disp.get("rare_event", None)
-                if rare_event:
-                    await interaction.channel.send(embed=discord.Embed(
-                        description=safe_embed_desc(f"✨ **Rare Event:** {rare_event.strip()}"),
-                        color=CORNER_TEAL  # purple for rare
-                    ))
-                    await asyncio.sleep(random.uniform(2.5, 3.5))
+                    # 5.5. Show rare event if present
+                    rare_event = disp.get("rare_event", None)
+                    if rare_event:
+                        await interaction.channel.send(embed=discord.Embed(
+                            description=safe_embed_desc(f"✨ **Rare Event:** {rare_event.strip()}"),
+                            color=CORNER_TEAL  # purple for rare
+                        ))
+                        await asyncio.sleep(random.uniform(2.5, 3.5))
     
-                # 5.6. Show streak reward if present
-                streak_reward = disp.get("streak_reward", None)
-                if streak_reward:
-                    await interaction.channel.send(embed=discord.Embed(
-                        description=safe_embed_desc(f"🔥 **Streak!** {streak_reward.strip()}"),
-                        color=CORNER_TEAL  # orange for streak
-                    ))
-                    await asyncio.sleep(random.uniform(2.5, 3.5))
+                    # 5.6. Show streak reward if present
+                    streak_reward = disp.get("streak_reward", None)
+                    if streak_reward:
+                        await interaction.channel.send(embed=discord.Embed(
+                            description=safe_embed_desc(f"🔥 **Streak!** {streak_reward.strip()}"),
+                            color=CORNER_TEAL  # orange for streak
+                        ))
+                        await asyncio.sleep(random.uniform(2.5, 3.5))
     
-                # 5.7. Show danger/combat indicator if present
-                if disp.get('danger'):
-                    await interaction.channel.send(embed=discord.Embed(
-                        description=safe_embed_desc('WARNING: **Danger! Threat detected in the scene.**'),
-                        color=VHS_RED
-                    ))
-                    await asyncio.sleep(random.uniform(1.5, 2.5))
-                if disp.get('combat'):
-                    msg = disp.get('combat_message', 'Combat imminent!')
-                    await interaction.channel.send(embed=discord.Embed(
-                        description=safe_embed_desc(f'⚔️ **{msg}**'),
-                        color=VHS_RED
-                    ))
-                    await asyncio.sleep(random.uniform(1.5, 2.5))
+                    # 5.7. Show danger/combat indicator if present
+                    if disp.get('danger'):
+                        await interaction.channel.send(embed=discord.Embed(
+                            description=safe_embed_desc('WARNING: **Danger! Threat detected in the scene.**'),
+                            color=VHS_RED
+                        ))
+                        await asyncio.sleep(random.uniform(1.5, 2.5))
+                    if disp.get('combat'):
+                        msg = disp.get('combat_message', 'Combat imminent!')
+                        await interaction.channel.send(embed=discord.Embed(
+                            description=safe_embed_desc(f'⚔️ **{msg}**'),
+                            color=VHS_RED
+                        ))
+                        await asyncio.sleep(random.uniform(1.5, 2.5))
     
-                # Image was already shown immediately in Phase 1 - skip duplicate display!
+                    # Image was already shown immediately in Phase 1 - skip duplicate display!
     
-                # 7. Show new choices
-                print(f"[BOT CHOICES] Displaying {len(disp.get('choices', []))} choices to user...", flush=True)
-                await interaction.channel.send("🟢 What will you do next?")
-                view = ChoiceView(disp["choices"])
-                await send_choices(interaction.channel, disp["choices"], view, getattr(self, 'last_choices_message', None))
-                print(f"[BOT CHOICES] Choices displayed successfully!", flush=True)
+                    # 7. Show new choices
+                    print(f"[BOT CHOICES] Displaying {len(disp.get('choices', []))} choices to user...", flush=True)
+                    await interaction.channel.send("🟢 What will you do next?")
+                    view = ChoiceView(disp["choices"])
+                    await send_choices(interaction.channel, disp["choices"], view, getattr(self, 'last_choices_message', None))
+                    print(f"[BOT CHOICES] Choices displayed successfully!", flush=True)
                 
-                # CRITICAL: Only start countdown if we have visual feedback (flipbook or image)
-                # Don't pressure the player to choose before they've seen what happened!
-                has_visual = flipbook_url or late_flipbook_displayed or image_path or video_path
-                print(f"[BOT COUNTDOWN CHECK] has_visual={bool(has_visual)}, flipbook={bool(flipbook_url)}, late={late_flipbook_displayed}, image={bool(image_path)}", flush=True)
+                    # CRITICAL: Only start countdown if we have visual feedback (flipbook or image)
+                    # Don't pressure the player to choose before they've seen what happened!
+                    has_visual = flipbook_url or late_flipbook_displayed or image_path or video_path
+                    print(f"[BOT COUNTDOWN CHECK] has_visual={bool(has_visual)}, flipbook={bool(flipbook_url)}, late={late_flipbook_displayed}, image={bool(image_path)}", flush=True)
                 
-                # Start countdown timer (if not in auto-play mode AND we have visual feedback)
-                if not auto_play_enabled and has_visual:
-                    print(f"[BOT COUNTDOWN] Starting countdown timer - visual feedback confirmed", flush=True)
-                    start_countdown_timer(
-                        interaction.channel,
-                        disp["choices"],
-                        view,
-                        disp.get("dispatch", ""),
-                        disp.get("situation_report", ""),
-                        disp.get("consequence_image")
-                    )
-                elif not has_visual:
-                    print(f"[BOT COUNTDOWN] WARNING: No visual feedback, countdown NOT started", flush=True)
+                    # Start countdown timer (if not in auto-play mode AND we have visual feedback)
+                    if not auto_play_enabled and has_visual:
+                        print(f"[BOT COUNTDOWN] Starting countdown timer - visual feedback confirmed", flush=True)
+                        start_countdown_timer(
+                            interaction.channel,
+                            disp["choices"],
+                            view,
+                            disp.get("dispatch", ""),
+                            disp.get("situation_report", ""),
+                            disp.get("consequence_image")
+                        )
+                    elif not has_visual:
+                        print(f"[BOT COUNTDOWN] WARNING: No visual feedback, countdown NOT started", flush=True)
                 
-                    # Start auto-advance timer with new choices
-                    start_auto_advance_timer(interaction.channel, disp["choices"], view)
-                    # Lock released here after turn fully processed
+                        # Start auto-advance timer with new choices
+                        start_auto_advance_timer(interaction.channel, disp["choices"], view)
+                        # Lock released here after turn fully processed
+
+                except Exception as _turn_err:  # ── TOP-LEVEL TURN GUARD ──────────────
+                    import traceback
+                    print(f"[BOT ERROR] Unhandled exception in ChoiceButton.callback: {_turn_err}", flush=True)
+                    traceback.print_exc()
+                    try:
+                        await interaction.channel.send(embed=discord.Embed(
+                            title="⚠️ Turn Error",
+                            description="Something went wrong processing your choice. The game will continue — please try again.",
+                            color=VHS_RED
+                        ))
+                        _fallback = ["Look around", "Move forward", "Wait and observe"]
+                        _fv = ChoiceView(_fallback)
+                        await send_choices(interaction.channel, _fallback, _fv, None)
+                    except Exception:
+                        pass
 
     # ═══════════════════════════════════════════════════════════════════════════
     # Custom Action Modal and Button
@@ -1557,408 +1575,424 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     print("[AUTO-PLAY] Custom action - cancelling auto-play timer")
             
             # Process exactly like ChoiceButton callback
-            try:
-                await interaction.response.defer()
-            except Exception:
-                pass
-            
-            # CRITICAL: Disable ALL buttons immediately to prevent double-click race condition
-            # Get the view from the interaction's message
-            try:
-                message = await interaction.channel.fetch_message(interaction.message.id)
-                if message and message.components:
-                    # Disable the view that spawned this modal
-                    for component in message.components:
-                        for item in component.children:
-                            item.disabled = True
-                    await message.edit(view=discord.ui.View.from_message(message))
-                    print("[CUSTOM ACTION] Buttons disabled to prevent concurrent actions")
-            except Exception as e:
-                print(f"[CUSTOM ACTION] Warning: Could not disable buttons: {e}")
-            
-
-            session_id = str(interaction.channel_id) if interaction.channel_id else 'default'
-            world_state = engine.get_state(session_id).get('world_prompt', '')
-            
-            # Get spatial context from last vision analysis
-            spatial_context = ""
-            try:
-                if engine.history and len(engine.history) > 0:
-                    last_vision = engine.history[-1].get("vision_analysis", "")
-                    if last_vision:
-                        spatial_context = f"\n\nCURRENT LOCATION: {last_vision[:150]}\nThis action MUST happen from player's CURRENT position. Interpret within physical constraints of THIS location."
-            except Exception as e:
-                print(f"[FREE WILL] Could not get spatial context: {e}")
-            
-            # Fast LLM call for micro-reaction
-            micro_prompt = (
-                "Given the player's custom action: '" + custom_choice + "', and the current world state: '" + world_state + "'" + spatial_context + ", "
-                "write a 1-sentence immediate world or NPC reaction. Start with a relevant emoji. Be suspenseful, direct, and avoid spoilers."
-            )
-            try:
-                micro_reaction = await asyncio.get_running_loop().run_in_executor(
-                    None, lambda: engine._ask(micro_prompt, model="gemini", temp=0.4, tokens=50)
-                )
-                # Ensure we never have empty string for Discord embed
-                if not micro_reaction or not micro_reaction.strip():
-                    micro_reaction = " The world holds its breath."
-            except Exception as e:
-                print(f"[CUSTOM ACTION] Micro reaction failed: {e}")
-                micro_reaction = " The world holds its breath."
-            
-            micro_msg = await interaction.channel.send(embed=discord.Embed(
-                description=safe_embed_desc(micro_reaction),
-                color=CORNER_TEAL
-            ))
-            
-            # Show action taken
-            await asyncio.sleep(0.6)
-            action_msg = await interaction.channel.send(embed=discord.Embed(
-                description=safe_embed_desc(f"**Action:** {custom_choice}"),
-                color=CORNER_TEAL  # purple for action
-            ))
-            
-            # Phase 1: Generate dispatch and image FAST
-            session_id = str(interaction.channel_id) if interaction.channel_id else 'default'
-            loop = asyncio.get_running_loop()
-            fate = compute_fate()
-            phase1_task = loop.run_in_executor(None, lambda: engine.advance_turn_image_fast(custom_choice, fate, False, session_id))
-            
-            # --- PROGRESSIVE FEEDBACK & RENDERING ---
-            render_msg = await interaction.channel.send(embed=discord.Embed(
-                description="🎬 **RECORDING SEQUENCE...**",
-                color=CORNER_GREY
-            ))
-
-            # Clean up micro-reaction and action text
-            try: await micro_msg.delete()
-            except: pass
-            try: await action_msg.delete()
-            except: pass
-
-            # Show fate roll animation
-            await animate_fate_roll(interaction.channel, fate)
-            
-            # Wait for narrative result (Phase 1)
-            phase1 = await phase1_task
-            dispatch_text = phase1.get("dispatch", "")
-            img_path = phase1.get("consequence_image")
-
-            # --- WAIT FOR FLIPBOOK RENDER ---
-            flipbook_url = None
-            current_state = engine.get_state(session_id)
-            if current_state.get("flipbook_mode", False):
-                print(f"[BOT FLIPBOOK WAIT CUSTOM] Waiting for flipbook to generate...", flush=True)
-                max_wait = 120  # Increased to 120s - HD flipbooks with 3 refs need 105s API timeout
-                check_interval = 1.0
-                elapsed = 0
-                while elapsed < max_wait:
-                    await asyncio.sleep(check_interval)
-                    elapsed += check_interval
-                    fresh_state = _get_state_no_lock(session_id)
-                    flipbook_url = fresh_state.get('current_flipbook_url')
-                    print(f"[BOT FLIPBOOK WAIT CUSTOM] Elapsed {elapsed}s, flipbook_url: {flipbook_url if flipbook_url else 'None'}", flush=True)
-                    if flipbook_url == "FAILED":
-                        flipbook_url = None
-                        print(f"[BOT FLIPBOOK WAIT CUSTOM] Flipbook FAILED", flush=True)
-                        break
-                    if flipbook_url:
-                        print(f"[BOT FLIPBOOK WAIT CUSTOM] Flipbook ready!", flush=True)
-                        break
-                if not flipbook_url and elapsed >= max_wait:
-                    print(f"[BOT FLIPBOOK WAIT CUSTOM] Timeout after {max_wait}s", flush=True)
-            
-            # Clean up "Recording" message
-            try: await render_msg.delete()
-            except: pass
-
-            # --- DISPLAY PHASE ---
-            print(f"[BOT DISPLAY CUSTOM] Entering display phase, flipbook_url: {flipbook_url if flipbook_url else 'None'}", flush=True)
-            
-            # 1. Show Flipbook (PRIORITY)
-            if flipbook_url and flipbook_url != "FAILED":
-                print(f"[BOT DISPLAY CUSTOM] Preparing to send flipbook: {flipbook_url}", flush=True)
-                flipbook_file, flipbook_name = _attach(flipbook_url, "")
-                if flipbook_file:
-                    print(f"[BOT DISPLAY CUSTOM] Sending flipbook to Discord...", flush=True)
-                    await interaction.channel.send(
-                        content="📹 **PLAYBACK**",
-                        file=flipbook_file
-                    )
-                    print(f"[BOT DISPLAY CUSTOM] Flipbook sent successfully!", flush=True)
-                    # Clear from state
-                    try:
-                        st = engine.get_state(session_id)
-                        st['current_flipbook_url'] = None
-                        engine._save_state(st, session_id)
-                        print(f"[BOT DISPLAY CUSTOM] Cleared flipbook URL from state", flush=True)
-                    except Exception as e:
-                        print(f"[BOT DISPLAY CUSTOM ERROR] Failed to clear flipbook URL: {e}", flush=True)
-            elif img_path:
-                # Fallback to static if flipbook failed
-                display_path = Path(img_path) if Path(img_path).is_absolute() else Path(img_path.lstrip("/"))
                 try:
-                    await interaction.channel.send(file=discord.File(display_path))
-                except: pass
-
-            # 2. Show Consequence Text
-            if dispatch_text:
-                movement_indicator = get_movement_indicator()
-                full_text = dispatch_text.strip()
-                if movement_indicator:
-                    full_text = f"{movement_indicator}\n\n{full_text}"
-                
-                await interaction.channel.send(embed=discord.Embed(
-                    title="⚡ Consequence",
-                    description=safe_embed_desc(full_text),
-                    color=VHS_RED
-                ))
-
-            # 3. Track for tape
-            global _run_images, _run_flipbooks
-            tape_img = img_path
-            
-            # If we displayed a flipbook, track it for the VHS compilation
-            if flipbook_url and flipbook_url != "FAILED":
-                _run_flipbooks.append(flipbook_url)
-                print(f"[BOT TAPE CUSTOM] Tracked flipbook GIF: {os.path.basename(flipbook_url)}", flush=True)
-            
-            # Also track last frame as fallback
-            if not tape_img and current_state.get("flipbook_mode", False):
-                fresh_state = _get_state_no_lock(session_id)
-                flipbook_last = fresh_state.get('flipbook_last_frame')
-                if flipbook_last and os.path.exists(flipbook_last):
-                    tape_img = flipbook_last
-            if tape_img:
-                _run_images.append(tape_img)
-
-            # --- PHASE 2: GENERATE NEXT CHOICES ---
-            choices_loading_msg = await interaction.channel.send(embed=discord.Embed(
-                description="⚙️ Analyzing scene...",
-                color=CORNER_GREY
-            ))
-            
-            phase2_task = loop.run_in_executor(
-                None, 
-                engine.advance_turn_choices_deferred,
-                tape_img,
-                dispatch_text,
-                phase1.get("vision_dispatch", ""),
-                custom_choice,
-                phase1.get("consequence_image_prompt", ""),
-                phase1.get("hard_transition", False),
-                session_id
-            )
-            phase2 = await phase2_task
-            
-            try: await choices_loading_msg.delete()
-            except: pass
-            
-            disp = {**phase1, **phase2, "dispatch_image": tape_img}
-            
-            # --- CHECK FOR LATE FLIPBOOK (Custom Action) ---
-            # If flipbook finished AFTER Phase 1 completed (during choice generation),
-            # display it now before showing choices
-            late_flipbook_displayed = False
-            current_state = engine.get_state(session_id)
-            if current_state.get("flipbook_mode", False):
-                # If we timed out earlier, give it a bit more time (10 more seconds)
-                # Sometimes flipbooks finish just seconds after the initial timeout
-                if not flipbook_url or flipbook_url == "FAILED":
-                    print(f"[BOT LATE FLIPBOOK CUSTOM] Initial wait timed out, checking again for up to 10 more seconds...", flush=True)
-                    extra_wait = 10
-                    elapsed = 0
-                    check_interval = 1.0
-                    while elapsed < extra_wait:
-                        await asyncio.sleep(check_interval)
-                        elapsed += check_interval
-                        fresh_state = _get_state_no_lock(session_id)
-                        late_flipbook_url = fresh_state.get('current_flipbook_url')
-                        if late_flipbook_url and late_flipbook_url != "FAILED":
-                            print(f"[BOT LATE FLIPBOOK CUSTOM] Found it after {elapsed}s! Displaying now...", flush=True)
-                            break
-                        if late_flipbook_url == "FAILED":
-                            print(f"[BOT LATE FLIPBOOK CUSTOM] Flipbook FAILED", flush=True)
-                            break
-                else:
-                    # Already have flipbook from initial wait
-                    fresh_state = _get_state_no_lock(session_id)
-                    late_flipbook_url = fresh_state.get('current_flipbook_url')
-                
-                if late_flipbook_url and late_flipbook_url != "FAILED":
-                    print(f"[BOT LATE FLIPBOOK CUSTOM] Displaying flipbook before choices...", flush=True)
-                    flipbook_file, flipbook_name = _attach(late_flipbook_url, "")
-                    if flipbook_file:
-                        await interaction.channel.send(
-                            content="📹 **PLAYBACK**",
-                            file=flipbook_file
-                        )
-                        print(f"[BOT LATE FLIPBOOK CUSTOM] Sent successfully!", flush=True)
-                        late_flipbook_displayed = True
-                        # Clear from state
-                        try:
-                            st = engine.get_state(session_id)
-                            st['current_flipbook_url'] = None
-                            engine._save_state(st, session_id)
-                        except: pass
-            
-            # CHECK FOR DEATH
-            player_alive = current_state.get("player_state", {}).get("alive", True)
-            if not player_alive:
-                print("[DEATH] Player died from custom action!")
-                await interaction.channel.send(embed=discord.Embed(
-                    title="💀 YOU DIED",
-                    description="The camera stops recording.",
-                    color=VHS_RED
-                ))
-                await asyncio.sleep(1)
-                
-                # Show VHS ejecting sequence WHILE tape is being created
-                eject_msg = await interaction.channel.send(embed=discord.Embed(
-                    description="`[STOP]` ⏏️ EJECTING TAPE...",
-                    color=VHS_RED
-                ))
-                
-                # Start tape creation in background
-                loop = asyncio.get_running_loop()
-                tape_task = loop.run_in_executor(None, _create_death_replay_tape_with_lock)
-                
-                # VHS eject animation (plays while GIF generates)
-                eject_sequence = [
-                    (0.8, "`[STOP]` ⏏️\n`REWINDING...`"),
-                    (0.8, "`[STOP]` ⏏️\n`[███░░░░░░░]`"),
-                    (0.8, "`[STOP]` ⏏️\n`[██████░░░░]`"),
-                    (0.8, "`[STOP]` ⏏️\n`[█████████░]`"),
-                    (0.8, "`[STOP]` ⏏️\n`FINALIZING...`"),
-                    (1.0, "`[STOP]` ⏏️\n`TAPE READY`")
-                ]
-                
-                for delay, message in eject_sequence:
-                    done, pending = await asyncio.wait([tape_task], timeout=delay)
-                    if done:
-                        break
-                    try:
-                        await eject_msg.edit(embed=discord.Embed(
-                            description=message,
-                            color=VHS_RED
-                        ))
-                    except Exception:
-                        break
-                
-                # Wait for completion
-                tape_path, error_msg = await tape_task
-                
-                # Clean up animation
-                try:
-                    await eject_msg.delete()
+                    await interaction.response.defer()
                 except Exception:
                     pass
-                
-                # Send tape or error
-                if tape_path:
-                    await interaction.channel.send(embed=discord.Embed(
-                        title=" VHS TAPE RECOVERED",
-                        description="Camera footage retrieved from scene.",
+            
+                try:  # ── CUSTOM ACTION TURN GUARD ────────────────────────────────────
+                    # CRITICAL: Disable ALL buttons immediately to prevent double-click race condition
+                    # Get the view from the interaction's message
+                    try:
+                        message = await interaction.channel.fetch_message(interaction.message.id)
+                        if message and message.components:
+                            # Disable the view that spawned this modal
+                            for component in message.components:
+                                for item in component.children:
+                                    item.disabled = True
+                            await message.edit(view=discord.ui.View.from_message(message))
+                            print("[CUSTOM ACTION] Buttons disabled to prevent concurrent actions")
+                    except Exception as e:
+                        print(f"[CUSTOM ACTION] Warning: Could not disable buttons: {e}")
+            
+
+                    session_id = str(interaction.channel_id) if interaction.channel_id else 'default'
+                    world_state = engine.get_state(session_id).get('world_prompt', '')
+            
+                    # Get spatial context from last vision analysis
+                    spatial_context = ""
+                    try:
+                        if engine.history and len(engine.history) > 0:
+                            last_vision = engine.history[-1].get("vision_analysis", "")
+                            if last_vision:
+                                spatial_context = f"\n\nCURRENT LOCATION: {last_vision[:150]}\nThis action MUST happen from player's CURRENT position. Interpret within physical constraints of THIS location."
+                    except Exception as e:
+                        print(f"[FREE WILL] Could not get spatial context: {e}")
+            
+                    # Fast LLM call for micro-reaction
+                    micro_prompt = (
+                        "Given the player's custom action: '" + custom_choice + "', and the current world state: '" + world_state + "'" + spatial_context + ", "
+                        "write a 1-sentence immediate world or NPC reaction. Start with a relevant emoji. Be suspenseful, direct, and avoid spoilers."
+                    )
+                    try:
+                        micro_reaction = await asyncio.get_running_loop().run_in_executor(
+                            None, lambda: engine._ask(micro_prompt, model="gemini", temp=0.4, tokens=50)
+                        )
+                        # Ensure we never have empty string for Discord embed
+                        if not micro_reaction or not micro_reaction.strip():
+                            micro_reaction = " The world holds its breath."
+                    except Exception as e:
+                        print(f"[CUSTOM ACTION] Micro reaction failed: {e}")
+                        micro_reaction = " The world holds its breath."
+            
+                    micro_msg = await interaction.channel.send(embed=discord.Embed(
+                        description=safe_embed_desc(micro_reaction),
+                        color=CORNER_TEAL
+                    ))
+            
+                    # Show action taken
+                    await asyncio.sleep(0.6)
+                    action_msg = await interaction.channel.send(embed=discord.Embed(
+                        description=safe_embed_desc(f"**Action:** {custom_choice}"),
+                        color=CORNER_TEAL  # purple for action
+                    ))
+            
+                    # Phase 1: Generate dispatch and image FAST
+                    session_id = str(interaction.channel_id) if interaction.channel_id else 'default'
+                    loop = asyncio.get_running_loop()
+                    fate = compute_fate()
+                    phase1_task = loop.run_in_executor(None, lambda: engine.advance_turn_image_fast(custom_choice, fate, False, session_id))
+            
+                    # --- PROGRESSIVE FEEDBACK & RENDERING ---
+                    render_msg = await interaction.channel.send(embed=discord.Embed(
+                        description="🎬 **RECORDING SEQUENCE...**",
                         color=CORNER_GREY
                     ))
-                    try:
-                        await interaction.channel.send(file=discord.File(tape_path))
-                        print("[DEATH]  Tape uploaded - waiting for player to download...")
-                    except Exception as e:
-                        print(f"[DEATH] Failed to send tape: {e}")
+
+                    # Clean up micro-reaction and action text
+                    try: await micro_msg.delete()
+                    except: pass
+                    try: await action_msg.delete()
+                    except: pass
+
+                    # Show fate roll animation
+                    await animate_fate_roll(interaction.channel, fate)
+            
+                    # Wait for narrative result (Phase 1)
+                    phase1 = await phase1_task
+                    dispatch_text = phase1.get("dispatch", "")
+                    img_path = phase1.get("consequence_image")
+
+                    # --- WAIT FOR FLIPBOOK RENDER ---
+                    flipbook_url = None
+                    current_state = engine.get_state(session_id)
+                    if current_state.get("flipbook_mode", False):
+                        print(f"[BOT FLIPBOOK WAIT CUSTOM] Waiting for flipbook to generate...", flush=True)
+                        max_wait = 120  # Increased to 120s - HD flipbooks with 3 refs need 105s API timeout
+                        check_interval = 1.0
+                        elapsed = 0
+                        while elapsed < max_wait:
+                            await asyncio.sleep(check_interval)
+                            elapsed += check_interval
+                            fresh_state = _get_state_no_lock(session_id)
+                            flipbook_url = fresh_state.get('current_flipbook_url')
+                            print(f"[BOT FLIPBOOK WAIT CUSTOM] Elapsed {elapsed}s, flipbook_url: {flipbook_url if flipbook_url else 'None'}", flush=True)
+                            if flipbook_url == "FAILED":
+                                flipbook_url = None
+                                print(f"[BOT FLIPBOOK WAIT CUSTOM] Flipbook FAILED", flush=True)
+                                break
+                            if flipbook_url:
+                                print(f"[BOT FLIPBOOK WAIT CUSTOM] Flipbook ready!", flush=True)
+                                break
+                        if not flipbook_url and elapsed >= max_wait:
+                            print(f"[BOT FLIPBOOK WAIT CUSTOM] Timeout after {max_wait}s", flush=True)
+            
+                    # Clean up "Recording" message
+                    try: await render_msg.delete()
+                    except: pass
+
+                    # --- DISPLAY PHASE ---
+                    print(f"[BOT DISPLAY CUSTOM] Entering display phase, flipbook_url: {flipbook_url if flipbook_url else 'None'}", flush=True)
+            
+                    # 1. Show Flipbook (PRIORITY)
+                    if flipbook_url and flipbook_url != "FAILED":
+                        print(f"[BOT DISPLAY CUSTOM] Preparing to send flipbook: {flipbook_url}", flush=True)
+                        flipbook_file, flipbook_name = _attach(flipbook_url, "")
+                        if flipbook_file:
+                            print(f"[BOT DISPLAY CUSTOM] Sending flipbook to Discord...", flush=True)
+                            await interaction.channel.send(
+                                content="📹 **PLAYBACK**",
+                                file=flipbook_file
+                            )
+                            print(f"[BOT DISPLAY CUSTOM] Flipbook sent successfully!", flush=True)
+                            # Clear from state
+                            try:
+                                st = engine.get_state(session_id)
+                                st['current_flipbook_url'] = None
+                                engine._save_state(st, session_id)
+                                print(f"[BOT DISPLAY CUSTOM] Cleared flipbook URL from state", flush=True)
+                            except Exception as e:
+                                print(f"[BOT DISPLAY CUSTOM ERROR] Failed to clear flipbook URL: {e}", flush=True)
+                    elif img_path:
+                        # Fallback to static if flipbook failed
+                        display_path = Path(img_path) if Path(img_path).is_absolute() else Path(img_path.lstrip("/"))
+                        try:
+                            await interaction.channel.send(file=discord.File(display_path))
+                        except: pass
+
+                    # 2. Show Consequence Text
+                    if dispatch_text:
+                        movement_indicator = get_movement_indicator()
+                        full_text = dispatch_text.strip()
+                        if movement_indicator:
+                            full_text = f"{movement_indicator}\n\n{full_text}"
+                
                         await interaction.channel.send(embed=discord.Embed(
-                            title="WARNING: Tape Upload Failed",
-                            description=f"Tape created but upload failed: {e}",
+                            title="⚡ Consequence",
+                            description=safe_embed_desc(full_text),
                             color=VHS_RED
                         ))
-                else:
-                    await interaction.channel.send(embed=discord.Embed(
-                        title="WARNING: No Tape Created",
-                        description=f"**Reason:** {error_msg}",
-                        color=VHS_RED
+
+                    # 3. Track for tape
+                    global _run_images, _run_flipbooks
+                    tape_img = img_path
+            
+                    # If we displayed a flipbook, track it for the VHS compilation
+                    if flipbook_url and flipbook_url != "FAILED":
+                        _run_flipbooks.append(flipbook_url)
+                        print(f"[BOT TAPE CUSTOM] Tracked flipbook GIF: {os.path.basename(flipbook_url)}", flush=True)
+            
+                    # Also track last frame as fallback
+                    if not tape_img and current_state.get("flipbook_mode", False):
+                        fresh_state = _get_state_no_lock(session_id)
+                        flipbook_last = fresh_state.get('flipbook_last_frame')
+                        if flipbook_last and os.path.exists(flipbook_last):
+                            tape_img = flipbook_last
+                    if tape_img:
+                        _run_images.append(tape_img)
+
+                    # --- PHASE 2: GENERATE NEXT CHOICES ---
+                    choices_loading_msg = await interaction.channel.send(embed=discord.Embed(
+                        description="⚙️ Analyzing scene...",
+                        color=CORNER_GREY
                     ))
+            
+                    phase2_task = loop.run_in_executor(
+                        None, 
+                        engine.advance_turn_choices_deferred,
+                        tape_img,
+                        dispatch_text,
+                        phase1.get("vision_dispatch", ""),
+                        custom_choice,
+                        phase1.get("consequence_image_prompt", ""),
+                        phase1.get("hard_transition", False),
+                        session_id
+                    )
+                    phase2 = await phase2_task
+            
+                    try: await choices_loading_msg.delete()
+                    except: pass
+            
+                    disp = {**phase1, **phase2, "dispatch_image": tape_img}
+            
+                    # --- CHECK FOR LATE FLIPBOOK (Custom Action) ---
+                    # If flipbook finished AFTER Phase 1 completed (during choice generation),
+                    # display it now before showing choices
+                    late_flipbook_displayed = False
+                    current_state = engine.get_state(session_id)
+                    if current_state.get("flipbook_mode", False):
+                        # If we timed out earlier, give it a bit more time (10 more seconds)
+                        # Sometimes flipbooks finish just seconds after the initial timeout
+                        if not flipbook_url or flipbook_url == "FAILED":
+                            print(f"[BOT LATE FLIPBOOK CUSTOM] Initial wait timed out, checking again for up to 10 more seconds...", flush=True)
+                            extra_wait = 10
+                            elapsed = 0
+                            check_interval = 1.0
+                            while elapsed < extra_wait:
+                                await asyncio.sleep(check_interval)
+                                elapsed += check_interval
+                                fresh_state = _get_state_no_lock(session_id)
+                                late_flipbook_url = fresh_state.get('current_flipbook_url')
+                                if late_flipbook_url and late_flipbook_url != "FAILED":
+                                    print(f"[BOT LATE FLIPBOOK CUSTOM] Found it after {elapsed}s! Displaying now...", flush=True)
+                                    break
+                                if late_flipbook_url == "FAILED":
+                                    print(f"[BOT LATE FLIPBOOK CUSTOM] Flipbook FAILED", flush=True)
+                                    break
+                        else:
+                            # Already have flipbook from initial wait
+                            fresh_state = _get_state_no_lock(session_id)
+                            late_flipbook_url = fresh_state.get('current_flipbook_url')
                 
-                # Create Play Again button (independent of disabled view)
-                manual_restart_done = asyncio.Event()  # Flag to prevent double restart
+                        if late_flipbook_url and late_flipbook_url != "FAILED":
+                            print(f"[BOT LATE FLIPBOOK CUSTOM] Displaying flipbook before choices...", flush=True)
+                            flipbook_file, flipbook_name = _attach(late_flipbook_url, "")
+                            if flipbook_file:
+                                await interaction.channel.send(
+                                    content="📹 **PLAYBACK**",
+                                    file=flipbook_file
+                                )
+                                print(f"[BOT LATE FLIPBOOK CUSTOM] Sent successfully!", flush=True)
+                                late_flipbook_displayed = True
+                                # Clear from state
+                                try:
+                                    st = engine.get_state(session_id)
+                                    st['current_flipbook_url'] = None
+                                    engine._save_state(st, session_id)
+                                except: pass
+            
+                    # CHECK FOR DEATH
+                    player_alive = current_state.get("player_state", {}).get("alive", True)
+                    if not player_alive:
+                        print("[DEATH] Player died from custom action!")
+                        await interaction.channel.send(embed=discord.Embed(
+                            title="💀 YOU DIED",
+                            description="The camera stops recording.",
+                            color=VHS_RED
+                        ))
+                        await asyncio.sleep(1)
                 
-                class PlayAgainButton(Button):
-                    def __init__(self):
-                        super().__init__(label="️ Play Again", style=discord.ButtonStyle.success)
-                    
-                    async def callback(self, button_interaction: discord.Interaction):
-                        # Authorization check
-                        if not check_authorization(button_interaction, OWNER_ID):
-                            await button_interaction.response.send_message(
-                                "🔒 Only the game owner can restart.",
-                                ephemeral=True
-                            )
-                            return
-                        
-                        global auto_advance_task, countdown_task, auto_play_enabled
-                        print("[DEATH CUSTOM] Play Again button pressed - manual restart")
-                        
-                        # Mark that manual restart is happening
-                        manual_restart_done.set()
-                        
+                        # Show VHS ejecting sequence WHILE tape is being created
+                        eject_msg = await interaction.channel.send(embed=discord.Embed(
+                            description="`[STOP]` ⏏️ EJECTING TAPE...",
+                            color=VHS_RED
+                        ))
+                
+                        # Start tape creation in background
+                        loop = asyncio.get_running_loop()
+                        tape_task = loop.run_in_executor(None, _create_death_replay_tape_with_lock)
+                
+                        # VHS eject animation (plays while GIF generates)
+                        eject_sequence = [
+                            (0.8, "`[STOP]` ⏏️\n`REWINDING...`"),
+                            (0.8, "`[STOP]` ⏏️\n`[███░░░░░░░]`"),
+                            (0.8, "`[STOP]` ⏏️\n`[██████░░░░]`"),
+                            (0.8, "`[STOP]` ⏏️\n`[█████████░]`"),
+                            (0.8, "`[STOP]` ⏏️\n`FINALIZING...`"),
+                            (1.0, "`[STOP]` ⏏️\n`TAPE READY`")
+                        ]
+                
+                        for delay, message in eject_sequence:
+                            done, pending = await asyncio.wait([tape_task], timeout=delay)
+                            if done:
+                                break
+                            try:
+                                await eject_msg.edit(embed=discord.Embed(
+                                    description=message,
+                                    color=VHS_RED
+                                ))
+                            except Exception:
+                                break
+                
+                        # Wait for completion
+                        tape_path, error_msg = await tape_task
+                
+                        # Clean up animation
                         try:
-                            await button_interaction.response.defer()
+                            await eject_msg.delete()
                         except Exception:
                             pass
-                        
-                        # Cancel all running tasks
-                        if auto_advance_task and not auto_advance_task.done():
-                            auto_advance_task.cancel()
-                        if countdown_task and not countdown_task.done():
-                            countdown_task.cancel()
-                        auto_play_enabled = False
-                        
-                        # Reset game
-                        loop = asyncio.get_running_loop()
-                        await loop.run_in_executor(None, ChoiceButton._do_reset_static)
-                        
-                        # Show intro
-                        await send_intro_tutorial(button_interaction.channel)
                 
-                # Show Play Again button and leave it (no auto-restart)
-                play_again_view = View(timeout=None)
-                play_again_view.add_item(PlayAgainButton())
-                await interaction.channel.send(
-                    embed=discord.Embed(
-                        description="💾 **Save the tape!** Press Play Again when ready.",
-                        color=CORNER_GREY
-                    ),
-                    view=play_again_view
-                )
+                        # Send tape or error
+                        if tape_path:
+                            await interaction.channel.send(embed=discord.Embed(
+                                title=" VHS TAPE RECOVERED",
+                                description="Camera footage retrieved from scene.",
+                                color=CORNER_GREY
+                            ))
+                            try:
+                                await interaction.channel.send(file=discord.File(tape_path))
+                                print("[DEATH]  Tape uploaded - waiting for player to download...")
+                            except Exception as e:
+                                print(f"[DEATH] Failed to send tape: {e}")
+                                await interaction.channel.send(embed=discord.Embed(
+                                    title="WARNING: Tape Upload Failed",
+                                    description=f"Tape created but upload failed: {e}",
+                                    color=VHS_RED
+                                ))
+                        else:
+                            await interaction.channel.send(embed=discord.Embed(
+                                title="WARNING: No Tape Created",
+                                description=f"**Reason:** {error_msg}",
+                                color=VHS_RED
+                            ))
                 
-                print("[DEATH CUSTOM] Play Again button ready - waiting for manual restart (no auto-restart)")
-                return  # End turn here - button will handle restart when clicked
+                        # Create Play Again button (independent of disabled view)
+                        manual_restart_done = asyncio.Event()  # Flag to prevent double restart
+                
+                        class PlayAgainButton(Button):
+                            def __init__(self):
+                                super().__init__(label="️ Play Again", style=discord.ButtonStyle.success)
+                    
+                            async def callback(self, button_interaction: discord.Interaction):
+                                # Authorization check
+                                if not check_authorization(button_interaction, OWNER_ID):
+                                    await button_interaction.response.send_message(
+                                        "🔒 Only the game owner can restart.",
+                                        ephemeral=True
+                                    )
+                                    return
+                        
+                                global auto_advance_task, countdown_task, auto_play_enabled
+                                print("[DEATH CUSTOM] Play Again button pressed - manual restart")
+                        
+                                # Mark that manual restart is happening
+                                manual_restart_done.set()
+                        
+                                try:
+                                    await button_interaction.response.defer()
+                                except Exception:
+                                    pass
+                        
+                                # Cancel all running tasks
+                                if auto_advance_task and not auto_advance_task.done():
+                                    auto_advance_task.cancel()
+                                if countdown_task and not countdown_task.done():
+                                    countdown_task.cancel()
+                                auto_play_enabled = False
+                        
+                                # Reset game
+                                loop = asyncio.get_running_loop()
+                                await loop.run_in_executor(None, ChoiceButton._do_reset_static)
+                        
+                                # Show intro
+                                await send_intro_tutorial(button_interaction.channel)
+                
+                        # Show Play Again button and leave it (no auto-restart)
+                        play_again_view = View(timeout=None)
+                        play_again_view.add_item(PlayAgainButton())
+                        await interaction.channel.send(
+                            embed=discord.Embed(
+                                description="💾 **Save the tape!** Press Play Again when ready.",
+                                color=CORNER_GREY
+                            ),
+                            view=play_again_view
+                        )
+                
+                        print("[DEATH CUSTOM] Play Again button ready - waiting for manual restart (no auto-restart)")
+                        return  # End turn here - button will handle restart when clicked
             
-            # Show new choices
-            await interaction.channel.send("🟢 What will you do next?")
-            view = ChoiceView(disp["choices"])
-            await send_choices(interaction.channel, disp["choices"], view, getattr(self, 'last_choices_message', None))
+                    # Show new choices
+                    await interaction.channel.send("🟢 What will you do next?")
+                    view = ChoiceView(disp["choices"])
+                    await send_choices(interaction.channel, disp["choices"], view, getattr(self, 'last_choices_message', None))
             
-            # CRITICAL: Only start countdown if we have visual feedback (flipbook or image)
-            has_visual = flipbook_url or late_flipbook_displayed or img_path
-            print(f"[BOT COUNTDOWN CHECK CUSTOM] has_visual={bool(has_visual)}, flipbook={bool(flipbook_url)}, late={late_flipbook_displayed}, image={bool(img_path)}", flush=True)
+                    # CRITICAL: Only start countdown if we have visual feedback (flipbook or image)
+                    has_visual = flipbook_url or late_flipbook_displayed or img_path
+                    print(f"[BOT COUNTDOWN CHECK CUSTOM] has_visual={bool(has_visual)}, flipbook={bool(flipbook_url)}, late={late_flipbook_displayed}, image={bool(img_path)}", flush=True)
             
-            # Start countdown timer (if not in auto-play mode AND we have visual feedback)
-            if not auto_play_enabled and has_visual:
-                print(f"[BOT COUNTDOWN CUSTOM] Starting countdown timer - visual feedback confirmed", flush=True)
-                start_countdown_timer(
-                    interaction.channel,
-                    disp["choices"],
-                    view,
-                    disp.get("dispatch", ""),
-                    disp.get("situation_report", ""),
-                    disp.get("consequence_image")
-                )
-            elif not has_visual:
-                print(f"[BOT COUNTDOWN CUSTOM] WARNING: No visual feedback, countdown NOT started", flush=True)
+                    # Start countdown timer (if not in auto-play mode AND we have visual feedback)
+                    if not auto_play_enabled and has_visual:
+                        print(f"[BOT COUNTDOWN CUSTOM] Starting countdown timer - visual feedback confirmed", flush=True)
+                        start_countdown_timer(
+                            interaction.channel,
+                            disp["choices"],
+                            view,
+                            disp.get("dispatch", ""),
+                            disp.get("situation_report", ""),
+                            disp.get("consequence_image")
+                        )
+                    elif not has_visual:
+                        print(f"[BOT COUNTDOWN CUSTOM] WARNING: No visual feedback, countdown NOT started", flush=True)
             
-            # Start auto-advance timer
-            start_auto_advance_timer(interaction.channel, disp["choices"], view)
+                    # Start auto-advance timer
+                    start_auto_advance_timer(interaction.channel, disp["choices"], view)
             
+                except Exception as _custom_err:  # ── CUSTOM ACTION TURN GUARD ──
+                    import traceback
+                    print(f"[BOT ERROR] Unhandled exception in CustomAction.on_submit: {_custom_err}", flush=True)
+                    traceback.print_exc()
+                    try:
+                        await interaction.channel.send(embed=discord.Embed(
+                            title="⚠️ Turn Error",
+                            description="Something went wrong processing your action. The game will continue — please try again.",
+                            color=VHS_RED
+                        ))
+                        _fallback = ["Look around", "Move forward", "Wait and observe"]
+                        _fv = ChoiceView(_fallback)
+                        await send_choices(interaction.channel, _fallback, _fv, None)
+                    except Exception:
+                        pass
     # Track which users have inventory open (for toggle behavior)
     inventory_open_users = set()
     
@@ -2756,6 +2790,88 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             print(f"[!play] Error: {e}", flush=True)
             await ctx.reply(f"❌ Could not post intro: {e}")
 
+    @bot.command(name="help")
+    async def help_command(ctx):
+        """Show available commands.
+
+        Usage: !help
+        """
+        is_admin = _is_server_admin(ctx)
+        embed = discord.Embed(
+            title="🎮 SOMEWHERE — Available Commands",
+            color=CORNER_TEAL,
+        )
+        embed.add_field(
+            name="Anyone",
+            value=(
+                "`!play` — show the intro / Play button\n"
+                "`!help` — show this message\n"
+                "`/play` — same as `!play` (slash version)"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Server admins",
+            value=(
+                "`!reset` — wipe state and post a fresh intro\n"
+                "`/restart` — same as `!reset` (slash version)\n"
+                "`/restart` typed as plain text also works"
+            ),
+            inline=False,
+        )
+        if not is_admin:
+            embed.set_footer(text="(some commands require server admin)")
+        try:
+            await ctx.reply(embed=embed)
+        except Exception:
+            await ctx.send(embed=embed)
+
+    # ───────── Text fallback for /-prefixed commands ───────────────────────────
+    #
+    # Players often type `/restart` (or `/reset`, `/play`, `/help`) before
+    # Discord has finished propagating slash commands to their client. When
+    # that happens Discord just sends the literal text to the channel and our
+    # bot would ignore it (`command_prefix="!"`). That's the exact symptom we
+    # just hit — the user typed `/restart` and got nothing.
+    #
+    # This handler catches those plain-text `/xxx` messages and runs the
+    # equivalent prefix command, so restarts work the moment the bot is up
+    # regardless of slash-command propagation state. We still call
+    # `bot.process_commands()` so normal `!`-prefix commands keep working.
+    _SLASH_TEXT_ALIASES = {
+        "/restart": "reset",
+        "/reset": "reset",
+        "/play": "play",
+        "/help": "help",
+    }
+
+    @bot.event
+    async def on_message(message: discord.Message):
+        try:
+            if message.author.bot:
+                return
+            content = (message.content or "").strip()
+            if content:
+                first = content.split()[0].lower()
+                aliased = _SLASH_TEXT_ALIASES.get(first)
+                if aliased is not None:
+                    print(
+                        f"[SLASH FALLBACK] Treating text '{first}' as !{aliased} "
+                        f"(slash commands may not have propagated yet)",
+                        flush=True,
+                    )
+                    ctx = await bot.get_context(message)
+                    cmd = bot.get_command(aliased)
+                    if cmd is not None:
+                        ctx.command = cmd
+                        await bot.invoke(ctx)
+                        return
+        except Exception as e:
+            print(f"[SLASH FALLBACK ERROR] {e}", flush=True)
+        # Always fall through to normal command processing for `!`-prefix
+        # commands. Without this, defining on_message disables prefix handling.
+        await bot.process_commands(message)
+
     def beginning_simulation_embed():
         embed = discord.Embed(
             title="🟢 Beginning Simulation",
@@ -3122,15 +3238,22 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                         pass
                     
                     if flipbook_url:
-                        print(f"[FLIPBOOK] Intro flipbook ready! Displaying...")
+                        print(f"[FLIPBOOK] Intro flipbook ready! Displaying...", flush=True)
                         flipbook_file, flipbook_name = _attach(flipbook_url, "")
                         if flipbook_file:
                             is_gif = flipbook_url.endswith('.gif')
                             content_text = "📹 **PLAYBACK**" if is_gif else "🎬 **RECORDED SEQUENCE**"
-                            await interaction.channel.send(
-                                content=content_text,
-                                file=flipbook_file
-                            )
+                            try:
+                                print(f"[BOT INTRO] Uploading flipbook GIF to Discord...", flush=True)
+                                await asyncio.wait_for(
+                                    interaction.channel.send(content=content_text, file=flipbook_file),
+                                    timeout=90.0
+                                )
+                                print(f"[BOT INTRO] Flipbook GIF sent successfully.", flush=True)
+                            except asyncio.TimeoutError:
+                                print(f"[BOT INTRO ERROR] Flipbook GIF upload timed out (90s)", flush=True)
+                            except Exception as _send_err:
+                                print(f"[BOT INTRO ERROR] Failed to send flipbook GIF: {_send_err}", flush=True)
                             
                             # Track INTRO FLIPBOOK GIF for VHS compilation tape
                             _run_flipbooks.append(flipbook_url)
@@ -3151,7 +3274,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                             except Exception as e:
                                 print(f"[FLIPBOOK ERROR] Failed to clear intro flipbook URL: {e}")
                     else:
-                        print(f"[FLIPBOOK] Intro flipbook timeout or failed ({elapsed}s)")
+                        print(f"[FLIPBOOK] Intro flipbook timeout or failed ({elapsed}s)", flush=True)
                 
                 # Final fallback for intro image error
                 if not dispatch_image_path and (not current_state.get("flipbook_mode", False) or not flipbook_url):
@@ -3161,22 +3284,28 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                         color=VHS_RED
                     ))
                 
-                # --- PHASE 2: Generate choices in background (Deferred) ---
+                # --- PHASE 2: Generate choices ---
                 choices_msg = await interaction.channel.send(embed=discord.Embed(
                     description=safe_embed_desc("⚙️ Generating choices..."),
                     color=CORNER_GREY
                 ))
                 
-                choices_task = loop.run_in_executor(
-                    None, 
-                    engine.generate_intro_choices_deferred,
-                    dispatch_image_path,
-                    intro_phase1["prologue"],
-                    intro_phase1["vision_dispatch"],
-                    None,
-                    session_id
-                )
-                intro_phase2 = await choices_task
+                intro_phase2 = None
+                try:
+                    choices_task = loop.run_in_executor(
+                        None, 
+                        engine.generate_intro_choices_deferred,
+                        dispatch_image_path,
+                        intro_phase1.get("prologue", ""),
+                        intro_phase1.get("vision_dispatch", ""),
+                        None,
+                        session_id
+                    )
+                    intro_phase2 = await choices_task
+                except Exception as _phase2_err:
+                    import traceback
+                    print(f"[PLAY ERROR] Intro Phase 2 (choice gen) failed: {_phase2_err}", flush=True)
+                    traceback.print_exc()
                 
                 # Delete "Generating choices..." message
                 try:
@@ -3184,20 +3313,33 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 except Exception:
                     pass
                 
+                # Extract choices, with fallback if Phase 2 failed
+                _intro_choices = (intro_phase2 or {}).get("choices") or []
+                if not _intro_choices:
+                    _intro_choices = ["Look around carefully", "Move forward slowly", "Wait and observe"]
+                    print(f"[PLAY] Using fallback choices (Phase 2 produced none)", flush=True)
+                
                 # Send choices
-                await interaction.channel.send("🟢 What will you do next?")
-                view = ChoiceView(intro_phase2["choices"], owner_id=OWNER_ID)
-                await send_choices(interaction.channel, intro_phase2["choices"], view, None)
+                try:
+                    await interaction.channel.send("🟢 What will you do next?")
+                    view = ChoiceView(_intro_choices, owner_id=OWNER_ID)
+                    await send_choices(interaction.channel, _intro_choices, view, None)
+                except Exception as _choice_send_err:
+                    print(f"[PLAY ERROR] Failed to send choices: {_choice_send_err}", flush=True)
+                    return
                 
                 # Start countdown timer
-                start_countdown_timer(
-                    interaction.channel,
-                    intro_phase2["choices"],
-                    view,
-                    intro_phase2.get("dispatch", intro_phase1.get("dispatch", "")),
-                    intro_phase2.get("situation_report", ""),
-                    intro_phase1.get("consequence_image")
-                )
+                try:
+                    start_countdown_timer(
+                        interaction.channel,
+                        _intro_choices,
+                        view,
+                        (intro_phase2 or {}).get("dispatch", intro_phase1.get("dispatch", "")),
+                        (intro_phase2 or {}).get("situation_report", ""),
+                        intro_phase1.get("consequence_image")
+                    )
+                except Exception as _timer_err:
+                    print(f"[PLAY] Countdown timer failed to start: {_timer_err}", flush=True)
                 
                 # No auto-advance for regular play mode
                 
@@ -3278,31 +3420,36 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 # 1. Send the intro narrative as an embed
                 embed_dispatch = discord.Embed(
                     title="Prologue",
-                    description=intro_result.get("dispatch", ""),
+                    description=(intro_result or {}).get("dispatch", ""),
                     color=CORNER_TEAL
                 )
                 await interaction.channel.send(embed=embed_dispatch)
                 # 2. Send the vision description as a second embed (what you see)
                 embed_vision = discord.Embed(
                     title="What You See",
-                    description=intro_result.get("vision_dispatch", ""),
+                    description=(intro_result or {}).get("vision_dispatch", ""),
                     color=CORNER_TEAL
                 )
                 await interaction.channel.send(embed=embed_vision)
-                # 3. Send the choices
+                # 3. Send the choices - fallback if generation failed
+                _noi_choices = (intro_result or {}).get("choices") or \
+                    ["Look around carefully", "Move forward slowly", "Wait and observe"]
                 await interaction.channel.send("🟢 What will you do next?")
-                view = ChoiceView(intro_result["choices"], owner_id=OWNER_ID)
-                await send_choices(interaction.channel, intro_result["choices"], view, None)
+                view = ChoiceView(_noi_choices, owner_id=OWNER_ID)
+                await send_choices(interaction.channel, _noi_choices, view, None)
                 
                 # Start countdown timer
-                start_countdown_timer(
-                    interaction.channel,
-                    intro_result["choices"],
-                    view,
-                    intro_result.get("dispatch", ""),
-                    intro_result.get("situation_report", ""),
-                    intro_result.get("consequence_image")
-                )
+                try:
+                    start_countdown_timer(
+                        interaction.channel,
+                        _noi_choices,
+                        view,
+                        (intro_result or {}).get("dispatch", ""),
+                        (intro_result or {}).get("situation_report", ""),
+                        (intro_result or {}).get("consequence_image")
+                    )
+                except Exception as _nt_err:
+                    print(f"[PLAY-NOIMAGES] Countdown timer failed: {_nt_err}", flush=True)
                 
                 # No auto-advance for regular play mode
         
@@ -3565,18 +3712,73 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
         custom_action_turn_counter = 0
         print("[STARTUP] Custom action available")
         
-        # Sync slash commands. The previous deploy disabled this entirely
-        # because of rate limits during testing, which left players with NO
-        # interactable commands at all (`/restart`, `/play`, `/ai_status`,
-        # etc. weren't registered with Discord). We re-enable it here in a
-        # background task so a transient rate-limit doesn't block the bot
-        # from coming online — the user gets buttons + commands as soon as
-        # Discord ACKs the sync, with a single retry on 429.
+        # Sync slash commands.
+        #
+        # Why guild-specific sync: when we previously synced commands with a
+        # plain `bot.tree.sync()` (global), Discord's documented propagation
+        # delay is "up to 1 hour" and in practice can be 15-60 minutes before
+        # the new commands appear in the picker. That's exactly the symptom
+        # players just hit — they typed `/restart` and Discord didn't know
+        # about it yet, so it sent as a literal text message and the bot
+        # ignored it.
+        #
+        # Guild-scoped sync (`tree.sync(guild=...)`) is **instantaneous** —
+        # commands appear in the picker as soon as the API call returns. We
+        # detect the guild from the configured CHANNEL_ID, copy our globals
+        # into the guild, and sync there. If we can't determine a guild
+        # (e.g. CHANNEL_ID misconfigured) we fall back to a global sync so
+        # the bot still works, just with slower propagation.
         async def _sync_slash_commands():
+            target_guild = None
+            try:
+                guild_env = os.getenv("GUILD_ID") or ""
+                if guild_env.strip().isdigit():
+                    target_guild = discord.Object(id=int(guild_env.strip()))
+                    print(f"[BOT] Slash sync target: guild {guild_env} (from GUILD_ID env)", flush=True)
+                elif CHAN:
+                    ch = bot.get_channel(CHAN)
+                    if ch is not None and getattr(ch, "guild", None) is not None:
+                        target_guild = discord.Object(id=ch.guild.id)
+                        print(f"[BOT] Slash sync target: guild {ch.guild.id} (auto-detected from CHANNEL_ID)", flush=True)
+            except Exception as e:
+                print(f"[BOT] Could not resolve sync guild: {e}", flush=True)
+
             for attempt in range(3):
                 try:
-                    synced = await bot.tree.sync()
-                    print(f"[BOT] Synced {len(synced)} slash command(s)", flush=True)
+                    if target_guild is not None:
+                        # Copy global commands into the guild and sync there
+                        # for instant availability.
+                        try:
+                            bot.tree.copy_global_to(guild=target_guild)
+                        except Exception as e:
+                            print(f"[BOT] copy_global_to failed: {e}", flush=True)
+                        synced = await bot.tree.sync(guild=target_guild)
+                        names = ", ".join(sorted(c.name for c in synced)) or "(none)"
+                        print(
+                            f"[BOT] Synced {len(synced)} guild slash command(s) "
+                            f"to {target_guild.id} (instant): {names}",
+                            flush=True,
+                        )
+                        # Also kick off a background global sync so the bot
+                        # works in DMs / other guilds eventually. This one is
+                        # slow-propagating but harmless.
+                        try:
+                            global_synced = await bot.tree.sync()
+                            print(
+                                f"[BOT] Synced {len(global_synced)} global slash command(s) "
+                                f"(propagation up to ~1 hour)",
+                                flush=True,
+                            )
+                        except Exception as e:
+                            print(f"[BOT] Global slash sync skipped: {e}", flush=True)
+                    else:
+                        synced = await bot.tree.sync()
+                        print(
+                            f"[BOT] Synced {len(synced)} GLOBAL slash command(s) "
+                            f"(no guild detected; propagation up to ~1 hour). "
+                            f"Set GUILD_ID env var for instant sync.",
+                            flush=True,
+                        )
                     return
                 except discord.HTTPException as e:
                     if getattr(e, "status", None) == 429:
@@ -3638,8 +3840,12 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                         try:
                             await channel.send(
                                 embed=discord.Embed(
-                                    description="🟢 **Resumed from previous state.**\n\n"
-                                                "Pick up where you left off:",
+                                    description=(
+                                        "🟢 **Resumed from previous state.**\n\n"
+                                        "Pick up where you left off, or type "
+                                        "`!reset` (admin) / `/restart` to start over.\n"
+                                        "Type `!help` to see all commands."
+                                    ),
                                     color=CORNER_TEAL,
                                 )
                             )
@@ -3657,6 +3863,20 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                             "falling back to intro tutorial.",
                             flush=True,
                         )
+                        try:
+                            await channel.send(
+                                embed=discord.Embed(
+                                    description=(
+                                        "🟢 **Bot is online.** No saved progress — "
+                                        "starting a fresh run.\n"
+                                        "Tip: type `!help` for commands, "
+                                        "`!reset` (admin) / `/restart` to wipe state."
+                                    ),
+                                    color=CORNER_TEAL,
+                                )
+                            )
+                        except Exception:
+                            pass
                         await send_intro_tutorial(channel)
             except Exception as e:
                 print(f"[BOT ERROR] Failed during on_ready channel post: {e}", flush=True)
@@ -4240,309 +4460,322 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             fate = compute_fate()
             phase1_task = loop.run_in_executor(None, lambda: engine.advance_turn_image_fast(chosen, fate, False, session_id))
         
-        # --- PROGRESSIVE FEEDBACK & RENDERING ---
-        render_msg = await channel.send(embed=discord.Embed(
-            description="🎬 **RECORDING SEQUENCE...**",
-            color=CORNER_GREY
-        ))
-
-        # Show fate roll animation
-        await animate_fate_roll(channel, fate)
-        
-        # Wait for Phase 1 to complete
-        phase1_result = await phase1_task
-        dispatch_text = phase1_result.get("dispatch", "")
-        image_path = phase1_result.get("consequence_image")
-
-        # --- WAIT FOR FLIPBOOK RENDER ---
-        flipbook_url = None
-        current_state = engine.get_state(session_id)
-        if current_state.get("flipbook_mode", False):
-            max_wait = 120  # Increased to 120s - HD flipbooks with 3 refs need 105s API timeout
-            check_interval = 1.0
-            elapsed = 0
-            while elapsed < max_wait:
-                await asyncio.sleep(check_interval)
-                elapsed += check_interval
-                fresh_state = _get_state_no_lock(session_id)
-                flipbook_url = fresh_state.get('current_flipbook_url')
-                if flipbook_url == "FAILED":
-                    flipbook_url = None
-                    break
-                if flipbook_url:
-                    break
-        
-        # Clean up "Recording" message
-        try: await render_msg.delete()
-        except: pass
-
-        # --- DISPLAY PHASE ---
-        
-        # 1. Show Flipbook (PRIORITY)
-        if flipbook_url and flipbook_url != "FAILED":
-            flipbook_file, flipbook_name = _attach(flipbook_url, "")
-            if flipbook_file:
-                await channel.send(
-                    content="📹 **PLAYBACK**",
-                    file=flipbook_file
-                )
-                # Clear from state
-                try:
-                    st = engine.get_state(session_id)
-                    st['current_flipbook_url'] = None
-                    engine._save_state(st, session_id)
-                except: pass
-        elif image_path:
-            # Fallback to static if flipbook failed
-            file, name = _attach(image_path, phase1_result.get("vision_dispatch", ""))
-            if file:
-                await channel.send(file=file)
-
-        # 2. Show Consequence Text
-        if dispatch_text:
-            movement_indicator = get_movement_indicator()
-            full_text = dispatch_text.strip()
-            if movement_indicator:
-                full_text = f"{movement_indicator}\n\n{full_text}"
-            
-            await channel.send(embed=discord.Embed(
-                title="⚡ Consequence",
-                description=safe_embed_desc(full_text),
-                color=VHS_RED
-            ))
-
-        # 3. Track for tape
-        global _run_images, _run_flipbooks
-        
-        # Track flipbook GIF if displayed
-        if flipbook_url and flipbook_url != "FAILED":
-            _run_flipbooks.append(flipbook_url)
-            print(f"[BOT TAPE AUTO] Tracked flipbook GIF: {os.path.basename(flipbook_url)}", flush=True)
-        
-        # Track last frame as fallback
-        tape_img = image_path
-        if not tape_img and current_state.get("flipbook_mode", False):
-            fresh_state = _get_state_no_lock(session_id)
-            flipbook_last = fresh_state.get('flipbook_last_frame')
-            if flipbook_last and os.path.exists(flipbook_last):
-                tape_img = flipbook_last
-        if tape_img:
-            _run_images.append(tape_img)
-
-        # CHECK FOR DEATH
-        current_state = engine.get_state(session_id)
-        player_alive = current_state.get("player_state", {}).get("alive", True)
-        if not player_alive:
-            print("[AUTO-PLAY] Player died!")
-            await channel.send(embed=discord.Embed(
-                title="💀 YOU DIED",
-                description="The camera stops recording.",
-                color=VHS_RED
-            ))
-            await asyncio.sleep(1)
-            
-            # Show VHS ejecting sequence WHILE tape is being created
-            eject_msg = await channel.send(embed=discord.Embed(
-                description="`[STOP]` ⏏️ EJECTING TAPE...",
-                color=VHS_RED
-            ))
-            
-            # Start tape creation in background
-            loop = asyncio.get_running_loop()
-            tape_task = loop.run_in_executor(None, _create_death_replay_tape_with_lock)
-            
-            # VHS eject animation (plays while GIF generates)
-            eject_sequence = [
-                (0.8, "`[STOP]` ⏏️\n`REWINDING...`"),
-                (0.8, "`[STOP]` ⏏️\n`[███░░░░░░░]`"),
-                (0.8, "`[STOP]` ⏏️\n`[██████░░░░]`"),
-                (0.8, "`[STOP]` ⏏️\n`[█████████░]`"),
-                (0.8, "`[STOP]` ⏏️\n`FINALIZING...`"),
-                (1.0, "`[STOP]` ⏏️\n`TAPE READY`")
-            ]
-            
-            for delay, message in eject_sequence:
-                done, pending = await asyncio.wait([tape_task], timeout=delay)
-                if done:
-                    break
-                try:
-                    await eject_msg.edit(embed=discord.Embed(
-                        description=message,
-                        color=VHS_RED
-                    ))
-                except Exception:
-                    break
-            
-            # Wait for completion
-            tape_path, error_msg = await tape_task
-            
-            # Clean up animation
-            try:
-                await eject_msg.delete()
-            except Exception:
-                pass
-            
-            # Send tape or error
-            if tape_path:
-                await channel.send(embed=discord.Embed(
-                    title=" VHS TAPE RECOVERED",
-                    description="Camera footage retrieved from scene.",
+            try:  # ── AUTO-ADVANCE TURN GUARD ──────────────────────────────────────
+                # --- PROGRESSIVE FEEDBACK & RENDERING ---
+                render_msg = await channel.send(embed=discord.Embed(
+                    description="🎬 **RECORDING SEQUENCE...**",
                     color=CORNER_GREY
                 ))
-                try:
-                    await channel.send(file=discord.File(tape_path))
-                    print("[AUTO-PLAY DEATH]  Tape uploaded - waiting for player to download...")
-                except Exception as e:
-                    print(f"[AUTO-PLAY] Failed to send tape: {e}")
+
+                # Show fate roll animation
+                await animate_fate_roll(channel, fate)
+        
+                # Wait for Phase 1 to complete
+                phase1_result = await phase1_task
+                dispatch_text = phase1_result.get("dispatch", "")
+                image_path = phase1_result.get("consequence_image")
+
+                # --- WAIT FOR FLIPBOOK RENDER ---
+                flipbook_url = None
+                current_state = engine.get_state(session_id)
+                if current_state.get("flipbook_mode", False):
+                    max_wait = 120  # Increased to 120s - HD flipbooks with 3 refs need 105s API timeout
+                    check_interval = 1.0
+                    elapsed = 0
+                    while elapsed < max_wait:
+                        await asyncio.sleep(check_interval)
+                        elapsed += check_interval
+                        fresh_state = _get_state_no_lock(session_id)
+                        flipbook_url = fresh_state.get('current_flipbook_url')
+                        if flipbook_url == "FAILED":
+                            flipbook_url = None
+                            break
+                        if flipbook_url:
+                            break
+        
+                # Clean up "Recording" message
+                try: await render_msg.delete()
+                except: pass
+
+                # --- DISPLAY PHASE ---
+        
+                # 1. Show Flipbook (PRIORITY)
+                if flipbook_url and flipbook_url != "FAILED":
+                    flipbook_file, flipbook_name = _attach(flipbook_url, "")
+                    if flipbook_file:
+                        await channel.send(
+                            content="📹 **PLAYBACK**",
+                            file=flipbook_file
+                        )
+                        # Clear from state
+                        try:
+                            st = engine.get_state(session_id)
+                            st['current_flipbook_url'] = None
+                            engine._save_state(st, session_id)
+                        except: pass
+                elif image_path:
+                    # Fallback to static if flipbook failed
+                    file, name = _attach(image_path, phase1_result.get("vision_dispatch", ""))
+                    if file:
+                        await channel.send(file=file)
+
+                # 2. Show Consequence Text
+                if dispatch_text:
+                    movement_indicator = get_movement_indicator()
+                    full_text = dispatch_text.strip()
+                    if movement_indicator:
+                        full_text = f"{movement_indicator}\n\n{full_text}"
+            
                     await channel.send(embed=discord.Embed(
-                        title="WARNING: Tape Upload Failed",
-                        description=f"Tape created but upload failed: {e}",
+                        title="⚡ Consequence",
+                        description=safe_embed_desc(full_text),
                         color=VHS_RED
                     ))
-            else:
-                await channel.send(embed=discord.Embed(
-                    title="WARNING: No Tape Created",
-                    description=f"**Reason:** {error_msg}",
-                    color=VHS_RED
-                ))
+
+                # 3. Track for tape
+                global _run_images, _run_flipbooks
+        
+                # Track flipbook GIF if displayed
+                if flipbook_url and flipbook_url != "FAILED":
+                    _run_flipbooks.append(flipbook_url)
+                    print(f"[BOT TAPE AUTO] Tracked flipbook GIF: {os.path.basename(flipbook_url)}", flush=True)
+        
+                # Track last frame as fallback
+                tape_img = image_path
+                if not tape_img and current_state.get("flipbook_mode", False):
+                    fresh_state = _get_state_no_lock(session_id)
+                    flipbook_last = fresh_state.get('flipbook_last_frame')
+                    if flipbook_last and os.path.exists(flipbook_last):
+                        tape_img = flipbook_last
+                if tape_img:
+                    _run_images.append(tape_img)
+
+                # CHECK FOR DEATH
+                current_state = engine.get_state(session_id)
+                player_alive = current_state.get("player_state", {}).get("alive", True)
+                if not player_alive:
+                    print("[AUTO-PLAY] Player died!")
+                    await channel.send(embed=discord.Embed(
+                        title="💀 YOU DIED",
+                        description="The camera stops recording.",
+                        color=VHS_RED
+                    ))
+                    await asyncio.sleep(1)
             
-            # Create Play Again button (independent of disabled view)
-            manual_restart_done = asyncio.Event()  # Flag to prevent double restart
+                    # Show VHS ejecting sequence WHILE tape is being created
+                    eject_msg = await channel.send(embed=discord.Embed(
+                        description="`[STOP]` ⏏️ EJECTING TAPE...",
+                        color=VHS_RED
+                    ))
             
-            class PlayAgainButton(Button):
-                def __init__(self):
-                    super().__init__(label="️ Play Again", style=discord.ButtonStyle.success)
-                
-                async def callback(self, button_interaction: discord.Interaction):
-                    # Authorization check
-                    if not check_authorization(button_interaction, OWNER_ID):
-                        await button_interaction.response.send_message(
-                            "🔒 Only the game owner can restart.",
-                            ephemeral=True
-                        )
-                        return
-                    
-                    global auto_advance_task, countdown_task, auto_play_enabled
-                    print("[AUTO-PLAY DEATH] Play Again button pressed - manual restart")
-                    
-                    # Mark that manual restart is happening
-                    manual_restart_done.set()
-                    
+                    # Start tape creation in background
+                    loop = asyncio.get_running_loop()
+                    tape_task = loop.run_in_executor(None, _create_death_replay_tape_with_lock)
+            
+                    # VHS eject animation (plays while GIF generates)
+                    eject_sequence = [
+                        (0.8, "`[STOP]` ⏏️\n`REWINDING...`"),
+                        (0.8, "`[STOP]` ⏏️\n`[███░░░░░░░]`"),
+                        (0.8, "`[STOP]` ⏏️\n`[██████░░░░]`"),
+                        (0.8, "`[STOP]` ⏏️\n`[█████████░]`"),
+                        (0.8, "`[STOP]` ⏏️\n`FINALIZING...`"),
+                        (1.0, "`[STOP]` ⏏️\n`TAPE READY`")
+                    ]
+            
+                    for delay, message in eject_sequence:
+                        done, pending = await asyncio.wait([tape_task], timeout=delay)
+                        if done:
+                            break
+                        try:
+                            await eject_msg.edit(embed=discord.Embed(
+                                description=message,
+                                color=VHS_RED
+                            ))
+                        except Exception:
+                            break
+            
+                    # Wait for completion
+                    tape_path, error_msg = await tape_task
+            
+                    # Clean up animation
                     try:
-                        await button_interaction.response.defer()
+                        await eject_msg.delete()
                     except Exception:
                         pass
+            
+                    # Send tape or error
+                    if tape_path:
+                        await channel.send(embed=discord.Embed(
+                            title=" VHS TAPE RECOVERED",
+                            description="Camera footage retrieved from scene.",
+                            color=CORNER_GREY
+                        ))
+                        try:
+                            await channel.send(file=discord.File(tape_path))
+                            print("[AUTO-PLAY DEATH]  Tape uploaded - waiting for player to download...")
+                        except Exception as e:
+                            print(f"[AUTO-PLAY] Failed to send tape: {e}")
+                            await channel.send(embed=discord.Embed(
+                                title="WARNING: Tape Upload Failed",
+                                description=f"Tape created but upload failed: {e}",
+                                color=VHS_RED
+                            ))
+                    else:
+                        await channel.send(embed=discord.Embed(
+                            title="WARNING: No Tape Created",
+                            description=f"**Reason:** {error_msg}",
+                            color=VHS_RED
+                        ))
+            
+                    # Create Play Again button (independent of disabled view)
+                    manual_restart_done = asyncio.Event()  # Flag to prevent double restart
+            
+                    class PlayAgainButton(Button):
+                        def __init__(self):
+                            super().__init__(label="️ Play Again", style=discord.ButtonStyle.success)
+                
+                        async def callback(self, button_interaction: discord.Interaction):
+                            # Authorization check
+                            if not check_authorization(button_interaction, OWNER_ID):
+                                await button_interaction.response.send_message(
+                                    "🔒 Only the game owner can restart.",
+                                    ephemeral=True
+                                )
+                                return
                     
+                            global auto_advance_task, countdown_task, auto_play_enabled
+                            print("[AUTO-PLAY DEATH] Play Again button pressed - manual restart")
+                    
+                            # Mark that manual restart is happening
+                            manual_restart_done.set()
+                    
+                            try:
+                                await button_interaction.response.defer()
+                            except Exception:
+                                pass
+                    
+                            # Cancel all running tasks
+                            if auto_advance_task and not auto_advance_task.done():
+                                auto_advance_task.cancel()
+                            if countdown_task and not countdown_task.done():
+                                countdown_task.cancel()
+                            auto_play_enabled = False
+                    
+                            # Reset game
+                            loop = asyncio.get_running_loop()
+                            await loop.run_in_executor(None, ChoiceButton._do_reset_static)
+                    
+                            # Show intro
+                            await send_intro_tutorial(channel)
+            
+                    # Show Play Again button immediately
+                    play_again_view = View(timeout=None)
+                    play_again_view.add_item(PlayAgainButton())
+                    await channel.send(
+                        embed=discord.Embed(
+                            description="💾 **Save the tape!** Press Play Again to restart.",
+                            color=CORNER_GREY
+                        ),
+                        view=play_again_view
+                    )
+            
+                    # Wait 30s for manual restart (check every second if button was clicked)
+                    print("[AUTO-PLAY DEATH] Waiting 30s for manual restart or auto-restart...")
+                    for _ in range(30):
+                        if manual_restart_done.is_set():
+                            print("[AUTO-PLAY DEATH] Manual restart detected - skipping auto-restart")
+                            return  # Player clicked button, don't auto-restart
+                        await asyncio.sleep(1)
+            
                     # Cancel all running tasks
                     if auto_advance_task and not auto_advance_task.done():
                         auto_advance_task.cancel()
+                        print("[AUTO-PLAY DEATH] Cancelled auto-play task")
                     if countdown_task and not countdown_task.done():
                         countdown_task.cancel()
+                        print("[AUTO-PLAY DEATH] Cancelled countdown task")
                     auto_play_enabled = False
-                    
-                    # Reset game
-                    loop = asyncio.get_running_loop()
+            
                     await loop.run_in_executor(None, ChoiceButton._do_reset_static)
-                    
-                    # Show intro
                     await send_intro_tutorial(channel)
-            
-            # Show Play Again button immediately
-            play_again_view = View(timeout=None)
-            play_again_view.add_item(PlayAgainButton())
-            await channel.send(
-                embed=discord.Embed(
-                    description="💾 **Save the tape!** Press Play Again to restart.",
+                    return
+        
+                # PHASE 2: Generate choices in background
+                choices_msg = await channel.send(embed=discord.Embed(
+                    description=safe_embed_desc("⚙️ Generating choices..."),
                     color=CORNER_GREY
-                ),
-                view=play_again_view
-            )
-            
-            # Wait 30s for manual restart (check every second if button was clicked)
-            print("[AUTO-PLAY DEATH] Waiting 30s for manual restart or auto-restart...")
-            for _ in range(30):
-                if manual_restart_done.is_set():
-                    print("[AUTO-PLAY DEATH] Manual restart detected - skipping auto-restart")
-                    return  # Player clicked button, don't auto-restart
-                await asyncio.sleep(1)
-            
-            # Cancel all running tasks
-            if auto_advance_task and not auto_advance_task.done():
-                auto_advance_task.cancel()
-                print("[AUTO-PLAY DEATH] Cancelled auto-play task")
-            if countdown_task and not countdown_task.done():
-                countdown_task.cancel()
-                print("[AUTO-PLAY DEATH] Cancelled countdown task")
-            auto_play_enabled = False
-            
-            await loop.run_in_executor(None, ChoiceButton._do_reset_static)
-            await send_intro_tutorial(channel)
-            return
-        
-        # PHASE 2: Generate choices in background
-        choices_msg = await channel.send(embed=discord.Embed(
-            description=safe_embed_desc("⚙️ Generating choices..."),
-            color=CORNER_GREY
-        ))
-        phase2_task = loop.run_in_executor(
-            None, 
-            engine.advance_turn_choices_deferred,
-            tape_img,
-            dispatch_text,
-            phase1_result.get("vision_dispatch", ""),
-            chosen,
-            phase1_result.get("consequence_image_prompt", ""),
-            phase1_result.get("hard_transition", False),
-            session_id
-        )
-        phase2_result = await phase2_task
-        
-        # Delete "Generating choices..." message
-        try:
-            await choices_msg.delete()
-        except Exception:
-            pass
-        
-        # --- CHECK FOR LATE FLIPBOOK (Auto-Play) ---
-        # If flipbook finished AFTER Phase 1 completed (during choice generation),
-        # display it now before showing choices
-        if current_state.get("flipbook_mode", False):
-            fresh_state = _get_state_no_lock(session_id)
-            late_flipbook_url = fresh_state.get('current_flipbook_url')
-            if late_flipbook_url and late_flipbook_url != "FAILED":
-                print(f"[BOT LATE FLIPBOOK AUTO] Flipbook finished during Phase 2! Displaying now...", flush=True)
-                flipbook_file, flipbook_name = _attach(late_flipbook_url, "")
-                if flipbook_file:
-                    await channel.send(
-                        content="📹 **PLAYBACK**",
-                        file=flipbook_file
-                    )
-                    print(f"[BOT LATE FLIPBOOK AUTO] Sent successfully!", flush=True)
-                    # Clear from state
-                    try:
-                        st = engine.get_state(session_id)
-                        st['current_flipbook_url'] = None
-                        engine._save_state(st, session_id)
-                    except: pass
-        
-        # Send new choices
-        new_choices = phase2_result.get("choices", [])
-        if new_choices:
-            # Send evolution summary (world state changes)
-            evolution_summary = phase2_result.get("evolution_summary", "")
-            if evolution_summary and len(evolution_summary) > 10:
-                await channel.send(embed=discord.Embed(
-                    description=f"🌍 {evolution_summary.strip()}",
-                    color=CORNER_TEAL_DARK
                 ))
+                phase2_task = loop.run_in_executor(
+                    None, 
+                    engine.advance_turn_choices_deferred,
+                    tape_img,
+                    dispatch_text,
+                    phase1_result.get("vision_dispatch", ""),
+                    chosen,
+                    phase1_result.get("consequence_image_prompt", ""),
+                    phase1_result.get("hard_transition", False),
+                    session_id
+                )
+                phase2_result = await phase2_task
+        
+                # Delete "Generating choices..." message
+                try:
+                    await choices_msg.delete()
+                except Exception:
+                    pass
+        
+                # --- CHECK FOR LATE FLIPBOOK (Auto-Play) ---
+                # If flipbook finished AFTER Phase 1 completed (during choice generation),
+                # display it now before showing choices
+                if current_state.get("flipbook_mode", False):
+                    fresh_state = _get_state_no_lock(session_id)
+                    late_flipbook_url = fresh_state.get('current_flipbook_url')
+                    if late_flipbook_url and late_flipbook_url != "FAILED":
+                        print(f"[BOT LATE FLIPBOOK AUTO] Flipbook finished during Phase 2! Displaying now...", flush=True)
+                        flipbook_file, flipbook_name = _attach(late_flipbook_url, "")
+                        if flipbook_file:
+                            await channel.send(
+                                content="📹 **PLAYBACK**",
+                                file=flipbook_file
+                            )
+                            print(f"[BOT LATE FLIPBOOK AUTO] Sent successfully!", flush=True)
+                            # Clear from state
+                            try:
+                                st = engine.get_state(session_id)
+                                st['current_flipbook_url'] = None
+                                engine._save_state(st, session_id)
+                            except: pass
+        
+                # Send new choices
+                new_choices = phase2_result.get("choices", [])
+                if new_choices:
+                    # Send evolution summary (world state changes)
+                    evolution_summary = phase2_result.get("evolution_summary", "")
+                    if evolution_summary and len(evolution_summary) > 10:
+                        await channel.send(embed=discord.Embed(
+                            description=f"🌍 {evolution_summary.strip()}",
+                            color=CORNER_TEAL_DARK
+                        ))
             
-            await channel.send("🟢 What will you do next?")
-            view = ChoiceView(new_choices, owner_id=OWNER_ID)
-            msg = await channel.send(content=" ", view=view)
-            view.last_choices_message = msg
-            # Restart the auto-play timer with new choices
-            start_auto_advance_timer(channel, new_choices, view)
+                    await channel.send("🟢 What will you do next?")
+                    view = ChoiceView(new_choices, owner_id=OWNER_ID)
+                    msg = await channel.send(content=" ", view=view)
+                    view.last_choices_message = msg
+                    # Restart the auto-play timer with new choices
+                    start_auto_advance_timer(channel, new_choices, view)
 
+            except Exception as _auto_err:  # ── AUTO-ADVANCE TURN GUARD ──────────
+                import traceback
+                print(f"[BOT ERROR] Unhandled exception in auto_advance_turn: {_auto_err}", flush=True)
+                traceback.print_exc()
+                try:
+                    await channel.send(embed=discord.Embed(
+                        title="⚠️ Auto-Play Error",
+                        description="Something went wrong during auto-play. Manual choices are still available.",
+                        color=VHS_RED
+                    ))
+                except Exception:
+                    pass
     def start_auto_advance_timer(channel, choices, view):
         """Start or restart the auto-play timer (only if auto-play is enabled)."""
         global auto_advance_task, current_choices, current_view, auto_play_enabled
