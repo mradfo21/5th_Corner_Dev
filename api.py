@@ -578,15 +578,90 @@ def api_advance_turn_choices():
 # ADMIN DASHBOARD
 # ═══════════════════════════════════════════════════════════════════
 
+def _admin_token_ok():
+    """
+    Validate the admin token from query string, header, or cookie.
+
+    If ADMIN_TOKEN is unset (e.g. local dev without secrets) we leave the
+    dashboard open. In production we strongly recommend setting it; the
+    dashboard exposes session state and reset controls. The token can be
+    supplied as `?token=...`, an `X-Admin-Token` header, or an `admin_token`
+    cookie so the dashboard's existing fetch() calls keep working.
+    """
+    expected = os.getenv('ADMIN_TOKEN')
+    if not expected:
+        return True
+    from flask import request
+    provided = (
+        request.args.get('token')
+        or request.headers.get('X-Admin-Token')
+        or request.cookies.get('admin_token')
+    )
+    return provided is not None and provided == expected
+
+
 @app.route('/admin', methods=['GET'])
 def serve_admin_dashboard():
     """Serve the admin dashboard with cross-origin support"""
+    if not _admin_token_ok():
+        return jsonify({
+            "error": "unauthorized",
+            "message": "Provide ADMIN_TOKEN via ?token=, X-Admin-Token header, or admin_token cookie."
+        }), 401
     try:
         response = make_response(send_file('admin_dashboard.html'))
-        response.headers['Access-Control-Allow-Origin'] = '*'
+        # Pin Access-Control-Allow-Origin to the request origin (or omit it)
+        # rather than '*' so credentials/cookies still work for the protected
+        # variant and we don't broadcast the dashboard to every origin.
+        from flask import request
+        origin = request.headers.get('Origin')
+        if origin:
+            response.headers['Access-Control-Allow-Origin'] = origin
+            response.headers['Vary'] = 'Origin'
+            response.headers['Access-Control-Allow-Credentials'] = 'true'
         return response
     except FileNotFoundError:
         return jsonify({"error": "Dashboard file not found"}), 404
+
+
+@app.route('/api/admin/reset', methods=['POST'])
+def admin_reset_session():
+    """
+    Emergency-reset the engine state for a session.
+
+    Useful when the Discord UI is stuck (e.g. the bot resumed into a state
+    with no choices and players have nothing to click). Guarded by
+    ADMIN_TOKEN — the same token the dashboard uses. The session id can be
+    passed as `?session=<id>` (defaults to `default`).
+
+    Example:
+        curl -X POST -H "X-Admin-Token: $ADMIN_TOKEN" \
+            "https://<host>/api/admin/reset?session=default"
+    """
+    if not _admin_token_ok():
+        return jsonify({
+            "error": "unauthorized",
+            "message": "Provide ADMIN_TOKEN via ?token=, X-Admin-Token header, or admin_token cookie."
+        }), 401
+
+    from flask import request
+    session_id = (
+        request.args.get('session')
+        or (request.get_json(silent=True) or {}).get('session')
+        or 'default'
+    )
+    try:
+        import engine as _engine
+        _engine.reset_state(session_id)
+        return jsonify({"status": "ok", "session": session_id, "action": "reset"})
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "status": "error",
+            "session": session_id,
+            "error": str(e),
+        }), 500
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -646,10 +721,17 @@ if __name__ == '__main__':
     print("SOMEWHERE Game Engine API")
     print("=" * 70)
     port = int(os.getenv('PORT', 5001))
-    print(f"Starting API server on http://0.0.0.0:{port}")
+    # Debug mode is a security and stability hazard in production: it exposes
+    # the interactive Werkzeug debugger to any HTTP client (arbitrary code
+    # execution from the browser) and is single-threaded with auto-reload.
+    # We default to off and only enable when FLASK_DEBUG=1 is explicitly set
+    # (e.g. for local development). Render and any other production environment
+    # will get a normal, threaded WSGI server.
+    debug_mode = os.getenv('FLASK_DEBUG', '0') == '1'
+    print(f"Starting API server on http://0.0.0.0:{port} (debug={debug_mode})")
     print(f"API Info: http://localhost:{port}/api/info")
     print(f"Health Check: http://localhost:{port}/api/health")
     print(f"Admin Dashboard: http://localhost:{port}/admin")
     print("=" * 70)
-    
-    app.run(debug=True, host='0.0.0.0', port=port)
+
+    app.run(debug=debug_mode, host='0.0.0.0', port=port, use_reloader=False, threaded=True)
