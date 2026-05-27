@@ -5175,20 +5175,32 @@ def generate_intro_choices_deferred(image_url: str, prologue: str, vision_dispat
         vision_analysis=vision_analysis_text
     )
     
-    options = generate_choices(
-        client, choice_tmpl,
-        prologue,  # What's happening in intro
-        n=3,
-        image_url=analysis_img_url,  # Gemini sees the image directly!
-        seen_elements=', '.join(state.get('seen_elements', [])[-10:]),  # Last 10 discovered entities
-        recent_choices='',
-        caption=vision_dispatch,
-        image_description=vision_analysis_text, # Corrected!
-        world_prompt=prologue,
-        temperature=0.7,
-        situation_summary=situation_summary,
-        injury_state=', '.join(state.get('injuries', []) or []) or 'none',
-    )
+    # Robust against any failure inside generate_choices — that function now
+    # has its own contextual fallback, but a *truly* unexpected exception
+    # (e.g. requests library breaking under Render's network) must NOT bubble
+    # up to bot.py's Phase 2 guard and produce "Generating choices failed"
+    # filler. We catch it here and let the bot's intro fallback handle the
+    # empty list with scene-aware choices.
+    try:
+        options = generate_choices(
+            client, choice_tmpl,
+            prologue,  # What's happening in intro
+            n=3,
+            image_url=analysis_img_url,  # Gemini sees the image directly!
+            seen_elements=', '.join(state.get('seen_elements', [])[-10:]),  # Last 10 discovered entities
+            recent_choices='',
+            caption=vision_dispatch,
+            image_description=vision_analysis_text, # Corrected!
+            world_prompt=prologue,
+            temperature=0.7,
+            situation_summary=situation_summary,
+            injury_state=', '.join(state.get('injuries', []) or []) or 'none',
+        )
+    except Exception as _gen_choices_err:
+        import traceback
+        print(f"[INTRO CHOICES DEFERRED] generate_choices crashed: {_gen_choices_err}", flush=True)
+        traceback.print_exc()
+        options = []
     
     if len(options) == 1:
         parts = re.split(r"[\/,\x19\x12\-]|  +", options[0])
@@ -5311,21 +5323,31 @@ def generate_intro_turn(session_id: str = 'default'):
         traceback.print_exc()
     
     situation_summary = summarize_world_state(state)
-    options = generate_choices(
-        client, choice_tmpl,
-        dispatch,  # What's happening now
-        n=3,
-        image_url=dispatch_img_url,  # Opening image - Gemini looks at THIS!
-        seen_elements=', '.join(state.get('seen_elements', [])[-10:]),  # Last 10 discovered entities
-        recent_choices='',
-        caption="",  # Let Gemini see the actual image
-        image_description="",  # Let Gemini see the actual image
-        time_of_day="",  # Removed - prevents outdoor lighting descriptions
-        world_prompt=prologue,
-        temperature=0.7,
-        situation_summary=situation_summary,
-        injury_state=', '.join(state.get('injuries', []) or []) or 'none',
-    )
+    # Same defensive wrapping as generate_intro_choices_deferred — the choice
+    # generator already has a built-in contextual fallback, but a fatal
+    # exception in any of its internal helpers (e.g. choice_critic LLM call
+    # raising a network error) must not propagate into the bot's intro flow.
+    try:
+        options = generate_choices(
+            client, choice_tmpl,
+            dispatch,  # What's happening now
+            n=3,
+            image_url=dispatch_img_url,  # Opening image - Gemini looks at THIS!
+            seen_elements=', '.join(state.get('seen_elements', [])[-10:]),  # Last 10 discovered entities
+            recent_choices='',
+            caption="",  # Let Gemini see the actual image
+            image_description="",  # Let Gemini see the actual image
+            time_of_day="",  # Removed - prevents outdoor lighting descriptions
+            world_prompt=prologue,
+            temperature=0.7,
+            situation_summary=situation_summary,
+            injury_state=', '.join(state.get('injuries', []) or []) or 'none',
+        )
+    except Exception as _intro_choices_err:
+        import traceback
+        print(f"[INTRO TURN] generate_choices crashed: {_intro_choices_err}", flush=True)
+        traceback.print_exc()
+        options = []
     if len(options) == 1:
         parts = re.split(r"[\/,\x19\x12\-]|  +", options[0])
         options = [p.strip() for p in parts if p.strip()][:3]

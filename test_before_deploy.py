@@ -1113,6 +1113,61 @@ except Exception as e:
     failed_tests.append("Pacing / fairness / immersion hardening")
 
 # ============================================================================
+# TEST 17: Choices generation robustness (no "Generating choices failed")
+# ============================================================================
+# Source-level invariants that lock in the fix for the production regression
+# where Phase 2 choice generation silently failed on the initial turn because
+# Gemini returned a SAFETY-blocked candidate with no `content.parts`. The unit
+# suite (test_choices_robustness.py) exercises the runtime paths against
+# mocked Gemini responses; this pre-deploy gate just sanity-checks that the
+# defensive code is still in place at the source level.
+print("\n[TEST 17] Choices robustness — no 'Generating choices failed'...")
+try:
+    choices_src = open("choices.py", encoding="utf-8").read()
+    bot_src     = open("bot.py", encoding="utf-8").read()
+    engine_src  = open("engine.py", encoding="utf-8").read()
+
+    checks = [
+        ("choices.py disables Gemini safety filters in the choices payload",
+         "BLOCK_NONE" in choices_src
+         and "HARM_CATEGORY_DANGEROUS_CONTENT" in choices_src
+         and "safetySettings" in choices_src),
+        ("choices.py has a contextual fallback builder",
+         "_contextual_fallback" in choices_src),
+        ("choices.py defensively extracts text from candidate parts",
+         'candidate0.get("content")' in choices_src
+         and 'content_obj.get("parts")' in choices_src),
+        ("choices.py logs which fallback path was taken",
+         "[CHOICES FALLBACK]" in choices_src),
+        ("choice_critic crash is caught so it can't strip the slate",
+         "[CHOICE CRITIC] Crashed" in choices_src),
+        ("bot.py exposes a scene-aware intro fallback builder",
+         "def _build_intro_fallback_choices" in bot_src),
+        ("All three intro paths use the scene-aware fallback",
+         bot_src.count("_build_intro_fallback_choices(") >= 3),
+        ("Legacy 'Look around carefully' filler is purged from intro fallbacks",
+         bot_src.count('"Look around carefully", "Move forward slowly", "Wait and observe"') == 0),
+        ("engine.generate_intro_choices_deferred guards generate_choices crash",
+         "generate_choices crashed" in engine_src),
+        ("engine.generate_intro_turn also guards generate_choices crash",
+         "[INTRO TURN] generate_choices crashed" in engine_src),
+    ]
+
+    all_passed = True
+    for label, ok in checks:
+        marker = "[OK]" if ok else "[FAIL]"
+        print(f"  {marker} {label}")
+        if not ok:
+            all_passed = False
+    if not all_passed:
+        failed_tests.append("Choices robustness — intro choice fallbacks")
+except Exception as e:
+    print(f"[FAIL] {e}")
+    import traceback
+    traceback.print_exc()
+    failed_tests.append("Choices robustness — intro choice fallbacks")
+
+# ============================================================================
 # RESULTS
 # ============================================================================
 print("\n" + "=" * 70)
