@@ -192,6 +192,7 @@ if DISCORD_ENABLED:
     
     _run_images = []  # Track all images from current run for VHS tape (fallback)
     _run_flipbooks = []  # Track all flipbook GIF paths for VHS tape compilation
+    _run_experience_mode = None  # Experience mode active for the current run (set at game start)
     import threading
     _tape_creation_lock = threading.Lock()  # Prevent duplicate tape creation (thread-safe)
     _tape_creation_in_progress = False  # Flag to track if tape is being created
@@ -347,12 +348,19 @@ if DISCORD_ENABLED:
                 print(f"[TAPE HD] Falling back to GIF...")
         
         # Normal mode or fallback: create GIF
-        # Try flipbook compilation first (if flipbooks were generated)
-        if _run_flipbooks and len(_run_flipbooks) > 0:
-            print(f"[TAPE] Found {len(_run_flipbooks)} flipbook GIFs - creating compilation tape")
+        # Route based on the experience mode that was active when the run started.
+        # Full Frame mode uses static still images (even if _run_flipbooks has the
+        # logo GIF entry added during intro).  Flipbook mode uses the compiled
+        # per-turn animation GIFs.
+        is_flipbook_run = _run_experience_mode == engine.EXPERIENCE_MODE_FLIPBOOK
+        if is_flipbook_run and _run_flipbooks and len(_run_flipbooks) > 0:
+            print(f"[TAPE] Flipbook mode — found {len(_run_flipbooks)} GIFs - creating compilation tape")
             return _create_flipbook_compilation_tape()
         else:
-            print(f"[TAPE] No flipbooks found, using static frames")
+            if _run_flipbooks and not is_flipbook_run:
+                print(f"[TAPE] Non-flipbook mode ({_run_experience_mode}) — skipping {len(_run_flipbooks)} logo-only GIF entries, using static frames")
+            else:
+                print(f"[TAPE] No flipbooks found, using static frames")
             return _create_death_replay_gif()
     
     def _create_flipbook_compilation_tape() -> tuple[Optional[str], str]:
@@ -1025,6 +1033,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 # Clear tape recording for new run
                 _run_images.clear()
                 _run_flipbooks.clear()
+                _run_experience_mode = None
                 print("[DEATH] Game state reset complete. New tape ready.")
             except Exception as e:
                 print(f"[DEATH] Reset error: {e}")
@@ -2357,7 +2366,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             # start_inactivity_timer(interaction.channel)  # TODO: Not implemented yet
 
         def _do_reset(self):
-            global _run_images, _run_flipbooks
+            global _run_images, _run_flipbooks, _run_experience_mode
             try:
                 with open(ROOT / "history.json", "w", encoding="utf-8") as f:
                     f.write("[]")
@@ -2378,6 +2387,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 # Clear tape recording for new run (CRITICAL FIX)
                 _run_images.clear()
                 _run_flipbooks.clear()
+                _run_experience_mode = None
                 print("[RESTART] Game state reset complete. New tape ready.")
             except Exception as e:
                 print(f"[RESTART] Reset error: {e}")
@@ -2814,6 +2824,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 pass
             _run_images.clear()
             _run_flipbooks.clear()
+            _run_experience_mode = None
             await ctx.reply("🔄 Game state cleared. Posting fresh intro…")
             await send_intro_tutorial(ctx.channel)
         except Exception as e:
@@ -3134,7 +3145,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     )
                     return
 
-                global _run_images, _run_flipbooks  # MUST be at the very top of the function
+                global _run_images, _run_flipbooks, _run_experience_mode  # MUST be at the very top of the function
 
                 # ── Apply selected experience mode ────────────────────────────
                 session_id = str(interaction.channel_id) if interaction.channel_id else 'default'
@@ -3144,6 +3155,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     # Unknown mode — fall back to flipbook
                     mode = engine.EXPERIENCE_MODE_FLIPBOOK
                     engine.apply_experience_mode(mode, session_id)
+                _run_experience_mode = mode  # Record mode so tape creation uses the right path
                 print(f"[PLAY] Experience mode applied: {mode}", flush=True)
 
                 # ── No-images path ────────────────────────────────────────────
@@ -3327,9 +3339,13 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                         # Send the normalized logo (static JPG for Discord)
                         await interaction.channel.send(file=discord.File(str(normalized_logo_path)))
                         
-                        # Track logo GIF as Frame 0 of VHS tape compilation
-                        _run_flipbooks.append(str(logo_gif_path))
-                        print(f"[BOT TAPE LOGO] Tracked logo GIF for compilation tape")
+                        # Track logo GIF as Frame 0 of VHS flipbook compilation tape
+                        # (only in flipbook mode — Full Frame mode uses the static JPG via _run_images)
+                        if _run_experience_mode == engine.EXPERIENCE_MODE_FLIPBOOK:
+                            _run_flipbooks.append(str(logo_gif_path))
+                            print(f"[BOT TAPE LOGO] Tracked logo GIF for flipbook compilation tape")
+                        else:
+                            print(f"[BOT TAPE LOGO] Skipping logo GIF tracking (mode={_run_experience_mode}); static JPG is in _run_images")
                         
                         # Also track static logo for fallback (old code compatibility)
                         _run_images.append(f"/static/Logo_normalized.jpg")
@@ -5157,6 +5173,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 pass
             _run_images.clear()
             _run_flipbooks.clear()
+            _run_experience_mode = None
             await interaction.followup.send(
                 "Game state cleared. Posting fresh intro now.", ephemeral=True
             )
