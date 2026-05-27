@@ -385,8 +385,8 @@ VEO_MODE_ENABLED    = False # DISABLED by default - use video generation instead
 # any future API endpoint that exposes mode selection.
 
 EXPERIENCE_MODE_NO_IMAGES  = "no_images"   # Text-only; all image generation off
-EXPERIENCE_MODE_FLIPBOOK   = "flipbook"    # 4×4 animated GIF sequence (default)
-EXPERIENCE_MODE_FULL_FRAME = "full_frame"  # Single photorealistic still image
+EXPERIENCE_MODE_FLIPBOOK   = "flipbook"    # 4×4 animated GIF sequence (16 frames)
+EXPERIENCE_MODE_FULL_FRAME = "full_frame"  # Single photorealistic still image (default)
 
 EXPERIENCE_MODES: dict = {
     EXPERIENCE_MODE_NO_IMAGES: {
@@ -1144,7 +1144,11 @@ DESCRIPTION: <detailed description of what is visible, focusing on objects, thre
 SPATIAL: <spatial compass — describe: (a) what is DIRECTLY AHEAD at what distance, (b) what is visible to the LEFT, (c) what is visible to the RIGHT, (d) what is underfoot/ground type, (e) camera height estimate (standing/crouching/elevated). Keep under 50 words. Example: "Ahead: chain-link fence ~20m with facility gate. Left: red mesa cliff face ~100m. Right: abandoned Horizon truck ~15m. Ground: sandy desert with scrub. Standing height.">
 SETTING: <ONE of: outdoor-desert, outdoor-cliff, outdoor-road, indoor-corridor, indoor-lab, indoor-warehouse, indoor-other, transitional>"""
         
-        api_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent"
+        # NOTE: previously hardcoded `gemini-2.0-flash-exp`, which Google retired —
+        # every vision call was silently 404'ing and returning an empty SPATIAL /
+        # SETTING block (the very signal the temporal-consistency pipeline relies on).
+        # We now use the same production model name as the rest of the engine.
+        api_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
         
         # DEBUG: Log API key status for Vision
         if not GEMINI_API_KEY:
@@ -2944,7 +2948,8 @@ def begin_tick() -> dict:
         image_description='',
         world_prompt=state.get('world_prompt', ''),
         temperature=0.2,
-        situation_summary=situation_summary
+        situation_summary=situation_summary,
+        injury_state=', '.join(state.get('injuries', []) or []) or 'none',
     )
     # Remove placeholder/empty choices
     options = [c for c in options if c and c.strip() and c.strip() != '—']
@@ -4217,15 +4222,41 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
         if fate == "LUCKY":
             fate_modifier = "\n\n🎰 FATE INTERVENTION - LUCKY:\nSomething breaks your way. Add ONE concrete benefit:\n• Equipment works better than expected\n• Guard patrol turns away at the right moment\n• You find something useful (ammo, cover, distraction)\n• Environmental timing favors you (door unlocked, light goes out)\n• A threat misses or hesitates\nMake it TANGIBLE and HELPFUL, not just flavor text.\n"
         elif fate == "UNLUCKY":
-            fate_modifier = "\n\n🎰 FATE INTERVENTION - UNLUCKY:\nFate turns VICIOUSLY against you. Add ONE concrete HORRIFYING complication:\n\n**PRIORITIZE GRIM BODILY HARM** (Choose physical trauma when plausible):\n• Body is IMPALED (rebar through leg, glass shard in shoulder, metal spike in abdomen)\n• Limb is CRUSHED or BROKEN (concrete slab on foot, bone snaps audibly, compound fracture)\n• Flesh is BURNED (caustic chemical splash, electrical arc across chest, scalding steam)\n• Tissue is LACERATED (barbed wire rips forearm open, jagged metal severs calf muscle)\n• Skull trauma (head strikes concrete, severe concussion, vision blurs)\n• Arterial bleeding (deep cut spurting blood, femoral artery compromised)\n• Red biome INFECTION (spores inhaled, flesh begins corrupting, tendril fuses with skin)\n• Creature MAULS you (claws rake ribs, teeth puncture shoulder, crushing bite)\n\n**OR Catastrophic Equipment/Environment Failure** (If bodily harm doesn't fit):\n• Equipment FAILS violently (rope snaps mid-climb, ladder rung breaks, catwalk collapses)\n• Structure COLLAPSES (ceiling caves in, floor gives way, wall crumbles)\n• Chemical/Biological CONTAMINATION (toxic gas exposure, corrosive spill, infection vector)\n• Multiple threats converge (guards AND creature, patrol plus structural collapse)\n• Hidden lethal trap springs (pressurized explosive, electrical grid, biological specimen breaks containment)\n\n**CRITICAL RULE**: UNLUCKY should cause SEVERE PHYSICAL CONSEQUENCES.\nThis is not \"bad luck\" - this is the world MUTILATING you.\nDescribe injuries with VISCERAL DETAIL: what breaks, what tears, what burns, what bleeds.\n\nThe player's situation should become DRASTICALLY worse - injury, discovery, or imminent death.\n"
+            fate_modifier = "\n\n🎰 FATE INTERVENTION - UNLUCKY:\nFate turns against you. Add ONE concrete dramatic complication. The DEATH FAIRNESS DOCTRINE above still applies — environment can WOUND but only characters/events KILL.\n\n**PRIORITIZE CHARACTER- OR EVENT-DRIVEN DRAMA** (these are the satisfying complications):\n• A character appears or closes in (guard patrol turns toward you, a creature emerges from cover, a sniper acquires you)\n• A dramatic event triggers (explosion the player set off, vehicle screeches in, structural collapse caused by the action)\n• Evidence is discovered against you (alarm trips, camera catches you, radio call alerts the facility)\n• A previously safe ally turns hostile or reveals themselves\n• A creature mauls or a guard fires (still subject to fairness — death only if visible and earned)\n\n**OR SURVIVABLE BODILY HARM** (when no character/event fits — these INJURE, do not kill):\n• Limb is bruised or broken (sprained ankle, fractured wrist, dislocated shoulder)\n• Flesh is burned (caustic splash on hand, scalding steam blistering skin)\n• Tissue is lacerated (barbed wire rips forearm, jagged metal cuts calf — still able to move)\n• Concussion or vision swim from a blow\n• Equipment fails (rope frays, ladder rung breaks, catwalk gives way — fall + injury, not death)\n\n**FORBIDDEN UNDER UNLUCKY (cheap-death patterns):**\n❌ Random impalement on rebar/spike/glass killing the player\n❌ Death by inert environment (falling onto debris with no character driving the scene)\n❌ Spores/contamination killing the player in one beat (slow corruption is fine; sudden death is not)\n\nDescribe injuries with VISCERAL DETAIL when wounds occur — what bruises, what tears, what burns. But unless a CHARACTER or DRAMATIC EVENT is on screen driving it, KEEP `player_alive` = TRUE and let the wound become a persistent burden the player carries forward.\n"
         # NORMAL = no modifier, outcome is purely based on choice
-        
+
+        # ── Entity + injury grounding (fairness) ─────────────────────────────
+        # The death-fairness doctrine in the prompt requires that any lethal
+        # threat already be visible to the player. Surface the seen entities
+        # and persistent injuries so the LLM can honor that contract.
+        seen_list = state.get('seen_elements', []) or []
+        if isinstance(seen_list, list):
+            seen_str = ', '.join(str(e) for e in seen_list[-10:])
+        else:
+            seen_str = str(seen_list)
+        injury_list = state.get('injuries', []) or []
+        if isinstance(injury_list, list):
+            injury_str = ', '.join(str(i) for i in injury_list) if injury_list else 'none'
+        else:
+            injury_str = str(injury_list)
+        phase_str = state.get('current_phase', 'normal')
+
+        grounding_block = (
+            f"\n\nDISCOVERED ENTITIES (these are the only things on the board — "
+            f"any LETHAL threat must come from here or the current scene): "
+            f"{seen_str or 'none yet'}\n"
+            f"INJURY STATE (persistent wounds — reference at least once if non-empty): "
+            f"{injury_str}\n"
+            f"STORY PHASE: {phase_str}\n"
+        )
+
         # Use JUST the dispatch_sys instructions (which has JSON format)
         json_prompt = (
             f"{dispatch_sys}\n\n"
             f"{free_will_header}"
             f"PLAYER CHOICE: '{choice}'\n"
-            f"WORLD CONTEXT: {world_prompt}\n\n"
+            f"WORLD CONTEXT: {world_prompt}\n"
+            f"{grounding_block}"
             f"{fate_modifier}"
             f"{spatial_context}"
             f"{prev_context}\n\n"
@@ -4712,7 +4743,8 @@ def _advance_turn_choices_deferred_impl(consequence_img_url: str, dispatch: str,
         image_description=vision_analysis_text, # Now correctly populated!
         world_prompt=state.get('world_prompt', ''),
         temperature=0.7,
-        situation_summary=situation_summary
+        situation_summary=situation_summary,
+        injury_state=', '.join(state.get('injuries', []) or []) or 'none',
     )
     
     next_choices = [c for c in next_choices if c and c.strip() and c.strip() != '—']
@@ -5154,7 +5186,8 @@ def generate_intro_choices_deferred(image_url: str, prologue: str, vision_dispat
         image_description=vision_analysis_text, # Corrected!
         world_prompt=prologue,
         temperature=0.7,
-        situation_summary=situation_summary
+        situation_summary=situation_summary,
+        injury_state=', '.join(state.get('injuries', []) or []) or 'none',
     )
     
     if len(options) == 1:
@@ -5290,7 +5323,8 @@ def generate_intro_turn(session_id: str = 'default'):
         time_of_day="",  # Removed - prevents outdoor lighting descriptions
         world_prompt=prologue,
         temperature=0.7,
-        situation_summary=situation_summary
+        situation_summary=situation_summary,
+        injury_state=', '.join(state.get('injuries', []) or []) or 'none',
     )
     if len(options) == 1:
         parts = re.split(r"[\/,\x19\x12\-]|  +", options[0])

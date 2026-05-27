@@ -1037,6 +1037,82 @@ except Exception as e:
     failed_tests.append("Full Frame temporal consistency visual_scene fix")
 
 # ============================================================================
+# TEST 16: Pacing / fairness / immersion hardening
+# ============================================================================
+# Locks in the no-cheap-deaths guarantee, phase-gated countdown, tiered
+# timeout penalties, injury threading, and Full-Frame-as-default. Each
+# of these is a non-structural prompt or constant tweak that we want a
+# regression gate around.
+# ============================================================================
+print("\n[TEST 16] Pacing / fairness / immersion hardening...")
+try:
+    from pathlib import Path
+    workspace = Path(__file__).parent
+    engine_src   = (workspace / "engine.py").read_text(encoding="utf-8")
+    bot_src      = (workspace / "bot.py").read_text(encoding="utf-8")
+    choices_src  = (workspace / "choices.py").read_text(encoding="utf-8")
+    prompts_src  = (workspace / "prompts" / "simulation_prompts.json").read_text(encoding="utf-8")
+
+    checks = [
+        ("vision URL no longer routes to retired gemini-2.0-flash-exp",
+         "models/gemini-2.0-flash-exp:generateContent" not in engine_src
+         and "models/gemini-2.0-flash:generateContent" in engine_src),
+        ("Full Frame is the default experience mode in the dropdown",
+         "EXPERIENCE_MODE_FULL_FRAME" in bot_src
+         and bot_src.find("EXPERIENCE_MODE_FULL_FRAME,\n                        description=\"Single photorealistic still image per turn\",\n                        default=True,") != -1),
+        ("IntroView defaults to FULL_FRAME",
+         "self.experience_mode: str = engine.EXPERIENCE_MODE_FULL_FRAME" in bot_src),
+        ("Death-fairness doctrine is present in the dispatch prompt",
+         "DEATH FAIRNESS DOCTRINE" in prompts_src
+         and "CHARACTERS AND DRAMATIC EVENTS KILL" in prompts_src
+         and "ENVIRONMENT ONLY WOUNDS" in prompts_src),
+        ("UNLUCKY fate modifier forbids cheap impalement deaths",
+         "FORBIDDEN UNDER UNLUCKY" in engine_src),
+        ("Tension rhythm allows ~30% stillness beats",
+         "TENSION RHYTHM" in prompts_src
+         and "STILLNESS BEAT" in prompts_src
+         and "TENSION ESCALATION (MANDATORY FINAL SENTENCE)" not in prompts_src),
+        ("Countdown duration is phase-gated",
+         "COUNTDOWN_BY_PHASE" in bot_src
+         and "_phase_countdown_duration" in bot_src
+         and "active_duration = _phase_countdown_duration()" in bot_src),
+        ("Timeout penalty is tiered (1=tell, 2=minor, 3+=severe/character)",
+         "_timeout_count_this_run" in bot_src
+         and "TIMEOUT_TIER = 1" in bot_src
+         and "TIMEOUT_TIER = 2" in bot_src
+         and "Tier 1" in prompts_src
+         and "Tier 2" in prompts_src
+         and "Tier 3" in prompts_src),
+        ("Injuries thread into both dispatch and choice prompts",
+         "INJURY STATE" in engine_src
+         and "DISCOVERED ENTITIES" in engine_src
+         and "injury_state" in choices_src
+         and "injury_state or" in choices_src),
+        ("Forward-movement choice slot is now randomized, not pinned to #1",
+         "CHOICE #1 MUST ALWAYS BE FORWARD SPATIAL MOVEMENT" not in prompts_src
+         and "slot position is RANDOMIZED" in prompts_src),
+        ("Time-of-day can advance with phase transitions",
+         "TIME-OF-DAY PROGRESSION (PHASE-LINKED)" in prompts_src
+         and "PHASE-GATED EXCEPTION" in prompts_src),
+        ("Per-run timeout counter is reset on death / restart / new play",
+         bot_src.count("_timeout_count_this_run = 0") >= 4),
+    ]
+
+    all_passed = True
+    for label, ok in checks:
+        marker = "[OK]" if ok else "[FAIL]"
+        print(f"  {marker} {label}")
+        if not ok:
+            all_passed = False
+    if not all_passed:
+        failed_tests.append("Pacing / fairness / immersion hardening")
+except Exception as e:
+    print(f"[FAIL] {e}")
+    import traceback
+    traceback.print_exc()
+    failed_tests.append("Pacing / fairness / immersion hardening")
+
+# ============================================================================
 # RESULTS
 # ============================================================================
 print("\n" + "=" * 70)

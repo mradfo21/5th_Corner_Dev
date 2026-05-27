@@ -865,21 +865,55 @@ if DISCORD_ENABLED:
         import requests
         import base64
         from pathlib import Path
-        
+
         # Use the timeout_penalty_instructions from prompts file
         penalty_instructions = engine.PROMPTS.get("timeout_penalty_instructions", "")
-        
+
+        # ── Tiered escalation ────────────────────────────────────────────────
+        # Tier 1 (first timeout this run) = atmospheric tell, no injury.
+        # Tier 2 (second) = minor survivable wound.
+        # Tier 3+ (third onward) = severe injury or character-driven threat.
+        global _timeout_count_this_run
+        _timeout_count_this_run = (_timeout_count_this_run or 0) + 1
+        tier = min(3, _timeout_count_this_run)
+        if tier == 1:
+            tier_guidance = (
+                "TIMEOUT_TIER = 1 (FIRST hesitation this run). "
+                "Output an ATMOSPHERIC TELL with NO injury — footsteps closer, "
+                "dust shifts, radio chatter, a creature's call, light dimming. "
+                "Make it dread, not damage. DO NOT injure the player."
+            )
+        elif tier == 2:
+            tier_guidance = (
+                "TIMEOUT_TIER = 2 (SECOND hesitation this run). "
+                "Output a MINOR SURVIVABLE wound — twisted ankle, glass nick, "
+                "scalded hand, bruised knee. The player is INJURED but fully "
+                "mobile. NEVER lethal. NEVER an impalement that would maim."
+            )
+        else:
+            tier_guidance = (
+                "TIMEOUT_TIER = 3+ (THIRD or later hesitation this run). "
+                "Output either (a) a SEVERE survivable injury (broken bone, "
+                "deep laceration, concussion — still mobile) OR (b) the "
+                "materialisation of a CHARACTER-DRIVEN threat that is "
+                "already plausible in the scene (a guard rounding the corner, "
+                "a creature emerging from cover). Death is judged by the "
+                "consequence LLM next turn — keep player_alive=TRUE here."
+            )
+
         image_context = ""
         if current_image:
             image_context = (
                 "\n\n🖼️ CRITICAL: Look at the attached image. This is YOUR CURRENT LOCATION.\n"
                 "THE CAMERA HAS NOT MOVED. You are STILL in this EXACT spot.\n"
                 "If indoor, STAY INDOOR. If outdoor, STAY OUTDOOR.\n"
-                "Base the penalty on VISIBLE THREATS in THIS image (structural hazards, debris, environmental danger).\n"
+                "Base the penalty on VISIBLE THREATS in THIS image (characters, atmospheric tells, debris).\n"
                 "DO NOT invent new locations. DO NOT teleport. DO NOT mention 'fence' if no fence visible."
             )
-        
+
         prompt = f"""{penalty_instructions}
+
+⏱️ {tier_guidance}
 
 🚨 CRITICAL RULE: YOU HAVE NOT MOVED. THE CAMERA IS IN THE EXACT SAME LOCATION.
 - If you were in a hallway, you are STILL in that hallway
@@ -893,7 +927,7 @@ CURRENT SITUATION:
 WHAT JUST HAPPENED:
 {dispatch}{image_context}
 
-Generate the penalty in valid JSON format. MUST stay in current location. Use 'you/your' only."""
+Generate the penalty in valid JSON format. MUST stay in current location. MUST honor the timeout tier above. Use 'you/your' only."""
 
         try:
             gemini_api_key = conf.get("GEMINI_API_KEY", "")
@@ -1034,6 +1068,8 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 _run_images.clear()
                 _run_flipbooks.clear()
                 _run_experience_mode = None
+                global _timeout_count_this_run
+                _timeout_count_this_run = 0
                 print("[DEATH] Game state reset complete. New tape ready.")
             except Exception as e:
                 print(f"[DEATH] Reset error: {e}")
@@ -2388,6 +2424,8 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 _run_images.clear()
                 _run_flipbooks.clear()
                 _run_experience_mode = None
+                global _timeout_count_this_run
+                _timeout_count_this_run = 0
                 print("[RESTART] Game state reset complete. New tape ready.")
             except Exception as e:
                 print(f"[RESTART] Reset error: {e}")
@@ -2825,6 +2863,8 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             _run_images.clear()
             _run_flipbooks.clear()
             _run_experience_mode = None
+            global _timeout_count_this_run
+            _timeout_count_this_run = 0
             await ctx.reply("🔄 Game state cleared. Posting fresh intro…")
             await send_intro_tutorial(ctx.channel)
         except Exception as e:
@@ -2982,15 +3022,15 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 self.parent_view = parent_view
                 options = [
                     discord.SelectOption(
-                        label="🎬 Flipbook (Default)",
-                        value=engine.EXPERIENCE_MODE_FLIPBOOK,
-                        description="16-frame animated sequence per turn",
+                        label="🖼️ Full Frame (Default)",
+                        value=engine.EXPERIENCE_MODE_FULL_FRAME,
+                        description="Single photorealistic still image per turn",
                         default=True,
                     ),
                     discord.SelectOption(
-                        label="🖼️ Full Frame",
-                        value=engine.EXPERIENCE_MODE_FULL_FRAME,
-                        description="Single photorealistic still image per turn",
+                        label="🎬 Flipbook",
+                        value=engine.EXPERIENCE_MODE_FLIPBOOK,
+                        description="16-frame animated sequence per turn",
                     ),
                     discord.SelectOption(
                         label="📝 Text Only",
@@ -3149,13 +3189,17 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
 
                 # ── Apply selected experience mode ────────────────────────────
                 session_id = str(interaction.channel_id) if interaction.channel_id else 'default'
-                mode = getattr(self.view, 'experience_mode', engine.EXPERIENCE_MODE_FLIPBOOK)
+                mode = getattr(self.view, 'experience_mode', engine.EXPERIENCE_MODE_FULL_FRAME)
                 mode_applied = engine.apply_experience_mode(mode, session_id)
                 if not mode_applied:
-                    # Unknown mode — fall back to flipbook
-                    mode = engine.EXPERIENCE_MODE_FLIPBOOK
+                    # Unknown mode — fall back to the default (Full Frame).
+                    mode = engine.EXPERIENCE_MODE_FULL_FRAME
                     engine.apply_experience_mode(mode, session_id)
                 _run_experience_mode = mode  # Record mode so tape creation uses the right path
+                # Reset per-run pacing counters so a fresh play starts with
+                # Tier 1 timeout penalties (atmospheric tell), not Tier 3+ leftover.
+                global _timeout_count_this_run
+                _timeout_count_this_run = 0
                 print(f"[PLAY] Experience mode applied: {mode}", flush=True)
 
                 # ── No-images path ────────────────────────────────────────────
@@ -3922,7 +3966,10 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
         class IntroView(View):
             def __init__(self):
                 super().__init__(timeout=None)
-                self.experience_mode: str = engine.EXPERIENCE_MODE_FLIPBOOK
+                # Default is Full Frame: most stable, most photographic, and
+                # the cheapest path to a coherent demo. Players can still pick
+                # Flipbook or Text Only from the row-0 dropdown.
+                self.experience_mode: str = engine.EXPERIENCE_MODE_FULL_FRAME
 
         play_view = IntroView()
         play_view.add_item(ExperienceModeSelect(play_view))  # Row 0: Visual experience
@@ -4168,14 +4215,17 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
     async def countdown_timer_task(channel, choices, view, dispatch, situation):
         """Run the countdown timer and handle timeout"""
         global countdown_message, countdown_task, current_choices, current_view, auto_advance_task, auto_play_enabled
-        
+
         import time
         start_time = time.time()
-        
+        # Snapshot the phase-gated duration once per countdown so phase
+        # transitions mid-countdown don't jitter the bar.
+        active_duration = _phase_countdown_duration()
+
         try:
             while True:
                 elapsed = time.time() - start_time
-                remaining = max(0, COUNTDOWN_DURATION - elapsed)
+                remaining = max(0, active_duration - elapsed)
                 
                 if remaining <= 0:
                     # TIME'S UP - Generate and execute penalty
@@ -4560,7 +4610,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     break  # Exit the main while loop after penalty sequence
                 
                 # Update countdown display
-                bars = "█" * int((remaining / COUNTDOWN_DURATION) * 10)
+                bars = "█" * int((remaining / max(1, active_duration)) * 10)
                 empty = "░" * (10 - len(bars))
                 
                 if remaining > 30:
@@ -4648,15 +4698,16 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
         
         # Start new countdown
         countdown_task = asyncio.create_task(countdown_timer_wrapper(channel, choices, view, dispatch, situation))
-        print(f"[COUNTDOWN] Started {COUNTDOWN_DURATION}s countdown")
+        print(f"[COUNTDOWN] Started {_phase_countdown_duration()}s countdown (phase-gated)")
     
     async def countdown_timer_wrapper(channel, choices, view, dispatch, situation):
         """Wrapper to create countdown message before running timer"""
         global countdown_message
-        
-        # Create countdown message
-        countdown_message = await channel.send(content=f" **{COUNTDOWN_DURATION}s** [██████████]")
-        
+
+        # Phase-gated duration: normal=30s, escalating=22s, critical=14s.
+        active_duration = _phase_countdown_duration()
+        countdown_message = await channel.send(content=f" **{active_duration}s** [██████████]")
+
         # Run the actual countdown
         await countdown_timer_task(channel, choices, view, dispatch, situation)
     
@@ -4688,9 +4739,34 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
     current_view = None  # Track current view for auto-advance
     
     # --- Countdown Timer ---
+    # COUNTDOWN_DURATION is now PHASE-GATED via _phase_countdown_duration() —
+    # the constant below is the fallback / normal-phase value.
     COUNTDOWN_ENABLED = True  # Enable/disable countdown timer
-    COUNTDOWN_DURATION = 30  # seconds per choice
+    COUNTDOWN_DURATION = 30  # seconds per choice (normal phase fallback)
     COUNTDOWN_UPDATE_INTERVAL = 1  # update display every 1 second (smooth countdown)
+    COUNTDOWN_BY_PHASE = {
+        # Normal scouting — give the player time to read and absorb.
+        "normal":     30,
+        # The world is closing in — compress the decision window.
+        "escalating": 22,
+        # Climax — snap decisions only.
+        "critical":   14,
+    }
+
+    def _phase_countdown_duration() -> int:
+        """Return countdown seconds for the current story phase."""
+        try:
+            st = engine.api_load_state() if hasattr(engine, 'api_load_state') else engine._load_state()
+            phase = (st or {}).get('current_phase', 'normal')
+        except Exception:
+            phase = 'normal'
+        return COUNTDOWN_BY_PHASE.get(phase, COUNTDOWN_DURATION)
+
+    # --- Timeout Penalty Tiering ---
+    # Tier 1 = atmospheric tell only (no injury), Tier 2 = minor wound, Tier 3+ =
+    # severe injury or character-driven threat. Counter resets each new run.
+    _timeout_count_this_run = 0
+
     countdown_task = None  # Track active countdown
     countdown_message = None  # Message showing countdown
     current_dispatch = ""  # For penalty generation
@@ -5174,6 +5250,8 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             _run_images.clear()
             _run_flipbooks.clear()
             _run_experience_mode = None
+            global _timeout_count_this_run
+            _timeout_count_this_run = 0
             await interaction.followup.send(
                 "Game state cleared. Posting fresh intro now.", ephemeral=True
             )

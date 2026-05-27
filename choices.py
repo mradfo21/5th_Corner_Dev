@@ -74,7 +74,8 @@ def generate_choices(
     world_prompt: str = "",
     temperature: float = 1.2,
     situation_summary: str = "",
-    inventory: list = None  # Player inventory items
+    inventory: list = None,  # Player inventory items
+    injury_state: str = "none",  # Persistent wounds carried into this turn
 ) -> List[str]:
     """
     Ask the model for up to n choices. The template must contain:
@@ -98,7 +99,8 @@ def generate_choices(
         image_description=image_description or "",
         time_of_day=time_of_day or "",
         beat_nudge=beat_nudge,
-        situation_summary=situation_summary  # RE-ENABLED: This is now grounded via Vision AI in Phase 2!
+        situation_summary=situation_summary,  # RE-ENABLED: This is now grounded via Vision AI in Phase 2!
+        injury_state=injury_state or "none",
     )
     
     # Format inventory for prompt
