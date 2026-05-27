@@ -30,3 +30,4 @@ test_*.py
 !test_experience_mode.py
 !test_no_images_simulation.py
 !test_choices_robustness.py
+!test_with_images_intro_hardening.py

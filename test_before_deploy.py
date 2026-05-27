@@ -1168,6 +1168,52 @@ except Exception as e:
     failed_tests.append("Choices robustness — intro choice fallbacks")
 
 # ============================================================================
+# TEST 18: With-images intro hardening (never silent on initial turn)
+# ============================================================================
+# Source-level invariants that lock in the fix for the regression where the
+# with-images intro flow could leave the channel completely silent if image
+# generation hung past its API timeout or Phase 2 choice generation crashed.
+# The runtime suite (test_with_images_intro_hardening.py) covers more
+# invariants; this gate just sanity-checks the critical few.
+print("\n[TEST 18] With-images intro never goes silent...")
+try:
+    bot_src = open("bot.py", encoding="utf-8").read()
+
+    checks = [
+        ("Top-level WITH-IMAGES guard banner is present",
+         "TOP-LEVEL WITH-IMAGES GUARD" in bot_src),
+        ("callback delegates to _run_with_images_intro inner method",
+         "await self._run_with_images_intro(" in bot_src
+         and "async def _run_with_images_intro(" in bot_src),
+        ("Unhandled with-images exception is logged + recovered",
+         "[PLAY-WITHIMAGES ERROR] Unhandled exception" in bot_src),
+        ("Phase 1 image_task awaits via asyncio.wait_for (hard ceiling)",
+         "asyncio.wait_for(image_task" in bot_src),
+        ("Phase 2 choices_task awaits via asyncio.wait_for (hard ceiling)",
+         "asyncio.wait_for(choices_task" in bot_src),
+        ("Synthesised Phase 1 fallback dict exists for image failures",
+         '"prologue": "You survey the Horizon facility from a distant ridge."' in bot_src),
+        ("isinstance(intro_phase1, dict) defends downstream .get() calls",
+         "isinstance(intro_phase1, dict)" in bot_src),
+        ("Existing no-images guard is still in place (no regression)",
+         "TOP-LEVEL NO-IMAGES GUARD" in bot_src),
+    ]
+
+    all_passed = True
+    for label, ok in checks:
+        marker = "[OK]" if ok else "[FAIL]"
+        print(f"  {marker} {label}")
+        if not ok:
+            all_passed = False
+    if not all_passed:
+        failed_tests.append("With-images intro hardening")
+except Exception as e:
+    print(f"[FAIL] {e}")
+    import traceback
+    traceback.print_exc()
+    failed_tests.append("With-images intro hardening")
+
+# ============================================================================
 # RESULTS
 # ============================================================================
 print("\n" + "=" * 70)
