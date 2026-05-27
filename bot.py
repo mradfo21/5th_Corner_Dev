@@ -2884,7 +2884,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
     # --- Helper to send intro tutorial (rules embed + Play button) ---
     async def send_intro_tutorial(channel):
         rules_embed = discord.Embed(
-            title=" Welcome to SOMEWHERE: An Analog Horror Story",
+            title="⬛ Welcome to SOMEWHERE: An Analog Horror Story",
             color=CORNER_TEAL
         )
         rules_embed.add_field(
@@ -2894,12 +2894,12 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
         )
         rules_embed.add_field(
             name="Turn Structure",
-            value="️ Each turn: a VHS-style image + a narrative segment.",
+            value="▶️ Each turn: a VHS-style scene + a narrative segment.",
             inline=False
         )
         rules_embed.add_field(
             name="Controls",
-            value="️ Press Play to continue the story.\n🔘 Click buttons to choose your action.",
+            value="▶️ Press **Play** to begin the story.\n🔘 Click buttons to choose your action.",
             inline=False
         )
         rules_embed.add_field(
@@ -2907,9 +2907,62 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             value="🕰️ Story escalates slowly — pay attention to details!\n🧭 Your choices shape your fate.",
             inline=False
         )
-        rules_embed.set_footer(text="Ready? Press ️ Play below to begin.")
+        rules_embed.add_field(
+            name="🎮 Visual Experience",
+            value=(
+                "**📝 Text Only** — Pure narrative, no image generation. Fastest.\n"
+                "**🎬 Flipbook** *(default)* — 16-frame animated sequence per turn.\n"
+                "**🖼️ Full Frame** — Single photorealistic still per turn, no flipbook guide."
+            ),
+            inline=False
+        )
+        rules_embed.set_footer(text="Select your visual experience below, then press ▶️ Play.")
 
         
+        # ── Experience Mode Select ────────────────────────────────────────────
+        class ExperienceModeSelect(discord.ui.Select):
+            """Row 0 dropdown — choose the visual experience before pressing Play."""
+
+            def __init__(self, parent_view):
+                self.parent_view = parent_view
+                options = [
+                    discord.SelectOption(
+                        label="🎬 Flipbook (Default)",
+                        value=engine.EXPERIENCE_MODE_FLIPBOOK,
+                        description="16-frame animated sequence per turn",
+                        default=True,
+                    ),
+                    discord.SelectOption(
+                        label="🖼️ Full Frame",
+                        value=engine.EXPERIENCE_MODE_FULL_FRAME,
+                        description="Single photorealistic still image per turn",
+                    ),
+                    discord.SelectOption(
+                        label="📝 Text Only",
+                        value=engine.EXPERIENCE_MODE_NO_IMAGES,
+                        description="Pure narrative — no image generation",
+                    ),
+                ]
+                super().__init__(
+                    placeholder="🎮 Select Visual Experience",
+                    options=options,
+                    row=0,
+                )
+
+            async def callback(self, interaction: discord.Interaction):
+                selected = self.values[0]
+                self.parent_view.experience_mode = selected
+
+                cfg = engine.EXPERIENCE_MODES.get(selected, {})
+                embed = discord.Embed(
+                    title=f"{cfg.get('emoji', '🎮')} {cfg.get('label', selected)} selected",
+                    description=cfg.get("description", ""),
+                    color=CORNER_TEAL,
+                )
+                embed.set_footer(text="Press ▶️ Play to begin with this experience.")
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        # ── AI Provider Select ────────────────────────────────────────────────
         class AIProviderSelect(discord.ui.Select):
             """Dropdown menu for selecting AI provider presets."""
             def __init__(self):
@@ -2927,7 +2980,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 super().__init__(
                     placeholder="🎛️ Select AI Model",
                     options=options,
-                    row=0
+                    row=1
                 )
             
             async def callback(self, interaction: discord.Interaction):
@@ -2975,7 +3028,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     label = "📚 Lore: OFF"
                     style = discord.ButtonStyle.secondary
                 
-                super().__init__(label=label, style=style, row=1)
+                super().__init__(label=label, style=style, row=2)
             
             async def callback(self, interaction: discord.Interaction):
                 # Toggle lore cache
@@ -3012,7 +3065,8 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
         
         class PlayButton(Button):
             def __init__(self):
-                super().__init__(label="️ Play", style=discord.ButtonStyle.success, row=1)
+                super().__init__(label="▶️ Play", style=discord.ButtonStyle.success, row=2)
+
             async def callback(self, interaction: discord.Interaction):
                 # Authorization check
                 if not check_authorization(interaction, OWNER_ID):
@@ -3021,9 +3075,106 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                         ephemeral=True
                     )
                     return
-                
+
                 global _run_images, _run_flipbooks  # MUST be at the very top of the function
-                
+
+                # ── Apply selected experience mode ────────────────────────────
+                session_id = str(interaction.channel_id) if interaction.channel_id else 'default'
+                mode = getattr(self.view, 'experience_mode', engine.EXPERIENCE_MODE_FLIPBOOK)
+                mode_applied = engine.apply_experience_mode(mode, session_id)
+                if not mode_applied:
+                    # Unknown mode — fall back to flipbook
+                    mode = engine.EXPERIENCE_MODE_FLIPBOOK
+                    engine.apply_experience_mode(mode, session_id)
+                print(f"[PLAY] Experience mode applied: {mode}", flush=True)
+
+                # ── No-images path ────────────────────────────────────────────
+                if mode == engine.EXPERIENCE_MODE_NO_IMAGES:
+                    try:
+                        if not interaction.response.is_done():
+                            await interaction.response.defer()
+                    except Exception as _defer_e:
+                        print(f"[LOG] Play (no-images) defer failed: {_defer_e}")
+                        try:
+                            await interaction.channel.send(
+                                "This Play button is no longer active. Please use a newer Play button."
+                            )
+                        except Exception:
+                            pass
+                        return
+
+                    try:
+                        await interaction.message.delete()
+                    except Exception as _del_e:
+                        print(f"[LOG] Could not delete intro message: {_del_e}")
+
+                    _ni_loop = asyncio.get_running_loop()
+                    _ni_task = _ni_loop.run_in_executor(
+                        None, lambda: engine.generate_intro_turn(session_id)
+                    )
+                    _ni_vhs = await interaction.channel.send(embed=discord.Embed(
+                        description="`[00:00:00]` VHS PLAYER\n`LOADING...`",
+                        color=CORNER_GREY,
+                    ))
+                    _ni_vhs_seq = [
+                        (1.5, "`[00:00:03]` TRACKING HEADS\n`ENGAGING...`"),
+                        (1.5, "`[00:00:06]` MAGNETIC STRIP\n`READING...`"),
+                        (1.5, "`[00:00:09]` VIDEO SIGNAL\n`DETECTED`"),
+                        (1.5, "`[00:00:12]` AUDIO CHANNELS\n`SYNCHRONIZING...`"),
+                        (1.5, "`[00:00:15]` PLAYBACK\n`STARTING...`"),
+                    ]
+                    for _ni_delay, _ni_msg in _ni_vhs_seq:
+                        _ni_done, _ = await asyncio.wait([_ni_task], timeout=_ni_delay)
+                        if _ni_done:
+                            break
+                        try:
+                            await _ni_vhs.edit(embed=discord.Embed(
+                                description=_ni_msg, color=CORNER_GREY
+                            ))
+                        except Exception:
+                            break
+                    _ni_result = await _ni_task
+                    try:
+                        await _ni_vhs.delete()
+                    except Exception:
+                        pass
+
+                    await interaction.channel.send(embed=discord.Embed(
+                        title="Prologue",
+                        description=(_ni_result or {}).get("dispatch", ""),
+                        color=CORNER_TEAL,
+                    ))
+                    await interaction.channel.send(embed=discord.Embed(
+                        title="What You See",
+                        description=(_ni_result or {}).get("vision_dispatch", ""),
+                        color=CORNER_TEAL,
+                    ))
+                    _ni_choices = (
+                        (_ni_result or {}).get("choices")
+                        or ["Look around carefully", "Move forward slowly", "Wait and observe"]
+                    )
+                    await interaction.channel.send("🟢 What will you do next?")
+                    _ni_choice_view = ChoiceView(_ni_choices, owner_id=OWNER_ID)
+                    await send_choices(
+                        interaction.channel, _ni_choices, _ni_choice_view, None
+                    )
+                    try:
+                        start_countdown_timer(
+                            interaction.channel,
+                            _ni_choices,
+                            _ni_choice_view,
+                            (_ni_result or {}).get("dispatch", ""),
+                            (_ni_result or {}).get("situation_report", ""),
+                            (_ni_result or {}).get("consequence_image"),
+                        )
+                    except Exception as _ni_timer_err:
+                        print(
+                            f"[PLAY-NOIMAGES] Countdown timer failed: {_ni_timer_err}",
+                            flush=True,
+                        )
+                    return  # No-images path complete
+
+                # ── With-images path (flipbook or full_frame) ─────────────────
                 try:
                     if not interaction.response.is_done():
                         await interaction.response.defer()
@@ -3126,9 +3277,6 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 )
                 await interaction.channel.send(embed=intro_embed)
                 await asyncio.sleep(2)  # Let it sink in
-                
-                engine.IMAGE_ENABLED = True
-                engine.WORLD_IMAGE_ENABLED = True
                 
                 # Determine session ID
                 session_id = str(interaction.channel_id) if interaction.channel_id else 'default'
@@ -3456,7 +3604,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
         class PlayCinematicButton(Button):
             """ HD mode - Uses Veo video generation (expensive but beautiful)"""
             def __init__(self):
-                super().__init__(label=" Play HD", style=discord.ButtonStyle.danger, row=2)
+                super().__init__(label=" Play HD", style=discord.ButtonStyle.danger, row=3)
             
             async def callback(self, interaction: discord.Interaction):
                 # Authorization check
@@ -3678,12 +3826,18 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     intro_phase1.get("consequence_image")
                 )
                 
-        play_view = View(timeout=None)
-        play_view.add_item(AIProviderSelect())  # Row 0: AI Provider dropdown
-        play_view.add_item(LoreCacheToggle())  # Row 1: Lore toggle
-        play_view.add_item(PlayButton())  # Row 1: Play button
-        play_view.add_item(PlayNoImagesButton())  # Row 1: Play without images
-        play_view.add_item(PlayCinematicButton())  # Row 2: Cinematic mode (Veo)
+        # IntroView stores the selected experience mode so PlayButton can read it.
+        class IntroView(View):
+            def __init__(self):
+                super().__init__(timeout=None)
+                self.experience_mode: str = engine.EXPERIENCE_MODE_FLIPBOOK
+
+        play_view = IntroView()
+        play_view.add_item(ExperienceModeSelect(play_view))  # Row 0: Visual experience
+        play_view.add_item(AIProviderSelect())               # Row 1: AI Model
+        play_view.add_item(LoreCacheToggle())                # Row 2: Lore toggle
+        play_view.add_item(PlayButton())                     # Row 2: Play (all modes)
+        play_view.add_item(PlayCinematicButton())            # Row 3: Cinematic (Veo HD)
         await channel.send(embed=rules_embed, view=play_view)
 
     # ───────── startup ─────────────────────────────────────────────────────────

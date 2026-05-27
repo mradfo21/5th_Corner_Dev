@@ -263,6 +263,45 @@ class GameEngineClient:
             for key, value in kwargs.items():
                 if hasattr(engine, key):
                     setattr(engine, key, value)
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # EXPERIENCE MODE
+    # ═══════════════════════════════════════════════════════════════════════
+
+    @property
+    def EXPERIENCE_MODE_NO_IMAGES(self) -> str:
+        return engine.EXPERIENCE_MODE_NO_IMAGES
+
+    @property
+    def EXPERIENCE_MODE_FLIPBOOK(self) -> str:
+        return engine.EXPERIENCE_MODE_FLIPBOOK
+
+    @property
+    def EXPERIENCE_MODE_FULL_FRAME(self) -> str:
+        return engine.EXPERIENCE_MODE_FULL_FRAME
+
+    @property
+    def EXPERIENCE_MODES(self) -> dict:
+        return engine.EXPERIENCE_MODES
+
+    def apply_experience_mode(self, mode: str, session_id: str = None) -> bool:
+        """Apply a named experience mode to the session and engine globals.
+
+        Routes to the API endpoint when ``use_api=True``, otherwise calls
+        ``engine.apply_experience_mode`` directly.  Returns ``True`` on
+        success.
+        """
+        sid = session_id if session_id else self.session_id
+        if self.use_api:
+            try:
+                result = self._api_call(
+                    'POST', '/experience/mode', {'mode': mode, 'session_id': sid}
+                )
+                return bool(result.get('success', False))
+            except Exception:
+                return False
+        else:
+            return engine.apply_experience_mode(mode, sid)
     
     def get_prompt(self, prompt_key: str) -> Optional[str]:
         """Get a specific prompt"""

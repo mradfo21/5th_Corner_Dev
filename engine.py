@@ -379,6 +379,81 @@ WORLD_IMAGE_ENABLED = True  # ENABLED for production
 QUALITY_MODE        = True  # Quality mode: False=Gemini Flash (fast), True=Gemini Pro (high quality, slower)
 VEO_MODE_ENABLED    = False # DISABLED by default - use video generation instead of images
 
+# ── Experience Mode System ────────────────────────────────────────────────────
+# These constants name the three selectable visual modes shown at game start.
+# Storing them in engine ensures a single source of truth for bot, tests, and
+# any future API endpoint that exposes mode selection.
+
+EXPERIENCE_MODE_NO_IMAGES  = "no_images"   # Text-only; all image generation off
+EXPERIENCE_MODE_FLIPBOOK   = "flipbook"    # 4×4 animated GIF sequence (default)
+EXPERIENCE_MODE_FULL_FRAME = "full_frame"  # Single photorealistic still image
+
+EXPERIENCE_MODES: dict = {
+    EXPERIENCE_MODE_NO_IMAGES: {
+        "label":         "📝 Text Only",
+        "emoji":         "📝",
+        "description":   (
+            "Pure narrative — no image generation. "
+            "Fastest; every word of the horror stands alone."
+        ),
+        "image_enabled":  False,
+        "flipbook_mode":  False,
+    },
+    EXPERIENCE_MODE_FLIPBOOK: {
+        "label":         "🎬 Flipbook",
+        "emoji":         "🎬",
+        "description":   (
+            "16-frame animated sequence per turn — "
+            "cinematic action storytelling rendered as a looping GIF."
+        ),
+        "image_enabled":  True,
+        "flipbook_mode":  True,
+    },
+    EXPERIENCE_MODE_FULL_FRAME: {
+        "label":         "🖼️ Full Frame",
+        "emoji":         "🖼️",
+        "description":   (
+            "Single photorealistic still image per turn — "
+            "classic analog-horror atmosphere, no flipbook guide."
+        ),
+        "image_enabled":  True,
+        "flipbook_mode":  False,
+    },
+}
+
+
+def apply_experience_mode(mode: str, session_id: str = "default") -> bool:
+    """Apply a named experience mode, updating engine globals and session state.
+
+    Sets ``IMAGE_ENABLED`` / ``WORLD_IMAGE_ENABLED`` and writes
+    ``flipbook_mode`` + ``experience_mode`` into the session state so that
+    every subsequent turn respects the player's choice without needing to
+    pass the flag around.
+
+    Returns ``True`` on success, ``False`` if *mode* is not recognised.
+    """
+    global IMAGE_ENABLED, WORLD_IMAGE_ENABLED
+
+    if mode not in EXPERIENCE_MODES:
+        logging.warning(f"[EXPERIENCE] Unknown mode requested: {mode!r}")
+        return False
+
+    cfg = EXPERIENCE_MODES[mode]
+
+    IMAGE_ENABLED       = cfg["image_enabled"]
+    WORLD_IMAGE_ENABLED = cfg["image_enabled"]
+
+    st = _load_state(session_id)
+    st["flipbook_mode"]   = cfg["flipbook_mode"]
+    st["experience_mode"] = mode
+    _save_state(st, session_id)
+
+    logging.info(
+        f"[EXPERIENCE] Mode '{mode}' applied — "
+        f"image_enabled={IMAGE_ENABLED}, flipbook={cfg['flipbook_mode']}"
+    )
+    return True
+
 # OpenAI img2img consistency settings
 OPENAI_IMG2IMG_ENABLED = True  # Set to False to always use text-to-image (more variation, less consistency)
 OPENAI_IMG2IMG_REFERENCE_COUNT = 2  # Set to 1 if consistency is poor with 2 frames
