@@ -1559,18 +1559,45 @@ def build_image_prompt(
     print(f"{'='*60}\n", flush=True)
 
     # ── Base prompt ───────────────────────────────────────────────────────────
-    # If we have a separate visual scene description, structure the prompt clearly
-    # so the image model knows what to show vs what the narrative context is.
+    # Three cases:
+    #   A. LLM produced a distinct visual_scene → VISUAL-DOMINANT prompt, narrative
+    #      compressed to a short context clause so it cannot dominate the image.
+    #   B. No visual_scene but we DO have a prior vision_analysis → reuse the prior
+    #      camera position as the spatial scaffold, then describe what changed.
+    #   C. No visual scene and no prior vision → last-resort original style.
     has_visual_scene = (
         narrative_dispatch and
         narrative_dispatch.strip() and
         narrative_dispatch.strip() != dispatch.strip()
     )
     if has_visual_scene:
+        # Compress narrative to a single short clause. The image model is biased
+        # toward describing whatever it reads at length, so long narrative text
+        # (which is intentionally non-visual / kinesthetic) was the original drift
+        # cause. Keep it to ~120 chars of context only.
+        narrative_brief = narrative_dispatch.strip().replace("\n", " ")
+        if len(narrative_brief) > 120:
+            narrative_brief = narrative_brief[:117] + "..."
         prompt = (
-            f"VISUAL SCENE — WHAT THE CAMERA SEES:\n{dispatch}\n\n"
-            f"NARRATIVE CONTEXT — Action: {player_choice}. "
-            f"Consequence: {narrative_dispatch}"
+            f"FIRST-PERSON CAMERA VIEW — render exactly this scene:\n"
+            f"{dispatch}\n\n"
+            f"Action just performed: {player_choice}\n"
+            f"(Brief narrative context, do not over-illustrate: {narrative_brief})"
+        )
+    elif prev_vision_analysis:
+        # Visual scaffold from the previous frame's actual visual analysis. This is
+        # WAY more visually grounded than narrative text and prevents drift even
+        # when the LLM forgets to emit `visual_scene`.
+        scaffold = prev_vision_analysis.strip().replace("\n", " ")
+        if len(scaffold) > 240:
+            scaffold = scaffold[:237] + "..."
+        prompt = (
+            f"FIRST-PERSON CAMERA VIEW — continuing directly from the previous frame.\n"
+            f"Previous frame visual state: {scaffold}\n"
+            f"Action just performed: {player_choice}\n"
+            f"Now render the SAME camera position evolved to show the result of that "
+            f"action. Keep ground type, environment type, lighting, and visible "
+            f"landmarks identical unless the action itself changes them."
         )
     else:
         prompt = f"Action taken: {player_choice}. Result: {dispatch}"
@@ -1693,6 +1720,16 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
     caption = _sanitize_for_image_generation(caption)
     if original_caption != caption:
         print(f"[SANITIZE] Image prompt cleaned to avoid content filters")
+
+    # CRITICAL: The narrative `dispatch` text (player-facing) is now ALSO injected
+    # into the image prompt as `narrative_dispatch`. It must be sanitized the same
+    # way as `caption`, otherwise raw narrative gore/violence words bypass the
+    # content filter shield and the image silently fails or degrades.
+    sanitized_narrative_dispatch = ""
+    if dispatch:
+        sanitized_narrative_dispatch = _sanitize_for_image_generation(dispatch)
+        if sanitized_narrative_dispatch != dispatch:
+            print(f"[SANITIZE] Narrative dispatch cleaned for image prompt")
     
     try:
         prev_time_of_day, prev_color = "", ""
@@ -1819,8 +1856,8 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
             world_flavor = summarize_world_prompt_for_image(current_state["world_prompt"])
         prompt_str = build_image_prompt(
             player_choice=choice,
-            dispatch=caption,           # visual scene description (from visual_scene field)
-            narrative_dispatch=dispatch, # narrative consequence text (what player reads)
+            dispatch=caption,                              # visual scene (sanitized)
+            narrative_dispatch=sanitized_narrative_dispatch,  # narrative text (sanitized)
             prev_vision_analysis=prev_vision_analysis,
             hard_transition=hard_transition,
             is_timeout_penalty=is_timeout_penalty,
@@ -4100,18 +4137,33 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
     Returns: (dispatch, vision_dispatch, player_alive)
     """
     try:
-        # Get previous vision analysis for spatial consistency
-        prev_vision_analysis = ""
-        if history and len(history) > 0:
+        # Get previous vision analysis for spatial consistency.
+        # Source priority:
+        #   1. `prev_vision` arg (passed by caller — preferred, may be richer)
+        #   2. `history[-1].vision_analysis` (fallback when caller didn't pass)
+        # NOTE: Previously both sources were injected separately ("CURRENT VISUAL
+        # SCENE" + "PREVIOUS SCENE"), duplicating identical text and confusing the
+        # LLM about which is authoritative. We now use ONE consolidated block.
+        prev_vision_analysis = (prev_vision or "").strip()
+        if not prev_vision_analysis and history and len(history) > 0:
             last_entry = history[-1]
             if last_entry.get("vision_analysis"):
                 prev_vision_analysis = last_entry["vision_analysis"][:300]
-        
+
         spatial_context = ""
         if prev_vision_analysis:
-            spatial_context = f"\n\nCURRENT VISUAL SCENE (MUST STAY CONSISTENT): {prev_vision_analysis}\nDo NOT change locations unless the choice explicitly moves through a door, entrance, or exit. Stay in the same environment."
-        
-        prev_context = f"\n\nPREVIOUS SCENE: {prev_vision[:200]}" if prev_vision else ""
+            spatial_context = (
+                f"\n\nCURRENT VISUAL SCENE (the camera is HERE — visible state of the "
+                f"world right before your action): {prev_vision_analysis[:300]}\n"
+                f"Do NOT change locations unless the choice explicitly moves through a "
+                f"door, entrance, or exit. Stay in the same environment. Your "
+                f"`visual_scene` field must describe how THIS scene evolves after the "
+                f"action — preserve ground type, environment, and visible landmarks."
+            )
+
+        # `prev_context` removed: it duplicated `spatial_context`. Both came from
+        # the same vision_analysis source. Keeping only the richer label.
+        prev_context = ""
         world_prompt = state.get('world_prompt', '')
         
         image_context = ""

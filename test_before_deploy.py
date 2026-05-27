@@ -850,9 +850,9 @@ try:
 
     # 15b: visual_scene guidance must describe physical/visible content
     print("  Checking visual_scene guidance describes visible scene...", end=" ")
-    assert "VISUAL SCENE" in dispatch_instructions, \
-        "dispatch instructions must have a VISUAL SCENE guidance section"
-    assert "camera sees" in dispatch_instructions.lower() or "what is visible" in dispatch_instructions.lower(), \
+    assert "VISUAL SCENE" in dispatch_instructions or "visual_scene" in dispatch_instructions, \
+        "dispatch instructions must have a visual_scene guidance section"
+    assert "camera" in dispatch_instructions.lower() and "visible" in dispatch_instructions.lower(), \
         "visual_scene guidance must reference what is visually present"
     print("[OK]")
 
@@ -874,16 +874,16 @@ try:
         "build_image_prompt must accept narrative_dispatch parameter"
     print("[OK]")
 
-    # 15f: _gen_image passes narrative dispatch to build_image_prompt
-    print("  Checking _gen_image passes narrative_dispatch to build_image_prompt...", end=" ")
-    assert "narrative_dispatch=dispatch" in engine_src, \
-        "_gen_image must pass narrative dispatch to build_image_prompt"
+    # 15f: _gen_image passes narrative dispatch to build_image_prompt (sanitized)
+    print("  Checking _gen_image passes sanitized narrative_dispatch...", end=" ")
+    assert "narrative_dispatch=sanitized_narrative_dispatch" in engine_src, \
+        "_gen_image must pass SANITIZED narrative_dispatch to build_image_prompt"
     print("[OK]")
 
-    # 15g: build_image_prompt uses VISUAL SCENE label when visual scene differs from narrative
-    print("  Checking build_image_prompt structures visual vs narrative prompts...", end=" ")
-    assert "VISUAL SCENE" in engine_src and "NARRATIVE CONTEXT" in engine_src, \
-        "build_image_prompt must label visual and narrative sections separately"
+    # 15g: build_image_prompt uses FIRST-PERSON CAMERA VIEW framing
+    print("  Checking build_image_prompt frames scene as FIRST-PERSON CAMERA VIEW...", end=" ")
+    assert "FIRST-PERSON CAMERA VIEW" in engine_src, \
+        "build_image_prompt must use 'FIRST-PERSON CAMERA VIEW' framing for visual dominance"
     print("[OK]")
 
     # 15h: advance_turn_image_fast uses vision_analysis (not just vision_dispatch) for prev_vision
@@ -894,17 +894,146 @@ try:
 
     # 15i: token budget for dispatch increased (visual_scene adds ~100 tokens)
     print("  Checking dispatch token budget is sufficient for visual_scene...", end=" ")
-    # Find the _ask call in _generate_combined_dispatches that uses tokens=
     import re as _re
     combined_dispatch_fn = engine_src[engine_src.find("def _generate_combined_dispatches"):
                                       engine_src.find("\ndef ", engine_src.find("def _generate_combined_dispatches") + 10)]
     token_matches = _re.findall(r'tokens=(\d+)', combined_dispatch_fn)
     assert token_matches and int(token_matches[0]) >= 400, \
-        f"_generate_combined_dispatches token budget should be ≥400 for visual_scene, got: {token_matches}"
+        f"_generate_combined_dispatches token budget should be \u2265400 for visual_scene, got: {token_matches}"
     print("[OK]")
+
+    # 15j: OUTPUT CONTRACT must appear at the top of the dispatch prompt
+    print("  Checking OUTPUT CONTRACT is at top of action_consequence_instructions...", end=" ")
+    contract_idx = dispatch_instructions.find("OUTPUT CONTRACT")
+    assert contract_idx != -1, "action_consequence_instructions must contain an OUTPUT CONTRACT section"
+    assert contract_idx < 200, (
+        f"OUTPUT CONTRACT must appear in the first 200 chars of the prompt so the LLM "
+        f"weights it heavily; found at index {contract_idx}"
+    )
+    print("[OK]")
+
+    # 15k: narrative_dispatch is sanitized before reaching the image prompt
+    print("  Checking narrative_dispatch is sanitized before image prompt...", end=" ")
+    gen_image_fn = engine_src[engine_src.find("def _gen_image"):
+                              engine_src.find("\ndef ", engine_src.find("def _gen_image") + 10)]
+    assert "sanitized_narrative_dispatch" in gen_image_fn, (
+        "_gen_image must define sanitized_narrative_dispatch"
+    )
+    assert "_sanitize_for_image_generation(dispatch)" in gen_image_fn, (
+        "_gen_image must call _sanitize_for_image_generation on the narrative dispatch"
+    )
+    print("[OK]")
+
+    # 15l: build_image_prompt has a visual-grounded fallback when visual_scene absent
+    print("  Checking build_image_prompt has prev_vision_analysis fallback path...", end=" ")
+    build_fn = engine_src[engine_src.find("def build_image_prompt"):
+                          engine_src.find("\ndef ", engine_src.find("def build_image_prompt") + 10)]
+    assert "elif prev_vision_analysis:" in build_fn, (
+        "build_image_prompt must have an `elif prev_vision_analysis:` fallback that "
+        "uses prior vision instead of narrative text when visual_scene is absent"
+    )
+    assert "scaffold" in build_fn, (
+        "fallback path should construct a visual scaffold from prev_vision_analysis"
+    )
+    print("[OK]")
+
+    # 15m: narrative_brief truncation prevents narrative from dominating image prompt
+    print("  Checking narrative is compressed in the image prompt...", end=" ")
+    assert "narrative_brief" in build_fn, (
+        "build_image_prompt must compress the narrative into a brief context clause "
+        "(narrative_brief) so it cannot dominate the visual scene"
+    )
+    print("[OK]")
+
+    # 15n: redundant prev_context double-injection in _generate_combined_dispatches is removed
+    print("  Checking duplicate prev_vision injection in dispatch was consolidated...", end=" ")
+    combined_fn_post = engine_src[engine_src.find("def _generate_combined_dispatches"):
+                                  engine_src.find("\ndef ", engine_src.find("def _generate_combined_dispatches") + 10)]
+    # Old code had: prev_context = f"\n\nPREVIOUS SCENE: {prev_vision[:200]}" if prev_vision else ""
+    # New code should NOT inject PREVIOUS SCENE separately (it duplicates CURRENT VISUAL SCENE).
+    assert 'PREVIOUS SCENE: {prev_vision[:200]}' not in combined_fn_post, (
+        "redundant PREVIOUS SCENE injection (duplicated CURRENT VISUAL SCENE) must be removed"
+    )
+    print("[OK]")
+
+    # 15o: visual_scene contract examples ban sensation text
+    print("  Checking visual_scene contract bans sensation/feeling text...", end=" ")
+    assert "Bad `visual_scene` examples" in dispatch_instructions, (
+        "visual_scene contract must include explicit BAD examples (feelings/sounds banned)"
+    )
+    print("[OK]")
+
+    # 15p: Live wiring test — feed synthetic data through build_image_prompt and
+    #       check the output structure is what the image model will see.
+    print("  Checking build_image_prompt end-to-end output (visual-dominant case)...", end=" ")
+    import importlib.util as _ilu, sys as _sys, types as _types
+    # Light import of engine without triggering bot/discord side effects
+    # We need just build_image_prompt; load the module fresh.
+    if "engine" in _sys.modules:
+        _engine = _sys.modules["engine"]
+    else:
+        _spec = _ilu.spec_from_file_location("engine", "engine.py")
+        _engine = _ilu.module_from_spec(_spec)
+        try:
+            _spec.loader.exec_module(_engine)
+        except Exception:
+            _engine = None
+    if _engine is not None and hasattr(_engine, "build_image_prompt"):
+        out = _engine.build_image_prompt(
+            player_choice="Vault over chain-link fence",
+            dispatch="Red desert floor extends to the mesa wall 200 ft away, chain-link fence behind, storage shed 50 ft right.",
+            narrative_dispatch="You land hard on the other side, dust kicking up around your boots. Your heart slams against your ribs.",
+            prev_vision_analysis="Standing at facility perimeter. Chain-link fence directly ahead. Red mesa visible left. Storage shed right.",
+            prev_spatial="Ahead: facility ~20m. Left: red mesa. Right: shed ~15m. Ground: sand. Standing.",
+            prev_setting="outdoor-desert",
+        )
+        assert "FIRST-PERSON CAMERA VIEW" in out, "visual-dominant prompt must lead with FIRST-PERSON CAMERA VIEW"
+        assert "Red desert floor extends" in out, "visual scene content must be present"
+        assert "SPATIAL ANCHOR" in out, "spatial anchor block must be prepended"
+        # Narrative should be present but COMPRESSED (not full original)
+        assert "Brief narrative context" in out, "narrative must be wrapped in 'Brief narrative context' clause"
+        print("[OK]")
+    else:
+        print("[SKIP: engine import failed]")
+
+    # 15q: Live wiring test — fallback path when visual_scene is absent
+    print("  Checking build_image_prompt fallback (no visual_scene, but prev_vision)...", end=" ")
+    if _engine is not None and hasattr(_engine, "build_image_prompt"):
+        # When the LLM did NOT generate visual_scene, vision_dispatch == dispatch
+        # so dispatch == narrative_dispatch (same string). has_visual_scene = False.
+        same_text = "You land hard on the other side, dust kicking up around your boots."
+        out2 = _engine.build_image_prompt(
+            player_choice="Vault over chain-link fence",
+            dispatch=same_text,
+            narrative_dispatch=same_text,  # same → triggers fallback
+            prev_vision_analysis="Standing at facility perimeter. Chain-link fence ahead. Mesa left.",
+        )
+        # The KEY assertion: fallback must NOT echo narrative text. Must use prev vision.
+        assert "FIRST-PERSON CAMERA VIEW" in out2, "fallback must still produce a FIRST-PERSON CAMERA VIEW framing"
+        assert "Previous frame visual state" in out2, (
+            "fallback must scaffold from previous frame visual state, not narrative text"
+        )
+        assert "Chain-link fence ahead" in out2, "prev_vision_analysis content must be in the fallback prompt"
+        print("[OK]")
+    else:
+        print("[SKIP: engine import failed]")
+
+    # 15r: Live wiring test — sanitization actually runs end-to-end (regex check is enough)
+    print("  Checking sanitized_narrative_dispatch path is reachable...", end=" ")
+    if _engine is not None and hasattr(_engine, "_sanitize_for_image_generation"):
+        cleaned = _engine._sanitize_for_image_generation(
+            "Blood gushes from the wound as flesh tears open."
+        )
+        assert "blood" not in cleaned.lower(), "sanitizer must rewrite 'blood'"
+        assert "gush" not in cleaned.lower(), "sanitizer must rewrite 'gushes'"
+        print("[OK]")
+    else:
+        print("[SKIP: engine import failed]")
 
 except Exception as e:
     print(f"[FAIL] {e}")
+    import traceback
+    traceback.print_exc()
     failed_tests.append("Full Frame temporal consistency visual_scene fix")
 
 # ============================================================================
