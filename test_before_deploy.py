@@ -775,6 +775,62 @@ except Exception as e:
     failed_tests.append("Claude Opus provider + no-images bugfixes")
 
 # ============================================================================
+# TEST 14: Full Frame mode tape creation fix
+# ============================================================================
+print("\n[TEST 14] Full Frame mode tape creation fix...")
+try:
+    bot_src = Path("bot.py").read_text(encoding="utf-8")
+
+    # 14a: _run_experience_mode global declared
+    print("  Checking _run_experience_mode global declared...", end=" ")
+    assert "_run_experience_mode = None" in bot_src, "_run_experience_mode global not declared"
+    print("[OK]")
+
+    # 14b: PlayButton.callback sets _run_experience_mode
+    print("  Checking PlayButton.callback sets _run_experience_mode...", end=" ")
+    assert "_run_experience_mode = mode" in bot_src, "PlayButton must set _run_experience_mode = mode"
+    print("[OK]")
+
+    # 14c: _create_death_replay_tape routes by experience mode, not just flipbook list
+    print("  Checking _create_death_replay_tape checks experience mode...", end=" ")
+    assert "is_flipbook_run = _run_experience_mode == engine.EXPERIENCE_MODE_FLIPBOOK" in bot_src, \
+        "_create_death_replay_tape must check is_flipbook_run via _run_experience_mode"
+    assert "is_flipbook_run and _run_flipbooks" in bot_src, \
+        "_create_death_replay_tape must gate flipbook path on is_flipbook_run"
+    print("[OK]")
+
+    # 14d: Logo GIF only added to _run_flipbooks in flipbook mode
+    print("  Checking logo GIF tracking is mode-gated...", end=" ")
+    assert "EXPERIENCE_MODE_FLIPBOOK" in bot_src, "bot.py must reference EXPERIENCE_MODE_FLIPBOOK"
+    # Verify logo section checks mode before appending to _run_flipbooks
+    logo_section_start = bot_src.find("Track logo GIF as Frame 0 of VHS flipbook")
+    assert logo_section_start != -1, "Logo GIF tracking comment not found"
+    logo_section = bot_src[logo_section_start:logo_section_start + 400]
+    assert "EXPERIENCE_MODE_FLIPBOOK" in logo_section, \
+        "Logo GIF must only be added to _run_flipbooks in EXPERIENCE_MODE_FLIPBOOK"
+    print("[OK]")
+
+    # 14e: _run_experience_mode cleared in all reset paths
+    print("  Checking _run_experience_mode cleared in all reset paths...", end=" ")
+    clear_count = bot_src.count("_run_experience_mode = None")
+    # Declaration (1) + death reset (1) + restart _do_reset (1) + !reset (1) + /restart (1) = 5 minimum
+    assert clear_count >= 5, \
+        f"_run_experience_mode = None should appear at least 5 times (found {clear_count})"
+    print(f"[OK] ({clear_count} occurrences)")
+
+    # 14f: _run_experience_mode global declared in all clear functions
+    print("  Checking _do_reset declares _run_experience_mode global...", end=" ")
+    do_reset_start = bot_src.find("def _do_reset(self):")
+    do_reset_section = bot_src[do_reset_start:do_reset_start + 300]
+    assert "_run_experience_mode" in do_reset_section, \
+        "_do_reset must declare _run_experience_mode in its global statement"
+    print("[OK]")
+
+except Exception as e:
+    print(f"[FAIL] {e}")
+    failed_tests.append("Full Frame tape creation fix")
+
+# ============================================================================
 # RESULTS
 # ============================================================================
 print("\n" + "=" * 70)
