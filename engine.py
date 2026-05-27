@@ -801,6 +801,8 @@ def _ask(prompt: str, model="gemini", temp=1.0, tokens=90, image_path: str = Non
         return _ask_gemini(prompt, model_name, temp, tokens, image_path, use_lore)
     elif provider == "openai":
         return _ask_openai(prompt, model_name, temp, tokens, image_path)
+    elif provider == "anthropic":
+        return _ask_claude(prompt, model_name, temp, tokens, image_path)
     else:
         print(f"[ASK ERROR] Unknown provider: {provider}, falling back to Gemini")
         return _ask_gemini(prompt, model_name, temp, tokens, image_path, use_lore)
@@ -972,6 +974,59 @@ def _ask_openai(prompt: str, model_name: str, temp: float, tokens: int, image_pa
         return result if result else "..."
     except Exception as e:
         log_error(f"[ASK OPENAI] {e}")
+        return "Signal interrupted..."
+
+def _ask_claude(prompt: str, model_name: str, temp: float, tokens: int, image_path: str = None) -> str:
+    """Anthropic Claude text generation implementation."""
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not anthropic_key:
+        print("[CLAUDE TEXT] ERROR: ANTHROPIC_API_KEY not set! Cannot generate text.")
+        return "Signal interrupted — Anthropic API key not configured."
+
+    try:
+        import anthropic as _anthropic
+        _claude_client = _anthropic.Anthropic(api_key=anthropic_key)
+
+        content: list = []
+
+        if image_path:
+            from pathlib import Path as _Path
+            import base64 as _base64
+            if image_path.startswith("/images/"):
+                actual_path = _Path("images") / image_path.replace("/images/", "")
+            else:
+                actual_path = _Path(image_path)
+            if actual_path.exists():
+                small_path = actual_path.parent / actual_path.name.replace(".png", "_small.png")
+                use_path = small_path if small_path.exists() else actual_path
+                with open(use_path, "rb") as f:
+                    image_data = _base64.b64encode(f.read()).decode("utf-8")
+                content.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "image/png",
+                        "data": image_data,
+                    },
+                })
+                print(f"[CLAUDE TEXT+IMG] Including image: {image_path}")
+
+        content.append({"type": "text", "text": prompt})
+
+        print(f"[CLAUDE TEXT] Calling {model_name} API...", flush=True)
+        response = _claude_client.messages.create(
+            model=model_name,
+            max_tokens=tokens,
+            temperature=temp,
+            messages=[{"role": "user", "content": content}],
+        )
+        result = response.content[0].text.strip()
+        print(f"[CLAUDE TEXT] Response received ({len(result)} chars)", flush=True)
+        return result if result else "..."
+    except Exception as e:
+        log_error(f"[ASK CLAUDE] {e}")
+        import traceback
+        traceback.print_exc()
         return "Signal interrupted..."
 
 # ───────── path resolution helper ───────────────────────────────────────────

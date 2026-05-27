@@ -163,8 +163,9 @@ def set_custom(text_provider: str = None, text_model: str = None,
 def get_status() -> str:
     """Get human-readable status of current AI configuration."""
     config = load_ai_config()
-    
-    text_emoji = "🤖" if config["text_provider"] == "openai" else "✨"
+
+    _text_emojis = {"openai": "🤖", "anthropic": "🟠"}
+    text_emoji = _text_emojis.get(config["text_provider"], "✨")
     image_emoji = "🎨" if config["image_provider"] == "openai" else "🖼️"
     
     status = (

@@ -17,6 +17,13 @@
       "image_provider": "openai",
       "image_model": "gpt-image-1"
     },
+    "anthropic": {
+      "text_provider": "anthropic",
+      "text_model": "claude-opus-4-5",
+      "image_provider": "gemini",
+      "image_model": "gemini-2.5-flash-image",
+      "description": "Claude Opus for narrative + Gemini for images. Premium storytelling quality."
+    },
     "veo": {
       "text_provider": "gemini",
       "text_model": "gemini-2.0-flash",

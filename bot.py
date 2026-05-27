@@ -2968,14 +2968,21 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             def __init__(self):
                 options = [
                     discord.SelectOption(
-                        label="Gemini",
+                        label="✨ Gemini",
                         value="gemini",
-                        default=True
+                        description="Google Gemini Flash — fast, default",
+                        default=True,
                     ),
                     discord.SelectOption(
-                        label="OpenAI",
-                        value="openai"
-                    )
+                        label="🟠 Claude Opus",
+                        value="anthropic",
+                        description="Anthropic Claude Opus — premium narrative quality",
+                    ),
+                    discord.SelectOption(
+                        label="🤖 OpenAI",
+                        value="openai",
+                        description="GPT-4o mini — OpenAI text + images",
+                    ),
                 ]
                 super().__init__(
                     placeholder="🎛️ Select AI Model",
@@ -2988,14 +2995,21 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 preset_name = self.values[0]
                 
                 # Validate API keys before switching
-
                 if preset_name == "openai" and not engine.OPENAI_API_KEY:
                     await interaction.response.send_message(
                         "ERROR: **OpenAI API key not configured!**\nCannot switch to OpenAI provider.",
                         ephemeral=True
                     )
                     return
-                
+
+                if preset_name == "anthropic" and not os.environ.get("ANTHROPIC_API_KEY"):
+                    await interaction.response.send_message(
+                        "ERROR: **Anthropic API key not configured!**\n"
+                        "Add `ANTHROPIC_API_KEY` to your environment variables to use Claude Opus.",
+                        ephemeral=True
+                    )
+                    return
+
                 # Switch to selected preset
                 success = ai_provider_manager.set_preset(preset_name)
                 
@@ -3108,70 +3122,88 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     except Exception as _del_e:
                         print(f"[LOG] Could not delete intro message: {_del_e}")
 
-                    _ni_loop = asyncio.get_running_loop()
-                    _ni_task = _ni_loop.run_in_executor(
-                        None, lambda: engine.generate_intro_turn(session_id)
-                    )
-                    _ni_vhs = await interaction.channel.send(embed=discord.Embed(
-                        description="`[00:00:00]` VHS PLAYER\n`LOADING...`",
-                        color=CORNER_GREY,
-                    ))
-                    _ni_vhs_seq = [
-                        (1.5, "`[00:00:03]` TRACKING HEADS\n`ENGAGING...`"),
-                        (1.5, "`[00:00:06]` MAGNETIC STRIP\n`READING...`"),
-                        (1.5, "`[00:00:09]` VIDEO SIGNAL\n`DETECTED`"),
-                        (1.5, "`[00:00:12]` AUDIO CHANNELS\n`SYNCHRONIZING...`"),
-                        (1.5, "`[00:00:15]` PLAYBACK\n`STARTING...`"),
-                    ]
-                    for _ni_delay, _ni_msg in _ni_vhs_seq:
-                        _ni_done, _ = await asyncio.wait([_ni_task], timeout=_ni_delay)
-                        if _ni_done:
-                            break
+                    try:  # ── TOP-LEVEL NO-IMAGES GUARD ─────────────────────────
+                        _ni_loop = asyncio.get_running_loop()
+                        _ni_task = _ni_loop.run_in_executor(
+                            None, lambda: engine.generate_intro_turn(session_id)
+                        )
+                        _ni_vhs = await interaction.channel.send(embed=discord.Embed(
+                            description="`[00:00:00]` VHS PLAYER\n`LOADING...`",
+                            color=CORNER_GREY,
+                        ))
+                        _ni_vhs_seq = [
+                            (1.5, "`[00:00:03]` TRACKING HEADS\n`ENGAGING...`"),
+                            (1.5, "`[00:00:06]` MAGNETIC STRIP\n`READING...`"),
+                            (1.5, "`[00:00:09]` VIDEO SIGNAL\n`DETECTED`"),
+                            (1.5, "`[00:00:12]` AUDIO CHANNELS\n`SYNCHRONIZING...`"),
+                            (1.5, "`[00:00:15]` PLAYBACK\n`STARTING...`"),
+                        ]
+                        for _ni_delay, _ni_msg in _ni_vhs_seq:
+                            _ni_done, _ = await asyncio.wait([_ni_task], timeout=_ni_delay)
+                            if _ni_done:
+                                break
+                            try:
+                                await _ni_vhs.edit(embed=discord.Embed(
+                                    description=_ni_msg, color=CORNER_GREY
+                                ))
+                            except Exception:
+                                break
+                        _ni_result = await _ni_task
                         try:
-                            await _ni_vhs.edit(embed=discord.Embed(
-                                description=_ni_msg, color=CORNER_GREY
+                            await _ni_vhs.delete()
+                        except Exception:
+                            pass
+
+                        _ni_dispatch = (_ni_result or {}).get("dispatch", "") or "The story begins..."
+                        _ni_vision = (_ni_result or {}).get("vision_dispatch", "") or "You survey the scene."
+                        await interaction.channel.send(embed=discord.Embed(
+                            title="Prologue",
+                            description=safe_embed_desc(_ni_dispatch),
+                            color=CORNER_TEAL,
+                        ))
+                        await interaction.channel.send(embed=discord.Embed(
+                            title="What You See",
+                            description=safe_embed_desc(_ni_vision),
+                            color=CORNER_TEAL,
+                        ))
+                        _ni_choices = (
+                            (_ni_result or {}).get("choices")
+                            or ["Look around carefully", "Move forward slowly", "Wait and observe"]
+                        )
+                        await interaction.channel.send("🟢 What will you do next?")
+                        _ni_choice_view = ChoiceView(_ni_choices, owner_id=OWNER_ID)
+                        await send_choices(
+                            interaction.channel, _ni_choices, _ni_choice_view, None
+                        )
+                        try:
+                            start_countdown_timer(
+                                interaction.channel,
+                                _ni_choices,
+                                _ni_choice_view,
+                                _ni_dispatch,
+                                (_ni_result or {}).get("situation_report", ""),
+                                (_ni_result or {}).get("consequence_image"),
+                            )
+                        except Exception as _ni_timer_err:
+                            print(
+                                f"[PLAY-NOIMAGES] Countdown timer failed: {_ni_timer_err}",
+                                flush=True,
+                            )
+                    except Exception as _ni_err:  # ── TOP-LEVEL NO-IMAGES GUARD ─
+                        import traceback
+                        print(f"[PLAY-NOIMAGES ERROR] Unhandled exception: {_ni_err}", flush=True)
+                        traceback.print_exc()
+                        try:
+                            await interaction.channel.send(embed=discord.Embed(
+                                title="⚠️ Start Error",
+                                description=(
+                                    "Something went wrong starting Text Only mode. "
+                                    "Please try again — the game may still be initialising."
+                                ),
+                                color=VHS_RED,
                             ))
                         except Exception:
-                            break
-                    _ni_result = await _ni_task
-                    try:
-                        await _ni_vhs.delete()
-                    except Exception:
-                        pass
-
-                    await interaction.channel.send(embed=discord.Embed(
-                        title="Prologue",
-                        description=(_ni_result or {}).get("dispatch", ""),
-                        color=CORNER_TEAL,
-                    ))
-                    await interaction.channel.send(embed=discord.Embed(
-                        title="What You See",
-                        description=(_ni_result or {}).get("vision_dispatch", ""),
-                        color=CORNER_TEAL,
-                    ))
-                    _ni_choices = (
-                        (_ni_result or {}).get("choices")
-                        or ["Look around carefully", "Move forward slowly", "Wait and observe"]
-                    )
-                    await interaction.channel.send("🟢 What will you do next?")
-                    _ni_choice_view = ChoiceView(_ni_choices, owner_id=OWNER_ID)
-                    await send_choices(
-                        interaction.channel, _ni_choices, _ni_choice_view, None
-                    )
-                    try:
-                        start_countdown_timer(
-                            interaction.channel,
-                            _ni_choices,
-                            _ni_choice_view,
-                            (_ni_result or {}).get("dispatch", ""),
-                            (_ni_result or {}).get("situation_report", ""),
-                            (_ni_result or {}).get("consequence_image"),
-                        )
-                    except Exception as _ni_timer_err:
-                        print(
-                            f"[PLAY-NOIMAGES] Countdown timer failed: {_ni_timer_err}",
-                            flush=True,
-                        )
+                            pass
                     return  # No-images path complete
 
                 # ── With-images path (flipbook or full_frame) ─────────────────
@@ -3982,6 +4014,15 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                             if isinstance(c, str) and c.strip() not in ("", "—", "–", "-")
                         ]
                         saved_dispatch = snap.get('world_prompt') or snap.get('situation') or ""
+                        # Restore experience mode globals so IMAGE_ENABLED, flipbook_mode
+                        # etc. survive a bot restart/redeploy.
+                        saved_exp_mode = snap.get('experience_mode')
+                        if saved_exp_mode:
+                            engine.apply_experience_mode(saved_exp_mode, session_id)
+                            print(
+                                f"[BOT RESUME] Restored experience mode: {saved_exp_mode}",
+                                flush=True,
+                            )
                     except Exception as e:
                         print(f"[BOT RESUME] Could not load session state: {e}", flush=True)
 
