@@ -1084,8 +1084,10 @@ def _vision_analyze_all(image_path: str) -> dict:
         vision_prompt = """Analyze this image and respond in this EXACT format:
 
 TIME: <time of day - use ONLY: dawn, morning, afternoon, golden hour, dusk, or night>
-COLOR: <dominant color palette>
-DESCRIPTION: <detailed description of what is visible, focusing on objects, threats, exits, and anything you could interact with. Be direct and literal. If there are hands, weapons, tools, figures, silhouettes, or creatures visible, mention them explicitly.>"""
+COLOR: <dominant color palette in 5-10 words>
+DESCRIPTION: <detailed description of what is visible, focusing on objects, threats, exits, and anything you could interact with. Be direct and literal. If there are hands, weapons, tools, figures, silhouettes, or creatures visible, mention them explicitly.>
+SPATIAL: <spatial compass — describe: (a) what is DIRECTLY AHEAD at what distance, (b) what is visible to the LEFT, (c) what is visible to the RIGHT, (d) what is underfoot/ground type, (e) camera height estimate (standing/crouching/elevated). Keep under 50 words. Example: "Ahead: chain-link fence ~20m with facility gate. Left: red mesa cliff face ~100m. Right: abandoned Horizon truck ~15m. Ground: sandy desert with scrub. Standing height.">
+SETTING: <ONE of: outdoor-desert, outdoor-cliff, outdoor-road, indoor-corridor, indoor-lab, indoor-warehouse, indoor-other, transitional>"""
         
         api_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent"
         
@@ -1151,10 +1153,12 @@ DESCRIPTION: <detailed description of what is visible, focusing on objects, thre
             return {"description": "", "time_of_day": "", "color_palette": ""}
         
         # Parse the structured response
-        time_of_day = ""
+        time_of_day  = ""
         color_palette = ""
-        description = ""
-        
+        description  = ""
+        spatial      = ""   # NEW: directional compass (ahead/left/right/ground/height)
+        setting      = ""   # NEW: environment type (outdoor-desert, indoor-corridor, etc.)
+
         lines = full_text.strip().split("\n")
         for i, line in enumerate(lines):
             if line.startswith("TIME:"):
@@ -1163,25 +1167,40 @@ DESCRIPTION: <detailed description of what is visible, focusing on objects, thre
                 color_palette = line.replace("COLOR:", "").strip()
             elif line.startswith("DESCRIPTION:"):
                 description = line.replace("DESCRIPTION:", "").strip()
-                # Capture any subsequent lines as part of description
-                if i + 1 < len(lines):
-                    description += " " + " ".join(lines[i+1:])
-                break
-        
-        # If parsing failed, try fallback
+                # Capture continuation lines that are NOT other field labels
+                j = i + 1
+                while j < len(lines) and not any(
+                    lines[j].startswith(k) for k in ("SPATIAL:", "SETTING:", "TIME:", "COLOR:")
+                ):
+                    description += " " + lines[j]
+                    j += 1
+            elif line.startswith("SPATIAL:"):
+                spatial = line.replace("SPATIAL:", "").strip()
+            elif line.startswith("SETTING:"):
+                setting = line.replace("SETTING:", "").strip()
+
+        # If parsing failed, fall back to raw text
         if not description:
             description = full_text
-        
+
         result_dict = {
-            "description": description.strip().replace("\n", " "),
-            "time_of_day": time_of_day.strip(),
-            "color_palette": color_palette.strip()
+            "description":   description.strip().replace("\n", " "),
+            "time_of_day":   time_of_day.strip(),
+            "color_palette": color_palette.strip(),
+            "spatial":       spatial.strip(),
+            "setting":       setting.strip(),
         }
-        
+
         # Cache the result
         _vision_cache[cache_key] = result_dict
-        
-        print(f"[VISION] Analysis complete: {len(description)} chars, time={time_of_day}, color={color_palette[:30]}")
+
+        print(
+            f"[VISION] Analysis complete: {len(description)} chars, "
+            f"time={time_of_day}, setting={setting}, "
+            f"spatial='{spatial[:60]}...'" if len(spatial) > 60 else
+            f"[VISION] Analysis complete: {len(description)} chars, "
+            f"time={time_of_day}, setting={setting}, spatial='{spatial}'"
+        )
         return result_dict
     
     except requests.exceptions.HTTPError as e:
@@ -1420,82 +1439,112 @@ def _detect_movement_type(player_choice: str) -> str:
         print(f"[MOVEMENT DETECTION] Error: {safe_e}, defaulting to exploration")
         return 'exploration'  # Default to some movement to keep things interesting
 
-def build_image_prompt(player_choice: str = "", dispatch: str = "", prev_vision_analysis: str = "", hard_transition: bool = False, is_timeout_penalty: bool = False) -> str:
+def build_image_prompt(
+    player_choice: str = "",
+    dispatch: str = "",
+    prev_vision_analysis: str = "",
+    hard_transition: bool = False,
+    is_timeout_penalty: bool = False,
+    prev_spatial: str = "",
+    prev_setting: str = "",
+) -> str:
     """
-    Build image prompt with continuity from previous vision analysis.
-    Explicitly includes player choice so the image reflects the action taken.
+    Build an image generation prompt with spatial-anchor continuity.
+
+    ``prev_spatial`` — the directional compass extracted from the previous
+    turn's vision analysis (ahead/left/right/ground/height).  When present it
+    is injected as a hard spatial constraint so the model cannot silently move
+    the camera to a different environment.
+
+    ``prev_setting`` — indoor/outdoor environment type from previous vision
+    analysis; used to enforce environment type consistency.
     """
-    # TIMEOUT PENALTIES: EXACT same camera position, ZERO movement
+    # ── TIMEOUT PENALTIES: identical camera, only environment reacts ──────────
     if is_timeout_penalty:
-        return (
+        base = (
             f"Result: {dispatch}\n\n"
-            f"CRITICAL: TIMEOUT PENALTY.\n"
+            f"CRITICAL: TIMEOUT PENALTY — ZERO camera movement.\n"
             f"Show the EXACT SAME ANGLE and LOCATION as before.\n"
-            f"ONLY environmental changes (dust, debris, reactions, creatures, gore ,attacks, violence, trouble, danger, etc.) - NO camera movement.\n"
-            f"If outdoor, stay outdoor. If indoor, stay indoor. NO teleportation."
+            f"ONLY environmental reactions (dust, debris, creature, attack, danger).\n"
+            f"If outdoor, STAY outdoors. If indoor, STAY indoors. NO teleportation."
         )
-    
-    # SPECIAL CASE: Intro frame - simple establishing shot
+        if prev_spatial:
+            base += f"\n\n🗺️ LOCKED POSITION: {prev_spatial}"
+        return base
+
+    # ── INTRO FRAME: pure establishing shot ───────────────────────────────────
     if player_choice.lower().strip() == "intro":
         prompt = f"Opening scene: {dispatch}"
         print(f"\n{'='*60}")
         print(f"[INTRO MODE] Creating establishing shot")
         print(f"{'='*60}\n", flush=True)
         return prompt
-    
-    # Intelligently detect movement type
+
+    # ── Detect movement type ──────────────────────────────────────────────────
     global _last_movement_type
     movement_type = _detect_movement_type(player_choice)
-    _last_movement_type = movement_type  # Store for Discord display
-    
-    # Visual indicators for each type
-    type_emoji = {
+    _last_movement_type = movement_type
+
+    type_label = {
         'forward_movement': 'FORWARD MOVEMENT',
-        'exploration': 'EXPLORATION',
-        'stationary': 'STATIONARY'
+        'exploration':      'EXPLORATION',
+        'stationary':       'STATIONARY',
     }
     print(f"\n{'='*60}")
     safe_choice = player_choice.encode('ascii', 'replace').decode('ascii')
     print(f"[MOVEMENT DETECTION] '{safe_choice}'")
-    print(f"  -> {type_emoji.get(movement_type, movement_type.upper())}")
+    print(f"  -> {type_label.get(movement_type, movement_type.upper())}")
     print(f"{'='*60}\n", flush=True)
-    
-    # Start with the player's choice and what happened
+
+    # ── Base prompt ───────────────────────────────────────────────────────────
     prompt = f"Action taken: {player_choice}. Result: {dispatch}"
-    
-    # Add previous vision analysis for visual continuity
+
+    # ── Spatial anchor (highest priority constraint) ──────────────────────────
+    # Injected BEFORE movement-type guidance so the model reads it first.
+    if prev_spatial and not hard_transition:
+        setting_note = (
+            f"  Environment type: {prev_setting}." if prev_setting else ""
+        )
+        prompt = (
+            f"🗺️ SPATIAL ANCHOR — YOU ARE EXACTLY HERE:\n"
+            f"{prev_spatial}{setting_note}\n"
+            f"The camera CANNOT leave this spatial position unless the action"
+            f" explicitly moves through a door, entrance, or large gap.\n"
+            f"Visible landmarks from this position MUST remain consistent.\n\n"
+        ) + prompt
+
+    # ── Movement-type guidance ────────────────────────────────────────────────
     if prev_vision_analysis:
         if hard_transition:
-            # Location change - maintain lighting/aesthetic continuity
-            prompt = f"{prompt} Maintain similar lighting, time of day, and overall visual aesthetic as before."
+            prompt = (
+                f"{prompt}\n\nLOCATION CHANGE: Maintain same lighting, time of day, "
+                f"and VHS aesthetic as before, but show the new environment."
+            )
         elif movement_type == 'forward_movement':
-            # FORWARD MOVEMENT - Show natural spatial progression
             prompt = (
                 f"{prompt}\n\n"
-                f"FORWARD MOVEMENT: The camera has moved forward naturally.\n"
-                f"The player chose: '{player_choice}'\n\n"
-                f"Show spatial progression:\n"
-                f"- Objects ahead are now closer and larger in frame\n"
-                f"- Camera has advanced naturally (5-15 feet forward)\n"
-                f"- Smooth perspective shift showing forward progress\n"
-                f"- Ground/foreground elements reflect new position\n\n"
-                f"Previous scene for reference: {prev_vision_analysis[:150]}\n"
-                f"Maintain visual continuity while showing forward movement."
+                f"FORWARD MOVEMENT: Camera advances naturally.\n"
+                f"- Objects ahead are closer and larger in frame\n"
+                f"- Camera moved 5–15 ft forward (walking), 15–30 ft (sprint)\n"
+                f"- Smooth perspective shift; horizon line stays stable\n"
+                f"- Ground/foreground elements reflect new position\n"
+                f"Scene context: {prev_vision_analysis[:150]}"
             )
         elif movement_type == 'exploration':
-            # EXPLORATION - Subtle camera shift/pan to keep things dynamic
             prompt = (
                 f"{prompt}\n\n"
-                f"SUBTLE CAMERA SHIFT: The camera adjusts slightly (pan, tilt, or drift).\n"
-                f"- Maintain roughly the same position but show a SLIGHTLY different angle\n"
-                f"- Small perspective shift to keep the scene dynamic and interesting\n"
+                f"SUBTLE CAMERA SHIFT: Small pan, tilt, or drift — not a new location.\n"
+                f"- Roughly same position, slightly different angle\n"
                 f"- Environmental elements shift naturally with camera movement\n"
-                f"Previous scene for reference: {prev_vision_analysis[:150]}"
+                f"Scene context: {prev_vision_analysis[:150]}"
             )
         else:
-            # STATIONARY - Maintain exact position but allow environmental changes
-            prompt = f"{prompt} Same camera position. Only environmental/lighting changes: {prev_vision_analysis[:200]}"
-    
+            # STATIONARY
+            prompt = (
+                f"{prompt} Same camera position. "
+                f"Only environmental/lighting changes: {prev_vision_analysis[:200]}"
+            )
+
     return prompt
 
 def _build_vhs_prompt(base_prompt: str, use_img2img: bool = False) -> str:
@@ -1573,7 +1622,9 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
         prev_time_of_day, prev_color = "", ""
         prev_img_paths = []
         prev_img_captions = []
-        prev_vision_analysis = ""  # NEW: Vision AI's analysis of what's actually in the last frame
+        prev_vision_analysis = ""  # Vision AI description of last frame
+        prev_spatial         = ""  # Spatial compass: ahead/left/right/ground/height
+        prev_setting         = ""  # Environment type: outdoor-desert, indoor-corridor, etc.
         prev_img_path = None
         prev_img_paths_list = []  # List of recent image paths for multi-img2img
         
@@ -1601,7 +1652,9 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                     last_imgs.append((
                         entry["image"],
                         entry["vision_dispatch"],
-                        entry.get("vision_analysis", "")  # Pull vision analysis
+                        entry.get("vision_analysis", ""),  # visual description
+                        entry.get("spatial_compass", ""),  # ahead/left/right compass
+                        entry.get("setting_type", ""),     # indoor/outdoor type
                     ))
                     print(f"[IMG2IMG COLLECT]   -> Added to reference list (total: {len(last_imgs)})")
                     
@@ -1623,15 +1676,17 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
             
             if len(last_imgs) >= 1:
                 print(f"[IMG2IMG COLLECT] Processing {len(last_imgs)} references for img2img...")
-                # Get most recent image for time/color extraction
-                img, cap, vis_analysis = last_imgs[0]
+                # Get most recent entry — unpack all 5 fields
+                img, cap, vis_analysis, spatial_compass, setting_type = last_imgs[0]
                 prev_vision_analysis = vis_analysis
+                prev_spatial         = spatial_compass
+                prev_setting         = setting_type
                 prev_img_path = str(_resolve_image_path(img))
                 if not os.path.exists(prev_img_path):
                     prev_img_path = None
                 
                 # Collect all recent image paths for multi-reference img2img
-                for idx, (img, cap, _) in enumerate(last_imgs):
+                for idx, (img, cap, *_rest) in enumerate(last_imgs):
                     img_path = str(_resolve_image_path(img))
                     if not os.path.exists(img_path):
                         continue  # Skip missing images
@@ -1691,7 +1746,9 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
             dispatch=caption,
             prev_vision_analysis=prev_vision_analysis,
             hard_transition=hard_transition,
-            is_timeout_penalty=is_timeout_penalty
+            is_timeout_penalty=is_timeout_penalty,
+            prev_spatial=prev_spatial,
+            prev_setting=prev_setting,
         )
         
         # Inject world flavor and location for image model only
@@ -1853,110 +1910,90 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                             with open(state_path, 'r', encoding='utf-8') as f:
                                 st_temp = json.load(f)
                             
-                            prev_grid = st_temp.get('flipbook_last_grid') # Context for the entire previous 16 frames
-                            prev_last = st_temp.get('flipbook_last_frame') # Direct visual anchor for frame 16
+                            prev_grid  = st_temp.get('flipbook_last_grid')   # Full 4x4 grid from previous turn (style ref)
+                            prev_last  = st_temp.get('flipbook_last_frame')  # Panel 16 — spatial ground truth (WHERE camera is NOW)
+                            prev_first = st_temp.get('flipbook_first_frame') # Panel 01 — shows the broader environment at turn start
                             
-                            # Add MASSIVELY HARDENED flipbook prefix
-                            # This must be so strong the AI cannot ignore it
+                            # FLIPBOOK PREFIX: Spatial-anchor-first philosophy
+                            # Panel 16 is the first reference image — Frame 1 of the new grid
+                            # must be the immediate continuation of it.
                             flipbook_prefix = (
-                                "🚨🚨🚨 ABSOLUTE COMMAND - READ THIS FIRST 🚨🚨🚨\n\n"
-                                "⚠️⚠️⚠️ CRITICAL: COPY THE FIRST REFERENCE IMAGE'S STRUCTURE ⚠️⚠️⚠️\n\n"
-                                "The FIRST reference image attached is a NUMBERED TEMPLATE showing:\n"
-                                "• Size: 1200x896 pixels (4:3 aspect ratio)\n"
-                                "• Layout: 4x4 grid with black lines separating panels\n"
-                                "• Labels: 'FRAME 1' through 'FRAME 16' in each panel\n"
-                                "• Timestamps: 0.00s, 0.25s, 0.50s... up to 3.75s\n\n"
-                                "YOUR OUTPUT MUST EXACTLY MATCH THIS TEMPLATE'S STRUCTURE:\n"
-                                "✓ Same resolution: 1200x896\n"
-                                "✓ Same grid: 4 rows × 4 columns = 16 panels\n"
-                                "✓ Same panel size: 300x224 each\n"
-                                "✓ Same positions: Row 1: Frames 1-4, Row 2: Frames 5-8, etc.\n\n"
-                                "🚫🚫🚫 ABSOLUTELY DO NOT COPY THE TEXT FROM THE TEMPLATE 🚫🚫🚫\n"
-                                "❌ DO NOT include 'FRAME 1', 'FRAME 2', etc. in your output\n"
-                                "❌ DO NOT include '0.00s', '0.25s', '0.50s', etc. in your output\n"
-                                "❌ DO NOT include ANY text, numbers, or labels from the template\n"
-                                "✅ ONLY copy the GRID STRUCTURE (4x4 layout, black lines)\n"
-                                "✅ Fill each panel with CLEAN photorealistic imagery (NO TEXT)\n\n"
-                                "The template shows you WHERE to place each frame in the grid.\n"
-                                "Fill each labeled position with your generated content.\n"
-                                "DO NOT generate one continuous image - generate 16 SEPARATE panels.\n\n"
-                                "=" * 70 + "\n"
-                                "🎥 CAMERA TYPE: VHS CAMCORDER / BODY CAM 🎥\n"
-                                "=" * 70 + "\n\n"
-                                "This is 1993 VHS CAMCORDER footage or BODY CAM footage.\n"
-                                "The camera is STRAPPED TO THE PLAYER'S CHEST/HEAD.\n"
-                                "Think: Police body cam, GoPro, handheld camcorder held at chest level.\n\n"
-                                "📐 FIELD OF VIEW: WIDE ANGLE (28mm-35mm equivalent)\n"
-                                "CRITICAL: Use a WIDE field of view, NOT telephoto/zoomed in.\n"
-                                "• 1993 camcorders had WIDE ANGLE lenses (not zoom)\n"
-                                "• Body cams have WIDE ANGLE lenses (120+ degree FOV)\n"
-                                "• Show MORE of the environment, not less\n"
-                                "• If looking at building, show ENTIRE building + surroundings\n"
-                                "• If in desert, show WIDE landscape, not close-up details\n"
-                                "• MORE sky, MORE ground, MORE peripheral vision\n"
-                                "• Avoid narrow/telephoto/zoomed-in compositions\n\n"
-                                "🚫 ABSOLUTELY FORBIDDEN - ANY OF THESE WILL CAUSE REJECTION:\n"
-                                "❌ 'a person running' - WRONG (3rd person)\n"
-                                "❌ 'a man walking' - WRONG (3rd person)\n"
-                                "❌ 'someone walking away' - WRONG (3rd person)\n"
-                                "❌ 'a figure approaching' - WRONG (3rd person)\n"
-                                "❌ Showing back, legs, body, torso from behind - WRONG\n"
-                                "❌ Profile/side views of player - WRONG\n"
-                                "❌ Camera following a character - WRONG\n"
-                                "❌ Showing player as separate entity - WRONG\n\n"
-                                "IF YOU GENERATE ANY 3RD PERSON SHOTS, THE ENTIRE OUTPUT IS INVALID.\n"
-                                "You CANNOT show the player from outside their body. PERIOD.\n\n"
-                                "✅ CORRECT FIRST-PERSON EXAMPLES:\n"
-                                "• Running: Show GROUND rushing beneath, horizon bouncing, YOUR feet briefly visible at bottom\n"
-                                "• Scrambling: Show HANDS reaching forward, dirt/gravel close-up, ground rushing by\n"
-                                "• Looking around: Show ENVIRONMENT panning left/right as head turns\n"
-                                "• Approaching building: Show BUILDING getting larger, closer, filling frame\n"
-                                "• Examining object: Show OBJECT filling frame as YOU lean in close\n\n"
-                                "CRITICAL: When showing action, show what YOUR EYES SEE while performing that action.\n"
-                                "NOT what an outside observer would see of you performing it.\n\n"
-                                "If the prompt says 'you are running' -> Show ground/horizon from running POV\n"
-                                "If the prompt says 'you scramble' -> Show hands/ground from scrambling POV\n"
-                                "If the prompt says 'you approach' -> Show target getting closer from walking POV\n\n"
-                                "=" * 70 + "\n\n"
+                                "🚨🚨🚨 ABSOLUTE COMMAND — READ THIS BEFORE ANYTHING ELSE 🚨🚨🚨\n\n"
+                                "═══════════════════════════════════════════════════════════════\n"
+                                "⚡ SPATIAL CONTINUITY — YOUR CAMERA POSITION IS LOCKED ⚡\n"
+                                "═══════════════════════════════════════════════════════════════\n\n"
+                                "THE FIRST REFERENCE IMAGE IS PANEL 16 OF THE PREVIOUS SEQUENCE.\n"
+                                "It shows EXACTLY where the camera is pointing RIGHT NOW.\n"
+                                "YOUR FRAME 1 MUST BE THE VERY NEXT MOMENT AFTER THAT IMAGE.\n\n"
+                                "FRAME 1 REQUIREMENTS (non-negotiable):\n"
+                                "✓ Camera at IDENTICAL height as the first reference image\n"
+                                "✓ Camera pointing in the SAME DIRECTION as the first reference image\n"
+                                "✓ Same visible landmarks, terrain, and sky/ground ratio\n"
+                                "✓ Scene is clearly 0.25 seconds AFTER the reference — seamless cut\n\n"
+                                "A viewer watching the reference then Frame 1 must see UNCUT FOOTAGE.\n\n"
+                                "═══════════════════════════════════════════════════════════════\n"
+                                "📐 GRID OUTPUT FORMAT\n"
+                                "═══════════════════════════════════════════════════════════════\n\n"
+                                "Output: 4×4 grid, 16 panels, 1200×896 pixels total\n"
+                                "• Each panel: 300×224 pixels\n"
+                                "• Grid reads: LEFT→RIGHT, TOP→BOTTOM (panels 1…16)\n"
+                                "• NO text, numbers, labels, or timecodes in any panel\n"
+                                "• NO borders visible within panels (grid dividers only between panels)\n\n"
+                                "═══════════════════════════════════════════════════════════════\n"
+                                "🎥 CAMERA: 1993 VHS CAMCORDER / BODY CAM — WIDE ANGLE\n"
+                                "═══════════════════════════════════════════════════════════════\n\n"
+                                "• First-person POV, camera strapped to player's chest/head\n"
+                                "• 28-35mm equivalent field of view (WIDE — show MORE environment)\n"
+                                "• Hands may appear at frame bottom when reaching/interacting\n\n"
+                                "FORBIDDEN (third-person shots will invalidate the entire grid):\n"
+                                "❌ Showing player from behind, side, or above\n"
+                                "❌ 'Camera following a character' shots\n"
+                                "❌ Any frame showing the player's body as a separate entity\n\n"
+                                "═══════════════════════════════════════════════════════════════\n\n"
                             )
                             flipbook_prefix += PROMPTS.get("gemini_flipbook_4panel_prefix", "")
                             
-                            # --- REFERENCE STRATEGY: TEMPLATE FIRST, THEN STYLE REFERENCES ---
-                            # CRITICAL ORDER: The FIRST reference is the PRIMARY structure to copy
-                            # 1. Numbered template (1200x896) - EXACT layout to match
-                            # 2. Previous grid - visual style reference
-                            # 3. Individual frames - continuity reference
+                            # --- REFERENCE STRATEGY: SPATIAL ANCHOR FIRST ---
+                            # ORDER MATTERS: Gemini weights the FIRST reference most heavily.
+                            # 1. PANEL 16 (last frame) — PRIMARY spatial anchor; Frame 1 must continue from here
+                            # 2. PANEL 01 (first frame) — shows what the environment looked like at turn start
+                            # 3. FULL grid — style/quality reference only (lower priority)
+                            # Grid templates (if they exist) are appended last — layout aid only.
                             flipbook_refs = []
-                            
-                            # 1. NUMBERED grid template - THIS IS THE PRIMARY STRUCTURE REFERENCE
-                            # Must be FIRST so the AI copies its layout (1200x896, 4x4 grid)
-                            # This template has frame numbers (FRAME 1-16) and time markers
-                            numbered_template_path = str(ROOT / "prompts" / "flipbook_numbered_template.png")
-                            if os.path.exists(numbered_template_path):
-                                flipbook_refs.append(numbered_template_path)
-                                print(f"[FLIPBOOK LAYOUT] Passing NUMBERED template as PRIMARY reference (1200x896)", flush=True)
-                            else:
-                                # Fallback to blank template if numbered doesn't exist
-                                blank_template_path = str(ROOT / "prompts" / "flipbook_blank_grid_template.png")
-                                if os.path.exists(blank_template_path):
-                                    flipbook_refs.append(blank_template_path)
-                                    print(f"[FLIPBOOK LAYOUT] Passing blank grid template (fallback)", flush=True)
-                                else:
-                                    print(f"[FLIPBOOK WARNING] No grid template found", flush=True)
-                            
-                            # 2. FULL previous flipbook grid (4x4 grid PNG) - reinforces grid structure
-                            if prev_grid and os.path.exists(prev_grid):
-                                flipbook_refs.append(prev_grid)
-                                print(f"[FLIPBOOK CONTINUITY] Passing full previous 4x4 grid: {os.path.basename(prev_grid)}", flush=True)
-                            
-                            # 3. LAST FRAME ONLY from previous flipbook - temporal continuity
-                            # IMPORTANT: Only pass last frame, not first frame (first frame confuses the AI)
+
+                            # 1. LAST FRAME (panel_16) — THE PRIMARY SPATIAL ANCHOR
+                            # This is where the camera IS right now. Frame 1 of the new sequence
+                            # must be the very next moment after this image.
                             if prev_last and os.path.exists(prev_last):
                                 flipbook_refs.append(prev_last)
-                                print(f"[FLIPBOOK CONTINUITY] Passing ONLY last frame for temporal continuity: {os.path.basename(prev_last)}", flush=True)
-                            
-                            if not prev_grid and not prev_last:
-                                print(f"[FLIPBOOK GEN] No previous frames available (first turn after intro)", flush=True)
+                                print(f"[FLIPBOOK ANCHOR] Panel 16 (spatial ground truth) FIRST: {os.path.basename(prev_last)}", flush=True)
+                            else:
+                                print(f"[FLIPBOOK GEN] No panel_16 available (first turn after intro)", flush=True)
+
+                            # 2. FIRST FRAME (panel_01) — environment reference for world coherence
+                            # Shows the broader environment before the previous action began.
+                            if prev_first and os.path.exists(prev_first):
+                                flipbook_refs.append(prev_first)
+                                print(f"[FLIPBOOK ANCHOR] Panel 01 (environment reference) SECOND: {os.path.basename(prev_first)}", flush=True)
+
+                            # 3. FULL previous flipbook grid — style/quality reference (lowest priority)
+                            # Only included if we have fewer than 2 spatial refs to pad context.
+                            if prev_grid and os.path.exists(prev_grid) and len(flipbook_refs) < 2:
+                                flipbook_refs.append(prev_grid)
+                                print(f"[FLIPBOOK STYLE] Full grid as style reference: {os.path.basename(prev_grid)}", flush=True)
+
+                            # 4. Grid template (layout hint — lowest weight, append last)
+                            numbered_template_path = str(ROOT / "prompts" / "flipbook_numbered_template.png")
+                            blank_template_path    = str(ROOT / "prompts" / "flipbook_blank_grid_template.png")
+                            if os.path.exists(numbered_template_path):
+                                flipbook_refs.append(numbered_template_path)
+                                print(f"[FLIPBOOK LAYOUT] Numbered template appended (layout hint)", flush=True)
+                            elif os.path.exists(blank_template_path):
+                                flipbook_refs.append(blank_template_path)
+                                print(f"[FLIPBOOK LAYOUT] Blank grid template appended (layout hint)", flush=True)
+
+                            if not flipbook_refs:
+                                print(f"[FLIPBOOK GEN] No reference images available (first turn)", flush=True)
                             
                             print(f"[FLIPBOOK GEN] Using {len(flipbook_refs)} total references (template + grid + last frame)", flush=True)
 
@@ -4461,28 +4498,36 @@ def _advance_turn_choices_deferred_impl(consequence_img_url: str, dispatch: str,
             analysis_img_url = flipbook_last  # Primary analysis uses last frame
 
     # --- VISION ANALYSIS (Moved to top for grounding) ---
-    vision_analysis_text = ""
+    vision_analysis_text  = ""
+    _spatial_compass_turn = ""   # directional compass: ahead/left/right/ground/height
+    _setting_type_turn    = ""   # environment type: outdoor-desert, indoor-corridor, etc.
+
     if analysis_img_url and VISION_ENABLED:
         # Analyze BOTH frames if flipbook mode
         if flipbook_first and flipbook_last and os.path.exists(flipbook_first) and os.path.exists(flipbook_last):
             print(f"[VISION] Analyzing FIRST frame: {os.path.basename(flipbook_first)}")
             try:
                 first_result = _vision_analyze_all(flipbook_first)
-                first_desc = first_result.get("description", "")
+                first_desc   = first_result.get("description", "")
                 print(f"[VISION] First frame: {first_desc[:80]}...")
             except Exception as e:
                 print(f"[VISION] First frame analysis failed: {e}")
                 first_desc = ""
-            
+
             print(f"[VISION] Analyzing LAST frame: {os.path.basename(flipbook_last)}")
             try:
                 last_result = _vision_analyze_all(flipbook_last)
-                last_desc = last_result.get("description", "")
+                last_desc   = last_result.get("description", "")
+                # Spatial compass comes from the LAST frame (most current position)
+                _spatial_compass_turn = last_result.get("spatial", "")
+                _setting_type_turn    = last_result.get("setting", "")
                 print(f"[VISION] Last frame: {last_desc[:80]}...")
+                if _spatial_compass_turn:
+                    print(f"[VISION] Spatial compass (last frame): {_spatial_compass_turn[:80]}...")
             except Exception as e:
                 print(f"[VISION] Last frame analysis failed: {e}")
                 last_desc = ""
-            
+
             # Combine both descriptions
             if first_desc and last_desc:
                 vision_analysis_text = f"ANIMATION CONTEXT:\nStarting position: {first_desc}\nEnding position: {last_desc}"
@@ -4490,21 +4535,23 @@ def _advance_turn_choices_deferred_impl(consequence_img_url: str, dispatch: str,
                 vision_analysis_text = last_desc
             elif first_desc:
                 vision_analysis_text = first_desc
-                
+
             print(f"[VISION] Combined flipbook analysis complete")
         else:
             # Single frame analysis (static image or only last frame available)
             print(f"[VISION] Analyzing image for spatial context (source: {'flipbook' if analysis_img_url != consequence_img_url else 'static'})...")
             try:
-                vision_result = _vision_analyze_all(analysis_img_url)
-                vision_analysis_text = vision_result.get("description", "")
+                vision_result         = _vision_analyze_all(analysis_img_url)
+                vision_analysis_text  = vision_result.get("description", "")
+                _spatial_compass_turn = vision_result.get("spatial", "")
+                _setting_type_turn    = vision_result.get("setting", "")
                 if vision_analysis_text:
                     print(f"[VISION] Analysis complete: {vision_analysis_text[:100]}...")
-                else:
-                    print(f"[VISION] No description returned")
+                if _spatial_compass_turn:
+                    print(f"[VISION] Spatial compass: {_spatial_compass_turn[:80]}...")
             except Exception as e:
                 print(f"[VISION] Analysis failed: {e}")
-                vision_analysis_text = ""
+                vision_analysis_text  = ""
 
     # Generate situation summary with BOTH narrative and visual context
     situation_summary = _generate_situation_report(
@@ -4547,17 +4594,19 @@ def _advance_turn_choices_deferred_impl(consequence_img_url: str, dispatch: str,
             print(f"[HISTORY] Using flipbook_last_frame as reference for next turn: {os.path.basename(history_image)}")
     
     history_entry = {
-        "choice": choice,
-        "is_custom_action": is_custom_action,  # Flag for permanence
-        "dispatch": dispatch,
-        "vision_dispatch": vision_dispatch,
-        "vision_analysis": vision_analysis_text,
-        "world_prompt": state.get("world_prompt", ""),
-        "image": history_image, # Store reference image for next turn's img2img
-        "image_url": history_image,
-        "analysis_image": analysis_img_url, # Track which image was actually analyzed
-        "image_prompt": consequence_img_prompt,
-        "hard_transition": hard_transition  # Track location changes
+        "choice":            choice,
+        "is_custom_action":  is_custom_action,
+        "dispatch":          dispatch,
+        "vision_dispatch":   vision_dispatch,
+        "vision_analysis":   vision_analysis_text,
+        "spatial_compass":   _spatial_compass_turn,  # directional compass for next-turn anchor
+        "setting_type":      _setting_type_turn,     # environment type for next-turn anchor
+        "world_prompt":      state.get("world_prompt", ""),
+        "image":             history_image,
+        "image_url":         history_image,
+        "analysis_image":    analysis_img_url,
+        "image_prompt":      consequence_img_prompt,
+        "hard_transition":   hard_transition,
     }
     history.append(history_entry)
     _save_history(history, session_id)

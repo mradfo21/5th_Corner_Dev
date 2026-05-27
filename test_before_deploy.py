@@ -626,6 +626,90 @@ except Exception as e:
     failed_tests.append("Experience mode system checks")
 
 # ============================================================================
+# TEST 12: Temporal Consistency Architecture
+# ============================================================================
+print("\n[TEST 12] Temporal Consistency Architecture...")
+
+try:
+    with open("engine.py", "r", encoding="utf-8") as f:
+        engine_tc = f.read()
+    with open("gemini_image_utils.py", "r", encoding="utf-8") as f:
+        utils_tc = f.read()
+    import json as _json
+    with open("prompts/simulation_prompts.json", "r", encoding="utf-8") as f:
+        prompts_tc = _json.load(f)
+
+    # 12a: Vision analysis must extract spatial compass
+    print("  Checking spatial compass in _vision_analyze_all...", end=" ")
+    if "SPATIAL:" in engine_tc and "spatial_compass" in engine_tc:
+        print("[OK]")
+    else:
+        print("[FAIL]")
+        failed_tests.append("_vision_analyze_all missing SPATIAL field")
+
+    # 12b: spatial_compass must be stored in history entries
+    print("  Checking spatial_compass stored in history entries...", end=" ")
+    if '"spatial_compass"' in engine_tc and "_spatial_compass_turn" in engine_tc:
+        print("[OK]")
+    else:
+        print("[FAIL]")
+        failed_tests.append("spatial_compass not persisted in history entries")
+
+    # 13c: build_image_prompt must accept prev_spatial
+    print("  Checking build_image_prompt accepts prev_spatial...", end=" ")
+    if "prev_spatial" in engine_tc and "SPATIAL ANCHOR" in engine_tc:
+        print("[OK]")
+    else:
+        print("[FAIL]")
+        failed_tests.append("build_image_prompt missing prev_spatial / SPATIAL ANCHOR injection")
+
+    # 12d: Flipbook reference order — panel 16 must be first
+    print("  Checking flipbook references: panel_16 first...", end=" ")
+    if "Panel 16 (spatial ground truth) FIRST" in engine_tc:
+        print("[OK]")
+    else:
+        print("[FAIL]")
+        failed_tests.append("Flipbook reference order wrong — panel_16 must come first")
+
+    # 12e: is_flipbook=True continuity must use panel 16 as spatial anchor
+    print("  Checking is_flipbook continuity = spatial anchor...", end=" ")
+    if "PANEL 16" in utils_tc.upper() and "SPATIAL" in utils_tc.upper():
+        print("[OK]")
+    else:
+        print("[FAIL]")
+        failed_tests.append("is_flipbook=True continuity instruction missing panel-16 spatial anchor language")
+
+    # 12f: flipbook prefix must require Frame 1 to continue from reference
+    print("  Checking flipbook prefix: Frame 1 continuation rule...", end=" ")
+    flipbook_prefix = prompts_tc.get("gemini_flipbook_4panel_prefix", "")
+    if "FRAME 1" in flipbook_prefix and ("CONTINUATION" in flipbook_prefix or "reference image" in flipbook_prefix.lower()):
+        print("[OK]")
+    else:
+        print("[FAIL]")
+        failed_tests.append("gemini_flipbook_4panel_prefix missing Frame 1 continuation rule")
+
+    # 12g: flipbook prefix must allow actions to complete by frame 16
+    print("  Checking flipbook prefix: progression to near-completion...", end=" ")
+    if "NEAR-COMPLETION" in flipbook_prefix or "near completion" in flipbook_prefix.lower() or "SIGNIFICANTLY ADVANCED" in flipbook_prefix:
+        print("[OK]")
+    else:
+        print("[FAIL]")
+        failed_tests.append("gemini_flipbook_4panel_prefix still uses 'show beginning only' — actions never complete visually")
+
+    # 12h: image_to_image instructions must reference spatial anchor
+    print("  Checking gemini_image_to_image_instructions has spatial anchor note...", end=" ")
+    img2img_instructions = prompts_tc.get("gemini_image_to_image_instructions", "")
+    if "SPATIAL ANCHOR" in img2img_instructions or "SPATIAL GROUND TRUTH" in img2img_instructions:
+        print("[OK]")
+    else:
+        print("[FAIL]")
+        failed_tests.append("gemini_image_to_image_instructions missing SPATIAL ANCHOR/GROUND TRUTH language")
+
+except Exception as e:
+    print(f"[FAIL] {e}")
+    failed_tests.append("Temporal consistency architecture checks")
+
+# ============================================================================
 # RESULTS
 # ============================================================================
 print("\n" + "=" * 70)
