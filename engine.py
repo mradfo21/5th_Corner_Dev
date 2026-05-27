@@ -1497,6 +1497,7 @@ def _detect_movement_type(player_choice: str) -> str:
 def build_image_prompt(
     player_choice: str = "",
     dispatch: str = "",
+    narrative_dispatch: str = "",
     prev_vision_analysis: str = "",
     hard_transition: bool = False,
     is_timeout_penalty: bool = False,
@@ -1505,6 +1506,12 @@ def build_image_prompt(
 ) -> str:
     """
     Build an image generation prompt with spatial-anchor continuity.
+
+    ``dispatch`` — visual scene description of what the camera sees now
+    (generated as ``visual_scene`` by the LLM, or falls back to narrative).
+
+    ``narrative_dispatch`` — the narrative consequence text the player reads
+    (what they feel/experience). Provided as context alongside the visual scene.
 
     ``prev_spatial`` — the directional compass extracted from the previous
     turn's vision analysis (ahead/left/right/ground/height).  When present it
@@ -1552,7 +1559,21 @@ def build_image_prompt(
     print(f"{'='*60}\n", flush=True)
 
     # ── Base prompt ───────────────────────────────────────────────────────────
-    prompt = f"Action taken: {player_choice}. Result: {dispatch}"
+    # If we have a separate visual scene description, structure the prompt clearly
+    # so the image model knows what to show vs what the narrative context is.
+    has_visual_scene = (
+        narrative_dispatch and
+        narrative_dispatch.strip() and
+        narrative_dispatch.strip() != dispatch.strip()
+    )
+    if has_visual_scene:
+        prompt = (
+            f"VISUAL SCENE — WHAT THE CAMERA SEES:\n{dispatch}\n\n"
+            f"NARRATIVE CONTEXT — Action: {player_choice}. "
+            f"Consequence: {narrative_dispatch}"
+        )
+    else:
+        prompt = f"Action taken: {player_choice}. Result: {dispatch}"
 
     # ── Spatial anchor (highest priority constraint) ──────────────────────────
     # Injected BEFORE movement-type guidance so the model reads it first.
@@ -1798,7 +1819,8 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
             world_flavor = summarize_world_prompt_for_image(current_state["world_prompt"])
         prompt_str = build_image_prompt(
             player_choice=choice,
-            dispatch=caption,
+            dispatch=caption,           # visual scene description (from visual_scene field)
+            narrative_dispatch=dispatch, # narrative consequence text (what player reads)
             prev_vision_analysis=prev_vision_analysis,
             hard_transition=hard_transition,
             is_timeout_penalty=is_timeout_penalty,
@@ -4191,7 +4213,7 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
             json_prompt,
             model="gemini",
             temp=1.0,
-            tokens=350,
+            tokens=450,
             image_path=current_image,  # Pass current image if available
             use_lore=False  # Dispatch is mechanical, lore only for world evolution
         )
@@ -4209,16 +4231,22 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
         
         # Parse JSON response
         dispatch = ""
+        visual_scene = ""
         player_alive = True
         
         try:
             import json as json_lib
             data = json_lib.loads(result)
             dispatch = data.get("dispatch", "")
+            visual_scene = data.get("visual_scene", "").strip()
             player_alive = data.get("player_alive", True)
             # Safe print with Unicode handling
             try:
                 print(f"[DISPATCH] Parsed JSON: dispatch={dispatch[:50]}..., alive={player_alive}")
+                if visual_scene:
+                    print(f"[DISPATCH] visual_scene={visual_scene[:80]}...")
+                else:
+                    print(f"[DISPATCH] visual_scene: NOT generated (will fall back to dispatch)")
             except UnicodeEncodeError:
                 print(f"[DISPATCH] Parsed JSON: alive={player_alive} (dispatch contains special characters)")
         except Exception as parse_error:
@@ -4228,16 +4256,19 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
             except UnicodeEncodeError:
                 print(f"[DISPATCH] JSON parse failed (output contains special characters)")
             # Fallback: try to extract dispatch text
-            dispatch = result.replace('"dispatch":', '').replace('"player_alive":', '').replace('{', '').replace('}', '').strip()
+            dispatch = result.replace('"dispatch":', '').replace('"player_alive":', '').replace('"visual_scene":', '').replace('{', '').replace('}', '').strip()
             if ',' in dispatch:
                 dispatch = dispatch.split(',')[0].strip(' "')
         
-        # Vision dispatch = same as dispatch
-        vision_dispatch = dispatch
+        # vision_dispatch = visual scene description for image generation
+        # If the LLM generated a proper visual_scene, use it; otherwise fall back to dispatch
+        vision_dispatch = visual_scene if visual_scene else dispatch
         
         # Hard cap at 400 characters
         if len(dispatch) > 400:
             dispatch = dispatch[:385] + "...(truncated)"
+        if len(vision_dispatch) > 400:
+            vision_dispatch = vision_dispatch[:385] + "...(truncated)"
         
         return dispatch, vision_dispatch, player_alive
         
@@ -4358,10 +4389,13 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
         state = _load_state(session_id)
         
         # Get previous vision and image
+        # Use vision_analysis (actual image analysis) over vision_dispatch (narrative text)
+        # for better spatial continuity in the next dispatch generation
         prev_vision = ""
         prev_image = None
         if history and len(history) > 0:
-            prev_vision = history[-1].get("vision_dispatch", "")
+            prev_vision = (history[-1].get("vision_analysis", "") or
+                           history[-1].get("vision_dispatch", ""))
             prev_image = history[-1].get("image_url", None)
         
         # TIMEOUT PENALTIES: Use penalty text AS dispatch (don't generate new one)

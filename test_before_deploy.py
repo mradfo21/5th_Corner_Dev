@@ -831,6 +831,83 @@ except Exception as e:
     failed_tests.append("Full Frame tape creation fix")
 
 # ============================================================================
+# TEST 15: Full Frame temporal consistency — visual_scene dispatch fix
+# ============================================================================
+print("\n[TEST 15] Full Frame temporal consistency — visual_scene dispatch fix...")
+try:
+    import json as _json
+    from pathlib import Path as _Path
+    engine_src = _Path("engine.py").read_text(encoding="utf-8")
+    prompts_src = _Path("prompts/simulation_prompts.json").read_text(encoding="utf-8")
+    prompts_data = _json.loads(prompts_src)
+    dispatch_instructions = prompts_data.get("action_consequence_instructions", "")
+
+    # 15a: action_consequence_instructions must request a visual_scene field
+    print("  Checking action_consequence_instructions has visual_scene field...", end=" ")
+    assert '"visual_scene"' in dispatch_instructions, \
+        "action_consequence_instructions must include visual_scene in JSON output format"
+    print("[OK]")
+
+    # 15b: visual_scene guidance must describe physical/visible content
+    print("  Checking visual_scene guidance describes visible scene...", end=" ")
+    assert "VISUAL SCENE" in dispatch_instructions, \
+        "dispatch instructions must have a VISUAL SCENE guidance section"
+    assert "camera sees" in dispatch_instructions.lower() or "what is visible" in dispatch_instructions.lower(), \
+        "visual_scene guidance must reference what is visually present"
+    print("[OK]")
+
+    # 15c: _generate_combined_dispatches must extract visual_scene from JSON
+    print("  Checking _generate_combined_dispatches extracts visual_scene...", end=" ")
+    assert 'data.get("visual_scene"' in engine_src, \
+        "_generate_combined_dispatches must extract visual_scene from LLM JSON response"
+    print("[OK]")
+
+    # 15d: vision_dispatch falls back correctly when visual_scene absent
+    print("  Checking vision_dispatch fallback when visual_scene absent...", end=" ")
+    assert "vision_dispatch = visual_scene if visual_scene else dispatch" in engine_src, \
+        "_generate_combined_dispatches must fall back to dispatch when visual_scene is empty"
+    print("[OK]")
+
+    # 15e: build_image_prompt accepts narrative_dispatch parameter
+    print("  Checking build_image_prompt accepts narrative_dispatch...", end=" ")
+    assert "narrative_dispatch: str" in engine_src, \
+        "build_image_prompt must accept narrative_dispatch parameter"
+    print("[OK]")
+
+    # 15f: _gen_image passes narrative dispatch to build_image_prompt
+    print("  Checking _gen_image passes narrative_dispatch to build_image_prompt...", end=" ")
+    assert "narrative_dispatch=dispatch" in engine_src, \
+        "_gen_image must pass narrative dispatch to build_image_prompt"
+    print("[OK]")
+
+    # 15g: build_image_prompt uses VISUAL SCENE label when visual scene differs from narrative
+    print("  Checking build_image_prompt structures visual vs narrative prompts...", end=" ")
+    assert "VISUAL SCENE" in engine_src and "NARRATIVE CONTEXT" in engine_src, \
+        "build_image_prompt must label visual and narrative sections separately"
+    print("[OK]")
+
+    # 15h: advance_turn_image_fast uses vision_analysis (not just vision_dispatch) for prev_vision
+    print("  Checking advance_turn_image_fast uses vision_analysis for prev_vision...", end=" ")
+    assert 'get("vision_analysis", "")' in engine_src, \
+        "advance_turn_image_fast must prefer vision_analysis for prev_vision context"
+    print("[OK]")
+
+    # 15i: token budget for dispatch increased (visual_scene adds ~100 tokens)
+    print("  Checking dispatch token budget is sufficient for visual_scene...", end=" ")
+    # Find the _ask call in _generate_combined_dispatches that uses tokens=
+    import re as _re
+    combined_dispatch_fn = engine_src[engine_src.find("def _generate_combined_dispatches"):
+                                      engine_src.find("\ndef ", engine_src.find("def _generate_combined_dispatches") + 10)]
+    token_matches = _re.findall(r'tokens=(\d+)', combined_dispatch_fn)
+    assert token_matches and int(token_matches[0]) >= 400, \
+        f"_generate_combined_dispatches token budget should be ≥400 for visual_scene, got: {token_matches}"
+    print("[OK]")
+
+except Exception as e:
+    print(f"[FAIL] {e}")
+    failed_tests.append("Full Frame temporal consistency visual_scene fix")
+
+# ============================================================================
 # RESULTS
 # ============================================================================
 print("\n" + "=" * 70)
