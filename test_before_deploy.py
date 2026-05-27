@@ -509,6 +509,123 @@ except Exception as e:
     failed_tests.append("API resilience checks")
 
 # ============================================================================
+# TEST 11: Experience Mode System
+# ============================================================================
+print("\n[TEST 11] Experience Mode System...")
+
+try:
+    with open("engine.py", "r", encoding="utf-8") as f:
+        engine_content_em = f.read()
+    with open("api_client.py", "r", encoding="utf-8") as f:
+        apiclient_content_em = f.read()
+    with open("bot.py", "r", encoding="utf-8") as f:
+        bot_content_em = f.read()
+
+    # 11a: The three mode constants must be defined in engine.py
+    print("  Checking experience mode constants in engine.py...", end=" ")
+    has_no_images  = 'EXPERIENCE_MODE_NO_IMAGES'  in engine_content_em
+    has_flipbook   = 'EXPERIENCE_MODE_FLIPBOOK'   in engine_content_em
+    has_full_frame = 'EXPERIENCE_MODE_FULL_FRAME' in engine_content_em
+    if has_no_images and has_flipbook and has_full_frame:
+        print("[OK]")
+    else:
+        print("[FAIL]")
+        for name, present in [
+            ("EXPERIENCE_MODE_NO_IMAGES",  has_no_images),
+            ("EXPERIENCE_MODE_FLIPBOOK",   has_flipbook),
+            ("EXPERIENCE_MODE_FULL_FRAME", has_full_frame),
+        ]:
+            if not present:
+                print(f"    Missing: {name}")
+        failed_tests.append("Experience mode constants missing from engine.py")
+
+    # 11b: apply_experience_mode() must be defined in engine.py
+    print("  Checking apply_experience_mode() in engine.py...", end=" ")
+    if "def apply_experience_mode(" in engine_content_em:
+        print("[OK]")
+    else:
+        print("[FAIL]")
+        failed_tests.append("apply_experience_mode() missing from engine.py")
+
+    # 11c: EXPERIENCE_MODES dict must exist in engine.py
+    print("  Checking EXPERIENCE_MODES dict in engine.py...", end=" ")
+    if "EXPERIENCE_MODES" in engine_content_em and "EXPERIENCE_MODES: dict" in engine_content_em:
+        print("[OK]")
+    else:
+        print("[FAIL]")
+        failed_tests.append("EXPERIENCE_MODES dict missing from engine.py")
+
+    # 11d: api_client must proxy apply_experience_mode
+    print("  Checking apply_experience_mode proxy in api_client.py...", end=" ")
+    if "def apply_experience_mode(" in apiclient_content_em:
+        print("[OK]")
+    else:
+        print("[FAIL]")
+        failed_tests.append("apply_experience_mode() proxy missing from api_client.py")
+
+    # 11e: api_client must expose the three mode constants as properties
+    print("  Checking mode constant properties in api_client.py...", end=" ")
+    missing_props = [
+        p for p in ("EXPERIENCE_MODE_NO_IMAGES", "EXPERIENCE_MODE_FLIPBOOK",
+                    "EXPERIENCE_MODE_FULL_FRAME")
+        if p not in apiclient_content_em
+    ]
+    if not missing_props:
+        print("[OK]")
+    else:
+        print("[FAIL]")
+        for p in missing_props:
+            print(f"    Missing property: {p}")
+        failed_tests.append("Experience mode constant properties missing from api_client.py")
+
+    # 11f: ExperienceModeSelect must be present in bot.py
+    print("  Checking ExperienceModeSelect in bot.py...", end=" ")
+    if "class ExperienceModeSelect" in bot_content_em:
+        print("[OK]")
+    else:
+        print("[FAIL]")
+        failed_tests.append("ExperienceModeSelect class missing from bot.py")
+
+    # 11g: IntroView must be used instead of plain View for the intro
+    print("  Checking IntroView class in bot.py...", end=" ")
+    if "class IntroView" in bot_content_em and "play_view = IntroView()" in bot_content_em:
+        print("[OK]")
+    else:
+        print("[FAIL]")
+        failed_tests.append("IntroView class or play_view=IntroView() missing from bot.py")
+
+    # 11h: PlayButton must call apply_experience_mode
+    print("  Checking PlayButton calls apply_experience_mode...", end=" ")
+    if "engine.apply_experience_mode(" in bot_content_em:
+        print("[OK]")
+    else:
+        print("[FAIL]")
+        failed_tests.append("PlayButton does not call engine.apply_experience_mode()")
+
+    # 11i: PlayNoImagesButton must NOT be added to play_view (superseded by select)
+    print("  Checking PlayNoImagesButton removed from play_view...", end=" ")
+    if "play_view.add_item(PlayNoImagesButton())" not in bot_content_em:
+        print("[OK]")
+    else:
+        print("[FAIL]")
+        failed_tests.append(
+            "PlayNoImagesButton still added to play_view — should be removed "
+            "(mode select handles no-images)"
+        )
+
+    # 11j: Dedicated test suite must exist
+    print("  Checking test_experience_mode.py exists...", end=" ")
+    if Path("test_experience_mode.py").exists():
+        print("[OK]")
+    else:
+        print("[FAIL]")
+        failed_tests.append("test_experience_mode.py does not exist")
+
+except Exception as e:
+    print(f"[FAIL] {e}")
+    failed_tests.append("Experience mode system checks")
+
+# ============================================================================
 # RESULTS
 # ============================================================================
 print("\n" + "=" * 70)
