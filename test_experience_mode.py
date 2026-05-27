@@ -434,12 +434,28 @@ class TestBotIntroViewStructure(unittest.TestCase):
             "IntroView must set self.experience_mode",
         )
 
-    def test_intro_view_default_is_flipbook(self):
+    def test_intro_view_default_is_full_frame(self):
+        """
+        Demo-stability requirement: the IntroView's default mode is now
+        EXPERIENCE_MODE_FULL_FRAME, not Flipbook. Players can still pick
+        Flipbook from the row-0 dropdown, but the safer/most-photographic
+        path is what they get out of the box.
+        """
         src = self._read_bot_source()
+        # We look for the IntroView class body and verify the default attribute
+        # references FULL_FRAME (not FLIPBOOK).
+        idx = src.find("class IntroView")
+        self.assertNotEqual(idx, -1, "IntroView class must exist")
+        introview_block = src[idx: idx + 800]
         self.assertIn(
-            "EXPERIENCE_MODE_FLIPBOOK",
-            src,
-            "IntroView default experience_mode should be EXPERIENCE_MODE_FLIPBOOK",
+            "EXPERIENCE_MODE_FULL_FRAME",
+            introview_block,
+            "IntroView default experience_mode should be EXPERIENCE_MODE_FULL_FRAME",
+        )
+        self.assertNotIn(
+            "self.experience_mode: str = engine.EXPERIENCE_MODE_FLIPBOOK",
+            introview_block,
+            "IntroView must NOT still default to flipbook",
         )
 
     def test_experience_mode_select_added_to_play_view(self):
@@ -694,6 +710,151 @@ class TestNoImagesGuard(unittest.TestCase):
             idx, -1,
             "on_ready resume path must restore experience mode from saved state",
         )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# PACING / FAIRNESS / IMMERSION HARDENING
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestPacingFairnessHardening(unittest.TestCase):
+    """
+    Pacing, flow, balance, and fairness invariants added in the
+    post-PR-#14 pacing pass. These guard against regressions in:
+      • The silent vision-API 404 (gemini-2.0-flash-exp)
+      • The cheap-environmental-death pattern
+      • Mandatory tension-escalation (now allowed to breathe)
+      • Phase-gated countdown timer
+      • Tiered timeout penalty
+      • Injury state threading into prompts
+      • Default experience mode = Full Frame
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from pathlib import Path
+        cls.WORKSPACE = Path(__file__).parent
+        cls.engine_src = (cls.WORKSPACE / "engine.py").read_text(encoding="utf-8")
+        cls.bot_src = (cls.WORKSPACE / "bot.py").read_text(encoding="utf-8")
+        cls.choices_src = (cls.WORKSPACE / "choices.py").read_text(encoding="utf-8")
+        cls.prompts_src = (cls.WORKSPACE / "prompts" / "simulation_prompts.json").read_text(encoding="utf-8")
+
+    # -- Vision API 404 fix --
+    def test_vision_url_no_longer_uses_deprecated_exp_model(self):
+        """The `gemini-2.0-flash-exp` model was retired and silently 404'd
+        on every vision call, leaving the spatial-anchor pipeline deaf.
+
+        Comments in the source may still mention the retired name to
+        document the fix — what must not exist is an actual API URL
+        ending in `models/gemini-2.0-flash-exp:generateContent`.
+        """
+        self.assertNotIn(
+            "models/gemini-2.0-flash-exp:generateContent",
+            self.engine_src,
+            "engine.py must NOT route any API call to gemini-2.0-flash-exp",
+        )
+        self.assertIn(
+            "models/gemini-2.0-flash:generateContent",
+            self.engine_src,
+            "engine.py vision URL must use the production gemini-2.0-flash model",
+        )
+
+    # -- Default mode --
+    def test_full_frame_is_default_in_dropdown(self):
+        """The visual experience dropdown defaults to Full Frame."""
+        # Find the ExperienceModeSelect block and verify FULL_FRAME has default=True
+        idx = self.bot_src.find("class ExperienceModeSelect")
+        self.assertNotEqual(idx, -1)
+        block = self.bot_src[idx: idx + 1500]
+        # The Full Frame option must have default=True
+        ff_idx = block.find("EXPERIENCE_MODE_FULL_FRAME")
+        self.assertNotEqual(ff_idx, -1)
+        ff_window = block[ff_idx: ff_idx + 250]
+        self.assertIn("default=True", ff_window,
+                      "Full Frame must be the default option in ExperienceModeSelect")
+
+    # -- Fairness doctrine --
+    def test_death_fairness_doctrine_present(self):
+        """Prompt must encode 'characters/events kill, environment only injures'."""
+        self.assertIn("DEATH FAIRNESS DOCTRINE", self.prompts_src)
+        self.assertIn("CHARACTERS AND DRAMATIC EVENTS KILL", self.prompts_src)
+        self.assertIn("ENVIRONMENT ONLY WOUNDS", self.prompts_src)
+
+    def test_unlucky_fate_modifier_forbids_cheap_deaths(self):
+        """The UNLUCKY fate path must not re-introduce random impalement deaths."""
+        self.assertIn(
+            "FORBIDDEN UNDER UNLUCKY",
+            self.engine_src,
+            "engine.py must explicitly forbid cheap-death patterns under UNLUCKY",
+        )
+
+    # -- Tension rhythm --
+    def test_tension_rhythm_allows_stillness_beats(self):
+        """The action_consequence_instructions must allow ~30% stillness beats."""
+        self.assertIn("TENSION RHYTHM", self.prompts_src)
+        self.assertIn("STILLNESS BEAT", self.prompts_src)
+        # The old "MANDATORY FINAL SENTENCE" rule must be gone.
+        self.assertNotIn(
+            "TENSION ESCALATION (MANDATORY FINAL SENTENCE)",
+            self.prompts_src,
+            "Mandatory escalation final-sentence rule must be replaced with wave-rhythm",
+        )
+
+    # -- Phase-gated countdown --
+    def test_countdown_is_phase_gated(self):
+        self.assertIn("COUNTDOWN_BY_PHASE", self.bot_src)
+        self.assertIn("_phase_countdown_duration", self.bot_src)
+        # And the timer task uses the active_duration snapshot, not the constant.
+        self.assertIn(
+            "active_duration = _phase_countdown_duration()",
+            self.bot_src,
+            "countdown_timer_task must snapshot the phase-gated duration",
+        )
+
+    # -- Tiered timeout penalty --
+    def test_timeout_penalty_is_tiered(self):
+        self.assertIn("_timeout_count_this_run", self.bot_src)
+        self.assertIn("TIMEOUT_TIER", self.bot_src)
+        # And the prompt knows about tiered penalties.
+        self.assertIn("Tier 1", self.prompts_src)
+        self.assertIn("Tier 2", self.prompts_src)
+        self.assertIn("Tier 3", self.prompts_src)
+
+    # -- Injury state threading --
+    def test_injury_state_threaded_into_choices(self):
+        """generate_choices must accept and format injury_state."""
+        self.assertIn("injury_state", self.choices_src)
+        self.assertIn(
+            "injury_state=injury_state or",
+            self.choices_src,
+            "generate_choices must pass injury_state into prompt .format()",
+        )
+
+    def test_injury_state_threaded_into_dispatch(self):
+        """The dispatch prompt builder must inject seen_elements + injury_state."""
+        self.assertIn("INJURY STATE", self.engine_src)
+        self.assertIn("DISCOVERED ENTITIES", self.engine_src)
+
+    # -- Choice slate composition --
+    def test_choice_slot_is_randomized(self):
+        """The mandatory 'slot 1 = forward movement' rule must be replaced
+        with a randomized-slot rule so players cannot rote-memorize it."""
+        self.assertNotIn(
+            "CHOICE #1 MUST ALWAYS BE FORWARD SPATIAL MOVEMENT",
+            self.prompts_src,
+            "Hard-pinned slot 1 rule must be removed",
+        )
+        self.assertIn(
+            "slot position is RANDOMIZED",
+            self.prompts_src,
+            "Choice slate must randomize the forward-movement slot",
+        )
+
+    # -- Phase-linked time of day --
+    def test_time_of_day_can_advance_with_phase(self):
+        self.assertIn("TIME-OF-DAY PROGRESSION (PHASE-LINKED)", self.prompts_src)
+        # The world_tick instructions must allow the phase-gated exception
+        # so dusk/night can actually appear in long sessions.
+        self.assertIn("PHASE-GATED EXCEPTION", self.prompts_src)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
