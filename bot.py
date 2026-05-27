@@ -193,6 +193,50 @@ if DISCORD_ENABLED:
     _run_images = []  # Track all images from current run for VHS tape (fallback)
     _run_flipbooks = []  # Track all flipbook GIF paths for VHS tape compilation
     _run_experience_mode = None  # Experience mode active for the current run (set at game start)
+
+    def _build_intro_fallback_choices(scene_text: str) -> list:
+        """Build a 3-choice slate that is at least *visibly grounded* when the
+        Phase 2 choice generator (engine.generate_intro_choices_deferred) has
+        failed or returned an empty list. We never want the player to see the
+        old "Look around / Move forward / Wait" filler on Turn 1 — those words
+        are explicitly forbidden by the player_choice_generation_instructions
+        and reading them tells the player the system is broken.
+
+        Returns exactly 3 physical-verb, scene-relevant choices.
+        """
+        text = (scene_text or "").lower()
+        candidates: list = []
+        # High-priority anchors first (most distinctive scene cues)
+        if any(k in text for k in ("tower", "lookout", "platform")):
+            candidates.append("Descend the lookout tower")
+        if any(k in text for k in ("cliff", "ledge", "outcrop", "ridge", "mesa", "hillside", "hilltop")):
+            candidates.append("Scramble down the rocky slope")
+        if any(k in text for k in ("facility", "complex", "building", "structure", "warehouse", "lab", "compound")):
+            candidates.append("Advance toward the facility")
+        if any(k in text for k in ("valley", "canyon", "basin")):
+            candidates.append("Drop into the valley")
+        if any(k in text for k in ("fence", "perimeter", "chain-link", "razor wire")):
+            candidates.append("Vault over the fence")
+        if any(k in text for k in ("door", "gate", "hatch", "entrance", "opening")):
+            candidates.append("Push through the doorway")
+        if any(k in text for k in ("corridor", "hallway", "passage", "tunnel")):
+            candidates.append("Sprint down the corridor")
+        # Always include a physical-stillness option (PERMITTED in the prompt)
+        candidates.append("Crouch low and scan the terrain")
+        # Always include a quiet documentary action
+        candidates.append("Press against cover and listen")
+        # Always include a forward kinetic option as a final safety
+        candidates.append("Move forward in a low crouch")
+        # De-dupe and cap at 3
+        seen: set = set()
+        out: list = []
+        for c in candidates:
+            if c.lower() not in seen:
+                seen.add(c.lower())
+                out.append(c)
+            if len(out) == 3:
+                break
+        return out
     import threading
     _tape_creation_lock = threading.Lock()  # Prevent duplicate tape creation (thread-safe)
     _tape_creation_in_progress = False  # Flag to track if tape is being created
@@ -3266,10 +3310,15 @@ Generate the penalty in valid JSON format. MUST stay in current location. MUST h
                             description=safe_embed_desc(_ni_vision),
                             color=CORNER_TEAL,
                         ))
-                        _ni_choices = (
-                            (_ni_result or {}).get("choices")
-                            or ["Look around carefully", "Move forward slowly", "Wait and observe"]
-                        )
+                        _ni_choices = (_ni_result or {}).get("choices") or []
+                        if not _ni_choices:
+                            _ni_choices = _build_intro_fallback_choices(
+                                (_ni_vision or "") + " " + (_ni_dispatch or "")
+                            )
+                            print(
+                                f"[PLAY-NOIMAGES] generate_intro_turn returned no choices — using contextual fallback: {_ni_choices}",
+                                flush=True,
+                            )
                         await interaction.channel.send("🟢 What will you do next?")
                         _ni_choice_view = ChoiceView(_ni_choices, owner_id=OWNER_ID)
                         await send_choices(
@@ -3597,11 +3646,33 @@ Generate the penalty in valid JSON format. MUST stay in current location. MUST h
                 except Exception:
                     pass
                 
-                # Extract choices, with fallback if Phase 2 failed
+                # Extract choices, with fallback if Phase 2 failed. Build the
+                # intro-only fallback from the visible scene text rather than
+                # generic "Look around carefully" — that filler was what the
+                # player saw when Phase 2 crashed, and it looked like a
+                # complete regression of the choices system.
                 _intro_choices = (intro_phase2 or {}).get("choices") or []
                 if not _intro_choices:
-                    _intro_choices = ["Look around carefully", "Move forward slowly", "Wait and observe"]
-                    print(f"[PLAY] Using fallback choices (Phase 2 produced none)", flush=True)
+                    _scene_text = (
+                        (intro_phase1.get("vision_dispatch", "") or "") + " " +
+                        (intro_phase1.get("prologue", "") or "") + " " +
+                        (intro_phase1.get("dispatch", "") or "")
+                    ).lower()
+                    _intro_choices = _build_intro_fallback_choices(_scene_text)
+                    print(
+                        f"[PLAY] Phase 2 produced no choices — using intro contextual fallback: {_intro_choices}",
+                        flush=True,
+                    )
+                    # Tell the channel something soft so the demo doesn't look frozen.
+                    try:
+                        await interaction.channel.send(embed=discord.Embed(
+                            description=safe_embed_desc(
+                                "⚠️ Choice generator hiccup — using scene-aware backup options."
+                            ),
+                            color=CORNER_GREY,
+                        ))
+                    except Exception:
+                        pass
                 
                 # Send choices
                 try:
@@ -3715,9 +3786,18 @@ Generate the penalty in valid JSON format. MUST stay in current location. MUST h
                     color=CORNER_TEAL
                 )
                 await interaction.channel.send(embed=embed_vision)
-                # 3. Send the choices - fallback if generation failed
-                _noi_choices = (intro_result or {}).get("choices") or \
-                    ["Look around carefully", "Move forward slowly", "Wait and observe"]
+                # 3. Send the choices - contextual fallback if generation failed
+                _noi_choices = (intro_result or {}).get("choices") or []
+                if not _noi_choices:
+                    _noi_scene_text = (
+                        ((intro_result or {}).get("vision_dispatch", "") or "") + " " +
+                        ((intro_result or {}).get("dispatch", "") or "")
+                    )
+                    _noi_choices = _build_intro_fallback_choices(_noi_scene_text)
+                    print(
+                        f"[PLAY-NOIMAGES legacy] generate_intro_turn returned no choices — using contextual fallback: {_noi_choices}",
+                        flush=True,
+                    )
                 await interaction.channel.send("🟢 What will you do next?")
                 view = ChoiceView(_noi_choices, owner_id=OWNER_ID)
                 await send_choices(interaction.channel, _noi_choices, view, None)

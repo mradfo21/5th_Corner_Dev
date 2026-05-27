@@ -29,3 +29,4 @@ test_*.py
 !test_before_deploy.py
 !test_experience_mode.py
 !test_no_images_simulation.py
+!test_choices_robustness.py

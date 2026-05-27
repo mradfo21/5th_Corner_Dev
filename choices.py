@@ -240,17 +240,57 @@ def generate_choices(
     
     print(f"[GEMINI TEXT] Calling {model_name} for choice generation...", flush=True)
     
+    # Contextual fallback choices used whenever the LLM call/parse fails.
+    # We try hard to keep the player in the game with SOMETHING actionable
+    # rather than always returning generic "Look around" filler. The bot
+    # tracks "[CHOICES FALLBACK]" log lines to surface upstream failures.
+    def _contextual_fallback() -> List[str]:
+        ctx = (caption + " " + image_description + " " + world_prompt + " " + last_dispatch).lower()
+        opts: List[str] = []
+        if any(k in ctx for k in ("fence", "perimeter", "chain-link")):
+            opts.append("Vault over the fence")
+        if any(k in ctx for k in ("cliff", "ledge", "outcrop", "ridge", "mesa", "tower", "lookout", "hill")):
+            opts.append("Scramble down the slope")
+        if any(k in ctx for k in ("facility", "building", "complex", "structure", "warehouse", "lab")):
+            opts.append("Advance toward the facility")
+        if any(k in ctx for k in ("door", "entrance", "gate", "hatch", "opening")):
+            opts.append("Push through the doorway")
+        if any(k in ctx for k in ("corridor", "hallway", "passage", "tunnel")):
+            opts.append("Sprint down the corridor")
+        if any(k in ctx for k in ("crate", "barrel", "cover", "debris", "wall", "barrier")):
+            opts.append("Press behind cover")
+        # Always include a physical-stillness option so the player can also breathe.
+        opts.append("Crouch low and scan the area")
+        opts.append("Move forward carefully")
+        # De-dupe while preserving order, cap at 3
+        seen_local: set = set()
+        deduped: List[str] = []
+        for o in opts:
+            if o.lower() not in seen_local:
+                seen_local.add(o.lower())
+                deduped.append(o)
+        return deduped[:3] if len(deduped) >= 2 else ["Vault forward", "Press against cover", "Scan the perimeter"]
+
     import time as _time
     _choices_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
     _choices_headers = {"x-goog-api-key": gemini_api_key, "Content-Type": "application/json"}
+    # CRITICAL: include BLOCK_NONE safety settings so a dark dispatch (e.g. with
+    # "blood", "viscera", or a graphic visual_scene) does not silently strip the
+    # `parts` from the model's response and trigger a parse failure downstream.
     _choices_payload = {
         "contents": [{"parts": parts}],
-        "generationConfig": {"temperature": temperature, "maxOutputTokens": 200}
+        "generationConfig": {"temperature": temperature, "maxOutputTokens": 200},
+        "safetySettings": [
+            {"category": "HARM_CATEGORY_HARASSMENT",        "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_HATE_SPEECH",       "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+            {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+        ],
     }
     response_data = None
     for _attempt in range(2):  # one retry on 429
         try:
-            response = requests.post(_choices_url, headers=_choices_headers, json=_choices_payload, timeout=15)
+            response = requests.post(_choices_url, headers=_choices_headers, json=_choices_payload, timeout=20)
             print(f"[GEMINI TEXT] API returned status: {response.status_code}", flush=True)
             if response.status_code == 429 and _attempt == 0:
                 print(f"[CHOICES] Rate limited (429) — retrying in 4s...", flush=True)
@@ -261,36 +301,67 @@ def generate_choices(
             print("[GEMINI TEXT] Choice generation complete", flush=True)
             break
         except requests.exceptions.Timeout:
-            print(f"[CHOICES ERROR] Gemini API timeout after 15 seconds", flush=True)
-            return ["Look around", "Move forward", "Wait"]
+            print(f"[CHOICES ERROR] Gemini API timeout after 20 seconds", flush=True)
+            print(f"[CHOICES FALLBACK] timeout — using contextual fallback", flush=True)
+            return _contextual_fallback()
         except requests.exceptions.HTTPError as e:
             print(f"[CHOICES ERROR] Gemini API HTTP error: {e}", flush=True)
             if hasattr(e, 'response') and e.response is not None:
                 print(f"[CHOICES ERROR] Response: {e.response.text}", flush=True)
-            return ["Look around", "Move forward", "Wait"]
+            print(f"[CHOICES FALLBACK] http-error — using contextual fallback", flush=True)
+            return _contextual_fallback()
         except Exception as e:
             print(f"[CHOICES ERROR] Unexpected error calling Gemini API: {e}", flush=True)
             import traceback
             traceback.print_exc()
-            return ["Look around", "Move forward", "Wait"]
+            print(f"[CHOICES FALLBACK] unexpected — using contextual fallback", flush=True)
+            return _contextual_fallback()
     if response_data is None:
         print("[CHOICES ERROR] Gemini API still rate-limited after retry — using fallback", flush=True)
-        return ["Look around", "Move forward", "Wait"]
-    
+        print(f"[CHOICES FALLBACK] 429-retry-exhausted — using contextual fallback", flush=True)
+        return _contextual_fallback()
+
     # Create a mock OpenAI response object
     class GeminiResp:
         def __init__(self, text):
             self.choices = [type('obj', (object,), {'message': type('obj', (object,), {'content': text})()})]
-    
-    # Check for API errors
-    if "candidates" not in response_data:
-        print(f"[CHOICES ERROR] Gemini API error response: {response_data}")
+
+    # Robust response parser — Gemini will sometimes return a candidates entry
+    # with `finishReason: SAFETY` and NO `content.parts`, or `parts` containing
+    # only a `functionCall` instead of `text`. Either case used to throw an
+    # unhandled IndexError/KeyError that bubbled up to bot.py's Phase 2 guard
+    # and produced fallback choices, which is what the player saw as
+    # "Generating choices failed". Now we extract text defensively and fall
+    # back to contextual choices if no usable text is found.
+    if "candidates" not in response_data or not response_data["candidates"]:
+        print(f"[CHOICES ERROR] No candidates in Gemini response: {response_data}", flush=True)
         if "error" in response_data:
-            print(f"[CHOICES ERROR] Error details: {response_data['error']}")
-        # Return fallback choices
-        return ["Look around", "Move forward", "Wait"]
-    
-    result_text = response_data["candidates"][0]["content"]["parts"][0]["text"].strip()
+            print(f"[CHOICES ERROR] Error details: {response_data['error']}", flush=True)
+        if "promptFeedback" in response_data:
+            print(f"[CHOICES ERROR] promptFeedback: {response_data['promptFeedback']}", flush=True)
+        print(f"[CHOICES FALLBACK] no-candidates — using contextual fallback", flush=True)
+        return _contextual_fallback()
+
+    candidate0 = response_data["candidates"][0]
+    finish_reason = candidate0.get("finishReason", "")
+    content_obj = candidate0.get("content") or {}
+    cand_parts = content_obj.get("parts") or []
+    result_text = ""
+    for p in cand_parts:
+        if isinstance(p, dict) and isinstance(p.get("text"), str):
+            result_text += p["text"]
+    result_text = result_text.strip()
+
+    if not result_text:
+        # Common reasons: SAFETY block, MAX_TOKENS without text, recitation.
+        print(
+            f"[CHOICES ERROR] Empty result_text; finishReason={finish_reason!r}; "
+            f"parts={cand_parts!r}",
+            flush=True,
+        )
+        print(f"[CHOICES FALLBACK] empty-text ({finish_reason or 'unknown'}) — using contextual fallback", flush=True)
+        return _contextual_fallback()
+
     rsp = GeminiResp(result_text)
     raw = rsp.choices[0].message.content.strip()
     print("[CHOICES RAW LLM OUTPUT]", repr(raw))
@@ -320,7 +391,10 @@ def generate_choices(
     opts = enforce_diversity(opts)
     opts = [c for c in opts if c.lower() not in {"photograph the chaos", "sneak past the guards", "search for hidden passage"}]
     if not opts:
-        opts = ["Look around", "Move forward", "Wait"]
+        # Don't fall back to corporate language — use the contextual builder so
+        # the player sees scene-appropriate, physical options.
+        print(f"[CHOICES FALLBACK] parse-stripped-everything — using contextual fallback", flush=True)
+        opts = _contextual_fallback()
     # Enforce diversity: try to include at least one action, one explore, and one move/escape (not retreat/flee)
     categorized = {"action": [], "explore": [], "move": []}
     for c in opts:
@@ -346,7 +420,10 @@ def generate_choices(
     opts = diverse[:n]
     # Final diversity check
     opts = enforce_diversity(opts)
-    # After generating choices, run the critic
+    # After generating choices, run the critic. If the critic LLM throws OR
+    # strips everything, KEEP the LLM-generated `opts` — they are already
+    # diverse, grounded, and physical. The critic is a polish step, not a
+    # gate; we cannot let it produce an empty slate on the intro turn.
     vision = image_description if image_description else ''
     recent = []
     if recent_choices:
@@ -354,7 +431,16 @@ def generate_choices(
             recent = recent_choices
         elif isinstance(recent_choices, str):
             recent = [recent_choices]
-    improved_choices = choice_critic(last_dispatch, vision, opts, world_prompt, recent_choices=recent)
+    try:
+        improved_choices = choice_critic(last_dispatch, vision, opts, world_prompt, recent_choices=recent)
+    except Exception as _critic_err:
+        print(f"[CHOICE CRITIC] Crashed: {_critic_err} — keeping un-critiqued options", flush=True)
+        improved_choices = opts
+    if not improved_choices:
+        print(f"[CHOICE CRITIC] Returned empty — keeping un-critiqued options", flush=True)
+        improved_choices = opts
+    if not improved_choices:
+        improved_choices = _contextual_fallback()
     # Persist recent choices in world_state.json
     try:
         path = Path("world_state.json")
