@@ -1144,7 +1144,11 @@ DESCRIPTION: <detailed description of what is visible, focusing on objects, thre
 SPATIAL: <spatial compass — describe: (a) what is DIRECTLY AHEAD at what distance, (b) what is visible to the LEFT, (c) what is visible to the RIGHT, (d) what is underfoot/ground type, (e) camera height estimate (standing/crouching/elevated). Keep under 50 words. Example: "Ahead: chain-link fence ~20m with facility gate. Left: red mesa cliff face ~100m. Right: abandoned Horizon truck ~15m. Ground: sandy desert with scrub. Standing height.">
 SETTING: <ONE of: outdoor-desert, outdoor-cliff, outdoor-road, indoor-corridor, indoor-lab, indoor-warehouse, indoor-other, transitional>"""
         
-        api_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent"
+        # NOTE: previously hardcoded `gemini-2.0-flash-exp`, which Google retired —
+        # every vision call was silently 404'ing and returning an empty SPATIAL /
+        # SETTING block (the very signal the temporal-consistency pipeline relies on).
+        # We now use the same production model name as the rest of the engine.
+        api_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
         
         # DEBUG: Log API key status for Vision
         if not GEMINI_API_KEY:
