@@ -1095,7 +1095,13 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 
     
                     session_id = str(interaction.channel_id) if interaction.channel_id else 'default'
-                    world_state = engine.get_state(session_id).get('world_prompt', '')
+                    _cur_state_pre = engine.get_state(session_id)
+                    world_state = _cur_state_pre.get('world_prompt', '')
+                    # Detect text-only mode from both global flag and persisted session state
+                    _text_only = (
+                        not engine.IMAGE_ENABLED
+                        or _cur_state_pre.get('experience_mode') == engine.EXPERIENCE_MODE_NO_IMAGES
+                    )
                     choice_text = self.label
                     # Fast LLM call for micro-reaction (10-20 tokens, low temp)
                     micro_prompt = (
@@ -1128,8 +1134,9 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 
                     # --- PROGRESSIVE FEEDBACK & RENDERING ---
                     # Show "Recording" indicator immediately so it doesn't feel frozen
+                    _render_desc = "📝 **GENERATING NARRATIVE...**" if _text_only else "🎬 **RECORDING SEQUENCE...**"
                     render_msg = await interaction.channel.send(embed=discord.Embed(
-                        description="🎬 **RECORDING SEQUENCE...**",
+                        description=_render_desc,
                         color=CORNER_GREY
                     ))
     
@@ -1151,7 +1158,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     # --- WAIT FOR FLIPBOOK RENDER ---
                     flipbook_url = None
                     current_state = engine.get_state(session_id)
-                    if current_state.get("flipbook_mode", False):
+                    if current_state.get("flipbook_mode", False) and engine.IMAGE_ENABLED:
                         print(f"[BOT FLIPBOOK WAIT] Waiting for flipbook to generate...", flush=True)
                         max_wait = 120  # Increased to 120s - HD flipbooks with 3 refs need 105s API timeout
                         check_interval = 1.0
@@ -1218,6 +1225,15 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                             description=safe_embed_desc(full_text),
                             color=VHS_RED
                         ))
+                    # In text-only mode: show What You See so player gets full sensory picture
+                    if _text_only:
+                        _vision = phase1.get("vision_dispatch", "")
+                        if _vision:
+                            await interaction.channel.send(embed=discord.Embed(
+                                title="👁️ What You See",
+                                description=safe_embed_desc(_vision),
+                                color=CORNER_TEAL,
+                            ))
     
                     # 3. Track for tape
                     print(f"[BOT DISPLAY] Tracking image for tape...", flush=True)
@@ -1271,7 +1287,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     # If flipbook finished AFTER Phase 1 completed (during choice generation),
                     # display it now before showing choices
                     late_flipbook_displayed = False
-                    if current_state.get("flipbook_mode", False):
+                    if current_state.get("flipbook_mode", False) and engine.IMAGE_ENABLED:
                         fresh_state = _get_state_no_lock(session_id)
                         late_flipbook_url = fresh_state.get('current_flipbook_url')
                         if late_flipbook_url and late_flipbook_url != "FAILED":
@@ -1488,18 +1504,17 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     # 7. Show new choices
                     print(f"[BOT CHOICES] Displaying {len(disp.get('choices', []))} choices to user...", flush=True)
                     await interaction.channel.send("🟢 What will you do next?")
-                    view = ChoiceView(disp["choices"])
+                    view = ChoiceView(disp["choices"], owner_id=OWNER_ID)
                     await send_choices(interaction.channel, disp["choices"], view, getattr(self, 'last_choices_message', None))
                     print(f"[BOT CHOICES] Choices displayed successfully!", flush=True)
                 
-                    # CRITICAL: Only start countdown if we have visual feedback (flipbook or image)
-                    # Don't pressure the player to choose before they've seen what happened!
                     has_visual = flipbook_url or late_flipbook_displayed or image_path or video_path
-                    print(f"[BOT COUNTDOWN CHECK] has_visual={bool(has_visual)}, flipbook={bool(flipbook_url)}, late={late_flipbook_displayed}, image={bool(image_path)}", flush=True)
+                    print(f"[BOT COUNTDOWN CHECK] has_visual={bool(has_visual)}, text_only={_text_only}, flipbook={bool(flipbook_url)}, late={late_flipbook_displayed}, image={bool(image_path)}", flush=True)
                 
-                    # Start countdown timer (if not in auto-play mode AND we have visual feedback)
-                    if not auto_play_enabled and has_visual:
-                        print(f"[BOT COUNTDOWN] Starting countdown timer - visual feedback confirmed", flush=True)
+                    # Start countdown: always in text-only mode (narrative is the feedback);
+                    # in image modes, only when visual has confirmed what the player needs to see.
+                    if not auto_play_enabled and (has_visual or _text_only):
+                        print(f"[BOT COUNTDOWN] Starting countdown timer", flush=True)
                         start_countdown_timer(
                             interaction.channel,
                             disp["choices"],
@@ -1508,10 +1523,8 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                             disp.get("situation_report", ""),
                             disp.get("consequence_image")
                         )
-                    elif not has_visual:
+                    elif not has_visual and not _text_only:
                         print(f"[BOT COUNTDOWN] WARNING: No visual feedback, countdown NOT started", flush=True)
-                
-                        # Start auto-advance timer with new choices
                         start_auto_advance_timer(interaction.channel, disp["choices"], view)
                         # Lock released here after turn fully processed
 
@@ -1597,7 +1610,12 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             
 
                     session_id = str(interaction.channel_id) if interaction.channel_id else 'default'
-                    world_state = engine.get_state(session_id).get('world_prompt', '')
+                    _cur_state_pre_c = engine.get_state(session_id)
+                    world_state = _cur_state_pre_c.get('world_prompt', '')
+                    _text_only_c = (
+                        not engine.IMAGE_ENABLED
+                        or _cur_state_pre_c.get('experience_mode') == engine.EXPERIENCE_MODE_NO_IMAGES
+                    )
             
                     # Get spatial context from last vision analysis
                     spatial_context = ""
@@ -1644,8 +1662,9 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     phase1_task = loop.run_in_executor(None, lambda: engine.advance_turn_image_fast(custom_choice, fate, False, session_id))
             
                     # --- PROGRESSIVE FEEDBACK & RENDERING ---
+                    _render_desc_c = "📝 **GENERATING NARRATIVE...**" if _text_only_c else "🎬 **RECORDING SEQUENCE...**"
                     render_msg = await interaction.channel.send(embed=discord.Embed(
-                        description="🎬 **RECORDING SEQUENCE...**",
+                        description=_render_desc_c,
                         color=CORNER_GREY
                     ))
 
@@ -1666,7 +1685,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     # --- WAIT FOR FLIPBOOK RENDER ---
                     flipbook_url = None
                     current_state = engine.get_state(session_id)
-                    if current_state.get("flipbook_mode", False):
+                    if current_state.get("flipbook_mode", False) and engine.IMAGE_ENABLED:
                         print(f"[BOT FLIPBOOK WAIT CUSTOM] Waiting for flipbook to generate...", flush=True)
                         max_wait = 120  # Increased to 120s - HD flipbooks with 3 refs need 105s API timeout
                         check_interval = 1.0
@@ -1732,6 +1751,15 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                             description=safe_embed_desc(full_text),
                             color=VHS_RED
                         ))
+                    # In text-only mode: show What You See so the player has full sensory detail
+                    if _text_only_c:
+                        _vision_c = phase1.get("vision_dispatch", "")
+                        if _vision_c:
+                            await interaction.channel.send(embed=discord.Embed(
+                                title="👁️ What You See",
+                                description=safe_embed_desc(_vision_c),
+                                color=CORNER_TEAL,
+                            ))
 
                     # 3. Track for tape
                     global _run_images, _run_flipbooks
@@ -1780,7 +1808,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     # display it now before showing choices
                     late_flipbook_displayed = False
                     current_state = engine.get_state(session_id)
-                    if current_state.get("flipbook_mode", False):
+                    if current_state.get("flipbook_mode", False) and engine.IMAGE_ENABLED:
                         # If we timed out earlier, give it a bit more time (10 more seconds)
                         # Sometimes flipbooks finish just seconds after the initial timeout
                         if not flipbook_url or flipbook_url == "FAILED":
@@ -1954,16 +1982,14 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             
                     # Show new choices
                     await interaction.channel.send("🟢 What will you do next?")
-                    view = ChoiceView(disp["choices"])
+                    view = ChoiceView(disp["choices"], owner_id=OWNER_ID)
                     await send_choices(interaction.channel, disp["choices"], view, getattr(self, 'last_choices_message', None))
             
-                    # CRITICAL: Only start countdown if we have visual feedback (flipbook or image)
                     has_visual = flipbook_url or late_flipbook_displayed or img_path
-                    print(f"[BOT COUNTDOWN CHECK CUSTOM] has_visual={bool(has_visual)}, flipbook={bool(flipbook_url)}, late={late_flipbook_displayed}, image={bool(img_path)}", flush=True)
+                    print(f"[BOT COUNTDOWN CHECK CUSTOM] has_visual={bool(has_visual)}, text_only={_text_only_c}, flipbook={bool(flipbook_url)}, late={late_flipbook_displayed}, image={bool(img_path)}", flush=True)
             
-                    # Start countdown timer (if not in auto-play mode AND we have visual feedback)
-                    if not auto_play_enabled and has_visual:
-                        print(f"[BOT COUNTDOWN CUSTOM] Starting countdown timer - visual feedback confirmed", flush=True)
+                    if not auto_play_enabled and (has_visual or _text_only_c):
+                        print(f"[BOT COUNTDOWN CUSTOM] Starting countdown timer", flush=True)
                         start_countdown_timer(
                             interaction.channel,
                             disp["choices"],
@@ -1972,7 +1998,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                             disp.get("situation_report", ""),
                             disp.get("consequence_image")
                         )
-                    elif not has_visual:
+                    elif not has_visual and not _text_only_c:
                         print(f"[BOT COUNTDOWN CUSTOM] WARNING: No visual feedback, countdown NOT started", flush=True)
             
                     # Start auto-advance timer
@@ -2496,11 +2522,20 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
     
     class FlipbookToggleButton(Button):
         def __init__(self, parent_view):
-            # Check if flipbook mode is currently enabled (default session for now)
-            current_state = engine.get_state('default')
-            flipbook_mode = current_state.get("flipbook_mode", False)
-            label = "🎬 Flipbook: ON" if flipbook_mode else "🎬 Flipbook: OFF"
-            style = discord.ButtonStyle.success if flipbook_mode else discord.ButtonStyle.secondary
+            # Use IMAGE_ENABLED as the authoritative signal for initial label
+            # (avoids reading the wrong session in multi-channel setups)
+            flipbook_mode = not engine.IMAGE_ENABLED  # False in text-only, otherwise check state
+            if engine.IMAGE_ENABLED:
+                try:
+                    flipbook_mode = engine.get_state('default').get("flipbook_mode", False)
+                except Exception:
+                    flipbook_mode = False
+            if not engine.IMAGE_ENABLED:
+                label = "🎬 Flipbook: N/A"
+                style = discord.ButtonStyle.secondary
+            else:
+                label = "🎬 Flipbook: ON" if flipbook_mode else "🎬 Flipbook: OFF"
+                style = discord.ButtonStyle.success if flipbook_mode else discord.ButtonStyle.secondary
             super().__init__(label=label, style=style, row=2)
             self.parent_view = parent_view
         
@@ -2518,6 +2553,15 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             
             # Determine session ID from interaction
             session_id = str(interaction.channel_id) if interaction.channel_id else 'default'
+
+            # Guard: images must be enabled for flipbook to make sense
+            if not engine.IMAGE_ENABLED:
+                await interaction.response.send_message(
+                    "⚠️ **Flipbook is not available in Text Only mode.**\n"
+                    "Select a different visual experience at the start screen to use flipbook.",
+                    ephemeral=True,
+                )
+                return
             
             # Toggle flipbook mode in state
             current_state = engine.get_state(session_id)
@@ -2968,14 +3012,21 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
             def __init__(self):
                 options = [
                     discord.SelectOption(
-                        label="Gemini",
+                        label="✨ Gemini",
                         value="gemini",
-                        default=True
+                        description="Google Gemini Flash — fast, default",
+                        default=True,
                     ),
                     discord.SelectOption(
-                        label="OpenAI",
-                        value="openai"
-                    )
+                        label="🟠 Claude Opus",
+                        value="anthropic",
+                        description="Anthropic Claude Opus — premium narrative quality",
+                    ),
+                    discord.SelectOption(
+                        label="🤖 OpenAI",
+                        value="openai",
+                        description="GPT-4o mini — OpenAI text + images",
+                    ),
                 ]
                 super().__init__(
                     placeholder="🎛️ Select AI Model",
@@ -2988,14 +3039,21 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                 preset_name = self.values[0]
                 
                 # Validate API keys before switching
-
                 if preset_name == "openai" and not engine.OPENAI_API_KEY:
                     await interaction.response.send_message(
                         "ERROR: **OpenAI API key not configured!**\nCannot switch to OpenAI provider.",
                         ephemeral=True
                     )
                     return
-                
+
+                if preset_name == "anthropic" and not os.environ.get("ANTHROPIC_API_KEY"):
+                    await interaction.response.send_message(
+                        "ERROR: **Anthropic API key not configured!**\n"
+                        "Add `ANTHROPIC_API_KEY` to your environment variables to use Claude Opus.",
+                        ephemeral=True
+                    )
+                    return
+
                 # Switch to selected preset
                 success = ai_provider_manager.set_preset(preset_name)
                 
@@ -3108,70 +3166,88 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                     except Exception as _del_e:
                         print(f"[LOG] Could not delete intro message: {_del_e}")
 
-                    _ni_loop = asyncio.get_running_loop()
-                    _ni_task = _ni_loop.run_in_executor(
-                        None, lambda: engine.generate_intro_turn(session_id)
-                    )
-                    _ni_vhs = await interaction.channel.send(embed=discord.Embed(
-                        description="`[00:00:00]` VHS PLAYER\n`LOADING...`",
-                        color=CORNER_GREY,
-                    ))
-                    _ni_vhs_seq = [
-                        (1.5, "`[00:00:03]` TRACKING HEADS\n`ENGAGING...`"),
-                        (1.5, "`[00:00:06]` MAGNETIC STRIP\n`READING...`"),
-                        (1.5, "`[00:00:09]` VIDEO SIGNAL\n`DETECTED`"),
-                        (1.5, "`[00:00:12]` AUDIO CHANNELS\n`SYNCHRONIZING...`"),
-                        (1.5, "`[00:00:15]` PLAYBACK\n`STARTING...`"),
-                    ]
-                    for _ni_delay, _ni_msg in _ni_vhs_seq:
-                        _ni_done, _ = await asyncio.wait([_ni_task], timeout=_ni_delay)
-                        if _ni_done:
-                            break
+                    try:  # ── TOP-LEVEL NO-IMAGES GUARD ─────────────────────────
+                        _ni_loop = asyncio.get_running_loop()
+                        _ni_task = _ni_loop.run_in_executor(
+                            None, lambda: engine.generate_intro_turn(session_id)
+                        )
+                        _ni_vhs = await interaction.channel.send(embed=discord.Embed(
+                            description="`[00:00:00]` VHS PLAYER\n`LOADING...`",
+                            color=CORNER_GREY,
+                        ))
+                        _ni_vhs_seq = [
+                            (1.5, "`[00:00:03]` TRACKING HEADS\n`ENGAGING...`"),
+                            (1.5, "`[00:00:06]` MAGNETIC STRIP\n`READING...`"),
+                            (1.5, "`[00:00:09]` VIDEO SIGNAL\n`DETECTED`"),
+                            (1.5, "`[00:00:12]` AUDIO CHANNELS\n`SYNCHRONIZING...`"),
+                            (1.5, "`[00:00:15]` PLAYBACK\n`STARTING...`"),
+                        ]
+                        for _ni_delay, _ni_msg in _ni_vhs_seq:
+                            _ni_done, _ = await asyncio.wait([_ni_task], timeout=_ni_delay)
+                            if _ni_done:
+                                break
+                            try:
+                                await _ni_vhs.edit(embed=discord.Embed(
+                                    description=_ni_msg, color=CORNER_GREY
+                                ))
+                            except Exception:
+                                break
+                        _ni_result = await _ni_task
                         try:
-                            await _ni_vhs.edit(embed=discord.Embed(
-                                description=_ni_msg, color=CORNER_GREY
+                            await _ni_vhs.delete()
+                        except Exception:
+                            pass
+
+                        _ni_dispatch = (_ni_result or {}).get("dispatch", "") or "The story begins..."
+                        _ni_vision = (_ni_result or {}).get("vision_dispatch", "") or "You survey the scene."
+                        await interaction.channel.send(embed=discord.Embed(
+                            title="Prologue",
+                            description=safe_embed_desc(_ni_dispatch),
+                            color=CORNER_TEAL,
+                        ))
+                        await interaction.channel.send(embed=discord.Embed(
+                            title="What You See",
+                            description=safe_embed_desc(_ni_vision),
+                            color=CORNER_TEAL,
+                        ))
+                        _ni_choices = (
+                            (_ni_result or {}).get("choices")
+                            or ["Look around carefully", "Move forward slowly", "Wait and observe"]
+                        )
+                        await interaction.channel.send("🟢 What will you do next?")
+                        _ni_choice_view = ChoiceView(_ni_choices, owner_id=OWNER_ID)
+                        await send_choices(
+                            interaction.channel, _ni_choices, _ni_choice_view, None
+                        )
+                        try:
+                            start_countdown_timer(
+                                interaction.channel,
+                                _ni_choices,
+                                _ni_choice_view,
+                                _ni_dispatch,
+                                (_ni_result or {}).get("situation_report", ""),
+                                (_ni_result or {}).get("consequence_image"),
+                            )
+                        except Exception as _ni_timer_err:
+                            print(
+                                f"[PLAY-NOIMAGES] Countdown timer failed: {_ni_timer_err}",
+                                flush=True,
+                            )
+                    except Exception as _ni_err:  # ── TOP-LEVEL NO-IMAGES GUARD ─
+                        import traceback
+                        print(f"[PLAY-NOIMAGES ERROR] Unhandled exception: {_ni_err}", flush=True)
+                        traceback.print_exc()
+                        try:
+                            await interaction.channel.send(embed=discord.Embed(
+                                title="⚠️ Start Error",
+                                description=(
+                                    "Something went wrong starting Text Only mode. "
+                                    "Please try again — the game may still be initialising."
+                                ),
+                                color=VHS_RED,
                             ))
                         except Exception:
-                            break
-                    _ni_result = await _ni_task
-                    try:
-                        await _ni_vhs.delete()
-                    except Exception:
-                        pass
-
-                    await interaction.channel.send(embed=discord.Embed(
-                        title="Prologue",
-                        description=(_ni_result or {}).get("dispatch", ""),
-                        color=CORNER_TEAL,
-                    ))
-                    await interaction.channel.send(embed=discord.Embed(
-                        title="What You See",
-                        description=(_ni_result or {}).get("vision_dispatch", ""),
-                        color=CORNER_TEAL,
-                    ))
-                    _ni_choices = (
-                        (_ni_result or {}).get("choices")
-                        or ["Look around carefully", "Move forward slowly", "Wait and observe"]
-                    )
-                    await interaction.channel.send("🟢 What will you do next?")
-                    _ni_choice_view = ChoiceView(_ni_choices, owner_id=OWNER_ID)
-                    await send_choices(
-                        interaction.channel, _ni_choices, _ni_choice_view, None
-                    )
-                    try:
-                        start_countdown_timer(
-                            interaction.channel,
-                            _ni_choices,
-                            _ni_choice_view,
-                            (_ni_result or {}).get("dispatch", ""),
-                            (_ni_result or {}).get("situation_report", ""),
-                            (_ni_result or {}).get("consequence_image"),
-                        )
-                    except Exception as _ni_timer_err:
-                        print(
-                            f"[PLAY-NOIMAGES] Countdown timer failed: {_ni_timer_err}",
-                            flush=True,
-                        )
+                            pass
                     return  # No-images path complete
 
                 # ── With-images path (flipbook or full_frame) ─────────────────
@@ -3982,6 +4058,15 @@ Generate the penalty in valid JSON format. MUST stay in current location. Use 'y
                             if isinstance(c, str) and c.strip() not in ("", "—", "–", "-")
                         ]
                         saved_dispatch = snap.get('world_prompt') or snap.get('situation') or ""
+                        # Restore experience mode globals so IMAGE_ENABLED, flipbook_mode
+                        # etc. survive a bot restart/redeploy.
+                        saved_exp_mode = snap.get('experience_mode')
+                        if saved_exp_mode:
+                            engine.apply_experience_mode(saved_exp_mode, session_id)
+                            print(
+                                f"[BOT RESUME] Restored experience mode: {saved_exp_mode}",
+                                flush=True,
+                            )
                     except Exception as e:
                         print(f"[BOT RESUME] Could not load session state: {e}", flush=True)
 

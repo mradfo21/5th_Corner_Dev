@@ -610,6 +610,92 @@ class TestExperienceModeStatePersistence(unittest.TestCase):
             self.assertFalse(st2["flipbook_mode"])
 
 
+class TestClaudeOpusProvider(unittest.TestCase):
+    """Verify Claude/Anthropic provider is wired up correctly."""
+
+    def test_anthropic_preset_in_ai_config(self):
+        import json
+        from pathlib import Path
+        cfg_path = Path(__file__).parent / "ai_config.json"
+        with open(cfg_path) as f:
+            cfg = json.load(f)
+        presets = cfg.get("available_configs", {})
+        self.assertIn("anthropic", presets, "anthropic preset must exist in ai_config.json")
+        ant = presets["anthropic"]
+        self.assertEqual(ant["text_provider"], "anthropic")
+        self.assertIn("claude", ant["text_model"].lower(), "text_model must reference a Claude model")
+
+    def test_ask_routes_anthropic(self):
+        import engine
+        import ai_provider_manager
+        with patch.object(ai_provider_manager, "get_text_provider", return_value="anthropic"), \
+             patch.object(ai_provider_manager, "get_text_model", return_value="claude-opus-4-5"), \
+             patch.object(engine, "_ask_claude", return_value="narrative response") as mock_claude:
+            result = engine._ask("test prompt")
+        mock_claude.assert_called_once()
+        self.assertEqual(result, "narrative response")
+
+    def test_ask_claude_returns_fallback_without_key(self):
+        import engine
+        with patch.dict(os.environ, {}, clear=False):
+            # Temporarily remove key if present
+            original = os.environ.pop("ANTHROPIC_API_KEY", None)
+            try:
+                result = engine._ask_claude("test", "claude-opus-4-5", 0.7, 50)
+                self.assertIn("interrupted", result.lower())
+            finally:
+                if original is not None:
+                    os.environ["ANTHROPIC_API_KEY"] = original
+
+    def test_bot_ai_provider_select_includes_claude(self):
+        import ast
+        bot_src = Path(__file__).parent / "bot.py"
+        source = bot_src.read_text(encoding="utf-8")
+        self.assertIn("anthropic", source, "bot.py must reference anthropic provider")
+        self.assertIn("Claude Opus", source, "bot.py AIProviderSelect must list Claude Opus")
+        self.assertIn("ANTHROPIC_API_KEY", source, "bot.py must check for ANTHROPIC_API_KEY")
+
+
+class TestNoImagesGuard(unittest.TestCase):
+    """Verify the no-images PlayButton path has proper error handling."""
+
+    def test_no_images_path_has_try_except_guard(self):
+        """The no-images section in PlayButton.callback must have a top-level guard."""
+        from pathlib import Path
+        src = (Path(__file__).parent / "bot.py").read_text(encoding="utf-8")
+        # Guard comment is present
+        self.assertIn(
+            "TOP-LEVEL NO-IMAGES GUARD",
+            src,
+            "No-images PlayButton path must have a top-level exception guard",
+        )
+
+    def test_no_images_path_uses_safe_embed_desc(self):
+        """Embed descriptions in the no-images path must use safe_embed_desc."""
+        from pathlib import Path
+        src = (Path(__file__).parent / "bot.py").read_text(encoding="utf-8")
+        # Find the no-images section
+        start = src.find("TOP-LEVEL NO-IMAGES GUARD")
+        end = src.find("return  # No-images path complete", start)
+        section = src[start:end]
+        self.assertIn(
+            "safe_embed_desc",
+            section,
+            "No-images path must use safe_embed_desc to avoid empty-embed Discord errors",
+        )
+
+    def test_resume_restores_experience_mode(self):
+        """on_ready resume path must call apply_experience_mode from saved state."""
+        from pathlib import Path
+        src = (Path(__file__).parent / "bot.py").read_text(encoding="utf-8")
+        # Find the resume section
+        idx = src.find("Restored experience mode")
+        self.assertGreater(
+            idx, -1,
+            "on_ready resume path must restore experience mode from saved state",
+        )
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # ENTRY POINT
 # ═══════════════════════════════════════════════════════════════════════════

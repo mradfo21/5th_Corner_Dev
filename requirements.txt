@@ -8,4 +8,5 @@ requests
 replicate
 imageio-ffmpeg
 opencv-python
-google-genai 
+google-genai
+anthropic

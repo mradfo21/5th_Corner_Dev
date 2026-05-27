@@ -28,3 +28,4 @@ test_*.py
 # Keep the curated pre-deploy and experience-mode test suites in version control
 !test_before_deploy.py
 !test_experience_mode.py
+!test_no_images_simulation.py

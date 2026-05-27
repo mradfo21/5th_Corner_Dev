@@ -710,6 +710,71 @@ except Exception as e:
     failed_tests.append("Temporal consistency architecture checks")
 
 # ============================================================================
+# TEST 13: Claude Opus Provider + No-Images Bugfixes
+# ============================================================================
+print("\n[TEST 13] Claude Opus Provider + No-Images Bugfixes...")
+try:
+    import json
+    from pathlib import Path
+
+    # 1. anthropic preset in ai_config.json
+    print("  Checking anthropic preset in ai_config.json...", end=" ")
+    cfg = json.loads((Path("ai_config.json")).read_text())
+    presets = cfg.get("available_configs", {})
+    assert "anthropic" in presets, "anthropic preset missing"
+    assert presets["anthropic"]["text_provider"] == "anthropic"
+    assert "claude" in presets["anthropic"]["text_model"].lower()
+    print("[OK]")
+
+    # 2. _ask_claude exists in engine.py
+    print("  Checking _ask_claude function in engine.py...", end=" ")
+    engine_src = Path("engine.py").read_text(encoding="utf-8")
+    assert "def _ask_claude(" in engine_src, "_ask_claude missing from engine.py"
+    assert "anthropic" in engine_src.lower(), "engine.py must import/use anthropic"
+    print("[OK]")
+
+    # 3. _ask routes anthropic provider
+    print("  Checking _ask routes 'anthropic' to _ask_claude...", end=" ")
+    assert 'elif provider == "anthropic"' in engine_src
+    assert "_ask_claude(" in engine_src
+    print("[OK]")
+
+    # 4. anthropic in requirements.txt
+    print("  Checking anthropic in requirements.txt...", end=" ")
+    reqs = Path("requirements.txt").read_text()
+    assert "anthropic" in reqs, "anthropic missing from requirements.txt"
+    print("[OK]")
+
+    # 5. bot.py AIProviderSelect has Claude Opus option
+    print("  Checking bot.py AIProviderSelect has Claude Opus...", end=" ")
+    bot_src = Path("bot.py").read_text(encoding="utf-8")
+    assert "Claude Opus" in bot_src, "bot.py must show Claude Opus in dropdown"
+    assert "ANTHROPIC_API_KEY" in bot_src, "bot.py must check ANTHROPIC_API_KEY"
+    print("[OK]")
+
+    # 6. No-images PlayButton has top-level guard
+    print("  Checking no-images PlayButton has exception guard...", end=" ")
+    assert "TOP-LEVEL NO-IMAGES GUARD" in bot_src, "no-images path missing exception guard"
+    print("[OK]")
+
+    # 7. Resume restores experience mode
+    print("  Checking on_ready resume restores experience mode...", end=" ")
+    assert "Restored experience mode" in bot_src, "on_ready resume must restore experience mode"
+    print("[OK]")
+
+    # 8. No-images path uses safe_embed_desc
+    print("  Checking no-images path uses safe_embed_desc...", end=" ")
+    guard_start = bot_src.find("TOP-LEVEL NO-IMAGES GUARD")
+    guard_end = bot_src.find("return  # No-images path complete", guard_start)
+    section = bot_src[guard_start:guard_end]
+    assert "safe_embed_desc" in section, "no-images path must use safe_embed_desc"
+    print("[OK]")
+
+except Exception as e:
+    print(f"[FAIL] {e}")
+    failed_tests.append("Claude Opus provider + no-images bugfixes")
+
+# ============================================================================
 # RESULTS
 # ============================================================================
 print("\n" + "=" * 70)
