@@ -3372,6 +3372,38 @@ Generate the penalty in valid JSON format. MUST stay in current location. MUST h
                     await interaction.message.delete()
                 except Exception as e:
                     print(f"[LOG] Could not delete intro message: {e}")
+
+                # ── TOP-LEVEL WITH-IMAGES GUARD ────────────────────────────────
+                # Any unhandled exception in the with-images intro flow used to
+                # leave the channel completely silent — the player saw the logo
+                # then nothing, and Discord eventually surfaced "Interaction
+                # Failed" or "Generating choices failed". The guard mirrors the
+                # no-images path so the demo can ALWAYS recover with at least a
+                # narrative turn + scene-grounded choices.
+                try:
+                    await self._run_with_images_intro(interaction, session_id)
+                except Exception as _wi_err:
+                    import traceback
+                    print(f"[PLAY-WITHIMAGES ERROR] Unhandled exception: {_wi_err}", flush=True)
+                    traceback.print_exc()
+                    try:
+                        await interaction.channel.send(embed=discord.Embed(
+                            title="⚠️ Start Error",
+                            description=(
+                                "Something went wrong starting the visual feed. "
+                                "Try again — if it persists, switch to Text Only mode."
+                            ),
+                            color=VHS_RED,
+                        ))
+                    except Exception:
+                        pass
+                return
+
+            async def _run_with_images_intro(self, interaction, session_id):
+                """Inner with-images intro body. Wrapped by a top-level guard in
+                callback() so that any exception still produces a recoverable
+                demo experience instead of silent failure."""
+                global _run_images, _run_flipbooks, _run_experience_mode
                 
                 # === SHOW LOGO FIRST (Frame 0 of VHS tape) ===
                 logo_path = ROOT / "static" / "Logo"
@@ -3497,8 +3529,39 @@ Generate the penalty in valid JSON format. MUST stay in current location. MUST h
                     except Exception:
                         break
                 
-                # Wait for image generation to complete
-                intro_phase1 = await image_task
+                # Wait for image generation to complete with a HARD ceiling.
+                # _gen_image has its own 30s API timeout, but a hung executor
+                # thread or a sequence of retries can still leave `await` blocked
+                # forever — at which point Phase 2 never runs and the player
+                # sees an indefinite "Generating choices..." screen. 75s
+                # ceiling is well above the worst legitimate latency and
+                # guarantees the demo recovers.
+                intro_phase1 = None
+                try:
+                    intro_phase1 = await asyncio.wait_for(image_task, timeout=75.0)
+                except asyncio.TimeoutError:
+                    print(
+                        "[PLAY-WITHIMAGES] Phase 1 (image gen) hit 75s ceiling — "
+                        "continuing without intro image.",
+                        flush=True,
+                    )
+                except Exception as _p1_err:
+                    import traceback
+                    print(f"[PLAY-WITHIMAGES] Phase 1 crashed: {_p1_err}", flush=True)
+                    traceback.print_exc()
+                if not isinstance(intro_phase1, dict):
+                    # Always synthesise a usable Phase 1 payload so Phase 2 and
+                    # the bot have prologue/vision_dispatch to fall back on.
+                    intro_phase1 = {
+                        "dispatch": "You survey the Horizon facility from a distant ridge.",
+                        "prologue": "You survey the Horizon facility from a distant ridge.",
+                        "vision_dispatch": (
+                            "Wide landscape: the Horizon facility complex sits in the "
+                            "valley below, industrial buildings ringed by desert."
+                        ),
+                        "dispatch_image": None,
+                        "world_prompt": "You survey the Horizon facility from a distant ridge.",
+                    }
                 
                 # Clean up VHS loading message
                 try:
@@ -3634,7 +3697,17 @@ Generate the penalty in valid JSON format. MUST stay in current location. MUST h
                         None,
                         session_id
                     )
-                    intro_phase2 = await choices_task
+                    # Hard ceiling on Phase 2 — vision analysis + choice LLM +
+                    # critic LLM can each individually take ~20-30s. 60s is a
+                    # generous bound that still guarantees the player isn't
+                    # stuck staring at "⚙️ Generating choices..." forever.
+                    intro_phase2 = await asyncio.wait_for(choices_task, timeout=60.0)
+                except asyncio.TimeoutError:
+                    print(
+                        "[PLAY ERROR] Intro Phase 2 (choice gen) hit 60s ceiling — "
+                        "using intro contextual fallback.",
+                        flush=True,
+                    )
                 except Exception as _phase2_err:
                     import traceback
                     print(f"[PLAY ERROR] Intro Phase 2 (choice gen) failed: {_phase2_err}", flush=True)
