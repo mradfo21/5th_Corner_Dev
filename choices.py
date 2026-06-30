@@ -245,7 +245,13 @@ def generate_choices(
     # rather than always returning generic "Look around" filler. The bot
     # tracks "[CHOICES FALLBACK]" log lines to surface upstream failures.
     def _contextual_fallback() -> List[str]:
-        ctx = (caption + " " + image_description + " " + world_prompt + " " + last_dispatch).lower()
+        # Callers (e.g. api_regenerate_choices) sometimes pass None instead of
+        # "" for caption/image_description/world_prompt/last_dispatch (e.g. when
+        # there's no current image yet) — coerce so concatenation never raises.
+        ctx = (
+            (caption or "") + " " + (image_description or "") + " " +
+            (world_prompt or "") + " " + (last_dispatch or "")
+        ).lower()
         opts: List[str] = []
         if any(k in ctx for k in ("fence", "perimeter", "chain-link")):
             opts.append("Vault over the fence")
@@ -270,6 +276,15 @@ def generate_choices(
                 seen_local.add(o.lower())
                 deduped.append(o)
         return deduped[:3] if len(deduped) >= 2 else ["Vault forward", "Press against cover", "Scan the perimeter"]
+
+    # Offline/mock backend short-circuit: when ai_provider_manager has been
+    # told to use the "mock" backend (e.g. by run_local.py --mock or the
+    # offline test harness), skip the network call entirely instead of
+    # letting it fail/timeout. This is the only place generate_choices()
+    # needs to know about the provider manager's backend override.
+    if ai_provider_manager.is_mock_active("chat"):
+        print("[CHOICES] Mock backend active — returning contextual fallback choices (no network).", flush=True)
+        return _contextual_fallback()
 
     import time as _time
     _choices_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"

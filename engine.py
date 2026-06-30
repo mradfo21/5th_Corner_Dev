@@ -372,7 +372,12 @@ def delete_session(session_id, archive_first=True):
 # Legacy constants for backward compatibility
 STATE_PATH = ROOT/"world_state.json"
 IMAGE_DIR = ROOT / "images"
-WORLD_STATE_LOCK = threading.Lock() # Global lock for world_state.json access
+# Use an RLock (reentrant lock), not a plain Lock: many call sites do
+# `with WORLD_STATE_LOCK: ... _save_state(state)`, and _save_state() itself
+# acquires this same lock. A plain Lock would deadlock the owning thread on
+# that second acquisition; RLock allows the same thread to re-enter safely
+# while still excluding other threads, which is what was always intended.
+WORLD_STATE_LOCK = threading.RLock() # Global lock for world_state.json access
 
 IMAGE_ENABLED       = True  # ENABLED for production
 WORLD_IMAGE_ENABLED = True  # ENABLED for production
@@ -3145,7 +3150,11 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
         dispatch_text = ""
         try:
             if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Generating narrative dispatch...", flush=True)
-            dispatch_text = _generate_dispatch(choice, current_state_snapshot, prev_state_snapshot)
+            # _generate_dispatch() returns {"dispatch": str, "player_alive": bool},
+            # not a bare string — unwrap it here (this call site previously
+            # called .strip() directly on the dict, which always raised).
+            dispatch_result = _generate_dispatch(choice, current_state_snapshot, prev_state_snapshot)
+            dispatch_text = dispatch_result.get("dispatch", "") if isinstance(dispatch_result, dict) else (dispatch_result or "")
             if not dispatch_text or dispatch_text.strip().lower() in {"none", "", "[", "[]"}:
                 dispatch_text = "The situation evolves..."
             dispatch_item = create_feed_item(type="narrative_event", content=dispatch_text, metadata={"source": "dispatch"})
@@ -3197,7 +3206,11 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
         if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Applying choice to world state (via choices.py)...", flush=True)
         try:
             import choices  # Local import to avoid circular dependency
-            choices.generate_and_apply_choice(choice, dispatch_text_from_engine=dispatch_text) # Call via module
+            # generate_and_apply_choice(choice, state_path=...) — it has no
+            # 'dispatch_text_from_engine' parameter (that kwarg always raised
+            # TypeError here). Point it at the same 'default' session file
+            # the rest of this function reads/writes via _load_state()/_save_state().
+            choices.generate_and_apply_choice(choice, state_path=str(_get_state_path()))
             # Reload state after choices.py potentially modified it
             state = _load_state()
         except Exception as e_apply_choice:
@@ -3602,7 +3615,12 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                 consequence_for_choices = f"{final_choice_prompt_text}\nMost recent consequence: {consequence_text.strip()}"
 
             import choices  # Local import to avoid circular dependency
-            new_choices, choices_meta = choices.generate_choices(
+            # NOTE: choices.generate_choices() returns a plain List[str] (see
+            # its `return improved_choices` at the end of the function) — it
+            # does not return a (choices, metadata) tuple. choices_meta is
+            # kept as an empty dict for state["choices_metadata"] below,
+            # which expects a dict but never relied on real content from it.
+            new_choices = choices.generate_choices(
                 client=client, 
                 prompt_tmpl=choice_tmpl,
                 last_dispatch=dispatch_text,
@@ -3619,6 +3637,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                 situation_summary=consequence_for_choices,
                 inventory=state.get("inventory", [])  # Pass inventory for item-aware choices
             )
+            choices_meta = {}
             if not new_choices:
                 print("WARNING: choices.generate_choices returned empty list. Using fallback choices.", flush=True)
                 new_choices = ["Investigate further", "Scan the area", "Proceed with caution"]            # Corrected call: removed metadata argument as _structure_choices_for_feed doesn't accept it
@@ -3778,7 +3797,9 @@ def generate_intro_turn_feed_items() -> List[Dict[str, Any]]:
             
     initial_choice_texts = []
     try:
-        initial_choice_texts, _ = generate_choices( # Expecting metadata back now
+        # generate_choices() returns a plain List[str], not a (choices, meta)
+        # tuple — do not unpack it as one (see note in _process_turn_background).
+        initial_choice_texts = generate_choices(
             client=client,
             prompt_tmpl=choice_tmpl,
             last_dispatch="The simulation has just started.",
@@ -4045,7 +4066,9 @@ def api_regenerate_choices():
 
         from choices import generate_choices
         situation_summary = summarize_world_state(state_snapshot_for_context)
-        regenerated_choice_texts, _ = generate_choices(
+        # generate_choices() returns a plain List[str], not a (choices, meta)
+        # tuple — do not unpack it as one (see note in _process_turn_background).
+        regenerated_choice_texts = generate_choices(
             client=client,
             prompt_tmpl=choice_tmpl,
             last_dispatch=last_dispatch_text,
