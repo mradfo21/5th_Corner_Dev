@@ -1,0 +1,16 @@
+# Development/test dependencies on top of the production requirements.
+# Install with: pip install -r requirements-dev.txt
+-r requirements.txt
+
+# End-to-end browser testing for the standalone UI (test_standalone_e2e.py)
+playwright>=1.40
+pytest>=7.4
+pytest-playwright>=0.4
+
+# After installing, fetch the browser binary once with:
+#   playwright install chromium
+
+# Optional: native desktop window for run_desktop.py (see
+# DESKTOP_APP_ROADMAP.md). Not required — run_desktop.py falls back to a
+# normal browser tab if this isn't installed. Uncomment to try it locally:
+# pywebview>=4.4
