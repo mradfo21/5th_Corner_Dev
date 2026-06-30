@@ -3699,12 +3699,18 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                 json.dump(history, f_hist, indent=2)
         except Exception as e_hist_save:
             log_error(f"Error saving history.json: {e_hist_save}")
-        # Final prune of feed_log to keep it manageable (e.g., last 50-100 items)
-        MAX_FEED_LOG_ITEMS = 100 
-        if len(state.get("feed_log", [])) > MAX_FEED_LOG_ITEMS:
-            with WORLD_STATE_LOCK:
+        # Advance the turn counter for this completed turn. This legacy feed
+        # path never incremented it, so the standalone HUD's TURN counter was
+        # frozen at 0 forever. Also do the final feed_log prune and persist
+        # both here (the previous final _save_state had been accidentally
+        # commented out by being merged onto a comment line, so turn_count
+        # and the prune were never saved).
+        with WORLD_STATE_LOCK:
+            state["turn_count"] = int(state.get("turn_count", 0)) + 1
+            MAX_FEED_LOG_ITEMS = 100  # Keep feed_log manageable (last N items)
+            if len(state.get("feed_log", [])) > MAX_FEED_LOG_ITEMS:
                 state["feed_log"] = state["feed_log"][-MAX_FEED_LOG_ITEMS:]
-                # _save_state(state) # No need to save here, will be saved by turn_count update shortly        _save_state(state) # Final save for turn_count and any other latent changes
+            _save_state(state)  # Final save: turn_count + pruned feed_log
         if DEBUG_MODE: print(f"[DEBUG] _process_turn_background THREAD COMPLETED for choice: '{choice}'.", flush=True)
 
     except Exception as e_critical_thread:

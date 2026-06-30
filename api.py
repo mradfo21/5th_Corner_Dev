@@ -73,12 +73,32 @@ def api_status():
     call any LLM/image backend — pure read of the in-memory/disk state."""
     try:
         s = engine.state or {}
+
+        # Resolve inventory item ids to display names + emoji for the HUD.
+        inventory = []
+        try:
+            from items import ITEMS
+            for item_id in (s.get("inventory") or []):
+                meta = ITEMS.get(item_id)
+                if meta:
+                    inventory.append({
+                        "id": item_id,
+                        "display": meta.get("display", item_id),
+                        "emoji": meta.get("emoji", ""),
+                    })
+                else:
+                    inventory.append({"id": item_id, "display": item_id, "emoji": ""})
+        except Exception:
+            inventory = [{"id": i, "display": i, "emoji": ""} for i in (s.get("inventory") or [])]
+
         return jsonify({
             "phase": s.get("current_phase", "normal"),
             "chaos": s.get("chaos_level", 0),
             "turn": s.get("turn_count", 0),
             "alive": s.get("player_state", {}).get("alive", True),
             "in_combat": s.get("in_combat", False),
+            "time_of_day": s.get("time_of_day", ""),
+            "inventory": inventory,
             "backend": ai_provider_manager.active_backend("chat"),
             "image_enabled": engine.IMAGE_ENABLED,
         })
