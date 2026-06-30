@@ -24,6 +24,7 @@
   const el = {
     sceneA: document.getElementById("sceneA"),
     sceneB: document.getElementById("sceneB"),
+    sceneFlash: document.getElementById("scene-flash"),
     prose: document.getElementById("prose-feed"),
     choices: document.getElementById("choices-container"),
     customForm: document.getElementById("custom-form"),
@@ -33,12 +34,19 @@
     hudTurn: document.getElementById("hud-turn"),
     hudPhase: document.getElementById("hud-phase"),
     hudChaos: document.getElementById("hud-chaos"),
+    hudTime: document.getElementById("hud-time"),
+    hudTimeWrap: document.getElementById("hud-time-wrap"),
     btnReset: document.getElementById("btn-reset"),
     btnRegen: document.getElementById("btn-regen"),
     btnVhs: document.getElementById("btn-vhs"),
     vhsOverlay: document.getElementById("vhs-overlay"),
     backendName: document.getElementById("backend-name"),
     timecodeText: document.getElementById("timecode-text"),
+    inventoryHud: document.getElementById("inventory-hud"),
+    inventoryList: document.getElementById("inventory-list"),
+    deathOverlay: document.getElementById("death-overlay"),
+    deathMessage: document.getElementById("death-message"),
+    deathRestart: document.getElementById("death-restart"),
   };
 
   const state = {
@@ -52,6 +60,7 @@
     secondsElapsed: 0,
     timecodeTimer: null,
     awaitingResolution: false,
+    gameOver: false,
   };
 
   // ------------------------------------------------------------------
@@ -120,6 +129,19 @@
     return resp.json();
   }
 
+  function escapeHtml(str) {
+    const div = document.createElement("div");
+    div.textContent = str == null ? "" : String(str);
+    return div.innerHTML;
+  }
+
+  // Render a small subset of markdown (the engine emits **bold** in some
+  // feed content, e.g. inventory pickups). Everything is HTML-escaped first,
+  // so this is safe against injection from model-generated text.
+  function renderInline(text) {
+    return escapeHtml(text).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+  }
+
   /**
    * Normalize the response of POST /api/regenerate_choices, which may come
    * back as a bare list of feed items OR (in older/alternate server builds)
@@ -148,6 +170,15 @@
     incoming.classList.add("scene-active");
     outgoing.classList.remove("scene-active");
     state.activeScene = state.activeScene === "A" ? "B" : "A";
+    flashScene();
+  }
+
+  function flashScene() {
+    if (!el.sceneFlash) return;
+    el.sceneFlash.classList.remove("flash");
+    // Force reflow so the animation can re-trigger on consecutive scene swaps.
+    void el.sceneFlash.offsetWidth;
+    el.sceneFlash.classList.add("flash");
   }
 
   // ------------------------------------------------------------------
@@ -161,11 +192,20 @@
     vision_analysis: "vision-analysis",
     error_event: "error-event",
     player_choice_prompt: "player-choice-prompt",
+    inventory_pickup: "inventory-pickup",
+    inventory_full: "inventory-full",
+    suspense_event: "suspense-event",
+    threat_escalation: "threat-event",
+    risky_action_outcome: "risky-event",
+    combat_action: "combat-event",
+    combat_resolution: "combat-event",
+    game_over: "game-over",
   };
 
   function classForType(type) {
     if (TYPE_CLASS[type]) return TYPE_CLASS[type];
     if (type && type.indexOf("combat") === 0) return "combat-event";
+    if (type && type.indexOf("threat") === 0) return "threat-event";
     return "narrative-event";
   }
 
@@ -173,7 +213,7 @@
     const div = document.createElement("div");
     div.className = `prose-entry ${classForType(item.type)}`;
     div.dataset.itemId = item.id;
-    div.textContent = item.content || "";
+    div.innerHTML = renderInline(item.content || "");
     el.prose.appendChild(div);
     el.prose.scrollTop = el.prose.scrollHeight + 200;
     return div;
@@ -181,20 +221,29 @@
 
   function renderChoices(promptItem) {
     el.choices.innerHTML = "";
+    if (state.gameOver) return; // death overlay owns the restart action
     if (!promptItem || !Array.isArray(promptItem.choices)) return;
     promptItem.choices.forEach((choice, idx) => {
       const btn = document.createElement("button");
       btn.className = "choice-btn";
-      btn.innerHTML = `<span class="choice-num">${idx + 1}</span><span>${escapeHtml(choice.text)}</span>`;
+      btn.innerHTML = `<span class="choice-num">${idx + 1}</span><span>${renderInline(choice.text)}</span>`;
       btn.addEventListener("click", () => makeChoice(choice.text, promptItem.id));
       el.choices.appendChild(btn);
     });
   }
 
-  function escapeHtml(str) {
-    const div = document.createElement("div");
-    div.textContent = str == null ? "" : String(str);
-    return div.innerHTML;
+  function enterGameOver(message) {
+    state.gameOver = true;
+    state.awaitingResolution = false;
+    hideVeil();
+    el.choices.innerHTML = "";
+    if (message) el.deathMessage.innerHTML = renderInline(message);
+    el.deathOverlay.classList.remove("hidden");
+  }
+
+  function exitGameOver() {
+    state.gameOver = false;
+    el.deathOverlay.classList.add("hidden");
   }
 
   function renderItem(item) {
@@ -205,26 +254,74 @@
       setScene(item.image_url);
     }
 
-    if (item.type === "player_choice_prompt") {
-      appendProse(item);
-      renderChoices(item);
-      hideVeil();
-      state.awaitingResolution = false;
-      return;
-    }
+    switch (item.type) {
+      case "scene_image":
+        // The image itself is the payload (handled above by setScene). Its
+        // placeholder content ("The scene shifts...") is intentionally NOT
+        // added to the prose feed — it would just be noise over the art.
+        return;
 
-    if (item.type === "error_event") {
-      appendProse(item);
-      hideVeil();
-      state.awaitingResolution = false;
-      return;
-    }
+      case "game_over":
+        appendProse(item);
+        enterGameOver(item.content);
+        return;
 
-    appendProse(item);
+      case "player_choice_prompt":
+        // The engine pairs a death with a "GAME OVER" restart prompt; when
+        // we're in the death state we let the overlay own restart instead.
+        if (state.gameOver || (item.content || "").toUpperCase() === "GAME OVER") {
+          state.gameOver = true;
+          el.deathOverlay.classList.remove("hidden");
+          hideVeil();
+          return;
+        }
+        appendProse(item);
+        renderChoices(item);
+        hideVeil();
+        state.awaitingResolution = false;
+        refreshStatus(); // reflect turn/chaos/inventory promptly, not on the 4s tick
+        return;
+
+      case "error_event":
+        appendProse(item);
+        hideVeil();
+        state.awaitingResolution = false;
+        return;
+
+      case "inventory_pickup":
+      case "inventory_full":
+        appendProse(item);
+        refreshStatus(); // update the inventory HUD right away
+        return;
+
+      default:
+        appendProse(item);
+        return;
+    }
   }
 
   function renderItems(items) {
     (items || []).forEach(renderItem);
+  }
+
+  // ------------------------------------------------------------------
+  // Inventory HUD
+  // ------------------------------------------------------------------
+
+  function renderInventory(items) {
+    const inv = Array.isArray(items) ? items : [];
+    el.inventoryList.innerHTML = "";
+    if (!inv.length) {
+      el.inventoryHud.classList.add("hidden");
+      return;
+    }
+    inv.forEach((it) => {
+      const li = document.createElement("li");
+      const emoji = it.emoji ? `${it.emoji} ` : "";
+      li.textContent = `${emoji}${it.display || it.id || ""}`;
+      el.inventoryList.appendChild(li);
+    });
+    el.inventoryHud.classList.remove("hidden");
   }
 
   // ------------------------------------------------------------------
@@ -233,11 +330,13 @@
 
   async function resetGame() {
     try {
+      exitGameOver();
       showVeil("Initializing simulation...");
       el.prose.innerHTML = "";
       el.choices.innerHTML = "";
       state.lastId = 0;
       state.awaitingResolution = false;
+      renderInventory([]);
       startTimecode();
       const items = await postJSON("/api/reset", {});
       renderItems(items);
@@ -251,7 +350,7 @@
   }
 
   async function makeChoice(choiceText, contextItemId) {
-    if (state.processing) return;
+    if (state.processing || state.gameOver) return;
     el.choices.innerHTML = "";
     showVeil(INTERIM_MESSAGES[0]);
     state.awaitingResolution = true;
@@ -271,7 +370,7 @@
   }
 
   async function regenChoices() {
-    if (state.processing) return;
+    if (state.processing || state.gameOver) return;
     showVeil("Reconsidering the options...");
     try {
       const resp = await postJSON("/api/regenerate_choices", {});
@@ -290,7 +389,7 @@
   function submitCustomAction(e) {
     e.preventDefault();
     const text = el.customInput.value.trim();
-    if (!text || state.processing) return;
+    if (!text || state.processing || state.gameOver) return;
     el.customInput.value = "";
     makeChoice(text, null);
   }
@@ -350,6 +449,13 @@
       el.hudPhase.textContent = s.phase ?? "normal";
       el.hudChaos.textContent = s.chaos ?? 0;
       el.backendName.textContent = s.backend ?? "unknown";
+      renderInventory(s.inventory);
+      if (s.time_of_day) {
+        el.hudTime.textContent = s.time_of_day;
+        el.hudTimeWrap.classList.remove("hidden");
+      } else {
+        el.hudTimeWrap.classList.add("hidden");
+      }
       if (s.alive === false) {
         el.hudPhase.textContent = "deceased";
       }
@@ -385,6 +491,7 @@
 
     function drawNoise() {
       const w = canvas.width, h = canvas.height;
+      if (!w || !h) return;
       const imgData = ctx.createImageData(w, h);
       const buf = new Uint32Array(imgData.data.buffer);
       for (let i = 0; i < buf.length; i++) {
@@ -403,6 +510,11 @@
   function onKeydown(e) {
     if (document.activeElement === el.customInput) {
       if (e.key === "Escape") el.customInput.value = "";
+      return;
+    }
+    // While dead, only R (restart) is meaningful.
+    if (state.gameOver) {
+      if (e.key.toLowerCase() === "r") resetGame();
       return;
     }
     if (e.key === "1" || e.key === "2" || e.key === "3") {
@@ -428,6 +540,7 @@
     el.btnReset.addEventListener("click", resetGame);
     el.btnRegen.addEventListener("click", regenChoices);
     el.btnVhs.addEventListener("click", toggleVhs);
+    el.deathRestart.addEventListener("click", resetGame);
     el.customForm.addEventListener("submit", submitCustomAction);
     document.addEventListener("keydown", onKeydown);
 

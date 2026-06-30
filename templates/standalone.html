@@ -12,6 +12,7 @@
   <!-- Full-bleed scene crossfade layers. The image IS the game. -->
   <div id="sceneA" class="scene scene-active" style="background-image:url('{{ url_for('static', filename='img/scene_exterior.png') }}')"></div>
   <div id="sceneB" class="scene"></div>
+  <div id="scene-flash"></div>
   <div class="scene-scrim"></div>
 
   <!-- VHS overlay: grain + scanlines + tracking glitch + timecode -->
@@ -31,6 +32,7 @@
       <span class="hud-label">PHASE</span><span id="hud-phase" class="hud-value">normal</span>
       <span class="hud-sep">|</span>
       <span class="hud-label">CHAOS</span><span id="hud-chaos" class="hud-value">0</span>
+      <span id="hud-time-wrap" class="hidden"><span class="hud-sep">|</span><span id="hud-time" class="hud-value"></span></span>
     </div>
     <div class="hud-group hud-right">
       <button id="btn-reset" class="hud-btn" title="Reset (R)">⟲ RESET</button>
@@ -38,6 +40,12 @@
       <button id="btn-vhs" class="hud-btn" title="Toggle VHS overlay (V)">▣ VHS</button>
     </div>
   </header>
+
+  <!-- Inventory HUD (hidden until the player picks something up) -->
+  <aside id="inventory-hud" class="hidden">
+    <div class="inv-label">PACK</div>
+    <ul id="inventory-list"></ul>
+  </aside>
 
   <!-- Floating prose feed -->
   <main id="prose-feed" aria-live="polite"></main>
@@ -60,6 +68,17 @@
     <div class="veil-inner">
       <div class="veil-spinner"></div>
       <div id="veil-message">Transmitting...</div>
+    </div>
+  </div>
+
+  <!-- Death / game-over overlay -->
+  <div id="death-overlay" class="hidden">
+    <div class="death-inner">
+      <div class="death-static"></div>
+      <h1 class="death-title">YOU DIED</h1>
+      <p id="death-message">The transmission ends.</p>
+      <button id="death-restart" type="button">▶ RESTART SIMULATION</button>
+      <div class="death-hint">press R to restart</div>
     </div>
   </div>
 
