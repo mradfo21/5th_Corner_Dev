@@ -185,13 +185,26 @@ class TestStandaloneE2E(unittest.TestCase):
         )
 
     def test_status_hud_reflects_turn_count(self):
-        turn_before = int(self.page.inner_text("#hud-turn"))
+        # The standalone refreshes status immediately when a turn's choice
+        # prompt arrives, so the TURN counter should reach >= 1 after one
+        # completed turn (this legacy path used to leave it frozen at 0).
+        self.assertEqual(int(self.page.inner_text("#hud-turn")), 0)
         self.page.click(".choice-btn:first-child")
         self.page.wait_for_selector(".choice-btn", timeout=20000)
-        # Status polling happens on an interval; give it a moment to refresh.
-        self.page.wait_for_timeout(4500)
-        turn_after = int(self.page.inner_text("#hud-turn"))
-        self.assertGreaterEqual(turn_after, turn_before)
+        self.page.wait_for_function(
+            "parseInt(document.getElementById('hud-turn').textContent, 10) >= 1",
+            timeout=10000,
+        )
+
+    def test_inventory_hud_hidden_when_empty(self):
+        # With no items picked up, the inventory HUD stays hidden.
+        self.assertTrue(self.page.is_hidden("#inventory-hud"))
+
+    def test_death_overlay_present_but_hidden(self):
+        # The death overlay must exist in the DOM (so death can surface) but
+        # stay hidden during normal play.
+        self.assertTrue(self.page.query_selector("#death-overlay") is not None)
+        self.assertTrue(self.page.is_hidden("#death-overlay"))
 
 
 if __name__ == "__main__":
