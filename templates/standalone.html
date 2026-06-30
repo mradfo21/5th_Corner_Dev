@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>SOMEWHERE // Standalone</title>
+<link href="https://fonts.googleapis.com/css2?family=VT323&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/standalone.css') }}">
+</head>
+<body>
+
+  <!-- Full-bleed scene crossfade layers. The image IS the game. -->
+  <div id="sceneA" class="scene scene-active" style="background-image:url('{{ url_for('static', filename='img/scene_exterior.png') }}')"></div>
+  <div id="sceneB" class="scene"></div>
+  <div class="scene-scrim"></div>
+
+  <!-- VHS overlay: grain + scanlines + tracking glitch + timecode -->
+  <div id="vhs-overlay" class="vhs-on">
+    <canvas id="vhs-grain"></canvas>
+    <div id="scanlines"></div>
+    <div id="vhs-tracking"></div>
+    <div id="vhs-timecode">REC <span id="rec-dot">●</span> <span id="timecode-text">00:00:00</span></div>
+  </div>
+
+  <!-- HUD bar -->
+  <header id="hud">
+    <div class="hud-group hud-left">
+      <span class="hud-label">TURN</span><span id="hud-turn" class="hud-value">0</span>
+    </div>
+    <div class="hud-group hud-center">
+      <span class="hud-label">PHASE</span><span id="hud-phase" class="hud-value">normal</span>
+      <span class="hud-sep">|</span>
+      <span class="hud-label">CHAOS</span><span id="hud-chaos" class="hud-value">0</span>
+    </div>
+    <div class="hud-group hud-right">
+      <button id="btn-reset" class="hud-btn" title="Reset (R)">⟲ RESET</button>
+      <button id="btn-regen" class="hud-btn" title="Regenerate choices (G)">⟳ REGEN</button>
+      <button id="btn-vhs" class="hud-btn" title="Toggle VHS overlay (V)">▣ VHS</button>
+    </div>
+  </header>
+
+  <!-- Floating prose feed -->
+  <main id="prose-feed" aria-live="polite"></main>
+
+  <!-- Choices + free text -->
+  <footer id="action-bar">
+    <div id="choices-container"></div>
+    <form id="custom-form" autocomplete="off">
+      <span class="prompt-caret">&gt;</span>
+      <input id="custom-input" type="text" placeholder="...or type your own action and press Enter" maxlength="200">
+      <button id="custom-submit" type="submit">SEND</button>
+    </form>
+    <div class="action-hints">
+      <span>1·2·3 choose</span><span>R reset</span><span>G regen</span><span>V vhs</span><span>Enter submit</span><span>Esc clear</span>
+    </div>
+  </footer>
+
+  <!-- Processing veil shown while waiting on the backend -->
+  <div id="processing-veil" class="hidden">
+    <div class="veil-inner">
+      <div class="veil-spinner"></div>
+      <div id="veil-message">Transmitting...</div>
+    </div>
+  </div>
+
+  <!-- Backend / connectivity tag -->
+  <div id="backend-tag">backend: <span id="backend-name">—</span></div>
+
+  <script src="{{ url_for('static', filename='js/standalone.js') }}"></script>
+</body>
+</html>
