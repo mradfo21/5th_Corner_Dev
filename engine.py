@@ -3582,21 +3582,36 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
 
                 if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Calling evolve_prompt_file.evolve_world_state. Dispatch count: {len(current_feed_log_for_evolution)}, Consequence: '{consequence_text[:50]}...', Vision: '{vision_dispatch_text[:50]}...'", flush=True)
 
-                # NOTE: This code path is legacy (web UI), always uses 'legacy' session
-                # For Discord bot, use advance_turn_image_fast which is session-aware
-                legacy_state_path = _get_state_path('legacy')
+                # CRITICAL: this whole function reads/writes the 'default'
+                # session (via _load_state()/_save_state(state) with no
+                # session_id arg) everywhere else. Pointing this one step at
+                # the unrelated 'legacy' session (root-level world_state.json)
+                # and then reassigning the global `state` to whatever that
+                # file happened to contain used to silently discard the
+                # entire in-progress feed_log/chaos_level/last_choice for
+                # this turn — every subsequent save in this function would
+                # persist that wrong, mostly-empty state over the real
+                # session. evolve_world_state() itself only READS state_file
+                # (it returns the evolved prompt as a dict; it never writes
+                # to disk), so the fix is simply to point it at the SAME
+                # session file and merge its result into the existing
+                # `state` object instead of replacing `state` wholesale.
+                current_state_path = _get_state_path()
                 evolution_result = evolve_world_state(
                     dispatches=current_feed_log_for_evolution, 
                     consequence_summary=consequence_text, 
-                    state_file=str(legacy_state_path),  # Use session-specific path
+                    state_file=str(current_state_path),
                     vision_description=vision_dispatch_text
                 )
-                state = _load_state('legacy') # Reload legacy session state after evolution
-                
-                # Store evolution summary for player display
-                if evolution_result and "evolution_summary" in evolution_result:
+
+                # Merge the evolved world prompt + player-facing summary into
+                # the existing state in place (does NOT touch feed_log/
+                # chaos_level/turn_count/etc. — those stay exactly as they
+                # were already accumulated earlier in this turn).
+                if evolution_result and evolution_result.get("world_prompt"):
+                    state["world_prompt"] = evolution_result["world_prompt"]
+                if evolution_result and evolution_result.get("evolution_summary"):
                     state["evolution_summary"] = evolution_result["evolution_summary"]
-                    _save_state(state, 'legacy')
             else:
                 pass  # Non-legacy sessions use the standard world_prompt evolution
         
