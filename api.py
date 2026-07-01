@@ -7,7 +7,7 @@ import os
 import json
 import traceback
 from pathlib import Path
-from flask import Flask, request, jsonify, send_file, make_response, render_template
+from flask import Flask, request, jsonify, send_file, make_response, render_template, redirect
 from flask_cors import CORS
 import engine
 import ai_provider_manager
@@ -795,13 +795,10 @@ def api_health():
 
 @app.route('/', methods=['GET'])
 def index():
-    """Root endpoint"""
-    return jsonify({
-        "message": "SOMEWHERE Game Engine API",
-        "docs": "/api/info",
-        "health": "/api/health",
-        "admin": "/admin"
-    })
+    """Root: send visitors straight to the playable game. Machine clients
+    that want the JSON info blob (previously served here) can use
+    /api/info instead, which has identical contents."""
+    return redirect('/standalone')
 
 
 # ═══════════════════════════════════════════════════════════════════
