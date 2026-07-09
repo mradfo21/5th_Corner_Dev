@@ -11,6 +11,14 @@ logs/
 tapes/
 world_state.json
 history.json
+# Runtime game state - created on demand, not tracked
+sessions/*
+!sessions/.gitkeep
+archives/*
+!archives/.gitkeep
+autotest/*.json
+autotest/*.txt
+test_sessions/
 static/Logo_normalized.jpg
 # ai_config.json - MUST be deployed to production!
 lore/text/*
