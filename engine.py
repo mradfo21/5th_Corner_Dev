@@ -54,11 +54,8 @@ import ai_provider_manager
 print("[ENGINE] ai_provider_manager imported", flush=True)
 sys.stdout.flush(); sys.stderr.flush()
 
-print("[ENGINE] About to import lore_cache_manager...", flush=True)
-sys.stdout.flush(); sys.stderr.flush()
-import lore_cache_manager
-print("[ENGINE] lore_cache_manager imported", flush=True)
-sys.stdout.flush(); sys.stderr.flush()
+# lore_cache_manager is imported lazily (only when a lore-backed _ask runs)
+# so the disabled-by-default lore cache does not load with the core engine.
 
 # ───────── OpenAI client loader ──────────────────────────────────────────────
 def _client(api_key: str, base_url: str):
@@ -835,9 +832,11 @@ def _ask_gemini(prompt: str, model_name: str, temp: float, tokens: int, image_pa
                 size_note = "(480x360, 4:3)" if small_path.exists() else "(full-res)"
                 print(f"[GEMINI TEXT+IMG] Including image: {image_path} {size_note}")
         
-        # Check for lore cache (only if use_lore=True)
+        # Check for lore cache (only if use_lore=True). Imported lazily so the
+        # disabled-by-default lore cache never loads with the core engine.
         cache_id = None
         if use_lore:
+            import lore_cache_manager
             cache_id = lore_cache_manager.get_cache_id()
         
         # Build request payload with ALL SAFETY FILTERS DISABLED
@@ -2678,98 +2677,6 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
             print(f"[IMG PROVIDER] Error type: {type(e).__name__}")
         return (None, "", None)
 
-# ───────── async flipbook generation ─────────────────────────────────────────
-async def _gen_flipbook_async(canonical_frame_path: str, prompt_str: str, caption: str, world_prompt: str, choice: str, time_of_day: str, session_id: str = 'default') -> Optional[str]:
-    """
-    Generate a 4x4 flipbook sequence AFTER the canonical frame is displayed.
-    This runs asynchronously and does NOT block the main turn flow.
-    
-    Args:
-        canonical_frame_path: Path to the canonical frame (used as reference)
-        prompt_str: The narrative prompt (will be enhanced with flipbook instructions)
-        caption: The vision dispatch caption
-        world_prompt: Current world state
-        choice: Player action
-        time_of_day: Current time of day
-        session_id: Session identifier
-    
-    Returns:
-        Path to the generated flipbook image, or None if generation failed
-    """
-    try:
-        print(f"[FLIPBOOK] 🎬 Starting async flipbook generation...")
-        print(f"[FLIPBOOK] Reference frame: {os.path.basename(canonical_frame_path)}")
-        
-        # Build flipbook prompt
-        flipbook_prefix = PROMPTS.get("gemini_flipbook_4panel_prefix", "")
-        if not flipbook_prefix:
-            print(f"[FLIPBOOK] ERROR: flipbook prompt template not found in prompts!")
-            return None
-        
-        # Use the FULL prompt_str that was already built
-        flipbook_prompt = flipbook_prefix + prompt_str
-        try:
-            safe_prompt = prompt_str[:100].encode('ascii', 'replace').decode('ascii')
-            print(f"[FLIPBOOK ASYNC] Using full prompt with context: {safe_prompt}...", flush=True)
-        except:
-            print(f"[FLIPBOOK ASYNC] Using full prompt (contains special characters)", flush=True)
-        
-        # Generate flipbook using img2img from the canonical frame
-        from gemini_image_utils import generate_gemini_img2img
-        
-        img_dir = _get_image_dir(session_id)
-        
-        # Use canonical frame as reference for visual continuity
-        flipbook_path = generate_gemini_img2img(
-            prompt=flipbook_prompt,
-            caption=f"{caption}_flipbook",  # Distinguish from canonical
-            reference_image_path=[canonical_frame_path],  # Single reference
-            world_prompt=world_prompt,
-            time_of_day=time_of_day,
-            action_context=choice,
-            hd_mode=True,  # Use Pro model for HIGH QUALITY flipbooks
-            output_dir=img_dir
-        )
-        
-        if flipbook_path:
-            print(f"[FLIPBOOK] Grid generated: {os.path.basename(flipbook_path)}")
-            
-            # Convert 4x4 grid to animated GIF flipbook
-            try:
-                print(f"[FLIPBOOK] Converting grid to animated GIF...")
-                from create_flipbook_gif import grid_to_flipbook_gif
-                from pathlib import Path
-                
-                gif_path = grid_to_flipbook_gif(
-                    Path(flipbook_path),
-                    duration_ms=500,  # 500ms per frame = 8 seconds total (2x slower for better viewing)
-                    loop=0,  # Loop infinitely
-                    save_panels=False  # Don't save individual panels
-                )
-                
-                if gif_path:
-                    print(f"[FLIPBOOK] Animated GIF created: {os.path.basename(gif_path)}")
-                    return str(gif_path)  # Return GIF instead of static grid
-                else:
-                    print(f"[FLIPBOOK] GIF creation failed, returning static grid")
-                    return flipbook_path
-                    
-            except Exception as e:
-                safe_e = str(e).encode('ascii', 'replace').decode('ascii')
-                print(f"[FLIPBOOK] GIF conversion error: {safe_e}")
-                print(f"[FLIPBOOK] Falling back to static grid")
-                return flipbook_path
-        else:
-            print(f"[FLIPBOOK] WARNING: Flipbook generation returned None")
-            return None
-            
-    except Exception as e:
-        safe_e = str(e).encode('ascii', 'replace').decode('ascii')
-        print(f"[FLIPBOOK] ERROR: Flipbook generation failed: {safe_e}")
-        import traceback
-        traceback.print_exc()
-        return None
-
 # ───────── image prompt sanitization ─────────────────────────────────────────
 def _sanitize_for_image_generation(text: str) -> str:
     """
@@ -3003,39 +2910,6 @@ def check_player_death(dispatch: str, world_prompt: str, choice: str) -> bool:
     # Don't use lore - this is a binary mechanical check
     result = _ask(prompt, model="gemini", temp=0, tokens=2, use_lore=False).strip().lower()
     return result == "dead"
-
-def combat_hook(state, dispatch, vision_dispatch):
-    """Dice roll combat system. Returns dict with combat state and outcome."""
-    if not state.get('in_combat'):
-        # Start combat, present choices
-        state['in_combat'] = True
-        return {
-            'combat': True,
-            'combat_choices': ['Attack', 'Run'],
-            'combat_message': 'Combat! Choose to attack or run.'
-        }
-    # If already in combat, resolve based on last choice
-    last_choice = state.get('last_choice')
-    if last_choice == 'Attack':
-        roll = random.randint(1,6)
-        if roll >= 4:
-            state['in_combat'] = False
-            return {'combat': False, 'combat_result': 'You attack and win! The threat is defeated.'}
-        else:
-            state['in_combat'] = False
-            state['game_over'] = True
-            return {'combat': False, 'combat_result': 'You attack and fail. You are killed.'}
-    elif last_choice == 'Run':
-        roll = random.randint(1,6)
-        if roll >= 4:
-            state['in_combat'] = False
-            return {'combat': False, 'combat_result': 'You run and escape!'}
-        else:
-            state['in_combat'] = False
-            state['game_over'] = True
-            return {'combat': False, 'combat_result': 'You try to run but are caught. Game over.'}
-    # Default: still in combat
-    return {'combat': True, 'combat_choices': ['Attack', 'Run'], 'combat_message': 'Combat! Choose to attack or run.'}
 
 def extract_scene_elements(*args):
     """Extract key nouns/entities from dispatch, vision, and world state."""
