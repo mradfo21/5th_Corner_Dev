@@ -33,13 +33,12 @@ import openai
 print("[ENGINE] openai imported", flush=True); sys.stdout.flush()
 from openai import OpenAIError
 print("[ENGINE] OpenAIError imported", flush=True); sys.stdout.flush()
-from flask import Flask, send_from_directory, request, jsonify, render_template
+from flask import request, jsonify
 print("[ENGINE] flask imported", flush=True); sys.stdout.flush()
 from PIL import Image
 print("[ENGINE] PIL imported", flush=True); sys.stdout.flush()
 import io
 import requests  # For OpenAI multipart form-data img2img
-from flask_cors import CORS
 print("[ENGINE] flask_cors imported", flush=True); sys.stdout.flush()
 
 # Note: choices module imported locally in functions to avoid circular dependency
@@ -55,11 +54,8 @@ import ai_provider_manager
 print("[ENGINE] ai_provider_manager imported", flush=True)
 sys.stdout.flush(); sys.stderr.flush()
 
-print("[ENGINE] About to import lore_cache_manager...", flush=True)
-sys.stdout.flush(); sys.stderr.flush()
-import lore_cache_manager
-print("[ENGINE] lore_cache_manager imported", flush=True)
-sys.stdout.flush(); sys.stderr.flush()
+# lore_cache_manager is imported lazily (only when a lore-backed _ask runs)
+# so the disabled-by-default lore cache does not load with the core engine.
 
 # ───────── OpenAI client loader ──────────────────────────────────────────────
 def _client(api_key: str, base_url: str):
@@ -132,24 +128,12 @@ PROMPTS = json.load((ROOT/"prompts"/"simulation_prompts.json").open(encoding="ut
 # Game constants - Structured time/atmosphere tracking
 INITIAL_TIME_OF_DAY = "6:30pm | weather: clear, warm light | mood: tense anticipation"  # Start time matching world_initial_state
 
-app = Flask(__name__)
-CORS(app)  # Allow all origins for testing
-
-# Load the full config to access other keys if needed later, specifically DISCORD_CLIENT_ID
+# NOTE: engine.py no longer owns a Flask app. The feed-based game loop
+# functions below (api_reset / api_feed / api_choose / api_regenerate_choices)
+# are plain functions; production serves them via api.py (gunicorn api:app),
+# which mounts them with add_url_rule and owns the single Flask app + CORS +
+# iframe-embed headers.
 CONFIG_DATA = CONFIG  # Already loaded above
-DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID", CONFIG_DATA.get("DISCORD_CLIENT_ID"))
-DISCORD_CLIENT_SECRET = CONFIG_DATA.get("DISCORD_CLIENT_SECRET")
-
-# Allow embedding in iframe from Squarespace site
-@app.after_request
-def add_embed_headers(response):
-    response.headers['Content-Security-Policy'] = (
-        "frame-ancestors 'self' https://www.5th-corner.com https://discord.com https://canary.discord.com https://ptb.discord.com"
-    )
-    response.headers['X-Frame-Options'] = (
-        "ALLOW-FROM https://www.5th-corner.com https://discord.com https://canary.discord.com https://ptb.discord.com"
-    )
-    return response
 
 # Session-based paths (thread-safe by design - no global state)
 def _get_session_root(session_id='default'):
@@ -593,8 +577,9 @@ def _load_state(session_id='default') -> dict:
                 st.setdefault('feed_log', [])
                 st.setdefault('current_image_url', None)
                 st.setdefault('choices', []) # Ensure choices list is present
-                # STATE MIGRATION: Enable flipbook mode by default for existing sessions
-                st.setdefault('flipbook_mode', True)
+                # Default to Full Frame (flipbook off) to match the UI default;
+                # apply_experience_mode flips this on when Flipbook is chosen.
+                st.setdefault('flipbook_mode', False)
                 return st
             except json.JSONDecodeError as e_json:
                 logging.error(f"JSONDecodeError in _load_state for {state_path}: {e_json}. File might be corrupt or empty.")
@@ -613,7 +598,7 @@ def _load_state(session_id='default') -> dict:
         else:
             logging.warning(f"{state_path} failed to load, returning default state.")
         return {
-            "world_prompt": PROMPTS.get("world_prompt", "Default world starting point."), # Use .get for safety
+            "world_prompt": PROMPTS.get("world_initial_state", "Default world starting point."), # Use .get for safety
             "current_phase": "normal",
             "chaos_level": 0,
             "last_choice": "",
@@ -627,17 +612,19 @@ def _load_state(session_id='default') -> dict:
             "turn_count": 0, # Initialize turn_count
             "interim_index": 0, # Initialize interim_index
             "time_of_day": INITIAL_TIME_OF_DAY,
-            "flipbook_mode": True  # Enabled by default - 4x4 action sequence
+            "flipbook_mode": False  # Full Frame default; Flipbook opt-in via experience mode
         }
 
-# Legacy global state (deprecated - use session-based functions instead)
-# These are kept for backward compatibility but should not be used in new code
-print("[ENGINE INIT] Initializing legacy global state for backward compatibility...", flush=True)
+# Module-global state backing the standalone feed UI. It mirrors the
+# 'default' session on disk (sessions/default/state.json), the same session
+# the feed endpoints and _perform_game_reset read and write, so in-memory
+# state and disk state no longer diverge across restarts.
+print("[ENGINE INIT] Initializing global state from 'default' session...", flush=True)
 try:
-    state = _load_state('legacy') # Initial load for legacy code
-    print(f"[ENGINE INIT] Legacy state loaded successfully", flush=True)
+    state = _load_state('default')
+    print(f"[ENGINE INIT] Default-session state loaded successfully", flush=True)
 except Exception as e:
-    print(f"[ENGINE INIT ERROR] Failed to load legacy state: {e}", flush=True)
+    print(f"[ENGINE INIT ERROR] Failed to load default-session state: {e}", flush=True)
     import traceback
     traceback.print_exc()
     # Create default state if loading fails
@@ -659,16 +646,32 @@ except Exception as e:
         "in_combat": False,
         "threat_level": 0,
         "time_of_day": INITIAL_TIME_OF_DAY,
-        "flipbook_mode": True  # Enabled by default - 4x4 action sequence
+        "flipbook_mode": False  # Full Frame default; Flipbook opt-in via experience mode
     }
-    print("[ENGINE INIT] Created default legacy state", flush=True)
+    print("[ENGINE INIT] Created default fallback state", flush=True)
 
-history_path = ROOT / "history.json"
+# Global history mirrors the 'default' session (standalone feed path) so the
+# feed no longer writes history to a separate root history.json.
+history_path = _get_history_path('default')
 if history_path.exists():
-    with history_path.open("r", encoding="utf-8") as f:
-        history = json.load(f)
+    try:
+        with history_path.open("r", encoding="utf-8") as f:
+            history = json.load(f)
+    except Exception:
+        history = []
 else:
     history = []
+
+# Advance the feed-item id counter past any ids already persisted in the
+# resumed 'default' session so new items stay monotonically increasing and
+# never collide with existing feed_log entries after a restart.
+try:
+    _existing_feed = state.get("feed_log", []) if isinstance(state, dict) else []
+    _max_feed_id = max((int(i.get("id", 0)) for i in _existing_feed), default=0)
+    if _max_feed_id > _next_feed_item_id:
+        _next_feed_item_id = _max_feed_id
+except Exception:
+    pass
 
 # Session-based history functions
 def _load_history(session_id='default') -> list:
@@ -848,9 +851,11 @@ def _ask_gemini(prompt: str, model_name: str, temp: float, tokens: int, image_pa
                 size_note = "(480x360, 4:3)" if small_path.exists() else "(full-res)"
                 print(f"[GEMINI TEXT+IMG] Including image: {image_path} {size_note}")
         
-        # Check for lore cache (only if use_lore=True)
+        # Check for lore cache (only if use_lore=True). Imported lazily so the
+        # disabled-by-default lore cache never loads with the core engine.
         cache_id = None
         if use_lore:
+            import lore_cache_manager
             cache_id = lore_cache_manager.get_cache_id()
         
         # Build request payload with ALL SAFETY FILTERS DISABLED
@@ -2691,98 +2696,6 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
             print(f"[IMG PROVIDER] Error type: {type(e).__name__}")
         return (None, "", None)
 
-# ───────── async flipbook generation ─────────────────────────────────────────
-async def _gen_flipbook_async(canonical_frame_path: str, prompt_str: str, caption: str, world_prompt: str, choice: str, time_of_day: str, session_id: str = 'default') -> Optional[str]:
-    """
-    Generate a 4x4 flipbook sequence AFTER the canonical frame is displayed.
-    This runs asynchronously and does NOT block the main turn flow.
-    
-    Args:
-        canonical_frame_path: Path to the canonical frame (used as reference)
-        prompt_str: The narrative prompt (will be enhanced with flipbook instructions)
-        caption: The vision dispatch caption
-        world_prompt: Current world state
-        choice: Player action
-        time_of_day: Current time of day
-        session_id: Session identifier
-    
-    Returns:
-        Path to the generated flipbook image, or None if generation failed
-    """
-    try:
-        print(f"[FLIPBOOK] 🎬 Starting async flipbook generation...")
-        print(f"[FLIPBOOK] Reference frame: {os.path.basename(canonical_frame_path)}")
-        
-        # Build flipbook prompt
-        flipbook_prefix = PROMPTS.get("gemini_flipbook_4panel_prefix", "")
-        if not flipbook_prefix:
-            print(f"[FLIPBOOK] ERROR: flipbook prompt template not found in prompts!")
-            return None
-        
-        # Use the FULL prompt_str that was already built
-        flipbook_prompt = flipbook_prefix + prompt_str
-        try:
-            safe_prompt = prompt_str[:100].encode('ascii', 'replace').decode('ascii')
-            print(f"[FLIPBOOK ASYNC] Using full prompt with context: {safe_prompt}...", flush=True)
-        except:
-            print(f"[FLIPBOOK ASYNC] Using full prompt (contains special characters)", flush=True)
-        
-        # Generate flipbook using img2img from the canonical frame
-        from gemini_image_utils import generate_gemini_img2img
-        
-        img_dir = _get_image_dir(session_id)
-        
-        # Use canonical frame as reference for visual continuity
-        flipbook_path = generate_gemini_img2img(
-            prompt=flipbook_prompt,
-            caption=f"{caption}_flipbook",  # Distinguish from canonical
-            reference_image_path=[canonical_frame_path],  # Single reference
-            world_prompt=world_prompt,
-            time_of_day=time_of_day,
-            action_context=choice,
-            hd_mode=True,  # Use Pro model for HIGH QUALITY flipbooks
-            output_dir=img_dir
-        )
-        
-        if flipbook_path:
-            print(f"[FLIPBOOK] Grid generated: {os.path.basename(flipbook_path)}")
-            
-            # Convert 4x4 grid to animated GIF flipbook
-            try:
-                print(f"[FLIPBOOK] Converting grid to animated GIF...")
-                from create_flipbook_gif import grid_to_flipbook_gif
-                from pathlib import Path
-                
-                gif_path = grid_to_flipbook_gif(
-                    Path(flipbook_path),
-                    duration_ms=500,  # 500ms per frame = 8 seconds total (2x slower for better viewing)
-                    loop=0,  # Loop infinitely
-                    save_panels=False  # Don't save individual panels
-                )
-                
-                if gif_path:
-                    print(f"[FLIPBOOK] Animated GIF created: {os.path.basename(gif_path)}")
-                    return str(gif_path)  # Return GIF instead of static grid
-                else:
-                    print(f"[FLIPBOOK] GIF creation failed, returning static grid")
-                    return flipbook_path
-                    
-            except Exception as e:
-                safe_e = str(e).encode('ascii', 'replace').decode('ascii')
-                print(f"[FLIPBOOK] GIF conversion error: {safe_e}")
-                print(f"[FLIPBOOK] Falling back to static grid")
-                return flipbook_path
-        else:
-            print(f"[FLIPBOOK] WARNING: Flipbook generation returned None")
-            return None
-            
-    except Exception as e:
-        safe_e = str(e).encode('ascii', 'replace').decode('ascii')
-        print(f"[FLIPBOOK] ERROR: Flipbook generation failed: {safe_e}")
-        import traceback
-        traceback.print_exc()
-        return None
-
 # ───────── image prompt sanitization ─────────────────────────────────────────
 def _sanitize_for_image_generation(text: str) -> str:
     """
@@ -3005,51 +2918,6 @@ Generate ONE random variation. Return ONLY the formatted string, no explanation.
         print(f"[INIT] Error generating time: {e}, using default")
         return INITIAL_TIME_OF_DAY
 
-# --- LLM-based player death check ---
-def check_player_death(dispatch: str, world_prompt: str, choice: str) -> bool:
-    prompt = (
-        'Based on the following, has the player died? Respond with only "dead" or "alive".\n'
-        f'DISPATCH: {dispatch}\n'
-        f'WORLD STATE: {world_prompt}\n'
-        f'PLAYER CHOICE: {choice}'
-    )
-    # Don't use lore - this is a binary mechanical check
-    result = _ask(prompt, model="gemini", temp=0, tokens=2, use_lore=False).strip().lower()
-    return result == "dead"
-
-def combat_hook(state, dispatch, vision_dispatch):
-    """Dice roll combat system. Returns dict with combat state and outcome."""
-    if not state.get('in_combat'):
-        # Start combat, present choices
-        state['in_combat'] = True
-        return {
-            'combat': True,
-            'combat_choices': ['Attack', 'Run'],
-            'combat_message': 'Combat! Choose to attack or run.'
-        }
-    # If already in combat, resolve based on last choice
-    last_choice = state.get('last_choice')
-    if last_choice == 'Attack':
-        roll = random.randint(1,6)
-        if roll >= 4:
-            state['in_combat'] = False
-            return {'combat': False, 'combat_result': 'You attack and win! The threat is defeated.'}
-        else:
-            state['in_combat'] = False
-            state['game_over'] = True
-            return {'combat': False, 'combat_result': 'You attack and fail. You are killed.'}
-    elif last_choice == 'Run':
-        roll = random.randint(1,6)
-        if roll >= 4:
-            state['in_combat'] = False
-            return {'combat': False, 'combat_result': 'You run and escape!'}
-        else:
-            state['in_combat'] = False
-            state['game_over'] = True
-            return {'combat': False, 'combat_result': 'You try to run but are caught. Game over.'}
-    # Default: still in combat
-    return {'combat': True, 'combat_choices': ['Attack', 'Run'], 'combat_message': 'Combat! Choose to attack or run.'}
-
 def extract_scene_elements(*args):
     """Extract key nouns/entities from dispatch, vision, and world state."""
     text = ' '.join([a for a in args if a])
@@ -3064,687 +2932,123 @@ def extract_scene_elements(*args):
         nouns.add(w.lower())
     return nouns
 
-def generate_crisis_choices(dispatch, vision, world_prompt):
-    """Generate 2 urgent, high-stakes crisis choices for action mode."""
-    crisis_prompt = (
-        "You are in a crisis/action scene. Only present 2 urgent, high-stakes choices for the player. "
-        "Choices must be desperate, risky, or immediate reactions to the current threat (e.g., 'Dodge and run', 'Return fire', 'Drop to the ground and play dead'). "
-        "Do not include exploration or investigation. Only direct, crisis responses.\n"
-        f"DISPATCH: {dispatch}\nVISION: {vision}\nWORLD: {world_prompt}"
-    )
-    # Don't use lore - this is a mechanical crisis detection
-    rsp = _ask(crisis_prompt, model="gemini", temp=1.0, tokens=40, use_lore=False)
-    opts = []
-    for line in rsp.splitlines():
-        line = line.strip().lstrip("-*0123456789. ").strip()
-        if 4 < len(line) <= 40 and line.lower() not in opts:
-            opts.append(line)
-    if not opts:
-        opts = ["Dodge and run", "Return fire"]
-    return opts[:2]
-
-# Placeholder for generate_consequence_summary - to be defined or restored properly later
-# This needs to be at the module level to be found by _process_turn_background
-def generate_consequence_summary(dispatch_text: str, prev_state: dict, current_state: dict, choice: str) -> str:
-    logging.info(f"generate_consequence_summary called with dispatch: {dispatch_text[:30]}...")
-    # Use LLM to generate a consequence summary
-    try:
-        prompt = (
-            "You are a consequence engine for an interactive story. "
-            "Given the player's choice, the resulting narrative dispatch, and the before/after world state, "
-            "write a simple, declarative statement about what happened as a result of the event. "
-            "Focus on the direct outcome or change. If possible, add a sense of danger or tension. "
-            "Do not summarize the choice or dispatch, but reflect the consequence. "
-            "If nothing significant happened, say so concisely.\n"
-            f"PLAYER CHOICE: {choice}\n"
-            f"DISPATCH: {dispatch_text}\n"
-            f"PREVIOUS STATE: {json.dumps(prev_state, ensure_ascii=False)}\n"
-            f"CURRENT STATE: {json.dumps(current_state, ensure_ascii=False)}\n"
-        )
-        # Don't use lore - just detecting state changes
-        result = _ask(prompt, model="gemini", temp=1.0, tokens=48, use_lore=False)
-        if result and result.strip():
-            return result.strip()
-    except Exception as e:
-        logging.error(f"LLM error in generate_consequence_summary: {e}")
-    # Fallback to old logic
-    if "fail" in dispatch_text.lower() or "error" in dispatch_text.lower():
-        return f"The choice '{choice}' seems to have led to a problematic outcome: {dispatch_text}"
-    if prev_state.get("chaos_level", 0) < current_state.get("chaos_level", 0):
-        return "The situation appears to have become more chaotic."
-    return "No immediate major consequence observed from this action."
-
 # RENAMED from advance_turn
 def _process_turn_background(choice: str, initial_player_action_item_id: int, signal_file_path: Optional[str] = None):
-    # Write to signal file immediately if path is provided
+    """Standalone feed turn — a thin adapter over the canonical two-phase
+    session pipeline.
+
+    This runs in the background thread spawned by api_choose. It delegates the
+    actual turn work to advance_turn_image_fast + advance_turn_choices_deferred
+    on the 'default' session (the same pipeline the Discord/session path uses),
+    then translates their return dicts into the feed items the standalone UI
+    polls for. It replaces the previous ~600-line duplicate orchestration so
+    there is now ONE turn implementation.
+
+    Design decisions (previously divergent between the two paths):
+      • Death: honor the consequence LLM's player_alive verdict (Phase 1),
+        not a second check_player_death call.
+      • Image + flipbook: produced inside _gen_image (Phase 1); no separate
+        standalone flipbook copy.
+      • Fate: standalone runs at NORMAL fate (no per-turn fate roll here).
+    """
     if signal_file_path:
         try:
             Path(signal_file_path).write_text("THREAD SPAWNED AND WROTE TO FILE")
-        except Exception as e_signal_write:
-            # Cannot print here reliably if stdout is the issue, but log for posterity if possible
-            # For now, this is just a signal, if it fails, the check in api_choose will show it.
-            pass 
-            
-    if DEBUG_MODE: print(f"[DEBUG] _process_turn_background THREAD SPAWNED - VERY FIRST LINE. Choice: '{choice}'", flush=True) # ULTRA-EARLY PRINT
-    global state, history, _last_image_path
-    # Add a small delay to simulate processing and allow client to update.
-    time.sleep(0.75) # Adjusted as per previous implementation for pacing
-    if DEBUG_MODE: print(f"[DEBUG] _process_turn_background THREAD ENTERED for choice: '{choice}', originating action ID: {initial_player_action_item_id}", flush=True)
-
-    new_feed_items_for_log: List[Dict[str, Any]] = []
-    dispatch_text = "Default initial dispatch text" # Initialize dispatch_text
-    vision_dispatch_text = "" # Initialize vision_dispatch_text here
-
-    try:
-        # Load the state as it was when the player action was initially processed by api_choose
-        # This is crucial because other turns might be processing in parallel if things get very fast,
-        # though with current locking on _save_state, direct conflict is less likely on write,
-        # but reading a consistent snapshot is good.
-        current_state_snapshot = _load_state()
-        # However, for practical purposes, we'll mostly operate on the global `state`
-        # and rely on _save_state locks for write safety. The key is that `api_choose`
-        # has already logged the player_action. This thread logs subsequent events.
-
-        prev_state_snapshot = current_state_snapshot.copy() # For context to generators
-        # 1. Generate Narrative Dispatch ("Result" of player action)
-        dispatch_text = ""
-        try:
-            if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Generating narrative dispatch...", flush=True)
-            # _generate_dispatch() returns {"dispatch": str, "player_alive": bool},
-            # not a bare string — unwrap it here (this call site previously
-            # called .strip() directly on the dict, which always raised).
-            dispatch_result = _generate_dispatch(choice, current_state_snapshot, prev_state_snapshot)
-            dispatch_text = dispatch_result.get("dispatch", "") if isinstance(dispatch_result, dict) else (dispatch_result or "")
-            if not dispatch_text or dispatch_text.strip().lower() in {"none", "", "[", "[]"}:
-                dispatch_text = "The situation evolves..."
-            dispatch_item = create_feed_item(type="narrative_event", content=dispatch_text, metadata={"source": "dispatch"})
-            new_feed_items_for_log.append(dispatch_item)
-        except Exception as e_dispatch:
-            log_error(f"Error during _process_turn_background narrative dispatch generation: {e_dispatch}")
-            error_item = create_feed_item(type="error_event", content=f"Error generating dispatch: {e_dispatch}")
-            new_feed_items_for_log.append(error_item)
-            dispatch_text = "Error in narrative generation. The situation is unstable."
-        
-        # ITEM PICKUP DETECTION: Scan dispatch for items
-        try:
-            from items import detect_item_pickups, add_items_to_inventory, ITEMS, format_inventory_display
-            current_inventory = state.get("inventory", [])
-            picked_up_items = detect_item_pickups(dispatch_text, current_inventory)
-            
-            if picked_up_items:
-                updated_inventory, didnt_fit = add_items_to_inventory(current_inventory, picked_up_items)
-                state["inventory"] = updated_inventory
-                
-                # Create pickup notification
-                item_names = [ITEMS[item_id]["display"] for item_id in picked_up_items if item_id in ITEMS]
-                if len(item_names) == 1:
-                    pickup_msg = f"🎒 **Picked up:** {item_names[0]}"
-                else:
-                    pickup_msg = f"🎒 **Picked up:** {', '.join(item_names)}"
-                
-                pickup_item = create_feed_item(type="inventory_pickup", content=pickup_msg)
-                new_feed_items_for_log.append(pickup_item)
-                
-                if didnt_fit:
-                    overflow_names = [ITEMS[item_id]["display"] for item_id in didnt_fit if item_id in ITEMS]
-                    overflow_msg = f"⚠️ Inventory full! Couldn't pick up: {', '.join(overflow_names)}"
-                    overflow_item = create_feed_item(type="inventory_full", content=overflow_msg)
-                    new_feed_items_for_log.append(overflow_item)
-        except Exception as e_pickup:
-            log_error(f"Error detecting item pickups: {e_pickup}")
-        
-        # Append dispatch (or error) to global state's feed_log and save
-        with WORLD_STATE_LOCK:
-            state.setdefault("feed_log", []).extend(new_feed_items_for_log) # append all items (dispatch, pickup, etc.)
-            _save_state(state)
-        new_feed_items_for_log.clear() # Clear after saving this part
-
-        # 2. Apply choice to basic world state (e.g., chaos, threat levels if deterministic)
-        # This was part of generate_and_apply_choice which is now more LLM focused.
-        # We might need to re-evaluate if some direct state changes based on choice keywords are needed here.
-        # For now, primary world state evolution happens in generate_and_apply_choice and evolve_world_state.
-        if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Applying choice to world state (via choices.py)...", flush=True)
-        try:
-            import choices  # Local import to avoid circular dependency
-            # generate_and_apply_choice(choice, state_path=...) — it has no
-            # 'dispatch_text_from_engine' parameter (that kwarg always raised
-            # TypeError here). Point it at the same 'default' session file
-            # the rest of this function reads/writes via _load_state()/_save_state().
-            choices.generate_and_apply_choice(choice, state_path=str(_get_state_path()))
-            # Reload state after choices.py potentially modified it
-            state = _load_state()
-        except Exception as e_apply_choice:
-            log_error(f"Error in _process_turn_background calling generate_and_apply_choice: {e_apply_choice}")
-            error_item = create_feed_item(type="error_event", content=f"Error processing choice's core impact: {e_apply_choice}")
-            new_feed_items_for_log.append(error_item)
-            with WORLD_STATE_LOCK:
-                state.setdefault("feed_log", []).append(error_item)
-                _save_state(state)
-            # This is a critical error path, subsequent steps might be affected.
-
-        # 3. Generate Consequence Summary (based on dispatch and potentially new world state)
-        consequence_text = ""
-        try:
-            if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Generating consequence summary...", flush=True)
-            # Pass the state *after* generate_and_apply_choice for more accurate consequence
-            consequence_text = generate_consequence_summary(dispatch_text, prev_state_snapshot, state, choice)
-            if consequence_text and consequence_text.strip().lower() not in ["no major consequence observed.", "no major consequence.", "none", ""]:
-                consequence_item = create_feed_item(type="consequence_event", content=consequence_text)
-                new_feed_items_for_log.append(consequence_item)
-            else:
-                pass
-        except Exception as e_consequence:
-            log_error(f"Error generating consequence summary in _process_turn_background: {e_consequence}")
-            error_item = create_feed_item(type="error_event", content=f"Error generating consequence: {e_consequence}")
-            new_feed_items_for_log.append(error_item)
-        
-        # Append consequence (or error) to global state's feed_log and save
-        if new_feed_items_for_log: # If a consequence or error was added
-            with WORLD_STATE_LOCK:
-                state.setdefault("feed_log", []).extend(new_feed_items_for_log)
-                _save_state(state)
-            new_feed_items_for_log.clear()
-
-
-        # 4. Image Generation & Vision Analysis (if enabled)
-        # These depend on dispatch_text and the current world_prompt from the reloaded state
-        world_prompt_for_image = state.get("world_prompt", "")
-        vision_dispatch_for_image = "" # Initialize locally for image gen step
-        current_image_url = state.get("current_image_url") # Get current image to pass as previous
-
-        if dispatch_text:
-            # This is the primary vision_dispatch_text for the turn's narrative dispatch
-            vision_dispatch_text = _generate_vision_dispatch(dispatch_text, world_prompt_for_image) # Assign to the broader scoped variable
-            vision_dispatch_for_image = vision_dispatch_text # Also use it for the image gen step
-        new_image_url = None
-        if IMAGE_ENABLED and vision_dispatch_for_image:
-            if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Generating image...", flush=True)
-            try:
-                hard_trans = is_hard_transition(choice, dispatch_text)
-                new_image_url, image_prompt, video_url = _gen_image(
-                    caption=vision_dispatch_for_image,
-                    mode=state.get("current_phase", "normal"), # Use current_phase for mode
-                    choice=choice,
-                    previous_image_url=current_image_url,
-                    dispatch=dispatch_text, # Narrative dispatch
-                    world_prompt=world_prompt_for_image,
-                    hard_transition=hard_trans,
-                    frame_idx=state.get("turn_count", 0) + 1 # Approximate frame index
-                )
-                # Note: video_url not used in this code path (old multiplayer mode)
-                if new_image_url:
-                    image_item = create_feed_item(type="scene_image", content="The scene shifts...", image_url=new_image_url)
-                    new_feed_items_for_log.append(image_item)
-                    state['current_image_url'] = new_image_url # Update global state
-                    state['current_image_prompt'] = image_prompt # Store prompt for history
-                    state['current_hard_transition'] = hard_trans # Store hard transition flag
-                    
-                    # --- FLIPBOOK GENERATION (if enabled) ---
-                    # Run in background thread since this is already a background process
-                    if state.get("flipbook_mode", False):
-                        print(f"[FLIPBOOK] Flipbook mode enabled - starting background generation")
-                        
-                        def generate_flipbook_sync():
-                            """Synchronous flipbook generation for background thread"""
-                            try:
-                                from create_flipbook_gif import grid_to_flipbook_gif
-                                from pathlib import Path
-                                
-                                # Generate 4x4 grid using existing image generation
-                                print(f"[FLIPBOOK] Generating 4x4 grid...")
-                                from gemini_image_utils import generate_gemini_img2img
-                                
-                                img_dir = _get_image_dir(state.get('session_id', 'default'))
-                                
-                                # Build FULL prompt using same method as main path (old code path)
-                                flipbook_prefix = PROMPTS.get("gemini_flipbook_4panel_prefix", "")
-                                full_prompt = build_image_prompt(
-                                    player_choice=choice,
-                                    dispatch=vision_dispatch_for_image,
-                                    prev_vision_analysis="",
-                                    hard_transition=hard_trans,
-                                    is_timeout_penalty=False
-                                )
-                                flipbook_prompt = flipbook_prefix + full_prompt if flipbook_prefix else full_prompt
-                                print(f"[FLIPBOOK OLD PATH] Using full prompt with context", flush=True)
-                                
-                                # Generate 4x4 grid
-                                grid_path = generate_gemini_img2img(
-                                    prompt=flipbook_prompt,
-                                    caption=f"{vision_dispatch_for_image}_flipbook",
-                                    reference_image_path=[new_image_url],  # Use canonical as reference
-                                    world_prompt=world_prompt_for_image,
-                                    time_of_day=state.get('time_of_day', ''),
-                                    action_context=choice,
-                                    hd_mode=True,  # Use Pro model for HIGH QUALITY flipbooks
-                                    output_dir=img_dir
-                                )
-                                
-                                if grid_path:
-                                    print(f"[FLIPBOOK] Grid generated: {os.path.basename(grid_path)}")
-                                    
-                                    # PRODUCTION HARDENING: grid_to_flipbook_gif returns a DICT
-                                    # ({'gif_path', 'first_frame', 'last_frame'}), not a path.  Before
-                                    # this fix the code stringified the dict and saved it as the
-                                    # flipbook URL, then the bot tried to open it as a file and the
-                                    # display silently failed.
-                                    gif_result = grid_to_flipbook_gif(
-                                        Path(grid_path),
-                                        duration_ms=500,
-                                        loop=0,
-                                        save_panels=False
-                                    )
-                                    gif_path = gif_result.get('gif_path') if isinstance(gif_result, dict) else gif_result
-                                    
-                                    session_id_for_state = state.get('session_id', 'default')
-                                    if gif_path:
-                                        print(f"[FLIPBOOK] GIF created: {os.path.basename(str(gif_path))}")
-                                        st = _load_state(session_id_for_state)
-                                        st['current_flipbook_url'] = str(gif_path)
-                                        if isinstance(gif_result, dict):
-                                            st['flipbook_last_grid'] = str(grid_path)
-                                            if gif_result.get('first_frame'):
-                                                st['flipbook_first_frame'] = str(gif_result['first_frame'])
-                                            if gif_result.get('last_frame'):
-                                                st['flipbook_last_frame'] = str(gif_result['last_frame'])
-                                        _save_state(st, session_id_for_state)
-                                        print(f"[FLIPBOOK] Stored flipbook URL in state")
-                                    else:
-                                        # Must signal FAILED or the bot wait-loop holds the turn lock
-                                        # for the full 120s timeout.
-                                        st = _load_state(session_id_for_state)
-                                        st['current_flipbook_url'] = "FAILED"
-                                        _save_state(st, session_id_for_state)
-                                        print(f"[FLIPBOOK] GIF conversion failed - signaled FAILED")
-                                else:
-                                    session_id_for_state = state.get('session_id', 'default')
-                                    st = _load_state(session_id_for_state)
-                                    st['current_flipbook_url'] = "FAILED"
-                                    _save_state(st, session_id_for_state)
-                                    print(f"[FLIPBOOK] Grid generation failed - signaled FAILED")
-                            
-                            except Exception as e:
-                                try:
-                                    session_id_for_state = state.get('session_id', 'default')
-                                    st = _load_state(session_id_for_state)
-                                    st['current_flipbook_url'] = "FAILED"
-                                    _save_state(st, session_id_for_state)
-                                except Exception:
-                                    pass
-                                print(f"[FLIPBOOK] Error generating flipbook: {e}")
-                                import traceback
-                                traceback.print_exc()
-                        
-                        # Start flipbook generation in a separate thread (non-blocking)
-                        import threading
-                        flipbook_thread = threading.Thread(target=generate_flipbook_sync, daemon=True)
-                        flipbook_thread.start()
-                        print(f"[FLIPBOOK] Background thread started")
-                    
-                    if VISION_ENABLED: # Vision analysis of the new image
-                        if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Generating vision analysis for new image...", flush=True)
-                        vision_text = _vision_describe(new_image_url)
-                        if vision_text:
-                            vision_item = create_feed_item(type="vision_analysis", content=vision_text, metadata={"source_image_url": new_image_url})
-                            new_feed_items_for_log.append(vision_item)
-            except Exception as e_img_vision:
-                log_error(f"Error during image/vision generation in _process_turn_background: {e_img_vision}")
-                error_item = create_feed_item(type="error_event", content=f"Error generating visual data: {e_img_vision}")
-                new_feed_items_for_log.append(error_item)
-        
-        if new_feed_items_for_log: # If image/vision items were added
-            with WORLD_STATE_LOCK:
-                state.setdefault("feed_log", []).extend(new_feed_items_for_log)
-                _save_state(state) # Save state with new image/vision items
-            new_feed_items_for_log.clear()
-
-        # 5. Combat / Threat / Risky Action Logic
-        # This section needs careful review based on previous logic for these branches
-        # It will append its own feed items and might set proceed_with_standard_evolution to False
-        proceed_with_standard_evolution = True
-        
-        # Call the actual detect_threat function from choices.py
-        import choices  # Local import to avoid circular dependency
-        global FORCE_TEST_THREAT # Access the global flag
-        is_threat = choices.detect_threat(dispatch_text, vision=vision_dispatch_text) # Use the broader scoped vision_dispatch_text
-        threat_description = "" # Initialize threat_description
-
-        # Allow forcing combat via a special choice text for testing
-        if "FORCE_COMBAT_SCENARIO" in choice:
-            is_threat = True
-            threat_description = "Combat explicitly triggered by test choice text."
-            if DEBUG_MODE: print(f"[DEBUG] Combat path forced by choice text: '{choice}'", flush=True)
-
-        if FORCE_TEST_THREAT: # Existing flag can still be a backup or for other tests
-            is_threat = True # Ensure this is also set if flag is true
-            # Prioritize more specific description if already set by choice text trigger
-            threat_description = threat_description if "Combat explicitly triggered" in threat_description else "Forced test threat triggered by FORCE_TEST_THREAT flag."
-            if DEBUG_MODE: print(f"[DEBUG] FORCE_TEST_THREAT activated is_threat={is_threat}. Current threat_description: '{threat_description}'", flush=True)
-            FORCE_TEST_THREAT = False # Reset after use to prevent affecting subsequent calls in the same test run if any
-        elif not ("Combat explicitly triggered" in threat_description) and is_threat:
-            # Only set threat_description if is_threat is True from the original call and not forced by choice/flag
-            threat_description = "Hostile contact detected by choices.detect_threat."
-
-        # is_threat, threat_description = False, "" # COMMENTED OUT PLACEHOLDER
-        
-        if state.get('in_combat', False):
-            if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Already in combat. Resolving combat turn for choice: '{choice}'", flush=True)
-            
-            combat_action_item = create_feed_item(type="combat_action", content=f"You chose to: {choice}")
-            new_feed_items_for_log.append(combat_action_item)
-
-            combat_ended_this_turn = False
-            outcome_message = "The struggle continues..." # Default for unrecognized actions
-
-            # Determine combat outcome
-            if "attack" in choice.lower() or "engage" in choice.lower():
-                # Test specific win condition for "Engage the threat directly"
-                if choice == "Engage the threat directly": 
-                    outcome_message = "Your decisive action pays off! The threat is neutralized."
-                    state['in_combat'] = False
-                    combat_ended_this_turn = True
-                    if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Combat WIN via specific choice 'Engage the threat directly'.", flush=True)
-                else: # Generic attack
-                    if random.random() < 0.6: # 60% chance to win other attacks
-                        outcome_message = "Your attack connects! The threat is neutralized."
-                        state['in_combat'] = False
-                        combat_ended_this_turn = True
-                    else:
-                        outcome_message = "Your attack is parried or misses! The combat rages on."
-                        state['in_combat'] = True 
-                        combat_ended_this_turn = False
-            elif "flee" in choice.lower() or "evade" in choice.lower() or "disengage" in choice.lower() or "retreat" in choice.lower():
-                # Always succeed at retreat/flee/disengage
-                outcome_message = "You manage to break away and escape the immediate danger! Combat ends."
-                state['in_combat'] = False
-                combat_ended_this_turn = True
-            else: # Non-recognized combat action
-                outcome_message = f"Your action ('{choice}') is confusing in this combat situation. The threat remains, and the fight continues."
-                state['in_combat'] = True # Combat continues
-                combat_ended_this_turn = False
-
-            resolution_item_metadata = {
-                "outcome_raw": outcome_message,
-                "combat_ended": combat_ended_this_turn,
-                "player_won": combat_ended_this_turn and not state.get('in_combat') # True if combat ended AND player is not still in combat
-            }
-            resolution_item = create_feed_item(
-                type="combat_resolution", 
-                content=outcome_message,
-                metadata=resolution_item_metadata
-            )
-            new_feed_items_for_log.append(resolution_item)
-
-            if not state.get('in_combat', False): # Combat ended
-                proceed_with_standard_evolution = True
-                if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Combat has ENDED. Proceeding with standard evolution. Outcome: {outcome_message}", flush=True)
-            else: # Combat continues
-                # Regenerate combat choices
-                current_combat_choices_texts = ["Attack again", "Try to disengage"]
-                combat_choices_item = _structure_choices_for_feed(
-                    current_combat_choices_texts, 
-                    "The fight continues! What is your next move?",
-                    image_url=state.get('current_image_url')
-                )
-                new_feed_items_for_log.append(combat_choices_item)
-                proceed_with_standard_evolution = False
-                if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Combat CONTINUES. New combat choices generated.", flush=True)
-            if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Exiting ONGOING COMBAT logic. new_feed_items_for_log count: {len(new_feed_items_for_log)}. Proceed standard: {proceed_with_standard_evolution}", flush=True)
-            # pass # Simplified for now <-- REMOVE THIS
-        elif is_threat: # check new threat
-            if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - ENTERING elif is_threat BLOCK. Threat: {threat_description}", flush=True)
-            
-            suspense_item = create_feed_item(type="suspense_event", content=f"Threat detected! {threat_description}")
-            new_feed_items_for_log.append(suspense_item)
-
-            # For now, assume direct escalation to combat if a threat is confirmed by detect_threat
-            # The test mocks random.random to force this path if more complex logic was here.
-            escalation_content = "The threat escalates rapidly! Combat is imminent."
-            threat_escalation_item = create_feed_item(type="threat_escalation", content=escalation_content)
-            new_feed_items_for_log.append(threat_escalation_item)
-            
-            state['in_combat'] = True
-            if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - State in_combat SET TO TRUE.", flush=True)
-            
-            # Generate combat-specific choices
-            # For now, using predefined combat choices. Later, this could use generate_crisis_choices or similar.
-            combat_choice_texts = ["Engage the threat directly", "Attempt to flee the encounter"]
-            combat_prompt_text = "Combat initiated! How do you react to the immediate danger?"
-            
-            # Use current image for combat choice prompt if available
-            combat_image_url = state.get('current_image_url')
-            if WORLD_IMAGE_ENABLED == False: # If images globally disabled, don't pass URL
-                 combat_image_url = None
-
-            combat_choices_item = _structure_choices_for_feed(
-                combat_choice_texts, 
-                combat_prompt_text,
-                image_url=combat_image_url 
-            )
-            new_feed_items_for_log.append(combat_choices_item)
-            
-            proceed_with_standard_evolution = False # Prevent normal choice generation
-            if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Combat choices generated, proceed_with_standard_evolution SET TO FALSE.", flush=True)
-            
-            # new_feed_items_for_log now contains suspense, escalation, and combat choices.
-            # These will be saved in the block after the if/elif/else for combat/threat/risky_action.
-            if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Exiting elif is_threat BLOCK. new_feed_items_for_log count: {len(new_feed_items_for_log)}", flush=True)
-            
-        # Risky action check (if not in combat and not an immediate threat)
-        elif any(keyword in choice.lower() for keyword in RISKY_ACTION_KEYWORDS) and not state.get('in_combat') and not is_threat:
-            if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - ENTERING RISKY ACTION BLOCK. Choice: '{choice}'", flush=True)
-            
-            suspense_content = f"You consider the risky action: '{choice}'. The air crackles with uncertainty."
-            suspense_item = create_feed_item(type="suspense_event", content=suspense_content, metadata={"action_type": "risky"})
-            new_feed_items_for_log.append(suspense_item)
-            
-            # Simulate risky action outcome (e.g., 50/50 chance)
-            action_succeeded = random.random() < 0.5 
-            
-            if action_succeeded:
-                outcome_content = f"Against the odds, your risky move ('{choice}') pays off!"
-                state["chaos_level"] = max(0, state.get("chaos_level", 0) - 1) # Decrease chaos slightly
-            else:
-                outcome_content = f"Unfortunately, your gamble ('{choice}') backfires, escalating the danger."
-                state["chaos_level"] = state.get("chaos_level", 0) + 1 # Increase chaos
-
-            outcome_item = create_feed_item(
-                type="risky_action_outcome", 
-                content=outcome_content, 
-                metadata={"success": action_succeeded, "choice_made": choice}
-            )
-            new_feed_items_for_log.append(outcome_item)
-            
-            if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Risky action outcome: {'Success' if action_succeeded else 'Failure'}. Chaos level: {state.get('chaos_level')}", flush=True)
-            proceed_with_standard_evolution = True # Risky actions usually lead to new standard choices
-
-        # If combat items were added, save them
-        if new_feed_items_for_log: # If combat logic added items
-            with WORLD_STATE_LOCK:
-                state.setdefault("feed_log", []).extend(new_feed_items_for_log)
-                _save_state(state)
-            new_feed_items_for_log.clear()
-            
-        # 6. Evolve World State (if not in ongoing combat or other non-standard path)
-        if proceed_with_standard_evolution:
-            if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Evolving world state (evolve_prompt_file.evolve_world_state)...", flush=True)
-            # Removed the potentially problematic simple call: evolve_world_state(state)
-            # state = _load_state() # Reloading here might not be necessary if the above was the only modifier
-
-            # Evolve world state (LLM call, can be slow)
-            if LLM_ENABLED: 
-                if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Preparing for LLM-based world state evolution...", flush=True)
-                
-                # Ensure we are getting a list of feed items for dispatches
-                current_feed_log_for_evolution = list(state.get('feed_log', [])) 
-                # Ensure consequence_text is defined; it should be from earlier in the function
-                # vision_dispatch_text should also be defined from earlier
-
-                if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Calling evolve_prompt_file.evolve_world_state. Dispatch count: {len(current_feed_log_for_evolution)}, Consequence: '{consequence_text[:50]}...', Vision: '{vision_dispatch_text[:50]}...'", flush=True)
-
-                # CRITICAL: this whole function reads/writes the 'default'
-                # session (via _load_state()/_save_state(state) with no
-                # session_id arg) everywhere else. Pointing this one step at
-                # the unrelated 'legacy' session (root-level world_state.json)
-                # and then reassigning the global `state` to whatever that
-                # file happened to contain used to silently discard the
-                # entire in-progress feed_log/chaos_level/last_choice for
-                # this turn — every subsequent save in this function would
-                # persist that wrong, mostly-empty state over the real
-                # session. evolve_world_state() itself only READS state_file
-                # (it returns the evolved prompt as a dict; it never writes
-                # to disk), so the fix is simply to point it at the SAME
-                # session file and merge its result into the existing
-                # `state` object instead of replacing `state` wholesale.
-                current_state_path = _get_state_path()
-                evolution_result = evolve_world_state(
-                    dispatches=current_feed_log_for_evolution, 
-                    consequence_summary=consequence_text, 
-                    state_file=str(current_state_path),
-                    vision_description=vision_dispatch_text
-                )
-
-                # Merge the evolved world prompt + player-facing summary into
-                # the existing state in place (does NOT touch feed_log/
-                # chaos_level/turn_count/etc. — those stay exactly as they
-                # were already accumulated earlier in this turn).
-                if evolution_result and evolution_result.get("world_prompt"):
-                    state["world_prompt"] = evolution_result["world_prompt"]
-                if evolution_result and evolution_result.get("evolution_summary"):
-                    state["evolution_summary"] = evolution_result["evolution_summary"]
-            else:
-                pass  # Non-legacy sessions use the standard world_prompt evolution
-        
-        # 7. Generate Next Choices (if not in ongoing combat or other non-standard path that provides its own choices)
-        if proceed_with_standard_evolution:
-            if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Standard Path: Generating next choices START...", flush=True)            # Set the prompt above choices to empty string (no text)
-            final_choice_prompt_text = ""            
-            # Call choices.generate_choices            
-            # Prepare recent_choices as a string, from list of dicts
-            raw_recent_choices = state.get("choices", [])
-            recent_choices_str = "\n".join([rc.get("text", "") for rc in raw_recent_choices if isinstance(rc, dict) and rc.get("text")])
-            
-            # Ensure the most recent consequence is included in the situation summary
-            consequence_for_choices = final_choice_prompt_text
-            if consequence_text and consequence_text.strip():
-                consequence_for_choices = f"{final_choice_prompt_text}\nMost recent consequence: {consequence_text.strip()}"
-
-            import choices  # Local import to avoid circular dependency
-            # NOTE: choices.generate_choices() returns a plain List[str] (see
-            # its `return improved_choices` at the end of the function) — it
-            # does not return a (choices, metadata) tuple. choices_meta is
-            # kept as an empty dict for state["choices_metadata"] below,
-            # which expects a dict but never relied on real content from it.
-            new_choices = choices.generate_choices(
-                client=client, 
-                prompt_tmpl=choice_tmpl,
-                last_dispatch=dispatch_text,
-                n=3,
-                image_url=state.get("current_image_url"),
-                seen_elements=state.get("seen_elements", ""),
-                recent_choices=recent_choices_str, # Corrected to be a string
-                caption=state.get("current_image_caption", ""),
-                image_description=state.get("current_image_description", ""), # Keep for now, as it is in the signature
-                beat_nudge=state.get("beat_nudge", ""),
-                pacing=state.get("pacing", "normal"),
-                world_prompt=state.get("world_prompt"),
-                # temperature=0.7, # Optional, let choices.py use its default
-                situation_summary=consequence_for_choices,
-                inventory=state.get("inventory", [])  # Pass inventory for item-aware choices
-            )
-            choices_meta = {}
-            if not new_choices:
-                print("WARNING: choices.generate_choices returned empty list. Using fallback choices.", flush=True)
-                new_choices = ["Investigate further", "Scan the area", "Proceed with caution"]            # Corrected call: removed metadata argument as _structure_choices_for_feed doesn't accept it
-            choice_item = _structure_choices_for_feed(new_choices, final_choice_prompt_text, state.get("current_image_url"))            
-            new_feed_items_for_log.append(choice_item)
-            state["choices"] = choice_item["choices"] # Save new choices to top-level state for compatibility
-            state["choices_metadata"] = choices_meta # Save choices_metadata separately in state
-            
-            # Save state with new choices
-            with WORLD_STATE_LOCK:
-                state.setdefault('feed_log', []).extend(new_feed_items_for_log)
-                _save_state(state)
-            new_feed_items_for_log.clear()
-
-        if new_feed_items_for_log: # If choices or error were added
-            with WORLD_STATE_LOCK:
-                state.setdefault('feed_log', []).extend(new_feed_items_for_log)
-                _save_state(state) # Save state with new choices
-            new_feed_items_for_log.clear()
-        else:
+        except Exception:
             pass
 
-        # Player Death Check - using the main dispatch_text of this turn
-        player_is_dead = False
+    global state, history
+    time.sleep(0.75)  # brief pacing delay so the client renders the action first
+
+    SID = 'default'
+    try:
+        # ── PHASE 1: consequence dispatch + image (bumps chaos, evolves world) ──
+        p1 = advance_turn_image_fast(choice, fate="NORMAL", is_timeout_penalty=False, session_id=SID)
+        state = _load_state(SID)
+
+        dispatch_text = (p1.get("dispatch") or "").strip() or "The situation evolves..."
+        consequence_img_url = p1.get("consequence_image")
+        vision_dispatch_text = p1.get("vision_dispatch", "")
+        player_alive = state.get("player_state", {}).get("alive", True)
+
+        turn_items: List[Dict[str, Any]] = [
+            create_feed_item(type="narrative_event", content=dispatch_text, metadata={"source": "dispatch"})
+        ]
+
+        # Item pickup detection (feed notification; inventory itself is in state).
         try:
-            player_is_dead = check_player_death(dispatch_text, state.get("world_prompt"), choice)
-            if player_is_dead:
-                if DEBUG_MODE: print(f"[DEBUG] _process_turn_background - Player death detected by check_player_death.", flush=True)
-                state["player_state"]["alive"] = False
-                game_over_item = create_feed_item(type="game_over", content="You have succumbed to the horrors. The transmission ends.")
-                game_over_choices_item = _structure_choices_for_feed(
-                    ["Restart Simulation"], 
-                    "GAME OVER",
-                    image_url=state.get("current_image_url") 
-                )
-                with WORLD_STATE_LOCK:
-                    state.setdefault("feed_log", []).append(game_over_item)
-                    state.setdefault("feed_log", []).append(game_over_choices_item)
-                    _save_state(state)
-        except Exception as e_death_check:
-            log_error(f"Error during player death check in _process_turn_background: {e_death_check}")
-        
-        # Update history.json (simplified)
-        history_entry = {
-            "choice": choice,
-            "dispatch": dispatch_text,
-            "world_prompt_before": prev_state_snapshot.get("world_prompt"),
-            "world_prompt_after": state.get("world_prompt"),
-            "image": state.get("current_image_url"),
-            "image_prompt": state.get("current_image_prompt", ""),
-            "hard_transition": state.get("current_hard_transition", False),  # Track location changes
-            "timestamp": datetime.now(timezone.utc).isoformat()
-        }
-        history.append(history_entry)
-        if len(history) > 100: # Keep history to a reasonable size
-            history.pop(0)
-        try:
-            with history_path.open("w", encoding="utf-8") as f_hist:
-                json.dump(history, f_hist, indent=2)
-        except Exception as e_hist_save:
-            log_error(f"Error saving history.json: {e_hist_save}")
-        # Advance the turn counter for this completed turn. This legacy feed
-        # path never incremented it, so the standalone HUD's TURN counter was
-        # frozen at 0 forever. Also do the final feed_log prune and persist
-        # both here (the previous final _save_state had been accidentally
-        # commented out by being merged onto a comment line, so turn_count
-        # and the prune were never saved).
+            from items import detect_item_pickups, add_items_to_inventory, ITEMS
+            current_inventory = state.get("inventory", [])
+            picked_up = detect_item_pickups(dispatch_text, current_inventory)
+            if picked_up:
+                updated_inventory, didnt_fit = add_items_to_inventory(current_inventory, picked_up)
+                state["inventory"] = updated_inventory
+                names = [ITEMS[i]["display"] for i in picked_up if i in ITEMS]
+                if names:
+                    turn_items.append(create_feed_item(type="inventory_pickup", content=f"\U0001F392 **Picked up:** {', '.join(names)}"))
+                overflow = [ITEMS[i]["display"] for i in (didnt_fit or []) if i in ITEMS]
+                if overflow:
+                    turn_items.append(create_feed_item(type="inventory_full", content=f"\u26A0\uFE0F Inventory full! Couldn't pick up: {', '.join(overflow)}"))
+        except Exception as e_pick:
+            log_error(f"Error detecting item pickups: {e_pick}")
+
+        if consequence_img_url:
+            state['current_image_url'] = consequence_img_url
+            turn_items.append(create_feed_item(type="scene_image", content="The scene shifts...", image_url=consequence_img_url))
+
         with WORLD_STATE_LOCK:
+            state.setdefault("feed_log", []).extend(turn_items)
+            _save_state(state, SID)
+
+        # ── DEATH: single mechanism — the Phase 1 player_alive verdict ──
+        if not player_alive:
+            game_over_item = create_feed_item(type="game_over", content="You have succumbed to the horrors. The transmission ends.")
+            game_over_choices = _structure_choices_for_feed(
+                ["Restart Simulation"], "GAME OVER",
+                image_url=consequence_img_url or state.get("current_image_url"),
+            )
+            with WORLD_STATE_LOCK:
+                state.setdefault("feed_log", []).append(game_over_item)
+                state.setdefault("feed_log", []).append(game_over_choices)
+                state["turn_count"] = int(state.get("turn_count", 0)) + 1
+                _save_state(state, SID)
+            return
+
+        # ── PHASE 2: choices (also appends this turn to session history) ──
+        p2 = advance_turn_choices_deferred(
+            consequence_img_url, dispatch_text, vision_dispatch_text, choice,
+            p1.get("consequence_image_prompt", ""), p1.get("hard_transition", False), SID,
+        )
+        state = _load_state(SID)
+
+        next_choices = [c for c in (p2.get("choices") or []) if c and c.strip() and c.strip() != "\u2014"]
+        prompt_item = _structure_choices_for_feed(
+            next_choices, "What do you do next?",
+            state.get("current_image_url") or consequence_img_url,
+        )
+
+        with WORLD_STATE_LOCK:
+            state.setdefault("feed_log", []).append(prompt_item)
             state["turn_count"] = int(state.get("turn_count", 0)) + 1
-            MAX_FEED_LOG_ITEMS = 100  # Keep feed_log manageable (last N items)
+            MAX_FEED_LOG_ITEMS = 100  # keep feed_log manageable
             if len(state.get("feed_log", [])) > MAX_FEED_LOG_ITEMS:
                 state["feed_log"] = state["feed_log"][-MAX_FEED_LOG_ITEMS:]
-            _save_state(state)  # Final save: turn_count + pruned feed_log
-        if DEBUG_MODE: print(f"[DEBUG] _process_turn_background THREAD COMPLETED for choice: '{choice}'.", flush=True)
+            _save_state(state, SID)
 
-    except Exception as e_critical_thread:
-        log_error(f"Critical unhandled error in _process_turn_background thread: {e_critical_thread}")
+    except Exception as e_critical:
+        log_error(f"Critical unhandled error in _process_turn_background thread: {e_critical}")
         logging.exception("CRITICAL EXCEPTION in _process_turn_background thread top level:")
-        # Attempt to log a critical error item to the feed
         try:
-            critical_error_item = create_feed_item(type="error_event", content=f"System critical error during turn processing: {e_critical_thread}")
+            critical_error_item = create_feed_item(type="error_event", content=f"System critical error during turn processing: {e_critical}")
             with WORLD_STATE_LOCK:
-                # Try to load state one last time to append error, or use existing global
-                current_state_for_err = _load_state() if 'state' not in globals() or not state else state
+                current_state_for_err = state if ('state' in globals() and state) else _load_state(SID)
                 current_state_for_err.setdefault("feed_log", []).append(critical_error_item)
-                _save_state(current_state_for_err)
+                _save_state(current_state_for_err, SID)
         except Exception as e_final_log:
             log_error(f"Could not even log critical error to feed_log: {e_final_log}")
-    # No return value needed as this runs in a thread and modifies global state / feed_log
+    # No return value: runs in a thread and mutates global state / feed_log.
 
 
-# MOVED HELPER FUNCTION DEFINITION EARLIER - ENSURING CORRECT ORDER AND COMPLETENESS
 def _structure_choices_for_feed(choice_texts: List[str], prompt_text: str = "What do you do next?", image_url: Optional[str] = None) -> Dict[str, Any]:
     global state 
     structured_choices_list = []
@@ -3776,7 +3080,13 @@ def generate_intro_turn_feed_items() -> List[Dict[str, Any]]:
     global state 
     intro_items = [] # This list will be returned
     
-    initial_narrative_content = "The simulation begins. You find yourself in a familiar, yet unsettling environment. The air is thick with unspoken tension."
+    initial_narrative_content = (
+        "1993. Golden hour bleeds across the Four Corners desert. You are Jason Fleece, "
+        "photojournalist, crouched at the perimeter of Horizon Industries' quarantined "
+        "facility \u2014 the last place the missing were ever seen. Your camcorder hums against "
+        "your palm. Red dust drifts over the chain-link fence ahead. Whatever they buried "
+        "out here, you came to film it."
+    )
     narrative_item = create_feed_item(type="narrative_event", content=initial_narrative_content)
     intro_items.append(narrative_item)
 
@@ -3823,17 +3133,17 @@ def generate_intro_turn_feed_items() -> List[Dict[str, Any]]:
         initial_choice_texts = generate_choices(
             client=client,
             prompt_tmpl=choice_tmpl,
-            last_dispatch="The simulation has just started.",
+            last_dispatch=initial_narrative_content,
             world_prompt=state.get("world_prompt", "System Online."),
-            image_description="An initial, establishing scene.",
-            situation_summary="You are at the very beginning of your journey.",
+            image_description="Golden-hour desert at the perimeter fence of the Horizon facility; red mesas, chain-link fence, abandoned vehicles.",
+            situation_summary="You are crouched at the fence line of the quarantined Horizon facility as the sun drops. This is your way in.",
             n=3
         )
     except Exception as e_choices:
         log_error(f"Error generating initial choices: {e_choices}")
-        initial_choice_texts = ["Begin exploration.", "Assess the immediate surroundings.", "Prepare for the unknown."]
+        initial_choice_texts = ["Vault the perimeter fence", "Crouch low and scan the facility", "Photograph the abandoned vehicles"]
 
-    choice_prompt_text = "The system is online. Your journey begins now. What is your first action?"
+    choice_prompt_text = "The fence line waits. What's your first move?"
     choices_item = _structure_choices_for_feed(initial_choice_texts, choice_prompt_text, initial_image_url if WORLD_IMAGE_ENABLED else None)
     intro_items.append(choices_item)
     state["choices"] = choices_item['choices'] # This is fine, updates a different part of state
@@ -3854,7 +3164,7 @@ def _perform_game_reset() -> List[Dict[str, Any]]:
     
     # Explicitly create a new dictionary for the state to ensure no shared references for critical parts
     state = {
-        "world_prompt": PROMPTS.get("world_prompt", "Default world starting point."),
+        "world_prompt": PROMPTS.get("world_initial_state", "Default world starting point."),
         "current_phase": "normal",
         "chaos_level": 0,
         "last_choice": "",
@@ -3900,13 +3210,6 @@ def _perform_game_reset() -> List[Dict[str, Any]]:
     logging.info(f"_perform_game_reset: Game reset complete. {len(initial_items)} initial items generated and saved.")
     return initial_items
 
-@app.route('/')
-def serve_webui():
-    logging.info("serve_webui: Root path '/' accessed. Performing game reset before serving page.")
-    _perform_game_reset() # Reset state every time the main page is loaded
-    return render_template('feed.html', discord_client_id=DISCORD_CLIENT_ID)
-
-@app.route('/api/reset', methods=['POST'])
 def api_reset():
     global state # Ensure we're interacting with the global state
     logging.info(f"api_reset: POST request received. Current state ID before reset: {id(state)}")
@@ -3950,7 +3253,6 @@ def api_reset():
             log_error(f"Could not save error item to feed_log during api_reset error handling: {e_log}")
         return jsonify([error_feed_item]), 500
 
-@app.route('/api/feed', methods=['GET'])
 def api_feed():
     global state
     since_id_str = request.args.get('since_id')
@@ -3969,7 +3271,6 @@ def api_feed():
                 items_to_return = list(feed_log) # Return a copy of the full feed log            
     return jsonify(items_to_return)
 
-@app.route('/api/choose', methods=['POST'])
 def api_choose():
     global state
     try:
@@ -4045,7 +3346,6 @@ def api_choose():
         return jsonify([error_item]), 500
 
 
-@app.route('/api/regenerate_choices', methods=['POST'])
 def api_regenerate_choices():
     global state
     logging.info("api_regenerate_choices: POST request received.")
@@ -4132,47 +3432,6 @@ def api_regenerate_choices():
             log_error(f"Could not save error item to feed_log during api_regenerate_choices error handling: {e_log}")
         return jsonify([error_item]), 500
 
-
-# Discord Embedded App OAuth2 Token Exchange Endpoint
-@app.route('/discord/api/token', methods=['POST'])
-def discord_token_exchange():
-    try:
-        data = request.get_json()
-        code = data.get('code')
-
-        if not code:
-            return jsonify({"error": "Missing authorization code"}), 400
-        if not DISCORD_CLIENT_ID or not DISCORD_CLIENT_SECRET:
-            return jsonify({"error": "Discord client credentials not configured on server"}), 500
-
-        token_url = 'https://discord.com/api/oauth2/token'
-        payload = {
-            'client_id': DISCORD_CLIENT_ID,
-            'client_secret': DISCORD_CLIENT_SECRET,
-            'grant_type': 'authorization_code',
-            'code': code,
-            # IMPORTANT: This redirect_uri MUST EXACTLY MATCH one of the URIs
-            # you configured in your Discord Developer Portal for this application.
-            # For embedded apps, this is typically your main application URL.
-            'redirect_uri': 'https://somewhere-storygen.onrender.com/' # Make sure this matches your setup!
-        }
-        headers = {
-            'Content-Type': 'application/x-www-form-urlencoded'
-        }
-        
-        import requests # Make sure 'requests' is in requirements.txt
-        response = requests.post(token_url, data=payload, headers=headers)
-        response.raise_for_status() # Will raise an exception for HTTP errors
-        
-        token_data = response.json()
-        return jsonify(token_data) # Return the whole token response from Discord
-
-    except requests.exceptions.HTTPError as http_err:
-        logging.error(f"Discord token exchange HTTP error: {http_err} - {response.text}")
-        return jsonify({"error": "Failed to exchange token with Discord", "details": response.text}), response.status_code
-    except Exception as e:
-        logging.error(f"Error in Discord token exchange: {e}")
-        return jsonify({"error": "Internal server error during token exchange"}), 500
 
 # ───────── COMBINED dispatch generator (saves 1 API call) ─────────────────────
 def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = None, prev_vision: str = "", current_image: str = None, fate: str = "NORMAL") -> tuple[str, str, bool]:
@@ -4449,40 +3708,6 @@ def summarize_world_state_diff(prev_state: dict, state: dict) -> str:
         return "No major world state changes."
     return "; ".join(diffs)
 
-def is_clever_or_risky(choice):
-    """Heuristic: risky/clever if contains certain keywords"""
-    keywords = ["sneak", "hide", "stealth", "evade", "escape", "confront", "attack", "investigate", "search", "scan", "explore", "photograph", "analyze", "decipher", "decode", "hack", "sabotage", "ally", "bargain", "bribe", "bluff", "trick", "outsmart", "ambush", "rescue", "save", "risk", "danger", "hazard", "peril", "bold", "daring", "reckless", "brave", "uncover", "discover", "secret", "hidden", "mystery", "clue", "artifact", "ancient", "forbidden", "rare"]
-    return any(k in choice.lower() for k in keywords)
-
-def resolve_risky_action(choice, threat_level, dispatch, world_prompt):
-    import random
-    # Set base success chance by threat level
-    if threat_level == 0:
-        success_chance = 0.85
-    elif threat_level == 1:
-        success_chance = 0.7
-    elif threat_level == 2:
-        success_chance = 0.5
-    else:
-        success_chance = 0.33
-    success = random.random() < success_chance
-    # Use LLM to generate consequence
-    prompt = (
-        f"Write a single, punchy gameplay consequence line for the player's risky action. "
-        f"ACTION: {choice}\nDISPATCH: {dispatch}\nWORLD: {world_prompt}\n"
-        f"OUTCOME: {'success' if success else 'failure'}\n"
-        "If success, describe how the player advances or avoids danger. If failure, describe the immediate negative result."
-    )
-    try:
-        # Don't use lore - this is a mechanical risky action resolution
-        summary = _ask(prompt, model="gemini", temp=1.0, tokens=40, use_lore=False)
-        if not summary.strip():
-            summary = 'No major consequence.'
-        return success, summary
-    except Exception as e:
-        log_error(f"[RISKY ACTION CONSEQUENCE] LLM error: {e}")
-        return success, 'No major consequence.'
-
 # ───────── game loop ──────────────────────────────────────────────────────────
 def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalty: bool = False, session_id: str = 'default') -> dict:
     """
@@ -4529,7 +3754,7 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
         if is_timeout_penalty:
             dispatch = choice  # The penalty text IS the consequence
             vision_dispatch = choice
-            player_alive = True  # Let check_player_death determine this based on penalty severity
+            player_alive = True  # timeout penalties never kill directly; the next turn's consequence LLM judges lethality
             print(f"[TIMEOUT PENALTY] Using penalty text as dispatch: {dispatch[:100]}")
         else:
             # Generate dispatch using FULL StoryGen version (with fate modifier)
@@ -5434,18 +4659,3 @@ def generate_intro_turn(session_id: str = 'default'):
         "chaos": state["chaos_level"],
         "player_state": state.get('player_state', {})
     }
-
-if __name__ == '__main__':
-    # Setup logging if you want to see Flask's default logs
-    # logging.basicConfig(level=logging.INFO)
-    # Debug mode opt-in only: enabling it in production exposes the
-    # Werkzeug interactive debugger (arbitrary code execution from the
-    # browser). Defaults to off; set FLASK_DEBUG=1 locally to re-enable.
-    _debug_mode = os.environ.get('FLASK_DEBUG', '0') == '1'
-    app.run(
-        debug=_debug_mode,
-        host='0.0.0.0',
-        port=int(os.environ.get('PORT', 8080)),
-        use_reloader=False,
-        threaded=True,
-    )

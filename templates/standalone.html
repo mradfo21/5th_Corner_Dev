@@ -9,8 +9,10 @@
 </head>
 <body>
 
-  <!-- Full-bleed scene crossfade layers. The image IS the game. -->
-  <div id="sceneA" class="scene scene-active" style="background-image:url('{{ url_for('static', filename='img/scene_exterior.png') }}')"></div>
+  <!-- Full-bleed scene crossfade layers. The image IS the game.
+       No hardcoded seed art here (it 404'd); the pre-game backdrop is the
+       CSS background + VHS grain until the first generated scene arrives. -->
+  <div id="sceneA" class="scene scene-active"></div>
   <div id="sceneB" class="scene"></div>
   <div id="scene-flash"></div>
   <div class="scene-scrim"></div>
