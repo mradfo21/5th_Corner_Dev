@@ -39,6 +39,7 @@
     btnReset: document.getElementById("btn-reset"),
     btnRegen: document.getElementById("btn-regen"),
     btnVhs: document.getElementById("btn-vhs"),
+    btnSnd: document.getElementById("btn-snd"),
     vhsOverlay: document.getElementById("vhs-overlay"),
     backendName: document.getElementById("backend-name"),
     timecodeText: document.getElementById("timecode-text"),
@@ -61,7 +62,60 @@
     timecodeTimer: null,
     awaitingResolution: false,
     gameOver: false,
+    soundEnabled: true,
+    renderedIds: new Set(), // guard against rendering the same feed item twice
+    lastStatus: {},
   };
+
+  // ------------------------------------------------------------------
+  // Sound — tiny WebAudio synth (no assets; gated on first user gesture)
+  // ------------------------------------------------------------------
+  const Sound = (function () {
+    let ctx = null;
+    function ensure() {
+      if (!state.soundEnabled) return null;
+      if (!ctx) {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return null;
+        ctx = new AC();
+      }
+      if (ctx.state === "suspended") ctx.resume();
+      return ctx;
+    }
+    // A short shaped tone. Freqs can be a single value or a [from,to] glide.
+    function tone(freq, dur, type, vol, delay) {
+      if (!state.soundEnabled) return;
+      const c = ensure();
+      if (!c) return;
+      const t0 = c.currentTime + (delay || 0);
+      const osc = c.createOscillator();
+      const gain = c.createGain();
+      osc.type = type || "sine";
+      if (Array.isArray(freq)) {
+        osc.frequency.setValueAtTime(freq[0], t0);
+        osc.frequency.exponentialRampToValueAtTime(Math.max(1, freq[1]), t0 + dur);
+      } else {
+        osc.frequency.setValueAtTime(freq, t0);
+      }
+      gain.gain.setValueAtTime(0.0001, t0);
+      gain.gain.exponentialRampToValueAtTime(vol || 0.06, t0 + 0.01);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+      osc.connect(gain);
+      gain.connect(c.destination);
+      osc.start(t0);
+      osc.stop(t0 + dur + 0.02);
+    }
+    return {
+      resume() { ensure(); },
+      text() { tone(430, 0.09, "sine", 0.045); },              // narrative / world text lands
+      pickup() { tone([600, 900], 0.16, "triangle", 0.06); },  // item pickup
+      choices() { tone(680, 0.07, "triangle", 0.05); tone(920, 0.09, "triangle", 0.045, 0.07); }, // choices ready
+      select() { tone(520, 0.05, "square", 0.05); tone(790, 0.10, "square", 0.05, 0.055); },       // confirm choice
+      status() { tone(320, 0.05, "sine", 0.03); },             // HUD tick
+      death() { tone([180, 60], 0.7, "sawtooth", 0.09); },     // game over
+      error() { tone([200, 120], 0.18, "sawtooth", 0.05); },
+    };
+  })();
 
   // ------------------------------------------------------------------
   // Utilities
@@ -211,11 +265,11 @@
 
   function appendProse(item) {
     const div = document.createElement("div");
-    div.className = `prose-entry ${classForType(item.type)}`;
+    div.className = `prose-entry glow-pop ${classForType(item.type)}`;
     div.dataset.itemId = item.id;
     div.innerHTML = renderInline(item.content || "");
     el.prose.appendChild(div);
-    el.prose.scrollTop = el.prose.scrollHeight + 200;
+    el.prose.scrollTop = el.prose.scrollHeight + 400;
     return div;
   }
 
@@ -226,8 +280,14 @@
     promptItem.choices.forEach((choice, idx) => {
       const btn = document.createElement("button");
       btn.className = "choice-btn";
+      btn.style.animationDelay = `${idx * 70}ms`; // staggered pop-in cascade
       btn.innerHTML = `<span class="choice-num">${idx + 1}</span><span>${renderInline(choice.text)}</span>`;
-      btn.addEventListener("click", () => makeChoice(choice.text, promptItem.id));
+      btn.addEventListener("click", () => {
+        if (state.processing || state.gameOver) return;
+        Sound.select();
+        btn.classList.add("picked");
+        makeChoice(choice.text, promptItem.id);
+      });
       el.choices.appendChild(btn);
     });
   }
@@ -248,6 +308,12 @@
 
   function renderItem(item) {
     if (!item || typeof item.id !== "number") return;
+    // Dedup: never render the same server feed item twice (guards against
+    // overlapping polls / bootstrap races that caused doubled lines).
+    if (item.id >= 0) {
+      if (state.renderedIds.has(item.id)) return;
+      state.renderedIds.add(item.id);
+    }
     if (item.id > state.lastId) state.lastId = item.id;
 
     if (item.image_url) {
@@ -263,6 +329,7 @@
 
       case "game_over":
         appendProse(item);
+        Sound.death();
         enterGameOver(item.content);
         return;
 
@@ -277,6 +344,7 @@
         }
         appendProse(item);
         renderChoices(item);
+        Sound.choices();
         hideVeil();
         state.awaitingResolution = false;
         refreshStatus(); // reflect turn/chaos/inventory promptly, not on the 4s tick
@@ -284,6 +352,7 @@
 
       case "error_event":
         appendProse(item);
+        Sound.error();
         hideVeil();
         state.awaitingResolution = false;
         return;
@@ -291,11 +360,14 @@
       case "inventory_pickup":
       case "inventory_full":
         appendProse(item);
+        Sound.pickup();
         refreshStatus(); // update the inventory HUD right away
         return;
 
       default:
+        // Narrative / world-building text lands with a soft blip.
         appendProse(item);
+        Sound.text();
         return;
     }
   }
@@ -335,6 +407,7 @@
       el.prose.innerHTML = "";
       el.choices.innerHTML = "";
       state.lastId = 0;
+      state.renderedIds = new Set();
       state.awaitingResolution = false;
       renderInventory([]);
       startTimecode();
@@ -442,12 +515,29 @@
     }, FAST_POLL_INTERVAL_MS);
   }
 
+  // Update a HUD value element, and glow-pop it if the value actually changed.
+  function setHud(node, key, value) {
+    const str = String(value);
+    if (node.textContent !== str) {
+      node.textContent = str;
+      if (state.lastStatus[key] !== undefined && state.lastStatus[key] !== str) {
+        node.classList.remove("bumped");
+        void node.offsetWidth; // restart the animation
+        node.classList.add("bumped");
+        return true; // changed
+      }
+    }
+    return false;
+  }
+
   async function refreshStatus() {
     try {
       const s = await getJSON("/api/status");
-      el.hudTurn.textContent = s.turn ?? 0;
-      el.hudPhase.textContent = s.phase ?? "normal";
-      el.hudChaos.textContent = s.chaos ?? 0;
+      let changed = false;
+      changed = setHud(el.hudTurn, "turn", s.turn ?? 0) || changed;
+      changed = setHud(el.hudChaos, "chaos", s.chaos ?? 0) || changed;
+      const phaseText = s.alive === false ? "deceased" : (s.phase ?? "normal");
+      changed = setHud(el.hudPhase, "phase", phaseText) || changed;
       el.backendName.textContent = s.backend ?? "unknown";
       renderInventory(s.inventory);
       if (s.time_of_day) {
@@ -456,9 +546,9 @@
       } else {
         el.hudTimeWrap.classList.add("hidden");
       }
-      if (s.alive === false) {
-        el.hudPhase.textContent = "deceased";
-      }
+      // Record for next-change detection; ping a subtle tick on any change.
+      state.lastStatus = { turn: String(s.turn ?? 0), chaos: String(s.chaos ?? 0), phase: phaseText };
+      if (changed) Sound.status();
     } catch (err) {
       el.backendName.textContent = "offline";
     }
@@ -476,6 +566,13 @@
   function toggleVhs() {
     state.vhsEnabled = !state.vhsEnabled;
     el.vhsOverlay.classList.toggle("vhs-on", state.vhsEnabled);
+  }
+
+  function toggleSound() {
+    state.soundEnabled = !state.soundEnabled;
+    el.btnSnd.classList.toggle("off", !state.soundEnabled);
+    el.btnSnd.innerHTML = state.soundEnabled ? "\u266A SND" : "\u2715 SND";
+    if (state.soundEnabled) { Sound.resume(); Sound.select(); }
   }
 
   function initVhsGrain() {
@@ -527,6 +624,8 @@
       regenChoices();
     } else if (e.key.toLowerCase() === "v") {
       toggleVhs();
+    } else if (e.key.toLowerCase() === "m") {
+      toggleSound();
     } else if (e.key === "Escape") {
       el.customInput.value = "";
     }
@@ -571,9 +670,16 @@
     el.btnReset.addEventListener("click", resetGame);
     el.btnRegen.addEventListener("click", regenChoices);
     el.btnVhs.addEventListener("click", toggleVhs);
+    el.btnSnd.addEventListener("click", toggleSound);
     el.deathRestart.addEventListener("click", resetGame);
     el.customForm.addEventListener("submit", submitCustomAction);
     document.addEventListener("keydown", onKeydown);
+
+    // Browsers block audio until a user gesture; unlock the context on the
+    // first interaction so feedback sounds work for the rest of the session.
+    const unlockAudio = () => { Sound.resume(); };
+    document.addEventListener("pointerdown", unlockAudio, { once: true });
+    document.addEventListener("keydown", unlockAudio, { once: true });
 
     initVhsGrain();
     cycleVeilMessages();

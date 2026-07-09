@@ -40,6 +40,7 @@
       <button id="btn-reset" class="hud-btn" title="Reset (R)">⟲ RESET</button>
       <button id="btn-regen" class="hud-btn" title="Regenerate choices (G)">⟳ REGEN</button>
       <button id="btn-vhs" class="hud-btn" title="Toggle VHS overlay (V)">▣ VHS</button>
+      <button id="btn-snd" class="hud-btn" title="Toggle sound (M)">♪ SND</button>
     </div>
   </header>
 
@@ -49,21 +50,22 @@
     <ul id="inventory-list"></ul>
   </aside>
 
-  <!-- Floating prose feed -->
-  <main id="prose-feed" aria-live="polite"></main>
+  <!-- Compact console: prose feed + choices + free text, tight over the scene -->
+  <div id="console-panel">
+    <main id="prose-feed" aria-live="polite"></main>
 
-  <!-- Choices + free text -->
-  <footer id="action-bar">
-    <div id="choices-container"></div>
-    <form id="custom-form" autocomplete="off">
-      <span class="prompt-caret">&gt;</span>
-      <input id="custom-input" type="text" placeholder="...or type your own action and press Enter" maxlength="200">
-      <button id="custom-submit" type="submit">SEND</button>
-    </form>
-    <div class="action-hints">
-      <span>1·2·3 choose</span><span>R reset</span><span>G regen</span><span>V vhs</span><span>Enter submit</span><span>Esc clear</span>
-    </div>
-  </footer>
+    <footer id="action-bar">
+      <div id="choices-container"></div>
+      <form id="custom-form" autocomplete="off">
+        <span class="prompt-caret">&gt;</span>
+        <input id="custom-input" type="text" placeholder="...or type your own action" maxlength="200">
+        <button id="custom-submit" type="submit">SEND</button>
+      </form>
+      <div class="action-hints">
+        <span>1·2·3 choose</span><span>R reset</span><span>G regen</span><span>M sound</span>
+      </div>
+    </footer>
+  </div>
 
   <!-- Processing veil shown while waiting on the backend -->
   <div id="processing-veil" class="hidden">
