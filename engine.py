@@ -549,6 +549,24 @@ def create_feed_item(type: str, content: str, image_url: Optional[str] = None, c
 def log_error(message: str):
     print(f"ERROR: {message}", file=sys.stderr, flush=True)
 
+def _to_web_image_url(image_path) -> Optional[str]:
+    """Convert an image path from _gen_image into a browser-servable URL for
+    the standalone feed.
+
+    _gen_image (Gemini path) returns an absolute filesystem path
+    (sessions/<id>/images/<file>.png), which the Discord bot attaches directly
+    but a web browser cannot load. The standalone /images/<filename> route
+    serves those files by basename, so feed items must reference that URL form.
+    Returns None for falsy/failed inputs; passes through values already in
+    '/images/..' form.
+    """
+    if not image_path:
+        return None
+    s = str(image_path)
+    if s.startswith("/images/"):
+        return s
+    return "/images/" + os.path.basename(s)
+
 # ───────── prompt fragments ──────────────────────────────────────────────────
 choice_tmpl     = PROMPTS["player_choice_generation_instructions"]
 dispatch_sys    = PROMPTS["action_consequence_instructions"]
@@ -2992,9 +3010,12 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
         except Exception as e_pick:
             log_error(f"Error detecting item pickups: {e_pick}")
 
-        if consequence_img_url:
-            state['current_image_url'] = consequence_img_url
-            turn_items.append(create_feed_item(type="scene_image", content="The scene shifts...", image_url=consequence_img_url))
+        # consequence_img_url is an absolute path (kept for vision/history);
+        # the feed/browser needs the servable /images/<file> form.
+        web_img_url = _to_web_image_url(consequence_img_url)
+        if web_img_url:
+            state['current_image_url'] = web_img_url
+            turn_items.append(create_feed_item(type="scene_image", content="The scene shifts...", image_url=web_img_url))
 
         with WORLD_STATE_LOCK:
             state.setdefault("feed_log", []).extend(turn_items)
@@ -3005,7 +3026,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             game_over_item = create_feed_item(type="game_over", content="You have succumbed to the horrors. The transmission ends.")
             game_over_choices = _structure_choices_for_feed(
                 ["Restart Simulation"], "GAME OVER",
-                image_url=consequence_img_url or state.get("current_image_url"),
+                image_url=web_img_url or state.get("current_image_url"),
             )
             with WORLD_STATE_LOCK:
                 state.setdefault("feed_log", []).append(game_over_item)
@@ -3024,7 +3045,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
         next_choices = [c for c in (p2.get("choices") or []) if c and c.strip() and c.strip() != "\u2014"]
         prompt_item = _structure_choices_for_feed(
             next_choices, "What do you do next?",
-            state.get("current_image_url") or consequence_img_url,
+            state.get("current_image_url") or web_img_url,
         )
 
         with WORLD_STATE_LOCK:
@@ -3091,6 +3112,7 @@ def generate_intro_turn_feed_items() -> List[Dict[str, Any]]:
     intro_items.append(narrative_item)
 
     initial_image_url = None
+    intro_web_img_url = None  # servable /images/<file> form for the feed
     if WORLD_IMAGE_ENABLED: # Global toggle for images
         try:
             vision_dispatch_for_intro_image = _generate_vision_dispatch(initial_narrative_content, state.get("world_prompt", "Initialization sequence."))
@@ -3105,9 +3127,12 @@ def generate_intro_turn_feed_items() -> List[Dict[str, Any]]:
                 )
                 # Note: initial_video_url not used in this code path (intro sequence)
                 if initial_image_url:
-                    image_item = create_feed_item(type="scene_image", content="Initialising environment...", image_url=initial_image_url)
+                    # initial_image_url is an absolute path (kept below for vision);
+                    # the feed/browser needs the servable /images/<file> form.
+                    intro_web_img_url = _to_web_image_url(initial_image_url)
+                    image_item = create_feed_item(type="scene_image", content="Initialising environment...", image_url=intro_web_img_url)
                     intro_items.append(image_item)
-                    state['current_image_url'] = initial_image_url # This is fine, updates a different part of state
+                    state['current_image_url'] = intro_web_img_url
                     state['current_image_prompt'] = initial_image_prompt # Store prompt
         except Exception as e_img:
             log_error(f"Error generating intro image: {e_img}")
@@ -3144,7 +3169,7 @@ def generate_intro_turn_feed_items() -> List[Dict[str, Any]]:
         initial_choice_texts = ["Vault the perimeter fence", "Crouch low and scan the facility", "Photograph the abandoned vehicles"]
 
     choice_prompt_text = "The fence line waits. What's your first move?"
-    choices_item = _structure_choices_for_feed(initial_choice_texts, choice_prompt_text, initial_image_url if WORLD_IMAGE_ENABLED else None)
+    choices_item = _structure_choices_for_feed(initial_choice_texts, choice_prompt_text, intro_web_img_url if WORLD_IMAGE_ENABLED else None)
     intro_items.append(choices_item)
     state["choices"] = choices_item['choices'] # This is fine, updates a different part of state
 
