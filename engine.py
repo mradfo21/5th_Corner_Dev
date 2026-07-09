@@ -662,6 +662,17 @@ if history_path.exists():
 else:
     history = []
 
+# Advance the feed-item id counter past any ids already persisted in the
+# resumed 'default' session so new items stay monotonically increasing and
+# never collide with existing feed_log entries after a restart.
+try:
+    _existing_feed = state.get("feed_log", []) if isinstance(state, dict) else []
+    _max_feed_id = max((int(i.get("id", 0)) for i in _existing_feed), default=0)
+    if _max_feed_id > _next_feed_item_id:
+        _next_feed_item_id = _max_feed_id
+except Exception:
+    pass
+
 # Session-based history functions
 def _load_history(session_id='default') -> list:
     """Load history for a specific session"""

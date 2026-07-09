@@ -30,20 +30,13 @@ def add_embed_headers(response):
 # ═══════════════════════════════════════════════════════════════════
 # STANDALONE IMMERSIVE UI (feed-based game) + offline mock harness
 #
-# `engine.py` already implements the feed-based game loop as Flask view
-# functions on its OWN `app` (api_reset / api_feed / api_choose /
-# api_regenerate_choices), but production only ever serves `api:app`
-# (see start_production.sh -> `gunicorn api:app`). engine.py's `app` is
-# never run in production, so those routes were previously unreachable.
-#
-# Rather than duplicating that logic here, we register the existing
-# engine.py view functions directly onto THIS app. They are ordinary
-# Python functions (Flask route decoration just records them in
-# engine.app's url map; the functions themselves have no dependency on
-# which Flask app calls them) — calling them from api.app works exactly
-# the same way and shares the same in-memory `engine.state` / on-disk
-# 'default' session files this code path already reads and writes via
-# _load_state()/_save_state().
+# `engine.py` implements the feed-based game loop (api_reset / api_feed /
+# api_choose / api_regenerate_choices) as plain Python functions — it no
+# longer owns a Flask app of its own. This is the single Flask app for the
+# whole service (gunicorn api:app, see start_production.sh), so we mount
+# those functions here with add_url_rule. They share the same in-memory
+# `engine.state` / on-disk 'default' session files this code path reads and
+# writes via _load_state()/_save_state().
 # ═══════════════════════════════════════════════════════════════════
 
 app.add_url_rule('/api/reset', 'standalone_api_reset', engine.api_reset, methods=['POST'])
