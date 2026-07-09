@@ -577,8 +577,9 @@ def _load_state(session_id='default') -> dict:
                 st.setdefault('feed_log', [])
                 st.setdefault('current_image_url', None)
                 st.setdefault('choices', []) # Ensure choices list is present
-                # STATE MIGRATION: Enable flipbook mode by default for existing sessions
-                st.setdefault('flipbook_mode', True)
+                # Default to Full Frame (flipbook off) to match the UI default;
+                # apply_experience_mode flips this on when Flipbook is chosen.
+                st.setdefault('flipbook_mode', False)
                 return st
             except json.JSONDecodeError as e_json:
                 logging.error(f"JSONDecodeError in _load_state for {state_path}: {e_json}. File might be corrupt or empty.")
@@ -611,17 +612,19 @@ def _load_state(session_id='default') -> dict:
             "turn_count": 0, # Initialize turn_count
             "interim_index": 0, # Initialize interim_index
             "time_of_day": INITIAL_TIME_OF_DAY,
-            "flipbook_mode": True  # Enabled by default - 4x4 action sequence
+            "flipbook_mode": False  # Full Frame default; Flipbook opt-in via experience mode
         }
 
-# Legacy global state (deprecated - use session-based functions instead)
-# These are kept for backward compatibility but should not be used in new code
-print("[ENGINE INIT] Initializing legacy global state for backward compatibility...", flush=True)
+# Module-global state backing the standalone feed UI. It mirrors the
+# 'default' session on disk (sessions/default/state.json), the same session
+# the feed endpoints and _perform_game_reset read and write, so in-memory
+# state and disk state no longer diverge across restarts.
+print("[ENGINE INIT] Initializing global state from 'default' session...", flush=True)
 try:
-    state = _load_state('legacy') # Initial load for legacy code
-    print(f"[ENGINE INIT] Legacy state loaded successfully", flush=True)
+    state = _load_state('default')
+    print(f"[ENGINE INIT] Default-session state loaded successfully", flush=True)
 except Exception as e:
-    print(f"[ENGINE INIT ERROR] Failed to load legacy state: {e}", flush=True)
+    print(f"[ENGINE INIT ERROR] Failed to load default-session state: {e}", flush=True)
     import traceback
     traceback.print_exc()
     # Create default state if loading fails
@@ -643,14 +646,19 @@ except Exception as e:
         "in_combat": False,
         "threat_level": 0,
         "time_of_day": INITIAL_TIME_OF_DAY,
-        "flipbook_mode": True  # Enabled by default - 4x4 action sequence
+        "flipbook_mode": False  # Full Frame default; Flipbook opt-in via experience mode
     }
-    print("[ENGINE INIT] Created default legacy state", flush=True)
+    print("[ENGINE INIT] Created default fallback state", flush=True)
 
-history_path = ROOT / "history.json"
+# Global history mirrors the 'default' session (standalone feed path) so the
+# feed no longer writes history to a separate root history.json.
+history_path = _get_history_path('default')
 if history_path.exists():
-    with history_path.open("r", encoding="utf-8") as f:
-        history = json.load(f)
+    try:
+        with history_path.open("r", encoding="utf-8") as f:
+            history = json.load(f)
+    except Exception:
+        history = []
 else:
     history = []
 
