@@ -533,6 +533,37 @@
   }
 
   // ------------------------------------------------------------------
+  // Bootstrap — decide between resuming an existing session and starting fresh
+  // ------------------------------------------------------------------
+
+  /**
+   * On load, look at the existing feed. If a session is already in progress
+   * (has content, including an active choice prompt or a game-over), resume it
+   * so a page refresh doesn't wipe the player's run. If the session is empty
+   * or has no actionable prompt (a cold visit or a stale/half-written state),
+   * start a fresh game automatically so a first-time visitor immediately sees
+   * the intro and choices instead of a blank screen.
+   */
+  async function bootstrap() {
+    try {
+      const items = await getJSON(`/api/feed?since_id=0`);
+      if (Array.isArray(items) && items.length) {
+        renderItems(items);
+        const hasPrompt = items.some((i) => i.type === "player_choice_prompt");
+        const isDead = items.some((i) => i.type === "game_over");
+        if (hasPrompt || isDead) {
+          hideVeil();
+          return; // resume the in-progress run
+        }
+      }
+    } catch (err) {
+      console.error("[standalone] bootstrap feed check failed:", err);
+    }
+    // Cold start (or unusable session) → begin a new game.
+    await resetGame();
+  }
+
+  // ------------------------------------------------------------------
   // Init
   // ------------------------------------------------------------------
 
@@ -551,9 +582,9 @@
     startStatusPolling();
     refreshStatus();
 
-    // Does NOT auto-reset on load, per spec: pick up wherever the session
-    // left off by polling from id 0 (returns the full existing feed_log).
-    pollOnce();
+    // Resume an in-progress run if one exists, otherwise auto-start a fresh
+    // game so a first-time visitor is never greeted by a blank screen.
+    bootstrap();
   }
 
   if (document.readyState === "loading") {
