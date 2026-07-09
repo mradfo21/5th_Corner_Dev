@@ -3210,10 +3210,13 @@ def _perform_game_reset() -> List[Dict[str, Any]]:
     logging.info(f"_perform_game_reset: New state object created. New state id: {id(state)}. Its feed_log (len {len(state['feed_log'])}) id: {id(state['feed_log'])}")
 
     _last_image_path = None
-    
-    with feed_item_id_lock:
-        _next_feed_item_id = 0
-        logging.info(f"_perform_game_reset: Feed item ID counter reset to {_next_feed_item_id}.")
+
+    # NOTE: Do NOT reset _next_feed_item_id here. Feed item ids must stay
+    # monotonically increasing across resets — a connected client tracks the
+    # last id it has seen (and dedups by id), so restarting the counter made
+    # a fresh intro reuse low ids that the client had already rendered, which
+    # got deduped away → "Reset does nothing". Keeping the counter monotonic
+    # guarantees the new intro's items are always newer than anything seen.
 
     history = []
     if history_path.exists():

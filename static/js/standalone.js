@@ -1,6 +1,6 @@
 /* ============================================================
    SOMEWHERE // Standalone — game controller
-   Talks to: POST /api/reset, POST /api/choose, POST /api/regenerate_choices,
+   Talks to: POST /api/reset, POST /api/choose,
              GET /api/feed?since_id=N, GET /api/status
    ============================================================ */
 (function () {
@@ -39,7 +39,6 @@
     hudTime: document.getElementById("hud-time"),
     hudTimeWrap: document.getElementById("hud-time-wrap"),
     btnReset: document.getElementById("btn-reset"),
-    btnRegen: document.getElementById("btn-regen"),
     btnVhs: document.getElementById("btn-vhs"),
     btnSnd: document.getElementById("btn-snd"),
     vhsOverlay: document.getElementById("vhs-overlay"),
@@ -197,22 +196,6 @@
   // so this is safe against injection from model-generated text.
   function renderInline(text) {
     return escapeHtml(text).replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-  }
-
-  /**
-   * Normalize the response of POST /api/regenerate_choices, which may come
-   * back as a bare list of feed items OR (in older/alternate server builds)
-   * as a single object. Always returns the most relevant
-   * `player_choice_prompt` item, or null.
-   */
-  function pickChoicePrompt(resp) {
-    if (Array.isArray(resp)) {
-      for (let i = resp.length - 1; i >= 0; i--) {
-        if (resp[i] && resp[i].type === "player_choice_prompt") return resp[i];
-      }
-      return resp.length ? resp[resp.length - 1] : null;
-    }
-    return resp || null;
   }
 
   // ------------------------------------------------------------------
@@ -405,13 +388,15 @@
 
   async function resetGame() {
     try {
+      stopPolling(); // avoid a mid-reset poll racing the rebuilt feed
       exitGameOver();
-      showVeil("Initializing simulation...");
+      showVeil("Reawakening the tape...");
       el.prose.innerHTML = "";
       el.choices.innerHTML = "";
       state.lastId = 0;
       state.renderedIds = new Set();
       state.awaitingResolution = false;
+      state.gameOver = false;
       closeFreeWill(true);
       renderInventory([]);
       startTimecode();
@@ -423,6 +408,8 @@
       console.error("[standalone] resetGame failed:", err);
       hideVeil();
       appendProse({ id: -1, type: "error_event", content: `Could not reach the server: ${err.message}` });
+    } finally {
+      startPolling(); // resume normal polling once the fresh feed is in
     }
   }
 
@@ -444,23 +431,6 @@
       hideVeil();
       state.awaitingResolution = false;
       appendProse({ id: -1, type: "error_event", content: `Action failed to send: ${err.message}` });
-    }
-  }
-
-  async function regenChoices() {
-    if (state.processing || state.gameOver) return;
-    showVeil("Reconsidering the options...");
-    try {
-      const resp = await postJSON("/api/regenerate_choices", {});
-      const promptItem = pickChoicePrompt(resp);
-      if (promptItem) {
-        renderItem(promptItem);
-      }
-    } catch (err) {
-      console.error("[standalone] regenChoices failed:", err);
-      appendProse({ id: -1, type: "error_event", content: `Could not regenerate choices: ${err.message}` });
-    } finally {
-      hideVeil();
     }
   }
 
@@ -650,8 +620,6 @@
       if (btn) btn.click();
     } else if (e.key.toLowerCase() === "r") {
       resetGame();
-    } else if (e.key.toLowerCase() === "g") {
-      regenChoices();
     } else if (e.key.toLowerCase() === "v") {
       toggleVhs();
     } else if (e.key.toLowerCase() === "m") {
@@ -700,7 +668,6 @@
 
   function init() {
     el.btnReset.addEventListener("click", resetGame);
-    el.btnRegen.addEventListener("click", regenChoices);
     el.btnVhs.addEventListener("click", toggleVhs);
     el.btnSnd.addEventListener("click", toggleSound);
     el.deathRestart.addEventListener("click", resetGame);
