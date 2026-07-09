@@ -15,6 +15,18 @@ import ai_provider_manager
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
 
+
+# Allow embedding the game in an iframe (main site + Discord embedded app).
+@app.after_request
+def add_embed_headers(response):
+    response.headers['Content-Security-Policy'] = (
+        "frame-ancestors 'self' https://www.5th-corner.com https://discord.com https://canary.discord.com https://ptb.discord.com"
+    )
+    response.headers['X-Frame-Options'] = (
+        "ALLOW-FROM https://www.5th-corner.com https://discord.com https://canary.discord.com https://ptb.discord.com"
+    )
+    return response
+
 # ═══════════════════════════════════════════════════════════════════
 # STANDALONE IMMERSIVE UI (feed-based game) + offline mock harness
 #

@@ -33,13 +33,12 @@ import openai
 print("[ENGINE] openai imported", flush=True); sys.stdout.flush()
 from openai import OpenAIError
 print("[ENGINE] OpenAIError imported", flush=True); sys.stdout.flush()
-from flask import Flask, send_from_directory, request, jsonify, render_template
+from flask import request, jsonify
 print("[ENGINE] flask imported", flush=True); sys.stdout.flush()
 from PIL import Image
 print("[ENGINE] PIL imported", flush=True); sys.stdout.flush()
 import io
 import requests  # For OpenAI multipart form-data img2img
-from flask_cors import CORS
 print("[ENGINE] flask_cors imported", flush=True); sys.stdout.flush()
 
 # Note: choices module imported locally in functions to avoid circular dependency
@@ -132,24 +131,12 @@ PROMPTS = json.load((ROOT/"prompts"/"simulation_prompts.json").open(encoding="ut
 # Game constants - Structured time/atmosphere tracking
 INITIAL_TIME_OF_DAY = "6:30pm | weather: clear, warm light | mood: tense anticipation"  # Start time matching world_initial_state
 
-app = Flask(__name__)
-CORS(app)  # Allow all origins for testing
-
-# Load the full config to access other keys if needed later, specifically DISCORD_CLIENT_ID
+# NOTE: engine.py no longer owns a Flask app. The feed-based game loop
+# functions below (api_reset / api_feed / api_choose / api_regenerate_choices)
+# are plain functions; production serves them via api.py (gunicorn api:app),
+# which mounts them with add_url_rule and owns the single Flask app + CORS +
+# iframe-embed headers.
 CONFIG_DATA = CONFIG  # Already loaded above
-DISCORD_CLIENT_ID = os.getenv("DISCORD_CLIENT_ID", CONFIG_DATA.get("DISCORD_CLIENT_ID"))
-DISCORD_CLIENT_SECRET = CONFIG_DATA.get("DISCORD_CLIENT_SECRET")
-
-# Allow embedding in iframe from Squarespace site
-@app.after_request
-def add_embed_headers(response):
-    response.headers['Content-Security-Policy'] = (
-        "frame-ancestors 'self' https://www.5th-corner.com https://discord.com https://canary.discord.com https://ptb.discord.com"
-    )
-    response.headers['X-Frame-Options'] = (
-        "ALLOW-FROM https://www.5th-corner.com https://discord.com https://canary.discord.com https://ptb.discord.com"
-    )
-    return response
 
 # Session-based paths (thread-safe by design - no global state)
 def _get_session_root(session_id='default'):
@@ -3900,13 +3887,6 @@ def _perform_game_reset() -> List[Dict[str, Any]]:
     logging.info(f"_perform_game_reset: Game reset complete. {len(initial_items)} initial items generated and saved.")
     return initial_items
 
-@app.route('/')
-def serve_webui():
-    logging.info("serve_webui: Root path '/' accessed. Performing game reset before serving page.")
-    _perform_game_reset() # Reset state every time the main page is loaded
-    return render_template('feed.html', discord_client_id=DISCORD_CLIENT_ID)
-
-@app.route('/api/reset', methods=['POST'])
 def api_reset():
     global state # Ensure we're interacting with the global state
     logging.info(f"api_reset: POST request received. Current state ID before reset: {id(state)}")
@@ -3950,7 +3930,6 @@ def api_reset():
             log_error(f"Could not save error item to feed_log during api_reset error handling: {e_log}")
         return jsonify([error_feed_item]), 500
 
-@app.route('/api/feed', methods=['GET'])
 def api_feed():
     global state
     since_id_str = request.args.get('since_id')
@@ -3969,7 +3948,6 @@ def api_feed():
                 items_to_return = list(feed_log) # Return a copy of the full feed log            
     return jsonify(items_to_return)
 
-@app.route('/api/choose', methods=['POST'])
 def api_choose():
     global state
     try:
@@ -4045,7 +4023,6 @@ def api_choose():
         return jsonify([error_item]), 500
 
 
-@app.route('/api/regenerate_choices', methods=['POST'])
 def api_regenerate_choices():
     global state
     logging.info("api_regenerate_choices: POST request received.")
@@ -4132,47 +4109,6 @@ def api_regenerate_choices():
             log_error(f"Could not save error item to feed_log during api_regenerate_choices error handling: {e_log}")
         return jsonify([error_item]), 500
 
-
-# Discord Embedded App OAuth2 Token Exchange Endpoint
-@app.route('/discord/api/token', methods=['POST'])
-def discord_token_exchange():
-    try:
-        data = request.get_json()
-        code = data.get('code')
-
-        if not code:
-            return jsonify({"error": "Missing authorization code"}), 400
-        if not DISCORD_CLIENT_ID or not DISCORD_CLIENT_SECRET:
-            return jsonify({"error": "Discord client credentials not configured on server"}), 500
-
-        token_url = 'https://discord.com/api/oauth2/token'
-        payload = {
-            'client_id': DISCORD_CLIENT_ID,
-            'client_secret': DISCORD_CLIENT_SECRET,
-            'grant_type': 'authorization_code',
-            'code': code,
-            # IMPORTANT: This redirect_uri MUST EXACTLY MATCH one of the URIs
-            # you configured in your Discord Developer Portal for this application.
-            # For embedded apps, this is typically your main application URL.
-            'redirect_uri': 'https://somewhere-storygen.onrender.com/' # Make sure this matches your setup!
-        }
-        headers = {
-            'Content-Type': 'application/x-www-form-urlencoded'
-        }
-        
-        import requests # Make sure 'requests' is in requirements.txt
-        response = requests.post(token_url, data=payload, headers=headers)
-        response.raise_for_status() # Will raise an exception for HTTP errors
-        
-        token_data = response.json()
-        return jsonify(token_data) # Return the whole token response from Discord
-
-    except requests.exceptions.HTTPError as http_err:
-        logging.error(f"Discord token exchange HTTP error: {http_err} - {response.text}")
-        return jsonify({"error": "Failed to exchange token with Discord", "details": response.text}), response.status_code
-    except Exception as e:
-        logging.error(f"Error in Discord token exchange: {e}")
-        return jsonify({"error": "Internal server error during token exchange"}), 500
 
 # ───────── COMBINED dispatch generator (saves 1 API call) ─────────────────────
 def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = None, prev_vision: str = "", current_image: str = None, fate: str = "NORMAL") -> tuple[str, str, bool]:
@@ -5434,18 +5370,3 @@ def generate_intro_turn(session_id: str = 'default'):
         "chaos": state["chaos_level"],
         "player_state": state.get('player_state', {})
     }
-
-if __name__ == '__main__':
-    # Setup logging if you want to see Flask's default logs
-    # logging.basicConfig(level=logging.INFO)
-    # Debug mode opt-in only: enabling it in production exposes the
-    # Werkzeug interactive debugger (arbitrary code execution from the
-    # browser). Defaults to off; set FLASK_DEBUG=1 locally to re-enable.
-    _debug_mode = os.environ.get('FLASK_DEBUG', '0') == '1'
-    app.run(
-        debug=_debug_mode,
-        host='0.0.0.0',
-        port=int(os.environ.get('PORT', 8080)),
-        use_reloader=False,
-        threaded=True,
-    )
