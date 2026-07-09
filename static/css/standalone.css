@@ -132,52 +132,30 @@ html, body {
   transform: translateY(1px);
 }
 
-/* ---------- Compact console panel (prose + actions in one tight zone) ---------- */
-
-#console-panel {
-  position: fixed;
-  left: 50%;
-  bottom: calc(env(safe-area-inset-bottom, 0px) + 1.8vh);
-  transform: translateX(-50%);
-  width: min(94vw, 560px);
-  max-height: 66vh;
-  z-index: 10;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px 14px 12px;
-  border-radius: 10px;
-  background: linear-gradient(to top, rgba(3, 7, 5, 0.82), rgba(3, 7, 5, 0.5));
-  border: 1px solid rgba(142, 255, 193, 0.22);
-  box-shadow: 0 0 34px rgba(0, 0, 0, 0.65), inset 0 0 22px rgba(0, 0, 0, 0.45),
-              0 0 0 1px rgba(0, 0, 0, 0.4);
-  backdrop-filter: blur(4px);
-}
-
-/* ---------- Prose feed (scrollable, bounded inside the console) ---------- */
+/* ---------- Narrative feed: floating top-left, NO background ---------- */
 
 #prose-feed {
-  flex: 1 1 auto;
-  min-height: 0;
-  max-height: 34vh;
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 42px);
+  left: calc(env(safe-area-inset-left, 0px) + 26px);
+  width: min(46vw, 460px);
+  max-height: 56vh;
+  z-index: 6;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  justify-content: flex-end;
-  gap: 5px;
-  padding-right: 2px;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(142,255,193,0.3) transparent;
+  gap: 6px;
+  scrollbar-width: none;
 }
-#prose-feed::-webkit-scrollbar { width: 4px; }
-#prose-feed::-webkit-scrollbar-thumb { background: rgba(142,255,193,0.3); border-radius: 2px; }
+#prose-feed::-webkit-scrollbar { display: none; }
 
 .prose-entry {
   margin: 0;
   animation: pop-in 0.42s cubic-bezier(0.2, 0.9, 0.25, 1.2) both;
   font-size: 15px;
-  line-height: 1.42;
-  text-shadow: 0 1px 4px rgba(0,0,0,0.85);
+  line-height: 1.45;
+  /* Strong shadow so text stays legible directly over the scene. */
+  text-shadow: 0 1px 5px rgba(0,0,0,0.95), 0 0 3px rgba(0,0,0,0.95), 0 0 12px rgba(0,0,0,0.7);
 }
 
 @keyframes pop-in {
@@ -418,141 +396,147 @@ html, body {
   text-transform: uppercase;
 }
 
-/* ---------- Action bar (choices + free text) — inside the console panel ---------- */
+/* ---------- Radial action wheel: 3 choices arced around a central ACT hub ---------- */
 
-#action-bar {
-  flex: 0 0 auto;
-  display: flex;
-  flex-direction: column;
+#action-wheel {
+  position: fixed;
+  left: 50%;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 3vh);
+  transform: translateX(-50%);
+  width: 520px;
+  max-width: 96vw;
+  height: 188px;
+  z-index: 10;
 }
 
 #choices-container {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  margin-bottom: 8px;
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
 }
 
+/* Buttons are pure glowing text — no background. */
 .choice-btn {
+  position: absolute;
+  pointer-events: auto;
+  max-width: 210px;
   display: flex;
-  align-items: baseline;
-  gap: 9px;
-  text-align: left;
-  width: 100%;
-  background: rgba(8, 14, 12, 0.6);
-  border: 1px solid rgba(142, 255, 193, 0.28);
-  color: #e9f7ee;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: none;
+  color: #eafff2;
   font-family: inherit;
   font-size: 14px;
-  padding: 8px 12px;
-  border-radius: 5px;
+  line-height: 1.2;
+  padding: 4px 4px;
   cursor: pointer;
-  transition: background 0.14s, border-color 0.14s, transform 0.08s, box-shadow 0.14s;
-  animation: pop-in 0.34s cubic-bezier(0.2, 0.9, 0.25, 1.2) both;
+  text-shadow: 0 1px 5px rgba(0,0,0,0.95), 0 0 3px rgba(0,0,0,0.9);
+  transition: color 0.14s, transform 0.12s, text-shadow 0.14s;
+  /* 'backwards' (not 'both') so the finished animation doesn't pin a
+     transform that would override the centered slot's translateX(-50%). */
+  animation: pop-in 0.36s cubic-bezier(0.2, 0.9, 0.25, 1.2) backwards;
 }
 
 .choice-btn:hover {
-  background: rgba(142, 255, 193, 0.16);
-  border-color: rgba(142, 255, 193, 0.9);
-  box-shadow: 0 0 14px rgba(142, 255, 193, 0.28);
+  color: #8effc1;
+  text-shadow: 0 0 14px rgba(142,255,193,0.85), 0 1px 5px rgba(0,0,0,0.95);
 }
 
-.choice-btn:active {
-  transform: translateX(2px) scale(0.995);
-}
+/* Slot positions around the bottom-center hub: left, top, right. */
+.choice-btn:nth-child(1) { right: 53%; bottom: 22px; text-align: right; justify-content: flex-end; }
+.choice-btn:nth-child(2) { left: 50%; bottom: 120px; transform: translateX(-50%); text-align: center; justify-content: center; }
+.choice-btn:nth-child(3) { left: 53%; bottom: 22px; text-align: left; justify-content: flex-start; }
 
-/* Satisfying confirm flash when a choice is picked. */
-.choice-btn.picked {
-  animation: choice-pick 0.4s ease-out;
-  border-color: rgba(142, 255, 193, 1);
-}
-
-@keyframes choice-pick {
-  0%   { box-shadow: 0 0 0 rgba(142,255,193,0); background: rgba(142,255,193,0.5); }
-  40%  { box-shadow: 0 0 26px rgba(142,255,193,0.7); }
-  100% { box-shadow: 0 0 0 rgba(142,255,193,0); background: rgba(8,14,12,0.6); }
-}
+.choice-btn:active { transform: scale(0.96); }
+.choice-btn:nth-child(2):active { transform: translateX(-50%) scale(0.96); }
 
 .choice-num {
-  color: #8effc1;
-  font-weight: bold;
-  opacity: 0.85;
+  flex: 0 0 auto;
+  width: 20px; height: 20px;
+  border: 1px solid rgba(142, 255, 193, 0.55);
+  border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: bold; color: #8effc1;
+  box-shadow: 0 0 8px rgba(0,0,0,0.55);
 }
 
-/* ---------- Free-will gate: input hidden behind a deliberate button ---------- */
+.choice-btn.picked { color: #8effc1; animation: choice-pick 0.45s ease-out; }
 
-#custom-zone {
-  position: relative;
+@keyframes choice-pick {
+  0%   { text-shadow: 0 0 26px rgba(142,255,193,1), 0 1px 5px rgba(0,0,0,0.95); }
+  100% { text-shadow: 0 1px 5px rgba(0,0,0,0.95); }
 }
+
+/* ---------- Central ACT (free-will) hub — no background, glowing ring ---------- */
 
 #free-will-btn {
-  display: block;
-  width: 100%;
-  background: rgba(142, 255, 193, 0.08);
-  border: 1px solid rgba(142, 255, 193, 0.4);
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  transform: translateX(-50%);
+  width: 76px;
+  height: 76px;
+  border-radius: 50%;
+  background: none;
+  border: 1px solid rgba(142, 255, 193, 0.55);
   color: #b6ffd6;
   font-family: inherit;
-  font-size: 13px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  padding: 9px 12px;
-  border-radius: 5px;
   cursor: pointer;
-  transition: background 0.16s, border-color 0.16s, box-shadow 0.16s, transform 0.08s, opacity 0.2s;
-  box-shadow: 0 0 0 rgba(142, 255, 193, 0);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.9);
+  box-shadow: inset 0 0 16px rgba(0,0,0,0.5);
+  transition: border-color 0.16s, box-shadow 0.16s, transform 0.1s, opacity 0.22s;
   animation: fw-idle-glow 3.2s ease-in-out infinite;
 }
 
 @keyframes fw-idle-glow {
-  0%, 100% { box-shadow: 0 0 0 rgba(142,255,193,0); }
-  50%      { box-shadow: 0 0 16px rgba(142,255,193,0.22); }
+  0%, 100% { box-shadow: inset 0 0 16px rgba(0,0,0,0.5), 0 0 0 rgba(142,255,193,0); }
+  50%      { box-shadow: inset 0 0 16px rgba(0,0,0,0.5), 0 0 18px rgba(142,255,193,0.32); }
 }
 
 #free-will-btn:hover {
-  background: rgba(142, 255, 193, 0.2);
-  border-color: rgba(142, 255, 193, 0.95);
-  box-shadow: 0 0 20px rgba(142, 255, 193, 0.4);
-  transform: translateY(-1px);
+  border-color: rgba(142, 255, 193, 1);
+  box-shadow: inset 0 0 16px rgba(0,0,0,0.5), 0 0 24px rgba(142, 255, 193, 0.5);
+  transform: translateX(-50%) scale(1.06);
 }
 
-#free-will-btn:active { transform: translateY(0); }
+#free-will-btn:active { transform: translateX(-50%) scale(0.96); }
 
-.fw-icon { opacity: 0.9; margin-right: 4px; }
+.fw-icon { font-size: 20px; opacity: 0.95; }
+.fw-label { font-size: 10px; letter-spacing: 0.16em; opacity: 0.85; }
 
-/* Collapsed by default; expands beautifully when the gate is opened. */
+/* Free-will input: hidden until the ACT hub is tapped, then expands over the wheel. */
 #custom-form {
+  position: absolute;
+  left: 50%;
+  bottom: 6px;
+  transform: translateX(-50%) translateY(8px);
+  width: min(92vw, 440px);
   display: flex;
   align-items: center;
   gap: 8px;
-  max-height: 0;
-  opacity: 0;
-  transform: translateY(6px);
-  overflow: hidden;
-  pointer-events: none;
-  transition: max-height 0.32s cubic-bezier(0.2, 0.9, 0.25, 1.1),
-              opacity 0.28s ease, transform 0.32s cubic-bezier(0.2, 0.9, 0.25, 1.1);
-}
-
-#custom-zone.fw-open #free-will-btn {
   opacity: 0;
   pointer-events: none;
-  position: absolute;
-  animation: none;
+  transition: opacity 0.26s ease, transform 0.3s cubic-bezier(0.2, 0.9, 0.25, 1.1);
 }
 
-#custom-zone.fw-open #custom-form {
-  max-height: 60px;
+#action-wheel.fw-open #choices-container { opacity: 0; pointer-events: none; }
+#action-wheel.fw-open #free-will-btn { opacity: 0; pointer-events: none; animation: none; }
+#action-wheel.fw-open #custom-form {
   opacity: 1;
-  transform: translateY(0);
   pointer-events: auto;
+  transform: translateX(-50%) translateY(0);
 }
-
-#custom-zone.fw-open #custom-input {
-  animation: fw-input-flash 0.6s ease-out;
-}
+#action-wheel.fw-open #custom-input { animation: fw-input-flash 0.6s ease-out; }
 
 @keyframes fw-input-flash {
-  0%   { box-shadow: 0 0 0 rgba(142,255,193,0); border-color: rgba(142,255,193,0.9); }
+  0%   { box-shadow: 0 0 0 rgba(142,255,193,0); }
   40%  { box-shadow: 0 0 18px rgba(142,255,193,0.45); }
   100% { box-shadow: 0 0 0 rgba(142,255,193,0); }
 }
@@ -560,73 +544,81 @@ html, body {
 .prompt-caret {
   color: #8effc1;
   font-size: 18px;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.9);
 }
 
+/* Input keeps a faint backing purely for typing legibility (not a button). */
 #custom-input {
   flex: 1;
-  background: rgba(8, 14, 12, 0.55);
-  border: 1px solid rgba(142, 255, 193, 0.3);
-  color: #e9f7ee;
+  background: rgba(4, 8, 6, 0.6);
+  border: none;
+  border-bottom: 1px solid rgba(142, 255, 193, 0.6);
+  color: #eafff2;
   font-family: inherit;
   font-size: 15px;
-  padding: 9px 12px;
-  border-radius: 4px;
+  padding: 8px 6px;
   outline: none;
 }
 
 #custom-input:focus {
-  border-color: rgba(142, 255, 193, 0.85);
+  border-bottom-color: rgba(142, 255, 193, 1);
 }
 
 #custom-submit {
-  background: rgba(142, 255, 193, 0.15);
+  background: none;
   border: 1px solid rgba(142, 255, 193, 0.5);
   color: #cdf7df;
   font-family: inherit;
-  font-size: 12px;
+  font-size: 11px;
   letter-spacing: 0.08em;
-  padding: 9px 14px;
-  border-radius: 4px;
+  padding: 8px 12px;
+  border-radius: 3px;
   cursor: pointer;
+  transition: border-color 0.14s, color 0.14s;
 }
 
 #custom-submit:hover {
-  background: rgba(142, 255, 193, 0.3);
+  border-color: rgba(142, 255, 193, 0.95);
+  color: #eafff2;
 }
 
-/* ---------- Console controls (relocated from the removed top bar) ---------- */
+/* ---------- Tiny session controls (bottom-right corner, no backgrounds) ---------- */
 
 #console-controls {
-  margin-top: 8px;
+  position: fixed;
+  right: calc(env(safe-area-inset-right, 0px) + 12px);
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 10px);
+  z-index: 11;
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  justify-content: flex-end;
+  gap: 7px;
 }
 
 .mini-btn {
-  background: rgba(10, 18, 14, 0.5);
-  border: 1px solid rgba(142, 255, 193, 0.22);
-  color: rgba(205, 247, 223, 0.8);
+  background: none;
+  border: 1px solid rgba(142, 255, 193, 0.2);
+  color: rgba(205, 247, 223, 0.7);
   font-family: inherit;
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  padding: 4px 8px;
-  border-radius: 3px;
+  font-size: 13px;
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
   cursor: pointer;
-  transition: background 0.14s, border-color 0.14s, color 0.14s, transform 0.08s;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+  transition: border-color 0.14s, color 0.14s, box-shadow 0.14s, transform 0.08s;
 }
 
 .mini-btn:hover {
-  background: rgba(142, 255, 193, 0.14);
   border-color: rgba(142, 255, 193, 0.7);
   color: #e9f7ee;
+  box-shadow: 0 0 10px rgba(142, 255, 193, 0.25);
 }
 
 .mini-btn:active { transform: translateY(1px); }
 
-.mini-btn.off { opacity: 0.4; border-color: rgba(142, 255, 193, 0.12); }
+.mini-btn.off { opacity: 0.4; border-color: rgba(142, 255, 193, 0.1); }
 
 /* ---------- Processing veil ---------- */
 
@@ -786,45 +778,33 @@ html, body {
 
 /* ---------- Responsive ---------- */
 
-/* ---------- Mobile portrait: comfortable touch, no iOS zoom ---------- */
+/* ---------- Mobile portrait: text spans top, wheel fits the width ---------- */
 @media (max-width: 720px) {
-  #console-panel {
-    width: 96vw;
-    bottom: calc(env(safe-area-inset-bottom, 0px) + 10px);
-    max-height: 70vh;
-    padding: 11px 12px;
-    gap: 9px;
+  #prose-feed {
+    width: calc(100vw - 52px);
+    max-width: none;
+    max-height: 42vh;
+    top: calc(env(safe-area-inset-top, 0px) + 40px);
   }
-  #prose-feed { max-height: 40vh; gap: 7px; }
   .prose-entry { font-size: 15px; line-height: 1.45; }
 
-  /* Bigger tap targets (>=44px) so choices are easy to hit. */
-  .choice-btn { font-size: 15px; padding: 12px 13px; min-height: 46px; align-items: center; }
-  #free-will-btn { padding: 13px 12px; min-height: 46px; font-size: 13px; }
-  #custom-submit { padding: 12px 15px; }
-  .mini-btn { padding: 8px 11px; font-size: 11px; }
-  #console-controls { gap: 8px; justify-content: center; }
+  #action-wheel { width: 96vw; height: 176px; bottom: calc(env(safe-area-inset-bottom, 0px) + 2vh); }
+  .choice-btn { font-size: 14px; max-width: 42vw; }
+  .choice-btn:nth-child(2) { bottom: 112px; max-width: 80vw; }
+  #free-will-btn { width: 72px; height: 72px; }
 
   /* 16px input prevents iOS Safari from auto-zooming on focus. */
-  #custom-input { font-size: 16px; padding: 11px 12px; }
-  #custom-zone.fw-open #custom-form { max-height: 66px; }
+  #custom-input { font-size: 16px; }
+  #custom-submit { padding: 10px 13px; }
+  .mini-btn { width: 34px; height: 34px; font-size: 14px; }
 
-  /* Keep the REC timecode subtle and out of the way on small screens. */
   #vhs-timecode { font-size: 13px; }
 }
 
-/* ---------- Phones in landscape (short height): shrink the console so the
-   generated scene still dominates the frame. ---------- */
+/* ---------- Phones in landscape (short height): keep the wheel low + tight ---------- */
 @media (max-height: 500px) and (orientation: landscape) {
-  #console-panel {
-    width: min(88vw, 620px);
-    max-height: 82vh;
-    bottom: calc(env(safe-area-inset-bottom, 0px) + 6px);
-    padding: 8px 12px;
-    gap: 6px;
-  }
-  #prose-feed { max-height: 30vh; font-size: 14px; }
-  .choice-btn { padding: 7px 11px; min-height: 0; font-size: 14px; }
-  #free-will-btn { padding: 7px 11px; min-height: 0; }
-  #console-controls { margin-top: 5px; }
+  #prose-feed { max-height: 40vh; width: min(42vw, 420px); }
+  #action-wheel { height: 150px; bottom: calc(env(safe-area-inset-bottom, 0px) + 6px); }
+  .choice-btn:nth-child(2) { bottom: 96px; }
+  #free-will-btn { width: 62px; height: 62px; }
 }

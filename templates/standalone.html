@@ -31,28 +31,27 @@
     <ul id="inventory-list"></ul>
   </aside>
 
-  <!-- Compact console: prose feed + choices + free text, tight over the scene -->
-  <div id="console-panel">
-    <main id="prose-feed" aria-live="polite"></main>
+  <!-- Narrative: floating top-left, no background -->
+  <main id="prose-feed" aria-live="polite"></main>
 
-    <footer id="action-bar">
-      <div id="choices-container"></div>
-      <div id="custom-zone">
-        <button id="free-will-btn" type="button" title="Type your own action (F)">
-          <span class="fw-icon">✎</span> EXERT FREE WILL
-        </button>
-        <form id="custom-form" autocomplete="off">
-          <span class="prompt-caret">&gt;</span>
-          <input id="custom-input" type="text" placeholder="type your own action and press Enter" maxlength="200">
-          <button id="custom-submit" type="submit">SEND</button>
-        </form>
-      </div>
-      <div id="console-controls">
-        <button id="btn-reset" class="mini-btn" title="Restart (R)">⟲ RESTART</button>
-        <button id="btn-vhs" class="mini-btn" title="Toggle VHS overlay (V)">▣ VHS</button>
-        <button id="btn-snd" class="mini-btn" title="Toggle sound (M)">♪ SND</button>
-      </div>
-    </footer>
+  <!-- Radial action wheel: three choices arced around a central ACT (free-will) button -->
+  <div id="action-wheel">
+    <div id="choices-container"></div>
+    <form id="custom-form" autocomplete="off">
+      <span class="prompt-caret">&gt;</span>
+      <input id="custom-input" type="text" placeholder="type your own action..." maxlength="200">
+      <button id="custom-submit" type="submit">SEND</button>
+    </form>
+    <button id="free-will-btn" type="button" title="Your own action (F)">
+      <span class="fw-icon">✎</span><span class="fw-label">ACT</span>
+    </button>
+  </div>
+
+  <!-- Tiny session controls -->
+  <div id="console-controls">
+    <button id="btn-reset" class="mini-btn" title="Restart (R)">⟲</button>
+    <button id="btn-vhs" class="mini-btn" title="VHS (V)">▣</button>
+    <button id="btn-snd" class="mini-btn" title="Sound (M)">♪</button>
   </div>
 
   <!-- Processing veil shown while waiting on the backend -->
