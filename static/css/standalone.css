@@ -80,6 +80,23 @@ html, body {
   text-shadow: 0 0 6px rgba(142, 255, 193, 0.6);
   min-width: 1.4em;
   display: inline-block;
+  transition: color 0.2s;
+}
+
+/* Glow-pop when a status value changes (turn / chaos / phase / time). */
+.hud-value.bumped {
+  animation: hud-bump 0.6s cubic-bezier(0.2, 0.9, 0.25, 1.3);
+}
+
+@keyframes hud-bump {
+  0%   { transform: scale(1); text-shadow: 0 0 6px rgba(142,255,193,0.6); }
+  35%  { transform: scale(1.5); color: #eaffec; text-shadow: 0 0 18px rgba(142,255,193,1); }
+  100% { transform: scale(1); text-shadow: 0 0 6px rgba(142,255,193,0.6); }
+}
+
+.hud-btn.off {
+  opacity: 0.4;
+  border-color: rgba(142, 255, 193, 0.15);
 }
 
 .hud-sep {
@@ -113,38 +130,67 @@ html, body {
   transform: translateY(1px);
 }
 
-/* ---------- Prose feed ---------- */
+/* ---------- Compact console panel (prose + actions in one tight zone) ---------- */
+
+#console-panel {
+  position: fixed;
+  left: 50%;
+  bottom: 2.4vh;
+  transform: translateX(-50%);
+  width: min(94vw, 560px);
+  max-height: 66vh;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px 12px;
+  border-radius: 10px;
+  background: linear-gradient(to top, rgba(3, 7, 5, 0.82), rgba(3, 7, 5, 0.5));
+  border: 1px solid rgba(142, 255, 193, 0.22);
+  box-shadow: 0 0 34px rgba(0, 0, 0, 0.65), inset 0 0 22px rgba(0, 0, 0, 0.45),
+              0 0 0 1px rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(4px);
+}
+
+/* ---------- Prose feed (scrollable, bounded inside the console) ---------- */
 
 #prose-feed {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 168px;
-  top: 64px;
-  z-index: 5;
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: 34vh;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
-  padding: 0 8vw 12px 8vw;
-  pointer-events: none;
-  scrollbar-width: none;
+  gap: 5px;
+  padding-right: 2px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(142,255,193,0.3) transparent;
 }
-#prose-feed::-webkit-scrollbar { display: none; }
+#prose-feed::-webkit-scrollbar { width: 4px; }
+#prose-feed::-webkit-scrollbar-thumb { background: rgba(142,255,193,0.3); border-radius: 2px; }
 
 .prose-entry {
-  pointer-events: auto;
-  margin: 6px 0;
-  max-width: 760px;
-  animation: prose-fade-in 0.6s ease-out;
-  font-size: 17px;
-  line-height: 1.5;
-  text-shadow: 0 2px 8px rgba(0,0,0,0.9), 0 0 2px rgba(0,0,0,0.8);
+  margin: 0;
+  animation: pop-in 0.42s cubic-bezier(0.2, 0.9, 0.25, 1.2) both;
+  font-size: 15px;
+  line-height: 1.42;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.85);
 }
 
-@keyframes prose-fade-in {
-  from { opacity: 0; transform: translateY(8px); }
-  to   { opacity: 1; transform: translateY(0); }
+@keyframes pop-in {
+  0%   { opacity: 0; transform: translateY(7px) scale(0.97); }
+  55%  { opacity: 1; transform: translateY(0) scale(1.012); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* Brief glow flash layered on top of the pop for extra "satisfying" feedback. */
+.prose-entry.glow-pop { animation: pop-in 0.42s cubic-bezier(0.2,0.9,0.25,1.2) both, text-glow 0.7s ease-out; }
+
+@keyframes text-glow {
+  0%   { text-shadow: 0 0 0 transparent, 0 1px 4px rgba(0,0,0,0.85); }
+  30%  { text-shadow: 0 0 14px currentColor, 0 1px 4px rgba(0,0,0,0.85); }
+  100% { text-shadow: 0 1px 4px rgba(0,0,0,0.85); }
 }
 
 .prose-entry.player-action {
@@ -370,63 +416,71 @@ html, body {
   text-transform: uppercase;
 }
 
-/* ---------- Action bar (choices + free text) ---------- */
+/* ---------- Action bar (choices + free text) — inside the console panel ---------- */
 
 #action-bar {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 10;
-  padding: 10px 8vw 16px 8vw;
-  background: linear-gradient(to top, rgba(0,0,0,0.75), rgba(0,0,0,0));
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
 }
 
 #choices-container {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  margin-bottom: 10px;
+  gap: 5px;
+  margin-bottom: 8px;
 }
 
 .choice-btn {
   display: flex;
   align-items: baseline;
-  gap: 10px;
+  gap: 9px;
   text-align: left;
-  background: rgba(8, 14, 12, 0.55);
-  border: 1px solid rgba(142, 255, 193, 0.3);
+  width: 100%;
+  background: rgba(8, 14, 12, 0.6);
+  border: 1px solid rgba(142, 255, 193, 0.28);
   color: #e9f7ee;
   font-family: inherit;
-  font-size: 16px;
-  padding: 10px 14px;
-  border-radius: 4px;
+  font-size: 14px;
+  padding: 8px 12px;
+  border-radius: 5px;
   cursor: pointer;
-  backdrop-filter: blur(2px);
-  transition: background 0.15s, border-color 0.15s, transform 0.08s;
-  max-width: 760px;
+  transition: background 0.14s, border-color 0.14s, transform 0.08s, box-shadow 0.14s;
+  animation: pop-in 0.34s cubic-bezier(0.2, 0.9, 0.25, 1.2) both;
 }
 
 .choice-btn:hover {
-  background: rgba(142, 255, 193, 0.14);
-  border-color: rgba(142, 255, 193, 0.85);
+  background: rgba(142, 255, 193, 0.16);
+  border-color: rgba(142, 255, 193, 0.9);
+  box-shadow: 0 0 14px rgba(142, 255, 193, 0.28);
 }
 
 .choice-btn:active {
-  transform: translateX(2px);
+  transform: translateX(2px) scale(0.995);
+}
+
+/* Satisfying confirm flash when a choice is picked. */
+.choice-btn.picked {
+  animation: choice-pick 0.4s ease-out;
+  border-color: rgba(142, 255, 193, 1);
+}
+
+@keyframes choice-pick {
+  0%   { box-shadow: 0 0 0 rgba(142,255,193,0); background: rgba(142,255,193,0.5); }
+  40%  { box-shadow: 0 0 26px rgba(142,255,193,0.7); }
+  100% { box-shadow: 0 0 0 rgba(142,255,193,0); background: rgba(8,14,12,0.6); }
 }
 
 .choice-num {
   color: #8effc1;
   font-weight: bold;
-  opacity: 0.8;
+  opacity: 0.85;
 }
 
 #custom-form {
   display: flex;
   align-items: center;
   gap: 8px;
-  max-width: 760px;
 }
 
 .prompt-caret {
@@ -620,8 +674,9 @@ html, body {
 @media (max-width: 720px) {
   #hud { font-size: 12px; padding: 8px 10px; }
   .hud-center { display: none; }
-  #prose-feed { padding: 0 5vw 10px 5vw; bottom: 190px; }
-  #action-bar { padding: 8px 5vw 14px 5vw; }
-  .prose-entry { font-size: 15px; }
-  .choice-btn { font-size: 14px; }
+  #console-panel { width: 96vw; bottom: 1.4vh; max-height: 72vh; padding: 10px 11px; }
+  #prose-feed { max-height: 38vh; }
+  .prose-entry { font-size: 14px; }
+  .choice-btn { font-size: 14px; padding: 9px 12px; }
+  .action-hints { display: none; }
 }
