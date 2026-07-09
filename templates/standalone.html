@@ -25,25 +25,6 @@
     <div id="vhs-timecode">REC <span id="rec-dot">●</span> <span id="timecode-text">00:00:00</span></div>
   </div>
 
-  <!-- HUD bar -->
-  <header id="hud">
-    <div class="hud-group hud-left">
-      <span class="hud-label">TURN</span><span id="hud-turn" class="hud-value">0</span>
-    </div>
-    <div class="hud-group hud-center">
-      <span class="hud-label">PHASE</span><span id="hud-phase" class="hud-value">normal</span>
-      <span class="hud-sep">|</span>
-      <span class="hud-label">CHAOS</span><span id="hud-chaos" class="hud-value">0</span>
-      <span id="hud-time-wrap" class="hidden"><span class="hud-sep">|</span><span id="hud-time" class="hud-value"></span></span>
-    </div>
-    <div class="hud-group hud-right">
-      <button id="btn-reset" class="hud-btn" title="Reset (R)">⟲ RESET</button>
-      <button id="btn-regen" class="hud-btn" title="Regenerate choices (G)">⟳ REGEN</button>
-      <button id="btn-vhs" class="hud-btn" title="Toggle VHS overlay (V)">▣ VHS</button>
-      <button id="btn-snd" class="hud-btn" title="Toggle sound (M)">♪ SND</button>
-    </div>
-  </header>
-
   <!-- Inventory HUD (hidden until the player picks something up) -->
   <aside id="inventory-hud" class="hidden">
     <div class="inv-label">PACK</div>
@@ -61,8 +42,11 @@
         <input id="custom-input" type="text" placeholder="...or type your own action" maxlength="200">
         <button id="custom-submit" type="submit">SEND</button>
       </form>
-      <div class="action-hints">
-        <span>1·2·3 choose</span><span>R reset</span><span>G regen</span><span>M sound</span>
+      <div id="console-controls">
+        <button id="btn-reset" class="mini-btn" title="Restart (R)">⟲ RESTART</button>
+        <button id="btn-regen" class="mini-btn" title="Regenerate choices (G)">⟳ REGEN</button>
+        <button id="btn-vhs" class="mini-btn" title="Toggle VHS overlay (V)">▣ VHS</button>
+        <button id="btn-snd" class="mini-btn" title="Toggle sound (M)">♪ SND</button>
       </div>
     </footer>
   </div>

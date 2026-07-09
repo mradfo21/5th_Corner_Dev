@@ -517,6 +517,7 @@
 
   // Update a HUD value element, and glow-pop it if the value actually changed.
   function setHud(node, key, value) {
+    if (!node) return false; // top status bar was removed; no-op
     const str = String(value);
     if (node.textContent !== str) {
       node.textContent = str;
@@ -538,13 +539,15 @@
       changed = setHud(el.hudChaos, "chaos", s.chaos ?? 0) || changed;
       const phaseText = s.alive === false ? "deceased" : (s.phase ?? "normal");
       changed = setHud(el.hudPhase, "phase", phaseText) || changed;
-      el.backendName.textContent = s.backend ?? "unknown";
+      if (el.backendName) el.backendName.textContent = s.backend ?? "unknown";
       renderInventory(s.inventory);
-      if (s.time_of_day) {
-        el.hudTime.textContent = s.time_of_day;
-        el.hudTimeWrap.classList.remove("hidden");
-      } else {
-        el.hudTimeWrap.classList.add("hidden");
+      if (el.hudTimeWrap && el.hudTime) {
+        if (s.time_of_day) {
+          el.hudTime.textContent = s.time_of_day;
+          el.hudTimeWrap.classList.remove("hidden");
+        } else {
+          el.hudTimeWrap.classList.add("hidden");
+        }
       }
       // Record for next-change detection; ping a subtle tick on any change.
       state.lastStatus = { turn: String(s.turn ?? 0), chaos: String(s.chaos ?? 0), phase: phaseText };
