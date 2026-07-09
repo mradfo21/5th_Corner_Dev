@@ -5533,7 +5533,7 @@ if __name__ == "__main__":
         
         # Health-check server. We only spin up bot.py's own Flask health server
         # when nothing else is going to bind ${PORT}. In the combined
-        # deployment (start_production.sh / start.py), api.py / gunicorn
+        # deployment (start_production.sh), api.py / gunicorn
         # already bind ${PORT} and serve /api/health, so a second Flask in
         # this process just races for the same port and prints the noisy
         # "Address already in use" + Werkzeug debug-PIN traceback we saw in
