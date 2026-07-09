@@ -598,7 +598,7 @@ def _load_state(session_id='default') -> dict:
         else:
             logging.warning(f"{state_path} failed to load, returning default state.")
         return {
-            "world_prompt": PROMPTS.get("world_prompt", "Default world starting point."), # Use .get for safety
+            "world_prompt": PROMPTS.get("world_initial_state", "Default world starting point."), # Use .get for safety
             "current_phase": "normal",
             "chaos_level": 0,
             "last_choice": "",
@@ -3080,7 +3080,13 @@ def generate_intro_turn_feed_items() -> List[Dict[str, Any]]:
     global state 
     intro_items = [] # This list will be returned
     
-    initial_narrative_content = "The simulation begins. You find yourself in a familiar, yet unsettling environment. The air is thick with unspoken tension."
+    initial_narrative_content = (
+        "1993. Golden hour bleeds across the Four Corners desert. You are Jason Fleece, "
+        "photojournalist, crouched at the perimeter of Horizon Industries' quarantined "
+        "facility \u2014 the last place the missing were ever seen. Your camcorder hums against "
+        "your palm. Red dust drifts over the chain-link fence ahead. Whatever they buried "
+        "out here, you came to film it."
+    )
     narrative_item = create_feed_item(type="narrative_event", content=initial_narrative_content)
     intro_items.append(narrative_item)
 
@@ -3127,17 +3133,17 @@ def generate_intro_turn_feed_items() -> List[Dict[str, Any]]:
         initial_choice_texts = generate_choices(
             client=client,
             prompt_tmpl=choice_tmpl,
-            last_dispatch="The simulation has just started.",
+            last_dispatch=initial_narrative_content,
             world_prompt=state.get("world_prompt", "System Online."),
-            image_description="An initial, establishing scene.",
-            situation_summary="You are at the very beginning of your journey.",
+            image_description="Golden-hour desert at the perimeter fence of the Horizon facility; red mesas, chain-link fence, abandoned vehicles.",
+            situation_summary="You are crouched at the fence line of the quarantined Horizon facility as the sun drops. This is your way in.",
             n=3
         )
     except Exception as e_choices:
         log_error(f"Error generating initial choices: {e_choices}")
-        initial_choice_texts = ["Begin exploration.", "Assess the immediate surroundings.", "Prepare for the unknown."]
+        initial_choice_texts = ["Vault the perimeter fence", "Crouch low and scan the facility", "Photograph the abandoned vehicles"]
 
-    choice_prompt_text = "The system is online. Your journey begins now. What is your first action?"
+    choice_prompt_text = "The fence line waits. What's your first move?"
     choices_item = _structure_choices_for_feed(initial_choice_texts, choice_prompt_text, initial_image_url if WORLD_IMAGE_ENABLED else None)
     intro_items.append(choices_item)
     state["choices"] = choices_item['choices'] # This is fine, updates a different part of state
@@ -3158,7 +3164,7 @@ def _perform_game_reset() -> List[Dict[str, Any]]:
     
     # Explicitly create a new dictionary for the state to ensure no shared references for critical parts
     state = {
-        "world_prompt": PROMPTS.get("world_prompt", "Default world starting point."),
+        "world_prompt": PROMPTS.get("world_initial_state", "Default world starting point."),
         "current_phase": "normal",
         "chaos_level": 0,
         "last_choice": "",
