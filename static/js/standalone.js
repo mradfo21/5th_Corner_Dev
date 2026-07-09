@@ -29,6 +29,8 @@
     choices: document.getElementById("choices-container"),
     customForm: document.getElementById("custom-form"),
     customInput: document.getElementById("custom-input"),
+    customZone: document.getElementById("custom-zone"),
+    freeWillBtn: document.getElementById("free-will-btn"),
     veil: document.getElementById("processing-veil"),
     veilMessage: document.getElementById("veil-message"),
     hudTurn: document.getElementById("hud-turn"),
@@ -65,6 +67,7 @@
     soundEnabled: true,
     renderedIds: new Set(), // guard against rendering the same feed item twice
     lastStatus: {},
+    freeWillOpen: false,
   };
 
   // ------------------------------------------------------------------
@@ -409,6 +412,7 @@
       state.lastId = 0;
       state.renderedIds = new Set();
       state.awaitingResolution = false;
+      closeFreeWill(true);
       renderInventory([]);
       startTimecode();
       const items = await postJSON("/api/reset", {});
@@ -424,6 +428,7 @@
 
   async function makeChoice(choiceText, contextItemId) {
     if (state.processing || state.gameOver) return;
+    closeFreeWill(true); // picking any action closes the free-will gate
     el.choices.innerHTML = "";
     showVeil(INTERIM_MESSAGES[0]);
     state.awaitingResolution = true;
@@ -459,11 +464,33 @@
     }
   }
 
+  // ------------------------------------------------------------------
+  // Free-will gate — the custom action input hides behind a button, so
+  // typing your own action is a deliberate, satisfying choice.
+  // ------------------------------------------------------------------
+  function openFreeWill() {
+    if (state.processing || state.gameOver || state.freeWillOpen) return;
+    state.freeWillOpen = true;
+    el.customZone.classList.add("fw-open");
+    Sound.choices();
+    // Focus after the expand animation starts so the caret lands cleanly.
+    setTimeout(() => el.customInput.focus(), 60);
+  }
+
+  function closeFreeWill(clear) {
+    if (!state.freeWillOpen) return;
+    state.freeWillOpen = false;
+    el.customZone.classList.remove("fw-open");
+    if (clear) el.customInput.value = "";
+    if (document.activeElement === el.customInput) el.customInput.blur();
+  }
+
   function submitCustomAction(e) {
     e.preventDefault();
     const text = el.customInput.value.trim();
     if (!text || state.processing || state.gameOver) return;
     el.customInput.value = "";
+    closeFreeWill(true); // gate closes on submit
     makeChoice(text, null);
   }
 
@@ -609,7 +636,7 @@
 
   function onKeydown(e) {
     if (document.activeElement === el.customInput) {
-      if (e.key === "Escape") el.customInput.value = "";
+      if (e.key === "Escape") closeFreeWill(true); // Esc closes the gate
       return;
     }
     // While dead, only R (restart) is meaningful.
@@ -629,8 +656,10 @@
       toggleVhs();
     } else if (e.key.toLowerCase() === "m") {
       toggleSound();
+    } else if (e.key.toLowerCase() === "f") {
+      openFreeWill();
     } else if (e.key === "Escape") {
-      el.customInput.value = "";
+      closeFreeWill(true);
     }
   }
 
@@ -675,6 +704,7 @@
     el.btnVhs.addEventListener("click", toggleVhs);
     el.btnSnd.addEventListener("click", toggleSound);
     el.deathRestart.addEventListener("click", resetGame);
+    el.freeWillBtn.addEventListener("click", openFreeWill);
     el.customForm.addEventListener("submit", submitCustomAction);
     document.addEventListener("keydown", onKeydown);
 

@@ -477,10 +477,82 @@ html, body {
   opacity: 0.85;
 }
 
+/* ---------- Free-will gate: input hidden behind a deliberate button ---------- */
+
+#custom-zone {
+  position: relative;
+}
+
+#free-will-btn {
+  display: block;
+  width: 100%;
+  background: rgba(142, 255, 193, 0.08);
+  border: 1px solid rgba(142, 255, 193, 0.4);
+  color: #b6ffd6;
+  font-family: inherit;
+  font-size: 13px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding: 9px 12px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background 0.16s, border-color 0.16s, box-shadow 0.16s, transform 0.08s, opacity 0.2s;
+  box-shadow: 0 0 0 rgba(142, 255, 193, 0);
+  animation: fw-idle-glow 3.2s ease-in-out infinite;
+}
+
+@keyframes fw-idle-glow {
+  0%, 100% { box-shadow: 0 0 0 rgba(142,255,193,0); }
+  50%      { box-shadow: 0 0 16px rgba(142,255,193,0.22); }
+}
+
+#free-will-btn:hover {
+  background: rgba(142, 255, 193, 0.2);
+  border-color: rgba(142, 255, 193, 0.95);
+  box-shadow: 0 0 20px rgba(142, 255, 193, 0.4);
+  transform: translateY(-1px);
+}
+
+#free-will-btn:active { transform: translateY(0); }
+
+.fw-icon { opacity: 0.9; margin-right: 4px; }
+
+/* Collapsed by default; expands beautifully when the gate is opened. */
 #custom-form {
   display: flex;
   align-items: center;
   gap: 8px;
+  max-height: 0;
+  opacity: 0;
+  transform: translateY(6px);
+  overflow: hidden;
+  pointer-events: none;
+  transition: max-height 0.32s cubic-bezier(0.2, 0.9, 0.25, 1.1),
+              opacity 0.28s ease, transform 0.32s cubic-bezier(0.2, 0.9, 0.25, 1.1);
+}
+
+#custom-zone.fw-open #free-will-btn {
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+  animation: none;
+}
+
+#custom-zone.fw-open #custom-form {
+  max-height: 60px;
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+#custom-zone.fw-open #custom-input {
+  animation: fw-input-flash 0.6s ease-out;
+}
+
+@keyframes fw-input-flash {
+  0%   { box-shadow: 0 0 0 rgba(142,255,193,0); border-color: rgba(142,255,193,0.9); }
+  40%  { box-shadow: 0 0 18px rgba(142,255,193,0.45); }
+  100% { box-shadow: 0 0 0 rgba(142,255,193,0); }
 }
 
 .prompt-caret {

@@ -37,11 +37,16 @@
 
     <footer id="action-bar">
       <div id="choices-container"></div>
-      <form id="custom-form" autocomplete="off">
-        <span class="prompt-caret">&gt;</span>
-        <input id="custom-input" type="text" placeholder="...or type your own action" maxlength="200">
-        <button id="custom-submit" type="submit">SEND</button>
-      </form>
+      <div id="custom-zone">
+        <button id="free-will-btn" type="button" title="Type your own action (F)">
+          <span class="fw-icon">✎</span> EXERT FREE WILL
+        </button>
+        <form id="custom-form" autocomplete="off">
+          <span class="prompt-caret">&gt;</span>
+          <input id="custom-input" type="text" placeholder="type your own action and press Enter" maxlength="200">
+          <button id="custom-submit" type="submit">SEND</button>
+        </form>
+      </div>
       <div id="console-controls">
         <button id="btn-reset" class="mini-btn" title="Restart (R)">⟲ RESTART</button>
         <button id="btn-regen" class="mini-btn" title="Regenerate choices (G)">⟳ REGEN</button>
