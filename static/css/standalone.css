@@ -592,16 +592,6 @@ html, body {
   background: rgba(142, 255, 193, 0.3);
 }
 
-.action-hints {
-  margin-top: 8px;
-  display: flex;
-  gap: 14px;
-  font-size: 10px;
-  letter-spacing: 0.06em;
-  color: rgba(216, 240, 228, 0.35);
-  text-transform: uppercase;
-}
-
 /* ---------- Console controls (relocated from the removed top bar) ---------- */
 
 #console-controls {
@@ -801,5 +791,4 @@ html, body {
   #prose-feed { max-height: 38vh; }
   .prose-entry { font-size: 14px; }
   .choice-btn { font-size: 14px; padding: 9px 12px; }
-  .action-hints { display: none; }
 }
