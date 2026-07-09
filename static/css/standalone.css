@@ -10,10 +10,12 @@ html, body {
   padding: 0;
   width: 100%;
   height: 100%;
+  height: 100dvh; /* account for mobile browser chrome (address bar) */
   overflow: hidden;
   background: #000;
   color: #d8f0e4;
   font-family: 'Share Tech Mono', 'VT323', monospace;
+  -webkit-text-size-adjust: 100%;
 }
 
 /* ---------- Scene layers ---------- */
@@ -135,7 +137,7 @@ html, body {
 #console-panel {
   position: fixed;
   left: 50%;
-  bottom: 2.4vh;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 1.8vh);
   transform: translateX(-50%);
   width: min(94vw, 560px);
   max-height: 66vh;
@@ -285,8 +287,8 @@ html, body {
 
 #inventory-hud {
   position: fixed;
-  top: 58px;
-  left: 18px;
+  top: calc(env(safe-area-inset-top, 0px) + 14px);
+  left: calc(env(safe-area-inset-left, 0px) + 14px);
   z-index: 9;
   max-width: 220px;
   background: rgba(6, 12, 10, 0.55);
@@ -746,8 +748,8 @@ html, body {
 
 #vhs-timecode {
   position: absolute;
-  top: 16px;
-  right: 18px;
+  top: calc(env(safe-area-inset-top, 0px) + 14px);
+  right: calc(env(safe-area-inset-right, 0px) + 16px);
   font-family: 'VT323', monospace;
   font-size: 15px;
   color: rgba(255, 255, 255, 0.65);
@@ -784,11 +786,45 @@ html, body {
 
 /* ---------- Responsive ---------- */
 
+/* ---------- Mobile portrait: comfortable touch, no iOS zoom ---------- */
 @media (max-width: 720px) {
-  #hud { font-size: 12px; padding: 8px 10px; }
-  .hud-center { display: none; }
-  #console-panel { width: 96vw; bottom: 1.4vh; max-height: 72vh; padding: 10px 11px; }
-  #prose-feed { max-height: 38vh; }
-  .prose-entry { font-size: 14px; }
-  .choice-btn { font-size: 14px; padding: 9px 12px; }
+  #console-panel {
+    width: 96vw;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 10px);
+    max-height: 70vh;
+    padding: 11px 12px;
+    gap: 9px;
+  }
+  #prose-feed { max-height: 40vh; gap: 7px; }
+  .prose-entry { font-size: 15px; line-height: 1.45; }
+
+  /* Bigger tap targets (>=44px) so choices are easy to hit. */
+  .choice-btn { font-size: 15px; padding: 12px 13px; min-height: 46px; align-items: center; }
+  #free-will-btn { padding: 13px 12px; min-height: 46px; font-size: 13px; }
+  #custom-submit { padding: 12px 15px; }
+  .mini-btn { padding: 8px 11px; font-size: 11px; }
+  #console-controls { gap: 8px; justify-content: center; }
+
+  /* 16px input prevents iOS Safari from auto-zooming on focus. */
+  #custom-input { font-size: 16px; padding: 11px 12px; }
+  #custom-zone.fw-open #custom-form { max-height: 66px; }
+
+  /* Keep the REC timecode subtle and out of the way on small screens. */
+  #vhs-timecode { font-size: 13px; }
+}
+
+/* ---------- Phones in landscape (short height): shrink the console so the
+   generated scene still dominates the frame. ---------- */
+@media (max-height: 500px) and (orientation: landscape) {
+  #console-panel {
+    width: min(88vw, 620px);
+    max-height: 82vh;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 6px);
+    padding: 8px 12px;
+    gap: 6px;
+  }
+  #prose-feed { max-height: 30vh; font-size: 14px; }
+  .choice-btn { padding: 7px 11px; min-height: 0; font-size: 14px; }
+  #free-will-btn { padding: 7px 11px; min-height: 0; }
+  #console-controls { margin-top: 5px; }
 }

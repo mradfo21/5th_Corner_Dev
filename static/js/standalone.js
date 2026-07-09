@@ -31,6 +31,7 @@
     customInput: document.getElementById("custom-input"),
     customZone: document.getElementById("custom-zone"),
     freeWillBtn: document.getElementById("free-will-btn"),
+    consolePanel: document.getElementById("console-panel"),
     veil: document.getElementById("processing-veil"),
     veilMessage: document.getElementById("veil-message"),
     hudTurn: document.getElementById("hud-turn"),
@@ -453,6 +454,7 @@
     el.customZone.classList.remove("fw-open");
     if (clear) el.customInput.value = "";
     if (document.activeElement === el.customInput) el.customInput.blur();
+    if (el.consolePanel) el.consolePanel.style.bottom = ""; // drop any keyboard offset
   }
 
   function submitCustomAction(e) {
@@ -579,14 +581,21 @@
     const canvas = document.getElementById("vhs-grain");
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
+    // Render grain at a low resolution and let CSS stretch it to full screen.
+    // Grain noise looks identical scaled up, and this keeps the per-frame
+    // pixel fill cheap — critical for smoothness on phones.
+    const MAX_DIM = 360;
     function resize() {
-      canvas.width = window.innerWidth;
-      canvas.height = window.innerHeight;
+      const w = window.innerWidth, h = window.innerHeight;
+      const scale = Math.min(1, MAX_DIM / Math.max(w, h));
+      canvas.width = Math.max(1, Math.round(w * scale));
+      canvas.height = Math.max(1, Math.round(h * scale));
     }
     resize();
     window.addEventListener("resize", resize);
 
     function drawNoise() {
+      if (!state.vhsEnabled) return; // no work when the overlay is off
       const w = canvas.width, h = canvas.height;
       if (!w || !h) return;
       const imgData = ctx.createImageData(w, h);
@@ -598,6 +607,23 @@
       ctx.putImageData(imgData, 0, 0);
     }
     setInterval(drawNoise, 90);
+  }
+
+  // Keep the free-will input visible above the on-screen keyboard on mobile.
+  function initKeyboardInset() {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const adjust = () => {
+      if (!el.consolePanel) return;
+      if (!state.freeWillOpen) {
+        el.consolePanel.style.bottom = "";
+        return;
+      }
+      const keyboard = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+      el.consolePanel.style.bottom = keyboard > 80 ? `${keyboard + 8}px` : "";
+    };
+    vv.addEventListener("resize", adjust);
+    vv.addEventListener("scroll", adjust);
   }
 
   // ------------------------------------------------------------------
@@ -682,6 +708,7 @@
     document.addEventListener("keydown", unlockAudio, { once: true });
 
     initVhsGrain();
+    initKeyboardInset();
     cycleVeilMessages();
     startTimecode();
     startPolling();
