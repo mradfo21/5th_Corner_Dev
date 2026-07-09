@@ -29,9 +29,8 @@
     choices: document.getElementById("choices-container"),
     customForm: document.getElementById("custom-form"),
     customInput: document.getElementById("custom-input"),
-    customZone: document.getElementById("custom-zone"),
     freeWillBtn: document.getElementById("free-will-btn"),
-    consolePanel: document.getElementById("console-panel"),
+    actionWheel: document.getElementById("action-wheel"),
     veil: document.getElementById("processing-veil"),
     veilMessage: document.getElementById("veil-message"),
     hudTurn: document.getElementById("hud-turn"),
@@ -442,7 +441,7 @@
   function openFreeWill() {
     if (state.processing || state.gameOver || state.freeWillOpen) return;
     state.freeWillOpen = true;
-    el.customZone.classList.add("fw-open");
+    el.actionWheel.classList.add("fw-open");
     Sound.choices();
     // Focus after the expand animation starts so the caret lands cleanly.
     setTimeout(() => el.customInput.focus(), 60);
@@ -451,10 +450,10 @@
   function closeFreeWill(clear) {
     if (!state.freeWillOpen) return;
     state.freeWillOpen = false;
-    el.customZone.classList.remove("fw-open");
+    el.actionWheel.classList.remove("fw-open");
     if (clear) el.customInput.value = "";
     if (document.activeElement === el.customInput) el.customInput.blur();
-    if (el.consolePanel) el.consolePanel.style.bottom = ""; // drop any keyboard offset
+    if (el.actionWheel) el.actionWheel.style.bottom = ""; // drop any keyboard offset
   }
 
   function submitCustomAction(e) {
@@ -614,13 +613,13 @@
     const vv = window.visualViewport;
     if (!vv) return;
     const adjust = () => {
-      if (!el.consolePanel) return;
+      if (!el.actionWheel) return;
       if (!state.freeWillOpen) {
-        el.consolePanel.style.bottom = "";
+        el.actionWheel.style.bottom = "";
         return;
       }
       const keyboard = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
-      el.consolePanel.style.bottom = keyboard > 80 ? `${keyboard + 8}px` : "";
+      el.actionWheel.style.bottom = keyboard > 80 ? `${keyboard + 8}px` : "";
     };
     vv.addEventListener("resize", adjust);
     vv.addEventListener("scroll", adjust);
