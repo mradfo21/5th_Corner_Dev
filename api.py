@@ -147,10 +147,72 @@ def api_status():
             "inventory": inventory,
             "backend": ai_provider_manager.active_backend("chat"),
             "image_enabled": engine.IMAGE_ENABLED,
+            # Renderer selection + the latest scene prompt, so the standalone
+            # client can steer the Reactor realtime world model with the same
+            # text used to generate the still image.
+            "renderer": getattr(engine, "SCENE_RENDERER", "image"),
+            "current_image_prompt": s.get("current_image_prompt", ""),
         })
     except Exception as e:
         traceback.print_exc()
         return error_response("Failed to get status", str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════
+# REACTOR (REALTIME WORLD-MODEL RENDERER) ENDPOINTS
+#
+# Reactor's SDK runs in the browser and receives live WebRTC video, but the
+# Reactor API key must never reach the client. These endpoints let the server
+# proxy a short-lived JWT (per Reactor's auth docs) and advertise the active
+# renderer config so the standalone UI can decide whether to show the Gemini
+# still or the realtime video. See REACTOR_INTEGRATION_PLAN.md.
+# ═══════════════════════════════════════════════════════════════════
+
+REACTOR_TOKEN_URL = os.getenv("REACTOR_API_URL", "https://api.reactor.inc").rstrip("/") + "/tokens"
+
+
+@app.route('/api/reactor/config', methods=['GET'])
+def api_reactor_config():
+    """Advertise the realtime-renderer config to the client (no secrets)."""
+    return jsonify({
+        "enabled": bool(os.getenv("REACTOR_API_KEY")),
+        "renderer": getattr(engine, "SCENE_RENDERER", "image"),
+        "model_name": os.getenv("REACTOR_MODEL", "helios"),
+    })
+
+
+@app.route('/api/reactor/token', methods=['POST'])
+def api_reactor_token():
+    """Mint a short-lived Reactor JWT by exchanging the server-side API key.
+
+    Mirrors Reactor's documented auth flow: POST /tokens with the
+    `Reactor-API-Key` header returns `{ "jwt": ..., "expires_at": ... }`. The
+    API key stays on the server; only the short-lived token reaches the browser.
+    """
+    api_key = os.getenv("REACTOR_API_KEY")
+    if not api_key:
+        return error_response(
+            "Reactor is not configured",
+            "Set the REACTOR_API_KEY environment variable to enable the realtime renderer.",
+            code=503,
+        )
+    try:
+        import requests
+        resp = requests.post(
+            REACTOR_TOKEN_URL,
+            headers={"Reactor-API-Key": api_key},
+            timeout=15,
+        )
+        if resp.status_code != 200:
+            return error_response(
+                "Reactor token exchange failed",
+                f"HTTP {resp.status_code}: {resp.text[:500]}",
+                code=502,
+            )
+        return jsonify(resp.json())
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Reactor token exchange error", str(e), code=502)
 
 # ═══════════════════════════════════════════════════════════════════
 # HELPER FUNCTIONS

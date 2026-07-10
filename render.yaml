@@ -31,6 +31,16 @@ services:
         sync: false
       - key: ADMIN_TOKEN
         sync: false
+      # Reactor realtime world-model renderer (optional). REACTOR_API_KEY is a
+      # secret used only server-side to mint short-lived browser tokens.
+      - key: REACTOR_API_KEY
+        sync: false
+      - key: REACTOR_MODEL
+        value: "helios"
+      # Default scene renderer: "image" (Gemini stills) or "reactor" (realtime).
+      # The web client can still override per-session via ?renderer= / toggle.
+      - key: SCENE_RENDERER
+        value: "image"
       - key: RESUME_MODE
         value: "1"
       - key: DISCORD_ENABLED

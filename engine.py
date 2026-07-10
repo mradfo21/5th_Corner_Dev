@@ -368,6 +368,17 @@ WORLD_IMAGE_ENABLED = True  # ENABLED for production
 QUALITY_MODE        = True  # Quality mode: False=Gemini Flash (fast), True=Gemini Pro (high quality, slower)
 VEO_MODE_ENABLED    = False # DISABLED by default - use video generation instead of images
 
+# ── Scene renderer selection ──────────────────────────────────────────────────
+# Which renderer paints the scene each turn. This is a *hint* the standalone web
+# client reads (via /api/status and /api/reactor/config) to decide whether to show
+# the Gemini still image or steer Reactor's realtime world model with the same
+# per-turn scene prompt. The server still builds the prompt + still either way;
+# defaulting to "image" keeps the classic experience fully intact.
+#   "image"   -> Gemini still per turn (default, unchanged behavior)
+#   "reactor" -> Reactor Helios realtime video, steered by the scene prompt
+#   "hybrid"  -> still generated AND used to seed the realtime video (future)
+SCENE_RENDERER = os.getenv("SCENE_RENDERER", "image")
+
 # ── Experience Mode System ────────────────────────────────────────────────────
 # These constants name the three selectable visual modes shown at game start.
 # Storing them in engine ensures a single source of truth for bot, tests, and
@@ -3146,11 +3157,21 @@ def _spawn_scene_image_async(caption: str, dispatch: str, choice: str, frame_idx
             if not img_path:
                 return
             web = _to_web_image_url(img_path)
-            item = create_feed_item(type="scene_image", content="", image_url=web)
+            # The exact prompt fed to the still-image model is the same text we use
+            # to steer Reactor's realtime world model. Attach it (plus the
+            # location-change flag) to the feed item so the standalone client's
+            # realtime renderer can inject it live via set_prompt — no extra call.
+            scene_prompt = result[1] if len(result) > 1 else ""
+            item = create_feed_item(
+                type="scene_image",
+                content="",
+                image_url=web,
+                metadata={"prompt": scene_prompt, "hard_transition": bool(hard_transition)},
+            )
             with WORLD_STATE_LOCK:
                 st = _load_state(session_id)
                 st['current_image_url'] = web
-                st['current_image_prompt'] = result[1] if len(result) > 1 else ""
+                st['current_image_prompt'] = scene_prompt
                 st.setdefault('feed_log', []).append(item)
                 _save_state(st, session_id)
                 state = st
