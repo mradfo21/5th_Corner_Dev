@@ -44,6 +44,7 @@
     btnReset: document.getElementById("btn-reset"),
     btnVhs: document.getElementById("btn-vhs"),
     btnSnd: document.getElementById("btn-snd"),
+    rendererBtn: document.getElementById("btn-renderer"),
     vhsOverlay: document.getElementById("vhs-overlay"),
     backendName: document.getElementById("backend-name"),
     timecodeText: document.getElementById("timecode-text"),
@@ -250,6 +251,82 @@
   }
 
   // ------------------------------------------------------------------
+  // Renderer facade — swap between the classic still-image renderer and the
+  // Reactor realtime world-model renderer without the rest of the game caring.
+  // "image"   -> Gemini still per turn (default; existing behavior).
+  // "reactor" -> steer Reactor's Helios video with the SAME per-turn scene
+  //              prompt the engine used to build the still. The still is still
+  //              painted underneath as a graceful fallback if Reactor drops.
+  // Selection: ?renderer= query param > localStorage > "image".
+  // ------------------------------------------------------------------
+  const Renderer = {
+    mode: "image",
+
+    resolveInitial() {
+      const q = new URLSearchParams(location.search).get("renderer");
+      const stored = (function () {
+        try { return localStorage.getItem("scene_renderer"); } catch (_) { return null; }
+      })();
+      this.mode = q || stored || "image";
+    },
+
+    init() {
+      this.resolveInitial();
+      if (this.mode === "reactor") this._activateReactor();
+      updateRendererButton();
+    },
+
+    reactorAvailable() {
+      return !!window.ReactorRenderer;
+    },
+
+    _activateReactor() {
+      if (this.reactorAvailable()) {
+        try { window.ReactorRenderer.enable(); } catch (err) { console.error("[standalone] reactor enable failed", err); }
+      }
+    },
+
+    // Apply a scene coming off the feed. `prompt` is the engine's scene prompt
+    // (feed item metadata.prompt); `imageUrl` is the generated still.
+    applyScene(imageUrl, prompt) {
+      if (this.mode === "reactor" && this.reactorAvailable()) {
+        if (prompt) window.ReactorRenderer.setPrompt(prompt, imageUrl);
+        // Keep the still painted behind the video so a Reactor failure or the
+        // pre-"ready" window still shows something coherent.
+        if (imageUrl) setScene(imageUrl);
+        return;
+      }
+      if (imageUrl) setScene(imageUrl);
+    },
+
+    setMode(mode) {
+      if (mode === this.mode) return;
+      this.mode = mode;
+      try { localStorage.setItem("scene_renderer", mode); } catch (_) {}
+      if (mode === "reactor") {
+        this._activateReactor();
+      } else if (this.reactorAvailable()) {
+        try { window.ReactorRenderer.disable(); } catch (_) {}
+      }
+      updateRendererButton();
+    },
+
+    toggle() {
+      this.setMode(this.mode === "reactor" ? "image" : "reactor");
+    },
+  };
+
+  function updateRendererButton() {
+    if (!el.rendererBtn) return;
+    const live = Renderer.mode === "reactor";
+    el.rendererBtn.classList.toggle("on", live);
+    el.rendererBtn.textContent = live ? "\u25C9" : "\u25CE"; // ◉ live / ◎ still
+    el.rendererBtn.title = live
+      ? "Renderer: realtime world model — click for stills (G)"
+      : "Renderer: still images — click for realtime (G)";
+  }
+
+  // ------------------------------------------------------------------
   // Feed rendering
   // ------------------------------------------------------------------
 
@@ -330,8 +407,8 @@
     }
     if (item.id > state.lastId) state.lastId = item.id;
 
-    if (item.image_url) {
-      setScene(item.image_url);
+    if (item.image_url || (item.metadata && item.metadata.prompt)) {
+      Renderer.applyScene(item.image_url, item.metadata && item.metadata.prompt);
     }
 
     switch (item.type) {
@@ -857,6 +934,9 @@
       toggleAutoPlay();
     } else if (e.key.toLowerCase() === "f") {
       openFreeWill();
+    } else if (e.key.toLowerCase() === "g") {
+      Renderer.toggle();
+      Sound.toggle();
     } else if (e.key === "ArrowUp" || e.key === " " || e.key === "Spacebar") {
       e.preventDefault();
       moveForward();
@@ -904,6 +984,9 @@
     el.btnReset.addEventListener("click", resetGame);
     el.btnVhs.addEventListener("click", toggleVhs);
     el.btnSnd.addEventListener("click", toggleSound);
+    if (el.rendererBtn) {
+      el.rendererBtn.addEventListener("click", () => { Renderer.toggle(); Sound.toggle(); });
+    }
     el.deathRestart.addEventListener("click", resetGame);
     el.freeWillBtn.addEventListener("click", openFreeWill);
     el.forwardBtn.addEventListener("click", moveForward);
@@ -922,6 +1005,7 @@
     document.addEventListener("pointerdown", unlockAudio, { once: true });
     document.addEventListener("keydown", unlockAudio, { once: true });
 
+    Renderer.init();
     initVhsGrain();
     initKeyboardInset();
     cycleVeilMessages();

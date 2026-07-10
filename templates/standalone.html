@@ -14,6 +14,11 @@
        CSS background + VHS grain until the first generated scene arrives. -->
   <div id="sceneA" class="scene scene-active"></div>
   <div id="sceneB" class="scene"></div>
+  <!-- Reactor realtime world-model video layer (hidden until the realtime
+       renderer is active). Sits above the still scene layers so the live
+       stream replaces the still when connected, and the still shows through
+       as a graceful fallback if Reactor is unavailable. -->
+  <video id="reactor-video" class="reactor-video hidden" autoplay playsinline muted></video>
   <div id="scene-flash"></div>
   <div class="scene-scrim"></div>
 
@@ -89,6 +94,7 @@
     <button id="btn-reset" class="mini-btn" title="Restart (R)">⟲</button>
     <button id="btn-vhs" class="mini-btn" title="VHS (V)">▣</button>
     <button id="btn-snd" class="mini-btn" title="Sound (M)">♪</button>
+    <button id="btn-renderer" class="mini-btn" title="Renderer: still / realtime (G)">◉</button>
   </div>
 
   <!-- Processing veil shown while waiting on the backend -->
@@ -113,6 +119,7 @@
   <!-- Backend / connectivity tag -->
   <div id="backend-tag">backend: <span id="backend-name">—</span></div>
 
+  <script src="{{ url_for('static', filename='js/reactor_renderer.js') }}?v={{ asset_version }}"></script>
   <script src="{{ url_for('static', filename='js/standalone.js') }}?v={{ asset_version }}"></script>
 </body>
 </html>
