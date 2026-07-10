@@ -135,21 +135,77 @@
       osc.start(t0);
       osc.stop(t0 + dur + 0.02);
     }
+    // A filtered noise burst — percussive/textural (clicks, hits, tape, static).
+    function noise(dur, vol, filterType, freq, delay, q) {
+      if (!state.soundEnabled) return;
+      const c = ensure();
+      if (!c) return;
+      const t0 = c.currentTime + (delay || 0);
+      const frames = Math.max(1, Math.floor(c.sampleRate * dur));
+      const buf = c.createBuffer(1, frames, c.sampleRate);
+      const data = buf.getChannelData(0);
+      for (let i = 0; i < frames; i++) data[i] = Math.random() * 2 - 1;
+      const src = c.createBufferSource();
+      src.buffer = buf;
+      const filt = c.createBiquadFilter();
+      filt.type = filterType || "bandpass";
+      filt.frequency.value = freq || 1200;
+      filt.Q.value = q || 0.9;
+      const gain = c.createGain();
+      gain.gain.setValueAtTime(0.0001, t0);
+      gain.gain.exponentialRampToValueAtTime(vol || 0.05, t0 + 0.008);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+      src.connect(filt); filt.connect(gain); gain.connect(c.destination);
+      src.start(t0);
+      src.stop(t0 + dur + 0.02);
+    }
     return {
       resume() { ensure(); },
-      text() { tone(430, 0.09, "sine", 0.045); },              // narrative / world text lands
-      pickup() { tone([600, 900], 0.16, "triangle", 0.06); },  // item pickup
-      choices() { tone(680, 0.07, "triangle", 0.05); tone(920, 0.09, "triangle", 0.045, 0.07); }, // choices ready
-      select() { tone(520, 0.05, "square", 0.05); tone(790, 0.10, "square", 0.05, 0.055); },       // confirm choice
-      status() { tone(320, 0.05, "sine", 0.03); },             // HUD tick
-      death() { tone([180, 60], 0.7, "sawtooth", 0.09); },     // game over
-      error() { tone([200, 120], 0.18, "sawtooth", 0.05); },
-      scene() { tone(180, 0.05, "sine", 0.05); tone([520, 380], 0.14, "sine", 0.04, 0.03); }, // new scene image streams in (shutter/whir)
-      start() { tone([160, 520], 0.28, "sawtooth", 0.05); tone(880, 0.12, "triangle", 0.04, 0.18); }, // new tape / game start
-      escalate() { tone([300, 620], 0.35, "sawtooth", 0.06); tone([620, 900], 0.3, "square", 0.03, 0.12); }, // phase escalates — tension rises
+
+      // ── ambient text / world beats ──────────────────────────────
+      narrative() { tone(430, 0.09, "sine", 0.045); noise(0.05, 0.018, "highpass", 2600); }, // a dispatch lands
+      text() { tone(430, 0.09, "sine", 0.045); },              // legacy alias
+      act() { tone(300, 0.05, "sine", 0.05); noise(0.06, 0.05, "lowpass", 420); },           // you commit an action
+      worldShift() { tone([250, 400], 0.26, "sine", 0.045); tone([520, 720], 0.22, "triangle", 0.022, 0.06); }, // world update swells in
+
+      // ── world reactions: luck / danger / harm ───────────────────
+      lucky() { tone([720, 1180], 0.14, "triangle", 0.05, 0.02); tone(1560, 0.12, "sine", 0.035, 0.12); },   // fortune breaks your way
+      unlucky() { tone([260, 150], 0.34, "sawtooth", 0.06); noise(0.2, 0.03, "lowpass", 240, 0.02); },       // fate turns against you
+      hurt() { noise(0.16, 0.09, "lowpass", 300); tone([200, 85], 0.22, "sawtooth", 0.06, 0.01); },          // you take a wound
+      escalate() { tone([300, 620], 0.35, "sawtooth", 0.06); tone([620, 900], 0.3, "square", 0.03, 0.12); }, // phase escalates
+
+      // ── items ────────────────────────────────────────────────────
+      pickup() { tone([620, 940], 0.15, "triangle", 0.06); tone(1320, 0.1, "sine", 0.035, 0.1); }, // got an item
+      packFull() { tone([300, 220], 0.13, "square", 0.05); tone([300, 200], 0.13, "square", 0.045, 0.12); }, // inventory full (denied)
+
+      // ── choices / commit ────────────────────────────────────────
+      choices() { tone(680, 0.07, "triangle", 0.05); tone(920, 0.09, "triangle", 0.045, 0.07); noise(0.05, 0.018, "highpass", 3200); }, // options ready
+      select() { tone(520, 0.05, "square", 0.05); tone(790, 0.10, "square", 0.05, 0.055); },       // pick a numbered choice
+      forward() { tone([420, 900], 0.16, "triangle", 0.055); noise(0.12, 0.03, "bandpass", 1400, 0.02); }, // "move forward" advance
+      hover() { tone(1180, 0.028, "sine", 0.018); },           // button hover tick
+
+      // ── HUD / status ─────────────────────────────────────────────
+      status() { tone(320, 0.05, "sine", 0.03); },             // subtle tick
+
+      // ── lifecycle ────────────────────────────────────────────────
+      death() { tone([180, 60], 0.7, "sawtooth", 0.09); noise(0.6, 0.05, "lowpass", 200, 0.05); }, // game over
+      error() { tone([200, 120], 0.18, "sawtooth", 0.05); noise(0.14, 0.03, "bandpass", 800); },
+      scene() { noise(0.09, 0.04, "bandpass", 2200); tone(180, 0.05, "sine", 0.045); tone([520, 380], 0.14, "sine", 0.035, 0.03); }, // shutter/whir
+      start() { tone([160, 520], 0.28, "sawtooth", 0.05); tone(880, 0.12, "triangle", 0.04, 0.18); noise(0.3, 0.03, "bandpass", 1600); }, // tape spins up
+
+      // ── free-will gate ───────────────────────────────────────────
       submit() { tone(700, 0.05, "square", 0.05); tone(1050, 0.11, "square", 0.045, 0.05); }, // custom action sent
-      open() { tone([420, 760], 0.14, "triangle", 0.05); },    // free-will input reveal
-      toggle() { tone(300, 0.04, "square", 0.04); },           // UI toggle click
+      open() { tone([420, 760], 0.14, "triangle", 0.05); },    // gate opens
+      close() { tone([760, 380], 0.12, "triangle", 0.04); },   // gate closes
+
+      // ── UI toggles ───────────────────────────────────────────────
+      toggle() { tone(300, 0.04, "square", 0.04); noise(0.03, 0.02, "highpass", 4000); }, // generic click
+      autoplayOn() { tone([360, 720], 0.16, "triangle", 0.05); tone(960, 0.1, "sine", 0.035, 0.1); }, // world starts advancing
+      autoplayOff() { tone([720, 320], 0.18, "triangle", 0.045); }, // paused
+
+      // ── tape transport ───────────────────────────────────────────
+      tapeStep() { noise(0.05, 0.06, "bandpass", 1000, 0, 1.4); tone(260, 0.03, "square", 0.03); }, // mechanical chk
+      eject() { tone([300, 120], 0.22, "sawtooth", 0.05); noise(0.18, 0.04, "lowpass", 500, 0.02); }, // clunk
     };
   })();
 
@@ -327,15 +383,24 @@
       const btn = document.createElement("button");
       btn.className = "choice-btn";
       btn.style.animationDelay = `${idx * 70}ms`; // staggered pop-in cascade
+      btn.dataset.choiceText = choice.text; // used by "move forward" (random pick)
       btn.innerHTML = `<span class="choice-num">${idx + 1}</span><span>${renderInline(choice.text)}</span>`;
+      btn.addEventListener("mouseenter", () => Sound.hover());
       btn.addEventListener("click", () => {
         if (state.processing || state.gameOver) return;
-        Sound.select();
-        btn.classList.add("picked");
-        makeChoice(choice.text, promptItem.id);
+        Sound.select(); // deliberate numbered pick
+        commitChoice(btn, choice.text, promptItem.id);
       });
       el.choices.appendChild(btn);
     });
+  }
+
+  // Commit a choice (flash + send). The caller owns the sound so a deliberate
+  // pick and a "move forward" advance can feel different.
+  function commitChoice(btn, text, promptId) {
+    if (state.processing || state.gameOver) return;
+    if (btn) btn.classList.add("picked");
+    makeChoice(text, promptId);
   }
 
   function enterGameOver(message) {
@@ -455,21 +520,46 @@
         state.awaitingResolution = false;
         return;
 
+      case "player_action":
+        // The player's own move committing — a soft, satisfying thunk.
+        appendProse(item);
+        Sound.act();
+        return;
+
+      case "narrative_event":
+      case "consequence_event": {
+        // The world's reaction to the last move: the dispatch lands, then a
+        // sting layered on top reflects HOW it went — a wound, a lucky break,
+        // or fate turning against you. This is the punchiest per-turn feedback.
+        appendProse(item);
+        Sound.narrative();
+        const meta = item.metadata || {};
+        if (meta.injured) Sound.hurt();
+        else if (meta.fate === "LUCKY") Sound.lucky();
+        else if (meta.fate === "UNLUCKY") Sound.unlucky();
+        return;
+      }
+
       case "inventory_pickup":
-      case "inventory_full":
         appendProse(item);
         Sound.pickup();
         refreshStatus(); // update the inventory HUD right away
         return;
 
+      case "inventory_full":
+        appendProse(item);
+        Sound.packFull(); // distinct "denied" buzz
+        refreshStatus();
+        return;
+
       case "world_update":
         // Short, punchy atmospheric reaction (like the Discord world updates).
         appendProse(item);
-        Sound.status();
+        Sound.worldShift();
         return;
 
       default:
-        // Narrative / world-building text (and the player_action echo).
+        // Any other world-building text.
         appendProse(item);
         Sound.text();
         return;
@@ -586,13 +676,16 @@
     if (el.actionWheel) el.actionWheel.style.bottom = ""; // drop any keyboard offset
   }
 
-  // "Move forward" — commit to one of the generated actions at random.
+  // "Move forward" — commit to one of the generated actions at random. Uses a
+  // distinct "advance" whoosh instead of the numbered-pick sound so it feels
+  // like the world surging forward.
   function moveForward() {
     if (state.processing || state.gameOver || state.freeWillOpen) return;
     const btns = Array.from(el.choices.children);
     if (!btns.length) return;
     const pick = btns[Math.floor(Math.random() * btns.length)];
-    pick.click(); // reuses the choice flow (select sound, pick flash, makeChoice)
+    Sound.forward();
+    commitChoice(pick, pick.dataset.choiceText || "", state.currentPromptId);
   }
 
   // ------------------------------------------------------------------
@@ -627,8 +720,9 @@
   }
 
   function toggleAutoPlay() {
-    Sound.toggle();
-    setAutoPlay(!state.autoPlay);
+    const next = !state.autoPlay;
+    if (next) Sound.autoplayOn(); else Sound.autoplayOff();
+    setAutoPlay(next);
   }
 
   function submitCustomAction(e) {
@@ -798,7 +892,7 @@
     outgoing.classList.remove("tape-frame-active");
     tape.active = tape.active === "A" ? "B" : "A";
     el.tapeCounter.textContent = `FRAME ${tape.idx + 1} / ${tape.frames.length}`;
-    Sound.scene();
+    Sound.tapeStep(); // mechanical frame-advance chk
   }
 
   function startTapePlay() {
@@ -848,7 +942,7 @@
     clearInterval(tape.clock); tape.clock = null;
     tape.playing = false;
     el.tapeOverlay.classList.add("hidden");
-    Sound.toggle();
+    Sound.eject(); // clunk on eject
   }
 
   function toggleSound() {
@@ -921,7 +1015,7 @@
       return;
     }
     if (document.activeElement === el.customInput) {
-      if (e.key === "Escape") closeFreeWill(true); // Esc closes the gate
+      if (e.key === "Escape") { if (state.freeWillOpen) Sound.close(); closeFreeWill(true); } // Esc closes the gate
       return;
     }
     // While dead, only R (restart) is meaningful.
@@ -949,6 +1043,7 @@
       e.preventDefault();
       moveForward();
     } else if (e.key === "Escape") {
+      if (state.freeWillOpen) Sound.close();
       closeFreeWill(true);
     }
   }
@@ -1003,6 +1098,13 @@
     el.autoplayBtn.addEventListener("click", toggleAutoPlay);
     el.customForm.addEventListener("submit", submitCustomAction);
     document.addEventListener("keydown", onKeydown);
+
+    // A subtle hover tick on every control makes the whole UI feel tactile.
+    [
+      el.btnReset, el.btnVhs, el.btnSnd, el.deathRestart, el.freeWillBtn,
+      el.forwardBtn, el.tapeBtn, el.autoplayBtn, el.tapePlayPause,
+      el.tapePrev, el.tapeNext, el.tapeEject,
+    ].forEach((b) => { if (b) b.addEventListener("mouseenter", () => Sound.hover()); });
 
     // Browsers block audio until a user gesture; unlock the context on the
     // first interaction so feedback sounds work for the rest of the session.

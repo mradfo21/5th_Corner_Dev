@@ -677,24 +677,30 @@ def _extract_injury(dispatch: str) -> Optional[str]:
     return None
 
 
-def _apply_injuries(state: dict, dispatch: str, is_timeout_penalty: bool = False) -> None:
+def _apply_injuries(state: dict, dispatch: str, is_timeout_penalty: bool = False) -> bool:
     """Persist wounds described in the dispatch onto state['injuries'] (a list
     of short strings the dispatch/choice prompts already read), with natural
     decay: capped at 3 (FIFO), and a chance to heal the oldest on wound-free
-    turns so the player isn't permanently crippled."""
+    turns so the player isn't permanently crippled.
+
+    Returns True when a NEW wound was recorded this turn (so the UI can react
+    with a distinct 'hurt' sound)."""
     import random as _random
     injuries = [i for i in (state.get("injuries", []) or []) if isinstance(i, str)]
     wound = _extract_injury(dispatch) if not is_timeout_penalty else None
+    newly_injured = False
     if wound:
         # Avoid logging a near-duplicate of the most recent wound.
         if not injuries or injuries[-1][:30].lower() != wound[:30].lower():
             injuries.append(wound)
             injuries = injuries[-3:]  # cap → old wounds age out
+            newly_injured = True
             print(f"[INJURY] recorded: {wound[:60]}")
     elif injuries and _random.random() < 0.30:
         healed = injuries.pop(0)  # a wound-free turn: oldest wound recovers
         print(f"[INJURY] healed: {healed[:40]}")
     state["injuries"] = injuries
+    return newly_injured
 
 # ───────── prompt fragments ──────────────────────────────────────────────────
 choice_tmpl     = PROMPTS["player_choice_generation_instructions"]
@@ -3132,7 +3138,12 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             create_feed_item(
                 type="narrative_event",
                 content=dispatch_text,
-                metadata={"source": "dispatch", "degraded": bool(p1.get("degraded"))},
+                metadata={
+                    "source": "dispatch",
+                    "degraded": bool(p1.get("degraded")),
+                    "injured": bool(p1.get("injured")),
+                    "fate": p1.get("fate", "NORMAL"),
+                },
             )
         ]
 
@@ -4089,8 +4100,9 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
         # Persist any wound described this turn so future dispatches/choices can
         # reference it (the grounding block + choice prompt already read
         # state['injuries'] — it was just never populated).
+        injured = False
         if not degraded:
-            _apply_injuries(state, dispatch, is_timeout_penalty)
+            injured = _apply_injuries(state, dispatch, is_timeout_penalty)
             _save_state(state, session_id)
 
         # Evolve world state. Feed it the REAL action + narrative outcome (not
@@ -4203,6 +4215,8 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             "consequence_video": consequence_video_url,  # Video path for HD mode playback
             "hard_transition": hard_transition,  # Track location changes for reference buffer
             "degraded": degraded,  # True when dispatch was an error masked as diegetic text (QA signal)
+            "injured": injured,  # True when a new wound was recorded this turn (UI 'hurt' cue)
+            "fate": fate,  # LUCKY / NORMAL / UNLUCKY — drives a per-turn UI sting
             "frame_idx": frame_idx,  # for async image generation on the feed path
             "evolution_summary": state.get("evolution_summary", ""),  # Include world changes
             "phase": state["current_phase"],
