@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>SOMEWHERE // Standalone</title>
 <link href="https://fonts.googleapis.com/css2?family=VT323&family=Share+Tech+Mono&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="{{ url_for('static', filename='css/standalone.css') }}">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/standalone.css') }}?v={{ asset_version }}">
 </head>
 <body>
 
@@ -34,7 +34,7 @@
   <!-- Narrative: floating top-left, no background -->
   <main id="prose-feed" aria-live="polite"></main>
 
-  <!-- Radial action wheel: three choices arced around a central ACT (free-will) button -->
+  <!-- Minimal action zone: small options + free-will trigger at the bottom -->
   <div id="action-wheel">
     <div id="choices-container"></div>
     <form id="custom-form" autocomplete="off">
@@ -42,8 +42,8 @@
       <input id="custom-input" type="text" placeholder="type your own action..." maxlength="200">
       <button id="custom-submit" type="submit">SEND</button>
     </form>
-    <button id="free-will-btn" type="button" title="Your own action (F)">
-      <span class="fw-icon">✎</span><span class="fw-label">ACT</span>
+    <button id="free-will-btn" type="button" title="Type your own action (F)">
+      <span class="fw-icon">✎</span><span class="fw-label">FREE WILL</span>
     </button>
   </div>
 
@@ -76,6 +76,6 @@
   <!-- Backend / connectivity tag -->
   <div id="backend-tag">backend: <span id="backend-name">—</span></div>
 
-  <script src="{{ url_for('static', filename='js/standalone.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/standalone.js') }}?v={{ asset_version }}"></script>
 </body>
 </html>
