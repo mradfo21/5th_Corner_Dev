@@ -83,10 +83,22 @@
     lastEventAt: 0,
     lastActivityAt: 0,  // last command/chunk that means "the model is working"
     startedAt: 0,
+    lastState: null,    // raw payload of the most recent `state` message
+    lastStateAt: 0,
+    recent: [],         // ring buffer of recent model messages, for inspection
     _sampleFrames: 0,
     _sampleAt: 0,
+    _stateLogAt: 0,
     sampler: null,
   };
+
+  const RECENT_CAP = 16;
+
+  // Keep a short, inspectable history of what the world model sends back.
+  function pushRecent(type, data) {
+    tele.recent.push({ type: type, at: Date.now(), data: data });
+    if (tele.recent.length > RECENT_CAP) tele.recent.shift();
+  }
 
   // Note that the model is doing generation work (a prompt/seed/start went out,
   // or a chunk landed). Opens a short "generating" window the sampler keeps
@@ -392,6 +404,18 @@
     const d = msg.data || {};
     tele.lastEvent = t;
     tele.lastEventAt = performance.now();
+    // Capture what the world model reports so it can actually be inspected —
+    // both in the console (state throttled so it can't flood) and via the live
+    // on-screen inspector (see standalone.js).
+    if (t === "state") {
+      tele.lastState = d;
+      tele.lastStateAt = performance.now();
+      const now = performance.now();
+      if (now - tele._stateLogAt > 1000) { tele._stateLogAt = now; log("state \u25B8", d); }
+    } else {
+      log("msg \u25B8", t, d);
+    }
+    pushRecent(t, d);
     if (t === "image_accepted") resolveWaiters("image_accepted", d);
     else if (t === "prompt_accepted") resolveWaiters("prompt_accepted", d);
     else if (t === "generation_started") { resolveWaiters("generation_started", d); markActivity(); }
@@ -435,6 +459,7 @@
       tele.frames = 0; tele.chunks = 0; tele.fps = 0;
       tele.generating = false; tele.deferred = false;
       tele.startedAt = 0; tele.lastFrameAt = 0; tele.lastActivityAt = 0;
+      tele.lastState = null; tele.lastStateAt = 0; tele.recent = [];
       startTelemetrySampler();
       await reactor.connect(jwt);
       rstate.connecting = false;
@@ -558,6 +583,11 @@
         lastEvent: tele.lastEvent,
         msSinceFrame: tele.lastFrameAt ? Math.round(now - tele.lastFrameAt) : null,
         msSinceActivity: tele.lastActivityAt ? Math.round(now - tele.lastActivityAt) : null,
+        // The raw world-model state, plus a short history of recent messages,
+        // so the UI can print exactly what's coming back for inspection.
+        lastState: tele.lastState,
+        msSinceState: tele.lastStateAt ? Math.round(now - tele.lastStateAt) : null,
+        recent: tele.recent.slice(),
       };
     },
     onStatus: null,

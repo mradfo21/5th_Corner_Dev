@@ -1111,6 +1111,71 @@ body.rt-live #backend-tag { bottom: 34px; }
 .rt-sep { opacity: 0.4; }
 .rt-fps { color: rgba(142, 255, 193, 0.75); min-width: 44px; }
 .rt-detail { opacity: 0.6; font-size: 9px; }
+.rt-inspect-hint { opacity: 0.4; font-size: 9px; margin-left: 2px; }
+
+/* The HUD becomes clickable specifically so it can toggle the state inspector. */
+#realtime-hud { pointer-events: auto; cursor: pointer; }
+#realtime-hud.inspecting { border-color: rgba(142, 255, 193, 0.65); }
+
+/* ---------- World-model state inspector ---------- */
+
+#rt-inspector {
+  position: fixed;
+  bottom: 40px;
+  left: 10px;
+  z-index: 13;
+  width: min(92vw, 420px);
+  max-height: 46vh;
+  display: flex;
+  flex-direction: column;
+  border-radius: 10px;
+  background: rgba(2, 6, 4, 0.9);
+  border: 1px solid rgba(142, 255, 193, 0.32);
+  box-shadow: 0 0 26px rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(5px);
+  font-family: 'Share Tech Mono', monospace;
+  overflow: hidden;
+}
+#rt-inspector.hidden { display: none; }
+
+#rt-inspector-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 10px;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(142, 255, 193, 0.85);
+  border-bottom: 1px solid rgba(142, 255, 193, 0.18);
+  background: rgba(142, 255, 193, 0.06);
+}
+#rt-inspector-close {
+  background: none;
+  border: none;
+  color: rgba(216, 240, 228, 0.6);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0 2px;
+  line-height: 1;
+}
+#rt-inspector-close:hover { color: #8effc1; }
+
+#rt-inspector-body {
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: rgba(216, 240, 228, 0.82);
+  white-space: pre-wrap;
+  word-break: break-word;
+  -webkit-overflow-scrolling: touch;
+}
+#rt-inspector-body .rt-k { color: rgba(142, 255, 193, 0.85); }
+#rt-inspector-body .rt-log { color: rgba(216, 240, 228, 0.45); }
+#rt-inspector-body .rt-hd { color: rgba(142, 255, 193, 0.6); }
 
 /* Tiny live-signal bars — animate only while genuinely generating. */
 .rt-bars { display: inline-flex; align-items: flex-end; gap: 2px; height: 12px; }

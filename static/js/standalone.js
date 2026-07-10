@@ -78,6 +78,9 @@
     rtFps: document.getElementById("rt-fps"),
     rtBars: document.getElementById("rt-bars"),
     rtDetail: document.getElementById("rt-detail"),
+    rtInspector: document.getElementById("rt-inspector"),
+    rtInspectorBody: document.getElementById("rt-inspector-body"),
+    rtInspectorClose: document.getElementById("rt-inspector-close"),
   };
 
   const state = {
@@ -96,6 +99,7 @@
     renderedIds: new Set(), // guard against rendering the same feed item twice
     lastStatus: {},
     freeWillOpen: false,
+    inspectorOpen: false,       // world-model state inspector panel toggled open
     autoPlay: false,
     autoTimer: null,
     currentPromptId: null,     // id of the latest choice prompt (the live decision point)
@@ -849,14 +853,61 @@
       if (state.awaitingResolution && Ceremony.isActive() && t.showing && t.generating) {
         Ceremony.reach("world_respond");
       }
+
+      if (state.inspectorOpen) renderInspector(t);
+    }
+
+    // Print the raw world-model state (the latest `state` payload) plus a short
+    // log of recent messages, so what's coming back is actually inspectable.
+    function renderInspector(t) {
+      if (!el.rtInspectorBody) return;
+      const lines = [];
+      if (t && t.lastState) {
+        const age = t.msSinceState != null ? " (" + (t.msSinceState / 1000).toFixed(1) + "s ago)" : "";
+        lines.push('<span class="rt-hd">// state' + age + '</span>');
+        lines.push(escapeHtml(JSON.stringify(t.lastState, null, 2)));
+      } else {
+        lines.push('<span class="rt-hd">// no state message received yet</span>');
+      }
+      const rec = (t && t.recent) || [];
+      if (rec.length) {
+        lines.push("");
+        lines.push('<span class="rt-hd">// recent messages (newest first)</span>');
+        const now = Date.now();
+        for (let i = rec.length - 1; i >= 0; i--) {
+          const r = rec[i];
+          const ago = ((now - r.at) / 1000).toFixed(1) + "s";
+          let brief = "";
+          try { brief = JSON.stringify(r.data); } catch (_) { brief = String(r.data); }
+          if (brief === "{}" || brief === "null") brief = "";
+          if (brief.length > 96) brief = brief.slice(0, 93) + "\u2026";
+          lines.push('<span class="rt-log">' + escapeHtml(ago.padStart(6)) + "  " +
+            escapeHtml(r.type) + (brief ? "  " + escapeHtml(brief) : "") + "</span>");
+        }
+      }
+      el.rtInspectorBody.innerHTML = lines.join("\n");
     }
 
     return {
       start() { if (timer) return; timer = setInterval(update, 350); update(); },
       stop() { if (timer) clearInterval(timer); timer = null; },
       update,
+      renderInspector,
     };
   })();
+
+  // Toggle the world-model state inspector panel.
+  function setInspector(open) {
+    state.inspectorOpen = !!open;
+    if (el.rtInspector) el.rtInspector.classList.toggle("hidden", !state.inspectorOpen);
+    if (el.realtimeHud) el.realtimeHud.classList.toggle("inspecting", state.inspectorOpen);
+    if (state.inspectorOpen) {
+      const t = window.ReactorRenderer && window.ReactorRenderer.getTelemetry
+        ? window.ReactorRenderer.getTelemetry() : null;
+      RealtimeHud.renderInspector(t);
+    }
+  }
+  function toggleInspector() { setInspector(!state.inspectorOpen); }
 
   // ------------------------------------------------------------------
   // Feed rendering
@@ -1550,6 +1601,8 @@
     } else if (e.key.toLowerCase() === "g") {
       Renderer.toggle();
       Sound.toggle();
+    } else if (e.key.toLowerCase() === "i") {
+      toggleInspector();
     } else if (e.key === "ArrowUp" || e.key === " " || e.key === "Spacebar") {
       e.preventDefault();
       moveForward();
@@ -1600,6 +1653,8 @@
     if (el.rendererBtn) {
       el.rendererBtn.addEventListener("click", () => { Renderer.toggle(); Sound.toggle(); });
     }
+    if (el.realtimeHud) el.realtimeHud.addEventListener("click", toggleInspector);
+    if (el.rtInspectorClose) el.rtInspectorClose.addEventListener("click", () => setInspector(false));
     el.deathRestart.addEventListener("click", resetGame);
     el.freeWillBtn.addEventListener("click", openFreeWill);
     el.forwardBtn.addEventListener("click", moveForward);

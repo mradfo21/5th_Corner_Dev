@@ -142,13 +142,25 @@
        realtime world model is actually doing — measured decoded-frame rate,
        chunk count and generating/idle/stalled state. Only shown in realtime
        mode; driven by ReactorRenderer.getTelemetry() (see standalone.js). -->
-  <div id="realtime-hud" class="hidden" aria-live="polite" title="Realtime world-model signal">
+  <div id="realtime-hud" class="hidden" aria-live="polite" title="Realtime world-model signal — click to inspect state (I)">
     <span id="rt-dot" class="rt-dot"></span>
     <span id="rt-state" class="rt-state">OFF</span>
     <span class="rt-sep">·</span>
     <span id="rt-fps" class="rt-fps">0 fps</span>
     <span id="rt-bars" class="rt-bars"><i></i><i></i><i></i><i></i><i></i></span>
     <span id="rt-detail" class="rt-detail"></span>
+    <span id="rt-inspect-hint" class="rt-inspect-hint">[I] state</span>
+  </div>
+
+  <!-- Live world-model state inspector: prints the raw `state` payload the
+       realtime model streams back, plus a short log of recent messages, so the
+       incoming state is actually inspectable. Toggle with I or the HUD. -->
+  <div id="rt-inspector" class="hidden" aria-live="polite">
+    <div id="rt-inspector-head">
+      <span>WORLD-MODEL STATE</span>
+      <button id="rt-inspector-close" type="button" title="Close (I)">✕</button>
+    </div>
+    <pre id="rt-inspector-body">waiting for the world model…</pre>
   </div>
 
   {% if forced_renderer %}<script>window.__FORCED_RENDERER__ = "{{ forced_renderer }}";</script>{% endif %}
