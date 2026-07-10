@@ -561,7 +561,20 @@
         imageUrl: imageUrl || null,
         hardTransition: !!(meta && meta.hard_transition),
       };
-      if (scene.prompt || scene.imageUrl) this.lastScene = scene;
+      // Remember the latest scene we can (re)start realtime from. A steer needs
+      // BOTH a prompt and an image, but not every feed item carries both — a
+      // player_choice_prompt, for instance, rides the current still with no
+      // steer prompt. MERGE rather than replace, so a partial update never wipes
+      // a known-good prompt/image (which used to silently lock the realtime
+      // toggle out with "Realtime starts once a scene is ready").
+      if (scene.prompt || scene.imageUrl) {
+        const prev = this.lastScene || {};
+        this.lastScene = {
+          prompt: scene.prompt || prev.prompt || null,
+          imageUrl: scene.imageUrl || prev.imageUrl || null,
+          hardTransition: scene.hardTransition,
+        };
+      }
       if (meta && meta.base) this.lastBase = meta.base;
       if (this.mode === "reactor" && this.reactorAvailable()) {
         if (scene.prompt) window.ReactorRenderer.applyScene(scene);
@@ -577,15 +590,13 @@
 
     setMode(mode) {
       if (mode === this.mode) return;
-      // Don't switch INTO realtime until a scene is actually ready to steer from
-      // (we have a generated still + prompt). Prevents entering realtime on a
-      // blank/half-loaded state.
-      if (mode === "reactor") {
-        if (!this.reactorAvailable()) { showRendererToast("Realtime unavailable"); return; }
-        if (!this.lastScene || !this.lastScene.imageUrl || !this.lastScene.prompt) {
-          showRendererToast("Realtime starts once a scene is ready");
-          return;
-        }
+      // Enabling realtime just needs the renderer available. It connects now and
+      // starts as soon as a scene is ready to steer from — we must NOT hard-block
+      // here on lastScene, or a partial/incomplete scene permanently locks the
+      // toggle (the old "starts once a scene is ready" dead end).
+      if (mode === "reactor" && !this.reactorAvailable()) {
+        showRendererToast("Realtime unavailable");
+        return;
       }
       this.mode = mode;
       this.explicit = true;
