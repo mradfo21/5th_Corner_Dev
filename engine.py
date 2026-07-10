@@ -1178,9 +1178,9 @@ SPATIAL: <spatial compass — describe: (a) what is DIRECTLY AHEAD at what dista
 SETTING: <ONE of: outdoor-desert, outdoor-cliff, outdoor-road, indoor-corridor, indoor-lab, indoor-warehouse, indoor-other, transitional>"""
         
         # Model note: gemini-2.0-flash-exp and later gemini-2.0-flash were retired
-        # on the current API/key (text calls 404'd while gemini-2.5-flash-image still
-        # worked). Use the current gemini-2.5-flash text model.
-        api_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+        # on the current API/key (text calls 404'd while gemini-3.1-flash-lite-image still
+        # worked). Use the current gemini-3.1-flash-lite text model.
+        api_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent"
         
         # DEBUG: Log API key status for Vision
         if not GEMINI_API_KEY:

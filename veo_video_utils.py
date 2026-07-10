@@ -420,7 +420,7 @@ def _generate_video_and_extract_frame(
         
         # Load the seed frame through Gemini to get it in Veo-compatible format
         gemini_image_response = client.models.generate_content(
-            model="gemini-2.5-flash-image",
+            model="gemini-3.1-flash-lite-image",
             contents=[
                 types.Part(
                     inline_data=types.Blob(
@@ -451,7 +451,7 @@ def _generate_video_and_extract_frame(
                     
                     # Convert to Veo-compatible format
                     ref_response = client.models.generate_content(
-                        model="gemini-2.5-flash-image",
+                        model="gemini-3.1-flash-lite-image",
                         contents=[
                             types.Part(
                                 inline_data=types.Blob(
