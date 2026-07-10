@@ -116,6 +116,12 @@
       status() { tone(320, 0.05, "sine", 0.03); },             // HUD tick
       death() { tone([180, 60], 0.7, "sawtooth", 0.09); },     // game over
       error() { tone([200, 120], 0.18, "sawtooth", 0.05); },
+      scene() { tone(180, 0.05, "sine", 0.05); tone([520, 380], 0.14, "sine", 0.04, 0.03); }, // new scene image streams in (shutter/whir)
+      start() { tone([160, 520], 0.28, "sawtooth", 0.05); tone(880, 0.12, "triangle", 0.04, 0.18); }, // new tape / game start
+      escalate() { tone([300, 620], 0.35, "sawtooth", 0.06); tone([620, 900], 0.3, "square", 0.03, 0.12); }, // phase escalates — tension rises
+      submit() { tone(700, 0.05, "square", 0.05); tone(1050, 0.11, "square", 0.045, 0.05); }, // custom action sent
+      open() { tone([420, 760], 0.14, "triangle", 0.05); },    // free-will input reveal
+      toggle() { tone(300, 0.04, "square", 0.04); },           // UI toggle click
     };
   })();
 
@@ -311,6 +317,7 @@
         // The image itself is the payload (handled above by setScene). Its
         // placeholder content ("The scene shifts...") is intentionally NOT
         // added to the prose feed — it would just be noise over the art.
+        Sound.scene(); // audible cue that the scene has materialised
         return;
 
       case "game_over":
@@ -390,6 +397,7 @@
     try {
       stopPolling(); // avoid a mid-reset poll racing the rebuilt feed
       exitGameOver();
+      Sound.start(); // new tape / game begins
       showVeil("Reawakening the tape...");
       el.prose.innerHTML = "";
       el.choices.innerHTML = "";
@@ -442,7 +450,7 @@
     if (state.processing || state.gameOver || state.freeWillOpen) return;
     state.freeWillOpen = true;
     el.actionWheel.classList.add("fw-open");
-    Sound.choices();
+    Sound.open();
     // Focus after the expand animation starts so the caret lands cleanly.
     setTimeout(() => el.customInput.focus(), 60);
   }
@@ -461,6 +469,7 @@
     const text = el.customInput.value.trim();
     if (!text || state.processing || state.gameOver) return;
     el.customInput.value = "";
+    Sound.submit(); // custom free-will action sent
     closeFreeWill(true); // gate closes on submit
     makeChoice(text, null);
   }
@@ -547,11 +556,19 @@
           el.hudTimeWrap.classList.add("hidden");
         }
       }
-      // Record for next-change detection; ping a subtle tick on any change.
+      // Detect world-state changes independent of the (removed) top HUD and
+      // give them audible feedback: a rising sting when the phase escalates,
+      // a subtle tick when chaos climbs.
+      const prev = state.lastStatus || {};
+      const PHASE_RANK = { normal: 0, escalating: 1, critical: 2, deceased: 3 };
+      const escalated = prev.phase && phaseText !== prev.phase &&
+        (PHASE_RANK[phaseText] ?? 0) > (PHASE_RANK[prev.phase] ?? 0) && phaseText !== "deceased";
+      const chaosUp = prev.chaos !== undefined && (s.chaos ?? 0) > Number(prev.chaos);
       state.lastStatus = { turn: String(s.turn ?? 0), chaos: String(s.chaos ?? 0), phase: phaseText };
-      if (changed) Sound.status();
+      if (escalated) Sound.escalate();
+      else if (chaosUp || changed) Sound.status();
     } catch (err) {
-      el.backendName.textContent = "offline";
+      if (el.backendName) el.backendName.textContent = "offline";
     }
   }
 
@@ -567,6 +584,7 @@
   function toggleVhs() {
     state.vhsEnabled = !state.vhsEnabled;
     el.vhsOverlay.classList.toggle("vhs-on", state.vhsEnabled);
+    Sound.toggle();
   }
 
   function toggleSound() {
