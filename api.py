@@ -77,7 +77,15 @@ def serve_standalone():
     this does NOT reset the game on load — the player's in-progress session
     (if any) is preserved across page refreshes; use the Reset button (or
     POST /api/reset) to start over."""
-    return render_template('standalone.html')
+    # Cache-bust CSS/JS on every deploy so browsers never serve stale UI.
+    version = "0"
+    try:
+        css = os.path.getmtime("static/css/standalone.css")
+        js = os.path.getmtime("static/js/standalone.js")
+        version = str(int(max(css, js)))
+    except Exception:
+        pass
+    return render_template('standalone.html', asset_version=version)
 
 
 @app.route('/api/status', methods=['GET'])
