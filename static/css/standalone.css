@@ -655,6 +655,15 @@ html, body {
 }
 .rail-btn:active { transform: scale(0.94); }
 
+/* Make every interactive control a clean single-tap target on mobile — no
+   double-tap zoom, no gesture bleed between the action zone and the rail. */
+.rail-btn,
+.choice-btn,
+#free-will-btn,
+#forward-btn,
+#custom-submit,
+#custom-input { touch-action: manipulation; }
+
 .rail-ico { font-size: 17px; line-height: 1; }
 .rail-lbl {
   font-size: 8px;
