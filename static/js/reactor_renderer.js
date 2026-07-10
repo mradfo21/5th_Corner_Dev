@@ -86,6 +86,10 @@
     lastState: null,    // raw payload of the most recent `state` message
     lastStateAt: 0,
     recent: [],         // ring buffer of recent model messages, for inspection
+    seeds: 0,           // set_image (guide image) uploads pushed to the model
+    lastSeedAt: 0,
+    steers: 0,          // set_prompt (scene prompt) hot-swaps pushed to the model
+    lastSteerAt: 0,
     _sampleFrames: 0,
     _sampleAt: 0,
     _stateLogAt: 0,
@@ -285,6 +289,10 @@
     // Commands that make the world model compute new video open a generating
     // window for the telemetry meter.
     if (name === "set_prompt" || name === "set_image" || name === "start" || name === "resume") markActivity();
+    // Track the two ways we feed the world model, so the UI can PROVE the guide
+    // image (seed) and the scene prompt are actually being pumped in.
+    if (name === "set_image") { tele.seeds += 1; tele.lastSeedAt = performance.now(); }
+    else if (name === "set_prompt") { tele.steers += 1; tele.lastSteerAt = performance.now(); }
     emitEvent("command_sent", { command: name });
     return rstate.reactor.sendCommand(name, data || {});
   }
@@ -460,6 +468,7 @@
       tele.generating = false; tele.deferred = false;
       tele.startedAt = 0; tele.lastFrameAt = 0; tele.lastActivityAt = 0;
       tele.lastState = null; tele.lastStateAt = 0; tele.recent = [];
+      tele.seeds = 0; tele.steers = 0; tele.lastSeedAt = 0; tele.lastSteerAt = 0;
       startTelemetrySampler();
       await reactor.connect(jwt);
       rstate.connecting = false;
@@ -588,6 +597,13 @@
         lastState: tele.lastState,
         msSinceState: tele.lastStateAt ? Math.round(now - tele.lastStateAt) : null,
         recent: tele.recent.slice(),
+        // What we've pushed INTO the model — proof the guide image + prompt are
+        // actually wired to the realtime sim (and how fresh each is).
+        lastPrompt: rstate.lastPrompt || null,
+        seeds: tele.seeds,
+        steers: tele.steers,
+        msSinceSeed: tele.lastSeedAt ? Math.round(now - tele.lastSeedAt) : null,
+        msSinceSteer: tele.lastSteerAt ? Math.round(now - tele.lastSteerAt) : null,
       };
     },
     onStatus: null,

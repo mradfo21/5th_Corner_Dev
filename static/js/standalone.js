@@ -903,9 +903,23 @@
     function renderInspector(t) {
       if (!el.rtInspectorBody) return;
       const lines = [];
+      // What we're feeding INTO the world model — makes it obvious the guide
+      // image (seed) and the scene prompt are actually wired to the sim.
+      if (t) {
+        const seedAge = t.msSinceSeed != null ? (t.msSinceSeed / 1000).toFixed(1) + "s ago" : "never";
+        const steerAge = t.msSinceSteer != null ? (t.msSinceSteer / 1000).toFixed(1) + "s ago" : "never";
+        lines.push('<span class="rt-hd">// pushed into model</span>');
+        lines.push('<span class="rt-k">seed image:</span> ' + t.seeds + ' sent (' + escapeHtml(seedAge) + ')');
+        lines.push('<span class="rt-k">scene prompt:</span> ' + t.steers + ' sent (' + escapeHtml(steerAge) + ')');
+        if (t.lastPrompt) {
+          lines.push('<span class="rt-k">current prompt:</span>');
+          lines.push(escapeHtml(t.lastPrompt));
+        }
+        lines.push("");
+      }
       if (t && t.lastState) {
         const age = t.msSinceState != null ? " (" + (t.msSinceState / 1000).toFixed(1) + "s ago)" : "";
-        lines.push('<span class="rt-hd">// state' + age + '</span>');
+        lines.push('<span class="rt-hd">// state back from model' + age + '</span>');
         lines.push(escapeHtml(JSON.stringify(t.lastState, null, 2)));
       } else {
         lines.push('<span class="rt-hd">// no state message received yet</span>');

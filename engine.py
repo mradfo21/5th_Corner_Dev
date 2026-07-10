@@ -3162,9 +3162,34 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
         consequence_img_url = None  # streamed in asynchronously below
         vision_dispatch_text = p1.get("vision_dispatch", "")
         player_alive = state.get("player_state", {}).get("alive", True)
+        hard_transition = bool(p1.get("hard_transition", False))
+
+        # ── REALTIME STEER (decoupled from the slow still) ──────────────────
+        # The realtime world model's new scene prompt used to ride ONLY on the
+        # scene_image feed item, so it didn't reach the model until the Gemini
+        # still finished (~7-10s) — which is why steering "took ages" and felt
+        # disconnected. The prompt is cheap text (no LLM), so we compute it here
+        # and attach it to the narrative_event, which lands as soon as the
+        # consequence text is ready (~2-4s). The client hot-swaps the live video
+        # immediately; the still still follows on scene_image purely as the
+        # image-to-video SEED. We only steer early on same-location turns — a
+        # hard transition must re-seed from the new still, so it waits for the
+        # image (attaching a prompt-only steer there would just blank the video).
+        narrative_meta: Dict[str, Any] = {"source": "dispatch"}
+        if player_alive and not hard_transition:
+            try:
+                caption_for_rt = vision_dispatch_text or dispatch_text
+                narrative_meta["base"] = build_realtime_base(visual_scene=caption_for_rt, narrative=dispatch_text)
+                narrative_meta["prompt"] = build_realtime_prompt(
+                    visual_scene=caption_for_rt, narrative=dispatch_text, choice=choice
+                )
+                narrative_meta["hard_transition"] = False
+                print(f"[REALTIME] early steer prompt attached to narrative (pre-image): {narrative_meta['prompt'][:80]}", flush=True)
+            except Exception as e_rt:
+                log_error(f"[REALTIME] early steer prompt build failed: {e_rt}")
 
         turn_items: List[Dict[str, Any]] = [
-            create_feed_item(type="narrative_event", content=dispatch_text, metadata={"source": "dispatch"})
+            create_feed_item(type="narrative_event", content=dispatch_text, metadata=narrative_meta)
         ]
 
         # Item pickup detection (feed notification; inventory itself is in state).
