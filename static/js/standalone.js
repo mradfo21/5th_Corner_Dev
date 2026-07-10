@@ -261,18 +261,36 @@
   // ------------------------------------------------------------------
   const Renderer = {
     mode: "image",
+    lastPrompt: null, // latest scene prompt, so a mid-game toggle can steer now
 
     resolveInitial() {
       const q = new URLSearchParams(location.search).get("renderer");
       const stored = (function () {
         try { return localStorage.getItem("scene_renderer"); } catch (_) { return null; }
       })();
-      this.mode = q || stored || "image";
+      this.mode = q === "image" || q === "reactor"
+        ? q
+        : (stored === "reactor" ? "reactor" : "image");
     },
 
     init() {
       this.resolveInitial();
-      if (this.mode === "reactor") this._activateReactor();
+      // Report real connection state on the toggle button, and fall back to
+      // stills automatically if the realtime renderer can't start (no key,
+      // CDN/import failure, GPU conflict) so a player is never stuck on a
+      // "LIVE" button that isn't actually live.
+      if (this.reactorAvailable()) {
+        window.ReactorRenderer.onStatus = (s) => {
+          if (s === "error" && Renderer.mode === "reactor") {
+            console.warn("[standalone] realtime renderer unavailable — falling back to stills");
+            Renderer.mode = "image"; // reflect reality; keep stored pref intact
+          }
+          updateRendererButton();
+        };
+      }
+      // Do NOT eagerly connect here: connecting spins up a GPU session before
+      // there is anything to show and risks a session conflict. We connect
+      // lazily when the first scene prompt arrives (see applyScene).
       updateRendererButton();
     },
 
@@ -280,15 +298,10 @@
       return !!window.ReactorRenderer;
     },
 
-    _activateReactor() {
-      if (this.reactorAvailable()) {
-        try { window.ReactorRenderer.enable(); } catch (err) { console.error("[standalone] reactor enable failed", err); }
-      }
-    },
-
     // Apply a scene coming off the feed. `prompt` is the engine's scene prompt
     // (feed item metadata.prompt); `imageUrl` is the generated still.
     applyScene(imageUrl, prompt) {
+      if (prompt) this.lastPrompt = prompt;
       if (this.mode === "reactor" && this.reactorAvailable()) {
         if (prompt) window.ReactorRenderer.setPrompt(prompt, imageUrl);
         // Keep the still painted behind the video so a Reactor failure or the
@@ -303,8 +316,12 @@
       if (mode === this.mode) return;
       this.mode = mode;
       try { localStorage.setItem("scene_renderer", mode); } catch (_) {}
-      if (mode === "reactor") {
-        this._activateReactor();
+      if (mode === "reactor" && this.reactorAvailable()) {
+        window.ReactorRenderer.enable().then((ok) => {
+          // Steer the current scene immediately so switching mid-game shows
+          // something without waiting for the next turn.
+          if (ok && Renderer.lastPrompt) window.ReactorRenderer.setPrompt(Renderer.lastPrompt);
+        });
       } else if (this.reactorAvailable()) {
         try { window.ReactorRenderer.disable(); } catch (_) {}
       }
@@ -318,12 +335,20 @@
 
   function updateRendererButton() {
     if (!el.rendererBtn) return;
-    const live = Renderer.mode === "reactor";
-    el.rendererBtn.classList.toggle("on", live);
-    el.rendererBtn.textContent = live ? "\u25C9" : "\u25CE"; // ◉ live / ◎ still
-    el.rendererBtn.title = live
-      ? "Renderer: realtime world model — click for stills (G)"
-      : "Renderer: still images — click for realtime (G)";
+    const reactorMode = Renderer.mode === "reactor";
+    const status = (reactorMode && Renderer.reactorAvailable())
+      ? window.ReactorRenderer.getStatus()
+      : "off";
+    el.rendererBtn.textContent = reactorMode ? "\u25C9" : "\u25CE"; // ◉ live / ◎ still
+    el.rendererBtn.classList.toggle("on", reactorMode && status === "live");
+    el.rendererBtn.classList.toggle("pending", reactorMode && status === "connecting");
+    el.rendererBtn.title = !reactorMode
+      ? "Renderer: still images — click for realtime (G)"
+      : status === "live"
+        ? "Renderer: realtime world model (live) — click for stills (G)"
+        : status === "connecting"
+          ? "Renderer: realtime — connecting…"
+          : "Renderer: realtime — showing stills until it connects (G)";
   }
 
   // ------------------------------------------------------------------
@@ -390,6 +415,11 @@
     el.choices.innerHTML = "";
     if (message) el.deathMessage.innerHTML = renderInline(message);
     el.deathOverlay.classList.remove("hidden");
+    // Stop the realtime model generating behind the death overlay (cost + it
+    // would keep drifting the world while the run is over).
+    if (Renderer.mode === "reactor" && Renderer.reactorAvailable()) {
+      try { window.ReactorRenderer.pause(); } catch (_) {}
+    }
   }
 
   function exitGameOver() {
@@ -505,6 +535,12 @@
     try {
       stopPolling(); // avoid a mid-reset poll racing the rebuilt feed
       exitGameOver();
+      // New run → reset the realtime world model so it doesn't carry the dead
+      // run's world into the fresh intro (the next scene prompt re-starts it).
+      if (Renderer.mode === "reactor" && Renderer.reactorAvailable()) {
+        try { window.ReactorRenderer.reset(); } catch (_) {}
+      }
+      Renderer.lastPrompt = null;
       Sound.start(); // new tape / game begins
       showVeil("Reawakening the tape...");
       el.prose.innerHTML = "";

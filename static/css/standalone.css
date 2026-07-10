@@ -651,11 +651,23 @@ html, body {
 .mini-btn.off { opacity: 0.4; border-color: rgba(142, 255, 193, 0.1); }
 
 /* Renderer toggle "live" state — glow it red when the realtime world model
-   is the active renderer, so it reads like a REC light. */
+   is actually streaming, so it reads like a REC light. */
 .mini-btn.on {
   color: #ff6b6b;
   border-color: rgba(255, 107, 107, 0.7);
   box-shadow: 0 0 10px rgba(255, 107, 107, 0.35);
+}
+
+/* Realtime renderer selected but still connecting — amber pulse. */
+.mini-btn.pending {
+  color: #ffcf6b;
+  border-color: rgba(255, 207, 107, 0.7);
+  animation: renderer-pending 1s ease-in-out infinite alternate;
+}
+
+@keyframes renderer-pending {
+  from { box-shadow: 0 0 4px rgba(255, 207, 107, 0.2); }
+  to   { box-shadow: 0 0 12px rgba(255, 207, 107, 0.5); }
 }
 
 /* ---------- Processing veil ---------- */

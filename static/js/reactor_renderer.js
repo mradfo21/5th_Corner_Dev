@@ -15,14 +15,18 @@
        enable()              -> connect + start streaming
        disable()             -> stop + hide the video layer
        setPrompt(prompt,url) -> steer the live model with a new scene prompt
-       isActive()            -> currently connected/streaming
-       isReady()             -> connection reached "ready"
+       reset()               -> reset the world model (new game)
+       pause() / resume()    -> pause/resume generation (e.g. on death)
+       getStatus()           -> "off" | "connecting" | "live" | "error"
+       isActive()            -> a connection exists / is being set up
+   Set window.ReactorRenderer.onStatus = fn to observe status changes.
    ============================================================ */
 (function () {
   "use strict";
 
   // Pinned SDK version (Reactor is beta; pin to avoid surprise breakage).
-  const SDK_URL = "https://esm.sh/@reactor-team/js-sdk@0";
+  // NOTE: must be a real published version — @0 does not exist and would 404.
+  const SDK_URL = "https://esm.sh/@reactor-team/js-sdk@2.12.0";
   const FALLBACK_MODEL = "helios";
 
   const rstate = {
@@ -30,15 +34,27 @@
     active: false,       // connect() has been kicked off and not torn down
     ready: false,        // connection status === "ready"
     started: false,      // generation has been started at least once
+    paused: false,
     pendingPrompt: null, // most recent prompt awaiting injection
     lastPrompt: null,    // last prompt actually sent (dedup)
     video: null,
     cfg: { model_name: FALLBACK_MODEL, enabled: false },
     connecting: false,
+    status: "off",       // off | connecting | live | error
   };
 
   function log() {
     try { console.log.apply(console, ["[reactor]", ...arguments]); } catch (_) {}
+  }
+
+  function setStatus(s) {
+    if (rstate.status === s) return;
+    rstate.status = s;
+    try {
+      if (typeof window.ReactorRenderer.onStatus === "function") {
+        window.ReactorRenderer.onStatus(s);
+      }
+    } catch (_) {}
   }
 
   function getVideo() {
@@ -75,6 +91,7 @@
     video.srcObject = stream || new MediaStream([track]);
     video.classList.remove("hidden");
     video.play().catch(() => {}); // autoplay may need muted; element is muted
+    setStatus("live");
     log("main_video attached");
   }
 
@@ -110,11 +127,13 @@
   async function enable() {
     if (rstate.active || rstate.connecting) return true;
     rstate.connecting = true;
+    setStatus("connecting");
     try {
       await loadConfig();
       if (!rstate.cfg.enabled) {
         log("disabled: server has no REACTOR_API_KEY configured");
         rstate.connecting = false;
+        setStatus("error");
         return false;
       }
       let sdk;
@@ -123,12 +142,14 @@
       } catch (err) {
         log("SDK import failed", err);
         rstate.connecting = false;
+        setStatus("error");
         return false;
       }
       const Reactor = sdk.Reactor || (sdk.default && sdk.default.Reactor);
       if (!Reactor) {
         log("SDK missing Reactor export");
         rstate.connecting = false;
+        setStatus("error");
         return false;
       }
 
@@ -145,7 +166,11 @@
           rstate.ready = false;
         }
       });
-      reactor.on("error", (e) => log("error", e && e.code, e && e.message));
+      reactor.on("error", (e) => {
+        log("error", e && e.code, e && e.message);
+        // Surface hard failures so the UI can fall back to stills.
+        if (e && e.recoverable === false) setStatus("error");
+      });
 
       const jwt = await fetchToken();
       rstate.active = true;
@@ -156,6 +181,7 @@
     } catch (err) {
       log("enable failed", err);
       rstate.connecting = false;
+      setStatus("error");
       await disable();
       return false;
     }
@@ -164,6 +190,7 @@
   async function disable() {
     rstate.ready = false;
     rstate.started = false;
+    rstate.paused = false;
     rstate.pendingPrompt = null;
     rstate.lastPrompt = null;
     const video = getVideo();
@@ -174,6 +201,7 @@
     const r = rstate.reactor;
     rstate.reactor = null;
     rstate.active = false;
+    if (rstate.status !== "error") setStatus("off");
     if (r) {
       try { await r.disconnect(); } catch (_) {}
     }
@@ -192,11 +220,40 @@
     flushPrompt();
   }
 
+  // Reset the world model to a clean slate (used when the game restarts).
+  async function reset() {
+    const r = rstate.reactor;
+    rstate.started = false;
+    rstate.lastPrompt = null;
+    rstate.paused = false;
+    if (!r || !rstate.ready) return;
+    try { await r.sendCommand("reset", {}); } catch (err) { log("reset failed", err); }
+  }
+
+  async function pause() {
+    const r = rstate.reactor;
+    if (!r || !rstate.ready || !rstate.started || rstate.paused) return;
+    rstate.paused = true;
+    try { await r.sendCommand("pause", {}); } catch (err) { log("pause failed", err); }
+  }
+
+  async function resume() {
+    const r = rstate.reactor;
+    if (!r || !rstate.ready || !rstate.paused) return;
+    rstate.paused = false;
+    try { await r.sendCommand("resume", {}); } catch (err) { log("resume failed", err); }
+  }
+
   window.ReactorRenderer = {
     enable,
     disable,
     setPrompt,
+    reset,
+    pause,
+    resume,
+    getStatus: () => rstate.status,
     isActive: () => rstate.active,
     isReady: () => rstate.ready,
+    onStatus: null,
   };
 })();
