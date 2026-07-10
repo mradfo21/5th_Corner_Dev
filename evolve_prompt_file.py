@@ -161,10 +161,10 @@ RETURN ONLY THE NEW WORLD PROMPT TEXT - NO PREAMBLE, NO EXPLANATION, JUST THE EV
                 "contents": [{"parts": [{"text": prompt}]}],
                 "generationConfig": {"thinkingConfig": {"thinkingBudget": 0}, 
                     "temperature": 0.7,
-                    "maxOutputTokens": 2000  # ~1500 words
+                    "maxOutputTokens": 900  # trimmed for speed; still a substantial world update
                 }
             },
-            timeout=25  # Slightly reduced
+            timeout=20
         )
         
         if response.status_code != 200:

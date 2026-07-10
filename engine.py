@@ -2984,9 +2984,10 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
 
     SID = 'default'
     try:
-        # ── PHASE 1: consequence dispatch + world evolution (fast text, NO image) ──
-        # The scene image is generated asynchronously so choices come back fast.
-        p1 = advance_turn_image_fast(choice, fate="NORMAL", is_timeout_penalty=False, session_id=SID, skip_image=True)
+        # ── PHASE 1: consequence dispatch only (fast text; NO image, async evolve) ──
+        # Image and world-evolution run in the background so narrative + choices
+        # return fast.
+        p1 = advance_turn_image_fast(choice, fate="NORMAL", is_timeout_penalty=False, session_id=SID, skip_image=True, skip_evolve=True)
         state = _load_state(SID)
 
         dispatch_text = (p1.get("dispatch") or "").strip() or "The situation evolves..."
@@ -3153,6 +3154,36 @@ def _spawn_scene_image_async(caption: str, dispatch: str, choice: str, frame_idx
             print(f"[ASYNC IMG] scene appended for {session_id}: {web}", flush=True)
         except Exception as e:
             log_error(f"[ASYNC IMG] failed: {e}")
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+def _evolve_world_async(session_id: str, consequence_summary: str, vision_dispatch: str):
+    """Run world evolution off the turn's critical path. evolve_world_state is
+    read-only; we merge only the world fields under lock so a concurrent feed
+    write is never clobbered. Affects the next turn's world_prompt."""
+    def _worker():
+        global state
+        try:
+            from evolve_prompt_file import evolve_world_state
+            hist = _load_history(session_id)
+            evolution_result = evolve_world_state(
+                hist, consequence_summary,
+                state_file=str(_get_state_path(session_id)),
+                vision_description=vision_dispatch,
+            )
+            if not evolution_result:
+                return
+            with WORLD_STATE_LOCK:
+                st = _load_state(session_id)
+                for k in ("world_prompt", "evolution_summary", "recent_events", "seen_elements"):
+                    if k in evolution_result:
+                        st[k] = evolution_result[k]
+                _save_state(st, session_id)
+                state = st
+            print(f"[ASYNC EVOLVE] world updated for {session_id}", flush=True)
+        except Exception as e:
+            log_error(f"[ASYNC EVOLVE] failed: {e}")
 
     threading.Thread(target=_worker, daemon=True).start()
 
@@ -3769,13 +3800,14 @@ def summarize_world_state_diff(prev_state: dict, state: dict) -> str:
     return "; ".join(diffs)
 
 # ───────── game loop ──────────────────────────────────────────────────────────
-def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalty: bool = False, session_id: str = 'default', skip_image: bool = False) -> dict:
+def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalty: bool = False, session_id: str = 'default', skip_image: bool = False, skip_evolve: bool = False) -> dict:
     """
     PHASE 1 (FAST): Generate dispatch and image, return immediately.
 
-    skip_image=True generates only the dispatch + world evolution (fast text)
-    and returns without the image, so the feed path can render narrative +
-    choices immediately and stream the scene image in asynchronously.
+    skip_image=True   -> don't block on the scene image (feed streams it async).
+    skip_evolve=True  -> run the world-evolution rewrite in the background
+                         (it only affects the next turn), so the turn's
+                         narrative + choices return fast.
     
     Args:
         session_id: Session ID for state management
@@ -3839,27 +3871,26 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
         if not vision_dispatch or vision_dispatch.strip().lower() in {"none", "", "[", "[]"}:
             vision_dispatch = dispatch
         
-        # Evolve world state
-        from evolve_prompt_file import evolve_world_state
+        # Evolve world state.
         consequence_summary = summarize_world_state_diff(prev_state, state)
-        # Pass session-specific state file path
-        state_file_path = _get_state_path(session_id)
-        evolution_result = evolve_world_state(history, consequence_summary, state_file=str(state_file_path), vision_description=vision_dispatch)
-        
-        # Apply evolution results and SAVE properly with lock
-        state = _load_state(session_id)
-        if evolution_result:
-            if "world_prompt" in evolution_result:
-                state["world_prompt"] = evolution_result["world_prompt"]
-            if "evolution_summary" in evolution_result:
-                state["evolution_summary"] = evolution_result["evolution_summary"]
-            if "recent_events" in evolution_result:
-                state["recent_events"] = evolution_result["recent_events"]
-            if "seen_elements" in evolution_result:
-                state["seen_elements"] = evolution_result["seen_elements"]
-            
-            _save_state(state, session_id)
-            print(f"[WORLD EVOLUTION] Applied and saved evolution results for {session_id}")
+        if skip_evolve:
+            # Feed path: run the (slow, ~1k-token) world evolution in the
+            # background so the turn's narrative + choices return fast. It only
+            # affects the NEXT turn's world_prompt. evolve_world_state is
+            # read-only; the worker merges its result under lock, preserving
+            # feed_log.
+            _evolve_world_async(session_id, consequence_summary, vision_dispatch)
+        else:
+            from evolve_prompt_file import evolve_world_state
+            state_file_path = _get_state_path(session_id)
+            evolution_result = evolve_world_state(history, consequence_summary, state_file=str(state_file_path), vision_description=vision_dispatch)
+            state = _load_state(session_id)
+            if evolution_result:
+                for _k in ("world_prompt", "evolution_summary", "recent_events", "seen_elements"):
+                    if _k in evolution_result:
+                        state[_k] = evolution_result[_k]
+                _save_state(state, session_id)
+                print(f"[WORLD EVOLUTION] Applied and saved evolution results for {session_id}")
         
         # Generate image
         mode = state.get("mode", "camcorder")
