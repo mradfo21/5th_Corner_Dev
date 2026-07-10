@@ -72,6 +72,12 @@
     tapeEject: document.getElementById("tape-eject"),
     autoplayBtn: document.getElementById("autoplay-btn"),
     autoplayLabel: document.getElementById("autoplay-label"),
+    realtimeHud: document.getElementById("realtime-hud"),
+    rtDot: document.getElementById("rt-dot"),
+    rtState: document.getElementById("rt-state"),
+    rtFps: document.getElementById("rt-fps"),
+    rtBars: document.getElementById("rt-bars"),
+    rtDetail: document.getElementById("rt-detail"),
   };
 
   const state = {
@@ -226,6 +232,8 @@
     const DWELL_MS = 460;      // minimum time each step is shown (so it registers)
     const RESOLVE_HOLD_MS = 1050;
 
+    const STUCK_MS = 9000;     // after this with no progress, reassure the player
+
     let built = false;
     let active = false;
     let cur = -1;        // index of the currently active step
@@ -233,6 +241,9 @@
     let dwellTimer = null;
     let doneTimer = null;
     let noteTimer = null;
+    let watchTimer = null;     // watchdog so a slow turn never LOOKS frozen
+    let progressAt = 0;        // last time the pipeline visibly advanced
+    let watchOwnsNote = false; // the reassurance note is ours to overwrite
 
     function build() {
       if (built || !el.ceremonySteps) return;
@@ -264,8 +275,28 @@
       node.classList.add("active", "beat");
       node.addEventListener("animationend", () => node.classList.remove("beat"), { once: true });
       cur = i;
+      progressAt = Date.now(); // the pipeline just advanced — reset the watchdog
+      watchOwnsNote = false;
       const s = STEPS[i];
       if (s && Sound[s.sound]) Sound[s.sound]();
+    }
+
+    // Watchdog: if the current step hasn't advanced in a while (a genuinely slow
+    // turn — the "stuck at WORLD UPDATING" the player saw), keep the tracker
+    // feeling alive by counting up on the sub-line, so it never reads as frozen.
+    // Purely cosmetic; the real resolution still arrives via the feed.
+    function tickWatchdog() {
+      if (!active || cur < 0 || cur >= STEPS.length - 1) return;
+      const stuckFor = Date.now() - progressAt;
+      if (stuckFor < STUCK_MS) return;
+      // Don't stomp a fresh, informative realtime note; only take over the line
+      // if it's empty or already ours.
+      const cur_note = el.ceremonyNote ? el.ceremonyNote.textContent.trim() : "";
+      if (cur_note && !watchOwnsNote) return;
+      const secs = Math.floor(stuckFor / 1000);
+      el.ceremonyNote.textContent = "\u2026 still rendering (" + secs + "s)";
+      el.ceremonyNote.classList.add("show");
+      watchOwnsNote = true;
     }
 
     function pump() {
@@ -282,6 +313,9 @@
         clearTimeout(doneTimer); clearTimeout(dwellTimer); dwellTimer = null;
         active = true;
         cur = -1; target = -1;
+        progressAt = Date.now();
+        watchOwnsNote = false;
+        if (!watchTimer) watchTimer = setInterval(tickWatchdog, 1000);
         state.processing = true;
         // Reset all chips to pending.
         if (el.ceremonySteps) {
@@ -338,6 +372,8 @@
         Sound.cereDone();
         state.processing = false; // choices are live — let the player act
         active = false;
+        if (watchTimer) { clearInterval(watchTimer); watchTimer = null; }
+        watchOwnsNote = false;
         clearTimeout(doneTimer);
         doneTimer = setTimeout(hideVeil, RESOLVE_HOLD_MS);
       },
@@ -347,6 +383,8 @@
         active = false;
         clearTimeout(dwellTimer); dwellTimer = null;
         clearTimeout(doneTimer); doneTimer = null;
+        if (watchTimer) { clearInterval(watchTimer); watchTimer = null; }
+        watchOwnsNote = false;
       },
 
       // Hide just the ceremony chrome (keep the veil for the simple spinner).
@@ -519,6 +557,9 @@
               Ceremony.reach("world_respond");
               return;
             case "chunk_complete":
+              // A steered video segment finished — the world is demonstrably
+              // responding, so advance the pipeline past "world updating".
+              Ceremony.reach("world_respond");
               Ceremony.note("\u25A3 Chunk " + ((d.chunk_index != null ? d.chunk_index : 0) + 1) + " rendered");
               return;
             case "state": {
@@ -694,6 +735,8 @@
         : status === "connecting"
           ? "Renderer: realtime — connecting…"
           : "Renderer: realtime — showing stills until it connects (G)";
+    // Keep the realtime signal HUD in sync the instant the mode changes.
+    try { RealtimeHud.update(); } catch (_) {}
   }
 
   // Small transient on-screen note so it's obvious which renderer is active
@@ -712,6 +755,80 @@
     clearTimeout(_rendererToastTimer);
     _rendererToastTimer = setTimeout(() => toast.classList.remove("show"), 2200);
   }
+
+  // ------------------------------------------------------------------
+  // Realtime signal HUD — a persistent, always-honest readout of what the
+  // realtime world model is ACTUALLY doing. This answers the question "are we
+  // generating img2img in the background right now?" with measured facts: the
+  // fps/frame counters come from decoded video frames (ReactorRenderer
+  // telemetry), not from an optimistic status flag that can lie. Only visible
+  // in realtime mode.
+  // ------------------------------------------------------------------
+  const RealtimeHud = (function () {
+    let timer = null;
+    const PHASES = ["rt-generating", "rt-live", "rt-connecting", "rt-warn", "rt-stalled", "rt-error"];
+
+    function setPhase(phase) {
+      if (!el.realtimeHud) return;
+      PHASES.forEach((c) => el.realtimeHud.classList.remove(c));
+      if (phase) el.realtimeHud.classList.add(phase);
+    }
+
+    function update() {
+      if (!el.realtimeHud) return;
+      const on = Renderer.mode === "reactor" && Renderer.reactorAvailable();
+      if (!on) {
+        el.realtimeHud.classList.add("hidden");
+        document.body.classList.remove("rt-live");
+        return;
+      }
+      el.realtimeHud.classList.remove("hidden");
+      document.body.classList.add("rt-live");
+
+      const t = window.ReactorRenderer.getTelemetry ? window.ReactorRenderer.getTelemetry() : null;
+      if (!t) return;
+
+      const fps = t.fps || 0;
+      const fpsTxt = (fps >= 10 ? Math.round(fps) : fps.toFixed(1)) + " fps";
+      let phase, label, detail = "";
+
+      if (t.status === "error") { phase = "rt-error"; label = "UNAVAILABLE"; detail = "showing stills"; }
+      else if (t.status === "off" || !t.active) { phase = "rt-error"; label = "OFF"; }
+      else if (t.connecting || t.status === "connecting") { phase = "rt-connecting"; label = "CONNECTING"; }
+      else if (t.deferred) { phase = "rt-warn"; label = "WAITING FOR SEED"; detail = "no reference frame yet"; }
+      else if (t.paused) { phase = "rt-warn"; label = "PAUSED"; }
+      else if (t.showing && t.msSinceFrame != null && t.msSinceFrame > 2500) { phase = "rt-stalled"; label = "STALLED"; detail = "no new frames"; }
+      else if (t.generating && t.showing) { phase = "rt-generating"; label = "GENERATING"; }
+      else if (t.showing) { phase = "rt-live"; label = "LIVE \u00B7 IDLE"; }
+      else if (t.started) { phase = "rt-connecting"; label = "RENDERING"; detail = "awaiting first frame"; }
+      else { phase = "rt-connecting"; label = "STAGING"; }
+
+      setPhase(phase);
+      if (el.rtState) el.rtState.textContent = label;
+      if (el.rtFps) el.rtFps.textContent = fpsTxt;
+      if (el.rtDetail) {
+        const bits = [];
+        if (t.chunks) bits.push("chunk " + t.chunks);
+        if (detail) bits.push(detail);
+        el.rtDetail.textContent = bits.join(" \u00B7 ");
+      }
+
+      // Ground the ceremony in reality: if the live video is genuinely
+      // producing frames while a turn resolves, the world HAS visibly
+      // responded — advance past "world updating" so the pipeline never looks
+      // frozen waiting on the slow still/backend (the auto-mode "stuck at
+      // WORLD UPDATING" symptom the player reported).
+      if (state.awaitingResolution && Ceremony.isActive() && t.showing && t.generating) {
+        Ceremony.reach("world_respond");
+      }
+    }
+
+    return {
+      start() { if (timer) return; timer = setInterval(update, 350); update(); },
+      stop() { if (timer) clearInterval(timer); timer = null; },
+      update,
+    };
+  })();
 
   // ------------------------------------------------------------------
   // Feed rendering
@@ -1474,6 +1591,7 @@
     document.addEventListener("keydown", unlockAudio, { once: true });
 
     Renderer.init(); // async: resolves default renderer + warms realtime session
+    RealtimeHud.start(); // persistent, honest readout of the realtime pipeline
     initVhsGrain();
     initKeyboardInset();
     startTimecode();

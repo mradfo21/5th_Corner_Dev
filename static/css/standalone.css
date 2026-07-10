@@ -1070,6 +1070,94 @@ html, body {
   color: rgba(142, 255, 193, 0.6);
 }
 
+/* ---------- Realtime signal HUD (honest world-model telemetry) ---------- */
+
+#realtime-hud {
+  position: fixed;
+  bottom: 6px;
+  left: 10px;
+  z-index: 12;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 9px;
+  border-radius: 9px;
+  background: rgba(3, 8, 6, 0.6);
+  border: 1px solid rgba(142, 255, 193, 0.22);
+  backdrop-filter: blur(4px);
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(216, 240, 228, 0.75);
+  pointer-events: none;
+  transition: border-color 0.3s ease, opacity 0.3s ease;
+}
+#realtime-hud.hidden { display: none; }
+
+/* When the realtime HUD is showing (body gets .rt-live), the plain backend tag
+   would collide with it, so lift the backend tag to sit just above. */
+body.rt-live #backend-tag { bottom: 34px; }
+
+.rt-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgba(216, 240, 228, 0.4);
+  box-shadow: 0 0 6px rgba(216, 240, 228, 0.3);
+  flex: 0 0 auto;
+}
+.rt-state { font-weight: bold; }
+.rt-sep { opacity: 0.4; }
+.rt-fps { color: rgba(142, 255, 193, 0.75); min-width: 44px; }
+.rt-detail { opacity: 0.6; font-size: 9px; }
+
+/* Tiny live-signal bars — animate only while genuinely generating. */
+.rt-bars { display: inline-flex; align-items: flex-end; gap: 2px; height: 12px; }
+.rt-bars i {
+  width: 2.5px;
+  height: 4px;
+  background: rgba(142, 255, 193, 0.35);
+  border-radius: 1px;
+  transition: height 0.2s ease, background 0.2s ease;
+}
+
+/* State palettes. */
+#realtime-hud.rt-generating { border-color: rgba(142, 255, 193, 0.55); }
+#realtime-hud.rt-generating .rt-dot { background: #8effc1; box-shadow: 0 0 10px rgba(142,255,193,0.9); animation: rt-pulse 1.1s ease-in-out infinite; }
+#realtime-hud.rt-generating .rt-state { color: #b6ffd6; text-shadow: 0 0 8px rgba(142,255,193,0.5); }
+#realtime-hud.rt-generating .rt-bars i { background: #8effc1; animation: rt-bar 0.9s ease-in-out infinite; }
+#realtime-hud.rt-generating .rt-bars i:nth-child(2) { animation-delay: 0.12s; }
+#realtime-hud.rt-generating .rt-bars i:nth-child(3) { animation-delay: 0.24s; }
+#realtime-hud.rt-generating .rt-bars i:nth-child(4) { animation-delay: 0.36s; }
+#realtime-hud.rt-generating .rt-bars i:nth-child(5) { animation-delay: 0.48s; }
+
+#realtime-hud.rt-live .rt-dot { background: #8effc1; box-shadow: 0 0 8px rgba(142,255,193,0.6); }
+#realtime-hud.rt-live .rt-state { color: #8effc1; }
+
+#realtime-hud.rt-connecting { border-color: rgba(255, 209, 122, 0.5); }
+#realtime-hud.rt-connecting .rt-dot { background: #ffd17a; box-shadow: 0 0 8px rgba(255,209,122,0.7); animation: rt-pulse 1s ease-in-out infinite; }
+#realtime-hud.rt-connecting .rt-state { color: #ffd17a; }
+
+#realtime-hud.rt-warn { border-color: rgba(255, 209, 122, 0.55); }
+#realtime-hud.rt-warn .rt-dot { background: #ffd17a; box-shadow: 0 0 8px rgba(255,209,122,0.7); }
+#realtime-hud.rt-warn .rt-state { color: #ffd17a; }
+
+#realtime-hud.rt-stalled { border-color: rgba(255, 100, 100, 0.6); }
+#realtime-hud.rt-stalled .rt-dot { background: #ff6464; box-shadow: 0 0 9px rgba(255,100,100,0.8); animation: rt-pulse 0.7s ease-in-out infinite; }
+#realtime-hud.rt-stalled .rt-state { color: #ff8a8a; }
+#realtime-hud.rt-stalled .rt-fps { color: rgba(255,138,138,0.8); }
+
+#realtime-hud.rt-error { border-color: rgba(255, 100, 100, 0.5); opacity: 0.85; }
+#realtime-hud.rt-error .rt-dot { background: #ff6464; }
+#realtime-hud.rt-error .rt-state { color: #ff8a8a; }
+
+@keyframes rt-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+@keyframes rt-bar {
+  0%,100% { height: 4px; }
+  50% { height: 12px; }
+}
+
 /* (Tape/auto-play/renderer/reset/sound buttons now live in #control-rail.) */
 
 /* ---------- Tape playback overlay ---------- */

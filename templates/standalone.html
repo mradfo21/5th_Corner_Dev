@@ -138,6 +138,19 @@
   <!-- Backend / connectivity tag -->
   <div id="backend-tag">backend: <span id="backend-name">—</span></div>
 
+  <!-- Realtime signal HUD: a persistent, always-honest readout of what the
+       realtime world model is actually doing — measured decoded-frame rate,
+       chunk count and generating/idle/stalled state. Only shown in realtime
+       mode; driven by ReactorRenderer.getTelemetry() (see standalone.js). -->
+  <div id="realtime-hud" class="hidden" aria-live="polite" title="Realtime world-model signal">
+    <span id="rt-dot" class="rt-dot"></span>
+    <span id="rt-state" class="rt-state">OFF</span>
+    <span class="rt-sep">·</span>
+    <span id="rt-fps" class="rt-fps">0 fps</span>
+    <span id="rt-bars" class="rt-bars"><i></i><i></i><i></i><i></i><i></i></span>
+    <span id="rt-detail" class="rt-detail"></span>
+  </div>
+
   {% if forced_renderer %}<script>window.__FORCED_RENDERER__ = "{{ forced_renderer }}";</script>{% endif %}
   <script src="{{ url_for('static', filename='js/reactor_renderer.js') }}?v={{ asset_version }}"></script>
   <script src="{{ url_for('static', filename='js/standalone.js') }}?v={{ asset_version }}"></script>
