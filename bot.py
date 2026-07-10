@@ -1006,7 +1006,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. MUST h
                     })
             
             response_data = requests.post(
-                "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+                "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
                 headers={"x-goog-api-key": gemini_api_key, "Content-Type": "application/json"},
                 json={
                     "contents": [{"parts": parts}],

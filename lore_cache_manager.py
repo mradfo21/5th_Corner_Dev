@@ -204,7 +204,7 @@ def create_cache() -> Optional[str]:
         ttl_seconds = config.get("ttl_hours", 2) * 3600
         
         # Create cache via REST API
-        # Use gemini-2.0-flash (supports caching and is what we use for text generation)
+        # Use gemini-2.5-flash (supports caching and is what we use for text generation)
         response = requests.post(
             "https://generativelanguage.googleapis.com/v1beta/cachedContents",
             headers={
@@ -212,7 +212,7 @@ def create_cache() -> Optional[str]:
                 "Content-Type": "application/json"
             },
             json={
-                "model": "models/gemini-2.0-flash",
+                "model": "models/gemini-2.5-flash",
                 "contents": contents,
                 "ttl": f"{ttl_seconds}s",
                 "displayName": "Simulation Lore"
