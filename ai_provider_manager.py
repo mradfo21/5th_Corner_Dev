@@ -325,7 +325,7 @@ def _gemini_chat(messages, model: str, temperature: float, max_tokens: int) -> s
     headers = {"x-goog-api-key": api_key, "Content-Type": "application/json"}
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": temperature, "maxOutputTokens": max_tokens},
+        "generationConfig": {"thinkingConfig": {"thinkingBudget": 0}, "temperature": temperature, "maxOutputTokens": max_tokens},
     }
     try:
         resp = _requests.post(url, headers=headers, json=payload, timeout=20)
@@ -402,7 +402,7 @@ def vision(image_path: Optional[str] = None, image_data_b64: Optional[str] = Non
     parts = [{"text": prompt}]
     if image_b64:
         parts.insert(0, {"inlineData": {"mimeType": "image/png", "data": image_b64}})
-    payload = {"contents": [{"parts": parts}], "generationConfig": {"temperature": 0.4, "maxOutputTokens": 150}}
+    payload = {"contents": [{"parts": parts}], "generationConfig": {"thinkingConfig": {"thinkingBudget": 0}, "temperature": 0.4, "maxOutputTokens": 150}}
     try:
         resp = _requests.post(url, headers=headers, json=payload, timeout=20)
         resp.raise_for_status()

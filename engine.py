@@ -879,7 +879,7 @@ def _ask_gemini(prompt: str, model_name: str, temp: float, tokens: int, image_pa
         # Build request payload with ALL SAFETY FILTERS DISABLED
         payload = {
             "contents": [{"parts": parts}],
-            "generationConfig": {"temperature": temp, "maxOutputTokens": tokens},
+            "generationConfig": {"thinkingConfig": {"thinkingBudget": 0}, "temperature": temp, "maxOutputTokens": tokens},
             "safetySettings": [
                 {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
                 {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -1201,7 +1201,7 @@ SETTING: <ONE of: outdoor-desert, outdoor-cliff, outdoor-road, indoor-corridor, 
                     {"text": vision_prompt}
                 ]
             }],
-            "generationConfig": {
+            "generationConfig": {"thinkingConfig": {"thinkingBudget": 0}, 
                 "temperature": 1.0,  # Default for Gemini 2.x/3.x per guidelines
                 "maxOutputTokens": 800
             },
