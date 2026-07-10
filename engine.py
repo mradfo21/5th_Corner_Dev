@@ -1714,6 +1714,34 @@ REALTIME_STYLE_ANCHOR = os.getenv(
 )
 
 
+def realtime_action_beat(choice: str = "") -> str:
+    """The single 'one new element per prompt' motion clause for an action.
+
+    Kept in sync with the client (standalone.js) so an action can be injected
+    into the live video instantly — against the current scene — before the full
+    turn resolves.
+    """
+    c = (choice or "").strip().rstrip(".")
+    if not c or c.lower() in ("intro", "initialize simulation"):
+        return ""
+    return f"Motion: the view shifts as you {c[0].lower() + c[1:]}."
+
+
+def build_realtime_base(visual_scene: str = "", narrative: str = "") -> str:
+    """The stable part of a realtime prompt: style/camera anchor + physical scene
+    description (no action beat). The client recombines this with the live action
+    for instant, seamless steering."""
+    scene = (visual_scene or narrative or "").strip().replace("\n", " ")
+    scene = _sanitize_for_image_generation(scene)
+    # Keep it focused; overly long prompts dilute the signal for the video model.
+    if len(scene) > 600:
+        scene = scene[:597].rstrip() + "..."
+    parts = [REALTIME_STYLE_ANCHOR.rstrip(". ") + "."]
+    if scene:
+        parts.append(scene)
+    return " ".join(parts)
+
+
 def build_realtime_prompt(visual_scene: str = "", narrative: str = "", choice: str = "") -> str:
     """Compose a clean, natural-language prompt for the realtime world model.
 
@@ -1726,21 +1754,9 @@ def build_realtime_prompt(visual_scene: str = "", narrative: str = "", choice: s
     beat. Everything is sanitized the same way as the image prompt so we don't
     regress on content filtering.
     """
-    scene = (visual_scene or narrative or "").strip().replace("\n", " ")
-    scene = _sanitize_for_image_generation(scene)
-    # Keep it focused; overly long prompts dilute the signal for the video model.
-    if len(scene) > 600:
-        scene = scene[:597].rstrip() + "..."
-
-    parts = [REALTIME_STYLE_ANCHOR.rstrip(". ") + "."]
-    if scene:
-        parts.append(scene)
-    # A single action beat gives the model motion to render (the guide's
-    # "one new element per prompt"). Skip for the intro/establishing shot.
-    c = (choice or "").strip().rstrip(".")
-    if c and c.lower() not in ("intro", "initialize simulation"):
-        parts.append(f"Motion: the view shifts as you {c[0].lower() + c[1:]}.")
-    return " ".join(parts)
+    base = build_realtime_base(visual_scene, narrative)
+    beat = realtime_action_beat(choice)
+    return base + (" " + beat if beat else "")
 
 
 def _build_vhs_prompt(base_prompt: str, use_img2img: bool = False) -> str:
@@ -3213,6 +3229,7 @@ def _spawn_scene_image_async(caption: str, dispatch: str, choice: str, frame_idx
             # condition the world model on our exact composition (image-to-video)
             # at scene starts / location changes.
             image_prompt = result[1] if len(result) > 1 else ""
+            render_base = build_realtime_base(visual_scene=caption, narrative=dispatch)
             render_prompt = build_realtime_prompt(
                 visual_scene=caption, narrative=dispatch, choice=choice
             )
@@ -3220,13 +3237,20 @@ def _spawn_scene_image_async(caption: str, dispatch: str, choice: str, frame_idx
                 type="scene_image",
                 content="",
                 image_url=web,
-                metadata={"prompt": render_prompt, "hard_transition": bool(hard_transition)},
+                metadata={
+                    "prompt": render_prompt,
+                    # 'base' (style + scene, no action) lets the client re-steer
+                    # instantly with the next action before the turn resolves.
+                    "base": render_base,
+                    "hard_transition": bool(hard_transition),
+                },
             )
             with WORLD_STATE_LOCK:
                 st = _load_state(session_id)
                 st['current_image_url'] = web
                 st['current_image_prompt'] = image_prompt
                 st['current_render_prompt'] = render_prompt
+                st['current_render_base'] = render_base
                 st.setdefault('feed_log', []).append(item)
                 _save_state(st, session_id)
                 state = st

@@ -263,6 +263,7 @@
     mode: "image",
     explicit: false,  // did the user/URL explicitly pick a renderer?
     lastScene: null,  // latest {prompt,imageUrl,hardTransition}, for mid-game toggle
+    lastBase: null,   // stable style+scene text, for instant action re-steer
 
     resolveInitial() {
       // A dedicated route (e.g. /realtime) can force the renderer regardless of
@@ -337,6 +338,7 @@
         hardTransition: !!(meta && meta.hard_transition),
       };
       if (scene.prompt || scene.imageUrl) this.lastScene = scene;
+      if (meta && meta.base) this.lastBase = meta.base;
       if (this.mode === "reactor" && this.reactorAvailable()) {
         if (scene.prompt) window.ReactorRenderer.applyScene(scene);
         // Keep the still painted behind the video so a Reactor failure or the
@@ -368,6 +370,23 @@
 
     toggle() {
       this.setMode(this.mode === "reactor" ? "image" : "reactor");
+    },
+
+    // Inject a player's action into the live video IMMEDIATELY — steering the
+    // CURRENT scene with the action as a motion beat — so the world model reacts
+    // the instant a choice is made, well before the backend turn (LLM + image)
+    // resolves. When the resolved scene_image arrives it re-steers to the new
+    // scene. No-op unless realtime is live and we have a scene to build on.
+    steerAction(action) {
+      if (this.mode !== "reactor" || !this.reactorAvailable() || !this.lastBase) return;
+      const a = (action || "").trim().replace(/\.+$/, "");
+      if (!a) return;
+      const beat = "Motion: the view shifts as you " + a.charAt(0).toLowerCase() + a.slice(1) + ".";
+      window.ReactorRenderer.applyScene({
+        prompt: this.lastBase + " " + beat,
+        imageUrl: null,           // same scene — just re-steer, no image swap
+        hardTransition: false,
+      });
     },
   };
 
@@ -603,6 +622,7 @@
         try { window.ReactorRenderer.reset(); } catch (_) {}
       }
       Renderer.lastScene = null;
+      Renderer.lastBase = null;
       Sound.start(); // new tape / game begins
       showVeil("Reawakening the tape...");
       el.prose.innerHTML = "";
@@ -636,6 +656,9 @@
     el.choices.innerHTML = "";
     showVeil(INTERIM_MESSAGES[0]);
     state.awaitingResolution = true;
+    // Seamless realtime: steer the live video with this action NOW, before the
+    // backend turn resolves — the world model starts reacting immediately.
+    Renderer.steerAction(choiceText);
     try {
       const items = await postJSON("/api/choose", {
         choice: choiceText,
