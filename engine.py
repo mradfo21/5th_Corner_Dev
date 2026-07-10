@@ -3094,6 +3094,48 @@ def _structure_choices_for_feed(choice_texts: List[str], prompt_text: str = "Wha
         image_url=image_url
     )
 
+def _spawn_scene_image_async(caption: str, dispatch: str, choice: str, frame_idx: int,
+                             world_prompt: str, hard_transition: bool = False,
+                             session_id: str = 'default'):
+    """Generate a scene image in the background and append it to the session
+    feed when ready, so the turn/intro HTTP response never blocks on the slow
+    image call. The browser polls /api/feed and streams the scene in.
+    """
+    if not WORLD_IMAGE_ENABLED:
+        return
+
+    def _worker():
+        global state
+        try:
+            result = _gen_image(
+                caption=caption or dispatch,
+                mode="normal",
+                choice=choice,
+                dispatch=dispatch,
+                world_prompt=world_prompt,
+                hard_transition=hard_transition,
+                frame_idx=frame_idx,
+                session_id=session_id,
+            )
+            img_path = result[0] if result else None
+            if not img_path:
+                return
+            web = _to_web_image_url(img_path)
+            item = create_feed_item(type="scene_image", content="", image_url=web)
+            with WORLD_STATE_LOCK:
+                st = _load_state(session_id)
+                st['current_image_url'] = web
+                st['current_image_prompt'] = result[1] if len(result) > 1 else ""
+                st.setdefault('feed_log', []).append(item)
+                _save_state(st, session_id)
+                state = st
+            print(f"[ASYNC IMG] scene appended for {session_id}: {web}", flush=True)
+        except Exception as e:
+            log_error(f"[ASYNC IMG] failed: {e}")
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
 # Ensure generate_intro_turn_feed_items is defined AFTER _structure_choices_for_feed
 def generate_intro_turn_feed_items() -> List[Dict[str, Any]]:
     from choices import generate_choices # Local import
@@ -3110,50 +3152,9 @@ def generate_intro_turn_feed_items() -> List[Dict[str, Any]]:
     narrative_item = create_feed_item(type="narrative_event", content=initial_narrative_content)
     intro_items.append(narrative_item)
 
-    initial_image_url = None
-    intro_web_img_url = None  # servable /images/<file> form for the feed
-    if WORLD_IMAGE_ENABLED: # Global toggle for images
-        try:
-            vision_dispatch_for_intro_image = _generate_vision_dispatch(initial_narrative_content, state.get("world_prompt", "Initialization sequence."))
-            if vision_dispatch_for_intro_image:
-                initial_image_url, initial_image_prompt, initial_video_url = _gen_image(
-                    caption=vision_dispatch_for_intro_image, 
-                    mode="normal",
-                    choice="Initialize Simulation",
-                    dispatch=initial_narrative_content,
-                    world_prompt=state.get("world_prompt", "Initialization sequence."),
-                    frame_idx=0 
-                )
-                # Note: initial_video_url not used in this code path (intro sequence)
-                if initial_image_url:
-                    # initial_image_url is an absolute path (kept below for vision);
-                    # the feed/browser needs the servable /images/<file> form.
-                    intro_web_img_url = _to_web_image_url(initial_image_url)
-                    image_item = create_feed_item(type="scene_image", content="Initialising environment...", image_url=intro_web_img_url)
-                    intro_items.append(image_item)
-                    state['current_image_url'] = intro_web_img_url
-                    state['current_image_prompt'] = initial_image_prompt # Store prompt
-        except Exception as e_img:
-            log_error(f"Error generating intro image: {e_img}")
-            error_image_item = create_feed_item(type="error_event", content=f"Error generating initial visual: {e_img}")
-            intro_items.append(error_image_item)
-
-    if VISION_ENABLED and initial_image_url: # Global toggle for vision
-        try:
-            vision_text = _vision_describe(initial_image_url)
-            if vision_text:
-                vision_item = create_feed_item(type="vision_analysis", content=vision_text, metadata={"source_image_url": initial_image_url})
-                intro_items.append(vision_item)
-        except Exception as e_vision:
-            log_error(f"Error during initial vision analysis: {e_vision}")
-            logging.exception("Exception during initial vision analysis:")
-            error_item = create_feed_item(type="error_event", content=f"Error analysing initial visual: {e_vision}")
-            intro_items.append(error_item)
-            
+    # Choices are grounded on text (no image needed), so the intro returns fast.
     initial_choice_texts = []
     try:
-        # generate_choices() returns a plain List[str], not a (choices, meta)
-        # tuple — do not unpack it as one (see note in _process_turn_background).
         initial_choice_texts = generate_choices(
             client=client,
             prompt_tmpl=choice_tmpl,
@@ -3168,9 +3169,20 @@ def generate_intro_turn_feed_items() -> List[Dict[str, Any]]:
         initial_choice_texts = ["Vault the perimeter fence", "Crouch low and scan the facility", "Photograph the abandoned vehicles"]
 
     choice_prompt_text = "The fence line waits. What's your first move?"
-    choices_item = _structure_choices_for_feed(initial_choice_texts, choice_prompt_text, intro_web_img_url if WORLD_IMAGE_ENABLED else None)
+    choices_item = _structure_choices_for_feed(initial_choice_texts, choice_prompt_text, None)
     intro_items.append(choices_item)
-    state["choices"] = choices_item['choices'] # This is fine, updates a different part of state
+    state["choices"] = choices_item['choices']
+
+    # The intro scene image renders in the background and streams into the feed,
+    # so reset returns immediately instead of blocking on image generation.
+    _spawn_scene_image_async(
+        caption=initial_narrative_content,
+        dispatch=initial_narrative_content,
+        choice="Initialize Simulation",
+        frame_idx=0,
+        world_prompt=state.get("world_prompt", "Initialization sequence."),
+        session_id='default',
+    )
 
     return intro_items
     
