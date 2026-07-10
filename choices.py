@@ -45,21 +45,39 @@ def filter_choices(choices, seen_elements, recent_choices, dispatch='', image_de
 _MEANINGLESS_LEAD_VERBS = {
     # Observation (changes nothing)
     "look", "observe", "watch", "study", "examine", "inspect", "scan",
-    "survey", "peer", "gaze", "assess", "consider", "review", "eye",
+    "survey", "peer", "gaze", "assess", "consider", "review", "eye", "scout",
     # Waiting (time stalls, world unchanged)
     "wait", "listen", "stay", "pause", "linger", "hesitate",
+    # Repositioning in place (fidgeting — goes nowhere, changes nothing)
+    "hunker", "cower", "flatten", "cling",
     # Camera (the player films passively on their own — never a turn choice)
     "photograph", "film", "record", "document", "zoom", "monitor",
 }
+# Camera cues anywhere in the text — catches camera MODEL names and "to your eye"
+# style phrasing that a lead-verb check would miss (e.g. "Press your back against
+# the ribs and lift the Panasonic AG-450 to your eye").
 _CAMERA_MARKERS = (
     "camcorder", "camera", "photograph", "footage", "snapshot",
     "on tape", "on film", "the lens", "a picture", "pictures of",
+    "panasonic", "handycam", "ag-450", "ag-4", "viewfinder",
+    "to your eye", "to my eye", "get it on tape", "the tape",
+)
+# In-place stall phrases anywhere in the text — the body braces/anchors/presses
+# but never travels and nothing in the world changes.
+_STALL_MARKERS = (
+    "your back against", "back against the", "press your back",
+    "brace against", "to slow your", "slow your descent", "slow your fall",
+    "anchor your weight", "anchor yourself", "steady yourself",
+    "hold your breath", "hold your position", "hunker down",
+    "hug the wall", "flatten against", "flatten yourself", "cling to",
+    "cower", "to scout", "scout the", "to observe", "to inspect",
+    "to examine", "to survey", "get a better look", "for a better look",
 )
 
 def is_meaningless_choice(choice: str) -> bool:
-    """Return True if the choice is a camera / observation / waiting action that
-    neither moves the player through the space nor physically alters it — i.e. a
-    'dead turn' that does not advance the passage of time."""
+    """Return True if the choice fails to ADVANCE THE ACTION — i.e. it is a
+    camera, observation, waiting, or repositioning action that neither moves the
+    player through the space nor physically alters it (a 'dead turn')."""
     c = (choice or "").strip().lower()
     if not c:
         return True
@@ -68,6 +86,8 @@ def is_meaningless_choice(choice: str) -> bool:
     if lead in _MEANINGLESS_LEAD_VERBS:
         return True
     if any(marker in c for marker in _CAMERA_MARKERS):
+        return True
+    if any(marker in c for marker in _STALL_MARKERS):
         return True
     return False
 
