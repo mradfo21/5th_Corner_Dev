@@ -317,8 +317,29 @@
     try { await cmd("resume", {}); } catch (err) { log("resume failed", err); }
   }
 
+  // Grab the current on-screen video frame as a JPEG data URL (downscaled to
+  // keep the payload small). Used to feed the world simulator what the player
+  // actually sees. Returns null if the video isn't showing real frames.
+  function captureFrame(maxW) {
+    const v = rstate.video || document.getElementById("reactor-video");
+    if (!v || !v.videoWidth || v.classList.contains("hidden")) return null;
+    const cap = maxW || 512;
+    const scale = Math.min(1, cap / v.videoWidth);
+    const w = Math.max(1, Math.round(v.videoWidth * scale));
+    const h = Math.max(1, Math.round(v.videoHeight * scale));
+    try {
+      const c = document.createElement("canvas");
+      c.width = w; c.height = h;
+      c.getContext("2d").drawImage(v, 0, 0, w, h);
+      return c.toDataURL("image/jpeg", 0.72);
+    } catch (err) {
+      log("captureFrame failed", err);
+      return null;
+    }
+  }
+
   window.ReactorRenderer = {
-    enable, disable, applyScene, setPrompt, reset, pause, resume,
+    enable, disable, applyScene, setPrompt, reset, pause, resume, captureFrame,
     getStatus: () => rstate.status,
     isActive: () => rstate.active,
     isReady: () => rstate.ready,

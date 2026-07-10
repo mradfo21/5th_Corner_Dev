@@ -43,6 +43,10 @@ app.add_url_rule('/api/reset', 'standalone_api_reset', engine.api_reset, methods
 app.add_url_rule('/api/feed', 'standalone_api_feed', engine.api_feed, methods=['GET'])
 app.add_url_rule('/api/choose', 'standalone_api_choose', engine.api_choose, methods=['POST'])
 app.add_url_rule('/api/regenerate_choices', 'standalone_api_regenerate_choices', engine.api_regenerate_choices, methods=['POST'])
+# Vision for the realtime renderer: the client posts the actual on-screen video
+# frame; the engine analyzes it and re-grounds the simulation so it tracks the
+# video instead of drifting from the still. See engine.api_observe.
+app.add_url_rule('/api/observe', 'standalone_api_observe', engine.api_observe, methods=['POST'])
 
 
 @app.route('/images/<filename>', methods=['GET'])
@@ -126,7 +130,9 @@ def api_tape():
         if img_dir.exists():
             files = [
                 p for p in img_dir.glob('*.png')
-                if not p.name.endswith('_small.png') and 'flipbook' not in p.name.lower()
+                if not p.name.endswith('_small.png')
+                and 'flipbook' not in p.name.lower()
+                and not p.name.startswith('observed_')  # low-res video grabs, not canonical stills
             ]
             files.sort(key=lambda p: p.stat().st_mtime)
             frames = [f"/images/{p.name}" for p in files]

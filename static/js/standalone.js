@@ -90,6 +90,8 @@
     autoTimer: null,
     currentPromptId: null,     // id of the latest choice prompt (the live decision point)
     lastAdvancedPromptId: null, // guard: auto-advance at most once per prompt
+    observeTimer: null,         // debounce for feeding the video frame to the sim
+    observedPromptId: null,     // guard: observe at most once per decision point
   };
 
   // ------------------------------------------------------------------
@@ -384,6 +386,39 @@
       this.setMode(this.mode === "reactor" ? "image" : "reactor");
     },
 
+    // Vision loop: once the realtime video has settled on a scene, feed the
+    // ACTUAL frame the player is looking at back into the simulation so the
+    // narrative/choices/next-scene track the video instead of drifting from the
+    // still. Debounced; runs at most once per decision point.
+    observeScene(promptId) {
+      if (this.mode !== "reactor" || !this.reactorAvailable()) return;
+      if (this.observedPromptId === promptId) return;
+      clearTimeout(state.observeTimer);
+      let tries = 0;
+      const attempt = () => {
+        if (state.processing || state.gameOver) return;
+        if (state.currentPromptId !== promptId) return; // moved on already
+        // Wait until the video is actually showing real frames before reading it.
+        if (!window.ReactorRenderer.isShowing()) {
+          if (tries++ < 10) state.observeTimer = setTimeout(attempt, 1500);
+          return;
+        }
+        const frame = window.ReactorRenderer.captureFrame
+          ? window.ReactorRenderer.captureFrame()
+          : null;
+        if (!frame) {
+          if (tries++ < 10) state.observeTimer = setTimeout(attempt, 1500);
+          return;
+        }
+        this.observedPromptId = promptId;
+        // Fire and forget: the backend re-grounds the sim and delivers revised
+        // choices via a 'choices_revised' feed item (handled in renderItem).
+        postJSON("/api/observe", { frame, prompt_id: promptId })
+          .catch((err) => console.warn("[standalone] observe failed:", err));
+      };
+      state.observeTimer = setTimeout(attempt, 2600); // let the video settle first
+    },
+
     // Inject a player's action into the live video IMMEDIATELY — steering the
     // CURRENT scene with the action as a motion beat — so the world model reacts
     // the instant a choice is made, well before the backend turn (LLM + image)
@@ -570,8 +605,22 @@
         // will advance against THIS prompt (and only once).
         state.currentPromptId = item.id;
         refreshStatus(); // reflect turn/chaos/inventory promptly, not on the 4s tick
+        // Feed the settled video frame back into the sim so choices match what's
+        // actually on screen (realtime "vision"). No-op outside realtime mode.
+        Renderer.observeScene(item.id);
         // Prefer advancing when this turn's frame renders; fall back if none.
         scheduleAutoAdvance();
+        return;
+
+      case "choices_revised":
+        // Realtime "vision" result: choices regenerated from the actual video
+        // frame. Swap them in (no prose) only if we're still on that decision
+        // point and idle, so they now match what's on screen.
+        if (!state.gameOver && !state.processing &&
+            item.metadata && item.metadata.prompt_id === state.currentPromptId &&
+            Array.isArray(item.choices) && item.choices.length) {
+          renderChoices({ id: state.currentPromptId, choices: item.choices });
+        }
         return;
 
       case "error_event":
@@ -635,6 +684,8 @@
       }
       Renderer.lastScene = null;
       Renderer.lastBase = null;
+      Renderer.observedPromptId = null;
+      clearTimeout(state.observeTimer);
       Sound.start(); // new tape / game begins
       showVeil("Reawakening the tape...");
       el.prose.innerHTML = "";

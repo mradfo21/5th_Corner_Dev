@@ -382,6 +382,9 @@ VEO_MODE_ENABLED    = False # DISABLED by default - use video generation instead
 # unconfigured/unavailable, and players can flip renderers from the UI.
 SCENE_RENDERER = os.getenv("SCENE_RENDERER", "reactor")
 
+# Guard so the (slow, LLM-backed) realtime "vision" re-grounding never stacks up.
+_observe_reground_active = False
+
 # ── Experience Mode System ────────────────────────────────────────────────────
 # These constants name the three selectable visual modes shown at game start.
 # Storing them in engine ensures a single source of truth for bot, tests, and
@@ -3546,6 +3549,156 @@ def api_choose():
         except Exception as e_log:
             log_error(f"Could not save error item to feed_log during api_choose error handling: {e_log}")
         return jsonify([error_item]), 500
+
+
+def api_observe():
+    """Vision for the realtime renderer — close the perception loop.
+
+    The player watches the Helios video, which drifts from the Gemini still the
+    simulation is grounded on, so narrative/choices stop matching the screen.
+    This accepts the ACTUAL frame currently on screen (captured client-side from
+    the video) and feeds it back into the simulation:
+
+      • saves it as the current scene image and overwrites the latest history
+        frame + its vision, so the NEXT turn's consequence, img2img reference,
+        and narrative track what the player actually saw (anti-drift);
+      • regenerates the current choices from what's literally visible in the
+        video and returns them for the client to swap in place.
+
+    Loop: video -> vision -> simulation -> prompt (+seed) -> video.
+    """
+    global state, history
+    import base64 as _b64, re as _re, time as _time
+    from pathlib import Path as _Path
+    try:
+        data = request.get_json(silent=True) or {}
+        frame_b64 = data.get('frame')
+        session_id = data.get('session_id', 'default')
+        prompt_id = data.get('prompt_id')
+        if not frame_b64:
+            return jsonify({"error": "missing frame"}), 400
+        m = _re.match(r'^data:image/[^;]+;base64,(.*)$', frame_b64, _re.DOTALL)
+        raw = m.group(1) if m else frame_b64
+        try:
+            img_bytes = _b64.b64decode(raw)
+        except Exception:
+            return jsonify({"error": "bad frame encoding"}), 400
+        if len(img_bytes) < 512:
+            return jsonify({"error": "frame too small"}), 400
+
+        img_dir = _Path(_get_image_dir(session_id))
+        img_dir.mkdir(parents=True, exist_ok=True)
+        fname = f"observed_{int(_time.time() * 1000)}.png"
+        fpath = img_dir / fname
+        fpath.write_bytes(img_bytes)
+        web = f"/images/{fname}"
+
+        # FAST PATH (no LLM on the request): make the actual video frame the
+        # current scene image + the latest history reference, so the NEXT turn's
+        # img2img composition follows the video. Returns immediately.
+        with WORLD_STATE_LOCK:
+            st = _load_state(session_id)
+            st['current_image_url'] = web
+            hist = _load_history(session_id)
+            if hist:
+                hist[-1]['image'] = str(fpath)
+                hist[-1]['image_url'] = str(fpath)
+                _save_history(hist, session_id)
+                history = hist
+            _save_state(st, session_id)
+            state = st
+
+        # SLOW PATH (off the request thread): analyze what's actually on screen
+        # and regenerate the live choices to match. Bounded so it can never hang
+        # the app; delivers revised choices via a 'choices_revised' feed item.
+        _spawn_observe_reground(str(fpath), web, session_id, prompt_id)
+
+        return jsonify({"ok": True, "image_url": web})
+    except Exception as e:
+        import traceback as _tb
+        log_error(f"[OBSERVE] failed: {e}")
+        _tb.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+def _spawn_observe_reground(fpath: str, web: str, session_id: str, prompt_id):
+    """Background: run vision on the observed video frame and regenerate choices
+    grounded on what's actually visible, then push a 'choices_revised' feed item.
+    Kept off the request path (vision + choice LLM calls are slow) so /api/observe
+    never blocks or hangs the UI."""
+    # Vision + choice LLM calls can be slow/rate-limited; never stack them.
+    global _observe_reground_active
+    if _observe_reground_active:
+        return
+    _observe_reground_active = True
+
+    def _worker():
+        global state, history, _observe_reground_active
+        try:
+            print(f"[OBSERVE] reground worker start: {fpath}", flush=True)
+            vision = ""
+            try:
+                vres = _vision_analyze_all(fpath)  # has an internal 30s timeout
+                if isinstance(vres, dict):
+                    vision = (vres.get("description") or "").strip()
+            except Exception as e:
+                log_error(f"[OBSERVE] vision failed: {e}")
+            print(f"[OBSERVE] vision len={len(vision)}", flush=True)
+            if not vision:
+                print("[OBSERVE] empty vision — skipping reground", flush=True)
+                return
+
+            with WORLD_STATE_LOCK:
+                st = _load_state(session_id)
+                st['current_observed_vision'] = vision
+                hist = _load_history(session_id)
+                if hist:
+                    hist[-1]['vision_dispatch'] = vision
+                    hist[-1]['vision_analysis'] = vision
+                    _save_history(hist, session_id)
+                    history = hist
+                _save_state(st, session_id)
+                state = st
+
+            last_dispatch = ""
+            for it in reversed(st.get('feed_log', [])):
+                if it.get('type') in ('consequence_event', 'narrative_event') and it.get('content'):
+                    last_dispatch = it['content']
+                    break
+            texts = generate_choices(
+                client=client,
+                prompt_tmpl=choice_tmpl,
+                last_dispatch=(last_dispatch or vision),
+                image_description=vision,
+                image_url=web,
+                world_prompt=st.get('world_prompt', ''),
+                situation_summary=summarize_world_state(st),
+                inventory=st.get('inventory'),
+                n=3,
+            ) or []
+            print(f"[OBSERVE] regenerated {len(texts)} choices", flush=True)
+            if not texts:
+                return
+
+            item = create_feed_item(
+                type="choices_revised",
+                content="",
+                choices=[{"text": t} for t in texts],
+                metadata={"prompt_id": prompt_id},
+            )
+            with WORLD_STATE_LOCK:
+                st = _load_state(session_id)
+                st['choices'] = [{"text": t} for t in texts]
+                st.setdefault('feed_log', []).append(item)
+                _save_state(st, session_id)
+                state = st
+            print(f"[OBSERVE] re-grounded on video frame; {len(texts)} choices", flush=True)
+        except Exception as e:
+            log_error(f"[OBSERVE] reground failed: {e}")
+        finally:
+            _observe_reground_active = False
+
+    threading.Thread(target=_worker, daemon=True).start()
 
 
 def api_regenerate_choices():
