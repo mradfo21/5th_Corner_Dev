@@ -221,10 +221,10 @@ if DISCORD_ENABLED:
             candidates.append("Push through the doorway")
         if any(k in text for k in ("corridor", "hallway", "passage", "tunnel")):
             candidates.append("Sprint down the corridor")
-        # Always include a physical-stillness option (PERMITTED in the prompt)
-        candidates.append("Crouch low and scan the terrain")
-        # Always include a quiet documentary action
-        candidates.append("Press against cover and listen")
+        # Moving-stealth option — quiet, but the body still covers ground
+        candidates.append("Creep to the next patch of cover")
+        # Hands-on interaction option so an object changes state
+        candidates.append("Wrench the nearest door open")
         # Always include a forward kinetic option as a final safety
         candidates.append("Move forward in a low crouch")
         # De-dupe and cap at 3
