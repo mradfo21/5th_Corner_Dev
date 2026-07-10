@@ -30,6 +30,7 @@
     customForm: document.getElementById("custom-form"),
     customInput: document.getElementById("custom-input"),
     freeWillBtn: document.getElementById("free-will-btn"),
+    forwardBtn: document.getElementById("forward-btn"),
     actionWheel: document.getElementById("action-wheel"),
     veil: document.getElementById("processing-veil"),
     veilMessage: document.getElementById("veil-message"),
@@ -464,6 +465,15 @@
     if (el.actionWheel) el.actionWheel.style.bottom = ""; // drop any keyboard offset
   }
 
+  // "Move forward" — commit to one of the generated actions at random.
+  function moveForward() {
+    if (state.processing || state.gameOver || state.freeWillOpen) return;
+    const btns = Array.from(el.choices.children);
+    if (!btns.length) return;
+    const pick = btns[Math.floor(Math.random() * btns.length)];
+    pick.click(); // reuses the choice flow (select sound, pick flash, makeChoice)
+  }
+
   function submitCustomAction(e) {
     e.preventDefault();
     const text = el.customInput.value.trim();
@@ -669,6 +679,9 @@
       toggleSound();
     } else if (e.key.toLowerCase() === "f") {
       openFreeWill();
+    } else if (e.key === "ArrowUp" || e.key === " " || e.key === "Spacebar") {
+      e.preventDefault();
+      moveForward();
     } else if (e.key === "Escape") {
       closeFreeWill(true);
     }
@@ -715,6 +728,7 @@
     el.btnSnd.addEventListener("click", toggleSound);
     el.deathRestart.addEventListener("click", resetGame);
     el.freeWillBtn.addEventListener("click", openFreeWill);
+    el.forwardBtn.addEventListener("click", moveForward);
     el.customForm.addEventListener("submit", submitCustomAction);
     document.addEventListener("keydown", onKeydown);
 
