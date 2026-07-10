@@ -232,7 +232,8 @@
     const DWELL_MS = 460;      // minimum time each step is shown (so it registers)
     const RESOLVE_HOLD_MS = 1050;
 
-    const STUCK_MS = 9000;     // after this with no progress, reassure the player
+    const STUCK_MS = 9000;      // after this with no progress, reassure the player
+    const HARD_STUCK_MS = 20000; // after this, force-release so input is never trapped
 
     let built = false;
     let active = false;
@@ -243,6 +244,7 @@
     let noteTimer = null;
     let watchTimer = null;     // watchdog so a slow turn never LOOKS frozen
     let progressAt = 0;        // last time the pipeline visibly advanced
+    let beganAt = 0;           // when the current turn's ceremony started
     let watchOwnsNote = false; // the reassurance note is ours to overwrite
 
     function build() {
@@ -281,16 +283,23 @@
       if (s && Sound[s.sound]) Sound[s.sound]();
     }
 
-    // Watchdog: if the current step hasn't advanced in a while (a genuinely slow
-    // turn — the "stuck at WORLD UPDATING" the player saw), keep the tracker
-    // feeling alive by counting up on the sub-line, so it never reads as frozen.
-    // Purely cosmetic; the real resolution still arrives via the feed.
+    // Watchdog: keep a slow turn from ever LOOKING or STAYING frozen.
+    //   • After STUCK_MS with no visible progress, count up on the sub-line so
+    //     the tracker reads as "working", not "dead" (purely cosmetic).
+    //   • After HARD_STUCK_MS, force-release the input gate and clear the badge
+    //     so the player is NEVER trapped behind the ceremony overlay if a turn's
+    //     choice prompt is late or lost (the "it gets stuck on that screen"
+    //     bug). Polling stays live, so a late prompt still lands its choices.
     function tickWatchdog() {
-      if (!active || cur < 0 || cur >= STEPS.length - 1) return;
+      if (!active) return;
+      const runningFor = Date.now() - beganAt;
+      if (runningFor >= HARD_STUCK_MS) {
+        publicApi.forceResolve();
+        return;
+      }
+      if (cur < 0 || cur >= STEPS.length - 1) return;
       const stuckFor = Date.now() - progressAt;
       if (stuckFor < STUCK_MS) return;
-      // Don't stomp a fresh, informative realtime note; only take over the line
-      // if it's empty or already ours.
       const cur_note = el.ceremonyNote ? el.ceremonyNote.textContent.trim() : "";
       if (cur_note && !watchOwnsNote) return;
       const secs = Math.floor(stuckFor / 1000);
@@ -306,7 +315,7 @@
       dwellTimer = setTimeout(() => { dwellTimer = null; pump(); }, DWELL_MS);
     }
 
-    return {
+    const publicApi = {
       // Show the tracker fresh and enter the first step (action selected).
       begin() {
         build();
@@ -314,6 +323,7 @@
         active = true;
         cur = -1; target = -1;
         progressAt = Date.now();
+        beganAt = Date.now();
         watchOwnsNote = false;
         if (!watchTimer) watchTimer = setInterval(tickWatchdog, 1000);
         state.processing = true;
@@ -392,6 +402,23 @@
         if (el.ceremony) el.ceremony.classList.add("hidden");
       },
 
+      // Safety release: a turn ran too long (late/lost choice prompt). Clear the
+      // overlay and hand control back to the player WITHOUT faking a green
+      // "resolved" flourish — this is a recovery, not a real completion. Polling
+      // stays live, so if the prompt is merely late its choices still render
+      // when it lands; and if auto-play is on, nudge it so the world keeps
+      // moving instead of dead-ending behind the badge.
+      forceResolve() {
+        if (!active) return;
+        active = false;
+        clearTimeout(dwellTimer); dwellTimer = null;
+        if (watchTimer) { clearInterval(watchTimer); watchTimer = null; }
+        watchOwnsNote = false;
+        state.processing = false;
+        hideVeil();
+        if (state.autoPlay) scheduleAutoAdvance(AUTOPLAY_FALLBACK_MS);
+      },
+
       // Full reset of tracker visuals/state.
       reset() {
         this.abort();
@@ -403,6 +430,7 @@
 
       isActive() { return active; },
     };
+    return publicApi;
   })();
 
   async function postJSON(url, body) {
