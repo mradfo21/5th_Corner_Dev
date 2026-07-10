@@ -12,6 +12,8 @@
   const FAST_POLL_TIMEOUT_MS = 45000; // give up waiting fast after this long and fall back to normal polling
   const AUTOPLAY_FRAME_DELAY_MS = 350;  // advance almost immediately once the new frame renders
   const AUTOPLAY_FALLBACK_MS = 6000;    // if no image arrives, advance anyway after this
+  const BOOT_TIMEOUT_MS = 25000;        // reveal anyway if the first world image never streams in
+  const BOOT_DONE_HOLD_MS = 950;        // how long "World generated" shows before revealing
 
   const INTERIM_MESSAGES = [
     "Transmitting...",
@@ -100,6 +102,8 @@
     lastStatus: {},
     freeWillOpen: false,
     inspectorOpen: false,       // world-model state inspector panel toggled open
+    booting: false,             // fresh-start boot sequence in progress
+    bootTimer: null,            // fallback reveal if the first world image never comes
     autoPlay: false,
     autoTimer: null,
     currentPromptId: null,     // id of the latest choice prompt (the live decision point)
@@ -213,6 +217,36 @@
     state.processing = false;
     el.veil.classList.add("hidden");
     Ceremony.reset();
+  }
+
+  // ------------------------------------------------------------------
+  // Fresh-start boot sequence — a clear, legible three-beat progression so a
+  // new run reads unambiguously:
+  //     "Restarting…"  ->  "Generating world (first image)…"  ->  "World generated"
+  // The first still is generated as the world model's SEED; in realtime mode it
+  // is never shown — the reveal hands off to the live world-model video feed.
+  // ------------------------------------------------------------------
+  function setBootMessage(msg) {
+    if (el.veilMessage) el.veilMessage.textContent = msg;
+  }
+
+  // Called when the first world image has streamed in (or a fallback/timeout):
+  // flash "World generated", then reveal — video feed in realtime, still in
+  // image mode. Idempotent; only runs while booting.
+  function finishBoot() {
+    if (!state.booting) return;
+    state.booting = false;
+    clearTimeout(state.bootTimer);
+    state.bootTimer = null;
+    setBootMessage("World generated");
+    Sound.scene();
+    setTimeout(() => {
+      hideVeil();
+      // Choices for the opening decision are already rendered underneath the
+      // veil; input unlocks as the veil clears. If auto-play was left on, it
+      // resumes now that the world is up.
+      if (state.autoPlay) scheduleAutoAdvance();
+    }, BOOT_DONE_HOLD_MS);
   }
 
   // ------------------------------------------------------------------
@@ -550,6 +584,10 @@
             console.warn("[standalone] realtime renderer unavailable — falling back to stills");
             Renderer.mode = "image"; // reflect reality; keep stored pref intact
             showRendererToast("Realtime unavailable — showing stills");
+            // We suppressed the still while realtime was expected; now that we've
+            // fallen back, paint it so the screen isn't left blank.
+            if (Renderer.lastScene && Renderer.lastScene.imageUrl) setScene(Renderer.lastScene.imageUrl);
+            if (state.booting) finishBoot(true);
           } else if (s === "live" && Renderer.mode === "reactor") {
             showRendererToast("Realtime video — live");
           }
@@ -650,12 +688,12 @@
       }
       if (meta && meta.base) this.lastBase = meta.base;
       if (this.mode === "reactor" && this.reactorAvailable()) {
+        // Realtime is the renderer: the generated still is used ONLY as the
+        // world model's seed (image-to-video conditioning) — it is never shown.
+        // The screen displays the world-model video feed, not the still. If
+        // realtime later drops, the fallback path (setMode / onStatus error)
+        // repaints the last still, so we never lose the image entirely.
         if (scene.prompt) window.ReactorRenderer.applyScene(scene);
-        // Paint the still ONLY while the live video isn't actually covering the
-        // screen (connecting, reset gap, or fallback). Once the video is showing
-        // real frames it's the single source of truth — repainting stills under
-        // it is what caused the "image → video → old image" flicker.
-        if (imageUrl && !window.ReactorRenderer.isShowing()) setScene(imageUrl);
         return;
       }
       if (imageUrl) setScene(imageUrl);
@@ -684,6 +722,9 @@
       } else if (this.reactorAvailable()) {
         showRendererToast("Still images");
         try { window.ReactorRenderer.disable(); } catch (_) {}
+        // Switching back to stills: paint the still that realtime had been
+        // using only as a hidden seed, so the scene is visible again.
+        if (this.lastScene && this.lastScene.imageUrl) setScene(this.lastScene.imageUrl);
       }
       updateRendererButton();
     },
@@ -1033,9 +1074,14 @@
 
     switch (item.type) {
       case "scene_image":
-        // The image itself is the payload (handled above by setScene). Its
+        // The image itself is the payload (handled above by applyScene; in
+        // realtime it's a hidden seed, in still mode it's painted). Its
         // placeholder content ("The scene shifts...") is intentionally NOT
         // added to the prose feed — it would just be noise over the art.
+        // Fresh start: the first world image just landed → "World generated",
+        // then reveal (video feed in realtime, still in image mode). finishBoot
+        // plays its own cue, so return before the generic scene sound.
+        if (state.booting) { finishBoot(); return; }
         Sound.scene(); // audible cue that the scene has materialised
         // The world has responded (a new composition is on screen); the game
         // is now generating the next set of actions.
@@ -1069,12 +1115,16 @@
         renderChoices(item);
         Sound.choices();
         state.awaitingResolution = false;
-        // Turn fully resolved: march the ceremony to its finish, flash green,
-        // then clear it — choices are live so input is released.
-        Ceremony.complete();
         // New decision point: these are now the live/latest choices. Auto-play
         // will advance against THIS prompt (and only once).
         state.currentPromptId = item.id;
+        // Fresh-start boot: the opening choices are ready, but keep them behind
+        // the boot veil until the world's first image is generated — the reveal
+        // is owned by finishBoot(), so the sequence stays clear.
+        if (state.booting) { refreshStatus(); return; }
+        // Turn fully resolved: march the ceremony to its finish, flash green,
+        // then clear it — choices are live so input is released.
+        Ceremony.complete();
         refreshStatus(); // reflect turn/chaos/inventory promptly, not on the 4s tick
         // Feed the settled video frame back into the sim so choices match what's
         // actually on screen (realtime "vision"). No-op outside realtime mode.
@@ -1164,9 +1214,12 @@
       Renderer.lastBase = null;
       Renderer.observedPromptId = null;
       clearTimeout(state.observeTimer);
+      clearTimeout(state.bootTimer);
       Sound.start(); // new tape / game begins
       Ceremony.abort(); // cancel any mid-turn pipeline from the prior run
-      showVeil("Reawakening the tape...");
+      // Boot beat 1: restarting.
+      state.booting = true;
+      showVeil("Restarting\u2026");
       el.prose.innerHTML = "";
       el.choices.innerHTML = "";
       state.lastId = 0;
@@ -1175,19 +1228,29 @@
       state.gameOver = false;
       state.currentPromptId = null;
       state.lastAdvancedPromptId = null;
-      clearTimeout(state.autoTimer);
+      clearTimeout(state.autoTimer); // no auto-advance until the world is up
       closeFreeWill(true);
       renderInventory([]);
       startTimecode();
+      // Boot beat 2: generating the world (the first image is the seed).
+      setBootMessage("Generating world (first image)\u2026");
       const items = await postJSON("/api/reset", {});
+      // Render the intro narrative + opening choices, but they stay behind the
+      // veil (see the player_choice_prompt boot guard) until the first world
+      // image streams in and finishBoot() reveals it.
       renderItems(items);
-      hideVeil();
       refreshStatus();
+      startPolling(); // pick up the async first-image (scene_image) as it lands
+      // Safety net: if the first world image never arrives, reveal anyway so a
+      // new player is never stranded on the boot screen.
+      clearTimeout(state.bootTimer);
+      state.bootTimer = setTimeout(finishBoot, BOOT_TIMEOUT_MS);
     } catch (err) {
       console.error("[standalone] resetGame failed:", err);
+      state.booting = false;
+      clearTimeout(state.bootTimer);
       hideVeil();
       appendProse({ id: -1, type: "error_event", content: `Could not reach the server: ${err.message}` });
-    } finally {
       startPolling(); // resume normal polling once the fresh feed is in
     }
   }
