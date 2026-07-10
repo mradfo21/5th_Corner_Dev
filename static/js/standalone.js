@@ -45,7 +45,7 @@
     hudChaos: document.getElementById("hud-chaos"),
     hudTime: document.getElementById("hud-time"),
     hudTimeWrap: document.getElementById("hud-time-wrap"),
-    btnReset: document.getElementById("btn-reset"),
+    ejectBtn: document.getElementById("eject-btn"),
     btnVhs: document.getElementById("btn-vhs"),
     btnSnd: document.getElementById("btn-snd"),
     vhsOverlay: document.getElementById("vhs-overlay"),
@@ -303,6 +303,16 @@
     outgoing.classList.remove("scene-active");
     state.activeScene = state.activeScene === "A" ? "B" : "A";
     flashScene();
+  }
+
+  // Wipe both scene layers back to the pre-game backdrop (used on restart so
+  // the previous run's frame doesn't linger behind the intro).
+  function clearScene() {
+    el.sceneA.style.backgroundImage = "";
+    el.sceneB.style.backgroundImage = "";
+    el.sceneB.classList.remove("scene-active");
+    el.sceneA.classList.add("scene-active"); // sceneA is the base layer again
+    state.activeScene = "A";
   }
 
   function flashScene() {
@@ -597,26 +607,44 @@
   // Game actions
   // ------------------------------------------------------------------
 
+  // EJECT — one elegant action that tears everything down and reloads a fresh
+  // run: stop the world, cancel any in-flight generation, wipe the frame + the
+  // text feed, and stream in a brand-new intro. Safe to call at any point
+  // (mid-turn, mid-auto-play, on the death screen).
   async function resetGame() {
     try {
-      stopPolling(); // avoid a mid-reset poll racing the rebuilt feed
+      stopPolling();          // avoid a mid-reset poll racing the rebuilt feed
+      setAutoPlay(false);     // stop the world advancing
+      state.resumeAutoAfterAct = false;
+      closeFreeWill(true);
       exitGameOver();
-      Sound.start(); // new tape / game begins
+      Sound.eject();          // tape ejects...
+      Sound.start();          // ...and a fresh one spins up
       showVeil("Reawakening the tape...");
-      el.prose.innerHTML = "";
-      el.choices.innerHTML = "";
-      state.lastId = 0;
-      state.renderedIds = new Set();
-      state.awaitingResolution = false;
-      state.gameOver = false;
-      state.currentPromptId = null;
-      state.lastAdvancedPromptId = null;
+
+      // Cancel anything still generating so it can't land on the fresh feed.
       clearTimeout(state.autoTimer);
       clearTimeout(state.revealTimer);
       state.turnBuffer = [];
-      closeFreeWill(true);
+      state.awaitingResolution = false;
+
+      // Wipe the visuals + text back to a clean slate.
+      clearScene();
+      el.prose.innerHTML = "";
+      el.choices.innerHTML = "";
       renderInventory([]);
+
+      // Reset all run state.
+      state.lastId = 0;
+      state.renderedIds = new Set();
+      state.gameOver = false;
+      state.currentPromptId = null;
+      state.lastAdvancedPromptId = null;
+      state.lastPromptItem = null;
+      state.lastStatus = {};
+
       startTimecode();
+      // /api/reset also bumps the server's turn token, superseding in-flight work.
       const items = await postJSON("/api/reset", {});
       renderItems(items);
       hideVeil();
@@ -1141,7 +1169,7 @@
   // ------------------------------------------------------------------
 
   function init() {
-    el.btnReset.addEventListener("click", resetGame);
+    el.ejectBtn.addEventListener("click", resetGame);
     el.btnVhs.addEventListener("click", toggleVhs);
     el.btnSnd.addEventListener("click", toggleSound);
     el.deathRestart.addEventListener("click", resetGame);
@@ -1158,7 +1186,7 @@
 
     // A subtle hover tick on every control makes the whole UI feel tactile.
     [
-      el.btnReset, el.btnVhs, el.btnSnd, el.deathRestart, el.freeWillBtn,
+      el.ejectBtn, el.btnVhs, el.btnSnd, el.deathRestart, el.freeWillBtn,
       el.forwardBtn, el.tapeBtn, el.autoplayBtn, el.tapePlayPause,
       el.tapePrev, el.tapeNext, el.tapeEject,
     ].forEach((b) => { if (b) b.addEventListener("mouseenter", () => Sound.hover()); });

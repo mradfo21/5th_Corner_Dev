@@ -98,7 +98,7 @@ class TestStandaloneE2E(unittest.TestCase):
         self.page = self.browser.new_page()
         # Always start each test from a clean game state.
         self.page.goto(f"{self.base_url}/standalone")
-        self.page.click("#btn-reset")
+        self.page.click("#eject-btn")
         self.page.wait_for_selector(".choice-btn", timeout=15000)
 
     def tearDown(self):

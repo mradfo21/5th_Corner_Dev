@@ -836,7 +836,7 @@ html, body {
 
 /* ---------- VHS tape playback button (top-right) ---------- */
 
-#tape-btn, #autoplay-btn {
+#tape-btn, #autoplay-btn, #eject-btn {
   position: fixed;
   right: calc(env(safe-area-inset-right, 0px) + 16px);
   z-index: 12;
@@ -858,7 +858,10 @@ html, body {
 }
 #tape-btn { top: calc(env(safe-area-inset-top, 0px) + 40px); }
 #autoplay-btn { top: calc(env(safe-area-inset-top, 0px) + 74px); }
+#eject-btn { top: calc(env(safe-area-inset-top, 0px) + 108px); border-color: rgba(255, 170, 90, 0.32); color: rgba(255, 210, 165, 0.82); }
 #tape-btn:hover, #autoplay-btn:hover { border-color: rgba(142,255,193,0.8); color: #eafff2; box-shadow: 0 0 12px rgba(142,255,193,0.28); }
+#eject-btn:hover { border-color: rgba(255,170,90,0.85); color: #ffd9a8; box-shadow: 0 0 12px rgba(255,170,90,0.3); }
+.eject-icon { font-size: 12px; color: #ffb066; filter: drop-shadow(0 0 4px rgba(255,170,90,0.5)); }
 
 /* Auto-play running state: glowing, with a pulsing dot. */
 #autoplay-btn.on {

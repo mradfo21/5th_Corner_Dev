@@ -35,6 +35,11 @@
     <span class="autoplay-dot"></span><span id="autoplay-label">AUTO-PLAY</span>
   </button>
 
+  <!-- Eject: one-tap elegant restart — clears the scene, reloads a fresh run -->
+  <button id="eject-btn" type="button" title="Eject — restart the tape (R)">
+    <span class="eject-icon">⏏</span><span>EJECT</span>
+  </button>
+
   <!-- Tape playback overlay: plays this run's frames back in sequence -->
   <div id="tape-overlay" class="hidden">
     <div id="tape-frameA" class="tape-frame tape-frame-active"></div>
@@ -84,9 +89,8 @@
     </button>
   </div>
 
-  <!-- Tiny session controls -->
+  <!-- Tiny session controls (restart now lives as EJECT in the top-right) -->
   <div id="console-controls">
-    <button id="btn-reset" class="mini-btn" title="Restart (R)">⟲</button>
     <button id="btn-vhs" class="mini-btn" title="VHS (V)">▣</button>
     <button id="btn-snd" class="mini-btn" title="Sound (M)">♪</button>
   </div>
