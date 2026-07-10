@@ -33,6 +33,48 @@ def filter_choices(choices, seen_elements, recent_choices, dispatch='', image_de
         filtered.append(c)
     return filtered or ["Try something relevant"]
 
+# ──────────────────────────────────────────────────────────────────────────────
+# "Meaningless" action detection.
+#
+# The single biggest complaint about generated choices is that they default to
+# camera / observation / waiting actions ("photograph the scene", "look around",
+# "wait and listen"). These are DEAD TURNS: they neither move the player through
+# the space nor physically change anything in it, so time never meaningfully
+# advances. We forbid them in the prompts AND strip them here as a hard backstop,
+# because the model still slips them in.
+_MEANINGLESS_LEAD_VERBS = {
+    # Observation (changes nothing)
+    "look", "observe", "watch", "study", "examine", "inspect", "scan",
+    "survey", "peer", "gaze", "assess", "consider", "review", "eye",
+    # Waiting (time stalls, world unchanged)
+    "wait", "listen", "stay", "pause", "linger", "hesitate",
+    # Camera (the player films passively on their own — never a turn choice)
+    "photograph", "film", "record", "document", "zoom", "monitor",
+}
+_CAMERA_MARKERS = (
+    "camcorder", "camera", "photograph", "footage", "snapshot",
+    "on tape", "on film", "the lens", "a picture", "pictures of",
+)
+
+def is_meaningless_choice(choice: str) -> bool:
+    """Return True if the choice is a camera / observation / waiting action that
+    neither moves the player through the space nor physically alters it — i.e. a
+    'dead turn' that does not advance the passage of time."""
+    c = (choice or "").strip().lower()
+    if not c:
+        return True
+    m = re.match(r"[^a-z]*([a-z]+)", c)  # first alphabetic word = the action verb
+    lead = m.group(1) if m else ""
+    if lead in _MEANINGLESS_LEAD_VERBS:
+        return True
+    if any(marker in c for marker in _CAMERA_MARKERS):
+        return True
+    return False
+
+def drop_meaningless_choices(choices):
+    """Filter out camera/observation/waiting choices, preserving order."""
+    return [c for c in choices if not is_meaningless_choice(c)]
+
 def is_too_similar(a, b):
     """Return True if two choices are too similar (substring or high similarity)."""
     if a in b or b in a:
@@ -90,7 +132,7 @@ def generate_choices(
     # Update the prompt to require unique, contextually grounded, and diverse choices
     prompt = prompt_tmpl.replace('2-4 words', '2-5 words').replace(
         'Suggest a consequence, risk, or emotional cue',
-        'Suggest a consequence, risk, or emotional cue\n- Each choice must be unique, contextually grounded, and not a variant of "photograph", "sneak", or "search" unless those are truly the only logical actions.\n- Use a wide variety of verbs, including interact, distract, signal, hide, decode, analyze, negotiate, etc.\n- Encourage emotional/moral dilemmas and environmental interactions.\n- Avoid generic or repetitive phrasing.'
+        'Suggest a consequence, risk, or emotional cue\n- Each choice must be unique and contextually grounded.\n- EVERY choice must MOVE the player through the space OR physically MANIPULATE something in the space, and must advance the passage of time (the world is different afterward).\n- NEVER generate camera/observation/waiting choices ("photograph", "film", "record", "look", "observe", "watch", "examine", "scan", "wait", "listen") — those are dead turns that change nothing.\n- Use a wide variety of MOTION and INTERACTION verbs: sprint, vault, climb, crawl, slip, pry, wrench, smash, drag, force, ignite, topple, tear.\n- Avoid generic or repetitive phrasing.'
     ).format(
         dispatch=last_dispatch.strip(),
         seen_elements=seen_elements,
@@ -117,6 +159,12 @@ def generate_choices(
     system_prompt = {"role": "system", "content": (
         "Generate 3 VISCERAL, PHYSICAL ACTION CHOICES (3-6 words each). Emphasize BODILY movement and physical risk.\n\n"
         f"{inventory_text}"
+        "🚫 PRIME DIRECTIVE: EVERY choice MUST (1) MOVE the player through the space OR physically MANIPULATE something in the space, AND (2) advance the passage of time — the world must be materially different afterward. NO exceptions.\n\n"
+        "❌ ABSOLUTELY BANNED (meaningless dead turns that change nothing):\n"
+        "- CAMERA actions: photograph, film, record, capture footage, raise the camcorder, snap a photo, zoom in, document\n"
+        "- OBSERVATION actions: look around, observe, watch, study, examine, inspect, scan, survey, peer, gaze\n"
+        "- WAITING actions: wait, listen, hold position, stay, catch your breath\n"
+        "The player already films passively on their own — filming is NEVER a turn-advancing choice. Watching and waiting make the game feel stuck. If an action does not move the body or change an object, DO NOT generate it.\n\n"
         "CRITICAL: Use VIVID, PHYSICAL VERBS that emphasize what the player's BODY does:\n\n"
         "PHYSICAL BODY VERBS (PRIORITIZE THESE):\n"
         "- LEGS/FEET: Sprint, Vault, Leap, Scramble, Slide, Dive, Kick, Stomp, Brace, Plant, Launch\n"
@@ -124,7 +172,7 @@ def generate_choices(
         "- TORSO: Slam, Throw yourself, Barrel through, Roll, Twist, Duck, Drop, Lunge, Charge\n"
         "- FULL BODY: Hurl yourself, Fling yourself, Propel forward, Burst through, Crash into\n\n"
         "GROUNDING: Base ALL choices on the ATTACHED IMAGE and the provided IMAGE DESCRIPTION. The image and its description are the absolute source of truth for Jason's current position.\n\n"
-        "EXAMPLES OF EXCITING CHOICES:\n"
+        "EXAMPLES OF EXCITING CHOICES (movement + interaction, time advances):\n"
         "✅ 'Vault over chain-link fence'\n"
         "✅ 'Hurl yourself through window'\n"
         "✅ 'Sprint full-tilt toward shed'\n"
@@ -133,14 +181,14 @@ def generate_choices(
         "✅ 'Dive behind concrete barrier'\n"
         "✅ 'Wrench free the metal grate'\n"
         "✅ 'Barrel through the doorway'\n\n"
-        "❌ BORING (DO NOT USE):\n"
-        "- 'Look around'\n"
-        "- 'Go inside'\n"
-        "- 'Move forward'\n"
-        "- 'Check it out'\n"
-        "- 'Approach carefully'\n\n"
+        "❌ BORING / MEANINGLESS (DO NOT USE):\n"
+        "- 'Photograph the scene' / 'Film the fence' / 'Raise the camcorder'\n"
+        "- 'Look around' / 'Observe the area' / 'Scan the terrain'\n"
+        "- 'Wait and listen' / 'Hold position'\n"
+        "- 'Go inside' / 'Move forward' / 'Check it out' / 'Approach carefully'\n\n"
+        "STEALTH STILL MOVES: quiet options must still cover ground — 'Creep to the next doorway', 'Slip along the fence line', 'Crawl beneath the pipe rack'. Never a static held pose.\n\n"
         "GROUNDING: Only reference what's VISIBLE in the image, but use EXCITING physical language.\n\n"
-        "MOMENTUM: Jason is ALWAYS aggressive and forward-moving. Even 'safe' choices should feel ACTIVE and DECISIVE.\n\n"
+        "MOMENTUM: Jason is ALWAYS aggressive and forward-moving. Even 'safe' choices should feel ACTIVE and DECISIVE — and always progress the situation.\n\n"
         "Make every choice feel like an ACTION MOVIE. Use words that make you FEEL the physical exertion."
     )}
     if image_url:
@@ -264,10 +312,10 @@ def generate_choices(
         if any(k in ctx for k in ("corridor", "hallway", "passage", "tunnel")):
             opts.append("Sprint down the corridor")
         if any(k in ctx for k in ("crate", "barrel", "cover", "debris", "wall", "barrier")):
-            opts.append("Press behind cover")
-        # Always include a physical-stillness option so the player can also breathe.
-        opts.append("Crouch low and scan the area")
-        opts.append("Move forward carefully")
+            opts.append("Shove the crate aside and push through")
+        # Moving-stealth options — quiet, but the body still covers ground.
+        opts.append("Creep to the next patch of cover")
+        opts.append("Crawl forward into the shadows")
         # De-dupe while preserving order, cap at 3
         seen_local: set = set()
         deduped: List[str] = []
@@ -275,7 +323,7 @@ def generate_choices(
             if o.lower() not in seen_local:
                 seen_local.add(o.lower())
                 deduped.append(o)
-        return deduped[:3] if len(deduped) >= 2 else ["Vault forward", "Press against cover", "Scan the perimeter"]
+        return deduped[:3] if len(deduped) >= 2 else ["Vault forward over the obstacle", "Creep to the next cover", "Wrench the nearest door open"]
 
     # Offline/mock backend short-circuit: when ai_provider_manager has been
     # told to use the "mock" backend (e.g. by run_local.py --mock or the
@@ -402,6 +450,12 @@ def generate_choices(
     # Filter out repeated choices
     # Remove any choices containing 'retreat' or 'flee' (case-insensitive)
     opts = [c for c in opts if 'retreat' not in c.lower() and 'flee' not in c.lower()]
+    # Drop meaningless camera/observation/waiting choices — every choice must
+    # move through or interact with the space and advance time.
+    _pre_meaningless = list(opts)
+    opts = drop_meaningless_choices(opts)
+    if not opts and _pre_meaningless:
+        print(f"[CHOICES] All options were camera/observation/waiting — using contextual fallback", flush=True)
     # Final diversity and generic filter
     opts = enforce_diversity(opts)
     opts = [c for c in opts if c.lower() not in {"photograph the chaos", "sneak past the guards", "search for hidden passage"}]
@@ -454,6 +508,14 @@ def generate_choices(
     if not improved_choices:
         print(f"[CHOICE CRITIC] Returned empty — keeping un-critiqued options", flush=True)
         improved_choices = opts
+    # Backstop again: the critic LLM can reintroduce camera/observation choices.
+    _critic_kept = drop_meaningless_choices(improved_choices)
+    if _critic_kept:
+        improved_choices = _critic_kept
+    else:
+        # Everything the critic returned was a dead turn — fall back to the
+        # movement/interaction options we already had (also cleaned).
+        improved_choices = drop_meaningless_choices(opts) or opts
     if not improved_choices:
         improved_choices = _contextual_fallback()
     # Persist recent choices in world_state.json
