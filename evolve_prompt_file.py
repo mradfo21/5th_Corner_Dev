@@ -159,7 +159,7 @@ RETURN ONLY THE NEW WORLD PROMPT TEXT - NO PREAMBLE, NO EXPLANATION, JUST THE EV
             },
             json={
                 "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {
+                "generationConfig": {"thinkingConfig": {"thinkingBudget": 0}, 
                     "temperature": 0.7,
                     "maxOutputTokens": 2000  # ~1500 words
                 }
@@ -293,7 +293,7 @@ Write a tense, atmospheric sentence (15-25 words) describing what's changed:"""
             },
             json={
                 "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {
+                "generationConfig": {"thinkingConfig": {"thinkingBudget": 0}, 
                     "temperature": 0.3,
                     "maxOutputTokens": 50
                 }
@@ -388,7 +388,7 @@ Return ONLY the entities or "NONE":"""
             },
             json={
                 "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {
+                "generationConfig": {"thinkingConfig": {"thinkingBudget": 0}, 
                     "temperature": 0.1,
                     "maxOutputTokens": 100
                 }

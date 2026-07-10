@@ -1010,7 +1010,7 @@ Generate the penalty in valid JSON format. MUST stay in current location. MUST h
                 headers={"x-goog-api-key": gemini_api_key, "Content-Type": "application/json"},
                 json={
                     "contents": [{"parts": parts}],
-                    "generationConfig": {"temperature": 0.8, "maxOutputTokens": 50}
+                    "generationConfig": {"thinkingConfig": {"thinkingBudget": 0}, "temperature": 0.8, "maxOutputTokens": 50}
                 },
                 timeout=10
             ).json()
