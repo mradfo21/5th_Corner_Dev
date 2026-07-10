@@ -243,9 +243,9 @@ else:
         print(f"    Expected provider: gemini, Got: {image_provider}")
         failed_tests.append("ai_config.json wrong provider")
     # Should be using Flash model for fast mode by default
-    elif image_model != 'gemini-2.5-flash-image':
+    elif image_model != 'gemini-3.1-flash-lite-image':
         print("[FAIL]")
-        print(f"    Expected model: gemini-2.5-flash-image, Got: {image_model}")
+        print(f"    Expected model: gemini-3.1-flash-lite-image, Got: {image_model}")
         failed_tests.append("ai_config.json wrong model")
     else:
         print("[OK]")
@@ -1054,10 +1054,10 @@ try:
     prompts_src  = (workspace / "prompts" / "simulation_prompts.json").read_text(encoding="utf-8")
 
     checks = [
-        ("vision URL uses current gemini-2.5-flash (retired 2.0 models gone)",
+        ("vision URL uses current gemini-3.1-flash-lite (retired 2.0 models gone)",
          "models/gemini-2.0-flash-exp:generateContent" not in engine_src
          and "models/gemini-2.0-flash:generateContent" not in engine_src
-         and "models/gemini-2.5-flash:generateContent" in engine_src),
+         and "models/gemini-3.1-flash-lite:generateContent" in engine_src),
         ("Full Frame is the default experience mode in the dropdown",
          "EXPERIENCE_MODE_FULL_FRAME" in bot_src
          and bot_src.find("EXPERIENCE_MODE_FULL_FRAME,\n                        description=\"Single photorealistic still image per turn\",\n                        default=True,") != -1),

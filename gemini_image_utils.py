@@ -40,8 +40,8 @@ else:
     print(f"[GEMINI INIT] Ready to generate images")
 
 # Google Gemini models
-GEMINI_FLASH_IMAGE = "gemini-2.5-flash-image"  # Fast, cost-effective image generation
-GEMINI_PRO_IMAGE = "gemini-3-pro-image-preview"  # Slower, higher quality, 4K support
+GEMINI_FLASH_IMAGE = "gemini-3.1-flash-lite-image"  # Fast, cost-effective image generation
+GEMINI_PRO_IMAGE = "gemini-3.1-flash-image"  # Slower, higher quality, 4K support
 
 # Track last corrected image for continuity
 _last_corrected_image = None
