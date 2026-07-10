@@ -265,11 +265,16 @@
     lastPrompt: null, // latest scene prompt, so a mid-game toggle can steer now
 
     resolveInitial() {
+      // A dedicated route (e.g. /realtime) can force the renderer regardless of
+      // any saved preference. This wins over everything.
+      const forced = window.__FORCED_RENDERER__;
       const q = new URLSearchParams(location.search).get("renderer");
       const stored = (function () {
         try { return localStorage.getItem("scene_renderer"); } catch (_) { return null; }
       })();
-      if (q === "image" || q === "reactor") {
+      if (forced === "image" || forced === "reactor") {
+        this.mode = forced; this.explicit = true;
+      } else if (q === "image" || q === "reactor") {
         this.mode = q; this.explicit = true;
       } else if (stored === "image" || stored === "reactor") {
         this.mode = stored; this.explicit = true;

@@ -119,6 +119,7 @@
   <!-- Backend / connectivity tag -->
   <div id="backend-tag">backend: <span id="backend-name">—</span></div>
 
+  {% if forced_renderer %}<script>window.__FORCED_RENDERER__ = "{{ forced_renderer }}";</script>{% endif %}
   <script src="{{ url_for('static', filename='js/reactor_renderer.js') }}?v={{ asset_version }}"></script>
   <script src="{{ url_for('static', filename='js/standalone.js') }}?v={{ asset_version }}"></script>
 </body>

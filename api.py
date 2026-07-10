@@ -71,21 +71,44 @@ def serve_legacy_image(filename):
         return error_response("Failed to serve image", str(e))
 
 
+def _standalone_asset_version():
+    """Cache-bust CSS/JS on every deploy so browsers never serve stale UI."""
+    try:
+        css = os.path.getmtime("static/css/standalone.css")
+        js = os.path.getmtime("static/js/standalone.js")
+        rjs = 0
+        try:
+            rjs = os.path.getmtime("static/js/reactor_renderer.js")
+        except Exception:
+            pass
+        return str(int(max(css, js, rjs)))
+    except Exception:
+        return "0"
+
+
 @app.route('/standalone', methods=['GET'])
 def serve_standalone():
     """Serve the standalone immersive UI. Unlike engine.py's own '/' route,
     this does NOT reset the game on load — the player's in-progress session
     (if any) is preserved across page refreshes; use the Reset button (or
     POST /api/reset) to start over."""
-    # Cache-bust CSS/JS on every deploy so browsers never serve stale UI.
-    version = "0"
-    try:
-        css = os.path.getmtime("static/css/standalone.css")
-        js = os.path.getmtime("static/js/standalone.js")
-        version = str(int(max(css, js)))
-    except Exception:
-        pass
-    return render_template('standalone.html', asset_version=version)
+    return render_template('standalone.html', asset_version=_standalone_asset_version())
+
+
+@app.route('/realtime', methods=['GET'])
+@app.route('/live', methods=['GET'])
+def serve_realtime():
+    """Dedicated URL for the realtime world-model (Reactor) flow.
+
+    Same immersive UI as /standalone, but the scene renderer is forced to
+    "reactor" regardless of the server default or any saved per-browser
+    preference — so this URL always demonstrates the live video pipeline.
+    Handy for testing/sharing the realtime experience directly."""
+    return render_template(
+        'standalone.html',
+        asset_version=_standalone_asset_version(),
+        forced_renderer='reactor',
+    )
 
 
 @app.route('/api/tape', methods=['GET'])
