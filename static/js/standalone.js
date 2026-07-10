@@ -262,7 +262,7 @@
   const Renderer = {
     mode: "image",
     explicit: false,  // did the user/URL explicitly pick a renderer?
-    lastPrompt: null, // latest scene prompt, so a mid-game toggle can steer now
+    lastScene: null,  // latest {prompt,imageUrl,hardTransition}, for mid-game toggle
 
     resolveInitial() {
       // A dedicated route (e.g. /realtime) can force the renderer regardless of
@@ -317,7 +317,7 @@
       // scene prompt arrives. (Falls back to stills if it can't connect.)
       if (this.mode === "reactor" && this.reactorAvailable()) {
         window.ReactorRenderer.enable().then((ok) => {
-          if (ok && Renderer.lastPrompt) window.ReactorRenderer.setPrompt(Renderer.lastPrompt);
+          if (ok && Renderer.lastScene) window.ReactorRenderer.applyScene(Renderer.lastScene);
         });
       }
       updateRendererButton();
@@ -327,12 +327,18 @@
       return !!window.ReactorRenderer;
     },
 
-    // Apply a scene coming off the feed. `prompt` is the engine's scene prompt
-    // (feed item metadata.prompt); `imageUrl` is the generated still.
-    applyScene(imageUrl, prompt) {
-      if (prompt) this.lastPrompt = prompt;
+    // Apply a scene coming off the feed. `prompt` is the engine's realtime
+    // scene prompt (feed item metadata.prompt); `imageUrl` is the generated
+    // still; `meta` carries flags like hard_transition (location change).
+    applyScene(imageUrl, prompt, meta) {
+      const scene = {
+        prompt: prompt || null,
+        imageUrl: imageUrl || null,
+        hardTransition: !!(meta && meta.hard_transition),
+      };
+      if (scene.prompt || scene.imageUrl) this.lastScene = scene;
       if (this.mode === "reactor" && this.reactorAvailable()) {
-        if (prompt) window.ReactorRenderer.setPrompt(prompt, imageUrl);
+        if (scene.prompt) window.ReactorRenderer.applyScene(scene);
         // Keep the still painted behind the video so a Reactor failure or the
         // pre-"ready" window still shows something coherent.
         if (imageUrl) setScene(imageUrl);
@@ -351,7 +357,7 @@
         window.ReactorRenderer.enable().then((ok) => {
           // Steer the current scene immediately so switching mid-game shows
           // something without waiting for the next turn.
-          if (ok && Renderer.lastPrompt) window.ReactorRenderer.setPrompt(Renderer.lastPrompt);
+          if (ok && Renderer.lastScene) window.ReactorRenderer.applyScene(Renderer.lastScene);
         });
       } else if (this.reactorAvailable()) {
         showRendererToast("Still images");
@@ -487,7 +493,7 @@
     if (item.id > state.lastId) state.lastId = item.id;
 
     if (item.image_url || (item.metadata && item.metadata.prompt)) {
-      Renderer.applyScene(item.image_url, item.metadata && item.metadata.prompt);
+      Renderer.applyScene(item.image_url, item.metadata && item.metadata.prompt, item.metadata);
     }
 
     switch (item.type) {
@@ -589,7 +595,7 @@
       if (Renderer.mode === "reactor" && Renderer.reactorAvailable()) {
         try { window.ReactorRenderer.reset(); } catch (_) {}
       }
-      Renderer.lastPrompt = null;
+      Renderer.lastScene = null;
       Sound.start(); // new tape / game begins
       showVeil("Reawakening the tape...");
       el.prose.innerHTML = "";

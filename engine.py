@@ -1700,6 +1700,49 @@ def build_image_prompt(
 
     return prompt
 
+# Stable "scene bible" anchor for the realtime world model (Reactor/Helios).
+# Per Helios's prompt guide, every prompt must carry a consistent subject/style
+# and an explicit camera framing. We keep this constant across turns so the live
+# video maintains one look while the scene text evolves. Style-only (NO location)
+# so location comes from the per-turn scene description.
+REALTIME_STYLE_ANCHOR = os.getenv(
+    "REALTIME_STYLE_ANCHOR",
+    "First-person handheld camcorder POV, 1993 analog VHS home-video footage, "
+    "heavy film grain and chromatic aberration, slightly desaturated, low-light "
+    "dread and horror atmosphere. Medium-wide shot, the camera drifting slightly "
+    "as if held while walking",
+)
+
+
+def build_realtime_prompt(visual_scene: str = "", narrative: str = "", choice: str = "") -> str:
+    """Compose a clean, natural-language prompt for the realtime world model.
+
+    This is deliberately NOT the still-image diffusion prompt (which is packed
+    with model-specific control text — spatial anchors, camera-distance math,
+    anti-border/anti-person rules, img2img continuity clauses, world-state dumps).
+    Feeding that to a video world model produces incoherent output. Instead we
+    follow Helios's prompt guide: a consistent style/camera anchor + a physical
+    scene description (which already covers near/mid/far + lighting) + one action
+    beat. Everything is sanitized the same way as the image prompt so we don't
+    regress on content filtering.
+    """
+    scene = (visual_scene or narrative or "").strip().replace("\n", " ")
+    scene = _sanitize_for_image_generation(scene)
+    # Keep it focused; overly long prompts dilute the signal for the video model.
+    if len(scene) > 600:
+        scene = scene[:597].rstrip() + "..."
+
+    parts = [REALTIME_STYLE_ANCHOR.rstrip(". ") + "."]
+    if scene:
+        parts.append(scene)
+    # A single action beat gives the model motion to render (the guide's
+    # "one new element per prompt"). Skip for the intro/establishing shot.
+    c = (choice or "").strip().rstrip(".")
+    if c and c.lower() not in ("intro", "initialize simulation"):
+        parts.append(f"Motion: the view shifts as you {c[0].lower() + c[1:]}.")
+    return " ".join(parts)
+
+
 def _build_vhs_prompt(base_prompt: str, use_img2img: bool = False) -> str:
     """
     Wrap any image generation prompt with VHS aesthetic instructions.
@@ -3160,21 +3203,30 @@ def _spawn_scene_image_async(caption: str, dispatch: str, choice: str, frame_idx
             if not img_path:
                 return
             web = _to_web_image_url(img_path)
-            # The exact prompt fed to the still-image model is the same text we use
-            # to steer Reactor's realtime world model. Attach it (plus the
-            # location-change flag) to the feed item so the standalone client's
-            # realtime renderer can inject it live via set_prompt — no extra call.
-            scene_prompt = result[1] if len(result) > 1 else ""
+            # Two different prompts for two different renderers:
+            #   • image_prompt (result[1]) — the diffusion prompt used for the
+            #     Gemini still; kept in state for debugging only.
+            #   • render_prompt — a clean, video-model-appropriate scene bible
+            #     used to STEER Reactor/Helios (see build_realtime_prompt). This
+            #     is what we hand the standalone client via metadata.prompt.
+            # The still (image_url) also rides along so the realtime renderer can
+            # condition the world model on our exact composition (image-to-video)
+            # at scene starts / location changes.
+            image_prompt = result[1] if len(result) > 1 else ""
+            render_prompt = build_realtime_prompt(
+                visual_scene=caption, narrative=dispatch, choice=choice
+            )
             item = create_feed_item(
                 type="scene_image",
                 content="",
                 image_url=web,
-                metadata={"prompt": scene_prompt, "hard_transition": bool(hard_transition)},
+                metadata={"prompt": render_prompt, "hard_transition": bool(hard_transition)},
             )
             with WORLD_STATE_LOCK:
                 st = _load_state(session_id)
                 st['current_image_url'] = web
-                st['current_image_prompt'] = scene_prompt
+                st['current_image_prompt'] = image_prompt
+                st['current_render_prompt'] = render_prompt
                 st.setdefault('feed_log', []).append(item)
                 _save_state(st, session_id)
                 state = st

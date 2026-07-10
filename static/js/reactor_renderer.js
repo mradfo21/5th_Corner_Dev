@@ -2,58 +2,69 @@
    SOMEWHERE // Reactor realtime renderer (experimental)
 
    Drives Reactor's Helios world model as an alternative scene renderer.
-   Instead of painting a Gemini still each turn, we stream live WebRTC video
-   and STEER it with the same per-turn scene prompt the engine already builds.
+   We steer the live video with a clean, video-model-appropriate scene prompt
+   (built server-side by build_realtime_prompt) and — following Helios's
+   image-to-video guidance — condition the world model on the SAME still the
+   game generated so the video matches our intended composition.
 
-   - The Reactor API key never touches the browser: we mint a short-lived JWT
-     via our own POST /api/reactor/token proxy.
-   - The SDK is loaded from an ESM CDN so no build step is required. If the
-     import or connection fails, standalone.js falls back to the still image.
+   Wire protocol (per Helios schema reference; verified against the live model):
+     • establishing shot / new game:
+         set_prompt({prompt}) -> uploadFile(still) -> set_image_strength(S)
+           -> set_image({image}) -> start
+       (prompt MUST be registered before start; set_conditioning + immediate
+        start races and the model rejects start with "No prompt set")
+     • location change (hard_transition):
+         uploadFile(still) -> set_image_strength(S) -> set_image({image}) -> set_prompt({prompt})
+     • same-location turn:
+         set_prompt({prompt})   (let the video evolve continuously)
 
-   Exposes a tiny facade on window.ReactorRenderer so standalone.js can stay
-   renderer-agnostic:
-       enable()              -> connect + start streaming
-       disable()             -> stop + hide the video layer
-       setPrompt(prompt,url) -> steer the live model with a new scene prompt
-       reset()               -> reset the world model (new game)
-       pause() / resume()    -> pause/resume generation (e.g. on death)
-       getStatus()           -> "off" | "connecting" | "live" | "error"
-       isActive()            -> a connection exists / is being set up
+   The Reactor API key never touches the browser: we mint a short-lived JWT via
+   our own POST /api/reactor/token proxy. The SDK loads from an ESM CDN (pinned)
+   so no build step is required. If anything fails, standalone.js falls back to
+   the still image.
+
+   window.ReactorRenderer facade:
+       enable() / disable()
+       applyScene({prompt, imageUrl, hardTransition})
+       setPrompt(prompt, imageUrl)   // thin back-compat wrapper
+       reset() / pause() / resume()
+       getStatus() -> "off"|"connecting"|"live"|"error"
+       isActive() / isReady()
    Set window.ReactorRenderer.onStatus = fn to observe status changes.
    ============================================================ */
 (function () {
   "use strict";
 
-  // Pinned SDK version (Reactor is beta; pin to avoid surprise breakage).
-  // NOTE: must be a real published version — @0 does not exist and would 404.
   const SDK_URL = "https://esm.sh/@reactor-team/js-sdk@2.12.0";
   const FALLBACK_MODEL = "helios";
+  // How strongly the reference still anchors the video (0..1). Moderate-high so
+  // the scene matches our composition but the model can still animate/breathe.
+  const IMAGE_STRENGTH = 0.6;
 
   const rstate = {
     reactor: null,
-    active: false,       // connect() has been kicked off and not torn down
-    ready: false,        // connection status === "ready"
-    started: false,      // generation has been started at least once
+    active: false,
+    ready: false,
+    started: false,
     paused: false,
-    pendingPrompt: null, // most recent prompt awaiting injection
-    lastPrompt: null,    // last prompt actually sent (dedup)
+    pending: null,       // latest scene awaiting apply: {prompt,imageUrl,hardTransition}
+    lastPrompt: null,
+    lastImageUrl: null,  // avoid re-uploading the same still
+    lastRef: null,
+    supportsUpload: true,
     video: null,
     cfg: { model_name: FALLBACK_MODEL, enabled: false },
     connecting: false,
-    status: "off",       // off | connecting | live | error
+    status: "off",
   };
 
-  function log() {
-    try { console.log.apply(console, ["[reactor]", ...arguments]); } catch (_) {}
-  }
+  function log() { try { console.log.apply(console, ["[reactor]", ...arguments]); } catch (_) {} }
 
   function setStatus(s) {
     if (rstate.status === s) return;
     rstate.status = s;
     try {
-      if (typeof window.ReactorRenderer.onStatus === "function") {
-        window.ReactorRenderer.onStatus(s);
-      }
+      if (typeof window.ReactorRenderer.onStatus === "function") window.ReactorRenderer.onStatus(s);
     } catch (_) {}
   }
 
@@ -66,9 +77,7 @@
     try {
       const r = await fetch("/api/reactor/config");
       if (r.ok) rstate.cfg = await r.json();
-    } catch (err) {
-      log("config fetch failed, using defaults", err);
-    }
+    } catch (err) { log("config fetch failed, using defaults", err); }
     return rstate.cfg;
   }
 
@@ -90,39 +99,101 @@
     if (!video) return;
     video.srcObject = stream || new MediaStream([track]);
     video.classList.remove("hidden");
-    video.play().catch(() => {}); // autoplay may need muted; element is muted
+    video.play().catch(() => {});
     setStatus("live");
     log("main_video attached");
   }
 
-  // Send whatever prompt is pending, honoring Helios's "must set_prompt at
-  // chunk 0 before start" rule. Safe to call repeatedly.
-  async function flushPrompt() {
-    const r = rstate.reactor;
-    if (!r || !rstate.ready) return;
-    if (rstate.pendingPrompt == null) return;
-    const prompt = rstate.pendingPrompt;
-    if (prompt === rstate.lastPrompt && rstate.started) {
-      rstate.pendingPrompt = null;
-      return;
-    }
-    rstate.pendingPrompt = null;
+  // Fetch our own generated still and upload it to Reactor, returning a FileRef
+  // (or null on failure). Uploads only work while connection status is ready.
+  async function uploadStill(imageUrl) {
+    if (!rstate.supportsUpload || !imageUrl || !rstate.reactor) return null;
+    if (imageUrl === rstate.lastImageUrl && rstate.lastRef) return rstate.lastRef;
+    if (typeof rstate.reactor.uploadFile !== "function") { rstate.supportsUpload = false; return null; }
     try {
-      await r.sendCommand("set_prompt", { prompt });
-      rstate.lastPrompt = prompt;
-      if (!rstate.started) {
-        await r.sendCommand("start", {});
-        rstate.started = true;
-        log("generation started");
-      } else {
-        log("re-steered:", prompt.slice(0, 80));
-      }
+      const resp = await fetch(imageUrl);
+      if (!resp.ok) throw new Error("still fetch HTTP " + resp.status);
+      const blob = await resp.blob();
+      let fileArg = blob;
+      try { fileArg = new File([blob], "scene.png", { type: blob.type || "image/png" }); } catch (_) {}
+      const ref = await rstate.reactor.uploadFile(fileArg);
+      rstate.lastImageUrl = imageUrl;
+      rstate.lastRef = ref;
+      return ref;
     } catch (err) {
-      log("prompt send failed", err);
-      // Keep the prompt so a later ready/reconnect can retry.
-      rstate.pendingPrompt = prompt;
+      log("still upload failed (continuing text-only)", err);
+      return null;
     }
   }
+
+  async function cmd(name, data) {
+    return rstate.reactor.sendCommand(name, data || {});
+  }
+
+  // Apply the most recent pending scene, honoring Helios's command ordering.
+  async function flush() {
+    if (!rstate.reactor || !rstate.ready || rstate.pending == null) return;
+    const s = rstate.pending;
+    rstate.pending = null;
+    if (!s.prompt) return;
+
+    // Dedupe pure re-sends of the same prompt while already running.
+    if (rstate.started && s.prompt === rstate.lastPrompt && !s.hardTransition) return;
+
+    try {
+      if (!rstate.started) {
+        // Establishing shot. IMPORTANT: register the prompt BEFORE start —
+        // set_conditioning + immediate start races (the model rejects start
+        // with "No prompt set" while the image/prompt are still decoding). So
+        // we set_prompt first, attach the still as an image-to-video reference,
+        // then start. Chunk 0 is text-driven; the still conditions subsequent
+        // chunks once image_accepted lands (a beat later), which is exactly how
+        // Helios image-to-video is meant to run.
+        await cmd("set_prompt", { prompt: s.prompt });
+        const ref = await uploadStill(s.imageUrl);
+        if (ref) {
+          await cmd("set_image_strength", { image_strength: IMAGE_STRENGTH });
+          await cmd("set_image", { image: ref });
+        }
+        await cmd("start", {});
+        rstate.started = true;
+        rstate.lastPrompt = s.prompt;
+        log("generation started", ref ? "(image-conditioned)" : "(text-only)");
+      } else if (s.hardTransition) {
+        // Location change: swap the reference still, then re-steer.
+        const ref = await uploadStill(s.imageUrl);
+        if (ref) {
+          await cmd("set_image_strength", { image_strength: IMAGE_STRENGTH });
+          await cmd("set_image", { image: ref });
+        }
+        await cmd("set_prompt", { prompt: s.prompt });
+        rstate.lastPrompt = s.prompt;
+        log("hard transition re-steer", ref ? "(reseeded image)" : "");
+      } else {
+        // Same location: let the video evolve continuously via prompt only.
+        await cmd("set_prompt", { prompt: s.prompt });
+        rstate.lastPrompt = s.prompt;
+        log("re-steered:", s.prompt.slice(0, 80));
+      }
+    } catch (err) {
+      log("apply scene failed", err);
+      rstate.pending = s; // retry on next ready/flush
+    }
+  }
+
+  function applyScene(scene) {
+    if (!scene || !scene.prompt) return;
+    rstate.pending = {
+      prompt: scene.prompt,
+      imageUrl: scene.imageUrl || null,
+      hardTransition: !!scene.hardTransition,
+    };
+    if (!rstate.active) { enable().then(() => flush()); return; }
+    flush();
+  }
+
+  // Back-compat thin wrapper.
+  function setPrompt(prompt, imageUrl) { applyScene({ prompt, imageUrl, hardTransition: false }); }
 
   async function enable() {
     if (rstate.active || rstate.connecting) return true;
@@ -130,52 +201,26 @@
     setStatus("connecting");
     try {
       await loadConfig();
-      if (!rstate.cfg.enabled) {
-        log("disabled: server has no REACTOR_API_KEY configured");
-        rstate.connecting = false;
-        setStatus("error");
-        return false;
-      }
+      if (!rstate.cfg.enabled) { log("disabled: no REACTOR_API_KEY on server"); rstate.connecting = false; setStatus("error"); return false; }
       let sdk;
-      try {
-        sdk = await import(/* @vite-ignore */ SDK_URL);
-      } catch (err) {
-        log("SDK import failed", err);
-        rstate.connecting = false;
-        setStatus("error");
-        return false;
-      }
+      try { sdk = await import(/* @vite-ignore */ SDK_URL); }
+      catch (err) { log("SDK import failed", err); rstate.connecting = false; setStatus("error"); return false; }
       const Reactor = sdk.Reactor || (sdk.default && sdk.default.Reactor);
-      if (!Reactor) {
-        log("SDK missing Reactor export");
-        rstate.connecting = false;
-        setStatus("error");
-        return false;
-      }
+      if (!Reactor) { log("SDK missing Reactor export"); rstate.connecting = false; setStatus("error"); return false; }
 
       const reactor = new Reactor({ modelName: rstate.cfg.model_name || FALLBACK_MODEL });
       rstate.reactor = reactor;
-
       reactor.on("trackReceived", attachTrack);
       reactor.on("statusChanged", async (status) => {
         log("status:", status);
-        if (status === "ready") {
-          rstate.ready = true;
-          await flushPrompt();
-        } else if (status === "disconnected") {
-          rstate.ready = false;
-        }
+        if (status === "ready") { rstate.ready = true; await flush(); }
+        else if (status === "disconnected") { rstate.ready = false; }
       });
-      reactor.on("error", (e) => {
-        log("error", e && e.code, e && e.message);
-        // Surface hard failures so the UI can fall back to stills.
-        if (e && e.recoverable === false) setStatus("error");
-      });
+      reactor.on("error", (e) => { log("error", e && e.code, e && e.message); if (e && e.recoverable === false) setStatus("error"); });
 
       const jwt = await fetchToken();
       rstate.active = true;
       await reactor.connect(jwt);
-      log("connect() resolved");
       rstate.connecting = false;
       return true;
     } catch (err) {
@@ -191,66 +236,43 @@
     rstate.ready = false;
     rstate.started = false;
     rstate.paused = false;
-    rstate.pendingPrompt = null;
+    rstate.pending = null;
     rstate.lastPrompt = null;
+    rstate.lastImageUrl = null;
+    rstate.lastRef = null;
     const video = getVideo();
-    if (video) {
-      video.classList.add("hidden");
-      try { video.srcObject = null; } catch (_) {}
-    }
+    if (video) { video.classList.add("hidden"); try { video.srcObject = null; } catch (_) {} }
     const r = rstate.reactor;
     rstate.reactor = null;
     rstate.active = false;
     if (rstate.status !== "error") setStatus("off");
-    if (r) {
-      try { await r.disconnect(); } catch (_) {}
-    }
+    if (r) { try { await r.disconnect(); } catch (_) {} }
   }
 
-  // Queue a new scene prompt to steer the live model. `imageUrl` is accepted
-  // for parity with the still renderer / future set_image seeding.
-  function setPrompt(prompt, imageUrl) {
-    if (!prompt) return;
-    rstate.pendingPrompt = prompt;
-    if (!rstate.active) {
-      // Lazy-connect on first prompt if enabled.
-      enable().then(() => flushPrompt());
-      return;
-    }
-    flushPrompt();
-  }
-
-  // Reset the world model to a clean slate (used when the game restarts).
   async function reset() {
-    const r = rstate.reactor;
     rstate.started = false;
     rstate.lastPrompt = null;
+    rstate.lastImageUrl = null;
+    rstate.lastRef = null;
     rstate.paused = false;
-    if (!r || !rstate.ready) return;
-    try { await r.sendCommand("reset", {}); } catch (err) { log("reset failed", err); }
+    if (!rstate.reactor || !rstate.ready) return;
+    try { await cmd("reset", {}); } catch (err) { log("reset failed", err); }
   }
 
   async function pause() {
-    const r = rstate.reactor;
-    if (!r || !rstate.ready || !rstate.started || rstate.paused) return;
+    if (!rstate.reactor || !rstate.ready || !rstate.started || rstate.paused) return;
     rstate.paused = true;
-    try { await r.sendCommand("pause", {}); } catch (err) { log("pause failed", err); }
+    try { await cmd("pause", {}); } catch (err) { log("pause failed", err); }
   }
 
   async function resume() {
-    const r = rstate.reactor;
-    if (!r || !rstate.ready || !rstate.paused) return;
+    if (!rstate.reactor || !rstate.ready || !rstate.paused) return;
     rstate.paused = false;
-    try { await r.sendCommand("resume", {}); } catch (err) { log("resume failed", err); }
+    try { await cmd("resume", {}); } catch (err) { log("resume failed", err); }
   }
 
   window.ReactorRenderer = {
-    enable,
-    disable,
-    setPrompt,
-    reset,
-    pause,
-    resume,
+    enable, disable, applyScene, setPrompt, reset, pause, resume,
     getStatus: () => rstate.status,
     isActive: () => rstate.active,
     isReady: () => rstate.ready,
