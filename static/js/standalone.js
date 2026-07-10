@@ -36,6 +36,10 @@
     actionWheel: document.getElementById("action-wheel"),
     veil: document.getElementById("processing-veil"),
     veilMessage: document.getElementById("veil-message"),
+    veilSimple: document.getElementById("veil-simple"),
+    ceremony: document.getElementById("ceremony"),
+    ceremonySteps: document.getElementById("ceremony-steps"),
+    ceremonyNote: document.getElementById("ceremony-note"),
     hudTurn: document.getElementById("hud-turn"),
     hudPhase: document.getElementById("hud-phase"),
     hudChaos: document.getElementById("hud-chaos"),
@@ -147,6 +151,15 @@
       submit() { tone(700, 0.05, "square", 0.05); tone(1050, 0.11, "square", 0.045, 0.05); }, // custom action sent
       open() { tone([420, 760], 0.14, "triangle", 0.05); },    // free-will input reveal
       toggle() { tone(300, 0.04, "square", 0.04); },           // UI toggle click
+      // ---- Ceremony: one distinct cue per pipeline step, so the player HEARS
+      // the world working through each stage. ----
+      cereAction() { tone(300, 0.05, "square", 0.06); tone([300, 620], 0.14, "square", 0.05, 0.05); },   // action selected — decisive commit
+      cereConsequence() { tone(210, 0.09, "sine", 0.05); tone([420, 300], 0.2, "triangle", 0.045, 0.08); }, // consequence generated — a heavy reveal
+      cereWorldUpdate() { tone([260, 700], 0.32, "sawtooth", 0.045); },                                   // world updating — rising machine sweep
+      cereWorldRespond() { tone(520, 0.06, "triangle", 0.05); tone(780, 0.1, "triangle", 0.05, 0.06); tone(1040, 0.14, "sine", 0.04, 0.13); }, // world responding — it materialises
+      cereActions() { tone(660, 0.06, "triangle", 0.045); tone(880, 0.06, "triangle", 0.045, 0.06); tone(1180, 0.12, "sine", 0.04, 0.12); },  // actions generating — options shimmer in
+      cereDone() { tone(720, 0.06, "sine", 0.05); tone(1080, 0.18, "sine", 0.05, 0.06); },                // turn resolved — clean affirmation
+      cereNote() { tone(1500, 0.03, "square", 0.028); },       // realtime sub-event tick (prompt sent, chunk rendered…)
     };
   })();
 
@@ -176,8 +189,12 @@
     state.timecodeTimer = null;
   }
 
+  // Simple spinner veil — used for boot / reset, not for a turn (the turn uses
+  // the ceremony stepper below). Gates input via state.processing.
   function showVeil(message) {
     state.processing = true;
+    Ceremony.hideUI();
+    if (el.veilSimple) el.veilSimple.classList.remove("hidden");
     el.veilMessage.textContent = message || INTERIM_MESSAGES[0];
     el.veil.classList.remove("hidden");
   }
@@ -185,31 +202,170 @@
   function hideVeil() {
     state.processing = false;
     el.veil.classList.add("hidden");
+    Ceremony.reset();
   }
 
-  // Gamified turn status: a single clear line telling the player exactly what
-  // the world is doing, instead of a vague spinner. Stages:
-  //   inject   → your action is being pushed into the world
-  //   resolving→ the world is regenerating around it
-  //   done     → brief confirmation, then it clears on the next choices
-  function setStatusStage(stage) {
-    const label = {
-      inject: "\u25B8 INJECTING ACTION",
-      resolving: "\u25C8 UPDATING WORLD",
-      done: "\u2713 WORLD UPDATED",
-    }[stage];
-    if (!label) { hideVeil(); return; }
-    state.turnStage = stage;
-    el.veilMessage.textContent = label;
-    el.veil.classList.toggle("veil-done", stage === "done");
-    if (stage === "done") {
-      // Choices are ready — show the confirmation but DON'T block input.
-      state.processing = false;
-      el.veil.classList.remove("hidden");
-    } else {
-      showVeil(label); // processing = true; input gated while the world resolves
+  // ------------------------------------------------------------------
+  // Ceremony — the gamified turn pipeline. Each turn the world runs a clear
+  // sequence of steps; we light them up one at a time (with sound + a beat)
+  // so the player can FEEL the game working, instead of a vague spinner.
+  // The same tracker drives both still-image and realtime-video renderers;
+  // in video mode the realtime sub-events (prompt submitted, seed accepted,
+  // stream live, chunk rendered) show on the sub-line.
+  // ------------------------------------------------------------------
+  const Ceremony = (function () {
+    const STEPS = [
+      { key: "action",        label: "Action\nSelected",       glyph: "\u25C9", sound: "cereAction" },       // ◉
+      { key: "consequence",   label: "Consequence\nGenerated", glyph: "\u2726", sound: "cereConsequence" },  // ✦
+      { key: "world_update",  label: "World\nUpdating",        glyph: "\u27F3", sound: "cereWorldUpdate" },   // ⟳
+      { key: "world_respond", label: "World\nResponding",      glyph: "\u25C8", sound: "cereWorldRespond" },  // ◈
+      { key: "actions",       label: "Actions\nGenerating",    glyph: "\u22D4", sound: "cereActions" },       // ⋔
+    ];
+    const IDX = {};
+    STEPS.forEach((s, i) => { IDX[s.key] = i; });
+    const DWELL_MS = 460;      // minimum time each step is shown (so it registers)
+    const RESOLVE_HOLD_MS = 1050;
+
+    let built = false;
+    let active = false;
+    let cur = -1;        // index of the currently active step
+    let target = -1;     // furthest step requested
+    let dwellTimer = null;
+    let doneTimer = null;
+    let noteTimer = null;
+
+    function build() {
+      if (built || !el.ceremonySteps) return;
+      el.ceremonySteps.innerHTML = "";
+      STEPS.forEach((s) => {
+        const li = document.createElement("li");
+        li.className = "cere-step";
+        li.dataset.key = s.key;
+        li.innerHTML =
+          `<span class="cere-dot">${s.glyph}</span>` +
+          `<span class="cere-label">${s.label.replace(/\n/g, "<br>")}</span>`;
+        el.ceremonySteps.appendChild(li);
+      });
+      built = true;
     }
-  }
+
+    function stepEl(i) {
+      return el.ceremonySteps ? el.ceremonySteps.children[i] : null;
+    }
+
+    function enter(i) {
+      const node = stepEl(i);
+      if (!node) return;
+      for (let k = 0; k < i; k++) {
+        const p = stepEl(k);
+        if (p) { p.classList.remove("active", "beat"); p.classList.add("done"); }
+      }
+      node.classList.remove("done");
+      node.classList.add("active", "beat");
+      node.addEventListener("animationend", () => node.classList.remove("beat"), { once: true });
+      cur = i;
+      const s = STEPS[i];
+      if (s && Sound[s.sound]) Sound[s.sound]();
+    }
+
+    function pump() {
+      if (dwellTimer) return;                 // still dwelling on the current step
+      if (cur >= target) return;              // caught up
+      enter(cur + 1);
+      dwellTimer = setTimeout(() => { dwellTimer = null; pump(); }, DWELL_MS);
+    }
+
+    return {
+      // Show the tracker fresh and enter the first step (action selected).
+      begin() {
+        build();
+        clearTimeout(doneTimer); clearTimeout(dwellTimer); dwellTimer = null;
+        active = true;
+        cur = -1; target = -1;
+        state.processing = true;
+        // Reset all chips to pending.
+        if (el.ceremonySteps) {
+          Array.from(el.ceremonySteps.children).forEach((n) => n.classList.remove("active", "done", "beat"));
+        }
+        if (el.ceremony) el.ceremony.classList.remove("hidden", "resolved");
+        if (el.veilSimple) el.veilSimple.classList.add("hidden");
+        this.note("");
+        el.veil.classList.remove("hidden");
+        this.reach("action");
+      },
+
+      // Monotonically advance to (at least) the named step. Never goes back, so
+      // out-of-order feed items and duplicate signals are safe.
+      reach(key) {
+        if (!active) return;
+        const i = typeof key === "number" ? key : IDX[key];
+        if (i == null || i < 0) return;
+        if (i > target) target = i;
+        pump();
+      },
+
+      // A realtime sub-event line (prompt submitted, seed accepted, stream live,
+      // chunk N rendered…). Doesn't advance the main step; just informs + ticks.
+      note(text, opts) {
+        if (!el.ceremonyNote) return;
+        const t = (text || "").trim();
+        el.ceremonyNote.textContent = t;
+        el.ceremonyNote.classList.toggle("show", !!t);
+        if (t && active) {
+          el.ceremonyNote.classList.remove("tick");
+          void el.ceremonyNote.offsetWidth;
+          el.ceremonyNote.classList.add("tick");
+          if (!opts || opts.tick !== false) Sound.cereNote();
+          clearTimeout(noteTimer);
+        }
+      },
+
+      // The turn fully resolved: march to the last step, mark everything done,
+      // flash green, sound the affirmation, then fade. Releases input gating.
+      complete() {
+        if (!active) { hideVeil(); return; }
+        target = STEPS.length - 1;
+        // Snap through any remaining steps immediately for the finish.
+        clearTimeout(dwellTimer); dwellTimer = null;
+        while (cur < target) enter(cur + 1);
+        if (el.ceremonySteps) {
+          Array.from(el.ceremonySteps.children).forEach((n) => {
+            n.classList.remove("active", "beat"); n.classList.add("done");
+          });
+        }
+        if (el.ceremony) el.ceremony.classList.add("resolved");
+        this.note("\u2713 World updated", { tick: false });
+        Sound.cereDone();
+        state.processing = false; // choices are live — let the player act
+        active = false;
+        clearTimeout(doneTimer);
+        doneTimer = setTimeout(hideVeil, RESOLVE_HOLD_MS);
+      },
+
+      // Tear down without the resolve flourish (error / game over / reset).
+      abort() {
+        active = false;
+        clearTimeout(dwellTimer); dwellTimer = null;
+        clearTimeout(doneTimer); doneTimer = null;
+      },
+
+      // Hide just the ceremony chrome (keep the veil for the simple spinner).
+      hideUI() {
+        if (el.ceremony) el.ceremony.classList.add("hidden");
+      },
+
+      // Full reset of tracker visuals/state.
+      reset() {
+        this.abort();
+        cur = -1; target = -1;
+        if (el.ceremony) el.ceremony.classList.remove("resolved");
+        this.hideUI();
+        this.note("");
+      },
+
+      isActive() { return active; },
+    };
+  })();
 
   async function postJSON(url, body) {
     const resp = await fetch(url, {
@@ -271,8 +427,8 @@
   // Renderer facade — swap between the classic still-image renderer and the
   // Reactor realtime world-model renderer without the rest of the game caring.
   // "image"   -> Gemini still per turn (default; existing behavior).
-  // "reactor" -> steer Reactor's Helios video with the SAME per-turn scene
-  //              prompt the engine used to build the still. The still is still
+  // "reactor" -> steer Reactor's LingBot World 2 video with the SAME per-turn
+  //              scene prompt the engine used to build the still. The still is
   //              painted underneath as a graceful fallback if Reactor drops.
   // Selection: ?renderer= query param > localStorage > "image".
   // ------------------------------------------------------------------
@@ -328,6 +484,57 @@
             showRendererToast("Realtime video — live");
           }
           updateRendererButton();
+        };
+        // Surface the realtime world model's lifecycle on the ceremony sub-line
+        // so the player sees the video pipeline working too: prompts submitted,
+        // seed accepted, stream live, state/chunks updating.
+        window.ReactorRenderer.onEvent = (name, data) => {
+          if (Renderer.mode !== "reactor" || !Ceremony.isActive()) return;
+          const d = data || {};
+          switch (name) {
+            case "command_sent": {
+              const cmdNote = {
+                set_prompt: "\u25B8 Prompt submitted",
+                set_image: "\u25B8 Seed image sent",
+                start: "\u25B8 Starting stream",
+                reset: "\u25B8 Re-staging world",
+                pause: "\u25B8 Pausing stream",
+                resume: "\u25B8 Resuming stream",
+              }[d.command];
+              if (cmdNote) {
+                Ceremony.note(cmdNote);
+                if (d.command === "set_prompt" || d.command === "set_image") Ceremony.reach("world_update");
+              }
+              return;
+            }
+            case "prompt_accepted": Ceremony.note("\u2713 Prompt accepted"); return;
+            case "image_accepted": Ceremony.note("\u2713 Seed image accepted"); return;
+            case "generation_started":
+            case "stage_started":
+              Ceremony.note("\u25C8 Stream generating");
+              Ceremony.reach("world_update");
+              return;
+            case "video_showing":
+              Ceremony.note("\u25C9 Stream live");
+              Ceremony.reach("world_respond");
+              return;
+            case "chunk_complete":
+              Ceremony.note("\u25A3 Chunk " + ((d.chunk_index != null ? d.chunk_index : 0) + 1) + " rendered");
+              return;
+            case "state": {
+              const now = Date.now();
+              if (now - (state._lastStateNote || 0) < 700) return; // throttle
+              state._lastStateNote = now;
+              const act = d.current_action && d.current_action !== "still" ? d.current_action : null;
+              Ceremony.note(act ? "\u2261 State \u00B7 " + act : "\u2261 State updated");
+              return;
+            }
+            case "generation_reset": Ceremony.note("\u25CC World cleared"); return;
+            case "command_error":
+              Ceremony.note("\u26A0 " + (d.reason || d.command || "error"), { tick: false });
+              return;
+            default: return;
+          }
         };
       }
       // In realtime mode, connect eagerly so the GPU session is warming while
@@ -449,6 +656,7 @@
         imageUrl: null,           // same scene — just re-steer, no image swap
         hardTransition: false,
       });
+      Ceremony.note("\u25B8 Action injected into stream");
     },
   };
 
@@ -608,6 +816,11 @@
     if (item.id > state.lastId) state.lastId = item.id;
 
     if (item.image_url || (item.metadata && item.metadata.prompt)) {
+      // The world's new composition is being submitted to the renderer — this
+      // IS the "world updating" beat (prompt + seed pushed to the model).
+      if (state.awaitingResolution && item.metadata && item.metadata.prompt) {
+        Ceremony.reach("world_update");
+      }
       Renderer.applyScene(item.image_url, item.metadata && item.metadata.prompt, item.metadata);
     }
 
@@ -617,6 +830,12 @@
         // placeholder content ("The scene shifts...") is intentionally NOT
         // added to the prose feed — it would just be noise over the art.
         Sound.scene(); // audible cue that the scene has materialised
+        // The world has responded (a new composition is on screen); the game
+        // is now generating the next set of actions.
+        if (state.awaitingResolution) {
+          Ceremony.reach("world_respond");
+          Ceremony.reach("actions");
+        }
         // Auto-play: the new frame just rendered — submit the next turn now
         // (minus a tiny beat), so advancement is gated only by generation lag.
         if (state.autoPlay) scheduleAutoAdvance(AUTOPLAY_FRAME_DELAY_MS);
@@ -625,6 +844,7 @@
       case "game_over":
         appendProse(item);
         Sound.death();
+        Ceremony.abort();
         setAutoPlay(false); // stop the world advancing once you're dead
         enterGameOver(item.content);
         return;
@@ -642,10 +862,9 @@
         renderChoices(item);
         Sound.choices();
         state.awaitingResolution = false;
-        // Turn fully resolved: flash "world updated", then clear the status.
-        setStatusStage("done");
-        clearTimeout(state.statusDoneTimer);
-        state.statusDoneTimer = setTimeout(hideVeil, 900);
+        // Turn fully resolved: march the ceremony to its finish, flash green,
+        // then clear it — choices are live so input is released.
+        Ceremony.complete();
         // New decision point: these are now the live/latest choices. Auto-play
         // will advance against THIS prompt (and only once).
         state.currentPromptId = item.id;
@@ -671,6 +890,7 @@
       case "error_event":
         appendProse(item);
         Sound.error();
+        Ceremony.abort();
         hideVeil();
         state.awaitingResolution = false;
         return;
@@ -686,10 +906,11 @@
         // Narrative / world-building text lands with a soft blip.
         appendProse(item);
         Sound.text();
-        // Text generation for this turn just completed → the world now resolves
-        // (scene/video regenerating). Show the gamified status until choices land.
+        // The consequence prose for this turn just landed → mark the
+        // "consequence generated" beat. (The player_action echo is not a
+        // consequence, so it doesn't advance the pipeline.)
         if (state.awaitingResolution && item.type !== "player_action") {
-          setStatusStage("resolving");
+          Ceremony.reach("consequence");
         }
         return;
     }
@@ -737,6 +958,7 @@
       Renderer.observedPromptId = null;
       clearTimeout(state.observeTimer);
       Sound.start(); // new tape / game begins
+      Ceremony.abort(); // cancel any mid-turn pipeline from the prior run
       showVeil("Reawakening the tape...");
       el.prose.innerHTML = "";
       el.choices.innerHTML = "";
@@ -767,7 +989,7 @@
     if (state.processing || state.gameOver) return;
     closeFreeWill(true); // picking any action closes the free-will gate
     el.choices.innerHTML = "";
-    setStatusStage("inject");
+    Ceremony.begin(); // light up the turn pipeline — starting with "action selected"
     state.awaitingResolution = true;
     // Seamless realtime: steer the live video with this action NOW, before the
     // backend turn resolves — the world model starts reacting immediately.

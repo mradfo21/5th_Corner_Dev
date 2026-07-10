@@ -105,11 +105,22 @@
 
   <!-- (Session controls now live in #control-rail, top-right.) -->
 
-  <!-- Processing veil shown while waiting on the backend -->
+  <!-- Processing veil shown while waiting on the backend. Hosts the gamified
+       "ceremony" step tracker (the pipeline the world runs each turn) and a
+       simple spinner fallback for boot/reset. -->
   <div id="processing-veil" class="hidden">
     <div class="veil-inner">
-      <div class="veil-spinner"></div>
-      <div id="veil-message">Transmitting...</div>
+      <!-- Ceremony: the turn pipeline lights up step by step so the player
+           feels the world working. Steps are built by standalone.js. -->
+      <div id="ceremony" class="ceremony hidden" aria-live="polite">
+        <ol id="ceremony-steps" class="ceremony-steps"></ol>
+        <div id="ceremony-note" class="ceremony-note"></div>
+      </div>
+      <!-- Simple fallback (reset / boot). -->
+      <div id="veil-simple" class="veil-simple">
+        <div class="veil-spinner"></div>
+        <div id="veil-message">Transmitting...</div>
+      </div>
     </div>
   </div>
 
