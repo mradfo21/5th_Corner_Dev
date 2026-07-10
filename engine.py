@@ -374,10 +374,13 @@ VEO_MODE_ENABLED    = False # DISABLED by default - use video generation instead
 # the Gemini still image or steer Reactor's realtime world model with the same
 # per-turn scene prompt. The server still builds the prompt + still either way;
 # defaulting to "image" keeps the classic experience fully intact.
-#   "image"   -> Gemini still per turn (default, unchanged behavior)
-#   "reactor" -> Reactor Helios realtime video, steered by the scene prompt
+#   "image"   -> Gemini still per turn (classic behavior)
+#   "reactor" -> Reactor Helios realtime video, steered by the scene prompt (default)
 #   "hybrid"  -> still generated AND used to seed the realtime video (future)
-SCENE_RENDERER = os.getenv("SCENE_RENDERER", "image")
+# Defaults to "reactor" so the realtime world model is the out-of-the-box
+# experience; the web client still auto-falls back to stills if Reactor is
+# unconfigured/unavailable, and players can flip renderers from the UI.
+SCENE_RENDERER = os.getenv("SCENE_RENDERER", "reactor")
 
 # ── Experience Mode System ────────────────────────────────────────────────────
 # These constants name the three selectable visual modes shown at game start.

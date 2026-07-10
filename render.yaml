@@ -37,10 +37,11 @@ services:
         sync: false
       - key: REACTOR_MODEL
         value: "helios"
-      # Default scene renderer: "image" (Gemini stills) or "reactor" (realtime).
-      # The web client can still override per-session via ?renderer= / toggle.
+      # Default scene renderer: "reactor" (realtime video) or "image" (Gemini
+      # stills). The web client auto-falls back to stills if Reactor is
+      # unavailable, and can override per-session via ?renderer= / the toggle.
       - key: SCENE_RENDERER
-        value: "image"
+        value: "reactor"
       - key: RESUME_MODE
         value: "1"
       - key: DISCORD_ENABLED

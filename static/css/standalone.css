@@ -670,6 +670,33 @@ html, body {
   to   { box-shadow: 0 0 12px rgba(255, 207, 107, 0.5); }
 }
 
+/* Transient renderer-status note (top-center) shown when toggling renderers. */
+.renderer-toast {
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 14px);
+  left: 50%;
+  transform: translateX(-50%) translateY(-8px);
+  z-index: 30;
+  padding: 7px 14px;
+  border-radius: 5px;
+  background: rgba(10, 12, 11, 0.82);
+  border: 1px solid rgba(142, 255, 193, 0.35);
+  color: #d8f0e4;
+  font-family: inherit;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+
+.renderer-toast.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
 /* ---------- Processing veil ---------- */
 
 #processing-veil {

@@ -261,6 +261,7 @@
   // ------------------------------------------------------------------
   const Renderer = {
     mode: "image",
+    explicit: false,  // did the user/URL explicitly pick a renderer?
     lastPrompt: null, // latest scene prompt, so a mid-game toggle can steer now
 
     resolveInitial() {
@@ -268,13 +269,28 @@
       const stored = (function () {
         try { return localStorage.getItem("scene_renderer"); } catch (_) { return null; }
       })();
-      this.mode = q === "image" || q === "reactor"
-        ? q
-        : (stored === "reactor" ? "reactor" : "image");
+      if (q === "image" || q === "reactor") {
+        this.mode = q; this.explicit = true;
+      } else if (stored === "image" || stored === "reactor") {
+        this.mode = stored; this.explicit = true;
+      } else {
+        this.mode = "image"; this.explicit = false; // provisional; server sets default
+      }
     },
 
-    init() {
+    async init() {
       this.resolveInitial();
+      // When the player hasn't explicitly chosen, follow the server's default
+      // renderer (SCENE_RENDERER — "reactor" out of the box).
+      if (!this.explicit) {
+        try {
+          const r = await fetch("/api/reactor/config");
+          if (r.ok) {
+            const c = await r.json();
+            if (c.renderer === "image" || c.renderer === "reactor") this.mode = c.renderer;
+          }
+        } catch (_) {}
+      }
       // Report real connection state on the toggle button, and fall back to
       // stills automatically if the realtime renderer can't start (no key,
       // CDN/import failure, GPU conflict) so a player is never stuck on a
@@ -284,13 +300,21 @@
           if (s === "error" && Renderer.mode === "reactor") {
             console.warn("[standalone] realtime renderer unavailable — falling back to stills");
             Renderer.mode = "image"; // reflect reality; keep stored pref intact
+            showRendererToast("Realtime unavailable — showing stills");
+          } else if (s === "live" && Renderer.mode === "reactor") {
+            showRendererToast("Realtime video — live");
           }
           updateRendererButton();
         };
       }
-      // Do NOT eagerly connect here: connecting spins up a GPU session before
-      // there is anything to show and risks a session conflict. We connect
-      // lazily when the first scene prompt arrives (see applyScene).
+      // In realtime mode, connect eagerly so the GPU session is warming while
+      // the intro scene generates — the video then starts as soon as the first
+      // scene prompt arrives. (Falls back to stills if it can't connect.)
+      if (this.mode === "reactor" && this.reactorAvailable()) {
+        window.ReactorRenderer.enable().then((ok) => {
+          if (ok && Renderer.lastPrompt) window.ReactorRenderer.setPrompt(Renderer.lastPrompt);
+        });
+      }
       updateRendererButton();
     },
 
@@ -315,14 +339,17 @@
     setMode(mode) {
       if (mode === this.mode) return;
       this.mode = mode;
+      this.explicit = true;
       try { localStorage.setItem("scene_renderer", mode); } catch (_) {}
       if (mode === "reactor" && this.reactorAvailable()) {
+        showRendererToast("Realtime video — connecting…");
         window.ReactorRenderer.enable().then((ok) => {
           // Steer the current scene immediately so switching mid-game shows
           // something without waiting for the next turn.
           if (ok && Renderer.lastPrompt) window.ReactorRenderer.setPrompt(Renderer.lastPrompt);
         });
       } else if (this.reactorAvailable()) {
+        showRendererToast("Still images");
         try { window.ReactorRenderer.disable(); } catch (_) {}
       }
       updateRendererButton();
@@ -349,6 +376,23 @@
         : status === "connecting"
           ? "Renderer: realtime — connecting…"
           : "Renderer: realtime — showing stills until it connects (G)";
+  }
+
+  // Small transient on-screen note so it's obvious which renderer is active
+  // (useful while testing / toggling with the G key).
+  let _rendererToastTimer = null;
+  function showRendererToast(text) {
+    let toast = document.getElementById("renderer-toast");
+    if (!toast) {
+      toast = document.createElement("div");
+      toast.id = "renderer-toast";
+      toast.className = "renderer-toast";
+      document.body.appendChild(toast);
+    }
+    toast.textContent = text;
+    toast.classList.add("show");
+    clearTimeout(_rendererToastTimer);
+    _rendererToastTimer = setTimeout(() => toast.classList.remove("show"), 2200);
   }
 
   // ------------------------------------------------------------------
@@ -1041,7 +1085,7 @@
     document.addEventListener("pointerdown", unlockAudio, { once: true });
     document.addEventListener("keydown", unlockAudio, { once: true });
 
-    Renderer.init();
+    Renderer.init(); // async: resolves default renderer + warms realtime session
     initVhsGrain();
     initKeyboardInset();
     cycleVeilMessages();
