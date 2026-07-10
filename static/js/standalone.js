@@ -10,7 +10,8 @@
   const STATUS_INTERVAL_MS = 4000;
   const FAST_POLL_INTERVAL_MS = 800; // used right after a choice, while waiting for the turn to resolve
   const FAST_POLL_TIMEOUT_MS = 45000; // give up waiting fast after this long and fall back to normal polling
-  const AUTOPLAY_DELAY_MS = 4500; // read beat after choices appear before auto-advancing
+  const AUTOPLAY_FRAME_DELAY_MS = 350;  // advance almost immediately once the new frame renders
+  const AUTOPLAY_FALLBACK_MS = 6000;    // if no image arrives, advance anyway after this
 
   const INTERIM_MESSAGES = [
     "Transmitting...",
@@ -337,6 +338,9 @@
         // placeholder content ("The scene shifts...") is intentionally NOT
         // added to the prose feed — it would just be noise over the art.
         Sound.scene(); // audible cue that the scene has materialised
+        // Auto-play: the new frame just rendered — submit the next turn now
+        // (minus a tiny beat), so advancement is gated only by generation lag.
+        if (state.autoPlay) scheduleAutoAdvance(AUTOPLAY_FRAME_DELAY_MS);
         return;
 
       case "game_over":
@@ -497,7 +501,7 @@
   // ------------------------------------------------------------------
   // Auto-play — the world advances on its own via the forward hub
   // ------------------------------------------------------------------
-  function scheduleAutoAdvance() {
+  function scheduleAutoAdvance(delay) {
     clearTimeout(state.autoTimer);
     if (!state.autoPlay) return;
     state.autoTimer = setTimeout(() => {
@@ -507,7 +511,7 @@
           !state.freeWillOpen && !tapeIsOpen() && el.choices.children.length) {
         moveForward();
       }
-    }, AUTOPLAY_DELAY_MS);
+    }, delay == null ? AUTOPLAY_FALLBACK_MS : delay);
   }
 
   function setAutoPlay(on) {
@@ -515,7 +519,7 @@
     el.autoplayBtn.classList.toggle("on", on);
     el.autoplayLabel.textContent = on ? "STOP" : "AUTO-PLAY";
     el.autoplayBtn.title = on ? "Stop auto-play (P)" : "Auto-play — advance on its own (P)";
-    if (on) scheduleAutoAdvance();       // kick off from the current prompt
+    if (on) scheduleAutoAdvance(AUTOPLAY_FRAME_DELAY_MS); // start advancing right away
     else clearTimeout(state.autoTimer);  // pause
   }
 
