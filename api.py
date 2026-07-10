@@ -243,6 +243,54 @@ def api_reactor_token():
         traceback.print_exc()
         return error_response("Reactor token exchange error", str(e), code=502)
 
+
+@app.route('/api/reactor/health', methods=['GET'])
+def api_reactor_health():
+    """Honest, server-side realtime readiness probe.
+
+    This exists because "is realtime working?" kept getting answered from
+    `/api/reactor/config` (which only says a key EXISTS) — that is not the same
+    as realtime actually playing. This endpoint verifies only what the server
+    can truly verify:
+      • an API key is configured, and
+      • a short-lived token can really be minted (the auth path the browser
+        depends on).
+
+    It CANNOT confirm the browser will receive live WebRTC video frames — that
+    depends on the client GPU/network and Reactor's live session, which only the
+    in-page Realtime HUD can measure (decoded-frame fps). So `ready: true` here
+    means "the server side is wired correctly", NOT "realtime is proven to
+    play". `verifies_video` is always false on purpose; don't overclaim from it.
+    """
+    key = os.getenv("REACTOR_API_KEY")
+    result = {
+        "configured": bool(key),
+        "renderer_default": getattr(engine, "SCENE_RENDERER", "image"),
+        "model_name": os.getenv("REACTOR_MODEL", "reactor/lingbot-world-2"),
+        "token_ok": False,
+        "verifies_video": False,  # the server can never confirm client-side frames
+        "note": ("Server-side readiness only. Live video is verified in the browser "
+                 "by the Realtime HUD (measured fps), not here."),
+    }
+    if not key:
+        result["ready"] = False
+        result["detail"] = "REACTOR_API_KEY not set — realtime is disabled; the game shows stills."
+        return jsonify(result), 200
+    try:
+        import requests
+        resp = requests.post(
+            REACTOR_TOKEN_URL,
+            headers={"Reactor-API-Key": key},
+            timeout=15,
+        )
+        result["token_ok"] = resp.status_code == 200
+        if resp.status_code != 200:
+            result["detail"] = f"token exchange HTTP {resp.status_code}: {resp.text[:200]}"
+    except Exception as e:
+        result["detail"] = f"token exchange error: {e}"
+    result["ready"] = bool(result["token_ok"])
+    return jsonify(result), 200
+
 # ═══════════════════════════════════════════════════════════════════
 # HELPER FUNCTIONS
 # ═══════════════════════════════════════════════════════════════════
