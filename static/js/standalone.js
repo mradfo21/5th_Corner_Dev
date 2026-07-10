@@ -341,9 +341,11 @@
       if (meta && meta.base) this.lastBase = meta.base;
       if (this.mode === "reactor" && this.reactorAvailable()) {
         if (scene.prompt) window.ReactorRenderer.applyScene(scene);
-        // Keep the still painted behind the video so a Reactor failure or the
-        // pre-"ready" window still shows something coherent.
-        if (imageUrl) setScene(imageUrl);
+        // Paint the still ONLY while the live video isn't actually covering the
+        // screen (connecting, reset gap, or fallback). Once the video is showing
+        // real frames it's the single source of truth — repainting stills under
+        // it is what caused the "image → video → old image" flicker.
+        if (imageUrl && !window.ReactorRenderer.isShowing()) setScene(imageUrl);
         return;
       }
       if (imageUrl) setScene(imageUrl);
@@ -351,6 +353,16 @@
 
     setMode(mode) {
       if (mode === this.mode) return;
+      // Don't switch INTO realtime until a scene is actually ready to steer from
+      // (we have a generated still + prompt). Prevents entering realtime on a
+      // blank/half-loaded state.
+      if (mode === "reactor") {
+        if (!this.reactorAvailable()) { showRendererToast("Realtime unavailable"); return; }
+        if (!this.lastScene || !this.lastScene.imageUrl || !this.lastScene.prompt) {
+          showRendererToast("Realtime starts once a scene is ready");
+          return;
+        }
+      }
       this.mode = mode;
       this.explicit = true;
       try { localStorage.setItem("scene_renderer", mode); } catch (_) {}

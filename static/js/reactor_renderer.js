@@ -56,6 +56,9 @@
     cfg: { model_name: FALLBACK_MODEL, enabled: false },
     connecting: false,
     status: "off",
+    showSuppressed: false, // keep the video hidden during reset gaps
+    frameWatch: false,
+    frameWatchTimer: null,
   };
 
   function log() { try { console.log.apply(console, ["[reactor]", ...arguments]); } catch (_) {} }
@@ -98,10 +101,43 @@
     const video = getVideo();
     if (!video) return;
     video.srcObject = stream || new MediaStream([track]);
-    video.classList.remove("hidden");
     video.play().catch(() => {});
-    setStatus("live");
-    log("main_video attached");
+    // Keep the video hidden until it actually produces decoded frames, so the
+    // still image stays on screen until the world model is genuinely "ready to
+    // go" — no black or old-frame takeover, no flashing between still and video.
+    startFrameWatch(video);
+    log("main_video attached (awaiting first frame)");
+  }
+
+  // Reveal the video the moment it has real decoded frames (videoWidth > 0),
+  // unless we're mid-reset. This is the single hand-off from still -> video.
+  function revealIfFrames(video) {
+    if (rstate.showSuppressed) return;
+    if (video.videoWidth > 0) {
+      if (video.classList.contains("hidden")) video.classList.remove("hidden");
+      if (rstate.status !== "live") setStatus("live");
+    }
+  }
+
+  function startFrameWatch(video) {
+    if (rstate.frameWatch) return;
+    rstate.frameWatch = true;
+    if (typeof video.requestVideoFrameCallback === "function") {
+      const cb = () => {
+        if (!rstate.reactor) { rstate.frameWatch = false; return; }
+        revealIfFrames(video);
+        try { video.requestVideoFrameCallback(cb); } catch (_) { rstate.frameWatch = false; }
+      };
+      try { video.requestVideoFrameCallback(cb); } catch (_) { rstate.frameWatch = false; }
+    } else {
+      const onp = () => revealIfFrames(video);
+      video.addEventListener("playing", onp);
+      video.addEventListener("timeupdate", onp);
+      rstate.frameWatchTimer = setInterval(() => {
+        if (!rstate.reactor) { clearInterval(rstate.frameWatchTimer); rstate.frameWatch = false; return; }
+        revealIfFrames(video);
+      }, 400);
+    }
   }
 
   // Fetch our own generated still and upload it to Reactor, returning a FileRef
@@ -155,6 +191,7 @@
           await cmd("set_image_strength", { image_strength: IMAGE_STRENGTH });
           await cmd("set_image", { image: ref });
         }
+        rstate.showSuppressed = false; // allow the video to reveal once frames flow
         await cmd("start", {});
         rstate.started = true;
         rstate.lastPrompt = s.prompt;
@@ -240,6 +277,9 @@
     rstate.lastPrompt = null;
     rstate.lastImageUrl = null;
     rstate.lastRef = null;
+    rstate.showSuppressed = false;
+    rstate.frameWatch = false;
+    if (rstate.frameWatchTimer) { clearInterval(rstate.frameWatchTimer); rstate.frameWatchTimer = null; }
     const video = getVideo();
     if (video) { video.classList.add("hidden"); try { video.srcObject = null; } catch (_) {} }
     const r = rstate.reactor;
@@ -255,6 +295,12 @@
     rstate.lastImageUrl = null;
     rstate.lastRef = null;
     rstate.paused = false;
+    // Hide the (now-stale) video during the reset gap so the fresh still shows
+    // until the new run's first frame is ready — no old-scene bleed-through.
+    rstate.showSuppressed = true;
+    const v = getVideo();
+    if (v) v.classList.add("hidden");
+    if (rstate.status === "live") setStatus("connecting");
     if (!rstate.reactor || !rstate.ready) return;
     try { await cmd("reset", {}); } catch (err) { log("reset failed", err); }
   }
@@ -276,6 +322,12 @@
     getStatus: () => rstate.status,
     isActive: () => rstate.active,
     isReady: () => rstate.ready,
+    // True only when the video is actually on-screen with decoded frames — the
+    // signal the client uses to stop repainting the still behind it.
+    isShowing: () => {
+      const v = rstate.video || document.getElementById("reactor-video");
+      return !!(v && !v.classList.contains("hidden") && v.videoWidth > 0);
+    },
     onStatus: null,
   };
 })();
