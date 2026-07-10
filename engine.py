@@ -549,6 +549,11 @@ def create_feed_item(type: str, content: str, image_url: Optional[str] = None, c
 def log_error(message: str):
     print(f"ERROR: {message}", file=sys.stderr, flush=True)
 
+class _SkipImage(Exception):
+    """Internal sentinel: skip inline image generation (feed path streams it)."""
+    pass
+
+
 def _to_web_image_url(image_path) -> Optional[str]:
     """Convert an image path from _gen_image into a browser-servable URL for
     the standalone feed.
@@ -2979,12 +2984,13 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
 
     SID = 'default'
     try:
-        # ── PHASE 1: consequence dispatch + image (bumps chaos, evolves world) ──
-        p1 = advance_turn_image_fast(choice, fate="NORMAL", is_timeout_penalty=False, session_id=SID)
+        # ── PHASE 1: consequence dispatch + world evolution (fast text, NO image) ──
+        # The scene image is generated asynchronously so choices come back fast.
+        p1 = advance_turn_image_fast(choice, fate="NORMAL", is_timeout_penalty=False, session_id=SID, skip_image=True)
         state = _load_state(SID)
 
         dispatch_text = (p1.get("dispatch") or "").strip() or "The situation evolves..."
-        consequence_img_url = p1.get("consequence_image")
+        consequence_img_url = None  # streamed in asynchronously below
         vision_dispatch_text = p1.get("vision_dispatch", "")
         player_alive = state.get("player_state", {}).get("alive", True)
 
@@ -3009,13 +3015,6 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
         except Exception as e_pick:
             log_error(f"Error detecting item pickups: {e_pick}")
 
-        # consequence_img_url is an absolute path (kept for vision/history);
-        # the feed/browser needs the servable /images/<file> form.
-        web_img_url = _to_web_image_url(consequence_img_url)
-        if web_img_url:
-            state['current_image_url'] = web_img_url
-            turn_items.append(create_feed_item(type="scene_image", content="The scene shifts...", image_url=web_img_url))
-
         with WORLD_STATE_LOCK:
             state.setdefault("feed_log", []).extend(turn_items)
             _save_state(state, SID)
@@ -3025,7 +3024,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             game_over_item = create_feed_item(type="game_over", content="You have succumbed to the horrors. The transmission ends.")
             game_over_choices = _structure_choices_for_feed(
                 ["Restart Simulation"], "GAME OVER",
-                image_url=web_img_url or state.get("current_image_url"),
+                image_url=state.get("current_image_url"),
             )
             with WORLD_STATE_LOCK:
                 state.setdefault("feed_log", []).append(game_over_item)
@@ -3034,17 +3033,28 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                 _save_state(state, SID)
             return
 
-        # ── PHASE 2: choices (also appends this turn to session history) ──
+        # ── Stream the scene image asynchronously (don't block choices on it) ──
+        _spawn_scene_image_async(
+            caption=vision_dispatch_text or dispatch_text,
+            dispatch=dispatch_text,
+            choice=choice,
+            frame_idx=int(p1.get("frame_idx", 1)),
+            world_prompt=state.get("world_prompt", ""),
+            hard_transition=bool(p1.get("hard_transition", False)),
+            session_id=SID,
+        )
+
+        # ── PHASE 2: choices (text-grounded; image streams in separately) ──
         p2 = advance_turn_choices_deferred(
-            consequence_img_url, dispatch_text, vision_dispatch_text, choice,
-            p1.get("consequence_image_prompt", ""), p1.get("hard_transition", False), SID,
+            None, dispatch_text, vision_dispatch_text, choice,
+            "", p1.get("hard_transition", False), SID,
         )
         state = _load_state(SID)
 
         next_choices = [c for c in (p2.get("choices") or []) if c and c.strip() and c.strip() != "\u2014"]
         prompt_item = _structure_choices_for_feed(
             next_choices, "What do you do next?",
-            state.get("current_image_url") or web_img_url,
+            state.get("current_image_url"),
         )
 
         with WORLD_STATE_LOCK:
@@ -3105,8 +3115,11 @@ def _spawn_scene_image_async(caption: str, dispatch: str, choice: str, frame_idx
         return
 
     def _worker():
-        global state
+        global state, history
         try:
+            # _gen_image reads the module-global `history` to collect img2img
+            # reference frames — make sure it reflects this session.
+            history = _load_history(session_id)
             result = _gen_image(
                 caption=caption or dispatch,
                 mode="normal",
@@ -3129,6 +3142,14 @@ def _spawn_scene_image_async(caption: str, dispatch: str, choice: str, frame_idx
                 st.setdefault('feed_log', []).append(item)
                 _save_state(st, session_id)
                 state = st
+                # Write the absolute image path back into the latest history
+                # entry so the NEXT turn's img2img can use it for continuity.
+                hist = _load_history(session_id)
+                if hist:
+                    hist[-1]["image"] = img_path
+                    hist[-1]["image_url"] = img_path
+                    _save_history(hist, session_id)
+                    history = hist
             print(f"[ASYNC IMG] scene appended for {session_id}: {web}", flush=True)
         except Exception as e:
             log_error(f"[ASYNC IMG] failed: {e}")
@@ -3748,9 +3769,13 @@ def summarize_world_state_diff(prev_state: dict, state: dict) -> str:
     return "; ".join(diffs)
 
 # ───────── game loop ──────────────────────────────────────────────────────────
-def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalty: bool = False, session_id: str = 'default') -> dict:
+def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalty: bool = False, session_id: str = 'default', skip_image: bool = False) -> dict:
     """
     PHASE 1 (FAST): Generate dispatch and image, return immediately.
+
+    skip_image=True generates only the dispatch + world evolution (fast text)
+    and returns without the image, so the feed path can render narrative +
+    choices immediately and stream the scene image in asynchronously.
     
     Args:
         session_id: Session ID for state management
@@ -3850,6 +3875,10 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
         consequence_img_prompt = ""  # Initialize to prevent undefined variable error
         consequence_video_url = None  # Initialize to prevent UnboundLocalError if _gen_image raises before its internal assignment
         try:
+            if skip_image:
+                # Feed path streams the image asynchronously; skip the slow
+                # inline generation so the turn resolves fast.
+                raise _SkipImage()
             last_image_path = None
             if history and len(history) > 0:
                 for entry in reversed(history):
@@ -3899,6 +3928,8 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             
             if consequence_video_url:
                 print(f"[IMG FAST] Video ready: {consequence_video_url}")
+        except _SkipImage:
+            pass  # feed path renders the image asynchronously
         except Exception as e:
             print(f"[IMG FAST] Error: {e}")
             import traceback
@@ -3911,6 +3942,7 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             "consequence_image_prompt": consequence_img_prompt,
             "consequence_video": consequence_video_url,  # Video path for HD mode playback
             "hard_transition": hard_transition,  # Track location changes for reference buffer
+            "frame_idx": frame_idx,  # for async image generation on the feed path
             "evolution_summary": state.get("evolution_summary", ""),  # Include world changes
             "phase": state["current_phase"],
             "chaos": state["chaos_level"],
