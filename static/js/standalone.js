@@ -87,6 +87,8 @@
     freeWillOpen: false,
     autoPlay: false,
     autoTimer: null,
+    currentPromptId: null,     // id of the latest choice prompt (the live decision point)
+    lastAdvancedPromptId: null, // guard: auto-advance at most once per prompt
   };
 
   // ------------------------------------------------------------------
@@ -364,8 +366,12 @@
         Sound.choices();
         hideVeil();
         state.awaitingResolution = false;
+        // New decision point: these are now the live/latest choices. Auto-play
+        // will advance against THIS prompt (and only once).
+        state.currentPromptId = item.id;
         refreshStatus(); // reflect turn/chaos/inventory promptly, not on the 4s tick
-        scheduleAutoAdvance(); // if auto-play is on, advance after a read beat
+        // Prefer advancing when this turn's frame renders; fall back if none.
+        scheduleAutoAdvance();
         return;
 
       case "error_event":
@@ -430,6 +436,9 @@
       state.renderedIds = new Set();
       state.awaitingResolution = false;
       state.gameOver = false;
+      state.currentPromptId = null;
+      state.lastAdvancedPromptId = null;
+      clearTimeout(state.autoTimer);
       closeFreeWill(true);
       renderInventory([]);
       startTimecode();
@@ -505,10 +514,16 @@
     clearTimeout(state.autoTimer);
     if (!state.autoPlay) return;
     state.autoTimer = setTimeout(() => {
-      // Only advance if we're idle: not mid-turn, not dead, not typing, not
-      // watching the tape, and choices are actually available.
+      // Advance only when idle AND we haven't already advanced this decision
+      // point — so a late/stale frame can't fire against newer choices, and we
+      // always commit one of the CURRENT prompt's choices (frame + choices in
+      // lockstep).
       if (state.autoPlay && !state.processing && !state.gameOver &&
-          !state.freeWillOpen && !tapeIsOpen() && el.choices.children.length) {
+          !state.freeWillOpen && !tapeIsOpen() &&
+          el.choices.children.length &&
+          state.currentPromptId != null &&
+          state.currentPromptId !== state.lastAdvancedPromptId) {
+        state.lastAdvancedPromptId = state.currentPromptId;
         moveForward();
       }
     }, delay == null ? AUTOPLAY_FALLBACK_MS : delay);
