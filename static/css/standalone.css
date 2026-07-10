@@ -786,9 +786,8 @@ html, body {
 
 /* ---------- VHS tape playback button (top-right) ---------- */
 
-#tape-btn {
+#tape-btn, #autoplay-btn {
   position: fixed;
-  top: calc(env(safe-area-inset-top, 0px) + 40px);
   right: calc(env(safe-area-inset-right, 0px) + 16px);
   z-index: 12;
   display: inline-flex;
@@ -807,7 +806,26 @@ html, body {
   text-shadow: 0 1px 3px rgba(0,0,0,0.8);
   transition: border-color 0.14s, color 0.14s, box-shadow 0.14s;
 }
-#tape-btn:hover { border-color: rgba(142,255,193,0.8); color: #eafff2; box-shadow: 0 0 12px rgba(142,255,193,0.28); }
+#tape-btn { top: calc(env(safe-area-inset-top, 0px) + 40px); }
+#autoplay-btn { top: calc(env(safe-area-inset-top, 0px) + 74px); }
+#tape-btn:hover, #autoplay-btn:hover { border-color: rgba(142,255,193,0.8); color: #eafff2; box-shadow: 0 0 12px rgba(142,255,193,0.28); }
+
+/* Auto-play running state: glowing, with a pulsing dot. */
+#autoplay-btn.on {
+  border-color: rgba(142,255,193,0.85);
+  color: #eafff2;
+  box-shadow: 0 0 14px rgba(142,255,193,0.35);
+}
+.autoplay-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: rgba(142,255,193,0.35);
+}
+#autoplay-btn.on .autoplay-dot {
+  background: #8effc1;
+  box-shadow: 0 0 8px rgba(142,255,193,0.9);
+  animation: autoplay-pulse 1.4s ease-in-out infinite;
+}
+@keyframes autoplay-pulse { 0%,100% { opacity: 0.5; } 50% { opacity: 1; } }
 .tape-tri {
   width: 0; height: 0;
   border-left: 9px solid #8effc1;
