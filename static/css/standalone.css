@@ -136,26 +136,29 @@ html, body {
 
 #prose-feed {
   position: fixed;
-  top: calc(env(safe-area-inset-top, 0px) + 42px);
-  left: calc(env(safe-area-inset-left, 0px) + 26px);
-  width: min(46vw, 460px);
-  max-height: 56vh;
+  top: calc(env(safe-area-inset-top, 0px) + 40px);
+  left: calc(env(safe-area-inset-left, 0px) + 28px);
+  width: min(38vw, 400px);
+  max-height: 52vh;
   z-index: 6;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 5px;
   scrollbar-width: none;
+  /* Subtle, ambient — the scene is the star. */
+  opacity: 0.52;
 }
 #prose-feed::-webkit-scrollbar { display: none; }
 
 .prose-entry {
   margin: 0;
   animation: pop-in 0.42s cubic-bezier(0.2, 0.9, 0.25, 1.2) both;
-  font-size: 15px;
-  line-height: 1.45;
-  /* Strong shadow so text stays legible directly over the scene. */
-  text-shadow: 0 1px 5px rgba(0,0,0,0.95), 0 0 3px rgba(0,0,0,0.95), 0 0 12px rgba(0,0,0,0.7);
+  font-size: 13px;
+  line-height: 1.5;
+  font-weight: 300;
+  letter-spacing: 0.01em;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.9);
 }
 
 @keyframes pop-in {
@@ -409,11 +412,10 @@ html, body {
   z-index: 10;
 }
 
+/* Generated choices are hidden — the player advances via the forward hub
+   (random action) or ACT (free will). Kept in the DOM so forward can pick one. */
 #choices-container {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  transition: opacity 0.2s ease;
+  display: none;
 }
 
 /* Options are pure glowing text — no background. */
@@ -513,7 +515,8 @@ html, body {
 
 .fw-icon { font-size: 14px; opacity: 0.95; }
 .fw-label { font-size: 7px; letter-spacing: 0.12em; opacity: 0.85; }
-.forward-icon { font-size: 22px; line-height: 1; opacity: 0.95; }
+.forward-icon { display: inline-flex; opacity: 0.95; }
+.forward-icon svg { width: 22px; height: 22px; display: block; }
 
 /* Free-will input: hidden until the ACT hub is tapped, then expands over the wheel. */
 #custom-form {
