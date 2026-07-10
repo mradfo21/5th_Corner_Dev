@@ -617,6 +617,85 @@ def _diegetic_dispatch(choice: str = "") -> str:
     idx = abs(hash(seed)) % len(_DIEGETIC_DISPATCHES)
     return _DIEGETIC_DISPATCHES[idx]
 
+
+# ───────── simulation feedback helpers (fate / phase / injuries) ─────────────
+# The web turn used to hardcode fate=NORMAL, leaving the LUCKY/UNLUCKY drama
+# engine (which the Discord path rolls per turn) switched off. This mirrors
+# bot.compute_fate() but is phase-aware and dependency-free (no discord import).
+def _roll_fate(phase: str = "normal") -> str:
+    """Weighted luck roll for a turn. As the phase escalates the odds skew
+    toward UNLUCKY so the world gets more hostile the deeper the player goes."""
+    import random as _random
+    r = _random.random()
+    if phase == "critical":       # 15% lucky / 45% normal / 40% unlucky
+        return "LUCKY" if r < 0.15 else ("NORMAL" if r < 0.60 else "UNLUCKY")
+    if phase == "escalating":     # 20% / 50% / 30%
+        return "LUCKY" if r < 0.20 else ("NORMAL" if r < 0.70 else "UNLUCKY")
+    return "LUCKY" if r < 0.25 else ("NORMAL" if r < 0.75 else "UNLUCKY")  # normal
+
+
+# Phase names (normal → escalating → critical) match what the consequence and
+# world-tick prompts already reference for time-of-day progression; nothing
+# advanced the phase before, so it was a constant. chaos_level bumps +1/turn.
+def _escalate_phase(state: dict) -> str:
+    chaos = int(state.get("chaos_level", 0) or 0)
+    if chaos >= 12:
+        phase = "critical"
+    elif chaos >= 6:
+        phase = "escalating"
+    else:
+        phase = "normal"
+    state["current_phase"] = phase
+    return phase
+
+
+# Injury signals — words that mean the player took persistent bodily harm. We
+# require one of these (not bare body-part words) to avoid false positives.
+_INJURY_SIGNALS = (
+    "bleed", "blood", "wound", "gash", "laceration", "lacerat", "sprain",
+    "fracture", "broken bone", "burn", "scorch", "sear", "graze", "grazed",
+    "bruise", "bruised", "dislocat", "impaled", "puncture", "torn muscle",
+    "gouge", "twisted ankle", "cracked rib", "split lip", "deep cut",
+)
+
+
+def _extract_injury(dispatch: str) -> Optional[str]:
+    """Pull a concise, grounded wound label from the dispatch prose when it
+    describes bodily harm, so injuries can persist into future turns. Returns
+    None when no injury is described."""
+    if not dispatch:
+        return None
+    low = dispatch.lower()
+    if not any(sig in low for sig in _INJURY_SIGNALS):
+        return None
+    import re as _re
+    for sentence in _re.split(r'(?<=[.!?])\s+', dispatch.strip()):
+        sl = sentence.lower()
+        if any(sig in sl for sig in _INJURY_SIGNALS):
+            wound = sentence.strip()
+            return (wound[:87] + "...") if len(wound) > 90 else wound
+    return None
+
+
+def _apply_injuries(state: dict, dispatch: str, is_timeout_penalty: bool = False) -> None:
+    """Persist wounds described in the dispatch onto state['injuries'] (a list
+    of short strings the dispatch/choice prompts already read), with natural
+    decay: capped at 3 (FIFO), and a chance to heal the oldest on wound-free
+    turns so the player isn't permanently crippled."""
+    import random as _random
+    injuries = [i for i in (state.get("injuries", []) or []) if isinstance(i, str)]
+    wound = _extract_injury(dispatch) if not is_timeout_penalty else None
+    if wound:
+        # Avoid logging a near-duplicate of the most recent wound.
+        if not injuries or injuries[-1][:30].lower() != wound[:30].lower():
+            injuries.append(wound)
+            injuries = injuries[-3:]  # cap → old wounds age out
+            print(f"[INJURY] recorded: {wound[:60]}")
+    elif injuries and _random.random() < 0.30:
+        healed = injuries.pop(0)  # a wound-free turn: oldest wound recovers
+        print(f"[INJURY] healed: {healed[:40]}")
+    state["injuries"] = injuries
+
 # ───────── prompt fragments ──────────────────────────────────────────────────
 choice_tmpl     = PROMPTS["player_choice_generation_instructions"]
 dispatch_sys    = PROMPTS["action_consequence_instructions"]
@@ -3016,7 +3095,8 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
         not a second check_player_death call.
       • Image + flipbook: produced inside _gen_image (Phase 1); no separate
         standalone flipbook copy.
-      • Fate: standalone runs at NORMAL fate (no per-turn fate roll here).
+      • Fate: standalone rolls fate per turn (_roll_fate), phase-biased, so the
+        LUCKY/UNLUCKY drama engine is live on the web path (not hardcoded NORMAL).
     """
     if signal_file_path:
         try:
@@ -3029,10 +3109,18 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
 
     SID = 'default'
     try:
+        # Roll fate per turn (LUCKY / NORMAL / UNLUCKY), biased by the current
+        # phase so the world turns more hostile as chaos rises. This connects the
+        # web path to the same drama engine the Discord path already uses; it was
+        # previously hardcoded to NORMAL, making every web turn flat.
+        _pre = _load_state(SID)
+        fate = _roll_fate(_pre.get("current_phase", "normal"))
+        print(f"[FATE] rolled {fate} (phase={_pre.get('current_phase', 'normal')})", flush=True)
+
         # ── PHASE 1: consequence dispatch only (fast text; NO image, async evolve) ──
         # Image and world-evolution run in the background so narrative + choices
         # return fast.
-        p1 = advance_turn_image_fast(choice, fate="NORMAL", is_timeout_penalty=False, session_id=SID, skip_image=True, skip_evolve=True)
+        p1 = advance_turn_image_fast(choice, fate=fate, is_timeout_penalty=False, session_id=SID, skip_image=True, skip_evolve=True)
         state = _load_state(SID)
 
         dispatch_text = (p1.get("dispatch") or "").strip() or "The situation evolves..."
@@ -3094,7 +3182,20 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                 _save_state(state, SID)
             return
 
-        # ── Stream the scene image asynchronously (don't block choices on it) ──
+        # ── PHASE 2: choices FIRST so this turn's history entry exists ──
+        # advance_turn_choices_deferred appends the history record. Running it
+        # before the image spawn lets the async image+vision worker reliably
+        # attach its rendered frame + vision analysis to THIS turn's entry,
+        # closing the vision→story loop for the next turn.
+        p2 = advance_turn_choices_deferred(
+            None, dispatch_text, vision_dispatch_text, choice,
+            "", p1.get("hard_transition", False), SID,
+        )
+        state = _load_state(SID)
+
+        # ── Stream the scene image asynchronously (don't block on it). The
+        # worker also analyzes the rendered frame and folds it back into the
+        # history entry Phase 2 just created. ──
         _spawn_scene_image_async(
             caption=vision_dispatch_text or dispatch_text,
             dispatch=dispatch_text,
@@ -3104,13 +3205,6 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             hard_transition=bool(p1.get("hard_transition", False)),
             session_id=SID,
         )
-
-        # ── PHASE 2: choices (text-grounded; image streams in separately) ──
-        p2 = advance_turn_choices_deferred(
-            None, dispatch_text, vision_dispatch_text, choice,
-            "", p1.get("hard_transition", False), SID,
-        )
-        state = _load_state(SID)
 
         next_choices = [c for c in (p2.get("choices") or []) if c and c.strip() and c.strip() != "\u2014"]
         prompt_item = _structure_choices_for_feed(
@@ -3196,6 +3290,23 @@ def _spawn_scene_image_async(caption: str, dispatch: str, choice: str, frame_idx
                 return
             web = _to_web_image_url(img_path)
             item = create_feed_item(type="scene_image", content="", image_url=web)
+
+            # Close the vision→story loop: analyze what was ACTUALLY rendered so
+            # the next turn's dispatch + choices are grounded on the real frame
+            # (not just the intended text). Runs here (off the turn's critical
+            # path) so it never slows the player-facing response.
+            vis_desc = vis_spatial = vis_setting = ""
+            if VISION_ENABLED:
+                try:
+                    va = _vision_analyze_all(img_path)
+                    vis_desc = va.get("description", "") or ""
+                    vis_spatial = va.get("spatial", "") or ""
+                    vis_setting = va.get("setting", "") or ""
+                    if vis_desc:
+                        print(f"[ASYNC VISION] {vis_desc[:80]}...", flush=True)
+                except Exception as _ve:
+                    log_error(f"[ASYNC VISION] failed: {_ve}")
+
             with WORLD_STATE_LOCK:
                 st = _load_state(session_id)
                 st['current_image_url'] = web
@@ -3204,11 +3315,20 @@ def _spawn_scene_image_async(caption: str, dispatch: str, choice: str, frame_idx
                 _save_state(st, session_id)
                 state = st
                 # Write the absolute image path back into the latest history
-                # entry so the NEXT turn's img2img can use it for continuity.
+                # entry so the NEXT turn's img2img can use it for continuity, and
+                # fold in the vision analysis so the next dispatch re-grounds on
+                # the rendered frame.
                 hist = _load_history(session_id)
                 if hist:
                     hist[-1]["image"] = img_path
                     hist[-1]["image_url"] = img_path
+                    hist[-1]["analysis_image"] = img_path
+                    if vis_desc:
+                        hist[-1]["vision_analysis"] = vis_desc
+                    if vis_spatial:
+                        hist[-1]["spatial_compass"] = vis_spatial
+                    if vis_setting:
+                        hist[-1]["setting_type"] = vis_setting
                     _save_history(hist, session_id)
                     history = hist
             print(f"[ASYNC IMG] scene appended for {session_id}: {web}", flush=True)
@@ -3694,6 +3814,12 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
         else:
             injury_str = str(injury_list)
         phase_str = state.get('current_phase', 'normal')
+        chaos_val = int(state.get('chaos_level', 0) or 0)
+        recent_events = state.get('recent_events', []) or []
+        if isinstance(recent_events, list) and recent_events:
+            recent_str = ' | '.join(str(e) for e in recent_events[-5:])
+        else:
+            recent_str = 'none yet (this is an early turn)'
 
         grounding_block = (
             f"\n\nDISCOVERED ENTITIES (these are the only things on the board — "
@@ -3701,7 +3827,10 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
             f"{seen_str or 'none yet'}\n"
             f"INJURY STATE (persistent wounds — reference at least once if non-empty): "
             f"{injury_str}\n"
-            f"STORY PHASE: {phase_str}\n"
+            f"RECENT EVENTS (most recent last — your dispatch MUST stay consistent "
+            f"with this history; do not contradict or forget it): {recent_str}\n"
+            f"STORY PHASE: {phase_str}  |  ESCALATION (chaos level, higher = the "
+            f"world is more hostile and the tension should be tighter): {chaos_val}\n"
         )
 
         # Use JUST the dispatch_sys instructions (which has JSON format)
@@ -3895,7 +4024,16 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
         state_file_path = _get_state_path(session_id)
         generate_and_apply_choice(choice, state_path=str(state_file_path))
         state = _load_state(session_id)
-        
+
+        # Advance the story phase from the (now-bumped) chaos level BEFORE the
+        # dispatch is generated, so the consequence prompt's grounding block and
+        # time-of-day progression see the current escalation tier.
+        if not is_timeout_penalty:
+            new_phase = _escalate_phase(state)
+            if new_phase != prev_state.get("current_phase", "normal"):
+                print(f"[PHASE] escalated {prev_state.get('current_phase','normal')} -> {new_phase} (chaos={state.get('chaos_level')})")
+            _save_state(state, session_id)
+
         # Get previous vision and image
         # Use vision_analysis (actual image analysis) over vision_dispatch (narrative text)
         # for better spatial continuity in the next dispatch generation
@@ -3939,9 +4077,23 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             degraded = True
         if not vision_dispatch or vision_dispatch.strip().lower() in {"none", "", "[", "[]"} or _is_failure_dispatch(vision_dispatch):
             vision_dispatch = dispatch
-        
-        # Evolve world state.
-        consequence_summary = summarize_world_state_diff(prev_state, state)
+
+        # Persist any wound described this turn so future dispatches/choices can
+        # reference it (the grounding block + choice prompt already read
+        # state['injuries'] — it was just never populated).
+        if not degraded:
+            _apply_injuries(state, dispatch, is_timeout_penalty)
+            _save_state(state, session_id)
+
+        # Evolve world state. Feed it the REAL action + narrative outcome (not
+        # just a thin state-diff), so the living world_prompt actually reflects
+        # what the player just experienced instead of drifting.
+        state_diff = summarize_world_state_diff(prev_state, state)
+        consequence_summary = (
+            f"PLAYER ACTION: {choice}\n"
+            f"WHAT HAPPENED: {dispatch}\n"
+            f"STATE CHANGE: {state_diff}"
+        )
         if skip_evolve:
             # Feed path: run the (slow, ~1k-token) world evolution in the
             # background so the turn's narrative + choices return fast. It only

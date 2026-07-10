@@ -200,8 +200,21 @@ RETURN ONLY THE NEW WORLD PROMPT TEXT - NO PREAMBLE, NO EXPLANATION, JUST THE EV
     # Update state with new world prompt
     state["world_prompt"] = new_world_prompt
     
-    # Add to recent events buffer (cap at 10)
-    event_summary = f"{player_action} -> {consequence_summary[:80]}"
+    # Add to recent events buffer (cap at 10). The caller may pass a structured
+    # multi-line consequence ("PLAYER ACTION: ...\nWHAT HAPPENED: ...\nSTATE
+    # CHANGE: ..."); extract the clean action + outcome for a tidy buffer entry.
+    action_for_log = player_action
+    outcome_for_log = consequence_summary
+    if "WHAT HAPPENED:" in consequence_summary:
+        try:
+            for line in consequence_summary.splitlines():
+                if line.startswith("PLAYER ACTION:"):
+                    action_for_log = line.split(":", 1)[1].strip() or action_for_log
+                elif line.startswith("WHAT HAPPENED:"):
+                    outcome_for_log = line.split(":", 1)[1].strip()
+        except Exception:
+            pass
+    event_summary = f"{action_for_log} -> {outcome_for_log[:100]}"
     state["recent_events"].append(event_summary)
     if len(state["recent_events"]) > 10:
         state["recent_events"] = state["recent_events"][-10:]
