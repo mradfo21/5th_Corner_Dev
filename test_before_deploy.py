@@ -1054,9 +1054,10 @@ try:
     prompts_src  = (workspace / "prompts" / "simulation_prompts.json").read_text(encoding="utf-8")
 
     checks = [
-        ("vision URL no longer routes to retired gemini-2.0-flash-exp",
+        ("vision URL uses current gemini-2.5-flash (retired 2.0 models gone)",
          "models/gemini-2.0-flash-exp:generateContent" not in engine_src
-         and "models/gemini-2.0-flash:generateContent" in engine_src),
+         and "models/gemini-2.0-flash:generateContent" not in engine_src
+         and "models/gemini-2.5-flash:generateContent" in engine_src),
         ("Full Frame is the default experience mode in the dropdown",
          "EXPERIENCE_MODE_FULL_FRAME" in bot_src
          and bot_src.find("EXPERIENCE_MODE_FULL_FRAME,\n                        description=\"Single photorealistic still image per turn\",\n                        default=True,") != -1),

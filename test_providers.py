@@ -81,10 +81,10 @@ class TestActiveBackend(unittest.TestCase):
 
 class TestModelMap(unittest.TestCase):
     def test_model_map_gpt4o(self):
-        self.assertEqual(apm.resolve_model("gpt-4o"), "gemini-2.0-flash")
+        self.assertEqual(apm.resolve_model("gpt-4o"), "gemini-2.5-flash")
 
     def test_model_map_gpt4o_mini(self):
-        self.assertEqual(apm.resolve_model("gpt-4o-mini"), "gemini-2.0-flash")
+        self.assertEqual(apm.resolve_model("gpt-4o-mini"), "gemini-2.5-flash")
 
     def test_model_map_gpt_image_1(self):
         self.assertEqual(apm.resolve_model("gpt-image-1"), "gemini-2.5-flash-image")

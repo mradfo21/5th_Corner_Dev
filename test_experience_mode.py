@@ -753,9 +753,9 @@ class TestPacingFairnessHardening(unittest.TestCase):
             "engine.py must NOT route any API call to gemini-2.0-flash-exp",
         )
         self.assertIn(
-            "models/gemini-2.0-flash:generateContent",
+            "models/gemini-2.5-flash:generateContent",
             self.engine_src,
-            "engine.py vision URL must use the production gemini-2.0-flash model",
+            "engine.py vision URL must use the current gemini-2.5-flash model",
         )
 
     # -- Default mode --

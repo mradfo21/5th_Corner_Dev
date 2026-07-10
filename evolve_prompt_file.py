@@ -152,7 +152,7 @@ RETURN ONLY THE NEW WORLD PROMPT TEXT - NO PREAMBLE, NO EXPLANATION, JUST THE EV
     try:
         print("[WORLD EVOLUTION V3] Calling LLM to evolve world prompt...")
         response = requests.post(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
             headers={
                 "x-goog-api-key": api_key,
                 "Content-Type": "application/json"
@@ -286,7 +286,7 @@ Write a tense, atmospheric sentence (15-25 words) describing what's changed:"""
 
     try:
         response = requests.post(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
             headers={
                 "x-goog-api-key": api_key,
                 "Content-Type": "application/json"
@@ -381,7 +381,7 @@ Return ONLY the entities or "NONE":"""
     
     try:
         response = requests.post(
-            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+            "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
             headers={
                 "x-goog-api-key": api_key,
                 "Content-Type": "application/json"

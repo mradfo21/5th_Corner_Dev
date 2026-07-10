@@ -42,14 +42,14 @@ def load_ai_config() -> Dict[str, Any]:
             print("[AI CONFIG] File not found, creating default...", flush=True)
             default_config = {
                 "text_provider": "gemini",
-                "text_model": "gemini-2.0-flash",
+                "text_model": "gemini-2.5-flash",
                 "image_provider": "gemini",
                 "image_model": "gemini-3-pro-image-preview",
                 "last_updated": datetime.now(timezone.utc).isoformat(),
                 "available_configs": {
                     "gemini": {
                         "text_provider": "gemini",
-                        "text_model": "gemini-2.0-flash",
+                        "text_model": "gemini-2.5-flash",
                         "image_provider": "gemini",
                         "image_model": "gemini-3-pro-image-preview"
                     },
@@ -108,7 +108,7 @@ def get_text_provider() -> str:
 def get_text_model() -> str:
     """Get current text generation model."""
     _ensure_initialized()
-    return load_ai_config().get("text_model", "gemini-2.0-flash")
+    return load_ai_config().get("text_model", "gemini-2.5-flash")
 
 def get_image_provider() -> str:
     """Get current image generation provider."""
@@ -207,10 +207,10 @@ _backend_override: Optional[str] = None
 # Lets old call sites that still pass "gpt-4o" etc. keep working under
 # whichever provider is actually configured.
 MODEL_MAP: Dict[str, str] = {
-    "gpt-4o": "gemini-2.0-flash",
-    "gpt-4o-mini": "gemini-2.0-flash",
-    "gpt-4o-vision": "gemini-2.0-flash",
-    "gpt-4-vision-preview": "gemini-2.0-flash",
+    "gpt-4o": "gemini-2.5-flash",
+    "gpt-4o-mini": "gemini-2.5-flash",
+    "gpt-4o-vision": "gemini-2.5-flash",
+    "gpt-4-vision-preview": "gemini-2.5-flash",
     "gpt-image-1": "gemini-2.5-flash-image",
     "dall-e-3": "gemini-2.5-flash-image",
 }
