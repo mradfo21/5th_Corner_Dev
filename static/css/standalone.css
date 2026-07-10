@@ -743,10 +743,12 @@ html, body {
   inset: 0;
   z-index: 20;
   display: flex;
-  align-items: center;
+  align-items: flex-end;      /* status line sits low, above the action zone */
   justify-content: center;
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 200px);
+  pointer-events: none;       /* never intercept taps on the scene/controls */
   /* No full-screen dimming — the generated scene stays fully visible.
-     Only the compact indicator below is shown while a turn resolves. */
+     Only the compact status line is shown while a turn resolves. */
   background: transparent;
   opacity: 1;
   transition: opacity 0.55s ease;
@@ -760,16 +762,26 @@ html, body {
 /* Compact, self-contained "working" badge that floats over the scene
    instead of a painful full-screen scrim. */
 .veil-inner {
-  text-align: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
   color: #8effc1;
-  padding: 14px 22px;
-  border-radius: 12px;
-  background: rgba(3, 7, 5, 0.5);
-  border: 1px solid rgba(142, 255, 193, 0.28);
-  box-shadow: 0 0 26px rgba(0, 0, 0, 0.45), inset 0 0 18px rgba(0, 0, 0, 0.35);
-  backdrop-filter: blur(3px);
+  padding: 9px 16px;
+  border-radius: 999px;
+  background: rgba(3, 7, 5, 0.62);
+  border: 1px solid rgba(142, 255, 193, 0.3);
+  box-shadow: 0 0 22px rgba(0, 0, 0, 0.45), inset 0 0 14px rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(4px);
   animation: veil-badge-pulse 2.2s ease-in-out infinite;
 }
+
+/* Confirmation state when the turn is fully resolved. */
+#processing-veil.veil-done .veil-inner {
+  color: #b6ffd8;
+  border-color: rgba(142, 255, 193, 0.6);
+  animation: none;
+}
+#processing-veil.veil-done .veil-spinner { display: none; }
 
 @keyframes veil-badge-pulse {
   0%, 100% { box-shadow: 0 0 20px rgba(0,0,0,0.4), 0 0 0 rgba(142,255,193,0); }
@@ -777,9 +789,9 @@ html, body {
 }
 
 .veil-spinner {
-  width: 34px;
-  height: 34px;
-  margin: 0 auto 14px;
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
   border: 2px solid rgba(142, 255, 193, 0.25);
   border-top-color: #8effc1;
   border-radius: 50%;
@@ -791,9 +803,10 @@ html, body {
 }
 
 #veil-message {
-  font-size: 15px;
-  letter-spacing: 0.06em;
+  font-size: 13px;
+  letter-spacing: 0.14em;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
 /* ---------- VHS overlay ---------- */

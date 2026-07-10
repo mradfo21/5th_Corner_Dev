@@ -187,13 +187,28 @@
     el.veil.classList.add("hidden");
   }
 
-  function cycleVeilMessages() {
-    let i = 0;
-    return setInterval(() => {
-      if (!state.processing) return;
-      i = (i + 1) % INTERIM_MESSAGES.length;
-      el.veilMessage.textContent = INTERIM_MESSAGES[i];
-    }, 2200);
+  // Gamified turn status: a single clear line telling the player exactly what
+  // the world is doing, instead of a vague spinner. Stages:
+  //   inject   → your action is being pushed into the world
+  //   resolving→ the world is regenerating around it
+  //   done     → brief confirmation, then it clears on the next choices
+  function setStatusStage(stage) {
+    const label = {
+      inject: "\u25B8 INJECTING ACTION",
+      resolving: "\u25C8 UPDATING WORLD",
+      done: "\u2713 WORLD UPDATED",
+    }[stage];
+    if (!label) { hideVeil(); return; }
+    state.turnStage = stage;
+    el.veilMessage.textContent = label;
+    el.veil.classList.toggle("veil-done", stage === "done");
+    if (stage === "done") {
+      // Choices are ready — show the confirmation but DON'T block input.
+      state.processing = false;
+      el.veil.classList.remove("hidden");
+    } else {
+      showVeil(label); // processing = true; input gated while the world resolves
+    }
   }
 
   async function postJSON(url, body) {
@@ -507,11 +522,38 @@
     return "narrative-event";
   }
 
+  // Condense a long field-note paragraph down to a short, punchy beat — the
+  // scene (video) is the star; the feed should read like terse dispatches, not
+  // walls of text.
+  function shortBeat(text) {
+    const t = String(text == null ? "" : text).trim().replace(/\s+/g, " ");
+    if (t.length <= 160) return t;
+    // Accumulate whole sentences up to a coherent ~1–2 line beat (avoids cutting
+    // on tiny leading fragments like "1993.").
+    const parts = t.split(/(?<=[.!?])\s+/);
+    let out = "";
+    for (const s of parts) {
+      if (out && out.length + 1 + s.length > 180) break;
+      out = out ? out + " " + s : s;
+      if (out.length >= 130) break;
+    }
+    if (!out) out = t.slice(0, 160);
+    if (out.length > 200) out = out.slice(0, 197).trim() + "\u2026";
+    return out;
+  }
+
+  // Feed lines that carry generated prose we want to keep short.
+  const SHORTEN_TYPES = {
+    narrative_event: 1, consequence_event: 1, vision_analysis: 1,
+    suspense_event: 1, threat_escalation: 1, risky_action_outcome: 1,
+  };
+
   function appendProse(item) {
     const div = document.createElement("div");
     div.className = `prose-entry glow-pop ${classForType(item.type)}`;
     div.dataset.itemId = item.id;
-    div.innerHTML = renderInline(item.content || "");
+    const raw = item.content || "";
+    div.innerHTML = renderInline(SHORTEN_TYPES[item.type] ? shortBeat(raw) : raw);
     el.prose.appendChild(div);
     el.prose.scrollTop = el.prose.scrollHeight + 400;
     return div;
@@ -599,8 +641,11 @@
         appendProse(item);
         renderChoices(item);
         Sound.choices();
-        hideVeil();
         state.awaitingResolution = false;
+        // Turn fully resolved: flash "world updated", then clear the status.
+        setStatusStage("done");
+        clearTimeout(state.statusDoneTimer);
+        state.statusDoneTimer = setTimeout(hideVeil, 900);
         // New decision point: these are now the live/latest choices. Auto-play
         // will advance against THIS prompt (and only once).
         state.currentPromptId = item.id;
@@ -641,6 +686,11 @@
         // Narrative / world-building text lands with a soft blip.
         appendProse(item);
         Sound.text();
+        // Text generation for this turn just completed → the world now resolves
+        // (scene/video regenerating). Show the gamified status until choices land.
+        if (state.awaitingResolution && item.type !== "player_action") {
+          setStatusStage("resolving");
+        }
         return;
     }
   }
@@ -717,7 +767,7 @@
     if (state.processing || state.gameOver) return;
     closeFreeWill(true); // picking any action closes the free-will gate
     el.choices.innerHTML = "";
-    showVeil(INTERIM_MESSAGES[0]);
+    setStatusStage("inject");
     state.awaitingResolution = true;
     // Seamless realtime: steer the live video with this action NOW, before the
     // backend turn resolves — the world model starts reacting immediately.
@@ -1193,7 +1243,6 @@
     Renderer.init(); // async: resolves default renderer + warms realtime session
     initVhsGrain();
     initKeyboardInset();
-    cycleVeilMessages();
     startTimecode();
     startPolling();
     startStatusPolling();
