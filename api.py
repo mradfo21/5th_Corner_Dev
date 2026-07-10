@@ -88,6 +88,31 @@ def serve_standalone():
     return render_template('standalone.html', asset_version=version)
 
 
+@app.route('/api/tape', methods=['GET'])
+def api_tape():
+    """Ordered scene frames captured this session, for VHS tape playback.
+
+    The standalone game already saves every canonical scene frame to the
+    'default' session image directory; we just list them chronologically
+    (by mtime) as servable /images/<file> URLs. Downsampled vision helper
+    frames (*_small.png) and flipbook grids are excluded."""
+    try:
+        from pathlib import Path as _P
+        img_dir = _P(engine._get_image_dir('default'))
+        frames = []
+        if img_dir.exists():
+            files = [
+                p for p in img_dir.glob('*.png')
+                if not p.name.endswith('_small.png') and 'flipbook' not in p.name.lower()
+            ]
+            files.sort(key=lambda p: p.stat().st_mtime)
+            frames = [f"/images/{p.name}" for p in files]
+        return jsonify({"frames": frames, "count": len(frames)})
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to build tape", str(e))
+
+
 @app.route('/api/status', methods=['GET'])
 def api_status():
     """Lightweight state snapshot for the standalone UI's HUD. Does not

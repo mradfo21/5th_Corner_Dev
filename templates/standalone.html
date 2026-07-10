@@ -25,6 +25,30 @@
     <div id="vhs-timecode">REC <span id="rec-dot">●</span> <span id="timecode-text">00:00:00</span></div>
   </div>
 
+  <!-- VHS tape playback button (top-right) -->
+  <button id="tape-btn" type="button" title="Play back the tape (T)">
+    <span class="tape-tri"></span><span class="tape-btn-label">PLAY TAPE</span>
+  </button>
+
+  <!-- Tape playback overlay: plays this run's frames back in sequence -->
+  <div id="tape-overlay" class="hidden">
+    <div id="tape-frameA" class="tape-frame tape-frame-active"></div>
+    <div id="tape-frameB" class="tape-frame"></div>
+    <div id="tape-scanlines"></div>
+    <div id="tape-hud">
+      <span id="tape-rec">▶ PLAY</span>
+      <span id="tape-counter">FRAME 0 / 0</span>
+      <span id="tape-time">00:00:00</span>
+    </div>
+    <div id="tape-empty" class="hidden">NO FOOTAGE ON TAPE YET</div>
+    <div id="tape-controls">
+      <button id="tape-prev" class="tape-ctl" title="Previous frame">⏮</button>
+      <button id="tape-playpause" class="tape-ctl" title="Play / pause">⏸</button>
+      <button id="tape-next" class="tape-ctl" title="Next frame">⏭</button>
+      <button id="tape-eject" class="tape-ctl tape-eject" title="Eject (Esc)">⏏ EJECT</button>
+    </div>
+  </div>
+
   <!-- Inventory HUD (hidden until the player picks something up) -->
   <aside id="inventory-hud" class="hidden">
     <div class="inv-label">PACK</div>
