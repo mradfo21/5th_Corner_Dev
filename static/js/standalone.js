@@ -10,6 +10,7 @@
   const STATUS_INTERVAL_MS = 4000;
   const FAST_POLL_INTERVAL_MS = 800; // used right after a choice, while waiting for the turn to resolve
   const FAST_POLL_TIMEOUT_MS = 45000; // give up waiting fast after this long and fall back to normal polling
+  const AUTOPLAY_DELAY_MS = 4500; // read beat after choices appear before auto-advancing
 
   const INTERIM_MESSAGES = [
     "Transmitting...",
@@ -63,6 +64,8 @@
     tapePlayPause: document.getElementById("tape-playpause"),
     tapeNext: document.getElementById("tape-next"),
     tapeEject: document.getElementById("tape-eject"),
+    autoplayBtn: document.getElementById("autoplay-btn"),
+    autoplayLabel: document.getElementById("autoplay-label"),
   };
 
   const state = {
@@ -81,6 +84,8 @@
     renderedIds: new Set(), // guard against rendering the same feed item twice
     lastStatus: {},
     freeWillOpen: false,
+    autoPlay: false,
+    autoTimer: null,
   };
 
   // ------------------------------------------------------------------
@@ -337,6 +342,7 @@
       case "game_over":
         appendProse(item);
         Sound.death();
+        setAutoPlay(false); // stop the world advancing once you're dead
         enterGameOver(item.content);
         return;
 
@@ -355,6 +361,7 @@
         hideVeil();
         state.awaitingResolution = false;
         refreshStatus(); // reflect turn/chaos/inventory promptly, not on the 4s tick
+        scheduleAutoAdvance(); // if auto-play is on, advance after a read beat
         return;
 
       case "error_event":
@@ -485,6 +492,36 @@
     if (!btns.length) return;
     const pick = btns[Math.floor(Math.random() * btns.length)];
     pick.click(); // reuses the choice flow (select sound, pick flash, makeChoice)
+  }
+
+  // ------------------------------------------------------------------
+  // Auto-play — the world advances on its own via the forward hub
+  // ------------------------------------------------------------------
+  function scheduleAutoAdvance() {
+    clearTimeout(state.autoTimer);
+    if (!state.autoPlay) return;
+    state.autoTimer = setTimeout(() => {
+      // Only advance if we're idle: not mid-turn, not dead, not typing, not
+      // watching the tape, and choices are actually available.
+      if (state.autoPlay && !state.processing && !state.gameOver &&
+          !state.freeWillOpen && !tapeIsOpen() && el.choices.children.length) {
+        moveForward();
+      }
+    }, AUTOPLAY_DELAY_MS);
+  }
+
+  function setAutoPlay(on) {
+    state.autoPlay = on;
+    el.autoplayBtn.classList.toggle("on", on);
+    el.autoplayLabel.textContent = on ? "STOP" : "AUTO-PLAY";
+    el.autoplayBtn.title = on ? "Stop auto-play (P)" : "Auto-play — advance on its own (P)";
+    if (on) scheduleAutoAdvance();       // kick off from the current prompt
+    else clearTimeout(state.autoTimer);  // pause
+  }
+
+  function toggleAutoPlay() {
+    Sound.toggle();
+    setAutoPlay(!state.autoPlay);
   }
 
   function submitCustomAction(e) {
@@ -797,6 +834,8 @@
       toggleSound();
     } else if (e.key.toLowerCase() === "t") {
       openTape();
+    } else if (e.key.toLowerCase() === "p") {
+      toggleAutoPlay();
     } else if (e.key.toLowerCase() === "f") {
       openFreeWill();
     } else if (e.key === "ArrowUp" || e.key === " " || e.key === "Spacebar") {
@@ -854,6 +893,7 @@
     el.tapePrev.addEventListener("click", () => tapeStep(-1));
     el.tapeNext.addEventListener("click", () => tapeStep(1));
     el.tapeEject.addEventListener("click", closeTape);
+    el.autoplayBtn.addEventListener("click", toggleAutoPlay);
     el.customForm.addEventListener("submit", submitCustomAction);
     document.addEventListener("keydown", onKeydown);
 
