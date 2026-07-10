@@ -10,8 +10,12 @@
   const STATUS_INTERVAL_MS = 4000;
   const FAST_POLL_INTERVAL_MS = 800; // used right after a choice, while waiting for the turn to resolve
   const FAST_POLL_TIMEOUT_MS = 45000; // give up waiting fast after this long and fall back to normal polling
-  const AUTOPLAY_FRAME_DELAY_MS = 350;  // advance almost immediately once the new frame renders
-  const AUTOPLAY_FALLBACK_MS = 6000;    // if no image arrives, advance anyway after this
+  // A turn's narrative + choices resolve fast (~1-2s) but its scene image
+  // streams in several seconds later. To keep text and imagery IN SYNC we hold
+  // the turn's text/choices until the frame arrives, reveal them together, then
+  // let auto-play dwell on that synced beat before advancing.
+  const AUTOPLAY_DWELL_MS = 3000;        // read/watch beat after a synced reveal before auto-advancing
+  const REVEAL_IMAGE_TIMEOUT_MS = 10000; // if the frame never arrives (slow/failed), reveal text anyway
 
   const INTERIM_MESSAGES = [
     "Transmitting...",
@@ -89,6 +93,8 @@
     autoTimer: null,
     currentPromptId: null,     // id of the latest choice prompt (the live decision point)
     lastAdvancedPromptId: null, // guard: auto-advance at most once per prompt
+    turnBuffer: [],            // this turn's text/choices, held until the frame renders (sync)
+    revealTimer: null,         // fallback: reveal the buffer even if no frame arrives
   };
 
   // ------------------------------------------------------------------
@@ -320,6 +326,18 @@
     el.deathOverlay.classList.add("hidden");
   }
 
+  // Reveal everything held for the in-flight turn. Called when the turn's scene
+  // frame arrives (so text + imagery appear together) or, as a safety net, when
+  // the frame is too slow / failed to arrive.
+  function flushTurnBuffer() {
+    clearTimeout(state.revealTimer);
+    const buffered = state.turnBuffer;
+    state.turnBuffer = [];
+    buffered.forEach(renderResolved);
+    hideVeil();
+    state.awaitingResolution = false;
+  }
+
   function renderItem(item) {
     if (!item || typeof item.id !== "number") return;
     // Dedup: never render the same server feed item twice (guards against
@@ -330,19 +348,48 @@
     }
     if (item.id > state.lastId) state.lastId = item.id;
 
-    if (item.image_url) {
-      setScene(item.image_url);
+    // The scene frame is the SYNC POINT for a turn: swap it in and immediately
+    // reveal the turn's buffered narrative + choices, so text never appears
+    // ahead of (or behind) the imagery it describes. NOTE: only scene_image
+    // sets the scene — choice prompts carry a STALE image_url (the previous
+    // turn's frame) that would otherwise flip the backdrop backwards.
+    if (item.type === "scene_image") {
+      if (item.image_url) setScene(item.image_url);
+      Sound.scene();
+      flushTurnBuffer();
+      return;
     }
 
+    // The player's own action echoes back instantly (it's their input, not a
+    // world-state beat), so it never waits on the frame.
+    if (item.type === "player_action") {
+      renderResolved(item);
+      return;
+    }
+
+    // Terminal states must never be trapped behind a pending frame: reveal
+    // anything buffered first, then handle them.
+    if (item.type === "error_event" || item.type === "game_over") {
+      flushTurnBuffer();
+      renderResolved(item);
+      return;
+    }
+
+    // Mid-turn: hold narrative / choices / inventory until the frame arrives.
+    if (state.awaitingResolution) {
+      state.turnBuffer.push(item);
+      return;
+    }
+    renderResolved(item);
+  }
+
+  // Actually paint a resolved feed item (buffering decisions happen upstream in
+  // renderItem / flushTurnBuffer).
+  function renderResolved(item) {
     switch (item.type) {
       case "scene_image":
-        // The image itself is the payload (handled above by setScene). Its
-        // placeholder content ("The scene shifts...") is intentionally NOT
-        // added to the prose feed — it would just be noise over the art.
-        Sound.scene(); // audible cue that the scene has materialised
-        // Auto-play: the new frame just rendered — submit the next turn now
-        // (minus a tiny beat), so advancement is gated only by generation lag.
-        if (state.autoPlay) scheduleAutoAdvance(AUTOPLAY_FRAME_DELAY_MS);
+        if (item.image_url) setScene(item.image_url);
+        Sound.scene();
         return;
 
       case "game_over":
@@ -367,11 +414,11 @@
         hideVeil();
         state.awaitingResolution = false;
         // New decision point: these are now the live/latest choices. Auto-play
-        // will advance against THIS prompt (and only once).
+        // will advance against THIS prompt (and only once), after a readable
+        // dwell — the frame and choices are already in sync at this moment.
         state.currentPromptId = item.id;
         refreshStatus(); // reflect turn/chaos/inventory promptly, not on the 4s tick
-        // Prefer advancing when this turn's frame renders; fall back if none.
-        scheduleAutoAdvance();
+        scheduleAutoAdvance(AUTOPLAY_DWELL_MS);
         return;
 
       case "error_event":
@@ -389,7 +436,7 @@
         return;
 
       default:
-        // Narrative / world-building text lands with a soft blip.
+        // Narrative / world-building text (and the player_action echo).
         appendProse(item);
         Sound.text();
         return;
@@ -439,6 +486,8 @@
       state.currentPromptId = null;
       state.lastAdvancedPromptId = null;
       clearTimeout(state.autoTimer);
+      clearTimeout(state.revealTimer);
+      state.turnBuffer = [];
       closeFreeWill(true);
       renderInventory([]);
       startTimecode();
@@ -460,7 +509,13 @@
     closeFreeWill(true); // picking any action closes the free-will gate
     el.choices.innerHTML = "";
     showVeil(INTERIM_MESSAGES[0]);
+    // Start a fresh turn: hold its text/choices until the frame renders so
+    // they reveal in sync. The fallback reveals them even if the frame is
+    // slow or fails, so the game never freezes waiting on an image.
+    state.turnBuffer = [];
     state.awaitingResolution = true;
+    clearTimeout(state.revealTimer);
+    state.revealTimer = setTimeout(flushTurnBuffer, REVEAL_IMAGE_TIMEOUT_MS);
     try {
       const items = await postJSON("/api/choose", {
         choice: choiceText,
@@ -526,7 +581,7 @@
         state.lastAdvancedPromptId = state.currentPromptId;
         moveForward();
       }
-    }, delay == null ? AUTOPLAY_FALLBACK_MS : delay);
+    }, delay == null ? AUTOPLAY_DWELL_MS : delay);
   }
 
   function setAutoPlay(on) {
@@ -534,7 +589,7 @@
     el.autoplayBtn.classList.toggle("on", on);
     el.autoplayLabel.textContent = on ? "STOP" : "AUTO-PLAY";
     el.autoplayBtn.title = on ? "Stop auto-play (P)" : "Auto-play — advance on its own (P)";
-    if (on) scheduleAutoAdvance(AUTOPLAY_FRAME_DELAY_MS); // start advancing right away
+    if (on) scheduleAutoAdvance(AUTOPLAY_DWELL_MS); // start advancing after a dwell
     else clearTimeout(state.autoTimer);  // pause
   }
 
