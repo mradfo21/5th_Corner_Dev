@@ -763,6 +763,15 @@ html, body {
    instead of a painful full-screen scrim. */
 .veil-inner {
   display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  max-width: min(94vw, 640px);
+}
+
+/* Simple spinner badge (boot / reset). */
+.veil-simple {
+  display: inline-flex;
   align-items: center;
   gap: 10px;
   color: #8effc1;
@@ -774,14 +783,7 @@ html, body {
   backdrop-filter: blur(4px);
   animation: veil-badge-pulse 2.2s ease-in-out infinite;
 }
-
-/* Confirmation state when the turn is fully resolved. */
-#processing-veil.veil-done .veil-inner {
-  color: #b6ffd8;
-  border-color: rgba(142, 255, 193, 0.6);
-  animation: none;
-}
-#processing-veil.veil-done .veil-spinner { display: none; }
+.veil-simple.hidden { display: none; }
 
 @keyframes veil-badge-pulse {
   0%, 100% { box-shadow: 0 0 20px rgba(0,0,0,0.4), 0 0 0 rgba(142,255,193,0); }
@@ -807,6 +809,169 @@ html, body {
   letter-spacing: 0.14em;
   text-transform: uppercase;
   white-space: nowrap;
+}
+
+/* ---------- Ceremony (turn pipeline stepper) ---------- */
+
+.ceremony {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 15px 12px;
+  border-radius: 16px;
+  background: rgba(3, 8, 6, 0.72);
+  border: 1px solid rgba(142, 255, 193, 0.28);
+  box-shadow: 0 0 30px rgba(0, 0, 0, 0.5), inset 0 0 18px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(5px);
+}
+.ceremony.hidden { display: none; }
+
+.ceremony-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  flex-wrap: nowrap;
+}
+
+.cere-step {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  min-width: 66px;
+  max-width: 92px;
+  padding: 0 4px;
+  text-align: center;
+  color: rgba(142, 255, 193, 0.34);
+  transition: color 0.35s ease;
+}
+
+/* Connector line between steps. */
+.cere-step + .cere-step::before {
+  content: "";
+  position: absolute;
+  top: 13px;
+  left: -50%;
+  width: 100%;
+  height: 2px;
+  background: rgba(142, 255, 193, 0.16);
+  transition: background 0.4s ease, box-shadow 0.4s ease;
+  z-index: 0;
+}
+.cere-step.done + .cere-step::before,
+.cere-step.active::before {
+  background: rgba(142, 255, 193, 0.6);
+  box-shadow: 0 0 8px rgba(142, 255, 193, 0.4);
+}
+
+.cere-dot {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  font-size: 14px;
+  line-height: 1;
+  background: rgba(3, 8, 6, 0.95);
+  border: 1.5px solid rgba(142, 255, 193, 0.3);
+  color: rgba(142, 255, 193, 0.5);
+  transition: transform 0.3s ease, border-color 0.3s ease, color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.cere-label {
+  font-size: 8.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  line-height: 1.15;
+  opacity: 0.65;
+  transition: opacity 0.35s ease;
+}
+
+/* Done: settled, checkmark-bright. */
+.cere-step.done { color: rgba(142, 255, 193, 0.72); }
+.cere-step.done .cere-dot {
+  border-color: rgba(142, 255, 193, 0.7);
+  color: #8effc1;
+  box-shadow: 0 0 10px rgba(142, 255, 193, 0.25);
+}
+.cere-step.done .cere-label { opacity: 0.8; }
+
+/* Active: the step the world is doing right now — pulsing, bright. */
+.cere-step.active { color: #d6ffe9; }
+.cere-step.active .cere-dot {
+  border-color: #8effc1;
+  color: #012;
+  background: #8effc1;
+  transform: scale(1.18);
+  box-shadow: 0 0 16px rgba(142, 255, 193, 0.75), 0 0 32px rgba(142, 255, 193, 0.35);
+  animation: cere-pulse 1s ease-in-out infinite;
+}
+.cere-step.active .cere-label {
+  opacity: 1;
+  text-shadow: 0 0 8px rgba(142, 255, 193, 0.55);
+}
+
+@keyframes cere-pulse {
+  0%, 100% { box-shadow: 0 0 14px rgba(142, 255, 193, 0.6), 0 0 26px rgba(142, 255, 193, 0.25); }
+  50%      { box-shadow: 0 0 22px rgba(142, 255, 193, 0.95), 0 0 44px rgba(142, 255, 193, 0.5); }
+}
+
+/* A step that just fired flashes once to punctuate the beat. */
+.cere-step.beat .cere-dot {
+  animation: cere-beat 0.5s ease-out;
+}
+@keyframes cere-beat {
+  0%   { transform: scale(1.5); box-shadow: 0 0 30px rgba(142, 255, 193, 1), 0 0 60px rgba(142, 255, 193, 0.6); }
+  100% { transform: scale(1.18); }
+}
+
+/* The realtime sub-line: prompt submitted, seed accepted, stream live, chunk N. */
+.ceremony-note {
+  min-height: 13px;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: rgba(142, 255, 193, 0.62);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+.ceremony-note.show { opacity: 1; }
+.ceremony-note.tick { animation: cere-note-tick 0.4s ease-out; }
+@keyframes cere-note-tick {
+  0% { color: #d6ffe9; text-shadow: 0 0 10px rgba(142,255,193,0.7); }
+  100% { color: rgba(142, 255, 193, 0.62); text-shadow: none; }
+}
+
+/* Whole ceremony flashes green when the turn fully resolves. */
+.ceremony.resolved {
+  border-color: rgba(142, 255, 193, 0.7);
+  box-shadow: 0 0 40px rgba(142, 255, 193, 0.3), inset 0 0 18px rgba(0, 0, 0, 0.35);
+}
+
+/* Tighten on narrow phones so all five steps fit. */
+@media (max-width: 480px) {
+  .cere-step { min-width: 54px; padding: 0 2px; }
+  .cere-label { font-size: 7.5px; letter-spacing: 0.02em; }
+  .cere-dot { width: 24px; height: 24px; font-size: 12px; }
+  .cere-step + .cere-step::before { top: 11px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cere-step.active .cere-dot,
+  .cere-step.beat .cere-dot,
+  .veil-simple { animation: none; }
 }
 
 /* ---------- VHS overlay ---------- */

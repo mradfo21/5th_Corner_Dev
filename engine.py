@@ -375,7 +375,7 @@ VEO_MODE_ENABLED    = False # DISABLED by default - use video generation instead
 # per-turn scene prompt. The server still builds the prompt + still either way;
 # defaulting to "image" keeps the classic experience fully intact.
 #   "image"   -> Gemini still per turn (classic behavior)
-#   "reactor" -> Reactor Helios realtime video, steered by the scene prompt (default)
+#   "reactor" -> Reactor LingBot World 2 realtime video, steered by the scene prompt (default)
 #   "hybrid"  -> still generated AND used to seed the realtime video (future)
 # Defaults to "reactor" so the realtime world model is the out-of-the-box
 # experience; the web client still auto-falls back to stills if Reactor is
@@ -1703,8 +1703,8 @@ def build_image_prompt(
 
     return prompt
 
-# Stable "scene bible" anchor for the realtime world model (Reactor/Helios).
-# Per Helios's prompt guide, every prompt must carry a consistent subject/style
+# Stable "scene bible" anchor for the realtime world model (Reactor/LingBot World 2).
+# Per LingBot's prompt guide, every prompt must carry a consistent subject/style
 # and an explicit camera framing. We keep this constant across turns so the live
 # video maintains one look while the scene text evolves. Style-only (NO location)
 # so location comes from the per-turn scene description.
@@ -1752,7 +1752,7 @@ def build_realtime_prompt(visual_scene: str = "", narrative: str = "", choice: s
     with model-specific control text — spatial anchors, camera-distance math,
     anti-border/anti-person rules, img2img continuity clauses, world-state dumps).
     Feeding that to a video world model produces incoherent output. Instead we
-    follow Helios's prompt guide: a consistent style/camera anchor + a physical
+    follow LingBot's prompt guide: a consistent style/camera anchor + a physical
     scene description (which already covers near/mid/far + lighting) + one action
     beat. Everything is sanitized the same way as the image prompt so we don't
     regress on content filtering.
