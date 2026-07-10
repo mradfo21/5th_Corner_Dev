@@ -136,29 +136,60 @@ html, body {
 
 #prose-feed {
   position: fixed;
-  top: calc(env(safe-area-inset-top, 0px) + 40px);
-  left: calc(env(safe-area-inset-left, 0px) + 28px);
-  width: min(38vw, 400px);
-  max-height: 52vh;
+  top: calc(env(safe-area-inset-top, 0px) + 34px);
+  left: calc(env(safe-area-inset-left, 0px) + 24px);
+  width: min(33vw, 360px);
   z-index: 6;
-  overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 5px;
-  scrollbar-width: none;
-  /* Subtle, ambient — the scene is the star. */
-  opacity: 0.52;
+  gap: 7px;
+  /* Minimal transmission log: capped to a few lines in JS, no scroll, and it
+     never eats clicks meant for the scene. */
+  overflow: hidden;
+  pointer-events: none;
 }
-#prose-feed::-webkit-scrollbar { display: none; }
 
+/* Each line reads like an incoming dispatch: a small dark plate so the text is
+   legible over ANY frame, a teal accent rail, and the newest line emphasized
+   while older ones recede. Punchy, not a wall of prose. */
 .prose-entry {
   margin: 0;
   animation: pop-in 0.42s cubic-bezier(0.2, 0.9, 0.25, 1.2) both;
-  font-size: 13px;
-  line-height: 1.5;
-  font-weight: 300;
-  letter-spacing: 0.01em;
-  text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+  font-size: 12.5px;
+  line-height: 1.4;
+  font-weight: 400;
+  letter-spacing: 0.015em;
+  color: #dbf3e6;
+  padding: 6px 11px 6px 11px;
+  border-left: 2px solid rgba(142, 255, 193, 0.4);
+  border-radius: 2px 7px 7px 2px;
+  background: linear-gradient(90deg, rgba(3, 9, 7, 0.66), rgba(3, 9, 7, 0.30) 84%, rgba(3, 9, 7, 0));
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.95);
+  /* Older lines are clamped short + dimmed so history recedes to a whisper. */
+  opacity: 0.5;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  transition: opacity 0.45s ease, border-color 0.45s ease;
+}
+
+/* The newest dispatch is the focal point: brighter, fuller, glowing rail. */
+.prose-entry.latest {
+  opacity: 1;
+  font-size: 14px;
+  color: #eafff3;
+  border-left-color: #8effc1;
+  box-shadow: -1px 0 14px rgba(142, 255, 193, 0.14);
+  -webkit-line-clamp: 6;
+}
+
+/* Oldest lines slide up and dissolve as new dispatches push in. */
+.prose-entry.fading {
+  opacity: 0;
+  transform: translateY(-6px);
 }
 
 @keyframes pop-in {
@@ -181,13 +212,31 @@ html, body {
   color: #ffd97a;
   font-style: italic;
   text-align: right;
+  font-size: 12px;
+  border-left: none;
+  border-right: 2px solid rgba(255, 217, 122, 0.6);
+  border-radius: 7px 2px 2px 7px;
+  background: linear-gradient(270deg, rgba(3, 9, 7, 0.62), rgba(3, 9, 7, 0.26) 84%, rgba(3, 9, 7, 0));
+  -webkit-line-clamp: 2;
 }
-.prose-entry.player-action::before { content: "» "; }
+.prose-entry.player-action::before { content: "» "; opacity: 0.8; }
+/* The player's own echo isn't a world beat, so it never becomes the focal line. */
+.prose-entry.player-action.latest { font-size: 12px; opacity: 0.9; box-shadow: none; }
 
 .prose-entry.narrative-event,
 .prose-entry.consequence-event {
   color: #e9f7ee;
 }
+.prose-entry.narrative-event.latest::before { content: "▸ "; color: #8effc1; }
+
+/* Punchy world-state "update" line — the little atmospheric reaction the
+   Discord version streamed after each beat. Short, amber, italic. */
+.prose-entry.world-update {
+  color: #ffce7d;
+  font-style: italic;
+  border-left-color: rgba(255, 190, 90, 0.7);
+}
+.prose-entry.world-update::before { content: "// "; opacity: 0.7; }
 
 .prose-entry.vision-analysis {
   color: rgba(216, 240, 228, 0.55);
@@ -936,12 +985,13 @@ html, body {
 /* ---------- Mobile portrait: text spans top, wheel fits the width ---------- */
 @media (max-width: 720px) {
   #prose-feed {
-    width: calc(100vw - 52px);
+    width: calc(100vw - 44px);
     max-width: none;
-    max-height: 42vh;
-    top: calc(env(safe-area-inset-top, 0px) + 40px);
+    top: calc(env(safe-area-inset-top, 0px) + 36px);
+    gap: 6px;
   }
-  .prose-entry { font-size: 15px; line-height: 1.45; }
+  .prose-entry { font-size: 13px; line-height: 1.42; }
+  .prose-entry.latest { font-size: 15px; }
 
   #action-wheel { width: 96vw; height: 176px; bottom: calc(env(safe-area-inset-bottom, 0px) + 1.6vh); }
   .choice-btn { font-size: 14px; max-width: 42vw; }

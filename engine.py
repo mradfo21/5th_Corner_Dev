@@ -3359,6 +3359,14 @@ def _evolve_world_async(session_id: str, consequence_summary: str, vision_dispat
                 for k in ("world_prompt", "evolution_summary", "recent_events", "seen_elements"):
                     if k in evolution_result:
                         st[k] = evolution_result[k]
+                # Surface the short, player-facing world update as a punchy feed
+                # line (the "little response" the Discord version streamed after
+                # each beat). Only when it's meaningful and not an error echo.
+                summary = (evolution_result.get("evolution_summary") or "").strip()
+                if summary and not _is_failure_dispatch(summary):
+                    st.setdefault("feed_log", []).append(
+                        create_feed_item(type="world_update", content=summary)
+                    )
                 _save_state(st, session_id)
                 state = st
             print(f"[ASYNC EVOLVE] world updated for {session_id}", flush=True)

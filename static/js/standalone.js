@@ -266,6 +266,7 @@
     vision_analysis: "vision-analysis",
     error_event: "error-event",
     player_choice_prompt: "player-choice-prompt",
+    world_update: "world-update",
     inventory_pickup: "inventory-pickup",
     inventory_full: "inventory-full",
     suspense_event: "suspense-event",
@@ -283,13 +284,38 @@
     return "narrative-event";
   }
 
+  // Keep the transmission log minimal: only the newest few dispatches stay on
+  // screen. The latest is the focal line; older ones dim/clamp and the oldest
+  // dissolve out — punchy, never a growing wall of prose.
+  const MAX_PROSE_ENTRIES = 3;
+  // Only the story beat is the focal line; the action echo and the short
+  // world-update ride beneath it as accents so the narrative stays the star.
+  const FOCAL_TYPES = new Set(["narrative_event", "consequence_event", "game_over"]);
+
   function appendProse(item) {
     const div = document.createElement("div");
     div.className = `prose-entry glow-pop ${classForType(item.type)}`;
     div.dataset.itemId = item.id;
     div.innerHTML = renderInline(item.content || "");
+
+    // Promote story beats to the focal "latest"; demote the previous focal line.
+    if (FOCAL_TYPES.has(item.type)) {
+      const prevLatest = el.prose.querySelector(".prose-entry.latest");
+      if (prevLatest) prevLatest.classList.remove("latest");
+      div.classList.add("latest");
+    }
+
     el.prose.appendChild(div);
-    el.prose.scrollTop = el.prose.scrollHeight + 400;
+
+    // Fade out anything beyond the cap so the feed stays tight.
+    const entries = el.prose.querySelectorAll(".prose-entry:not(.fading)");
+    if (entries.length > MAX_PROSE_ENTRIES) {
+      for (let i = 0; i < entries.length - MAX_PROSE_ENTRIES; i++) {
+        const old = entries[i];
+        old.classList.add("fading");
+        setTimeout(() => old.remove(), 480);
+      }
+    }
     return div;
   }
 
@@ -408,7 +434,8 @@
           hideVeil();
           return;
         }
-        appendProse(item);
+        // The choices themselves are the prompt — don't dump the generic
+        // "What do you do next?" line into the log (it was pure clutter).
         renderChoices(item);
         Sound.choices();
         hideVeil();
@@ -433,6 +460,12 @@
         appendProse(item);
         Sound.pickup();
         refreshStatus(); // update the inventory HUD right away
+        return;
+
+      case "world_update":
+        // Short, punchy atmospheric reaction (like the Discord world updates).
+        appendProse(item);
+        Sound.status();
         return;
 
       default:
