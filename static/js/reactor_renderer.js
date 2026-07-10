@@ -67,6 +67,61 @@
     applying: false,       // flush() re-entrancy guard (establishing is async)
   };
 
+  // Live generation telemetry — the honest, MEASURED signal of whether the
+  // world model is actually producing img2img frames right now. The status
+  // above can say "live" while nothing streams; this tracks real decoded
+  // frames, chunk completions and command activity so the UI can show the
+  // player the truth (see standalone.js RealtimeHud).
+  const tele = {
+    frames: 0,          // total decoded/presented frames since connect
+    fps: 0,             // smoothed decoded frame rate (0 == no signal)
+    lastFrameAt: 0,     // performance.now() of the last presented frame
+    chunks: 0,          // chunk_complete events (steered video segments)
+    generating: false,  // world model is actively computing new video
+    deferred: false,    // couldn't start — waiting for a seed image
+    lastEvent: "",      // most recent model lifecycle event name
+    lastEventAt: 0,
+    lastActivityAt: 0,  // last command/chunk that means "the model is working"
+    startedAt: 0,
+    _sampleFrames: 0,
+    _sampleAt: 0,
+    sampler: null,
+  };
+
+  // Note that the model is doing generation work (a prompt/seed/start went out,
+  // or a chunk landed). Opens a short "generating" window the sampler keeps
+  // alive while frames keep flowing.
+  function markActivity() { tele.lastActivityAt = performance.now(); tele.generating = true; }
+
+  function startTelemetrySampler() {
+    if (tele.sampler) return;
+    tele._sampleAt = performance.now();
+    tele._sampleFrames = tele.frames;
+    tele.sampler = setInterval(() => {
+      const now = performance.now();
+      const dt = (now - tele._sampleAt) / 1000;
+      if (dt > 0) {
+        const inst = (tele.frames - tele._sampleFrames) / dt;
+        // Light smoothing so the readout is legible, not jittery.
+        tele.fps = tele.fps ? tele.fps * 0.55 + inst * 0.45 : inst;
+      }
+      tele._sampleAt = now;
+      tele._sampleFrames = tele.frames;
+      // "Generating" is true when frames are genuinely flowing, or a command
+      // that kicks off generation happened very recently. If neither holds, the
+      // world model has gone quiet.
+      const framesFlowing = tele.fps >= 1 && (now - tele.lastFrameAt) < 1200;
+      const recentWork = (now - tele.lastActivityAt) < 3500;
+      tele.generating = !!(framesFlowing || recentWork);
+    }, 500);
+  }
+
+  function stopTelemetrySampler() {
+    if (tele.sampler) { clearInterval(tele.sampler); tele.sampler = null; }
+    tele.fps = 0;
+    tele.generating = false;
+  }
+
   // Event waiters keyed by model message type, so command flows can await a
   // specific model reply (e.g. image_accepted) with a timeout fallback.
   const waiters = Object.create(null);
@@ -159,24 +214,36 @@
     }
   }
 
+  // Count a presented frame for the live-signal meter. `presented` is the
+  // browser's cumulative presentedFrames (rVFC metadata) when available, else
+  // we tick by one. This is the ground truth that img2img output is flowing.
+  function tickFrame(presented) {
+    if (typeof presented === "number" && presented > 0) tele.frames = presented;
+    else tele.frames += 1;
+    tele.lastFrameAt = performance.now();
+  }
+
   function startFrameWatch(video) {
     if (rstate.frameWatch) return;
     rstate.frameWatch = true;
     if (typeof video.requestVideoFrameCallback === "function") {
-      const cb = () => {
+      const cb = (now, meta) => {
         if (!rstate.reactor) { rstate.frameWatch = false; return; }
+        tickFrame(meta && meta.presentedFrames);
         revealIfFrames(video);
         try { video.requestVideoFrameCallback(cb); } catch (_) { rstate.frameWatch = false; }
       };
       try { video.requestVideoFrameCallback(cb); } catch (_) { rstate.frameWatch = false; }
     } else {
-      const onp = () => revealIfFrames(video);
+      const onp = () => { tickFrame(); revealIfFrames(video); };
       video.addEventListener("playing", onp);
       video.addEventListener("timeupdate", onp);
       rstate.frameWatchTimer = setInterval(() => {
         if (!rstate.reactor) { clearInterval(rstate.frameWatchTimer); rstate.frameWatch = false; return; }
+        // Fallback path: currentTime advancing == the track is decoding frames.
+        if (video.currentTime !== tele._lastMediaTime) { tickFrame(); tele._lastMediaTime = video.currentTime; }
         revealIfFrames(video);
-      }, 400);
+      }, 250);
     }
   }
 
@@ -203,6 +270,9 @@
   }
 
   async function cmd(name, data) {
+    // Commands that make the world model compute new video open a generating
+    // window for the telemetry meter.
+    if (name === "set_prompt" || name === "set_image" || name === "start" || name === "resume") markActivity();
     emitEvent("command_sent", { command: name });
     return rstate.reactor.sendCommand(name, data || {});
   }
@@ -216,10 +286,15 @@
     const ref = await uploadStill(s.imageUrl);
     if (!ref) {
       // LingBot World 2 cannot start without a reference image. Keep the still
-      // fallback on screen and retry when a scene with an image arrives.
+      // fallback on screen and retry when a scene with an image arrives. Flag
+      // it so the UI can honestly say "waiting for seed" instead of pretending
+      // generation is underway.
+      tele.deferred = true;
+      tele.generating = false;
       log("no reference image yet — deferring start (LingBot requires one)");
       return false;
     }
+    tele.deferred = false;
     const imageReady = waitForEvent("image_accepted", IMAGE_ACCEPT_TIMEOUT_MS);
     await cmd("set_image", { image: ref });
     await cmd("set_prompt", { prompt: s.prompt });
@@ -228,6 +303,9 @@
     await cmd("start", {});
     rstate.started = true;
     rstate.lastPrompt = s.prompt;
+    tele.startedAt = performance.now();
+    tele.deferred = false;
+    markActivity();
     emitEvent("stage_started", { prompt: s.prompt });
     log("generation started (image-conditioned)");
     return true;
@@ -312,9 +390,13 @@
     if (!msg || !msg.type) return;
     const t = msg.type;
     const d = msg.data || {};
+    tele.lastEvent = t;
+    tele.lastEventAt = performance.now();
     if (t === "image_accepted") resolveWaiters("image_accepted", d);
     else if (t === "prompt_accepted") resolveWaiters("prompt_accepted", d);
-    else if (t === "generation_started") resolveWaiters("generation_started", d);
+    else if (t === "generation_started") { resolveWaiters("generation_started", d); markActivity(); }
+    else if (t === "chunk_complete") { tele.chunks += 1; markActivity(); }
+    else if (t === "generation_reset") { tele.deferred = false; tele.generating = false; }
     emitEvent(t, d);
   }
 
@@ -349,6 +431,11 @@
 
       const jwt = await fetchToken();
       rstate.active = true;
+      // Reset the live-signal meter for this session and start sampling.
+      tele.frames = 0; tele.chunks = 0; tele.fps = 0;
+      tele.generating = false; tele.deferred = false;
+      tele.startedAt = 0; tele.lastFrameAt = 0; tele.lastActivityAt = 0;
+      startTelemetrySampler();
       await reactor.connect(jwt);
       rstate.connecting = false;
       return true;
@@ -374,6 +461,9 @@
     if (rstate.frameWatchTimer) { clearInterval(rstate.frameWatchTimer); rstate.frameWatchTimer = null; }
     const video = getVideo();
     if (video) { video.classList.add("hidden"); try { video.srcObject = null; } catch (_) {} }
+    stopTelemetrySampler();
+    tele.frames = 0; tele.chunks = 0; tele.deferred = false;
+    tele.lastFrameAt = 0; tele.lastActivityAt = 0;
     const r = rstate.reactor;
     rstate.reactor = null;
     rstate.active = false;
@@ -387,6 +477,10 @@
     rstate.lastImageUrl = null;
     rstate.lastRef = null;
     rstate.paused = false;
+    // Fresh stage: the new run hasn't produced its seed/frames yet.
+    tele.chunks = 0;
+    tele.generating = false;
+    tele.deferred = false;
     // Hide the (now-stale) video during the reset gap so the fresh still shows
     // until the new run's first frame is ready — no old-scene bleed-through.
     rstate.showSuppressed = true;
@@ -440,6 +534,31 @@
     isShowing: () => {
       const v = rstate.video || document.getElementById("reactor-video");
       return !!(v && !v.classList.contains("hidden") && v.videoWidth > 0);
+    },
+    // A measured snapshot of what the world model is actually doing right now —
+    // the honest source of truth for the realtime signal HUD. Nothing here is
+    // inferred from status alone; fps/frames come from decoded video frames.
+    getTelemetry: () => {
+      const now = performance.now();
+      const v = rstate.video || document.getElementById("reactor-video");
+      const showing = !!(v && !v.classList.contains("hidden") && v.videoWidth > 0);
+      return {
+        status: rstate.status,
+        active: rstate.active,
+        connecting: rstate.connecting,
+        ready: rstate.ready,
+        started: rstate.started,
+        paused: rstate.paused,
+        showing: showing,
+        generating: tele.generating,
+        deferred: tele.deferred,
+        fps: Math.round(tele.fps * 10) / 10,
+        frames: tele.frames,
+        chunks: tele.chunks,
+        lastEvent: tele.lastEvent,
+        msSinceFrame: tele.lastFrameAt ? Math.round(now - tele.lastFrameAt) : null,
+        msSinceActivity: tele.lastActivityAt ? Math.round(now - tele.lastActivityAt) : null,
+      };
     },
     onStatus: null,
     onEvent: null,
