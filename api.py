@@ -91,23 +91,14 @@ def serve_standalone():
 
 @app.route('/api/tape', methods=['GET'])
 def api_tape():
-    """Ordered scene frames captured this session, for VHS tape playback.
+    """Ordered scene frames for THIS run, for VHS tape playback.
 
-    The standalone game already saves every canonical scene frame to the
-    'default' session image directory; we just list them chronologically
-    (by mtime) as servable /images/<file> URLs. Downsampled vision helper
-    frames (*_small.png) and flipbook grids are excluded."""
+    Sourced from the run's own `tape_frames` (recorded as each scene renders and
+    reset with every new game), NOT from a directory glob — globbing the image
+    folder replayed leftover frames from previous adventures."""
     try:
-        from pathlib import Path as _P
-        img_dir = _P(engine._get_image_dir('default'))
-        frames = []
-        if img_dir.exists():
-            files = [
-                p for p in img_dir.glob('*.png')
-                if not p.name.endswith('_small.png') and 'flipbook' not in p.name.lower()
-            ]
-            files.sort(key=lambda p: p.stat().st_mtime)
-            frames = [f"/images/{p.name}" for p in files]
+        st = engine._load_state('default')
+        frames = [f for f in (st.get('tape_frames') or []) if f]
         return jsonify({"frames": frames, "count": len(frames)})
     except Exception as e:
         traceback.print_exc()

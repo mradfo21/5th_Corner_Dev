@@ -3375,6 +3375,9 @@ def _spawn_scene_image_async(caption: str, dispatch: str, choice: str, frame_idx
                 st['current_image_url'] = web
                 st['current_image_prompt'] = result[1] if len(result) > 1 else ""
                 st.setdefault('feed_log', []).append(item)
+                # Record the frame for THIS run's tape (resets with the run, so
+                # playback never shows stale images from previous adventures).
+                st.setdefault('tape_frames', []).append(web)
                 _save_state(st, session_id)
                 state = st
                 # Write the absolute image path back into the latest history
@@ -3516,6 +3519,7 @@ def _perform_game_reset() -> List[Dict[str, Any]]:
         "player_state": {"alive": True},
         "feed_log": [],  # Explicitly a new empty list
         "current_image_url": None,
+        "tape_frames": [],  # this run's scene frames, in order, for VHS tape playback
         "choices": [],
         "choices_metadata": {},
         "turn_count": 0,

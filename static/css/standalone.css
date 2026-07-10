@@ -887,20 +887,54 @@ html, body {
   filter: drop-shadow(0 0 4px rgba(142,255,193,0.6));
 }
 
-/* ---------- Tape playback overlay ---------- */
+/* ---------- Tape playback — picture-in-picture VHS monitor ---------- */
 
 #tape-overlay {
   position: fixed;
-  inset: 0;
-  z-index: 40;
-  background: #000;
+  left: calc(env(safe-area-inset-left, 0px) + 18px);
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 20px);
+  z-index: 30;
+  width: clamp(240px, 30vw, 348px);
+  display: flex;
+  flex-direction: column;
+  background: rgba(4, 9, 7, 0.92);
+  border: 1px solid rgba(142, 255, 193, 0.4);
+  border-radius: 9px;
+  box-shadow: 0 12px 44px rgba(0,0,0,0.62), 0 0 22px rgba(142,255,193,0.16);
   overflow: hidden;
-  animation: tape-fade-in 0.4s ease-out;
+  backdrop-filter: blur(7px);
+  animation: tape-pip-in 0.3s cubic-bezier(0.2, 0.9, 0.25, 1.2);
 }
 #tape-overlay.hidden { display: none; }
 
-@keyframes tape-fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes tape-pip-in {
+  from { opacity: 0; transform: translateY(14px) scale(0.95); }
+  to   { opacity: 1; transform: none; }
+}
 
+/* Title bar: rec status · TAPE · close */
+#tape-titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 7px 6px 11px;
+  border-bottom: 1px solid rgba(142,255,193,0.16);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+.tape-title { color: rgba(205,247,223,0.72); font-weight: bold; letter-spacing: 0.22em; }
+#tape-rec { color: #8effc1; display: inline-flex; align-items: center; gap: 5px; }
+
+/* The little CRT screen */
+#tape-screen {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  background: #050505;
+  overflow: hidden;
+}
 .tape-frame {
   position: absolute;
   inset: 0;
@@ -917,33 +951,29 @@ html, body {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background: repeating-linear-gradient(to bottom, rgba(0,0,0,0.14) 0px, rgba(0,0,0,0.14) 1px, transparent 2px, transparent 4px);
+  background: repeating-linear-gradient(to bottom, rgba(0,0,0,0.16) 0px, rgba(0,0,0,0.16) 1px, transparent 2px, transparent 4px);
   mix-blend-mode: multiply;
 }
-#tape-overlay::after {
+#tape-screen::after {
   content: "";
   position: absolute; inset: 0;
   pointer-events: none;
-  /* Very light edge darkening only — no heavy vignette over the footage. */
-  box-shadow: inset 0 0 60px rgba(0,0,0,0.25);
+  box-shadow: inset 0 0 40px rgba(0,0,0,0.4);
 }
 
 #tape-hud {
   position: absolute;
-  top: calc(env(safe-area-inset-top, 0px) + 18px);
-  left: 0; right: 0;
+  left: 0; right: 0; bottom: 5px;
   display: flex;
-  justify-content: center;
-  gap: 22px;
+  justify-content: space-between;
+  padding: 0 9px;
   font-family: 'VT323', monospace;
-  font-size: 18px;
-  color: rgba(255,255,255,0.75);
-  letter-spacing: 0.1em;
-  text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+  font-size: 13px;
+  color: rgba(255,255,255,0.82);
+  letter-spacing: 0.08em;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.95);
   pointer-events: none;
-  z-index: 2;
 }
-#tape-rec { color: #8effc1; }
 
 #tape-empty {
   position: absolute;
@@ -952,36 +982,47 @@ html, body {
   align-items: center;
   justify-content: center;
   font-family: 'VT323', monospace;
-  font-size: 26px;
+  font-size: 16px;
   letter-spacing: 0.14em;
   color: rgba(216,240,228,0.5);
+  text-align: center;
+  padding: 0 14px;
 }
 #tape-empty.hidden { display: none; }
 
 #tape-controls {
-  position: absolute;
-  bottom: calc(env(safe-area-inset-bottom, 0px) + 28px);
-  left: 0; right: 0;
   display: flex;
-  justify-content: center;
   align-items: center;
-  gap: 14px;
-  z-index: 2;
+  justify-content: center;
+  gap: 8px;
+  padding: 8px;
+  border-top: 1px solid rgba(142,255,193,0.14);
 }
 .tape-ctl {
   background: rgba(6,12,10,0.5);
-  border: 1px solid rgba(142,255,193,0.35);
+  border: 1px solid rgba(142,255,193,0.3);
   color: #cdf7df;
   font-family: inherit;
-  font-size: 16px;
-  padding: 8px 14px;
+  font-size: 14px;
+  padding: 5px 11px;
   border-radius: 4px;
   cursor: pointer;
-  backdrop-filter: blur(2px);
-  transition: background 0.14s, border-color 0.14s;
+  transition: background 0.14s, border-color 0.14s, box-shadow 0.14s;
 }
-.tape-ctl:hover { background: rgba(142,255,193,0.16); border-color: rgba(142,255,193,0.8); }
-.tape-eject { font-size: 12px; letter-spacing: 0.1em; }
+.tape-ctl:hover { background: rgba(142,255,193,0.16); border-color: rgba(142,255,193,0.85); box-shadow: 0 0 10px rgba(142,255,193,0.25); }
+#tape-playpause { font-size: 15px; min-width: 42px; }
+.tape-eject { font-size: 12px; padding: 3px 9px; border-color: rgba(255,170,90,0.4); color: rgba(255,210,165,0.85); }
+.tape-eject:hover { border-color: rgba(255,170,90,0.85); color: #ffd9a8; box-shadow: 0 0 10px rgba(255,170,90,0.3); }
+
+/* Mobile: shrink the PiP and tuck it into the left, clear of the wheel. */
+@media (max-width: 720px) {
+  #tape-overlay {
+    width: min(52vw, 220px);
+    left: 8px;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 188px);
+  }
+  .tape-ctl { font-size: 13px; padding: 5px 9px; }
+}
 
 /* ---------- Responsive ---------- */
 

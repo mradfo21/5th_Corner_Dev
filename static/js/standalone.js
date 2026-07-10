@@ -207,6 +207,8 @@
 
       // ── tape transport ───────────────────────────────────────────
       tapeStep() { noise(0.05, 0.06, "bandpass", 1000, 0, 1.4); tone(260, 0.03, "square", 0.03); }, // mechanical chk
+      tapePlay() { tone([420, 760], 0.1, "triangle", 0.05); },  // tape resumes
+      tapePause() { tone([560, 300], 0.11, "triangle", 0.045); }, // tape pauses
       eject() { tone([300, 120], 0.22, "sawtooth", 0.05); noise(0.18, 0.04, "lowpass", 500, 0.02); }, // clunk
     };
   })();
@@ -617,6 +619,12 @@
       setAutoPlay(false);     // stop the world advancing
       state.resumeAutoAfterAct = false;
       closeFreeWill(true);
+      if (tapeIsOpen()) {     // close the PiP; its frames belong to the old run
+        clearInterval(tape.timer); tape.timer = null;
+        clearInterval(tape.clock); tape.clock = null;
+        tape.playing = false;
+        el.tapeOverlay.classList.add("hidden");
+      }
       exitGameOver();
       Sound.eject();          // tape ejects...
       Sound.start();          // ...and a fresh one spins up
@@ -785,8 +793,10 @@
       // point — so a late/stale frame can't fire against newer choices, and we
       // always commit one of the CURRENT prompt's choices (frame + choices in
       // lockstep).
+      // Note: the tape is now picture-in-picture, so auto-play keeps running
+      // while you review — the main sim stays live behind the PiP monitor.
       if (state.autoPlay && !state.processing && !state.gameOver &&
-          !state.freeWillOpen && !tapeIsOpen() &&
+          !state.freeWillOpen &&
           el.choices.children.length &&
           state.currentPromptId != null &&
           state.currentPromptId !== state.lastAdvancedPromptId) {
@@ -1001,9 +1011,9 @@
 
   function toggleTapePlay() {
     if (!tape.frames.length) return;
-    if (tape.playing) { pauseTape(false); Sound.toggle(); return; }
+    if (tape.playing) { pauseTape(false); Sound.tapePause(); return; }
     if (tape.idx >= tape.frames.length - 1) showTapeFrame(0); // replay from the top
-    Sound.toggle();
+    Sound.tapePlay();
     startTapePlay();
   }
 
@@ -1092,13 +1102,12 @@
   // ------------------------------------------------------------------
 
   function onKeydown(e) {
-    // Tape playback owns the keyboard while open.
+    // Tape is picture-in-picture, so it does NOT own the keyboard — the game
+    // stays fully playable. Only the arrow keys scrub the tape while it's open
+    // (the game doesn't use them), and Esc closes it if nothing else is open.
     if (tapeIsOpen()) {
-      if (e.key === "Escape" || e.key.toLowerCase() === "t") closeTape();
-      else if (e.key === " " || e.key === "Spacebar") { e.preventDefault(); toggleTapePlay(); }
-      else if (e.key === "ArrowLeft") tapeStep(-1);
-      else if (e.key === "ArrowRight") tapeStep(1);
-      return;
+      if (e.key === "ArrowLeft") { tapeStep(-1); return; }
+      if (e.key === "ArrowRight") { tapeStep(1); return; }
     }
     if (document.activeElement === el.customInput) {
       if (e.key === "Escape") dismissFreeWill(); // Esc closes the gate (resumes auto if it was on)
@@ -1120,7 +1129,7 @@
     } else if (e.key.toLowerCase() === "m") {
       toggleSound();
     } else if (e.key.toLowerCase() === "t") {
-      openTape();
+      if (tapeIsOpen()) closeTape(); else openTape();
     } else if (e.key.toLowerCase() === "p") {
       toggleAutoPlay();
     } else if (e.key.toLowerCase() === "f") {
@@ -1129,7 +1138,8 @@
       e.preventDefault();
       forwardPressed(); // forward also starts the world auto-advancing
     } else if (e.key === "Escape") {
-      dismissFreeWill();
+      if (state.freeWillOpen) dismissFreeWill();
+      else if (tapeIsOpen()) closeTape();
     }
   }
 
@@ -1175,7 +1185,7 @@
     el.deathRestart.addEventListener("click", resetGame);
     el.freeWillBtn.addEventListener("click", openFreeWill);
     el.forwardBtn.addEventListener("click", forwardPressed);
-    el.tapeBtn.addEventListener("click", openTape);
+    el.tapeBtn.addEventListener("click", () => { if (tapeIsOpen()) closeTape(); else openTape(); });
     el.tapePlayPause.addEventListener("click", toggleTapePlay);
     el.tapePrev.addEventListener("click", () => tapeStep(-1));
     el.tapeNext.addEventListener("click", () => tapeStep(1));

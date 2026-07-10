@@ -40,22 +40,28 @@
     <span class="eject-icon">⏏</span><span>EJECT</span>
   </button>
 
-  <!-- Tape playback overlay: plays this run's frames back in sequence -->
+  <!-- Tape playback: a picture-in-picture VHS monitor. The main sim stays
+       visible/playable behind it so you can review then hop right back in. -->
   <div id="tape-overlay" class="hidden">
-    <div id="tape-frameA" class="tape-frame tape-frame-active"></div>
-    <div id="tape-frameB" class="tape-frame"></div>
-    <div id="tape-scanlines"></div>
-    <div id="tape-hud">
+    <div id="tape-titlebar">
       <span id="tape-rec">▶ PLAY</span>
-      <span id="tape-counter">FRAME 0 / 0</span>
-      <span id="tape-time">00:00:00</span>
+      <span class="tape-title">◉ TAPE</span>
+      <button id="tape-eject" class="tape-ctl tape-eject" title="Close (Esc / T)">⏏</button>
     </div>
-    <div id="tape-empty" class="hidden">NO FOOTAGE ON TAPE YET</div>
+    <div id="tape-screen">
+      <div id="tape-frameA" class="tape-frame tape-frame-active"></div>
+      <div id="tape-frameB" class="tape-frame"></div>
+      <div id="tape-scanlines"></div>
+      <div id="tape-empty" class="hidden">NO FOOTAGE YET</div>
+      <div id="tape-hud">
+        <span id="tape-counter">FRAME 0 / 0</span>
+        <span id="tape-time">00:00:00</span>
+      </div>
+    </div>
     <div id="tape-controls">
-      <button id="tape-prev" class="tape-ctl" title="Previous frame">⏮</button>
-      <button id="tape-playpause" class="tape-ctl" title="Play / pause">⏸</button>
-      <button id="tape-next" class="tape-ctl" title="Next frame">⏭</button>
-      <button id="tape-eject" class="tape-ctl tape-eject" title="Eject (Esc)">⏏ EJECT</button>
+      <button id="tape-prev" class="tape-ctl" title="Previous frame (←)">⏮</button>
+      <button id="tape-playpause" class="tape-ctl" title="Play / pause (Space)">⏸</button>
+      <button id="tape-next" class="tape-ctl" title="Next frame (→)">⏭</button>
     </div>
   </div>
 
