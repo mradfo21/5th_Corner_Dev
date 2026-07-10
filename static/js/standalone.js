@@ -50,6 +50,19 @@
     deathOverlay: document.getElementById("death-overlay"),
     deathMessage: document.getElementById("death-message"),
     deathRestart: document.getElementById("death-restart"),
+    tapeBtn: document.getElementById("tape-btn"),
+    tapeOverlay: document.getElementById("tape-overlay"),
+    tapeFrameA: document.getElementById("tape-frameA"),
+    tapeFrameB: document.getElementById("tape-frameB"),
+    tapeHud: document.getElementById("tape-hud"),
+    tapeRec: document.getElementById("tape-rec"),
+    tapeCounter: document.getElementById("tape-counter"),
+    tapeTime: document.getElementById("tape-time"),
+    tapeEmpty: document.getElementById("tape-empty"),
+    tapePrev: document.getElementById("tape-prev"),
+    tapePlayPause: document.getElementById("tape-playpause"),
+    tapeNext: document.getElementById("tape-next"),
+    tapeEject: document.getElementById("tape-eject"),
   };
 
   const state = {
@@ -597,6 +610,103 @@
     Sound.toggle();
   }
 
+  // ------------------------------------------------------------------
+  // VHS tape playback — replay this run's frames in sequence
+  // ------------------------------------------------------------------
+  const tape = { frames: [], idx: 0, playing: false, timer: null, clock: null, seconds: 0, active: "A" };
+
+  function tapeIsOpen() { return el.tapeOverlay && !el.tapeOverlay.classList.contains("hidden"); }
+
+  async function openTape() {
+    if (tapeIsOpen()) return;
+    Sound.start();
+    try {
+      const data = await getJSON("/api/tape");
+      tape.frames = (data && Array.isArray(data.frames)) ? data.frames : [];
+    } catch (err) {
+      tape.frames = [];
+    }
+    el.tapeOverlay.classList.remove("hidden");
+    if (!tape.frames.length) {
+      el.tapeEmpty.classList.remove("hidden");
+      el.tapeCounter.textContent = "FRAME 0 / 0";
+      el.tapeRec.textContent = "\u25A0 NO TAPE";
+      return;
+    }
+    el.tapeEmpty.classList.add("hidden");
+    tape.idx = 0; tape.active = "A";
+    el.tapeFrameA.style.backgroundImage = "";
+    el.tapeFrameB.style.backgroundImage = "";
+    el.tapeFrameA.classList.add("tape-frame-active");
+    el.tapeFrameB.classList.remove("tape-frame-active");
+    showTapeFrame(0);
+    startTapeClock();
+    startTapePlay();
+  }
+
+  function showTapeFrame(i) {
+    tape.idx = Math.max(0, Math.min(i, tape.frames.length - 1));
+    const url = tape.frames[tape.idx];
+    const incoming = tape.active === "A" ? el.tapeFrameB : el.tapeFrameA;
+    const outgoing = tape.active === "A" ? el.tapeFrameA : el.tapeFrameB;
+    incoming.style.backgroundImage = `url('${url}')`;
+    incoming.classList.add("tape-frame-active");
+    outgoing.classList.remove("tape-frame-active");
+    tape.active = tape.active === "A" ? "B" : "A";
+    el.tapeCounter.textContent = `FRAME ${tape.idx + 1} / ${tape.frames.length}`;
+    Sound.scene();
+  }
+
+  function startTapePlay() {
+    tape.playing = true;
+    el.tapePlayPause.textContent = "\u23F8"; // pause glyph
+    el.tapeRec.textContent = "\u25B6 PLAY";
+    clearInterval(tape.timer);
+    tape.timer = setInterval(() => {
+      if (tape.idx >= tape.frames.length - 1) { pauseTape(true); return; }
+      showTapeFrame(tape.idx + 1);
+    }, 1300);
+  }
+
+  function pauseTape(ended) {
+    tape.playing = false;
+    clearInterval(tape.timer); tape.timer = null;
+    el.tapePlayPause.textContent = "\u23F5"; // play glyph
+    el.tapeRec.textContent = ended ? "\u23F9 END" : "\u23F8 PAUSE";
+  }
+
+  function toggleTapePlay() {
+    if (!tape.frames.length) return;
+    if (tape.playing) { pauseTape(false); Sound.toggle(); return; }
+    if (tape.idx >= tape.frames.length - 1) showTapeFrame(0); // replay from the top
+    Sound.toggle();
+    startTapePlay();
+  }
+
+  function tapeStep(delta) {
+    if (!tape.frames.length) return;
+    pauseTape(false);
+    showTapeFrame(tape.idx + delta);
+  }
+
+  function startTapeClock() {
+    clearInterval(tape.clock);
+    tape.seconds = 0;
+    el.tapeTime.textContent = fmtTimecode(0);
+    tape.clock = setInterval(() => {
+      tape.seconds += 1;
+      el.tapeTime.textContent = fmtTimecode(tape.seconds);
+    }, 1000);
+  }
+
+  function closeTape() {
+    clearInterval(tape.timer); tape.timer = null;
+    clearInterval(tape.clock); tape.clock = null;
+    tape.playing = false;
+    el.tapeOverlay.classList.add("hidden");
+    Sound.toggle();
+  }
+
   function toggleSound() {
     state.soundEnabled = !state.soundEnabled;
     el.btnSnd.classList.toggle("off", !state.soundEnabled);
@@ -658,6 +768,14 @@
   // ------------------------------------------------------------------
 
   function onKeydown(e) {
+    // Tape playback owns the keyboard while open.
+    if (tapeIsOpen()) {
+      if (e.key === "Escape" || e.key.toLowerCase() === "t") closeTape();
+      else if (e.key === " " || e.key === "Spacebar") { e.preventDefault(); toggleTapePlay(); }
+      else if (e.key === "ArrowLeft") tapeStep(-1);
+      else if (e.key === "ArrowRight") tapeStep(1);
+      return;
+    }
     if (document.activeElement === el.customInput) {
       if (e.key === "Escape") closeFreeWill(true); // Esc closes the gate
       return;
@@ -677,6 +795,8 @@
       toggleVhs();
     } else if (e.key.toLowerCase() === "m") {
       toggleSound();
+    } else if (e.key.toLowerCase() === "t") {
+      openTape();
     } else if (e.key.toLowerCase() === "f") {
       openFreeWill();
     } else if (e.key === "ArrowUp" || e.key === " " || e.key === "Spacebar") {
@@ -729,6 +849,11 @@
     el.deathRestart.addEventListener("click", resetGame);
     el.freeWillBtn.addEventListener("click", openFreeWill);
     el.forwardBtn.addEventListener("click", moveForward);
+    el.tapeBtn.addEventListener("click", openTape);
+    el.tapePlayPause.addEventListener("click", toggleTapePlay);
+    el.tapePrev.addEventListener("click", () => tapeStep(-1));
+    el.tapeNext.addEventListener("click", () => tapeStep(1));
+    el.tapeEject.addEventListener("click", closeTape);
     el.customForm.addEventListener("submit", submitCustomAction);
     document.addEventListener("keydown", onKeydown);
 
