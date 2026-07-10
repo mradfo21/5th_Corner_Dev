@@ -1464,36 +1464,114 @@ def _save_img(b64: str, caption: str, session_id: str = 'default') -> str:
 # _vision_is_inside removed - was expensive and never used in StoryGen
 # _generate_burn_in removed - was never called and caused timecode overlays
 
+# Enclosed / distinct spaces a player can move INTO or THROUGH. Crossing into
+# one of these from a different environment is a genuine scene change (a "hard
+# cut") — a fresh composition — rather than a small step within the current view.
+_TRANSITION_SPACE_NOUNS = [
+    'shaft', 'vent', 'ventilation', 'duct', 'ductwork', 'tunnel', 'crawlspace',
+    'crawl space', 'conduit', 'hatch', 'opening', 'corridor', 'hallway',
+    'stairwell', 'stairway', 'staircase', 'chamber', 'room', 'building',
+    'facility', 'structure', 'doorway', 'gateway', 'gate', 'threshold',
+    'archway', 'entrance', 'gap', 'hole', 'cave', 'cavern', 'basement',
+    'cellar', 'elevator', 'airlock', 'passage', 'passageway', 'grate', 'grating',
+    'manhole', 'sewer', 'pit', 'trench', 'alcove', 'vault', 'den', 'nest',
+    'window', 'maw', 'pipe', 'pipeline', 'lab', 'laboratory', 'silo', 'bunker',
+    'compound', 'courtyard', 'clearing', 'ravine', 'culvert', 'shed', 'garage',
+    'warehouse', 'reactor', 'core', 'atrium', 'lobby', 'vestibule', 'antechamber',
+]
+
+# Verbs that denote the player physically relocating their whole body/camera INTO
+# or THROUGH a space (as opposed to observational verbs like "peer/look/reach
+# into", which must NOT trigger a scene change).
+_TRANSITION_MOVE_VERBS = [
+    'enter', 'climb', 'clamber', 'crawl', 'scramble', 'squeeze', 'wriggle',
+    'duck', 'drop', 'descend', 'ascend', 'wade', 'slip', 'slide', 'dive',
+    'vault', 'step', 'push', 'pass', 'move', 'go', 'head', 'venture', 'sneak',
+    'creep', 'lower yourself', 'haul yourself', 'pull yourself', 'force your way',
+    'navigate', 'plunge', 'burrow', 'thrust yourself', 'hoist yourself',
+    'make your way', 'break', 'stumble', 'run', 'sprint', 'walk', 'march',
+]
+
+# Prepositions that, paired with a move verb and a space noun, indicate crossing
+# into a new area.
+_TRANSITION_PREPS = [
+    'into', 'through', 'inside', 'in through', 'out through', 'down into',
+    'up into', 'in to', 'onto',
+]
+
+# Words signalling continuation WITHIN the current space rather than crossing into
+# a new one ("navigate DEEPER into the crawlspace" = same crawlspace, keep img2img
+# continuity; "scramble into the ventilation shaft" = new space, hard cut).
+_TRANSITION_CONTINUATION_WORDS = [
+    'deeper', 'further', 'farther', 'onward', 'onwards', 'along', 'ahead within',
+]
+
+
 def is_hard_transition(choice: str, dispatch: str) -> bool:
     """
-    Detect if player's CHOICE indicates a location change.
-    ONLY checks the player's choice, NOT the LLM's narrative dispatch.
-    This prevents false positives from dramatic language (fall, crumple, etc.)
+    Detect if the player's CHOICE moves them into a genuinely new area — a
+    location change that warrants a "hard cut" (fresh image composition) rather
+    than img2img continuity off the previous frame.
+
+    Only the player's CHOICE is inspected, never the LLM narrative ``dispatch``:
+    narrative prose is full of dramatic language ("the floor falls away", "you
+    crumple") that would cause false location changes and shatter continuity.
+
+    Two detectors, tuned to fire on real scene changes while staying quiet on
+    small in-place moves so the world still feels temporally continuous:
+
+      1. Unambiguous location phrases (enter/exit/leave/through the door, …).
+      2. A movement verb + into/through + a distinct/enclosed space noun
+         (e.g. "scramble into the ventilation shaft", "crawl through the duct").
+         Suppressed when a continuation word ("deeper", "further", …) is present,
+         since that means moving WITHIN the current space, not into a new one.
     """
-    # Only check ACTUAL location change keywords (not movement/action keywords)
+    if not choice:
+        return False
+
+    choice_lower = choice.lower()
+
+    # ── 1. Unambiguous location-change phrases ────────────────────────────────
     location_keywords = [
         'enter ', 'step inside', 'go inside', 'walk inside', 'move inside',
         'step outdoors', 'go outdoors', 'walk outdoors', 'move outdoors',
+        'step outside', 'head outside', 'get outside',
         'exit ', 'leave ', 'open door', 'open the door', 'through the door',
-        'cross into', 'cross over', 'cross through',
-        'enter the facility', 'enter facility', 'enter building', 'enter the building',
-        'into the facility', 'into facility', 'into building', 'into the building',
+        'through the doorway', 'through the gate', 'through the hatch',
+        'cross into', 'cross over', 'cross through', 'cross the threshold',
         'red biome', 'new location', 'different room', 'different area',
-        'teleport', 'wake up in', 'dragged to', 'carried to', 'transported to'
+        'next room', 'another room', 'the next area',
+        'teleport', 'wake up in', 'dragged to', 'carried to', 'transported to',
+        'emerge into', 'emerge from', 'emerge onto',
     ]
-    
-    # ONLY check the player's choice (intentional movement)
-    # DO NOT check dispatch (LLM narrative can contain "fall", "crumple", etc.)
-    choice_lower = choice.lower()
-    
-    # Check for exact keyword matches in player choice
-    has_transition = any(k in choice_lower for k in location_keywords)
-    
-    if has_transition:
+    reason = ""
+    if any(k in choice_lower for k in location_keywords):
+        reason = "explicit location phrase"
+
+    # ── 2. move-verb + preposition + enclosed-space noun ──────────────────────
+    if not reason:
+        is_continuation = any(w in choice_lower for w in _TRANSITION_CONTINUATION_WORDS)
+        if not is_continuation:
+            has_verb = any(v in choice_lower for v in _TRANSITION_MOVE_VERBS)
+            if has_verb:
+                for prep in _TRANSITION_PREPS:
+                    marker = f" {prep} "
+                    if marker not in choice_lower:
+                        continue
+                    # Only the text AFTER the preposition should name the space we
+                    # are moving into, so "reach into your PACK" style objects
+                    # before the noun don't cause false hits.
+                    tail = choice_lower.split(marker, 1)[1]
+                    if any(re.search(rf"\b{re.escape(n)}\b", tail) for n in _TRANSITION_SPACE_NOUNS):
+                        reason = f"move-verb + '{prep}' + new space"
+                        break
+
+    if reason:
         safe_choice = choice.encode('ascii', 'replace').decode('ascii')
-        print(f"[HARD TRANSITION] Detected in choice: '{safe_choice}' - new location (maintaining lighting/aesthetic)")
-    
-    return has_transition
+        print(f"[HARD TRANSITION] Detected in choice ({reason}): '{safe_choice}' - new location (fresh composition, keep lighting/aesthetic)")
+        return True
+
+    return False
 
 def get_last_movement_type() -> Optional[str]:
     """Get the last detected movement type for display purposes."""
@@ -1845,7 +1923,6 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
     
     try:
         prev_time_of_day, prev_color = "", ""
-        prev_img_paths = []
         prev_img_captions = []
         prev_vision_analysis = ""  # Vision AI description of last frame
         prev_spatial         = ""  # Spatial compass: ahead/left/right/ground/height
@@ -1882,13 +1959,24 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                         entry.get("setting_type", ""),     # indoor/outdoor type
                     ))
                     print(f"[IMG2IMG COLLECT]   -> Added to reference list (total: {len(last_imgs)})")
-                    
-                    # CRITICAL: Stop collecting after a hard transition
-                    # This creates a "reference buffer" that resets on location changes
-                    if was_hard_transition and len(last_imgs) > 0:
-                        print(f"[IMG2IMG COLLECT] HARD TRANSITION DETECTED - Stopping collection here")
-                        print(f"[IMG2IMG COLLECT] Reference buffer reset at location change")
-                        break
+                
+                # CRITICAL: The reference buffer must RESET at a location change —
+                # whether or not that boundary frame produced a usable image.
+                #
+                # This break used to be nested INSIDE the has-image branch above.
+                # That meant a hard-cut frame whose image was missing (async
+                # write-back race, content-filter block, or flipbook turn) never
+                # stopped the search, so collection kept walking back PAST the cut
+                # and grabbed PRE-CUT frames. The next turn then did img2img off the
+                # OLD scene instead of the freshly-expanded new area — exactly the
+                # "hard cut expands, then the next image snaps back to the old scene"
+                # bug. Evaluating the boundary unconditionally fixes that: we include
+                # the new-area frame if it has an image, otherwise we fall back to a
+                # clean text-to-image for the new area rather than reviving the old one.
+                if was_hard_transition:
+                    print(f"[IMG2IMG COLLECT] HARD TRANSITION BOUNDARY - stopping collection")
+                    print(f"[IMG2IMG COLLECT] Reference buffer reset at location change (collected {len(last_imgs)} pre-boundary refs)")
+                    break
                 
                 if len(last_imgs) == num_images_to_collect:
                     print(f"[IMG2IMG COLLECT] Collected {num_images_to_collect} references, stopping search")
@@ -1982,8 +2070,12 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
             prompt_str += f" World flavor: {world_flavor}."
         if world_summary:
             prompt_str += f" Background context: {world_summary}."
-        # ALWAYS maintain lighting/aesthetic continuity, even during location changes
-        if prev_img_paths:
+        # ALWAYS maintain lighting/aesthetic continuity, even during location changes.
+        # NOTE: guard on prev_img_paths_list (the list we actually populate). The old
+        # code checked `prev_img_paths`, which is never appended to, so this whole
+        # continuity clause was silently dead — hard cuts lost their "same world
+        # aesthetic" instruction and same-location frames lost their lighting match.
+        if prev_img_paths_list:
             if hard_transition:
                 # Location change - use reference for lighting/aesthetic ONLY (not composition)
                 prompt_str = (
@@ -3257,14 +3349,42 @@ def _spawn_scene_image_async(caption: str, dispatch: str, choice: str, frame_idx
                 st.setdefault('feed_log', []).append(item)
                 _save_state(st, session_id)
                 state = st
-                # Write the absolute image path back into the latest history
-                # entry so the NEXT turn's img2img can use it for continuity.
+
+            # Write the absolute image path back into THIS turn's history entry so
+            # the NEXT turn's img2img can use it for continuity. Done OUTSIDE the
+            # world-state lock: it may briefly wait for the parallel choice step to
+            # append the entry, and we must not hold the lock (blocking state saves
+            # / feed polling) while sleeping.
+            #
+            # This image is generated in parallel with choice generation
+            # (advance_turn_choices_deferred), which appends this turn's entry.
+            # Blindly writing hist[-1] used to race: if the image finished before
+            # that append landed, hist[-1] was still the PREVIOUS turn, so we
+            # overwrote the wrong frame's image AND left this turn's frame imageless
+            # — which then made the next turn reach back to an older scene.
+            # frame_idx == len(history)+1 at turn start, so after the append this
+            # turn's entry is at index frame_idx-1. Target that exact slot, waiting
+            # briefly for the append if it hasn't happened yet.
+            hist = _load_history(session_id)
+            target_idx = int(frame_idx) - 1
+            for _ in range(40):  # up to ~10s: append is quick, image is slow
+                if 0 <= target_idx < len(hist):
+                    break
+                time.sleep(0.25)
                 hist = _load_history(session_id)
-                if hist:
-                    hist[-1]["image"] = img_path
-                    hist[-1]["image_url"] = img_path
-                    _save_history(hist, session_id)
-                    history = hist
+            if 0 <= target_idx < len(hist):
+                hist[target_idx]["image"] = img_path
+                hist[target_idx]["image_url"] = img_path
+                _save_history(hist, session_id)
+                history = hist
+            elif hist:
+                # Fallback: append never materialised (shouldn't happen) — attach
+                # to the most recent entry so at least continuity isn't lost.
+                print(f"[ASYNC IMG] WARN: turn entry idx {target_idx} absent (len={len(hist)}); writing hist[-1]")
+                hist[-1]["image"] = img_path
+                hist[-1]["image_url"] = img_path
+                _save_history(hist, session_id)
+                history = hist
             print(f"[ASYNC IMG] scene appended for {session_id}: {web}", flush=True)
         except Exception as e:
             log_error(f"[ASYNC IMG] failed: {e}")
