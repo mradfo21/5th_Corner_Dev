@@ -377,7 +377,14 @@
     const status = (reactorMode && Renderer.reactorAvailable())
       ? window.ReactorRenderer.getStatus()
       : "off";
-    el.rendererBtn.textContent = reactorMode ? "\u25C9" : "\u25CE"; // ◉ live / ◎ still
+    const ico = el.rendererBtn.querySelector(".rail-ico");
+    const lbl = el.rendererBtn.querySelector(".rail-lbl");
+    if (ico) ico.textContent = reactorMode ? "\u25C9" : "\u25CE"; // ◉ live / ◎ still
+    if (lbl) {
+      lbl.textContent = !reactorMode ? "STILL"
+        : status === "connecting" ? "\u00B7\u00B7\u00B7"
+        : "LIVE";
+    }
     el.rendererBtn.classList.toggle("on", reactorMode && status === "live");
     el.rendererBtn.classList.toggle("pending", reactorMode && status === "connecting");
     el.rendererBtn.title = !reactorMode
@@ -700,7 +707,7 @@
   function setAutoPlay(on) {
     state.autoPlay = on;
     el.autoplayBtn.classList.toggle("on", on);
-    el.autoplayLabel.textContent = on ? "STOP" : "AUTO-PLAY";
+    el.autoplayLabel.textContent = on ? "STOP" : "AUTO";
     el.autoplayBtn.title = on ? "Stop auto-play (P)" : "Auto-play — advance on its own (P)";
     if (on) scheduleAutoAdvance(AUTOPLAY_FRAME_DELAY_MS); // start advancing right away
     else clearTimeout(state.autoTimer);  // pause
@@ -934,7 +941,8 @@
   function toggleSound() {
     state.soundEnabled = !state.soundEnabled;
     el.btnSnd.classList.toggle("off", !state.soundEnabled);
-    el.btnSnd.innerHTML = state.soundEnabled ? "\u266A SND" : "\u2715 SND";
+    const ico = el.btnSnd.querySelector(".rail-ico");
+    if (ico) ico.textContent = state.soundEnabled ? "\u266A" : "\u2715"; // ♪ / ✕
     if (state.soundEnabled) { Sound.resume(); Sound.select(); }
   }
 

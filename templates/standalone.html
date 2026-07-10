@@ -30,15 +30,29 @@
     <div id="vhs-timecode">REC <span id="rec-dot">●</span> <span id="timecode-text">00:00:00</span></div>
   </div>
 
-  <!-- VHS tape playback button (top-right) -->
-  <button id="tape-btn" type="button" title="Play back the tape (T)">
-    <span class="tape-tri"></span><span class="tape-btn-label">PLAY TAPE</span>
-  </button>
-
-  <!-- Auto-play: the world advances on its own, choosing a random action each turn -->
-  <button id="autoplay-btn" type="button" title="Auto-play — advance on its own (P)">
-    <span class="autoplay-dot"></span><span id="autoplay-label">AUTO-PLAY</span>
-  </button>
+  <!-- Control rail: every session control stacked in a vertical bar in the
+       top-right, so nothing overlaps the prose text or gets blocked by the
+       action field at the bottom. Icon + micro-label for clarity on PC/mobile. -->
+  <nav id="control-rail" aria-label="Controls">
+    <button id="btn-renderer" class="rail-btn" type="button" title="Realtime video on / still images (G)">
+      <span class="rail-ico">◉</span><span class="rail-lbl">LIVE</span>
+    </button>
+    <button id="autoplay-btn" class="rail-btn" type="button" title="Auto-play — advance on its own (P)">
+      <span class="rail-ico">⏩</span><span class="rail-lbl" id="autoplay-label">AUTO</span>
+    </button>
+    <button id="tape-btn" class="rail-btn" type="button" title="Play back the tape (T)">
+      <span class="rail-ico">▤</span><span class="rail-lbl">TAPE</span>
+    </button>
+    <button id="btn-vhs" class="rail-btn" type="button" title="VHS overlay (V)">
+      <span class="rail-ico">▣</span><span class="rail-lbl">VHS</span>
+    </button>
+    <button id="btn-snd" class="rail-btn" type="button" title="Sound (M)">
+      <span class="rail-ico">♪</span><span class="rail-lbl">SND</span>
+    </button>
+    <button id="btn-reset" class="rail-btn rail-btn-danger" type="button" title="Restart (R)">
+      <span class="rail-ico">⟲</span><span class="rail-lbl">NEW</span>
+    </button>
+  </nav>
 
   <!-- Tape playback overlay: plays this run's frames back in sequence -->
   <div id="tape-overlay" class="hidden">
@@ -89,13 +103,7 @@
     </button>
   </div>
 
-  <!-- Tiny session controls -->
-  <div id="console-controls">
-    <button id="btn-reset" class="mini-btn" title="Restart (R)">⟲</button>
-    <button id="btn-vhs" class="mini-btn" title="VHS (V)">▣</button>
-    <button id="btn-snd" class="mini-btn" title="Sound (M)">♪</button>
-    <button id="btn-renderer" class="mini-btn" title="Renderer: still / realtime (G)">◉</button>
-  </div>
+  <!-- (Session controls now live in #control-rail, top-right.) -->
 
   <!-- Processing veil shown while waiting on the backend -->
   <div id="processing-veil" class="hidden">

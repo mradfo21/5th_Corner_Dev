@@ -612,62 +612,92 @@ html, body {
   color: #eafff2;
 }
 
-/* ---------- Tiny session controls (bottom-right corner, no backgrounds) ---------- */
+/* ---------- Control rail (vertical bar, top-right) ---------- */
 
-#console-controls {
+#control-rail {
   position: fixed;
-  right: calc(env(safe-area-inset-right, 0px) + 12px);
-  bottom: calc(env(safe-area-inset-bottom, 0px) + 10px);
-  z-index: 11;
+  top: calc(env(safe-area-inset-top, 0px) + 44px); /* below the REC timecode */
+  right: calc(env(safe-area-inset-right, 0px) + 10px);
+  z-index: 13;
   display: flex;
-  gap: 7px;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px;
+  border-radius: 12px;
+  background: rgba(8, 12, 10, 0.42);
+  border: 1px solid rgba(142, 255, 193, 0.14);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
 }
 
-.mini-btn {
-  background: none;
-  border: 1px solid rgba(142, 255, 193, 0.2);
-  color: rgba(205, 247, 223, 0.7);
-  font-family: inherit;
-  font-size: 13px;
-  width: 30px;
-  height: 30px;
-  border-radius: 6px;
-  cursor: pointer;
-  display: inline-flex;
+.rail-btn {
+  display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  text-shadow: 0 1px 3px rgba(0,0,0,0.8);
-  transition: border-color 0.14s, color 0.14s, box-shadow 0.14s, transform 0.08s;
+  gap: 2px;
+  width: 46px;
+  min-height: 44px;              /* comfortable touch target on mobile */
+  padding: 5px 2px;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: rgba(205, 247, 223, 0.85);
+  font-family: inherit;
+  cursor: pointer;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.85);
+  transition: background 0.14s, border-color 0.14s, color 0.14s, box-shadow 0.14s, transform 0.08s;
 }
-
-.mini-btn:hover {
-  border-color: rgba(142, 255, 193, 0.7);
-  color: #e9f7ee;
-  box-shadow: 0 0 10px rgba(142, 255, 193, 0.25);
+.rail-btn:hover {
+  background: rgba(142, 255, 193, 0.10);
+  border-color: rgba(142, 255, 193, 0.5);
+  color: #eafff2;
 }
+.rail-btn:active { transform: scale(0.94); }
 
-.mini-btn:active { transform: translateY(1px); }
+.rail-ico { font-size: 17px; line-height: 1; }
+.rail-lbl {
+  font-size: 8px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(205, 247, 223, 0.6);
+}
+.rail-btn:hover .rail-lbl { color: rgba(234, 255, 242, 0.9); }
 
-.mini-btn.off { opacity: 0.4; border-color: rgba(142, 255, 193, 0.1); }
+/* Sound muted = dimmed */
+#btn-snd.off { opacity: 0.42; }
 
-/* Renderer toggle "live" state — glow it red when the realtime world model
-   is actually streaming, so it reads like a REC light. */
-.mini-btn.on {
+/* Restart reads subtly warm so it's clearly the "reset" action */
+#btn-reset:hover { border-color: rgba(255, 180, 120, 0.55); color: #ffd9b0; }
+#btn-reset:hover .rail-lbl { color: #ffd9b0; }
+
+/* Realtime renderer LIVE = red REC glow; connecting = amber pulse */
+#btn-renderer.on {
   color: #ff6b6b;
-  border-color: rgba(255, 107, 107, 0.7);
-  box-shadow: 0 0 10px rgba(255, 107, 107, 0.35);
+  border-color: rgba(255, 107, 107, 0.6);
+  box-shadow: 0 0 12px rgba(255, 107, 107, 0.3);
 }
-
-/* Realtime renderer selected but still connecting — amber pulse. */
-.mini-btn.pending {
+#btn-renderer.on .rail-lbl { color: #ff9f9f; }
+#btn-renderer.pending {
   color: #ffcf6b;
-  border-color: rgba(255, 207, 107, 0.7);
+  border-color: rgba(255, 207, 107, 0.6);
   animation: renderer-pending 1s ease-in-out infinite alternate;
 }
-
 @keyframes renderer-pending {
   from { box-shadow: 0 0 4px rgba(255, 207, 107, 0.2); }
   to   { box-shadow: 0 0 12px rgba(255, 207, 107, 0.5); }
+}
+
+/* Auto-play running = green glow + gentle pulse */
+#autoplay-btn.on {
+  color: #8effc1;
+  border-color: rgba(142, 255, 193, 0.6);
+  animation: autoplay-pulse 1.6s ease-in-out infinite;
+}
+#autoplay-btn.on .rail-lbl { color: #b6ffd8; }
+@keyframes autoplay-pulse {
+  0%, 100% { box-shadow: 0 0 6px rgba(142, 255, 193, 0.25); }
+  50%      { box-shadow: 0 0 15px rgba(142, 255, 193, 0.5); }
 }
 
 /* Transient renderer-status note (top-center) shown when toggling renderers. */
@@ -853,55 +883,7 @@ html, body {
   color: rgba(142, 255, 193, 0.6);
 }
 
-/* ---------- VHS tape playback button (top-right) ---------- */
-
-#tape-btn, #autoplay-btn {
-  position: fixed;
-  right: calc(env(safe-area-inset-right, 0px) + 16px);
-  z-index: 12;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  background: none;
-  border: 1px solid rgba(142, 255, 193, 0.3);
-  border-radius: 4px;
-  color: rgba(205, 247, 223, 0.8);
-  font-family: inherit;
-  font-size: 10px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  padding: 6px 10px;
-  cursor: pointer;
-  text-shadow: 0 1px 3px rgba(0,0,0,0.8);
-  transition: border-color 0.14s, color 0.14s, box-shadow 0.14s;
-}
-#tape-btn { top: calc(env(safe-area-inset-top, 0px) + 40px); }
-#autoplay-btn { top: calc(env(safe-area-inset-top, 0px) + 74px); }
-#tape-btn:hover, #autoplay-btn:hover { border-color: rgba(142,255,193,0.8); color: #eafff2; box-shadow: 0 0 12px rgba(142,255,193,0.28); }
-
-/* Auto-play running state: glowing, with a pulsing dot. */
-#autoplay-btn.on {
-  border-color: rgba(142,255,193,0.85);
-  color: #eafff2;
-  box-shadow: 0 0 14px rgba(142,255,193,0.35);
-}
-.autoplay-dot {
-  width: 8px; height: 8px; border-radius: 50%;
-  background: rgba(142,255,193,0.35);
-}
-#autoplay-btn.on .autoplay-dot {
-  background: #8effc1;
-  box-shadow: 0 0 8px rgba(142,255,193,0.9);
-  animation: autoplay-pulse 1.4s ease-in-out infinite;
-}
-@keyframes autoplay-pulse { 0%,100% { opacity: 0.5; } 50% { opacity: 1; } }
-.tape-tri {
-  width: 0; height: 0;
-  border-left: 9px solid #8effc1;
-  border-top: 6px solid transparent;
-  border-bottom: 6px solid transparent;
-  filter: drop-shadow(0 0 4px rgba(142,255,193,0.6));
-}
+/* (Tape/auto-play/renderer/reset/sound buttons now live in #control-rail.) */
 
 /* ---------- Tape playback overlay ---------- */
 
@@ -1004,12 +986,17 @@ html, body {
 /* ---------- Mobile portrait: text spans top, wheel fits the width ---------- */
 @media (max-width: 720px) {
   #prose-feed {
-    width: calc(100vw - 52px);
+    /* Stop before the control rail on the right; keep the block compact so it
+       no longer dominates the screen. Scrolls when longer. */
+    width: calc(100vw - 108px);
     max-width: none;
-    max-height: 42vh;
+    max-height: 30vh;
     top: calc(env(safe-area-inset-top, 0px) + 40px);
+    /* Fade the top edge so a long dispatch dissolves instead of hard-cropping. */
+    -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 18px);
+    mask-image: linear-gradient(to bottom, transparent 0, #000 18px);
   }
-  .prose-entry { font-size: 15px; line-height: 1.45; }
+  .prose-entry { font-size: 14px; line-height: 1.4; }
 
   #action-wheel { width: 96vw; height: 176px; bottom: calc(env(safe-area-inset-bottom, 0px) + 1.6vh); }
   .choice-btn { font-size: 14px; max-width: 42vw; }
@@ -1020,7 +1007,6 @@ html, body {
   /* 16px input prevents iOS Safari from auto-zooming on focus. */
   #custom-input { font-size: 16px; }
   #custom-submit { padding: 10px 13px; }
-  .mini-btn { width: 34px; height: 34px; font-size: 14px; }
 
   #vhs-timecode { font-size: 13px; }
 }
@@ -1033,4 +1019,10 @@ html, body {
   #free-will-btn, #forward-btn { width: 42px; height: 42px; }
   #forward-btn { bottom: 48px; }
   #prose-feed { max-height: 40vh; }
+
+  /* Compact the rail so all six controls fit a short landscape screen. */
+  #control-rail { top: calc(env(safe-area-inset-top, 0px) + 6px); gap: 4px; padding: 4px; }
+  .rail-btn { min-height: 32px; width: 38px; padding: 3px 2px; }
+  .rail-ico { font-size: 14px; }
+  .rail-lbl { display: none; }
 }
