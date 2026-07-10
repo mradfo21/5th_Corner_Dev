@@ -639,6 +639,39 @@ def _diegetic_dispatch(choice: str = "") -> str:
     return _DIEGETIC_DISPATCHES[idx]
 
 
+# Short, HUD-style "event" notifications — the punchy one-liner shown in the
+# feed for each beat (the full prose feeds the image/history, not the log).
+_DIEGETIC_EVENTS = [
+    "Signal stutters — the feed jumps",
+    "Static crawls across the lens",
+    "The tape skips a beat",
+    "Interference swallows the frame",
+    "The picture ghosts, then holds",
+]
+
+
+def _diegetic_event(choice: str = "") -> str:
+    seed = f"{choice}|{int(time.time() // 7)}"
+    return _DIEGETIC_EVENTS[abs(hash(seed)) % len(_DIEGETIC_EVENTS)]
+
+
+def _short_event_from(text: str, max_words: int = 9) -> str:
+    """Fallback: distil a long dispatch into a short, punchy log line when the
+    model didn't return an explicit `event`. Takes the first clause and clamps
+    it to a handful of words."""
+    if not text or not text.strip():
+        return "The world shifts"
+    import re as _re
+    first = _re.split(r'(?<=[.!?])\s+', text.strip())[0]
+    # Prefer the first clause if the sentence is long and comma-separated.
+    if len(first.split()) > max_words and "," in first:
+        first = first.split(",")[0]
+    words = first.split()
+    if len(words) > max_words:
+        return " ".join(words[:max_words]).rstrip(",;:") + "…"
+    return first.rstrip(".")
+
+
 # ───────── simulation feedback helpers (fate / phase / injuries) ─────────────
 # The web turn used to hardcode fate=NORMAL, leaving the LUCKY/UNLUCKY drama
 # engine (which the Discord path rolls per turn) switched off. This mirrors
@@ -3168,15 +3201,21 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
         vision_dispatch_text = p1.get("vision_dispatch", "")
         player_alive = state.get("player_state", {}).get("alive", True)
 
+        # The feed log shows a SHORT, gamey event notification — not the full
+        # prose paragraph (that was illegible over the art). The full dispatch
+        # still drives the image + pickup detection + history.
+        event_text = (p1.get("event") or "").strip() or _short_event_from(dispatch_text)
+
         turn_items: List[Dict[str, Any]] = [
             create_feed_item(
                 type="narrative_event",
-                content=dispatch_text,
+                content=event_text,
                 metadata={
                     "source": "dispatch",
                     "degraded": bool(p1.get("degraded")),
                     "injured": bool(p1.get("injured")),
                     "fate": p1.get("fate", "NORMAL"),
+                    "dispatch": dispatch_text,  # full prose kept in metadata (not displayed)
                 },
             )
         ]
@@ -3806,15 +3845,15 @@ def api_regenerate_choices():
 
 
 # ───────── COMBINED dispatch generator (saves 1 API call) ─────────────────────
-def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = None, prev_vision: str = "", current_image: str = None, fate: str = "NORMAL") -> tuple[str, str, bool]:
+def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = None, prev_vision: str = "", current_image: str = None, fate: str = "NORMAL") -> tuple:
     """
-    Generate BOTH narrative dispatch AND vision dispatch in ONE API call.
-    Now supports multimodal input - can see the current frame!
-    
+    Generate the narrative dispatch, vision dispatch, a short game-log `event`,
+    and the alive verdict in ONE API call. Supports multimodal input (the frame).
+
     Args:
         fate: Luck modifier - "LUCKY", "NORMAL", or "UNLUCKY"
-    
-    Returns: (dispatch, vision_dispatch, player_alive)
+
+    Returns: (dispatch, vision_dispatch, player_alive, event)
     """
     try:
         # Get previous vision analysis for spatial consistency.
@@ -4000,6 +4039,7 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
         dispatch = ""
         visual_scene = ""
         player_alive = True
+        event = ""
         
         try:
             import json as json_lib
@@ -4007,6 +4047,7 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
             dispatch = data.get("dispatch", "")
             visual_scene = data.get("visual_scene", "").strip()
             player_alive = data.get("player_alive", True)
+            event = (data.get("event", "") or "").strip()
             # Safe print with Unicode handling
             try:
                 print(f"[DISPATCH] Parsed JSON: dispatch={dispatch[:50]}..., alive={player_alive}")
@@ -4036,8 +4077,12 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
             dispatch = dispatch[:385] + "...(truncated)"
         if len(vision_dispatch) > 400:
             vision_dispatch = vision_dispatch[:385] + "...(truncated)"
-        
-        return dispatch, vision_dispatch, player_alive
+
+        # Cap the event to a short notification.
+        if event and len(event.split()) > 12:
+            event = _short_event_from(event, max_words=9)
+
+        return dispatch, vision_dispatch, player_alive, event
         
     except Exception as e:
         try:
@@ -4047,7 +4092,7 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
         import traceback
         traceback.print_exc()
         # Fallback to safe defaults
-        return "You make a tense move in the chaos.", "The desert stretches ahead.", True
+        return "You make a tense move in the chaos.", "The desert stretches ahead.", True, ""
 
 def summarize_world_state_diff(prev_state: dict, state: dict) -> str:
     """
@@ -4146,6 +4191,7 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             prev_image = history[-1].get("image_url", None)
         
         # TIMEOUT PENALTIES: Use penalty text AS dispatch (don't generate new one)
+        event = ""
         if is_timeout_penalty:
             dispatch = choice  # The penalty text IS the consequence
             vision_dispatch = choice
@@ -4153,7 +4199,7 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             print(f"[TIMEOUT PENALTY] Using penalty text as dispatch: {dispatch[:100]}")
         else:
             # Generate dispatch using FULL StoryGen version (with fate modifier)
-            dispatch, vision_dispatch, player_alive = _generate_combined_dispatches(choice, state, prev_state, prev_vision, prev_image, fate)
+            dispatch, vision_dispatch, player_alive, event = _generate_combined_dispatches(choice, state, prev_state, prev_vision, prev_image, fate)
         
         # SIMPLE DEATH SYSTEM: Just trust the LLM
         state['player_state']['alive'] = player_alive
@@ -4178,6 +4224,16 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             degraded = True
         if not vision_dispatch or vision_dispatch.strip().lower() in {"none", "", "[", "[]"} or _is_failure_dispatch(vision_dispatch):
             vision_dispatch = dispatch
+
+        # The short, gamey log line for this beat: the model's `event` when we
+        # have it, a diegetic glitch line in degraded mode, else distilled from
+        # the dispatch. The full prose still feeds the image + history.
+        if degraded:
+            event_line = _diegetic_event(choice)
+        elif is_timeout_penalty:
+            event_line = _short_event_from(dispatch)
+        else:
+            event_line = event or _short_event_from(dispatch)
 
         # Persist any wound described this turn so future dispatches/choices can
         # reference it (the grounding block + choice prompt already read
@@ -4298,6 +4354,7 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             "hard_transition": hard_transition,  # Track location changes for reference buffer
             "degraded": degraded,  # True when dispatch was an error masked as diegetic text (QA signal)
             "injured": injured,  # True when a new wound was recorded this turn (UI 'hurt' cue)
+            "event": event_line,  # short, gamey notification shown in the feed log
             "fate": fate,  # LUCKY / NORMAL / UNLUCKY — drives a per-turn UI sting
             "frame_idx": frame_idx,  # for async image generation on the feed path
             "evolution_summary": state.get("evolution_summary", ""),  # Include world changes
@@ -4311,7 +4368,9 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
         import traceback
         traceback.print_exc()
         return {
-            "dispatch": f"Error: {e}",
+            "dispatch": _diegetic_dispatch(choice),
+            "event": _diegetic_event(choice),
+            "degraded": True,
             "vision_dispatch": "",
             "consequence_image": None,
             "phase": "error",
