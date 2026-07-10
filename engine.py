@@ -572,6 +572,51 @@ def _to_web_image_url(image_path) -> Optional[str]:
         return s
     return "/images/" + os.path.basename(s)
 
+
+# Markers that mean "the LLM/tooling failed" rather than "this is story text".
+# When any of these appear as the dispatch, we must NOT show it to the player —
+# it breaks immersion (e.g. "Signal interrupted due to API error..."). Instead
+# we substitute a diegetic, in-world line so a transient outage still reads as
+# part of the 1993 camcorder-horror fiction.
+_DISPATCH_FAILURE_MARKERS = (
+    "signal interrupted",
+    "api error",
+    "transmission wavers",
+    "could not read image",
+    "error:",
+    "gemini_api_key",
+    "openai_api_key",
+    "not configured",
+)
+
+# Diegetic fallbacks, phrased as camcorder-glitch beats so the player reads them
+# as tension rather than as an app failure. We rotate through them so repeated
+# degraded turns don't loop the exact same sentence.
+_DIEGETIC_DISPATCHES = [
+    "The camcorder viewfinder floods with static, then snaps back. For a heartbeat you saw nothing at all — now the desert is closer than before.",
+    "Your tape stutters. The audio drops to a low hum and the frame smears, then steadies. Whatever you did, the world took a breath and held it.",
+    "A wave of interference rolls across the lens. When it clears, the light has shifted and the silence feels deliberate, like something waited for the picture to break.",
+    "The battery indicator flickers red. The image ghosts, doubles, resolves. You are still moving forward, and the quarantine line is nearer than it should be.",
+    "Static swallows the shot. You keep the camera rolling on instinct; when the picture returns the shadows have rearranged themselves and the air tastes of iron.",
+]
+
+
+def _is_failure_dispatch(text) -> bool:
+    """True when a dispatch string is actually an error sentinel, not story."""
+    t = (text or "").strip().lower()
+    if not t:
+        return True
+    return any(m in t for m in _DISPATCH_FAILURE_MARKERS)
+
+
+def _diegetic_dispatch(choice: str = "") -> str:
+    """Return an in-world line to show when dispatch generation failed, so a
+    transient API outage still reads as part of the fiction. Deterministically
+    varied by the player's choice + wall clock so consecutive failures differ."""
+    seed = f"{choice}|{int(time.time() // 7)}"
+    idx = abs(hash(seed)) % len(_DIEGETIC_DISPATCHES)
+    return _DIEGETIC_DISPATCHES[idx]
+
 # ───────── prompt fragments ──────────────────────────────────────────────────
 choice_tmpl     = PROMPTS["player_choice_generation_instructions"]
 dispatch_sys    = PROMPTS["action_consequence_instructions"]
@@ -2996,7 +3041,11 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
         player_alive = state.get("player_state", {}).get("alive", True)
 
         turn_items: List[Dict[str, Any]] = [
-            create_feed_item(type="narrative_event", content=dispatch_text, metadata={"source": "dispatch"})
+            create_feed_item(
+                type="narrative_event",
+                content=dispatch_text,
+                metadata={"source": "dispatch", "degraded": bool(p1.get("degraded"))},
+            )
         ]
 
         # Item pickup detection (feed notification; inventory itself is in state).
@@ -3879,7 +3928,16 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
         
         if not dispatch or dispatch.strip().lower() in {"none", "", "[", "[]"}:
             dispatch = "You make a tense move in the chaos."
-        if not vision_dispatch or vision_dispatch.strip().lower() in {"none", "", "[", "[]"}:
+        # Never surface an LLM/tooling error sentinel to the player. Timeout
+        # penalties intentionally reuse the choice text as the dispatch, so
+        # skip them here.
+        degraded = False
+        if not is_timeout_penalty and _is_failure_dispatch(dispatch):
+            print(f"[DISPATCH] Failure sentinel detected ('{dispatch[:40]}...') — substituting diegetic line")
+            dispatch = _diegetic_dispatch(choice)
+            vision_dispatch = dispatch
+            degraded = True
+        if not vision_dispatch or vision_dispatch.strip().lower() in {"none", "", "[", "[]"} or _is_failure_dispatch(vision_dispatch):
             vision_dispatch = dispatch
         
         # Evolve world state.
@@ -3984,6 +4042,7 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             "consequence_image_prompt": consequence_img_prompt,
             "consequence_video": consequence_video_url,  # Video path for HD mode playback
             "hard_transition": hard_transition,  # Track location changes for reference buffer
+            "degraded": degraded,  # True when dispatch was an error masked as diegetic text (QA signal)
             "frame_idx": frame_idx,  # for async image generation on the feed path
             "evolution_summary": state.get("evolution_summary", ""),  # Include world changes
             "phase": state["current_phase"],

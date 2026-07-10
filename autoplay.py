@@ -144,13 +144,19 @@ def play(base, turns, strategy, turn_timeout):
         items, elapsed, status = wait_for_turn(base, since, turn_timeout)
 
         narr = " ".join(i.get("content", "") for i in items if i.get("type") == "narrative_event")
+        # A narrative_event tagged degraded is an error masked as diegetic text:
+        # invisible to players, but it must NOT count as real AI content for QA.
+        degraded = any(
+            i.get("type") == "narrative_event" and (i.get("metadata") or {}).get("degraded")
+            for i in items
+        )
         scene = next((i for i in items if i.get("type") == "scene_image"), None)
         img_url = (scene or {}).get("image_url") or next((i.get("image_url") for i in items if i.get("image_url")), None)
         img_ok, img_status, img_bytes, _ = check_image(base, img_url) if img_url else (False, "none", 0, "")
         new_prompt = latest_prompt(items)
         new_choices = choice_texts(new_prompt)
         regenerated = bool(new_choices) and new_choices != prev_choices
-        real_text = bool(narr) and not is_fallback_text(narr)
+        real_text = bool(narr) and not is_fallback_text(narr) and not degraded
         fallback_choices = bool(new_choices) and all(c.lower() in KNOWN_FALLBACKS for c in new_choices)
 
         turn = {

@@ -265,17 +265,32 @@ def generate_choices(
             opts.append("Sprint down the corridor")
         if any(k in ctx for k in ("crate", "barrel", "cover", "debris", "wall", "barrier")):
             opts.append("Press behind cover")
-        # Always include a physical-stillness option so the player can also breathe.
-        opts.append("Crouch low and scan the area")
-        opts.append("Move forward carefully")
-        # De-dupe while preserving order, cap at 3
+        # Themed filler pool so a degraded turn still offers three distinct,
+        # in-world actions (rather than looping the same two forever). We rotate
+        # the pool by the turn's context so consecutive fallbacks differ.
+        filler_pool = [
+            "Crouch low and scan the area",
+            "Move forward carefully",
+            "Raise the camcorder and hold the shot",
+            "Backtrack toward the fence line",
+            "Freeze and listen for movement",
+            "Sweep the lens across the dark",
+            "Press on toward the facility",
+            "Check the tape and steady your grip",
+        ]
+        # Deterministic rotation seeded by context so it varies turn to turn
+        # without needing shared state.
+        offset = abs(hash(ctx.strip())) % len(filler_pool)
+        rotated = filler_pool[offset:] + filler_pool[:offset]
+        opts.extend(rotated)
+        # De-dupe while preserving order, then take exactly 3.
         seen_local: set = set()
         deduped: List[str] = []
         for o in opts:
             if o.lower() not in seen_local:
                 seen_local.add(o.lower())
                 deduped.append(o)
-        return deduped[:3] if len(deduped) >= 2 else ["Vault forward", "Press against cover", "Scan the perimeter"]
+        return deduped[:3]
 
     # Offline/mock backend short-circuit: when ai_provider_manager has been
     # told to use the "mock" backend (e.g. by run_local.py --mock or the
