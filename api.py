@@ -42,6 +42,7 @@ def add_embed_headers(response):
 app.add_url_rule('/api/reset', 'standalone_api_reset', engine.api_reset, methods=['POST'])
 app.add_url_rule('/api/feed', 'standalone_api_feed', engine.api_feed, methods=['GET'])
 app.add_url_rule('/api/choose', 'standalone_api_choose', engine.api_choose, methods=['POST'])
+app.add_url_rule('/api/cancel', 'standalone_api_cancel', engine.api_cancel, methods=['POST'])
 app.add_url_rule('/api/regenerate_choices', 'standalone_api_regenerate_choices', engine.api_regenerate_choices, methods=['POST'])
 
 

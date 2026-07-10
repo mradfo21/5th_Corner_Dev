@@ -95,6 +95,8 @@
     lastAdvancedPromptId: null, // guard: auto-advance at most once per prompt
     turnBuffer: [],            // this turn's text/choices, held until the frame renders (sync)
     revealTimer: null,         // fallback: reveal the buffer even if no frame arrives
+    resumeAutoAfterAct: false, // ACT paused auto-play; resume it after the action
+    lastPromptItem: null,      // last live choice prompt, so ACT can revert cleanly
   };
 
   // ------------------------------------------------------------------
@@ -509,6 +511,7 @@
         // will advance against THIS prompt (and only once), after a readable
         // dwell — the frame and choices are already in sync at this moment.
         state.currentPromptId = item.id;
+        state.lastPromptItem = item; // cached so ACT can revert to this decision point
         refreshStatus(); // reflect turn/chaos/inventory promptly, not on the 4s tick
         scheduleAutoAdvance(AUTOPLAY_DWELL_MS);
         return;
@@ -627,9 +630,37 @@
     }
   }
 
+  // Stop whatever the world is currently generating: tell the server to drop
+  // the in-flight turn, clear client timers/veil, and revert to the last real
+  // decision point so the player can act cleanly (no orphaned half-turn).
+  function cancelInFlight() {
+    postJSON("/api/cancel", {}).catch(() => {}); // supersede the server-side turn
+    clearTimeout(state.revealTimer);
+    clearTimeout(state.autoTimer);
+    state.turnBuffer = [];
+    state.awaitingResolution = false;
+    hideVeil();
+    // Drop the orphaned "» ..." echo from the auto-advance we just cancelled.
+    const echoes = el.prose.querySelectorAll(".prose-entry.player-action");
+    const lastEcho = echoes[echoes.length - 1];
+    if (lastEcho) lastEcho.remove();
+    // Revert to the last live choices so the decision point is on screen again
+    // and auto-play (if resumed) can advance from here.
+    if (state.lastPromptItem) {
+      renderChoices(state.lastPromptItem);
+      state.currentPromptId = state.lastPromptItem.id;
+      state.lastAdvancedPromptId = null; // allow advancing from this prompt again
+    }
+  }
+
   async function makeChoice(choiceText, contextItemId) {
     if (state.processing || state.gameOver) return;
     closeFreeWill(true); // picking any action closes the free-will gate
+    // If ACT paused auto-play to let us intervene, resume it after this action.
+    if (state.resumeAutoAfterAct) {
+      state.resumeAutoAfterAct = false;
+      setAutoPlay(true);
+    }
     el.choices.innerHTML = "";
     showVeil(INTERIM_MESSAGES[0]);
     // Start a fresh turn: hold its text/choices until the frame renders so
@@ -659,12 +690,30 @@
   // typing your own action is a deliberate, satisfying choice.
   // ------------------------------------------------------------------
   function openFreeWill() {
-    if (state.processing || state.gameOver || state.freeWillOpen) return;
+    if (state.gameOver || state.freeWillOpen) return;
+    // ACT is an interruption: pause auto-play and cancel any in-flight
+    // generation so your own action lands cleanly. Remember whether to resume
+    // auto-play once you've acted (or bailed).
+    state.resumeAutoAfterAct = state.autoPlay;
+    if (state.autoPlay) setAutoPlay(false);
+    if (state.processing || state.awaitingResolution) cancelInFlight();
     state.freeWillOpen = true;
     el.actionWheel.classList.add("fw-open");
     Sound.open();
     // Focus after the expand animation starts so the caret lands cleanly.
     setTimeout(() => el.customInput.focus(), 60);
+  }
+
+  // Dismiss the gate without acting (Esc / cancel). If ACT had paused
+  // auto-play, resume it — the decision point is back on screen.
+  function dismissFreeWill() {
+    const wasOpen = state.freeWillOpen;
+    if (wasOpen) Sound.close();
+    closeFreeWill(true);
+    if (state.resumeAutoAfterAct) {
+      state.resumeAutoAfterAct = false;
+      setAutoPlay(true);
+    }
   }
 
   function closeFreeWill(clear) {
@@ -686,6 +735,15 @@
     const pick = btns[Math.floor(Math.random() * btns.length)];
     Sound.forward();
     commitChoice(pick, pick.dataset.choiceText || "", state.currentPromptId);
+  }
+
+  // Pressing FORWARD starts the world advancing on its own: it flips auto-play
+  // on (if not already) and takes the first step now. From there the world
+  // keeps advancing until the player pauses (ACT) or stops auto-play.
+  function forwardPressed() {
+    if (state.gameOver) return;
+    if (!state.autoPlay) { Sound.autoplayOn(); setAutoPlay(true); }
+    moveForward();
   }
 
   // ------------------------------------------------------------------
@@ -1015,7 +1073,7 @@
       return;
     }
     if (document.activeElement === el.customInput) {
-      if (e.key === "Escape") { if (state.freeWillOpen) Sound.close(); closeFreeWill(true); } // Esc closes the gate
+      if (e.key === "Escape") dismissFreeWill(); // Esc closes the gate (resumes auto if it was on)
       return;
     }
     // While dead, only R (restart) is meaningful.
@@ -1041,10 +1099,9 @@
       openFreeWill();
     } else if (e.key === "ArrowUp" || e.key === " " || e.key === "Spacebar") {
       e.preventDefault();
-      moveForward();
+      forwardPressed(); // forward also starts the world auto-advancing
     } else if (e.key === "Escape") {
-      if (state.freeWillOpen) Sound.close();
-      closeFreeWill(true);
+      dismissFreeWill();
     }
   }
 
@@ -1089,7 +1146,7 @@
     el.btnSnd.addEventListener("click", toggleSound);
     el.deathRestart.addEventListener("click", resetGame);
     el.freeWillBtn.addEventListener("click", openFreeWill);
-    el.forwardBtn.addEventListener("click", moveForward);
+    el.forwardBtn.addEventListener("click", forwardPressed);
     el.tapeBtn.addEventListener("click", openTape);
     el.tapePlayPause.addEventListener("click", toggleTapePlay);
     el.tapePrev.addEventListener("click", () => tapeStep(-1));

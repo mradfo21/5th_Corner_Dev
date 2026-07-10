@@ -363,6 +363,27 @@ IMAGE_DIR = ROOT / "images"
 # while still excluding other threads, which is what was always intended.
 WORLD_STATE_LOCK = threading.RLock() # Global lock for world_state.json access
 
+# ── Turn generation tokens (in-flight turn cancellation) ─────────────────────
+# Each new turn (api_choose) bumps the session's token. A background turn (and
+# its async image/evolve workers) captures the token when it starts and checks
+# it before mutating state / appending to the feed; if a newer turn has started
+# — or the player cancelled via /api/cancel — the stale work aborts instead of
+# clobbering the feed. This lets the UI stop the world mid-generation when the
+# player presses ACT to intervene.
+_TURN_GEN_LOCK = threading.Lock()
+_TURN_GEN: Dict[str, int] = {}
+
+def _bump_turn_gen(session_id: str = 'default') -> int:
+    with _TURN_GEN_LOCK:
+        _TURN_GEN[session_id] = _TURN_GEN.get(session_id, 0) + 1
+        return _TURN_GEN[session_id]
+
+def _turn_is_current(session_id: str, gen: Optional[int]) -> bool:
+    if gen is None:
+        return True  # legacy callers with no token are never superseded
+    with _TURN_GEN_LOCK:
+        return _TURN_GEN.get(session_id, 0) == gen
+
 IMAGE_ENABLED       = True  # ENABLED for production
 WORLD_IMAGE_ENABLED = True  # ENABLED for production
 QUALITY_MODE        = True  # Quality mode: False=Gemini Flash (fast), True=Gemini Pro (high quality, slower)
@@ -3085,7 +3106,7 @@ def extract_scene_elements(*args):
     return nouns
 
 # RENAMED from advance_turn
-def _process_turn_background(choice: str, initial_player_action_item_id: int, signal_file_path: Optional[str] = None):
+def _process_turn_background(choice: str, initial_player_action_item_id: int, signal_file_path: Optional[str] = None, gen: Optional[int] = None):
     """Standalone feed turn — a thin adapter over the canonical two-phase
     session pipeline.
 
@@ -3114,7 +3135,20 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
     time.sleep(0.75)  # brief pacing delay so the client renders the action first
 
     SID = 'default'
+
+    def _superseded() -> bool:
+        """True once a newer turn started or the player cancelled this one."""
+        if not _turn_is_current(SID, gen):
+            print(f"[TURN] gen {gen} superseded — aborting stale turn", flush=True)
+            return True
+        return False
+
     try:
+        # Player cancelled/started a new turn during the pacing delay → bail out
+        # before doing any work so nothing lands on the feed.
+        if _superseded():
+            return
+
         # Roll fate per turn (LUCKY / NORMAL / UNLUCKY), biased by the current
         # phase so the world turns more hostile as chaos rises. This connects the
         # web path to the same drama engine the Discord path already uses; it was
@@ -3126,7 +3160,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
         # ── PHASE 1: consequence dispatch only (fast text; NO image, async evolve) ──
         # Image and world-evolution run in the background so narrative + choices
         # return fast.
-        p1 = advance_turn_image_fast(choice, fate=fate, is_timeout_penalty=False, session_id=SID, skip_image=True, skip_evolve=True)
+        p1 = advance_turn_image_fast(choice, fate=fate, is_timeout_penalty=False, session_id=SID, skip_image=True, skip_evolve=True, gen=gen)
         state = _load_state(SID)
 
         dispatch_text = (p1.get("dispatch") or "").strip() or "The situation evolves..."
@@ -3164,6 +3198,11 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
         except Exception as e_pick:
             log_error(f"Error detecting item pickups: {e_pick}")
 
+        # Player intervened (ACT) or a newer turn started while we generated —
+        # abort before anything lands on the feed.
+        if _superseded():
+            return
+
         with WORLD_STATE_LOCK:
             state.setdefault("feed_log", []).extend(turn_items)
             _save_state(state, SID)
@@ -3180,6 +3219,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                 world_prompt=state.get("world_prompt", ""),
                 hard_transition=bool(p1.get("hard_transition", False)),
                 session_id=SID,
+                gen=gen,
             )
             game_over_item = create_feed_item(type="game_over", content="You have succumbed to the horrors. The transmission ends.")
             game_over_choices = _structure_choices_for_feed(
@@ -3204,6 +3244,11 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
         )
         state = _load_state(SID)
 
+        # Player intervened while choices generated — stop before the image and
+        # the next prompt land.
+        if _superseded():
+            return
+
         # ── Stream the scene image asynchronously (don't block on it). The
         # worker also analyzes the rendered frame and folds it back into the
         # history entry Phase 2 just created. ──
@@ -3215,6 +3260,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             world_prompt=state.get("world_prompt", ""),
             hard_transition=bool(p1.get("hard_transition", False)),
             session_id=SID,
+            gen=gen,
         )
 
         next_choices = [c for c in (p2.get("choices") or []) if c and c.strip() and c.strip() != "\u2014"]
@@ -3272,7 +3318,7 @@ def _structure_choices_for_feed(choice_texts: List[str], prompt_text: str = "Wha
 
 def _spawn_scene_image_async(caption: str, dispatch: str, choice: str, frame_idx: int,
                              world_prompt: str, hard_transition: bool = False,
-                             session_id: str = 'default'):
+                             session_id: str = 'default', gen: Optional[int] = None):
     """Generate a scene image in the background and append it to the session
     feed when ready, so the turn/intro HTTP response never blocks on the slow
     image call. The browser polls /api/feed and streams the scene in.
@@ -3299,6 +3345,12 @@ def _spawn_scene_image_async(caption: str, dispatch: str, choice: str, frame_idx
             img_path = result[0] if result else None
             if not img_path:
                 return
+            # The turn was cancelled/superseded while the image generated —
+            # don't append a stale frame to the live feed.
+            if not _turn_is_current(session_id, gen):
+                print(f"[ASYNC IMG] gen {gen} superseded — dropping frame", flush=True)
+                return
+
             web = _to_web_image_url(img_path)
             item = create_feed_item(type="scene_image", content="", image_url=web)
 
@@ -3349,7 +3401,7 @@ def _spawn_scene_image_async(caption: str, dispatch: str, choice: str, frame_idx
     threading.Thread(target=_worker, daemon=True).start()
 
 
-def _evolve_world_async(session_id: str, consequence_summary: str, vision_dispatch: str):
+def _evolve_world_async(session_id: str, consequence_summary: str, vision_dispatch: str, gen: Optional[int] = None):
     """Run world evolution off the turn's critical path. evolve_world_state is
     read-only; we merge only the world fields under lock so a concurrent feed
     write is never clobbered. Affects the next turn's world_prompt."""
@@ -3364,6 +3416,10 @@ def _evolve_world_async(session_id: str, consequence_summary: str, vision_dispat
                 vision_description=vision_dispatch,
             )
             if not evolution_result:
+                return
+            # Don't let a cancelled/superseded turn's world update land.
+            if not _turn_is_current(session_id, gen):
+                print(f"[ASYNC EVOLVE] gen {gen} superseded — dropping world update", flush=True)
                 return
             with WORLD_STATE_LOCK:
                 st = _load_state(session_id)
@@ -3500,9 +3556,27 @@ def _perform_game_reset() -> List[Dict[str, Any]]:
     logging.info(f"_perform_game_reset: Game reset complete. {len(initial_items)} initial items generated and saved.")
     return initial_items
 
+def api_cancel():
+    """Cancel any in-flight turn for the standalone session.
+
+    Bumps the session's turn-generation token so the background turn (and its
+    async image/evolve workers) sees it's been superseded and aborts before
+    landing anything on the feed. Used when the player presses ACT to intervene
+    mid-generation. Safe to call when nothing is in flight (idempotent)."""
+    try:
+        gen = _bump_turn_gen('default')
+        return jsonify({"ok": True, "gen": gen})
+    except Exception as e:
+        log_error(f"Error in api_cancel: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 def api_reset():
     global state # Ensure we're interacting with the global state
     logging.info(f"api_reset: POST request received. Current state ID before reset: {id(state)}")
+    # A reset supersedes any in-flight turn so stale work can't land on the
+    # fresh feed.
+    _bump_turn_gen('default')
     try:
         initial_items = _perform_game_reset()
         logging.info(f"api_reset: _perform_game_reset completed. Current state ID after reset: {id(state)}. Feed log length: {len(state.get('feed_log', []))}")
@@ -3571,6 +3645,10 @@ def api_choose():
         player_choice_text = data['choice']
         context_item_id = data.get('context_item_id') # Optional, for context
 
+        # Start a new turn generation — this supersedes (cancels) any turn still
+        # in flight, so its background/async work won't land on the feed.
+        my_gen = _bump_turn_gen('default')
+
         if DEBUG_MODE: print(f"[DEBUG] api_choose received choice: '{player_choice_text}', context_id: {context_item_id}. Current state ID: {id(state)}", flush=True)
 
         # 1. Immediately create and log the Player Action
@@ -3591,7 +3669,7 @@ def api_choose():
         temp_signal_file = ROOT / f"thread_signal_{player_action_item['id']}.tmp" # Use the correct ID here
         
         try:
-            thread = threading.Thread(target=_process_turn_background, args=(player_choice_text, player_action_item['id'], str(temp_signal_file)))
+            thread = threading.Thread(target=_process_turn_background, args=(player_choice_text, player_action_item['id'], str(temp_signal_file), my_gen))
             # thread.daemon = True # Allow main program to exit even if threads are running. Temporarily commenting out for testing.
             thread.start()            
             # Check for signal from thread via temp file
@@ -4008,7 +4086,7 @@ def summarize_world_state_diff(prev_state: dict, state: dict) -> str:
     return "; ".join(diffs)
 
 # ───────── game loop ──────────────────────────────────────────────────────────
-def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalty: bool = False, session_id: str = 'default', skip_image: bool = False, skip_evolve: bool = False) -> dict:
+def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalty: bool = False, session_id: str = 'default', skip_image: bool = False, skip_evolve: bool = False, gen: Optional[int] = None) -> dict:
     """
     PHASE 1 (FAST): Generate dispatch and image, return immediately.
 
@@ -4120,7 +4198,7 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             # affects the NEXT turn's world_prompt. evolve_world_state is
             # read-only; the worker merges its result under lock, preserving
             # feed_log.
-            _evolve_world_async(session_id, consequence_summary, vision_dispatch)
+            _evolve_world_async(session_id, consequence_summary, vision_dispatch, gen)
         else:
             from evolve_prompt_file import evolve_world_state
             state_file_path = _get_state_path(session_id)
