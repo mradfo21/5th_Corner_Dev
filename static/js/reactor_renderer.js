@@ -7,16 +7,31 @@
    image-to-video guidance — condition the world model on the SAME still the
    game generated so the video matches our intended composition.
 
+   Steering model: IMAGE-TO-IMAGE ON EVERY TURN. Rather than letting Helios
+   free-run on text (which drifts into incoherent, out-of-universe video), we
+   re-anchor the live stream to the SAME coherent Gemini keyframe the game
+   generated each turn, at a high image_strength. The video then only adds
+   motion/continuity around our composition instead of inventing its own world.
+   Clarity (staying in-universe) is favored over free motion.
+
    Wire protocol (per Helios schema reference; verified against the live model):
      • establishing shot / new game:
-         set_prompt({prompt}) -> uploadFile(still) -> set_image_strength(S)
-           -> set_image({image}) -> start
-       (prompt MUST be registered before start; set_conditioning + immediate
-        start races and the model rejects start with "No prompt set")
-     • location change (hard_transition):
-         uploadFile(still) -> set_image_strength(S) -> set_image({image}) -> set_prompt({prompt})
-     • same-location turn:
-         set_prompt({prompt})   (let the video evolve continuously)
+         uploadFile(still) -> set_image_strength(S)
+           -> set_conditioning({prompt, image})   (atomic; avoids the first-chunk
+              race where start ships before the image lands and the scene
+              "corrects itself" a chunk later) -> start
+         (falls back to set_prompt -> set_image -> start if set_conditioning is
+          unsupported, and to text-only set_prompt -> start if the upload fails)
+     • every subsequent turn (same location AND hard_transition):
+         uploadFile(still) -> set_image_strength(S) -> set_image({image})
+           -> set_prompt({prompt})
+         (re-anchor to the fresh keyframe so the video tracks our universe; the
+          Helios image swap is an immediate switch at the next chunk boundary)
+
+   image_strength note: Helios snapshots image_strength together with the
+   reference image, so a new strength value only takes effect on the NEXT
+   set_image. We therefore always send set_image_strength immediately before
+   set_image / set_conditioning. Tune live with ?strength=0..1.
 
    The Reactor API key never touches the browser: we mint a short-lived JWT via
    our own POST /api/reactor/token proxy. The SDK loads from an ESM CDN (pinned)
@@ -37,9 +52,22 @@
 
   const SDK_URL = "https://esm.sh/@reactor-team/js-sdk@2.12.0";
   const FALLBACK_MODEL = "helios";
-  // How strongly the reference still anchors the video (0..1). Moderate-high so
-  // the scene matches our composition but the model can still animate/breathe.
-  const IMAGE_STRENGTH = 0.6;
+  // How strongly the reference keyframe anchors the video (0..1). High by
+  // default: we want the live video to stay clearly in the SAME universe as our
+  // Gemini still (clarity/coherence) and just breathe/animate around it, rather
+  // than drift off on its own. Override live for tuning with ?strength=0..1.
+  const DEFAULT_IMAGE_STRENGTH = 0.85;
+  function resolveImageStrength() {
+    try {
+      const q = new URLSearchParams(location.search).get("strength");
+      if (q != null && q !== "") {
+        const v = parseFloat(q);
+        if (!isNaN(v)) return Math.max(0, Math.min(1, v));
+      }
+    } catch (_) {}
+    return DEFAULT_IMAGE_STRENGTH;
+  }
+  const IMAGE_STRENGTH = resolveImageStrength();
 
   const rstate = {
     reactor: null,
@@ -173,44 +201,59 @@
     rstate.pending = null;
     if (!s.prompt) return;
 
-    // Dedupe pure re-sends of the same prompt while already running.
-    if (rstate.started && s.prompt === rstate.lastPrompt && !s.hardTransition) return;
+    // Dedupe true no-ops only: same prompt AND no fresh keyframe to re-anchor on
+    // while already running. A new still (s.imageUrl) always re-anchors.
+    if (rstate.started && !s.hardTransition && s.prompt === rstate.lastPrompt &&
+        (!s.imageUrl || s.imageUrl === rstate.lastImageUrl)) return;
 
     try {
       if (!rstate.started) {
-        // Establishing shot. IMPORTANT: register the prompt BEFORE start —
-        // set_conditioning + immediate start races (the model rejects start
-        // with "No prompt set" while the image/prompt are still decoding). So
-        // we set_prompt first, attach the still as an image-to-video reference,
-        // then start. Chunk 0 is text-driven; the still conditions subsequent
-        // chunks once image_accepted lands (a beat later), which is exactly how
-        // Helios image-to-video is meant to run.
-        await cmd("set_prompt", { prompt: s.prompt });
+        // Establishing shot. Register the prompt and reference image ATOMICALLY
+        // via set_conditioning so the very first chunk is generated from our
+        // keyframe (not text-only, then "correcting itself" a chunk later once
+        // the image lands). set_image_strength must precede it — Helios
+        // snapshots strength with the image. Falls back gracefully if
+        // set_conditioning isn't available, and to text-only if upload fails.
         const ref = await uploadStill(s.imageUrl);
         if (ref) {
           await cmd("set_image_strength", { image_strength: IMAGE_STRENGTH });
-          await cmd("set_image", { image: ref });
+          let conditioned = false;
+          try {
+            await cmd("set_conditioning", { prompt: s.prompt, image: ref });
+            conditioned = true;
+          } catch (e) {
+            log("set_conditioning unsupported, falling back", e);
+          }
+          if (!conditioned) {
+            await cmd("set_prompt", { prompt: s.prompt });
+            await cmd("set_image", { image: ref });
+          }
+        } else {
+          // No keyframe yet — start text-only; the very next turn re-anchors on
+          // the still via set_image. standalone.js keeps the still painted
+          // underneath until real frames flow, so we never show a blank scene.
+          await cmd("set_prompt", { prompt: s.prompt });
         }
         rstate.showSuppressed = false; // allow the video to reveal once frames flow
         await cmd("start", {});
         rstate.started = true;
         rstate.lastPrompt = s.prompt;
-        log("generation started", ref ? "(image-conditioned)" : "(text-only)");
-      } else if (s.hardTransition) {
-        // Location change: swap the reference still, then re-steer.
-        const ref = await uploadStill(s.imageUrl);
+        log("generation started", ref ? "(image-conditioned)" : "(text-only fallback)");
+      } else {
+        // EVERY subsequent turn — same location and hard transitions alike:
+        // re-anchor the live video to the fresh Gemini keyframe (image-to-image)
+        // so it stays in our universe instead of drifting on text. The swap is
+        // an immediate switch at the next Helios chunk boundary. When there's no
+        // new still (e.g. instant action re-steer before the turn resolves) we
+        // just re-prompt and let the current anchor ride.
+        const ref = s.imageUrl ? await uploadStill(s.imageUrl) : null;
         if (ref) {
           await cmd("set_image_strength", { image_strength: IMAGE_STRENGTH });
           await cmd("set_image", { image: ref });
         }
         await cmd("set_prompt", { prompt: s.prompt });
         rstate.lastPrompt = s.prompt;
-        log("hard transition re-steer", ref ? "(reseeded image)" : "");
-      } else {
-        // Same location: let the video evolve continuously via prompt only.
-        await cmd("set_prompt", { prompt: s.prompt });
-        rstate.lastPrompt = s.prompt;
-        log("re-steered:", s.prompt.slice(0, 80));
+        log(ref ? "re-anchored (img2img)" : "re-steered (text)", s.prompt.slice(0, 80));
       }
     } catch (err) {
       log("apply scene failed", err);
