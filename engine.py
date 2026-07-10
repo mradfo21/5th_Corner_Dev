@@ -3022,6 +3022,17 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
 
         # ── DEATH: single mechanism — the Phase 1 player_alive verdict ──
         if not player_alive:
+            # Still render the death moment's scene image — it streams in
+            # behind the "YOU DIED" overlay and lands on the tape.
+            _spawn_scene_image_async(
+                caption=vision_dispatch_text or dispatch_text,
+                dispatch=dispatch_text,
+                choice=choice,
+                frame_idx=int(p1.get("frame_idx", 1)),
+                world_prompt=state.get("world_prompt", ""),
+                hard_transition=bool(p1.get("hard_transition", False)),
+                session_id=SID,
+            )
             game_over_item = create_feed_item(type="game_over", content="You have succumbed to the horrors. The transmission ends.")
             game_over_choices = _structure_choices_for_feed(
                 ["Restart Simulation"], "GAME OVER",

@@ -316,7 +316,8 @@ html, body {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: radial-gradient(circle at center, rgba(40,0,0,0.82), rgba(0,0,0,0.95));
+  /* Lighter red wash so the death frame shows through behind YOU DIED. */
+  background: radial-gradient(circle at center, rgba(45,0,0,0.5), rgba(10,0,0,0.82));
   animation: death-fade-in 1.1s ease-out;
 }
 
