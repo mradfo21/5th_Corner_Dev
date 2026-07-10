@@ -36,7 +36,7 @@ services:
       - key: REACTOR_API_KEY
         sync: false
       - key: REACTOR_MODEL
-        value: "helios"
+        value: "reactor/lingbot-world-2"
       # Default scene renderer: "reactor" (realtime video) or "image" (Gemini
       # stills). The web client auto-falls back to stills if Reactor is
       # unavailable, and can override per-session via ?renderer= / the toggle.

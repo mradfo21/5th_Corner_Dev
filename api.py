@@ -206,7 +206,7 @@ def api_reactor_config():
     return jsonify({
         "enabled": bool(os.getenv("REACTOR_API_KEY")),
         "renderer": getattr(engine, "SCENE_RENDERER", "image"),
-        "model_name": os.getenv("REACTOR_MODEL", "helios"),
+        "model_name": os.getenv("REACTOR_MODEL", "reactor/lingbot-world-2"),
     })
 
 
