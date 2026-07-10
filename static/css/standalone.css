@@ -396,102 +396,143 @@ html, body {
   text-transform: uppercase;
 }
 
-/* ---------- Minimal action zone: small options at the bottom, no backgrounds ---------- */
+/* ---------- Radial action wheel: 3 choices arced around a central ACT hub ---------- */
 
 #action-wheel {
   position: fixed;
   left: 50%;
-  bottom: calc(env(safe-area-inset-bottom, 0px) + 2.4vh);
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 3vh);
   transform: translateX(-50%);
-  width: min(92vw, 480px);
+  width: 540px;
+  max-width: 96vw;
+  height: 196px;
   z-index: 10;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
 }
 
 #choices-container {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
   transition: opacity 0.2s ease;
 }
 
-/* Options are pure glowing text — no background, small and minimal. */
+/* Options are pure glowing text — no background. */
 .choice-btn {
+  position: absolute;
+  pointer-events: auto;
+  max-width: 220px;
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
-  width: 100%;
-  text-align: left;
   background: none;
   border: none;
-  color: #e4fbef;
+  color: #eafff2;
   font-family: inherit;
-  font-size: 13px;
-  line-height: 1.35;
-  padding: 3px 2px;
+  font-size: 14px;
+  line-height: 1.2;
+  padding: 4px 4px;
   cursor: pointer;
   text-shadow: 0 1px 5px rgba(0,0,0,0.95), 0 0 3px rgba(0,0,0,0.9);
-  transition: color 0.14s, transform 0.1s, text-shadow 0.14s;
-  animation: pop-in 0.32s cubic-bezier(0.2, 0.9, 0.25, 1.2) backwards;
+  transition: color 0.14s, transform 0.12s, text-shadow 0.14s;
+  /* 'backwards' fill so the finished animation doesn't pin a transform that
+     would override the centered slot's translateX(-50%). */
+  animation: pop-in 0.36s cubic-bezier(0.2, 0.9, 0.25, 1.2) backwards;
 }
 
 .choice-btn:hover {
   color: #8effc1;
-  text-shadow: 0 0 12px rgba(142,255,193,0.85), 0 1px 5px rgba(0,0,0,0.95);
+  text-shadow: 0 0 14px rgba(142,255,193,0.85), 0 1px 5px rgba(0,0,0,0.95);
 }
 
-.choice-btn:active { transform: translateX(2px); }
+/* Slot positions arced around the bottom-center hub: left, top, right. */
+.choice-btn:nth-child(1) { right: 53%; bottom: 24px; text-align: right; justify-content: flex-end; }
+.choice-btn:nth-child(2) { left: 50%; bottom: 126px; transform: translateX(-50%); text-align: center; justify-content: center; }
+.choice-btn:nth-child(3) { left: 53%; bottom: 24px; text-align: left; justify-content: flex-start; }
+
+.choice-btn:active { transform: scale(0.96); }
+.choice-btn:nth-child(2):active { transform: translateX(-50%) scale(0.96); }
 
 .choice-num {
   flex: 0 0 auto;
-  color: #8effc1;
-  font-weight: bold;
-  opacity: 0.8;
-  font-size: 12px;
+  width: 20px; height: 20px;
+  border: 1px solid rgba(142, 255, 193, 0.55);
+  border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 11px; font-weight: bold; color: #8effc1;
+  box-shadow: 0 0 8px rgba(0,0,0,0.55);
 }
 
 .choice-btn.picked { color: #8effc1; animation: choice-pick 0.45s ease-out; }
 
 @keyframes choice-pick {
-  0%   { text-shadow: 0 0 22px rgba(142,255,193,1), 0 1px 5px rgba(0,0,0,0.95); }
+  0%   { text-shadow: 0 0 26px rgba(142,255,193,1), 0 1px 5px rgba(0,0,0,0.95); }
   100% { text-shadow: 0 1px 5px rgba(0,0,0,0.95); }
 }
 
-/* Minimal free-will trigger — a small text link, no background. */
+/* ---------- Central ACT (free-will) hub — no background, glowing ring ---------- */
+
 #free-will-btn {
-  align-self: flex-start;
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  transform: translateX(-50%);
+  width: 78px;
+  height: 78px;
+  border-radius: 50%;
   background: none;
-  border: none;
-  color: rgba(142, 255, 193, 0.65);
+  border: 1px solid rgba(142, 255, 193, 0.55);
+  color: #b6ffd6;
   font-family: inherit;
-  font-size: 11px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  padding: 4px 2px;
-  margin-top: 2px;
   cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
   text-shadow: 0 1px 4px rgba(0,0,0,0.9);
-  transition: color 0.14s;
+  box-shadow: inset 0 0 16px rgba(0,0,0,0.5);
+  transition: border-color 0.16s, box-shadow 0.16s, transform 0.1s, opacity 0.22s;
+  animation: fw-idle-glow 3.2s ease-in-out infinite;
 }
 
-#free-will-btn:hover { color: #8effc1; }
+@keyframes fw-idle-glow {
+  0%, 100% { box-shadow: inset 0 0 16px rgba(0,0,0,0.5), 0 0 0 rgba(142,255,193,0); }
+  50%      { box-shadow: inset 0 0 16px rgba(0,0,0,0.5), 0 0 20px rgba(142,255,193,0.34); }
+}
 
-.fw-icon { margin-right: 5px; opacity: 0.9; }
-.fw-label { letter-spacing: 0.14em; }
+#free-will-btn:hover {
+  border-color: rgba(142, 255, 193, 1);
+  box-shadow: inset 0 0 16px rgba(0,0,0,0.5), 0 0 26px rgba(142, 255, 193, 0.5);
+  transform: translateX(-50%) scale(1.06);
+}
 
-/* Free-will input: hidden until the trigger is tapped, then shown inline. */
+#free-will-btn:active { transform: translateX(-50%) scale(0.96); }
+
+.fw-icon { font-size: 20px; opacity: 0.95; }
+.fw-label { font-size: 9px; letter-spacing: 0.14em; opacity: 0.85; }
+
+/* Free-will input: hidden until the ACT hub is tapped, then expands over the wheel. */
 #custom-form {
-  display: none;
+  position: absolute;
+  left: 50%;
+  bottom: 6px;
+  transform: translateX(-50%) translateY(8px);
+  width: min(92vw, 440px);
+  display: flex;
   align-items: center;
   gap: 8px;
-  width: 100%;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.26s ease, transform 0.3s cubic-bezier(0.2, 0.9, 0.25, 1.1);
 }
 
-#action-wheel.fw-open #choices-container { display: none; }
-#action-wheel.fw-open #free-will-btn { display: none; }
-#action-wheel.fw-open #custom-form { display: flex; }
+#action-wheel.fw-open #choices-container { opacity: 0; pointer-events: none; }
+#action-wheel.fw-open #free-will-btn { opacity: 0; pointer-events: none; animation: none; }
+#action-wheel.fw-open #custom-form {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(-50%) translateY(0);
+}
 #action-wheel.fw-open #custom-input { animation: fw-input-flash 0.6s ease-out; }
 
 @keyframes fw-input-flash {
@@ -747,8 +788,10 @@ html, body {
   }
   .prose-entry { font-size: 15px; line-height: 1.45; }
 
-  #action-wheel { width: 94vw; bottom: calc(env(safe-area-inset-bottom, 0px) + 1.4vh); }
-  .choice-btn { font-size: 14px; padding: 5px 2px; }
+  #action-wheel { width: 96vw; height: 182px; bottom: calc(env(safe-area-inset-bottom, 0px) + 1.6vh); }
+  .choice-btn { font-size: 14px; max-width: 42vw; }
+  .choice-btn:nth-child(2) { bottom: 118px; max-width: 82vw; }
+  #free-will-btn { width: 74px; height: 74px; }
 
   /* 16px input prevents iOS Safari from auto-zooming on focus. */
   #custom-input { font-size: 16px; }
@@ -761,6 +804,8 @@ html, body {
 /* ---------- Phones in landscape (short height): keep the wheel low + tight ---------- */
 @media (max-height: 500px) and (orientation: landscape) {
   #prose-feed { max-height: 40vh; width: min(42vw, 420px); }
-  #action-wheel { bottom: calc(env(safe-area-inset-bottom, 0px) + 6px); }
-  #prose-feed { max-height: 42vh; }
+  #action-wheel { height: 152px; bottom: calc(env(safe-area-inset-bottom, 0px) + 6px); }
+  .choice-btn:nth-child(2) { bottom: 98px; }
+  #free-will-btn { width: 62px; height: 62px; }
+  #prose-feed { max-height: 40vh; }
 }
