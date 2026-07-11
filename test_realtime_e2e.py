@@ -312,6 +312,36 @@ class TestRealtimeRenderer(unittest.TestCase):
         finally:
             page.close()
 
+    def test_ceremony_animates_all_five_steps_to_done(self):
+        """The turn pipeline (Action → Consequence → World Updating → World
+        Responding → Actions Generating) must animate through ALL steps and
+        resolve — the last two used to be snapped/skipped, appearing to 'never
+        trigger'."""
+        page = self._new_realtime_page()
+        try:
+            # The ceremony is renderer-agnostic; use image mode so the flow
+            # matches the known-good standalone path (no reactor/video timing).
+            page.goto(f"{self.base_url}/standalone?renderer=image", wait_until="domcontentloaded")
+            # Intro choices from the auto-restart (uses the real mock backend).
+            page.wait_for_selector(".choice-btn", state="attached", timeout=20000)
+            page.evaluate("document.querySelector('.choice-btn').click()")  # begins the ceremony
+            # The turn resolves and the ceremony reaches its green resolved state
+            # with EVERY step marked done.
+            page.wait_for_function(
+                "document.getElementById('ceremony') && document.getElementById('ceremony').classList.contains('resolved')",
+                timeout=25000,
+            )
+            done = page.evaluate(
+                "Array.from(document.querySelectorAll('#ceremony-steps .cere-step')).map(n => n.classList.contains('done'))"
+            )
+            self.assertEqual(len(done), 5, f"expected 5 steps, got {len(done)}")
+            self.assertTrue(all(done), f"World Responding / Actions Generating never completed: {done}")
+        except Exception:
+            print("\n=== REACTOR CONSOLE LOG (ceremony) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
     def test_loading_realtime_auto_restarts(self):
         """Loading /realtime must auto-restart from scratch: the client bootstrap
         POSTs /api/reset on load (no resuming the in-progress session)."""

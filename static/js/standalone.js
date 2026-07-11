@@ -277,6 +277,7 @@
     let dwellTimer = null;
     let doneTimer = null;
     let noteTimer = null;
+    let completing = false; // animating through the final steps to the resolve flourish
 
     function build() {
       if (built || !el.ceremonySteps) return;
@@ -314,18 +315,40 @@
 
     function pump() {
       if (dwellTimer) return;                 // still dwelling on the current step
-      if (cur >= target) return;              // caught up
+      if (cur >= target) {                    // caught up
+        if (completing) finishFlourish();     // reached the last step -> resolve
+        return;
+      }
       enter(cur + 1);
       dwellTimer = setTimeout(() => { dwellTimer = null; pump(); }, DWELL_MS);
     }
 
-    return {
+    // The resolve flourish, run once the tracker has ANIMATED through to the
+    // last step — so World Responding / Actions Generating actually light up in
+    // sequence instead of being snapped straight to done on turn resolution.
+    function finishFlourish() {
+      completing = false;
+      if (el.ceremonySteps) {
+        Array.from(el.ceremonySteps.children).forEach((n) => { n.classList.remove("active", "beat"); n.classList.add("done"); });
+      }
+      if (el.ceremony) el.ceremony.classList.add("resolved");
+      api.note("\u2713 World updated", { tick: false });
+      Sound.cereDone();
+      active = false;
+      clearTimeout(doneTimer);
+      clearTimeout(state.finishTimer);
+      state.finishTimer = setTimeout(() => api.finish(), IMAGE_WAIT_FALLBACK_MS);
+      api._tryFinish();
+    }
+
+    const api = {
       // Show the tracker fresh and enter the first step (action selected).
       begin() {
         build();
         clearTimeout(doneTimer); clearTimeout(dwellTimer); dwellTimer = null;
         clearTimeout(state.finishTimer);
         active = true;
+        completing = false;
         cur = -1; target = -1;
         state.processing = true;
         state.turnResolved = false;
@@ -373,27 +396,21 @@
       // flash green, sound the affirmation, then fade. Releases input gating.
       complete() {
         if (!active) { hideVeil(); return; }
+        // ANIMATE through any remaining steps (World Responding, Actions
+        // Generating) rather than snapping them to done — the back half of the
+        // pipeline actually lights up in sequence. The green resolve flourish
+        // (finishFlourish) runs once we reach the final step. Choices are
+        // already live, so release input right away even while it animates.
         target = STEPS.length - 1;
-        // Snap through any remaining steps immediately for the finish.
-        clearTimeout(dwellTimer); dwellTimer = null;
-        while (cur < target) enter(cur + 1);
-        if (el.ceremonySteps) {
-          Array.from(el.ceremonySteps.children).forEach((n) => {
-            n.classList.remove("active", "beat"); n.classList.add("done");
-          });
-        }
-        if (el.ceremony) el.ceremony.classList.add("resolved");
-        this.note("\u2713 World updated", { tick: false });
-        Sound.cereDone();
+        completing = true;
         state.processing = false; // choices are live — let the player act
-        active = false;
         state.turnResolved = true;
         // Hold the resolved bar until this turn's frame loads, then fade it back
         // to the play button. Fallback so a missing image never strands the bar.
         clearTimeout(doneTimer);
         clearTimeout(state.finishTimer);
         state.finishTimer = setTimeout(() => this.finish(), IMAGE_WAIT_FALLBACK_MS);
-        this._tryFinish();
+        pump();
       },
 
       // The new frame for this turn is on screen. If the pipeline has already
@@ -419,6 +436,7 @@
       // Tear down without the resolve flourish (error / game over / reset).
       abort() {
         active = false;
+        completing = false;
         clearTimeout(dwellTimer); dwellTimer = null;
         clearTimeout(doneTimer); doneTimer = null;
       },
@@ -439,6 +457,7 @@
 
       isActive() { return active; },
     };
+    return api;
   })();
 
   async function postJSON(url, body) {
