@@ -79,11 +79,11 @@
 
     // Given a media element that is painted with `object-fit: cover` inside a
     // box `rect`, and the media's natural size, map a viewport point + a
-    // viewport-space box edge into SOURCE-pixel crop coordinates.
+    // viewport-space box (width x height) into SOURCE-pixel crop coordinates.
     //   cover scale s = max(rect.w / natW, rect.h / natH)
     //   displayed media size = natW*s x natH*s (>= rect, overflow is clipped)
     //   a viewport length L corresponds to L / s source pixels
-    function coverCrop(rect, natW, natH, x, y, box) {
+    function coverCrop(rect, natW, natH, x, y, boxW, boxH) {
       const s = Math.max(rect.width / natW, rect.height / natH);
       if (!(s > 0)) return null;
       const dispW = natW * s;
@@ -94,11 +94,12 @@
       // Point in source pixels.
       const srcX = (x - dispLeft) / s;
       const srcY = (y - dispTop) / s;
-      const srcBox = box / s;
-      let sx = srcX - srcBox / 2;
-      let sy = srcY - srcBox / 2;
-      let sw = srcBox;
-      let sh = srcBox;
+      const srcBoxW = boxW / s;
+      const srcBoxH = boxH / s;
+      let sx = srcX - srcBoxW / 2;
+      let sy = srcY - srcBoxH / 2;
+      let sw = srcBoxW;
+      let sh = srcBoxH;
       // Clamp the crop rect inside the source so drawImage never reads outside.
       sx = clamp(sx, 0, Math.max(0, natW - 1));
       sy = clamp(sy, 0, Math.max(0, natH - 1));
@@ -130,15 +131,17 @@
       });
     }
 
-    // Crop a square region of the current scene around a viewport point.
-    // opts: { x, y, box, thumb }  (box/thumb optional; defaults above)
+    // Crop a rectangular region of the current scene around a viewport point.
+    // opts: { x, y, w, h, thumb }  (w/h default to a square DEFAULT_BOX)
     // Returns a Promise resolving to a result object, or null if nothing on
-    // screen can be read.
+    // screen can be read. Reads the live Reactor video first, then the
+    // still-image scene layer — so it works in BOTH render modes.
     //   { dataUrl, width, height, source: "reactor"|"image",
-    //     natural: {w,h}, crop: {sx,sy,sw,sh}, box }
-    async function captureRegion(opts) {
+    //     natural: {w,h}, crop: {sx,sy,sw,sh}, box: {w,h} }
+    async function captureRect(opts) {
       opts = opts || {};
-      const box = opts.box || DEFAULT_BOX;
+      const boxW = opts.w || opts.box || DEFAULT_BOX;
+      const boxH = opts.h || opts.box || DEFAULT_BOX;
       const thumb = opts.thumb || DEFAULT_THUMB;
       const x = opts.x != null ? opts.x : window.innerWidth / 2;
       const y = opts.y != null ? opts.y : window.innerHeight / 2;
@@ -148,17 +151,13 @@
       if (v) {
         try {
           const rect = v.getBoundingClientRect();
-          const crop = coverCrop(rect, v.videoWidth, v.videoHeight, x, y, box);
+          const crop = coverCrop(rect, v.videoWidth, v.videoHeight, x, y, boxW, boxH);
           if (crop) {
             const out = drawCrop(v, crop, thumb);
             return {
               dataUrl: out.canvas.toDataURL("image/jpeg", JPEG_QUALITY),
-              width: out.width,
-              height: out.height,
-              source: "reactor",
-              natural: { w: v.videoWidth, h: v.videoHeight },
-              crop,
-              box,
+              width: out.width, height: out.height, source: "reactor",
+              natural: { w: v.videoWidth, h: v.videoHeight }, crop, box: { w: boxW, h: boxH },
             };
           }
         } catch (err) {
@@ -173,17 +172,13 @@
         try {
           const img = await loadImage(url);
           const rect = sceneEl.getBoundingClientRect();
-          const crop = coverCrop(rect, img.naturalWidth, img.naturalHeight, x, y, box);
+          const crop = coverCrop(rect, img.naturalWidth, img.naturalHeight, x, y, boxW, boxH);
           if (crop) {
             const out = drawCrop(img, crop, thumb);
             return {
               dataUrl: out.canvas.toDataURL("image/jpeg", JPEG_QUALITY),
-              width: out.width,
-              height: out.height,
-              source: "image",
-              natural: { w: img.naturalWidth, h: img.naturalHeight },
-              crop,
-              box,
+              width: out.width, height: out.height, source: "image",
+              natural: { w: img.naturalWidth, h: img.naturalHeight }, crop, box: { w: boxW, h: boxH },
             };
           }
         } catch (err) {
@@ -192,6 +187,13 @@
       }
 
       return null;
+    }
+
+    // Square-region convenience (kept for callers that pass a single `box`).
+    async function captureRegion(opts) {
+      opts = opts || {};
+      const box = opts.box || DEFAULT_BOX;
+      return captureRect({ x: opts.x, y: opts.y, w: box, h: box, thumb: opts.thumb });
     }
 
     // Capture the WHOLE visible frame (a framed shot of the world) — the raw
@@ -242,6 +244,7 @@
     }
 
     return {
+      captureRect,
       captureRegion,
       captureFull,
       available,
