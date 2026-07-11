@@ -66,6 +66,10 @@
   // diagnostic so the exact stall point is visible in the browser console.
   // Overridable (e.g. from tests) via a window global.
   const REVEAL_WATCHDOG_MS = (typeof window !== "undefined" && window.__REACTOR_REVEAL_WATCHDOG_MS__) || 12000;
+  // Helios image-to-video conditioning strength (0..1). Helios is prompt-primary
+  // by design, so we push this high to make it hew to our guide still as closely
+  // as possible. Overridable at runtime via window.__HELIOS_IMAGE_STRENGTH__.
+  const HELIOS_IMAGE_STRENGTH = (typeof window !== "undefined" && window.__HELIOS_IMAGE_STRENGTH__) || 0.9;
 
   const rstate = {
     reactor: null,
@@ -400,28 +404,6 @@
     }
   }
 
-  // Fetch our own generated still as raw base64 (no data: prefix) for models
-  // whose set_image takes an inline image (Helios `image_b64`). Returns null on
-  // failure so the caller can proceed text-only.
-  async function fetchImageBase64(imageUrl) {
-    if (!imageUrl) return null;
-    try {
-      const resp = await fetch(imageUrl);
-      if (!resp.ok) throw new Error("HTTP " + resp.status);
-      const blob = await resp.blob();
-      return await new Promise((resolve) => {
-        const fr = new FileReader();
-        fr.onload = () => {
-          const s = String(fr.result || "");
-          const comma = s.indexOf(",");
-          resolve(comma >= 0 ? s.slice(comma + 1) : s || null);
-        };
-        fr.onerror = () => resolve(null);
-        fr.readAsDataURL(blob);
-      });
-    } catch (err) { log("image base64 fetch failed", err); return null; }
-  }
-
   async function cmd(name, data) {
     // Surface the payload (prompt text / whether an image seed rides along) so
     // the world-model inspector can show EXACTLY what we send to the model.
@@ -495,16 +477,21 @@
     // New stage boundary: invalidate any seed still decoding from a prior stage.
     rstate.seedToken++;
     if (!rstate.freezeActive && s.imageUrl) paintSeedToFreeze(s.imageUrl);
+    // Feed the guide image in the way Helios's docs prescribe: upload it and pass
+    // the FileRef to set_image (NOT base64), crank the image-conditioning strength
+    // up so it hews to our composition, set the prompt at chunk 0, and WAIT for
+    // image_accepted before start — so the FIRST chunk is image-conditioned
+    // instead of hitting the documented race where `start` sails past the upload
+    // and chunk 0 renders from the prompt alone (which reads as "disconnected").
+    const ref = await uploadStill(s.imageUrl);
     await cmd("schedule_prompt", { prompt: s.prompt, chunk: 0 });
-    if (s.imageUrl) {
-      const b64 = await fetchImageBase64(s.imageUrl);
-      if (b64) {
-        rstate.stagingGuideUrl = s.imageUrl;
-        const imageReady = waitForEvent("image_accepted", IMAGE_ACCEPT_TIMEOUT_MS);
-        await cmd("set_image", { image_b64: b64, transition: "cut" });
-        rstate.lastImageUrl = s.imageUrl;
-        await imageReady;
-      }
+    if (ref) {
+      rstate.stagingGuideUrl = s.imageUrl || null;
+      try { await cmd("set_image_strength", { image_strength: HELIOS_IMAGE_STRENGTH }); } catch (_) {}
+      const imageReady = waitForEvent("image_accepted", IMAGE_ACCEPT_TIMEOUT_MS);
+      await cmd("set_image", { image: ref, transition: "cut" });
+      rstate.lastImageUrl = s.imageUrl;
+      await imageReady; // let the seed decode so chunk 0 renders from it
     }
     await cmd("start", {});
     rstate.started = true;
@@ -512,23 +499,26 @@
     emitEvent("stage_started", { prompt: s.prompt });
     armFreezeReveal();
     armRevealWatchdog();
-    log("helios: generation started");
+    log("helios: generation started (image-conditioned)");
     return true;
   }
 
   async function applyRunningHelios(s, ctx) {
     if (ctx.newGuideImage || s.hardTransition) {
-      const b64 = await fetchImageBase64(s.imageUrl);
-      if (b64) {
+      // Swap the guide image in-stream as a FileRef (same path as establish), at
+      // full conditioning strength, so the live video re-anchors on the new still
+      // instead of drifting. Blend keeps continuity; a hard transition cuts.
+      const ref = await uploadStill(s.imageUrl);
+      if (ref) {
         rstate.stagingGuideUrl = s.imageUrl;
-        // Blend the new frame in continuously; a hard transition cuts decisively.
-        await cmd("set_image", { image_b64: b64, transition: s.hardTransition ? "cut" : "blend" });
+        try { await cmd("set_image_strength", { image_strength: HELIOS_IMAGE_STRENGTH }); } catch (_) {}
+        await cmd("set_image", { image: ref, transition: s.hardTransition ? "cut" : "blend" });
         rstate.lastImageUrl = s.imageUrl;
       }
     }
     await cmd("set_prompt", { prompt: s.prompt });
     rstate.lastPrompt = s.prompt;
-    log("helios: re-steered", (ctx.newGuideImage || s.hardTransition) ? "(image blended)" : "");
+    log("helios: re-steered", (ctx.newGuideImage || s.hardTransition) ? "(image re-anchored)" : "");
     return true;
   }
 
