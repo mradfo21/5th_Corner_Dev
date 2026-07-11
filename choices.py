@@ -74,6 +74,30 @@ _STALL_MARKERS = (
     "to examine", "to survey", "get a better look", "for a better look",
 )
 
+# Adverbs that commonly PREFIX a choice ("Carefully inspect…", "Quietly watch…"),
+# hiding the real verb from a naive first-word check. We skip these (and any other
+# -ly adverb) to find the ACTUAL action verb.
+_LEADING_ADVERBS = {
+    "carefully", "cautiously", "quietly", "silently", "slowly", "gently",
+    "quickly", "warily", "tentatively", "hesitantly", "calmly", "deliberately",
+    "casually", "nervously", "gingerly", "stealthily", "methodically", "intently",
+    "closely", "briefly", "just", "then", "steadily", "patiently", "carefully",
+}
+# -ly words that are actually action VERBS, not adverbs — don't skip these.
+_LY_VERBS = {"apply", "rely", "reply", "comply", "imply", "supply", "multiply", "ally"}
+
+def _lead_action_verb(c: str) -> str:
+    """The first real action verb, skipping any leading adverb(s) (explicit set
+    or generic -ly words) so 'Carefully inspect the mass' resolves to 'inspect'
+    (a dead turn), not 'carefully'."""
+    for w in re.findall(r"[a-z]+", c):
+        if w in _LEADING_ADVERBS:
+            continue
+        if w.endswith("ly") and w not in _LY_VERBS:
+            continue
+        return w
+    return ""
+
 def is_meaningless_choice(choice: str) -> bool:
     """Return True if the choice fails to ADVANCE THE ACTION — i.e. it is a
     camera, observation, waiting, or repositioning action that neither moves the
@@ -81,8 +105,9 @@ def is_meaningless_choice(choice: str) -> bool:
     c = (choice or "").strip().lower()
     if not c:
         return True
-    m = re.match(r"[^a-z]*([a-z]+)", c)  # first alphabetic word = the action verb
-    lead = m.group(1) if m else ""
+    # Skip any leading adverb so adverb-dressed observation ("carefully inspect",
+    # "quietly study", "slowly examine") is still caught by the verb check.
+    lead = _lead_action_verb(c)
     if lead in _MEANINGLESS_LEAD_VERBS:
         return True
     if any(marker in c for marker in _CAMERA_MARKERS):

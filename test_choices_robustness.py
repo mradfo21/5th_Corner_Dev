@@ -219,5 +219,43 @@ class TestBotIntroFallbackIsContextual(unittest.TestCase):
         )
 
 
+class TestMeaninglessChoiceFilter(unittest.TestCase):
+    """The dead-turn filter must catch observation/waiting choices even when
+    they're dressed with a leading adverb (the 'Carefully inspect …' slip)."""
+
+    def setUp(self):
+        import choices
+        self.choices = choices
+
+    def test_adverb_dressed_observation_is_meaningless(self):
+        for c in (
+            "Carefully inspect the pulsing, vein-like filaments of the Red Biome creeping",
+            "Quietly study the door",
+            "Slowly examine the mass",
+            "Cautiously observe the guards",
+            "Silently watch the corridor",
+            "Inspect the panel",
+            "Wait and listen",
+        ):
+            self.assertTrue(
+                self.choices.is_meaningless_choice(c),
+                f"dead turn slipped through the filter: {c!r}",
+            )
+
+    def test_forward_movement_choices_are_kept(self):
+        for c in (
+            "Advance on the loading dock",
+            "Cross to the pulsing growth",
+            "Sprint down the corridor",
+            "Vault over the fence",
+            "Slip through the gap to the next room",
+            "Apply pressure to the wound",  # a real -ly-prefixed action verb
+        ):
+            self.assertFalse(
+                self.choices.is_meaningless_choice(c),
+                f"a valid forward action was wrongly filtered: {c!r}",
+            )
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
