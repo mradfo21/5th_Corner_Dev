@@ -48,7 +48,15 @@
   "use strict";
 
   const SDK_URL = "https://esm.sh/@reactor-team/js-sdk@2.12.0";
+  // The base pair of Reactor world models we can switch between live, mid-game
+  // (see WORLD_MODEL_SWITCHING_PLAN.md). Each id maps to a DRIVER (its wire
+  // protocol) below and to SDK metadata advertised by /api/reactor/config.
+  const FALLBACK_MODEL_ID = "lingbot-world-2";
   const FALLBACK_MODEL = "reactor/lingbot-world-2";
+  const DEFAULT_MODELS = [
+    { id: "lingbot-world-2", label: "LingBot World 2", sdk_name: "reactor/lingbot-world-2", requiresSeedImage: true },
+    { id: "helios", label: "Helios", sdk_name: "reactor/helios", requiresSeedImage: false },
+  ];
   // How long to wait for the seed image to decode before starting anyway.
   const IMAGE_ACCEPT_TIMEOUT_MS = 6000;
   // After we issue `start`, how long to wait for real decoded video frames
@@ -73,6 +81,10 @@
     guideImageUrl: null,   // last guide image actually integrated into the world
     supportsUpload: true,
     video: null,
+    modelId: null,                 // active world-model id (resolved in enable())
+    models: DEFAULT_MODELS.slice(), // available world models (from /api/reactor/config)
+    lastSceneApplied: null,        // last scene handed to applyScene, for model-swap re-apply
+    swapping: false,               // a live model swap is in flight
     cfg: { model_name: FALLBACK_MODEL, enabled: false },
     connecting: false,
     status: "off",
@@ -234,9 +246,38 @@
   async function loadConfig() {
     try {
       const r = await fetch("/api/reactor/config");
-      if (r.ok) rstate.cfg = await r.json();
+      if (r.ok) {
+        rstate.cfg = await r.json();
+        if (Array.isArray(rstate.cfg.available_models) && rstate.cfg.available_models.length) {
+          rstate.models = rstate.cfg.available_models.map((m) => ({
+            id: m.id,
+            label: m.label || m.id,
+            sdk_name: m.sdk_name || m.model_name || m.id,
+            requiresSeedImage: !!m.requires_seed_image,
+          }));
+        }
+      }
     } catch (err) { log("config fetch failed, using defaults", err); }
     return rstate.cfg;
+  }
+
+  // ── World-model helpers ─────────────────────────────────────────────────────
+  function modelById(id) { return (rstate.models || []).find((m) => m.id === id) || null; }
+  function knownModel(id) { return !!modelById(id); }
+  function modelLabel(id) { const m = modelById(id); return m ? m.label : id; }
+  function modelNameFor(id) {
+    const m = modelById(id);
+    return (m && m.sdk_name) || rstate.cfg.model_name || FALLBACK_MODEL;
+  }
+  // Resolve the active world model: ?model= > localStorage > server default > fallback.
+  function resolveModelId() {
+    if (rstate.modelId && knownModel(rstate.modelId)) return rstate.modelId;
+    let q = null, stored = null;
+    try { q = new URLSearchParams(location.search).get("model"); } catch (_) {}
+    try { stored = localStorage.getItem("world_model"); } catch (_) {}
+    const pick = (id) => (id && knownModel(id) ? id : null);
+    rstate.modelId = pick(q) || pick(stored) || pick(rstate.cfg.world_model) || FALLBACK_MODEL_ID;
+    return rstate.modelId;
   }
 
   async function fetchToken() {
@@ -359,6 +400,28 @@
     }
   }
 
+  // Fetch our own generated still as raw base64 (no data: prefix) for models
+  // whose set_image takes an inline image (Helios `image_b64`). Returns null on
+  // failure so the caller can proceed text-only.
+  async function fetchImageBase64(imageUrl) {
+    if (!imageUrl) return null;
+    try {
+      const resp = await fetch(imageUrl);
+      if (!resp.ok) throw new Error("HTTP " + resp.status);
+      const blob = await resp.blob();
+      return await new Promise((resolve) => {
+        const fr = new FileReader();
+        fr.onload = () => {
+          const s = String(fr.result || "");
+          const comma = s.indexOf(",");
+          resolve(comma >= 0 ? s.slice(comma + 1) : s || null);
+        };
+        fr.onerror = () => resolve(null);
+        fr.readAsDataURL(blob);
+      });
+    } catch (err) { log("image base64 fetch failed", err); return null; }
+  }
+
   async function cmd(name, data) {
     // Surface the payload (prompt text / whether an image seed rides along) so
     // the world-model inspector can show EXACTLY what we send to the model.
@@ -370,21 +433,19 @@
     return rstate.reactor.sendCommand(name, data || {});
   }
 
-  // Stage a fresh run: reference image first (LingBot needs an image before
-  // start), then the prompt, then start once the seed has decoded. Chunk 0
-  // renders from the still, subsequent chunks are steered by the prompt.
-  // Returns true once generation has started, false if it had to defer (no
-  // reference image available yet).
-  async function establish(s) {
+  // ── Per-model drivers ───────────────────────────────────────────────────────
+  // Each world model has a materially different wire protocol, so the "how to
+  // realize a scene" logic lives in a driver. `establish(s)` stages a fresh run;
+  // `applyRunning(s, ctx)` handles a per-turn update while already streaming.
+  // Both return true when applied, false when they had to defer (retry later).
+
+  // LingBot World 2: image-conditioned; the reference image is LOCKED once a run
+  // starts, so a new guide image forces a fresh stage (reset + re-establish).
+  async function establishLingbot(s) {
     // New stage boundary: invalidate any seed still decoding from a prior stage
     // so it can't paint over this one.
     rstate.seedToken++;
-    // Make sure SOMETHING intended is on screen while we stage: if the freeze
-    // buffer isn't already covering (i.e. this isn't a re-anchor that grabbed
-    // the last live frame), paint the seed guide image so we never show a black
-    // video during warmup.
     if (!rstate.freezeActive && s.imageUrl) paintSeedToFreeze(s.imageUrl);
-
     const ref = await uploadStill(s.imageUrl);
     if (!ref) {
       // LingBot World 2 cannot start without a reference image. Keep the freeze
@@ -392,8 +453,6 @@
       log("no reference image yet — deferring start (LingBot requires one)");
       return false;
     }
-    // Remember which still we're seeding so the guide-image notification can
-    // carry the exact URL once the model reports image_accepted.
     rstate.stagingGuideUrl = s.imageUrl || null;
     const imageReady = waitForEvent("image_accepted", IMAGE_ACCEPT_TIMEOUT_MS);
     await cmd("set_image", { image: ref });
@@ -403,13 +462,83 @@
     rstate.started = true;
     rstate.lastPrompt = s.prompt;
     emitEvent("stage_started", { prompt: s.prompt });
-    armFreezeReveal();   // crossfade the freeze out on the first NEW frame
-    armRevealWatchdog(); // surface it loudly if no frames ever arrive
-    log("generation started (image-conditioned)");
+    armFreezeReveal();
+    armRevealWatchdog();
+    log("lingbot: generation started (image-conditioned)");
     return true;
   }
 
-  // Apply the most recent pending scene, honoring LingBot's command ordering.
+  async function applyRunningLingbot(s, ctx) {
+    if (s.hardTransition || ctx.newGuideImage) {
+      // A new guide image means a fresh stage (reference image is locked). Freeze
+      // the last live frame first so the tear-down never exposes black/the still.
+      captureVideoToFreeze();
+      try { await cmd("reset", {}); } catch (err) { log("reset failed", err); }
+      rstate.started = false;
+      rstate.lastPrompt = null;
+      rstate.lastRef = null;
+      rstate.lastImageUrl = null;
+      const ok = await establishLingbot(s);
+      if (ok) log(s.hardTransition ? "hard transition re-staged" : "re-anchored on new guide image");
+      return ok;
+    }
+    await cmd("set_prompt", { prompt: s.prompt });
+    rstate.lastPrompt = s.prompt;
+    log("re-steered:", s.prompt.slice(0, 80));
+    return true;
+  }
+
+  // Helios: text/image-to-video with infinite streaming. Starts text-only (no
+  // seed image required); a new guide image blends IN-STREAM (set_image) with no
+  // reset, and prompts re-steer live via set_prompt.
+  async function establishHelios(s) {
+    // New stage boundary: invalidate any seed still decoding from a prior stage.
+    rstate.seedToken++;
+    if (!rstate.freezeActive && s.imageUrl) paintSeedToFreeze(s.imageUrl);
+    await cmd("schedule_prompt", { prompt: s.prompt, chunk: 0 });
+    if (s.imageUrl) {
+      const b64 = await fetchImageBase64(s.imageUrl);
+      if (b64) {
+        rstate.stagingGuideUrl = s.imageUrl;
+        const imageReady = waitForEvent("image_accepted", IMAGE_ACCEPT_TIMEOUT_MS);
+        await cmd("set_image", { image_b64: b64, transition: "cut" });
+        rstate.lastImageUrl = s.imageUrl;
+        await imageReady;
+      }
+    }
+    await cmd("start", {});
+    rstate.started = true;
+    rstate.lastPrompt = s.prompt;
+    emitEvent("stage_started", { prompt: s.prompt });
+    armFreezeReveal();
+    armRevealWatchdog();
+    log("helios: generation started");
+    return true;
+  }
+
+  async function applyRunningHelios(s, ctx) {
+    if (ctx.newGuideImage || s.hardTransition) {
+      const b64 = await fetchImageBase64(s.imageUrl);
+      if (b64) {
+        rstate.stagingGuideUrl = s.imageUrl;
+        // Blend the new frame in continuously; a hard transition cuts decisively.
+        await cmd("set_image", { image_b64: b64, transition: s.hardTransition ? "cut" : "blend" });
+        rstate.lastImageUrl = s.imageUrl;
+      }
+    }
+    await cmd("set_prompt", { prompt: s.prompt });
+    rstate.lastPrompt = s.prompt;
+    log("helios: re-steered", (ctx.newGuideImage || s.hardTransition) ? "(image blended)" : "");
+    return true;
+  }
+
+  const DRIVERS = {
+    "lingbot-world-2": { establish: establishLingbot, applyRunning: applyRunningLingbot },
+    "helios": { establish: establishHelios, applyRunning: applyRunningHelios },
+  };
+  function activeDriver() { return DRIVERS[rstate.modelId] || DRIVERS[FALLBACK_MODEL_ID]; }
+
+  // Apply the most recent pending scene through the active model's driver.
   async function flush() {
     if (rstate.applying) return;
     if (!rstate.reactor || !rstate.ready || rstate.pending == null) return;
@@ -417,45 +546,23 @@
     rstate.pending = null;
     if (!s.prompt) return;
 
-    // A still we haven't staged yet is a NEW guide image — a re-anchor boundary.
-    // LingBot's reference image is locked once a run starts (set_image mid-run is
-    // ignored), so the only way to force the video onto this exact frame at full
-    // strength is a fresh stage. Steering-only updates (instant action beats)
-    // carry no image and fall through to a prompt hot-swap.
+    // A still we haven't staged yet is a NEW guide image. How that's handled is
+    // model-specific (LingBot re-stages; Helios blends it in), so the driver
+    // decides. Steering-only updates (instant action beats) carry no image.
     const newGuideImage = !!(s.imageUrl && s.imageUrl !== rstate.lastImageUrl);
 
     // Dedupe pure re-sends of the same prompt while already running — but never
     // skip a new guide image or an explicit location change.
     if (rstate.started && s.prompt === rstate.lastPrompt && !s.hardTransition && !newGuideImage) return;
 
+    const driver = activeDriver();
     rstate.applying = true;
     let deferred = false;
     try {
       if (!rstate.started) {
-        deferred = !(await establish(s));
-      } else if (s.hardTransition || newGuideImage) {
-        // New guide image (every turn that draws one) or a location change.
-        // LingBot's reference image is locked for the life of a run, so moving
-        // onto a new frame means a fresh stage: reset, then re-establish from
-        // the new still + prompt. To make the switch seamless we FREEZE the last
-        // live frame onto the back-buffer canvas first (a single-session double
-        // buffer) and keep the video visible underneath — so the tear-down never
-        // exposes black or the underlying still, and we crossfade to the fresh
-        // stream the instant its first new frame arrives.
-        captureVideoToFreeze();
-        try { await cmd("reset", {}); } catch (err) { log("reset failed", err); }
-        rstate.started = false;
-        rstate.lastPrompt = null;
-        rstate.lastRef = null;
-        rstate.lastImageUrl = null;
-        deferred = !(await establish(s));
-        if (!deferred) log(s.hardTransition ? "hard transition re-staged" : "re-anchored on new guide image");
+        deferred = !(await driver.establish(s));
       } else {
-        // Same scene, no new still: hot-swap the prompt; the video evolves
-        // continuously (used for instant action injection between turns).
-        await cmd("set_prompt", { prompt: s.prompt });
-        rstate.lastPrompt = s.prompt;
-        log("re-steered:", s.prompt.slice(0, 80));
+        deferred = !(await driver.applyRunning(s, { newGuideImage }));
       }
     } catch (err) {
       log("apply scene failed", err);
@@ -487,6 +594,9 @@
       imageUrl: scene.imageUrl || null,
       hardTransition: !!scene.hardTransition,
     };
+    // Remember the latest complete scene so a mid-game model swap can re-apply it
+    // on the new model without waiting for the next turn.
+    rstate.lastSceneApplied = rstate.pending;
     if (!rstate.active) { enable().then(() => flush()); return; }
     flush();
   }
@@ -500,7 +610,10 @@
     if (!msg || !msg.type) return;
     const t = msg.type;
     const d = msg.data || {};
-    if (t === "image_accepted") {
+    // LingBot reports image_accepted/prompt_accepted; Helios reports
+    // image_set/prompt_scheduled/prompt_switched. Map both onto the same
+    // internal waiters so the command flows are model-agnostic.
+    if (t === "image_accepted" || t === "image_set") {
       resolveWaiters("image_accepted", d);
       // The guide image is now decoded and anchoring the world — announce it.
       const url = rstate.stagingGuideUrl || rstate.lastImageUrl || null;
@@ -510,7 +623,9 @@
         emitGuideImage(url, d);
       }
     }
-    else if (t === "prompt_accepted") resolveWaiters("prompt_accepted", d);
+    else if (t === "prompt_accepted" || t === "prompt_scheduled" || t === "prompt_switched") {
+      resolveWaiters("prompt_accepted", d);
+    }
     else if (t === "generation_started") resolveWaiters("generation_started", d);
     emitEvent(t, d);
   }
@@ -528,7 +643,10 @@
       const Reactor = sdk.Reactor || (sdk.default && sdk.default.Reactor);
       if (!Reactor) { log("SDK missing Reactor export"); rstate.connecting = false; setStatus("error"); return false; }
 
-      const reactor = new Reactor({ modelName: rstate.cfg.model_name || FALLBACK_MODEL });
+      const modelId = resolveModelId();
+      const modelName = modelNameFor(modelId);
+      log("connecting to world model:", modelId, "(" + modelName + ")");
+      const reactor = new Reactor({ modelName: modelName });
       rstate.reactor = reactor;
       reactor.on("trackReceived", attachTrack);
       reactor.on("statusChanged", async (status) => {
@@ -555,6 +673,69 @@
       setStatus("error");
       await disable();
       return false;
+    }
+  }
+
+  // Tear down the current Reactor session WITHOUT clearing the freeze cover or
+  // the chosen model — used by a live model swap so the last frame stays on
+  // screen while we reconnect to the other world model.
+  async function teardownSession() {
+    rstate.ready = false;
+    rstate.started = false;
+    rstate.paused = false;
+    rstate.lastPrompt = null;
+    rstate.lastImageUrl = null;
+    rstate.lastRef = null;
+    rstate.stagingGuideUrl = null;
+    rstate.frameWatch = false;
+    rstate.freezeArmed = false;
+    clearRevealWatchdog();
+    if (rstate.freezeFallbackTimer) { clearTimeout(rstate.freezeFallbackTimer); rstate.freezeFallbackTimer = null; }
+    if (rstate.frameWatchTimer) { clearInterval(rstate.frameWatchTimer); rstate.frameWatchTimer = null; }
+    const video = getVideo();
+    if (video) { try { video.srcObject = null; } catch (_) {} } // freeze cover stays up
+    const r = rstate.reactor;
+    rstate.reactor = null;
+    rstate.active = false;
+    rstate.connecting = false;
+    if (rstate.status !== "error") setStatus("connecting");
+    if (r) { try { await r.disconnect(); } catch (_) {} }
+  }
+
+  // Switch world models LIVE, mid-game. Reactor is one model per session, so we
+  // freeze the current frame, tear the session down, and reconnect to the other
+  // model — then re-apply the current scene on it. The freeze buffer keeps the
+  // last frame on screen throughout, so the swap reads as a VCR-style hand-off
+  // with no black gap. Returns true if the switch was accepted.
+  async function setModel(id) {
+    if (!knownModel(id)) { log("unknown world model:", id); return false; }
+    if (id === rstate.modelId) return true;
+    if (rstate.swapping) return false;
+    rstate.swapping = true;
+    try {
+      const scene = rstate.lastSceneApplied || rstate.pending || null;
+      // Cover the switch: hold the last live frame (or the seed still) so the
+      // reconnect never flashes black or the underlying image.
+      if (!captureVideoToFreeze() && scene && scene.imageUrl) paintSeedToFreeze(scene.imageUrl);
+      const wasActive = rstate.active || rstate.connecting;
+      rstate.modelId = id;
+      try { localStorage.setItem("world_model", id); } catch (_) {}
+      log("switching world model ->", id, "(" + modelNameFor(id) + ")");
+      emitEvent("model_switching", { model: id, label: modelLabel(id) });
+      if (typeof window.ReactorRenderer.onModel === "function") {
+        try { window.ReactorRenderer.onModel(id, modelLabel(id)); } catch (_) {}
+      }
+      if (wasActive) {
+        await teardownSession();
+        // Queue the current scene so the new session applies it once ready.
+        if (scene) rstate.pending = scene;
+        const ok = await enable(); // reconnects with the new modelId
+        if (ok && rstate.ready) await flush();
+        return ok;
+      }
+      return true;
+    } finally {
+      rstate.swapping = false;
     }
   }
 
@@ -652,9 +833,15 @@
 
   window.ReactorRenderer = {
     enable, disable, applyScene, setPrompt, reset, pause, resume, captureFrame,
+    setModel,
     getStatus: () => rstate.status,
     isActive: () => rstate.active,
     isReady: () => rstate.ready,
+    // World-model selection API (for the mid-game switcher UI).
+    getModel: () => rstate.modelId,
+    getModels: () => (rstate.models || []).map((m) => ({
+      id: m.id, label: m.label, active: m.id === rstate.modelId,
+    })),
     // The last guide image actually integrated into the live world model.
     getGuideImage: () => rstate.guideImageUrl || null,
     // True only when the LIVE video is actually on-screen (decoded frames and
@@ -675,5 +862,7 @@
     onEvent: null,
     // fn(imageUrl, data) — fired when a guide image is integrated into the world.
     onGuideImage: null,
+    // fn(id, label) — fired when the active world model changes.
+    onModel: null,
   };
 })();
