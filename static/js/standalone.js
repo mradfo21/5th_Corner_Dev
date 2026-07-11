@@ -1412,10 +1412,34 @@
     // the re-anchor (see Renderer.applyScene / ReactorRenderer) starts the new
     // guide-image stream with the render prompt, which already carries this
     // action beat (build_realtime_prompt, server-side).
+    //
+    // ACT-TIME FRAME CAPTURE: grab the frame the player is ACTUALLY looking at
+    // in the live world model at the instant they commit an action, and hand it
+    // to the turn. The server uses it as the PRIMARY img2img reference (so the
+    // next guide image evolves from the realtime state on screen, not from a
+    // stale still) while still keeping the original high-fidelity guide still as
+    // a secondary quality anchor. Captured only when the realtime video is truly
+    // showing; null (still mode / not yet live) simply skips this and behaves as
+    // before.
+    let actFrame = null;
+    try {
+      if (
+        Renderer.mode === "reactor" &&
+        Renderer.reactorAvailable() &&
+        window.ReactorRenderer.isShowing &&
+        window.ReactorRenderer.isShowing() &&
+        window.ReactorRenderer.captureFrame
+      ) {
+        actFrame = window.ReactorRenderer.captureFrame();
+      }
+    } catch (_) {
+      actFrame = null;
+    }
     try {
       const items = await postJSON("/api/choose", {
         choice: choiceText,
         context_item_id: contextItemId,
+        act_frame: actFrame,
       });
       renderItems(items); // immediately shows the player_action echo
       beginFastPolling();

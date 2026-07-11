@@ -1929,6 +1929,11 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
         prev_setting         = ""  # Environment type: outdoor-desert, indoor-corridor, etc.
         prev_img_path = None
         prev_img_paths_list = []  # List of recent image paths for multi-img2img
+        # High-fidelity guide still for the PRIMARY reference. When the primary
+        # reference 'image' has been replaced by a live world-model frame (act-time
+        # capture / observe), this holds the original Gemini still so img2img can
+        # anchor QUALITY on it while spatial state follows the live frame.
+        primary_guide_image_path = None
         
         if frame_idx > 0 and history:
             last_imgs = []
@@ -1957,6 +1962,7 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                         entry.get("vision_analysis", ""),  # visual description
                         entry.get("spatial_compass", ""),  # ahead/left/right compass
                         entry.get("setting_type", ""),     # indoor/outdoor type
+                        entry.get("guide_image", ""),      # original hi-fi guide still
                     ))
                     print(f"[IMG2IMG COLLECT]   -> Added to reference list (total: {len(last_imgs)})")
                 
@@ -1989,14 +1995,24 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
             
             if len(last_imgs) >= 1:
                 print(f"[IMG2IMG COLLECT] Processing {len(last_imgs)} references for img2img...")
-                # Get most recent entry — unpack all 5 fields
-                img, cap, vis_analysis, spatial_compass, setting_type = last_imgs[0]
+                # Get most recent entry — unpack all fields
+                img, cap, vis_analysis, spatial_compass, setting_type, guide_img = last_imgs[0]
                 prev_vision_analysis = vis_analysis
                 prev_spatial         = spatial_compass
                 prev_setting         = setting_type
                 prev_img_path = str(_resolve_image_path(img))
                 if not os.path.exists(prev_img_path):
                     prev_img_path = None
+
+                # If the primary reference's 'image' is a live world-model frame,
+                # the original hi-fi guide still lives under 'guide_image'. Keep it
+                # as a secondary reference so img2img anchors quality on it while
+                # the composition follows the realtime frame. (Skip if it's the
+                # same file — i.e. no realtime frame ever replaced it.)
+                if guide_img:
+                    _guide_resolved = str(_resolve_image_path(guide_img))
+                    if os.path.exists(_guide_resolved) and _guide_resolved != prev_img_path:
+                        primary_guide_image_path = _guide_resolved
                 
                 # Collect all recent image paths for multi-reference img2img
                 for idx, (img, cap, *_rest) in enumerate(last_imgs):
@@ -2185,6 +2201,16 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                 else:
                     ref_images_to_use = prev_img_paths_list[:1]  # ONLY most recent for strongest continuity
                     print(f"[IMG GENERATION] Normal transition - using 1 reference image (most recent frame)")
+                    # DUAL-REFERENCE REALTIME ANCHOR: when the most-recent frame is
+                    # a LIVE world-model capture (act-time / observe), also pass the
+                    # original high-fidelity guide still. Ref 1 (live frame) drives
+                    # spatial/state continuity so the next guide image evolves from
+                    # what's actually on screen; ref 2 (guide still) anchors image
+                    # quality/aesthetic. Only added on normal transitions — hard
+                    # cuts and Frame 1 intentionally stay single-reference.
+                    if primary_guide_image_path and primary_guide_image_path not in ref_images_to_use:
+                        ref_images_to_use = [ref_images_to_use[0], primary_guide_image_path]
+                        print(f"[IMG GENERATION] Realtime dual-ref ENABLED: live frame + guide still ({os.path.basename(primary_guide_image_path)})")
                 
                 print(f"[IMG GENERATION] References being passed to API:")
                 for i, ref in enumerate(ref_images_to_use):
@@ -3387,12 +3413,18 @@ def _generate_and_append_scene_image(caption: str, dispatch: str, choice: str, f
             if 0 <= target_idx < len(hist):
                 hist[target_idx]["image"] = img_path
                 hist[target_idx]["image_url"] = img_path
+                # Record the original high-fidelity guide still separately so it
+                # survives even after a realtime frame later overwrites 'image'
+                # (see _ingest_realtime_frame) — it stays available as a
+                # secondary img2img quality reference.
+                hist[target_idx]["guide_image"] = img_path
                 _save_history(hist, session_id)
                 history = hist
             elif hist:
                 print(f"[SCENE IMG] WARN: turn entry idx {target_idx} absent (len={len(hist)}); writing hist[-1]")
                 hist[-1]["image"] = img_path
                 hist[-1]["image_url"] = img_path
+                hist[-1]["guide_image"] = img_path
                 _save_history(hist, session_id)
                 history = hist
         print(f"[SCENE IMG] scene appended for {session_id}: {web}", flush=True)
@@ -3635,8 +3667,24 @@ def api_choose():
         
         player_choice_text = data['choice']
         context_item_id = data.get('context_item_id') # Optional, for context
+        session_id = data.get('session_id', 'default')
 
         if DEBUG_MODE: print(f"[DEBUG] api_choose received choice: '{player_choice_text}', context_id: {context_item_id}. Current state ID: {id(state)}", flush=True)
+
+        # ACT-TIME FRAME CAPTURE: if the client sent the frame the player was
+        # actually looking at in the live world model, ingest it BEFORE the turn
+        # spawns. It becomes the latest history entry's img2img reference (the
+        # realtime state we're interacting with), while the original high-fidelity
+        # guide still is preserved as a secondary quality anchor. Must run before
+        # the background thread appends this turn's new history entry, so it lands
+        # on the CURRENT scene (history[-1]). Best-effort: a bad frame is ignored.
+        act_frame_b64 = data.get('act_frame')
+        if act_frame_b64:
+            try:
+                if _ingest_realtime_frame(act_frame_b64, session_id):
+                    if DEBUG_MODE: print(f"[DEBUG] api_choose ingested act-time world-model frame for img2img.", flush=True)
+            except Exception as e_frame:
+                log_error(f"api_choose: failed to ingest act frame: {e_frame}")
 
         # 1. Immediately create and log the Player Action
         player_action_item = create_feed_item(
@@ -3701,6 +3749,63 @@ def api_choose():
         return jsonify([error_item]), 500
 
 
+def _ingest_realtime_frame(frame_b64: str, session_id: str = 'default'):
+    """Ingest a frame captured from the live world-model video.
+
+    Decodes the base64 frame, saves it, and makes it the current scene image +
+    the latest history entry's img2img reference — so the NEXT turn's img2img
+    evolves from what the world model actually rendered (the realtime state the
+    player is interacting with) instead of a stale guide still.
+
+    Crucially, the ORIGINAL high-fidelity guide still is preserved on the history
+    entry under 'guide_image' (set once, never clobbered). That lets _gen_image
+    pass BOTH references to img2img: the live frame for spatial/state continuity,
+    and the guide still for image quality.
+
+    Shared by /api/choose (act-time capture) and /api/observe (post-choice
+    perception loop). Returns (fpath, web_url) or None on a bad/too-small frame.
+    """
+    import base64 as _b64, re as _re, time as _time
+    from pathlib import Path as _Path
+    global state, history
+    if not frame_b64:
+        return None
+    m = _re.match(r'^data:image/[^;]+;base64,(.*)$', frame_b64, _re.DOTALL)
+    raw = m.group(1) if m else frame_b64
+    try:
+        img_bytes = _b64.b64decode(raw)
+    except Exception:
+        return None
+    if len(img_bytes) < 512:
+        return None
+
+    img_dir = _Path(_get_image_dir(session_id))
+    img_dir.mkdir(parents=True, exist_ok=True)
+    fname = f"observed_{int(_time.time() * 1000)}.png"
+    fpath = img_dir / fname
+    fpath.write_bytes(img_bytes)
+    web = f"/images/{fname}"
+
+    with WORLD_STATE_LOCK:
+        st = _load_state(session_id)
+        st['current_image_url'] = web
+        hist = _load_history(session_id)
+        if hist:
+            # Preserve the original high-fidelity guide still ONCE, before we
+            # point 'image' at the live frame, so it survives as a secondary
+            # img2img quality reference (see _gen_image dual-reference logic).
+            if not hist[-1].get('guide_image') and hist[-1].get('image'):
+                hist[-1]['guide_image'] = hist[-1]['image']
+            hist[-1]['image'] = str(fpath)
+            hist[-1]['image_url'] = str(fpath)
+            _save_history(hist, session_id)
+            history = hist
+        _save_state(st, session_id)
+        state = st
+
+    return (str(fpath), web)
+
+
 def api_observe():
     """Vision for the realtime renderer — close the perception loop.
 
@@ -3718,8 +3823,6 @@ def api_observe():
     Loop: video -> vision -> simulation -> prompt (+seed) -> video.
     """
     global state, history
-    import base64 as _b64, re as _re, time as _time
-    from pathlib import Path as _Path
     try:
         data = request.get_json(silent=True) or {}
         frame_b64 = data.get('frame')
@@ -3727,36 +3830,14 @@ def api_observe():
         prompt_id = data.get('prompt_id')
         if not frame_b64:
             return jsonify({"error": "missing frame"}), 400
-        m = _re.match(r'^data:image/[^;]+;base64,(.*)$', frame_b64, _re.DOTALL)
-        raw = m.group(1) if m else frame_b64
-        try:
-            img_bytes = _b64.b64decode(raw)
-        except Exception:
-            return jsonify({"error": "bad frame encoding"}), 400
-        if len(img_bytes) < 512:
-            return jsonify({"error": "frame too small"}), 400
-
-        img_dir = _Path(_get_image_dir(session_id))
-        img_dir.mkdir(parents=True, exist_ok=True)
-        fname = f"observed_{int(_time.time() * 1000)}.png"
-        fpath = img_dir / fname
-        fpath.write_bytes(img_bytes)
-        web = f"/images/{fname}"
-
         # FAST PATH (no LLM on the request): make the actual video frame the
-        # current scene image + the latest history reference, so the NEXT turn's
+        # current scene image + the latest history reference (preserving the
+        # original guide still as a secondary quality ref), so the NEXT turn's
         # img2img composition follows the video. Returns immediately.
-        with WORLD_STATE_LOCK:
-            st = _load_state(session_id)
-            st['current_image_url'] = web
-            hist = _load_history(session_id)
-            if hist:
-                hist[-1]['image'] = str(fpath)
-                hist[-1]['image_url'] = str(fpath)
-                _save_history(hist, session_id)
-                history = hist
-            _save_state(st, session_id)
-            state = st
+        ingested = _ingest_realtime_frame(frame_b64, session_id)
+        if not ingested:
+            return jsonify({"error": "bad frame"}), 400
+        fpath, web = ingested
 
         # SLOW PATH (off the request thread): analyze what's actually on screen
         # and regenerate the live choices to match. Bounded so it can never hang
