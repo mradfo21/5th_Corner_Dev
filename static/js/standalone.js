@@ -146,6 +146,7 @@
     turnImageLoaded: false,     // this turn's new frame has arrived on screen
     imagesEnabled: true,        // server has image gen on (from /api/status) — else skip the guide-image wait
     finishTimer: null,          // fallback: fade the progress bar back to play
+    forceHardTransition: false, // EXPERIMENT: forward presses always cut hard, so the world never feels static
   };
 
   // ------------------------------------------------------------------
@@ -836,11 +837,20 @@
     // scene prompt (feed item metadata.prompt); `imageUrl` is the generated
     // still; `meta` carries flags like hard_transition (location change).
     applyScene(imageUrl, prompt, meta) {
+      // EXPERIMENT: a "go forward" press arms a forced hard transition so the
+      // NEXT real scene (the one carrying a steer prompt) cuts decisively
+      // instead of blending — the world advancing should always feel like a
+      // beat change, not a slow drift. Consume the flag only when a genuine new
+      // scene lands (prompt present); partial updates that ride the current
+      // still (no prompt) must NOT swallow it.
+      const newScene = !!prompt;
+      const forced = state.forceHardTransition && newScene;
       const scene = {
         prompt: prompt || null,
         imageUrl: imageUrl || null,
-        hardTransition: !!(meta && meta.hard_transition),
+        hardTransition: !!(meta && meta.hard_transition) || forced,
       };
+      if (forced) state.forceHardTransition = false;
       // Remember the latest scene we can (re)start realtime from. A steer needs
       // BOTH a prompt and an image, but not every feed item carries both — a
       // player_choice_prompt, for instance, rides the current still with no
@@ -2135,6 +2145,10 @@
     if (state.processing || state.gameOver || state.freeWillOpen) return;
     const btns = Array.from(el.choices.children);
     if (!btns.length) return;
+    // EXPERIMENT: every forward press should feel like a hard cut, not a slow
+    // blend. Arm a forced hard transition so the scene this choice resolves to
+    // lands decisively. (Renderer.applyScene consumes it on the new scene.)
+    state.forceHardTransition = true;
     const pick = btns[Math.floor(Math.random() * btns.length)];
     pick.click(); // reuses the choice flow (select sound, pick flash, makeChoice)
   }
