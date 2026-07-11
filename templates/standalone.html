@@ -99,6 +99,18 @@
     <ul id="inventory-list"></ul>
   </aside>
 
+  <!-- World-model inspector: a subtle, sequential log of what the app sends to
+       the realtime world model (prompts) and what it reports back (accepted /
+       started / chunks / stalls / errors) — so the black box is legible. Shown
+       only in realtime mode; toggle with L. -->
+  <aside id="rt-log" class="rt-log" aria-label="World model log">
+    <div class="rt-log-head">
+      <span class="rt-log-title">WORLD MODEL</span>
+      <button id="rt-log-hide" class="rt-log-hide" type="button" title="Hide (L)">&#10005;</button>
+    </div>
+    <ol id="rt-log-list" class="rt-log-list" aria-live="polite"></ol>
+  </aside>
+
   <!-- Narrative: floating top-left, no background -->
   <main id="prose-feed" aria-live="polite"></main>
 

@@ -69,6 +69,9 @@
     timecodeText: document.getElementById("timecode-text"),
     inventoryHud: document.getElementById("inventory-hud"),
     inventoryList: document.getElementById("inventory-list"),
+    rtLog: document.getElementById("rt-log"),
+    rtLogList: document.getElementById("rt-log-list"),
+    rtLogHide: document.getElementById("rt-log-hide"),
     deathOverlay: document.getElementById("death-overlay"),
     deathMessage: document.getElementById("death-message"),
     deathRestart: document.getElementById("death-restart"),
@@ -115,6 +118,7 @@
     observedPromptId: null,     // guard: observe at most once per decision point
     turnResolved: false,        // the turn's pipeline finished (choices are live)
     turnImageLoaded: false,     // this turn's new frame has arrived on screen
+    imagesEnabled: true,        // server has image gen on (from /api/status) — else skip the guide-image wait
     finishTimer: null,          // fallback: fade the progress bar back to play
   };
 
@@ -271,14 +275,22 @@
       { key: "world_update",  label: "World\nUpdating",        glyph: "\u27F3", sound: "cereWorldUpdate" },   // ⟳
       { key: "world_respond", label: "World\nResponding",      glyph: "\u25C8", sound: "cereWorldRespond" },  // ◈
       { key: "actions",       label: "Actions\nGenerating",    glyph: "\u22D4", sound: "cereActions" },       // ⋔
+      // The guide image is the slowest stage and lands AFTER choices, so it gets
+      // its own step that stays "rendering" (spinning) until the still actually
+      // arrives — otherwise the app looks frozen while it generates.
+      { key: "guide_image",   label: "Guide Image\nRendering", glyph: "\u25A6", sound: "cereWorldUpdate" },   // ▦
     ];
     const IDX = {};
     STEPS.forEach((s, i) => { IDX[s.key] = i; });
+    const IMG_STEP = STEPS.length - 1;      // the guide-image step (last)
     const DWELL_MS = 460;      // minimum time each step is shown (so it registers)
     // After the turn resolves we keep the (green) progress bar in the play
     // button's spot until the new frame actually loads, then fade back to play.
     const FADE_AFTER_IMAGE_MS = 520;   // brief hold once the image is on screen
-    const IMAGE_WAIT_FALLBACK_MS = 6000; // never strand the bar (no_images / gen fail)
+    // The guide-image step spins until the still lands. Image gen can be slow —
+    // that's the whole point of showing it — so give it a generous window before
+    // we resolve anyway (so a failed/absent image can't spin forever).
+    const GUIDE_IMAGE_FALLBACK_MS = 30000;
 
     let built = false;
     let active = false;
@@ -287,7 +299,8 @@
     let dwellTimer = null;
     let doneTimer = null;
     let noteTimer = null;
-    let completing = false; // animating through the final steps to the resolve flourish
+    let completing = false; // animating through the logic steps toward the guide-image wait
+    let awaitingImage = false; // parked on the guide-image step, waiting for the still
 
     function build() {
       if (built || !el.ceremonySteps) return;
@@ -325,30 +338,45 @@
 
     function pump() {
       if (dwellTimer) return;                 // still dwelling on the current step
-      if (cur >= target) {                    // caught up
-        if (completing) finishFlourish();     // reached the last step -> resolve
+      if (cur >= target) {                    // caught up on the logic steps
+        if (completing) enterGuideImageWait(); // …now park on the guide-image step
         return;
       }
       enter(cur + 1);
       dwellTimer = setTimeout(() => { dwellTimer = null; pump(); }, DWELL_MS);
     }
 
-    // The resolve flourish, run once the tracker has ANIMATED through to the
-    // last step — so World Responding / Actions Generating actually light up in
-    // sequence instead of being snapped straight to done on turn resolution.
-    function finishFlourish() {
+    // Once the logic steps (…Actions Generating) have animated through, PARK on
+    // the guide-image step as an active spinner — so the wait for the (slow)
+    // still reads as live progress, not a frozen app. Resolves when the image
+    // arrives (imageLoaded) or the fallback fires.
+    function enterGuideImageWait() {
       completing = false;
+      awaitingImage = true;
+      enter(IMG_STEP); // guide-image dot goes active/pulsing
+      api.note("\u25A6 Rendering the guide image\u2026", { tick: false });
+      // If the still is already here (or there's no image to wait for), resolve now.
+      if (state.turnImageLoaded || state.imagesEnabled === false) resolveGuideImage();
+    }
+
+    // The guide image landed (or the fallback fired): mark everything done, flash
+    // green, then fade the bar back to the play button.
+    function resolveGuideImage() {
+      if (!awaitingImage && cur >= IMG_STEP && el.ceremony && el.ceremony.classList.contains("resolved")) return;
+      awaitingImage = false;
+      completing = false;
+      clearTimeout(dwellTimer); dwellTimer = null;
       if (el.ceremonySteps) {
         Array.from(el.ceremonySteps.children).forEach((n) => { n.classList.remove("active", "beat"); n.classList.add("done"); });
       }
+      cur = STEPS.length - 1;
       if (el.ceremony) el.ceremony.classList.add("resolved");
-      api.note("\u2713 World updated", { tick: false });
+      api.note("\u2713 Guide image ready", { tick: false });
       Sound.cereDone();
       active = false;
       clearTimeout(doneTimer);
       clearTimeout(state.finishTimer);
-      state.finishTimer = setTimeout(() => api.finish(), IMAGE_WAIT_FALLBACK_MS);
-      api._tryFinish();
+      doneTimer = setTimeout(hideVeil, FADE_AFTER_IMAGE_MS);
     }
 
     const api = {
@@ -359,6 +387,7 @@
         clearTimeout(state.finishTimer);
         active = true;
         completing = false;
+        awaitingImage = false;
         cur = -1; target = -1;
         state.processing = true;
         state.turnResolved = false;
@@ -406,20 +435,20 @@
       // flash green, sound the affirmation, then fade. Releases input gating.
       complete() {
         if (!active) { hideVeil(); return; }
-        // ANIMATE through any remaining steps (World Responding, Actions
-        // Generating) rather than snapping them to done — the back half of the
-        // pipeline actually lights up in sequence. The green resolve flourish
-        // (finishFlourish) runs once we reach the final step. Choices are
-        // already live, so release input right away even while it animates.
-        target = STEPS.length - 1;
+        // ANIMATE through the logic steps (World Responding, Actions Generating)
+        // in sequence, THEN park on the guide-image step as a live spinner until
+        // the still actually renders (enterGuideImageWait / resolveGuideImage) —
+        // so the final image-gen wait shows progress instead of a frozen app.
+        // Choices are already live, so release input right away.
+        target = IMG_STEP - 1; // animate up to "Actions Generating"
         completing = true;
         state.processing = false; // choices are live — let the player act
         state.turnResolved = true;
-        // Hold the resolved bar until this turn's frame loads, then fade it back
-        // to the play button. Fallback so a missing image never strands the bar.
+        // Never spin forever: if the guide image never lands, resolve anyway
+        // after a generous window (image gen is legitimately slow).
         clearTimeout(doneTimer);
         clearTimeout(state.finishTimer);
-        state.finishTimer = setTimeout(() => this.finish(), IMAGE_WAIT_FALLBACK_MS);
+        state.finishTimer = setTimeout(() => resolveGuideImage(), GUIDE_IMAGE_FALLBACK_MS);
         pump();
       },
 
@@ -427,7 +456,11 @@
       // resolved, fade the progress bar back to the play button.
       imageLoaded() {
         state.turnImageLoaded = true;
-        this._tryFinish();
+        // If we're parked on the guide-image step waiting for the still, this is
+        // the signal to complete + fade. (If it arrives before we've parked, the
+        // flag above lets enterGuideImageWait resolve immediately.)
+        if (awaitingImage) resolveGuideImage();
+        else this._tryFinish();
       },
 
       _tryFinish() {
@@ -447,6 +480,7 @@
       abort() {
         active = false;
         completing = false;
+        awaitingImage = false;
         clearTimeout(dwellTimer); dwellTimer = null;
         clearTimeout(doneTimer); doneTimer = null;
       },
@@ -616,6 +650,7 @@
       // "LIVE" button that isn't actually live.
       if (this.reactorAvailable()) {
         window.ReactorRenderer.onStatus = (s) => {
+          RtLog.push("status", "status \u00B7 " + s);
           if (s === "error" && Renderer.mode === "reactor") {
             console.warn("[standalone] realtime renderer unavailable — falling back to stills");
             Renderer.mode = "image"; // reflect reality; keep stored pref intact
@@ -635,6 +670,31 @@
         // seed accepted, stream live, state/chunks updating.
         window.ReactorRenderer.onEvent = (name, data) => {
           const d = data || {};
+          // World-model inspector log (subtle right-side console) — sequential
+          // record of what we SEND (prompts) and what the model REPORTS, so the
+          // black box is legible (incl. stalls / errors / "just drawing black").
+          switch (name) {
+            case "command_sent":
+              if (d.command === "set_prompt") RtLog.push("prompt", "\u2192 set_prompt", RtLog.clip(d.prompt, 160));
+              else if (d.command === "set_image") RtLog.push("prompt", "\u2192 set_image", d.hasImage ? "[seed image]" : "");
+              else RtLog.push(null, "\u2192 " + d.command);
+              break;
+            case "prompt_accepted": RtLog.push("ok", "\u2713 prompt accepted"); break;
+            case "image_accepted": RtLog.push("ok", "\u2713 image accepted (seed decoded)"); break;
+            case "generation_started":
+            case "stage_started": RtLog.push("ok", "\u25C8 generation started"); break;
+            case "video_showing": RtLog.push("ok", "\u25C9 video live \u2014 frames on screen"); break;
+            case "video_stalled": RtLog.push("error", "\u26A0 stalled \u2014 no video after " + (d.afterMs || "?") + "ms"); break;
+            case "chunk_complete": RtLog.push("dim", "chunk " + ((d.chunk_index != null ? d.chunk_index : 0) + 1), "", { throttleMs: 1200 }); break;
+            case "state": {
+              const act = d.current_action && d.current_action !== "still" ? d.current_action : null;
+              RtLog.push("dim", act ? "state \u00B7 " + act : "state", "", { throttleMs: 1200 });
+              break;
+            }
+            case "generation_reset": RtLog.push("status", "\u21BA world reset (re-staging)"); break;
+            case "command_error": RtLog.push("error", "\u26A0 error \u00B7 " + (d.command || ""), RtLog.clip(d.reason, 140)); break;
+            default: break;
+          }
           // VCR static over the ONE visible realtime hand-off: the freeze→video
           // reveal (video_showing). We deliberately do NOT burst on the 'reset'
           // command — at teardown the freeze buffer is already covering an
@@ -707,12 +767,14 @@
         // the live video just re-anchored on.
         window.ReactorRenderer.onGuideImage = (imageUrl) => {
           if (Renderer.mode !== "reactor" || !imageUrl) return;
+          RtLog.push("img", "\u25C8 guide image integrated");
           showRendererToast("Guide image integrated");
           if (Ceremony.isActive()) Ceremony.note("\u25C8 Guide image integrated");
           try { Sound.scene(); } catch (_) {}
           showGuideThumbnail(imageUrl);
         };
       }
+      RtLog.init();
       // In realtime mode, connect eagerly so the GPU session is warming while
       // the intro scene generates — the video then starts as soon as the first
       // scene prompt arrives. (Falls back to stills if it can't connect.)
@@ -884,6 +946,75 @@
           ? "Renderer: realtime — connecting…"
           : "Renderer: realtime — showing stills until it connects (G)";
   }
+
+  // ------------------------------------------------------------------
+  // World-model inspector log — a subtle, sequential console of what we send to
+  // the realtime world model (prompts) and what it reports back (accepted /
+  // started / chunks / stalls / errors), so the black box is legible.
+  // ------------------------------------------------------------------
+  const RtLog = (function () {
+    const MAX = 220;
+    const throttleAt = {};           // per-kind throttle timestamps
+    function visible() {
+      try { return localStorage.getItem("rt_log") !== "off"; } catch (_) { return true; }
+    }
+    function applyVisibility() {
+      document.body.classList.toggle("rt-log-on", visible());
+    }
+    function stamp() {
+      const d = new Date();
+      const mm = String(d.getMinutes()).padStart(2, "0");
+      const ss = String(d.getSeconds()).padStart(2, "0");
+      return `${mm}:${ss}`;
+    }
+    // kind: prompt | img | ok | error | status | dim | (default)
+    function push(kind, label, detail, opts) {
+      if (!el.rtLogList) return;
+      if (opts && opts.throttleMs) {
+        const now = Date.now();
+        const key = kind + "|" + label.slice(0, 8);
+        if (now - (throttleAt[key] || 0) < opts.throttleMs) {
+          // Update the most recent matching line in place instead of appending.
+          const last = el.rtLogList.lastElementChild;
+          if (last && last.dataset.key === key) {
+            const m = last.querySelector(".rt-m"); if (m) m.textContent = label;
+            const dd = last.querySelector(".rt-d"); if (dd) dd.textContent = detail ? " " + detail : "";
+            return;
+          }
+        }
+        throttleAt[key] = now;
+        var _key = key;
+      }
+      const li = document.createElement("li");
+      li.className = "rt-e" + (kind ? " rt-" + kind : "");
+      if (typeof _key === "string") li.dataset.key = _key;
+      const t = document.createElement("span"); t.className = "rt-t"; t.textContent = stamp();
+      const m = document.createElement("span"); m.className = "rt-m"; m.textContent = label;
+      li.appendChild(t); li.appendChild(m);
+      if (detail) {
+        const dd = document.createElement("span"); dd.className = "rt-d"; dd.textContent = " " + detail;
+        li.appendChild(dd);
+      }
+      const atBottom = el.rtLogList.scrollTop + el.rtLogList.clientHeight >= el.rtLogList.scrollHeight - 24;
+      el.rtLogList.appendChild(li);
+      while (el.rtLogList.children.length > MAX) el.rtLogList.removeChild(el.rtLogList.firstChild);
+      if (atBottom) el.rtLogList.scrollTop = el.rtLogList.scrollHeight;
+    }
+    function clip(s, n) {
+      s = (s || "").toString().replace(/\s+/g, " ").trim();
+      return s.length > (n || 120) ? s.slice(0, (n || 120) - 1) + "\u2026" : s;
+    }
+    function toggle() {
+      const on = !visible();
+      try { localStorage.setItem("rt_log", on ? "on" : "off"); } catch (_) {}
+      applyVisibility();
+    }
+    function init() {
+      applyVisibility();
+      if (el.rtLogHide) el.rtLogHide.addEventListener("click", () => { try { localStorage.setItem("rt_log", "off"); } catch (_) {} applyVisibility(); });
+    }
+    return { push, clip, toggle, init };
+  })();
 
   // Small transient on-screen note so it's obvious which renderer is active
   // (useful while testing / toggling with the G key).
@@ -1481,6 +1612,7 @@
       const phaseText = s.alive === false ? "deceased" : (s.phase ?? "normal");
       changed = setHud(el.hudPhase, "phase", phaseText) || changed;
       if (el.backendName) el.backendName.textContent = s.backend ?? "unknown";
+      if (typeof s.image_enabled === "boolean") state.imagesEnabled = s.image_enabled;
       renderInventory(s.inventory);
       if (el.hudTimeWrap && el.hudTime) {
         if (s.time_of_day) {
@@ -1501,6 +1633,13 @@
       state.lastStatus = { turn: String(s.turn ?? 0), chaos: String(s.chaos ?? 0), phase: phaseText };
       if (escalated) Sound.escalate();
       else if (chaosUp || changed) Sound.status();
+      // Log the image-generation prompt (the text we sent Gemini to draw the
+      // guide still) whenever it changes — the other half of "what did we send".
+      const ip = (s.current_image_prompt || "").trim();
+      if (ip && ip !== state._lastImagePrompt) {
+        state._lastImagePrompt = ip;
+        RtLog.push("img", "image prompt", RtLog.clip(ip, 180));
+      }
     } catch (err) {
       if (el.backendName) el.backendName.textContent = "offline";
     }
@@ -1715,6 +1854,8 @@
       openFreeWill();
     } else if (e.key.toLowerCase() === "h") {
       openRealtime(); // realtime SHAPE tool (no-op outside realtime mode)
+    } else if (e.key.toLowerCase() === "l") {
+      RtLog.toggle(); // show/hide the world-model inspector log
     } else if (e.key.toLowerCase() === "g") {
       Renderer.toggle();
       Sound.toggle();
