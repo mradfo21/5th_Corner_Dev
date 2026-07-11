@@ -441,6 +441,105 @@ class TestRealtimeRenderer(unittest.TestCase):
         finally:
             page.close()
 
+    def test_realtime_scan_tool_tags_and_interact(self):
+        """The realtime SCAN tool must: be visible in /realtime, arm into a
+        non-modal scanning overlay, surface recognized objects as starfield tags
+        (from a mocked /api/detect over the live video frame), and let a tag's
+        little + button steer the LIVE stream (a set_prompt hot-swap) anchored to
+        that object WITHOUT resolving a turn (no /api/choose) or re-anchoring
+        (no reset)."""
+        page = self._new_realtime_page()
+        scene_items = [
+            {"id": 1, "type": "narrative", "content": "Intro."},
+            {"id": 2, "type": "scene_image", "content": "", "image_url": TINY_PNG_DATA_URL,
+             "metadata": {"prompt": "scene one", "base": "First-person VHS. A loading dock.", "hard_transition": False}},
+            {"id": 3, "type": "player_choice_prompt", "content": "?", "choices": [{"text": "Go"}]},
+        ]
+        chooses = []
+        detects = []
+        page.route("**/api/reset", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(scene_items)))
+        page.route("**/api/feed*", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
+        page.route("**/api/choose", lambda r: (chooses.append(r.request.url), r.fulfill(status=200, content_type="application/json", body="[]")))
+        # Mock object recognition: two things the player can poke.
+        def detect_handler(route):
+            detects.append(route.request.url)
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({
+                "objects": [
+                    {"label": "wooden crate", "cx": 0.3, "cy": 0.45, "w": 0.2, "h": 0.2},
+                    {"label": "steel door", "cx": 0.72, "cy": 0.5, "w": 0.15, "h": 0.4},
+                ]
+            }))
+        page.route("**/api/detect", detect_handler)
+        try:
+            page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
+            page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
+            # The SCAN tool is revealed in realtime mode.
+            self.assertNotEqual(page.evaluate("getComputedStyle(document.getElementById('scan-btn')).display"), "none")
+            # Arm it -> scanning: the overlay opens and an initial scan fires.
+            page.evaluate("document.getElementById('scan-btn').click()")
+            self.assertTrue(page.evaluate("document.getElementById('scan-btn').classList.contains('scanning')"))
+            self.assertFalse(page.evaluate("document.getElementById('scan-layer').classList.contains('hidden')"))
+            # Starfield tags appear from the recognized objects.
+            page.wait_for_function("document.querySelectorAll('#scan-tags .scan-tag').length >= 2", timeout=10000)
+            self.assertGreaterEqual(len(detects), 1, "SCAN never called /api/detect")
+            labels = page.evaluate("Array.from(document.querySelectorAll('.scan-tag-label')).map(e=>e.textContent)")
+            self.assertIn("wooden crate", labels)
+            self.assertIn("steel door", labels)
+            # Every tag carries its little interact button.
+            self.assertTrue(page.evaluate("!!document.querySelector('.scan-tag .scan-tag-act')"))
+            # Poke the first tag -> its inline prompt opens.
+            page.evaluate("document.querySelector('.scan-tag .scan-tag-act').click()")
+            self.assertTrue(page.evaluate("!!document.querySelector('.scan-tag.acting')"))
+            # Type an interaction and submit -> a LIVE steer (set_prompt), no turn.
+            page.evaluate("window.__MOCK_CMDS__ = []")
+            page.evaluate(
+                """() => {
+                    const tag = document.querySelector('.scan-tag.acting');
+                    const inp = tag.querySelector('.scan-tag-form input');
+                    inp.value = 'kick it open';
+                    tag.querySelector('.scan-tag-form').dispatchEvent(new Event('submit', {cancelable:true, bubbles:true}));
+                }"""
+            )
+            page.wait_for_function("(window.__MOCK_CMDS__||[]).includes('set_prompt')", timeout=8000)
+            cmds = page.evaluate("window.__MOCK_CMDS__ || []")
+            self.assertIn("set_prompt", cmds, f"SCAN tag didn't steer the live stream. logs:\n{self._dump_logs()}")
+            self.assertNotIn("reset", cmds, "SCAN interact must NOT re-anchor (no reset / scene change)")
+            self.assertEqual(len(chooses), 0, "SCAN interact must NOT resolve a turn (no /api/choose)")
+        except Exception:
+            print("\n=== REACTOR CONSOLE LOG (scan) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
+    def test_realtime_scan_is_realtime_only(self):
+        """SCAN is a realtime instrument: switching to still-image mode must hide
+        the SCAN hub and tear down any active scan overlay."""
+        page = self._new_realtime_page()
+        scene_items = [
+            {"id": 1, "type": "narrative", "content": "Intro."},
+            {"id": 2, "type": "scene_image", "content": "", "image_url": TINY_PNG_DATA_URL,
+             "metadata": {"prompt": "scene one", "base": "First-person VHS. A loading dock.", "hard_transition": False}},
+            {"id": 3, "type": "player_choice_prompt", "content": "?", "choices": [{"text": "Go"}]},
+        ]
+        page.route("**/api/reset", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(scene_items)))
+        page.route("**/api/feed*", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
+        page.route("**/api/detect", lambda r: r.fulfill(status=200, content_type="application/json", body='{"objects":[]}'))
+        try:
+            page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
+            page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
+            page.evaluate("document.getElementById('scan-btn').click()")
+            self.assertTrue(page.evaluate("document.getElementById('scan-btn').classList.contains('scanning')"))
+            # Switch to still images via the renderer toggle -> SCAN tears down.
+            page.evaluate("document.getElementById('btn-renderer').click()")
+            page.wait_for_function("document.getElementById('scan-layer').classList.contains('hidden')", timeout=5000)
+            self.assertFalse(page.evaluate("document.getElementById('scan-btn').classList.contains('scanning')"))
+            self.assertFalse(page.evaluate("document.body.classList.contains('realtime-on')"))
+        except Exception:
+            print("\n=== REACTOR CONSOLE LOG (scan-realtime-only) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
     def test_ceremony_animates_all_steps_to_done(self):
         """The turn pipeline (Action → Consequence → World Updating → World
         Responding → Actions Generating → Guide Image) must animate through ALL
