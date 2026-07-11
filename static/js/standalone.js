@@ -13,6 +13,12 @@
   const AUTOPLAY_FRAME_DELAY_MS = 350;  // advance almost immediately once the new frame renders
   const AUTOPLAY_FALLBACK_MS = 6000;    // if no image arrives, advance anyway after this
 
+  // Show a small thumbnail preview of each guide image as it's integrated into
+  // the realtime world model. Flip to false (or set localStorage
+  // "guide_thumbnail" = "off", toggled by the thumbnail's own hide button) to
+  // hide it — the notification + re-anchor still happen either way.
+  const GUIDE_THUMBNAIL_ENABLED = true;
+
   const INTERIM_MESSAGES = [
     "Transmitting...",
     "Static crackles across the channel...",
@@ -480,6 +486,7 @@
             console.warn("[standalone] realtime renderer unavailable — falling back to stills");
             Renderer.mode = "image"; // reflect reality; keep stored pref intact
             showRendererToast("Realtime unavailable — showing stills");
+            hideGuideThumbnail();
           } else if (s === "live" && Renderer.mode === "reactor") {
             showRendererToast("Realtime video — live");
           }
@@ -535,6 +542,16 @@
               return;
             default: return;
           }
+        };
+        // When a guide image is integrated into the world model, notify the
+        // player and (optionally) show a thumbnail preview of the exact frame
+        // the live video just re-anchored on.
+        window.ReactorRenderer.onGuideImage = (imageUrl) => {
+          if (Renderer.mode !== "reactor" || !imageUrl) return;
+          showRendererToast("Guide image integrated");
+          if (Ceremony.isActive()) Ceremony.note("\u25C8 Guide image integrated");
+          try { Sound.scene(); } catch (_) {}
+          showGuideThumbnail(imageUrl);
         };
       }
       // In realtime mode, connect eagerly so the GPU session is warming while
@@ -611,6 +628,7 @@
       } else if (this.reactorAvailable()) {
         showRendererToast("Still images");
         try { window.ReactorRenderer.disable(); } catch (_) {}
+        hideGuideThumbnail();
       }
       updateRendererButton();
     },
@@ -711,6 +729,63 @@
     toast.classList.add("show");
     clearTimeout(_rendererToastTimer);
     _rendererToastTimer = setTimeout(() => toast.classList.remove("show"), 2200);
+  }
+
+  // ------------------------------------------------------------------
+  // Guide-image thumbnail preview — a small, dismissible corner preview of the
+  // still that was just integrated into the realtime world model, so it's
+  // obvious the guide image is actually driving the video (not silently
+  // dropped). Built lazily; easy to hide (build-time flag GUIDE_THUMBNAIL_ENABLED
+  // or the player's own ✕ button, persisted in localStorage).
+  // ------------------------------------------------------------------
+  function guideThumbHidden() {
+    if (!GUIDE_THUMBNAIL_ENABLED) return true;
+    try { return localStorage.getItem("guide_thumbnail") === "off"; } catch (_) { return false; }
+  }
+
+  function ensureGuideThumb() {
+    let wrap = document.getElementById("guide-thumb");
+    if (wrap) return wrap;
+    wrap = document.createElement("div");
+    wrap.id = "guide-thumb";
+    wrap.className = "guide-thumb";
+    const label = document.createElement("div");
+    label.className = "guide-thumb-label";
+    label.textContent = "GUIDE";
+    const img = document.createElement("img");
+    img.className = "guide-thumb-img";
+    img.alt = "Guide image integrated into the realtime world";
+    const hide = document.createElement("button");
+    hide.type = "button";
+    hide.className = "guide-thumb-hide";
+    hide.title = "Hide guide preview";
+    hide.textContent = "\u2715";
+    hide.addEventListener("click", () => {
+      try { localStorage.setItem("guide_thumbnail", "off"); } catch (_) {}
+      hideGuideThumbnail();
+    });
+    wrap.appendChild(img);
+    wrap.appendChild(label);
+    wrap.appendChild(hide);
+    document.body.appendChild(wrap);
+    return wrap;
+  }
+
+  function showGuideThumbnail(imageUrl) {
+    if (guideThumbHidden() || !imageUrl) return;
+    const wrap = ensureGuideThumb();
+    const img = wrap.querySelector(".guide-thumb-img");
+    if (img && img.getAttribute("src") !== imageUrl) img.setAttribute("src", imageUrl);
+    wrap.classList.add("show");
+    // Brief "just updated" pulse so a re-anchor on a new frame is noticeable.
+    wrap.classList.remove("pulse");
+    void wrap.offsetWidth; // reflow to restart the animation
+    wrap.classList.add("pulse");
+  }
+
+  function hideGuideThumbnail() {
+    const wrap = document.getElementById("guide-thumb");
+    if (wrap) wrap.classList.remove("show");
   }
 
   // ------------------------------------------------------------------

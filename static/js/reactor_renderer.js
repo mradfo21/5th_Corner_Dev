@@ -13,12 +13,18 @@
            -> set_prompt({prompt}) -> start
        (start requires BOTH a prompt and a reference image; waiting for
         image_accepted means chunk 0 renders from the seed still)
-     • location change (hard_transition):
+     • NEW guide image (a fresh still — every turn that draws one, or a
+       location change / hard_transition):
          reset  -> uploadFile(new still) -> set_image -> set_prompt -> start
-       (LingBot's reference image is fixed once a run starts — set_image
-        mid-run has no effect until reset, so a new location is a fresh stage)
-     • same-location turn:
-         set_prompt({prompt})   (hot-swap; lands on the next chunk boundary)
+       LingBot World 2's reference image is LOCKED once a run starts — per the
+       schema, "changes during generation have no effect until reset is issued
+       and start is called again." So the ONLY way to force the live video onto
+       a new guide image at full strength (strength 1 — chunk 0 renders directly
+       from that frame) is a fresh stage. We re-anchor on EVERY new guide image,
+       not just location changes, so the video keeps blending from vignette to
+       vignette instead of drifting off the still the engine actually drew.
+     • same scene, prompt-only re-steer (e.g. instant action injection, no new
+       still): set_prompt({prompt})   (hot-swap; lands on the next chunk)
 
    The Reactor API key never touches the browser: we mint a short-lived JWT via
    our own POST /api/reactor/token proxy. The SDK loads from an ESM CDN (pinned)
@@ -56,6 +62,8 @@
     lastPrompt: null,
     lastImageUrl: null,  // avoid re-uploading the same still
     lastRef: null,
+    stagingGuideUrl: null, // still URL currently being staged (awaiting image_accepted)
+    guideImageUrl: null,   // last guide image actually integrated into the world
     supportsUpload: true,
     video: null,
     cfg: { model_name: FALLBACK_MODEL, enabled: false },
@@ -85,6 +93,15 @@
   function emitEvent(name, data) {
     try {
       if (typeof window.ReactorRenderer.onEvent === "function") window.ReactorRenderer.onEvent(name, data || {});
+    } catch (_) {}
+  }
+
+  // Fire when a guide image is actually integrated into the world model (the
+  // model has accepted + decoded the seed still and the next chunk will render
+  // from it). The UI uses this to notify the player and show a thumbnail.
+  function emitGuideImage(imageUrl, data) {
+    try {
+      if (typeof window.ReactorRenderer.onGuideImage === "function") window.ReactorRenderer.onGuideImage(imageUrl, data || {});
     } catch (_) {}
   }
 
@@ -220,6 +237,9 @@
       log("no reference image yet — deferring start (LingBot requires one)");
       return false;
     }
+    // Remember which still we're seeding so the guide-image notification can
+    // carry the exact URL once the model reports image_accepted.
+    rstate.stagingGuideUrl = s.imageUrl || null;
     const imageReady = waitForEvent("image_accepted", IMAGE_ACCEPT_TIMEOUT_MS);
     await cmd("set_image", { image: ref });
     await cmd("set_prompt", { prompt: s.prompt });
@@ -241,18 +261,29 @@
     rstate.pending = null;
     if (!s.prompt) return;
 
-    // Dedupe pure re-sends of the same prompt while already running.
-    if (rstate.started && s.prompt === rstate.lastPrompt && !s.hardTransition) return;
+    // A still we haven't staged yet is a NEW guide image — a re-anchor boundary.
+    // LingBot's reference image is locked once a run starts (set_image mid-run is
+    // ignored), so the only way to force the video onto this exact frame at full
+    // strength is a fresh stage. Steering-only updates (instant action beats)
+    // carry no image and fall through to a prompt hot-swap.
+    const newGuideImage = !!(s.imageUrl && s.imageUrl !== rstate.lastImageUrl);
+
+    // Dedupe pure re-sends of the same prompt while already running — but never
+    // skip a new guide image or an explicit location change.
+    if (rstate.started && s.prompt === rstate.lastPrompt && !s.hardTransition && !newGuideImage) return;
 
     rstate.applying = true;
     let deferred = false;
     try {
       if (!rstate.started) {
         deferred = !(await establish(s));
-      } else if (s.hardTransition) {
-        // Location change. LingBot's reference image is locked for the life of a
-        // run, so a new location means a fresh stage: reset, hide the stale
-        // video during the gap, and re-establish from the new still + prompt.
+      } else if (s.hardTransition || newGuideImage) {
+        // New guide image (every turn that draws one) or a location change.
+        // LingBot's reference image is locked for the life of a run, so moving
+        // onto a new frame means a fresh stage: reset, hide the stale video
+        // during the gap, and re-establish from the new still + prompt. This is
+        // the "vignette to vignette" blend — each run is anchored (strength 1)
+        // on the exact guide image the engine drew, so the video can't drift.
         try { await cmd("reset", {}); } catch (err) { log("reset failed", err); }
         rstate.started = false;
         rstate.lastPrompt = null;
@@ -262,9 +293,10 @@
         const v = getVideo();
         if (v) v.classList.add("hidden");
         deferred = !(await establish(s));
-        if (!deferred) log("hard transition re-staged");
+        if (!deferred) log(s.hardTransition ? "hard transition re-staged" : "re-anchored on new guide image");
       } else {
-        // Same location: hot-swap the prompt; the video evolves continuously.
+        // Same scene, no new still: hot-swap the prompt; the video evolves
+        // continuously (used for instant action injection between turns).
         await cmd("set_prompt", { prompt: s.prompt });
         rstate.lastPrompt = s.prompt;
         log("re-steered:", s.prompt.slice(0, 80));
@@ -312,7 +344,16 @@
     if (!msg || !msg.type) return;
     const t = msg.type;
     const d = msg.data || {};
-    if (t === "image_accepted") resolveWaiters("image_accepted", d);
+    if (t === "image_accepted") {
+      resolveWaiters("image_accepted", d);
+      // The guide image is now decoded and anchoring the world — announce it.
+      const url = rstate.stagingGuideUrl || rstate.lastImageUrl || null;
+      if (url) {
+        rstate.guideImageUrl = url;
+        rstate.stagingGuideUrl = null;
+        emitGuideImage(url, d);
+      }
+    }
     else if (t === "prompt_accepted") resolveWaiters("prompt_accepted", d);
     else if (t === "generation_started") resolveWaiters("generation_started", d);
     emitEvent(t, d);
@@ -369,6 +410,7 @@
     rstate.lastPrompt = null;
     rstate.lastImageUrl = null;
     rstate.lastRef = null;
+    rstate.stagingGuideUrl = null;
     rstate.showSuppressed = false;
     rstate.frameWatch = false;
     if (rstate.frameWatchTimer) { clearInterval(rstate.frameWatchTimer); rstate.frameWatchTimer = null; }
@@ -435,6 +477,8 @@
     getStatus: () => rstate.status,
     isActive: () => rstate.active,
     isReady: () => rstate.ready,
+    // The last guide image actually integrated into the live world model.
+    getGuideImage: () => rstate.guideImageUrl || null,
     // True only when the video is actually on-screen with decoded frames — the
     // signal the client uses to stop repainting the still behind it.
     isShowing: () => {
@@ -443,5 +487,7 @@
     },
     onStatus: null,
     onEvent: null,
+    // fn(imageUrl, data) — fired when a guide image is integrated into the world.
+    onGuideImage: null,
   };
 })();

@@ -736,6 +736,82 @@ html, body {
   transform: translateX(-50%) translateY(0);
 }
 
+/* ---------- Guide-image thumbnail preview ---------- */
+/* A small corner preview of the still just integrated into the realtime world
+   model, so it's obvious the guide image is actually anchoring the video. */
+.guide-thumb {
+  position: fixed;
+  left: calc(env(safe-area-inset-left, 0px) + 14px);
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 14px);
+  z-index: 29;
+  width: 132px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: rgba(10, 12, 11, 0.82);
+  border: 1px solid rgba(142, 255, 193, 0.35);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.55);
+  opacity: 0;
+  transform: translateY(10px) scale(0.96);
+  transition: opacity 0.3s ease, transform 0.3s ease;
+  pointer-events: none;
+}
+
+.guide-thumb.show {
+  opacity: 0.92;
+  transform: translateY(0) scale(1);
+  pointer-events: auto;
+}
+
+.guide-thumb-img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  background: #05060a;
+}
+
+.guide-thumb-label {
+  position: absolute;
+  top: 5px;
+  left: 6px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: rgba(10, 12, 11, 0.72);
+  color: #b6ffd8;
+  font-family: inherit;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+}
+
+.guide-thumb-hide {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 3px;
+  border: 1px solid rgba(142, 255, 193, 0.3);
+  background: rgba(10, 12, 11, 0.72);
+  color: #d8f0e4;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.guide-thumb:hover .guide-thumb-hide { opacity: 1; }
+
+/* Brief green pulse when a new guide frame re-anchors the world. */
+.guide-thumb.pulse { animation: guide-thumb-pulse 0.9s ease-out; }
+@keyframes guide-thumb-pulse {
+  0%   { box-shadow: 0 0 0 rgba(142, 255, 193, 0.0), 0 4px 16px rgba(0,0,0,0.55); }
+  30%  { box-shadow: 0 0 18px rgba(142, 255, 193, 0.55), 0 4px 16px rgba(0,0,0,0.55); }
+  100% { box-shadow: 0 0 0 rgba(142, 255, 193, 0.0), 0 4px 16px rgba(0,0,0,0.55); }
+}
+
 /* ---------- Processing veil ---------- */
 
 #processing-veil {
