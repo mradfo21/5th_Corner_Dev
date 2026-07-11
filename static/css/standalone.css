@@ -659,6 +659,40 @@ html, body {
 /* FORWARD hub: up-arrow just above the ACT hub — a random generated action. */
 #forward-btn { left: 50%; bottom: 60px; transform: translateX(-50%); }
 
+/* Realtime SHAPE tool — a live world nudge, sat to the right of the ACT hub.
+   Amber accent + hammer so it reads as a DIFFERENT instrument from ACT (which
+   resolves a full turn). Only shown in realtime mode (body.realtime-on). */
+#realtime-btn {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  transform: translateX(34px);
+  width: 51px;
+  height: 51px;
+  border-radius: 50%;
+  background: none;
+  border: 1px solid rgba(255, 186, 89, 0.6);
+  color: #ffcf94;
+  font-family: inherit;
+  cursor: pointer;
+  display: none; /* revealed only in realtime mode */
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.9);
+  box-shadow: inset 0 0 12px rgba(0,0,0,0.5);
+  transition: border-color 0.16s, box-shadow 0.16s, transform 0.1s, opacity 0.22s;
+}
+body.realtime-on #realtime-btn { display: flex; }
+#realtime-btn:hover {
+  border-color: rgba(255, 186, 89, 1);
+  box-shadow: inset 0 0 12px rgba(0,0,0,0.5), 0 0 22px rgba(255, 186, 89, 0.5);
+  transform: translateX(34px) scale(1.08);
+}
+#realtime-btn:active { transform: translateX(34px) scale(0.94); }
+.rt-icon { font-size: 15px; line-height: 1; opacity: 0.98; }
+.rt-label { font-size: 7px; letter-spacing: 0.12em; opacity: 0.85; }
+
 @keyframes fw-idle-glow {
   0%, 100% { box-shadow: inset 0 0 12px rgba(0,0,0,0.5), 0 0 0 rgba(142,255,193,0); }
   50%      { box-shadow: inset 0 0 12px rgba(0,0,0,0.5), 0 0 16px rgba(142,255,193,0.34); }
@@ -704,7 +738,26 @@ html, body {
 
 #action-wheel.fw-open #choices-container { opacity: 0; pointer-events: none; }
 #action-wheel.fw-open #free-will-btn,
+#action-wheel.fw-open #realtime-btn,
 #action-wheel.fw-open #forward-btn { opacity: 0; pointer-events: none; animation: none; }
+
+/* Steer (realtime SHAPE) input mode: amber tint so it's obvious you're nudging
+   the LIVE world, not committing a scene-changing turn. */
+#action-wheel.steer-open #custom-input {
+  border-color: rgba(255, 186, 89, 0.75);
+  caret-color: #ffcf94;
+  animation: rt-input-flash 0.6s ease-out;
+}
+#action-wheel.steer-open .prompt-caret { color: #ffcf94; }
+#action-wheel.steer-open #custom-submit {
+  border-color: rgba(255, 186, 89, 0.75);
+  color: #ffcf94;
+}
+@keyframes rt-input-flash {
+  0%   { box-shadow: 0 0 0 rgba(255,186,89,0); }
+  40%  { box-shadow: 0 0 18px rgba(255,186,89,0.5); }
+  100% { box-shadow: 0 0 0 rgba(255,186,89,0); }
+}
 #action-wheel.fw-open #custom-form {
   opacity: 1;
   pointer-events: auto;

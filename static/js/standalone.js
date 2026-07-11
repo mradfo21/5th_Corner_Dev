@@ -46,6 +46,7 @@
     customForm: document.getElementById("custom-form"),
     customInput: document.getElementById("custom-input"),
     freeWillBtn: document.getElementById("free-will-btn"),
+    realtimeBtn: document.getElementById("realtime-btn"),
     forwardBtn: document.getElementById("forward-btn"),
     actionWheel: document.getElementById("action-wheel"),
     veil: document.getElementById("processing-veil"),
@@ -104,6 +105,7 @@
     renderedIds: new Set(), // guard against rendering the same feed item twice
     lastStatus: {},
     freeWillOpen: false,
+    inputMode: "act",           // custom input intent: "act" (full turn) | "steer" (realtime nudge)
     autoPlay: false,
     autoTimer: null,
     autoDeadline: 0,            // realtime: latest time we'll wait for the new video before advancing anyway
@@ -826,28 +828,37 @@
       state.observeTimer = setTimeout(attempt, 2600); // let the video settle first
     },
 
-    // Steer the CURRENT live video with an action as a motion beat, against the
-    // scene already on screen. This is NO LONGER called on every choice: doing
-    // so made the original scene's video play the action before its new guide
-    // image had formed, which looked wrong. The action now rides the new guide
-    // image's stream instead (its render prompt already carries the beat). Kept
-    // as a facade capability for callers that want an explicit instant steer.
-    // No-op unless realtime is live and we have a scene to build on.
-    steerAction(action) {
-      if (this.mode !== "reactor" || !this.reactorAvailable() || !this.lastBase) return;
-      const a = (action || "").trim().replace(/\.+$/, "");
-      if (!a) return;
+    // SHAPE tool: submit a REALTIME prompt that steers the CURRENT live video
+    // INSTANTLY — a prompt hot-swap on the running stream (no new guide image,
+    // no backend turn), so the world reacts now for fast feedback. This is
+    // deliberately separate from ACT/choices, which resolve a full turn and
+    // change the scene. Returns true if it steered, false if realtime isn't
+    // ready (no live scene to build on yet).
+    steerRealtime(text) {
+      if (this.mode !== "reactor" || !this.reactorAvailable()) return false;
+      const a = (text || "").trim().replace(/\.+$/, "");
+      if (!a) return false;
+      // Build on the stable scene bible (style + physical scene, no action beat)
+      // so the nudge blends with the current shot instead of resetting it.
+      const base = this.lastBase || (this.lastScene && this.lastScene.prompt) || "";
+      if (!base) return false;
       const beat = "Motion: the view shifts as you " + a.charAt(0).toLowerCase() + a.slice(1) + ".";
       window.ReactorRenderer.applyScene({
-        prompt: this.lastBase + " " + beat,
+        prompt: base + " " + beat,
         imageUrl: null,           // same scene — just re-steer, no image swap
         hardTransition: false,
       });
-      Ceremony.note("\u25B8 Action injected into stream");
+      if (Ceremony.isActive()) Ceremony.note("\u25B8 Live nudge injected");
+      return true;
     },
   };
 
   function updateRendererButton() {
+    // Reveal the realtime SHAPE tool only when the realtime renderer is active.
+    document.body.classList.toggle(
+      "realtime-on",
+      Renderer.mode === "reactor" && Renderer.reactorAvailable()
+    );
     if (!el.rendererBtn) return;
     const reactorMode = Renderer.mode === "reactor";
     const status = (reactorMode && Renderer.reactorAvailable())
@@ -1279,16 +1290,34 @@
   function openFreeWill() {
     if (state.processing || state.gameOver || state.freeWillOpen) return;
     state.freeWillOpen = true;
+    state.inputMode = "act";
     el.actionWheel.classList.add("fw-open");
+    if (el.customInput) el.customInput.setAttribute("placeholder", "type your own action...");
     Sound.open();
     // Focus after the expand animation starts so the caret lands cleanly.
+    setTimeout(() => el.customInput.focus(), 60);
+  }
+
+  // Open the same input in REALTIME "shape" mode: submitting steers the live
+  // video instantly instead of resolving a turn. Allowed even mid-turn (that's
+  // the point — instant feedback), only blocked when dead or already open.
+  function openRealtime() {
+    if (state.gameOver || state.freeWillOpen) return;
+    if (Renderer.mode !== "reactor" || !Renderer.reactorAvailable()) return;
+    state.freeWillOpen = true;
+    state.inputMode = "steer";
+    el.actionWheel.classList.add("fw-open", "steer-open");
+    if (el.customInput) el.customInput.setAttribute("placeholder", "shape the live moment\u2026");
+    Sound.open();
     setTimeout(() => el.customInput.focus(), 60);
   }
 
   function closeFreeWill(clear) {
     if (!state.freeWillOpen) return;
     state.freeWillOpen = false;
-    el.actionWheel.classList.remove("fw-open");
+    state.inputMode = "act";
+    el.actionWheel.classList.remove("fw-open", "steer-open");
+    if (el.customInput) el.customInput.setAttribute("placeholder", "type your own action...");
     if (clear) el.customInput.value = "";
     if (document.activeElement === el.customInput) el.customInput.blur();
     if (el.actionWheel) el.actionWheel.style.bottom = ""; // drop any keyboard offset
@@ -1359,7 +1388,18 @@
   function submitCustomAction(e) {
     e.preventDefault();
     const text = el.customInput.value.trim();
-    if (!text || state.processing || state.gameOver) return;
+    if (!text || state.gameOver) return;
+    // Realtime SHAPE: steer the live video NOW (works even while a turn resolves).
+    if (state.inputMode === "steer") {
+      el.customInput.value = "";
+      const ok = Renderer.steerRealtime(text);
+      Sound.submit();
+      closeFreeWill(true);
+      showRendererToast(ok ? "Live nudge sent" : "Realtime not ready yet");
+      return;
+    }
+    // ACT (full turn) stays gated on the pipeline being idle.
+    if (state.processing) return;
     el.customInput.value = "";
     Sound.submit(); // custom free-will action sent
     closeFreeWill(true); // gate closes on submit
@@ -1671,6 +1711,8 @@
       toggleAutoPlay();
     } else if (e.key.toLowerCase() === "f") {
       openFreeWill();
+    } else if (e.key.toLowerCase() === "h") {
+      openRealtime(); // realtime SHAPE tool (no-op outside realtime mode)
     } else if (e.key.toLowerCase() === "g") {
       Renderer.toggle();
       Sound.toggle();
@@ -1709,6 +1751,7 @@
     }
     el.deathRestart.addEventListener("click", resetGame);
     el.freeWillBtn.addEventListener("click", openFreeWill);
+    if (el.realtimeBtn) el.realtimeBtn.addEventListener("click", openRealtime);
     el.forwardBtn.addEventListener("click", moveForward);
     el.tapeBtn.addEventListener("click", openTape);
     el.tapePlayPause.addEventListener("click", toggleTapePlay);

@@ -355,6 +355,49 @@ class TestRealtimeRenderer(unittest.TestCase):
         finally:
             page.close()
 
+    def test_realtime_shape_tool_steers_live_without_a_turn(self):
+        """The realtime SHAPE tool must be visible in /realtime and submit a LIVE
+        steer (a set_prompt hot-swap on the running stream) WITHOUT resolving a
+        turn (no /api/choose) and WITHOUT a re-anchor (no reset)."""
+        page = self._new_realtime_page()
+        scene_items = [
+            {"id": 1, "type": "narrative", "content": "Intro."},
+            {"id": 2, "type": "scene_image", "content": "", "image_url": TINY_PNG_DATA_URL,
+             "metadata": {"prompt": "scene one", "base": "First-person VHS. A loading dock.", "hard_transition": False}},
+            {"id": 3, "type": "player_choice_prompt", "content": "?", "choices": [{"text": "Go"}]},
+        ]
+        chooses = []
+        page.route("**/api/reset", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(scene_items)))
+        page.route("**/api/feed*", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
+        page.route("**/api/choose", lambda r: (chooses.append(r.request.url), r.fulfill(status=200, content_type="application/json", body="[]")))
+        try:
+            page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
+            page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
+            # The SHAPE tool is revealed in realtime mode.
+            self.assertNotEqual(page.evaluate("getComputedStyle(document.getElementById('realtime-btn')).display"), "none")
+            # Open it -> steer-open input mode.
+            page.evaluate("document.getElementById('realtime-btn').click()")
+            self.assertTrue(page.evaluate("document.getElementById('action-wheel').classList.contains('steer-open')"))
+            # Submit a live nudge and watch for a set_prompt hot-swap (no reset).
+            page.evaluate("window.__MOCK_CMDS__ = []")
+            page.evaluate(
+                """() => {
+                    const inp = document.getElementById('custom-input');
+                    inp.value = 'smash the crates open';
+                    document.getElementById('custom-form').dispatchEvent(new Event('submit', {cancelable:true, bubbles:true}));
+                }"""
+            )
+            page.wait_for_function("(window.__MOCK_CMDS__||[]).includes('set_prompt')", timeout=8000)
+            cmds = page.evaluate("window.__MOCK_CMDS__ || []")
+            self.assertIn("set_prompt", cmds, f"SHAPE didn't steer the live stream. logs:\n{self._dump_logs()}")
+            self.assertNotIn("reset", cmds, "SHAPE must NOT re-anchor (no reset / scene change)")
+            self.assertEqual(len(chooses), 0, "SHAPE must NOT resolve a turn (no /api/choose)")
+        except Exception:
+            print("\n=== REACTOR CONSOLE LOG (shape) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
     def test_ceremony_animates_all_five_steps_to_done(self):
         """The turn pipeline (Action → Consequence → World Updating → World
         Responding → Actions Generating) must animate through ALL steps and
