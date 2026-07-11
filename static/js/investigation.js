@@ -45,9 +45,10 @@
     // Deliberately larger than the 48px reticle so we capture the world AROUND
     // and UNDER the hand, not just the gizmo footprint.
     const DEFAULT_BOX = 176;
-    // Longest edge (px) of the stored thumbnail texture. Small on purpose:
-    // these are meant to be many, cheap, and prompt-sized.
-    const DEFAULT_THUMB = 160;
+    // Longest edge (px) of the stored thumbnail texture. Kept modest so the
+    // store stays cheap, but large enough to serve as a usable img2img
+    // reference when an investigation seeds a full action turn.
+    const DEFAULT_THUMB = 240;
     const JPEG_QUALITY = 0.82;
 
     function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }

@@ -1400,7 +1400,10 @@
     }
   }
 
-  async function makeChoice(choiceText, contextItemId) {
+  // opts.frame — optional data-URL of a captured evidence texture (from the
+  // TOUCH tool). When present it is posted alongside the action so the backend
+  // seeds this turn's img2img on what the player actually investigated.
+  async function makeChoice(choiceText, contextItemId, opts) {
     if (state.processing || state.gameOver) return;
     closeFreeWill(true); // picking any action closes the free-will gate
     el.choices.innerHTML = "";
@@ -1415,10 +1418,12 @@
     // guide-image stream with the render prompt, which already carries this
     // action beat (build_realtime_prompt, server-side).
     try {
-      const items = await postJSON("/api/choose", {
-        choice: choiceText,
-        context_item_id: contextItemId,
-      });
+      const payload = { choice: choiceText, context_item_id: contextItemId };
+      // Evidence-seeded turn: attach the shot + where it was taken so the
+      // backend can run img2img featuring exactly what the player looked at.
+      if (opts && opts.frame) payload.frame = opts.frame;
+      if (opts && opts.touchRegion) payload.touch_region = opts.touchRegion;
+      const items = await postJSON("/api/choose", payload);
       renderItems(items); // immediately shows the player_action echo
       beginFastPolling();
     } catch (err) {
@@ -1445,12 +1450,14 @@
   }
 
   // ------------------------------------------------------------------
-  // TOUCH tool — a spatial, in-world steer. Arming it fades the hub and turns
-  // the whole scene into an aiming surface: a reticle (magnifying glass) tracks
-  // the cursor, a click locks it to a spot and expands it into a prompt field,
-  // and submitting steers the LIVE video at that location. Instant, no turn —
-  // allowed even mid-turn (that's the point), only blocked when dead / already
-  // aiming / while the bottom ACT input is open.
+  // TOUCH tool — investigate a spot, then act on it. Arming it fades the hub and
+  // turns the whole scene into an aiming surface: a reticle (a reaching hand)
+  // tracks the cursor; a click locks a spot and SHOOTS an evidence texture of
+  // that patch of world (filed in CaptureStore); the reticle then expands into a
+  // prompt field. Typing an action resolves a FULL TURN whose new scene is
+  // generated img2img from that evidence (see submitTouch → makeChoice). Backing
+  // out (Esc / click away / empty submit) keeps the shot and runs no turn.
+  // Blocked when dead / already aiming / while the bottom ACT input is open.
   // ------------------------------------------------------------------
   function openTouch() {
     if (state.gameOver || state.freeWillOpen || state.touchMode) return;
@@ -1486,8 +1493,8 @@
       e.preventDefault();
       lockTouchSpot(e.clientX, e.clientY);
     } else if (state.touchMode === "prompt") {
-      // Clicking away from the pill cancels; clicks inside it edit the prompt.
-      if (el.touchReticle && !el.touchReticle.contains(e.target)) closeTouch(true);
+      // Clicking away from the pill backs out but keeps the shot ("filming it").
+      if (el.touchReticle && !el.touchReticle.contains(e.target)) closeTouch(true, true);
     }
   }
 
@@ -1561,8 +1568,15 @@
     f.classList.add("fire");
   }
 
-  function closeTouch(clear) {
+  // clear   — wipe the pending prompt text.
+  // filmed  — the player backed out WITHOUT acting; if a shot was taken this
+  //           session, acknowledge it ("just filming it"). The texture itself
+  //           already lives in CaptureStore, so escaping never loses it.
+  function closeTouch(clear, filmed) {
     if (!state.touchMode) return;
+    if (filmed && state.touchCaptureId) {
+      showRendererToast("\uD83D\uDCF7 Shot filed to evidence");
+    }
     state.touchMode = null;
     state.touchCaptureId = null;
     if (el.touchLayer) {
@@ -1577,7 +1591,7 @@
   }
 
   // Turn the reticle's viewport position into a human phrase ("at the top-left
-  // of the view") so the steer can anchor the change to that region.
+  // of the view") so the action can anchor the change to that region.
   function describeTouchRegion(pt) {
     if (!pt) return { label: "the scene", phrase: "" };
     const fx = pt.x / Math.max(1, window.innerWidth);
@@ -1592,21 +1606,42 @@
     return { label, phrase: "at " + label };
   }
 
+  // Submitting a TOUCH prompt now runs a FULL ACTION TURN (not a realtime video
+  // steer): the action text + the evidence texture we shot at this spot are
+  // posted to /api/choose, and the backend seeds this turn's img2img on that
+  // evidence — e.g. "move over and investigate the radio tower" + the shot of
+  // the radio tower. Leaving the field empty (or hitting Esc) just keeps the
+  // shot — "filming it" — and runs no turn.
   function submitTouch(e) {
     e.preventDefault();
     if (!el.touchInput) return;
     const text = el.touchInput.value.trim();
-    if (!text || state.gameOver) { closeTouch(true); return; }
-    const where = describeTouchRegion(state.touchPoint);
-    // Attach what the player asked for to the texture they investigated, so the
-    // stored capture carries both the patch of world AND the intent behind it.
+    // No action typed → this was just a shot. Keep it; run nothing.
+    if (!text || state.gameOver) { closeTouch(true, !state.gameOver); return; }
+    // Full turns are gated on the pipeline being idle (the old realtime steer
+    // was not). If a turn is resolving, keep the shot and let them act after.
+    if (state.processing) {
+      showRendererToast("Turn resolving — shot filed, act after it lands");
+      closeTouch(true);
+      return;
+    }
+    // Pull the evidence texture shot when this spot was locked.
+    let evidence = null;
     if (state.touchCaptureId && window.CaptureStore) {
+      const rec = window.CaptureStore.get(state.touchCaptureId);
+      evidence = rec && rec.thumb ? rec.thumb : null;
       window.CaptureStore.update(state.touchCaptureId, { prompt: text, used: true });
     }
-    const ok = Renderer.steerRealtime(text, where);
+    const where = describeTouchRegion(state.touchPoint);
+    // Anchor the action to where the player looked so the new scene lands there.
+    const action = where.phrase ? (text + " (" + where.phrase + ")") : text;
     Sound.submit();
+    showRendererToast(evidence
+      ? "Investigating " + where.label + "\u2026"
+      : "Acting on " + where.label + "\u2026");
+    // Resolve a real turn, seeding img2img with the evidence we captured.
+    makeChoice(action, state.currentPromptId, { frame: evidence, touchRegion: where.label });
     closeTouch(true);
-    showRendererToast(ok ? "Touched " + where.label : "Realtime not ready yet");
   }
 
   function closeFreeWill(clear) {
@@ -1998,7 +2033,7 @@
     // TOUCH tool owns the keyboard while armed: Esc cancels; other keys pass
     // through so the locked-spot prompt types normally.
     if (state.touchMode) {
-      if (e.key === "Escape") closeTouch(true);
+      if (e.key === "Escape") closeTouch(true, true); // back out — keep the shot ("just filming it")
       return;
     }
     // While dead, only R (restart) is meaningful.
