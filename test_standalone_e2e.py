@@ -219,6 +219,61 @@ class TestStandaloneE2E(unittest.TestCase):
         self.assertTrue(self.page.query_selector("#death-overlay") is not None)
         self.assertTrue(self.page.is_hidden("#death-overlay"))
 
+    # A tiny 1x1 PNG used to stand in for a rendered scene still (mock mode has
+    # image generation disabled, so no real still is painted — but the camera's
+    # still-image capture path is what we're proving works in image mode).
+    TINY_PNG = ("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1"
+                "HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==")
+
+    def test_camera_photographs_in_image_mode(self):
+        """The camera tool must work on the DEFAULT (still-image) renderer, not
+        just realtime — this is the whole point of the rework. Arm it, shoot the
+        framed still, and confirm the shot is filed (from the image renderer) +
+        shown in the film roll, with no turn resolved."""
+        # The camera hub is always available (not gated on realtime anymore).
+        self.assertFalse(self.page.is_hidden("#realtime-btn"))
+        self.assertTrue(self.page.evaluate("!!(window.SceneCapture && window.CaptureStore)"))
+        # Ensure a still is on screen to photograph (mock disables image gen, so
+        # paint a known still into the active scene layer to drive the image path).
+        self.page.evaluate(
+            """(png) => {
+                const a = document.getElementById('sceneA');
+                const b = document.getElementById('sceneB');
+                if (b) b.classList.remove('scene-active');
+                if (a) { a.style.backgroundImage = "url('" + png + "')"; a.classList.add('scene-active'); }
+            }""",
+            self.TINY_PNG,
+        )
+        self.page.wait_for_function("window.SceneCapture.available() === true", timeout=10000)
+        self.page.evaluate("window.CaptureStore.clear()")
+
+        # Arm the camera -> viewfinder surface opens.
+        self.page.click("#realtime-btn")
+        self.assertFalse(self.page.evaluate("document.getElementById('touch-layer').classList.contains('hidden')"))
+        self.assertTrue(self.page.evaluate("document.getElementById('realtime-btn').classList.contains('aiming')"))
+
+        # Aim + click -> photograph the framed still.
+        self.page.evaluate(
+            """() => {
+                const layer = document.getElementById('touch-layer');
+                layer.dispatchEvent(new MouseEvent('mousemove', {clientX: 320, clientY: 240, bubbles:true}));
+                layer.dispatchEvent(new MouseEvent('click', {clientX: 320, clientY: 240, cancelable:true, bubbles:true}));
+            }"""
+        )
+        # The still-image capture path is async (it loads the scene image), so
+        # wait for the photograph to be filed.
+        self.page.wait_for_function(
+            "window.CaptureStore.list().filter(r=>r.kind==='photograph').length >= 1", timeout=8000)
+        # It was captured from the still-image renderer, and shows in the roll.
+        src = self.page.evaluate("window.CaptureStore.list().find(r=>r.kind==='photograph').source")
+        self.assertEqual(src, "image")
+        self.assertTrue(self.page.evaluate("document.querySelectorAll('#photo-roll-list .roll-photo').length >= 1"))
+        self.assertEqual(self.page.evaluate("document.getElementById('photo-count').textContent"), "1")
+
+        # Esc exits the camera; the shot persists in the store.
+        self.page.keyboard.press("Escape")
+        self.assertTrue(self.page.evaluate("document.getElementById('touch-layer').classList.contains('hidden')"))
+
 
 if __name__ == "__main__":
     unittest.main()
