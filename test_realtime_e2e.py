@@ -549,6 +549,90 @@ class TestRealtimeRenderer(unittest.TestCase):
         finally:
             page.close()
 
+    def test_static_burst_masks_reveal_not_teardown(self):
+        """Staging/timing contract: the VCR static burst must be tied to the
+        ACTUAL visible switch (freeze->video reveal / 'video_showing'), NOT to the
+        realtime teardown ('reset' command). Firing it at teardown put the static
+        seconds before the real switch — 'static, then a held still, then an
+        abrupt jump to video'. A re-anchor here must NOT flash static between the
+        reset and the reveal; the burst must land at (or after) the reveal."""
+        page = self._new_realtime_page()
+        try:
+            page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
+            page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isReady() === true", timeout=15000)
+
+            # Scene one -> live video.
+            page.evaluate(
+                "(img) => window.ReactorRenderer.applyScene({prompt: 'scene one', imageUrl: img, hardTransition: false})",
+                TINY_PNG_DATA_URL,
+            )
+            page.wait_for_function("window.ReactorRenderer.isShowing() === true", timeout=15000)
+
+            # Instrument: timestamp every static burst (the #scene-glitch element
+            # gains the 'burst' class) and the reset / reveal lifecycle events.
+            # The onEvent wrapper still calls standalone's handler, so the real
+            # glitch (fired by that handler on 'video_showing') is preserved.
+            page.evaluate(
+                """() => {
+                    window.__BURST_TS__ = [];
+                    window.__EVT_TS__ = {};
+                    const g = document.getElementById('scene-glitch');
+                    let had = false;
+                    const mo = new MutationObserver(() => {
+                        const now = g.classList.contains('burst');
+                        if (now && !had) window.__BURST_TS__.push(performance.now());
+                        had = now;
+                    });
+                    mo.observe(g, { attributes: true, attributeFilter: ['class'] });
+                    const prev = window.ReactorRenderer.onEvent;
+                    window.ReactorRenderer.onEvent = (name, data) => {
+                        const t = performance.now();
+                        if (name === 'command_sent' && data && data.command === 'reset') window.__EVT_TS__.reset = t;
+                        else if (name === 'video_showing') window.__EVT_TS__.video_showing = t;
+                        if (typeof prev === 'function') prev(name, data);
+                    };
+                }"""
+            )
+            # Clear any burst from scene one's own reveal, then re-anchor onto a
+            # DIFFERENT guide image (reset -> re-establish -> reveal).
+            page.evaluate("() => { window.__BURST_TS__ = []; }")
+            page.evaluate(
+                "() => window.ReactorRenderer.applyScene({prompt: 'scene two', imageUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', hardTransition: false})"
+            )
+            # Wait for the re-anchor's reset AND its subsequent reveal.
+            page.wait_for_function("window.__EVT_TS__ && window.__EVT_TS__.reset != null", timeout=10000)
+            page.wait_for_function("window.__EVT_TS__ && window.__EVT_TS__.video_showing != null", timeout=15000)
+            # Let any (erroneous) teardown-time burst register.
+            page.wait_for_timeout(150)
+
+            evt = page.evaluate("window.__EVT_TS__")
+            bursts = page.evaluate("window.__BURST_TS__ || []")
+            reset_t = evt.get("reset")
+            reveal_t = evt.get("video_showing")
+            self.assertIsNotNone(reset_t, "re-anchor never issued a reset")
+            self.assertIsNotNone(reveal_t, "re-anchor never revealed the video")
+            # The reveal must genuinely come AFTER teardown (there IS a warmup gap).
+            self.assertGreater(reveal_t, reset_t, "reveal did not follow the reset")
+            # No static burst may fire in the teardown->reveal warmup window: the
+            # burst must mask the reveal, so its first occurrence is at/after it
+            # (small epsilon for the event/DOM-mutation ordering at reveal time).
+            premature = [t for t in bursts if t < reveal_t - 40]
+            self.assertEqual(
+                premature, [],
+                f"static burst fired before the reveal (masking nothing): "
+                f"reset@{reset_t:.0f} reveal@{reveal_t:.0f} bursts={bursts}\n{self._dump_logs()}",
+            )
+            # And the reveal itself IS masked by a burst.
+            self.assertTrue(
+                any(t >= reveal_t - 40 for t in bursts),
+                f"no static burst masked the reveal. reveal@{reveal_t:.0f} bursts={bursts}\n{self._dump_logs()}",
+            )
+        except Exception:
+            print("\n=== REACTOR CONSOLE LOG (burst_timing) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
 
 if __name__ == "__main__":
     unittest.main()

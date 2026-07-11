@@ -88,6 +88,8 @@
     freezeArmed: false,    // waiting for the first NEW frame to fade it out
     freezeArmTs: 0,
     freezeFallbackTimer: null,
+    seedToken: 0,          // bumps every reveal/reset so a slow seed decode that
+                           // lands AFTER the stream revealed can't re-cover it
   };
 
   // Event waiters keyed by model message type, so command flows can await a
@@ -186,18 +188,26 @@
   }
 
   // Paint the seed guide image onto the freeze canvas (async image load) so the
-  // very first scene shows the intended composition immediately instead of a
-  // black video while the stream warms up.
+  // very first scene shows the intended composition instead of a black video
+  // while the stream warms up. The image is EASED in (soft fade) rather than
+  // snapped on: the seed is a deliberate "here's the destination" beat, so a
+  // hard pop before the (later) video reveal reads as a glitch.
   function paintSeedToFreeze(imageUrl) {
     const f = getFreeze();
     if (!f || !imageUrl) return;
+    // Capture the staging token now. If a reveal fires (or a new stage begins)
+    // before this image decodes, the token advances and we drop this paint —
+    // otherwise a slow decode could slam the seed back over the live video that
+    // already revealed underneath.
+    const token = rstate.seedToken;
     const img = new Image();
     img.onload = () => {
+      if (token !== rstate.seedToken) return; // stale — the stream already moved on
       try {
         f.width = img.naturalWidth || 1280;
         f.height = img.naturalHeight || 720;
         f.getContext("2d").drawImage(img, 0, 0, f.width, f.height);
-        showFreeze(true);
+        showFreeze(false); // fade in — no instant snap
       } catch (e) { log("seed paint failed", e); }
     };
     img.onerror = () => {};
@@ -270,6 +280,7 @@
       // the (still-old) frame before the new scene has actually rendered.
       if (Date.now() - rstate.freezeArmTs < 200) return;
       rstate.freezeArmed = false;
+      rstate.seedToken++; // invalidate any still-decoding seed so it can't re-cover us
       if (rstate.freezeFallbackTimer) { clearTimeout(rstate.freezeFallbackTimer); rstate.freezeFallbackTimer = null; }
       hideFreeze();
       emitEvent("video_showing", {}); // the fresh scene is now on screen
@@ -359,6 +370,9 @@
   // Returns true once generation has started, false if it had to defer (no
   // reference image available yet).
   async function establish(s) {
+    // New stage boundary: invalidate any seed still decoding from a prior stage
+    // so it can't paint over this one.
+    rstate.seedToken++;
     // Make sure SOMETHING intended is on screen while we stage: if the freeze
     // buffer isn't already covering (i.e. this isn't a re-anchor that grabbed
     // the last live frame), paint the seed guide image so we never show a black
@@ -549,6 +563,7 @@
     rstate.stagingGuideUrl = null;
     rstate.frameWatch = false;
     rstate.freezeArmed = false;
+    rstate.seedToken++; // drop any in-flight seed decode from the dead run
     clearRevealWatchdog();
     if (rstate.freezeFallbackTimer) { clearTimeout(rstate.freezeFallbackTimer); rstate.freezeFallbackTimer = null; }
     if (rstate.frameWatchTimer) { clearInterval(rstate.frameWatchTimer); rstate.frameWatchTimer = null; }
@@ -578,6 +593,7 @@
     rstate.stagingGuideUrl = null;
     rstate.guideImageUrl = null;
     rstate.freezeArmed = false;
+    rstate.seedToken++; // drop any in-flight seed decode from the dead run
     clearRevealWatchdog();
     if (rstate.freezeFallbackTimer) { clearTimeout(rstate.freezeFallbackTimer); rstate.freezeFallbackTimer = null; }
     // A game reset is a CLEAN WIPE (unlike a per-turn re-anchor, which freezes

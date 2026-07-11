@@ -33,9 +33,12 @@
        buffer. Only used by the realtime (reactor) renderer. -->
   <canvas id="reactor-freeze" class="reactor-freeze" aria-hidden="true"></canvas>
   <div id="scene-flash"></div>
-  <!-- VCR distortion burst: a heavy static/tracking glitch fired over scene and
-       video transitions (image swap, realtime re-anchor, reveal, reset) so the
-       hand-off is masked like a tape jumping between segments. -->
+  <!-- VCR distortion burst: a heavy static/tracking glitch fired over the actual
+       visible hand-off (still image swap, realtime freeze→video reveal, and the
+       game-reset wipe) so the switch is masked like a tape jumping between
+       segments. It is deliberately NOT fired at realtime teardown ('reset'
+       command): the freeze buffer covers that with an unchanging frame, so a
+       burst there would fire seconds before the real switch. -->
   <div id="scene-glitch" aria-hidden="true"></div>
   <div class="scene-scrim"></div>
 

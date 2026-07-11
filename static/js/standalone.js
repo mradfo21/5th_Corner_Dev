@@ -635,12 +635,14 @@
         // seed accepted, stream live, state/chunks updating.
         window.ReactorRenderer.onEvent = (name, data) => {
           const d = data || {};
-          // VCR static over realtime transitions, independent of the ceremony
-          // overlay: the re-anchor (world 'reset' before re-staging on a new
-          // guide image) and the still→video reveal are the visible hand-offs.
+          // VCR static over the ONE visible realtime hand-off: the freeze→video
+          // reveal (video_showing). We deliberately do NOT burst on the 'reset'
+          // command — at teardown the freeze buffer is already covering an
+          // unchanging frame, so a burst there masks nothing and fires seconds
+          // before the actual switch, leaving a naked hold then an abrupt jump.
+          // Timing the static to the reveal makes it mask the real transition.
           if (Renderer.mode === "reactor") {
-            if (name === "video_showing" ||
-                (name === "command_sent" && d.command === "reset")) {
+            if (name === "video_showing") {
               glitchTransition();
             }
             // Realtime auto-play advances off the LIVE video, not the scene_image
