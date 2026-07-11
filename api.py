@@ -47,6 +47,11 @@ app.add_url_rule('/api/regenerate_choices', 'standalone_api_regenerate_choices',
 # frame; the engine analyzes it and re-grounds the simulation so it tracks the
 # video instead of drifting from the still. See engine.api_observe.
 app.add_url_rule('/api/observe', 'standalone_api_observe', engine.api_observe, methods=['POST'])
+# Realtime object recognition for the SCAN tool: the client posts the on-screen
+# video frame; the engine returns the prominent, interactable objects visible in
+# it plus their positions so the UI can float "starfield" tags. Stateless /
+# read-only (does not mutate the sim). See engine.api_detect.
+app.add_url_rule('/api/detect', 'standalone_api_detect', engine.api_detect, methods=['POST'])
 
 
 @app.route('/images/<filename>', methods=['GET'])
