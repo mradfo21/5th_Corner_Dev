@@ -390,14 +390,11 @@ class TestRealtimeRenderer(unittest.TestCase):
         finally:
             page.close()
 
-    def test_realtime_touch_tool_runs_evidence_seeded_turn(self):
-        """TOUCH resolves a FULL ACTION TURN seeded by the shot it captures.
-
-        Locking a spot shoots an evidence texture (filed in CaptureStore).
-        Backing out with Esc keeps that shot and runs no turn ("just filming
-        it"). Typing an action instead POSTs /api/choose WITH that frame (the
-        img2img seed) and the region it was taken in — and does NOT do a realtime
-        set_prompt steer."""
+    def test_camera_tool_photographs_the_scene(self):
+        """The camera tool arms a viewfinder and, on click, photographs the
+        framed scene — no prompting, no turn. The shot lands in the film roll and
+        the hub count badge, and clicking a roll thumbnail opens the lightbox. It
+        must NOT resolve a turn (/api/choose) or steer the stream (set_prompt)."""
         page = self._new_realtime_page()
         scene_items = [
             {"id": 1, "type": "narrative", "content": "Intro."},
@@ -405,69 +402,52 @@ class TestRealtimeRenderer(unittest.TestCase):
              "metadata": {"prompt": "scene one", "base": "First-person VHS. A loading dock.", "hard_transition": False}},
             {"id": 3, "type": "player_choice_prompt", "content": "?", "choices": [{"text": "Go"}]},
         ]
-        chooses = []  # parsed POST bodies to /api/choose
-
-        def _on_choose(route):
-            try:
-                chooses.append(json.loads(route.request.post_data or "{}"))
-            except Exception:
-                chooses.append({})
-            route.fulfill(status=200, content_type="application/json", body="[]")
-
+        chooses = []
         page.route("**/api/reset", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(scene_items)))
         page.route("**/api/feed*", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
-        page.route("**/api/choose", _on_choose)
-
-        def _lock_spot(x, y):
-            page.evaluate("document.getElementById('realtime-btn').click()")
-            self.assertFalse(page.evaluate("document.getElementById('touch-layer').classList.contains('hidden')"))
-            page.evaluate(
-                f"""() => document.getElementById('touch-layer').dispatchEvent(
-                    new MouseEvent('click', {{clientX: {x}, clientY: {y}, cancelable:true, bubbles:true}}))"""
-            )
-            self.assertTrue(page.evaluate("document.getElementById('touch-reticle').classList.contains('prompting')"))
-
+        page.route("**/api/choose", lambda r: (chooses.append(r.request.url), r.fulfill(status=200, content_type="application/json", body="[]")))
         try:
             page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
             page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
-            # The capture infrastructure is present.
+            # The capture infrastructure is present and the camera hub is visible.
             self.assertTrue(page.evaluate("!!(window.SceneCapture && window.CaptureStore)"))
-            page.evaluate("window.CaptureStore.clear()")
-            # The TOUCH tool is revealed in realtime mode.
             self.assertNotEqual(page.evaluate("getComputedStyle(document.getElementById('realtime-btn')).display"), "none")
-
-            # --- (a) "just filming it": lock a spot, then Esc — shot kept, no turn.
-            _lock_spot(220, 160)
-            page.wait_for_function("window.CaptureStore.count() >= 1", timeout=8000)
-            page.keyboard.press("Escape")
-            self.assertTrue(page.evaluate("document.getElementById('touch-layer').classList.contains('hidden')"))
-            self.assertEqual(len(chooses), 0, "Escaping TOUCH must NOT resolve a turn (film-only)")
-
-            # --- (b) act on a shot: lock a spot, type an action, submit a full turn.
+            page.evaluate("window.CaptureStore.clear()")
             page.evaluate("window.__MOCK_CMDS__ = []")
-            _lock_spot(220, 160)
-            page.wait_for_function("window.CaptureStore.count() >= 2", timeout=8000)
+
+            # Arm the camera -> viewfinder surface opens, hub reads as active.
+            page.evaluate("document.getElementById('realtime-btn').click()")
+            self.assertFalse(page.evaluate("document.getElementById('touch-layer').classList.contains('hidden')"))
+            self.assertTrue(page.evaluate("document.getElementById('realtime-btn').classList.contains('aiming')"))
+
+            # Aim + click -> take a photograph of the framed scene.
             page.evaluate(
                 """() => {
-                    const inp = document.getElementById('touch-input');
-                    inp.value = 'smash the crates open';
-                    document.getElementById('touch-form').dispatchEvent(new Event('submit', {cancelable:true, bubbles:true}));
+                    const layer = document.getElementById('touch-layer');
+                    layer.dispatchEvent(new MouseEvent('mousemove', {clientX: 300, clientY: 240, bubbles:true}));
+                    layer.dispatchEvent(new MouseEvent('click', {clientX: 300, clientY: 240, cancelable:true, bubbles:true}));
                 }"""
             )
-            # Wait for the /api/choose POST to arrive.
-            deadline = time.time() + 8
-            while time.time() < deadline and not chooses:
-                page.wait_for_timeout(100)
-            self.assertTrue(chooses, f"TOUCH didn't resolve a full turn via /api/choose. logs:\n{self._dump_logs()}")
-            body = chooses[-1]
-            self.assertIn("smash the crates open", body.get("choice", ""), "action text missing from the turn")
-            self.assertIn("of the view", body.get("choice", ""), "spatial region not anchored into the action")
-            self.assertTrue(str(body.get("frame", "")).startswith("data:image"),
-                            "TOUCH turn must carry the captured evidence frame (img2img seed)")
+            # The shot is filed as a photograph.
+            page.wait_for_function(
+                "window.CaptureStore.list().filter(r=>r.kind==='photograph').length >= 1", timeout=8000)
+            # Film roll shows the shot and the hub count badge updates.
+            self.assertFalse(page.evaluate("document.getElementById('photo-roll').classList.contains('hidden')"))
+            self.assertTrue(page.evaluate("document.querySelectorAll('#photo-roll-list .roll-photo').length >= 1"))
+            self.assertEqual(page.evaluate("document.getElementById('photo-count').textContent"), "1")
+
+            # Clicking a roll thumbnail opens the lightbox; Esc closes it.
+            page.evaluate("document.querySelector('#photo-roll-list .roll-photo').click()")
+            self.assertFalse(page.evaluate("document.getElementById('photo-viewer').classList.contains('hidden')"))
+            page.keyboard.press("Escape")
+            self.assertTrue(page.evaluate("document.getElementById('photo-viewer').classList.contains('hidden')"))
+
+            # Photography must be inert: no turn, no realtime steer.
+            self.assertEqual(len(chooses), 0, "Camera must NOT resolve a turn (no /api/choose)")
             cmds = page.evaluate("window.__MOCK_CMDS__ || []")
-            self.assertNotIn("set_prompt", cmds, "TOUCH must NOT do a realtime steer anymore (it runs a full turn)")
+            self.assertNotIn("set_prompt", cmds, "Camera must NOT steer the live stream")
         except Exception:
-            print("\n=== REACTOR CONSOLE LOG (touch) ===\n" + self._dump_logs())
+            print("\n=== REACTOR CONSOLE LOG (camera) ===\n" + self._dump_logs())
             raise
         finally:
             page.close()

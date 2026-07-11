@@ -49,9 +49,15 @@
     realtimeBtn: document.getElementById("realtime-btn"),
     touchLayer: document.getElementById("touch-layer"),
     touchReticle: document.getElementById("touch-reticle"),
-    touchForm: document.getElementById("touch-form"),
-    touchInput: document.getElementById("touch-input"),
-    touchCaptureFlash: document.getElementById("touch-capture-flash"),
+    cameraHud: document.getElementById("camera-hud"),
+    cameraFrameNo: document.getElementById("camera-frame-no"),
+    cameraShutter: document.getElementById("camera-shutter"),
+    photoCount: document.getElementById("photo-count"),
+    photoRoll: document.getElementById("photo-roll"),
+    photoRollList: document.getElementById("photo-roll-list"),
+    photoViewer: document.getElementById("photo-viewer"),
+    photoViewerImg: document.getElementById("photo-viewer-img"),
+    photoViewerMeta: document.getElementById("photo-viewer-meta"),
     forwardBtn: document.getElementById("forward-btn"),
     actionWheel: document.getElementById("action-wheel"),
     veil: document.getElementById("processing-veil"),
@@ -114,9 +120,8 @@
     lastStatus: {},
     freeWillOpen: false,
     inputMode: "act",           // custom input intent: "act" (full turn) | "steer" (realtime nudge)
-    touchMode: null,            // TOUCH tool state: null | "aim" (reticle tracks cursor) | "prompt" (spot locked, field open)
-    touchPoint: null,           // {x, y} viewport coords of the reticle / locked spot
-    touchCaptureId: null,       // id of the investigation texture captured for the current locked spot
+    touchMode: null,            // CAMERA state: null | "camera" (viewfinder armed, tracking cursor)
+    touchPoint: null,           // {x, y} viewport coords of the viewfinder center
     autoPlay: false,
     autoTimer: null,
     autoDeadline: 0,            // realtime: latest time we'll wait for the new video before advancing anyway
@@ -209,6 +214,7 @@
       submit() { tone(700, 0.05, "square", 0.05); tone(1050, 0.11, "square", 0.045, 0.05); }, // custom action sent
       open() { tone([420, 760], 0.14, "triangle", 0.05); },    // free-will input reveal
       toggle() { tone(300, 0.04, "square", 0.04); },           // UI toggle click
+      shutter() { noise(0.05, 0.09); tone([1400, 300], 0.05, "square", 0.05); tone([300, 90], 0.08, "square", 0.05, 0.05); }, // camera shutter click-clack
       // ---- Ceremony: one distinct cue per pipeline step, so the player HEARS
       // the world working through each stage. ----
       cereAction() { tone(300, 0.05, "square", 0.06); tone([300, 620], 0.14, "square", 0.05, 0.05); },   // action selected — decisive commit
@@ -1450,148 +1456,125 @@
   }
 
   // ------------------------------------------------------------------
-  // TOUCH tool — investigate a spot, then act on it. Arming it fades the hub and
-  // turns the whole scene into an aiming surface: a reticle (a reaching hand)
-  // tracks the cursor; a click locks a spot and SHOOTS an evidence texture of
-  // that patch of world (filed in CaptureStore); the reticle then expands into a
-  // prompt field. Typing an action resolves a FULL TURN whose new scene is
-  // generated img2img from that evidence (see submitTouch → makeChoice). Backing
-  // out (Esc / click away / empty submit) keeps the shot and runs no turn.
-  // Blocked when dead / already aiming / while the bottom ACT input is open.
+  // CAMERA tool — pure, satisfying photography (no prompting). Arming it fades
+  // the bottom hubs and turns the whole scene into a viewfinder: a framing
+  // reticle (corner brackets + crosshair) tracks the cursor; a click fires the
+  // shutter (blades + flash + sound) and photographs the framed rectangle,
+  // which flies into your film roll. Works in BOTH still-image and realtime
+  // modes — it just reads whatever scene is on screen. Blocked only when dead /
+  // already aiming / while the ACT input is open / when there's nothing to shoot.
   // ------------------------------------------------------------------
-  function openTouch() {
+  const CAMERA = { w: 300, h: 220 }; // viewfinder size (kept in sync with CSS)
+
+  function cameraAvailable() {
+    return !!(window.SceneCapture && window.SceneCapture.available());
+  }
+
+  function openCamera() {
     if (state.gameOver || state.freeWillOpen || state.touchMode) return;
-    if (Renderer.mode !== "reactor" || !Renderer.reactorAvailable()) return;
-    state.touchMode = "aim";
+    if (!cameraAvailable()) { showRendererToast("Nothing to photograph yet"); return; }
+    state.touchMode = "camera";
     if (el.realtimeBtn) el.realtimeBtn.classList.add("aiming");
     document.body.classList.add("touch-aiming");
-    if (el.touchReticle) el.touchReticle.classList.remove("prompting");
-    if (el.touchLayer) el.touchLayer.classList.remove("prompting");
-    if (el.touchInput) el.touchInput.value = "";
-    // Start the reticle where it was last, else at the center of the view.
+    if (el.touchReticle) {
+      el.touchReticle.style.width = CAMERA.w + "px";
+      el.touchReticle.style.height = CAMERA.h + "px";
+    }
+    updateFrameNo();
+    // Start the viewfinder where it was last, else at the center of the view.
     const start = state.touchPoint ||
       { x: window.innerWidth / 2, y: window.innerHeight / 2 };
-    moveReticle(start.x, start.y);
+    moveViewfinder(start.x, start.y);
     if (el.touchLayer) el.touchLayer.classList.remove("hidden");
+    renderPhotoRoll();
+    if (el.photoRoll) el.photoRoll.classList.remove("hidden");
     Sound.open();
   }
 
-  function moveReticle(x, y) {
-    state.touchPoint = { x, y };
+  // Center the viewfinder on (x, y), clamped so the whole frame stays on screen.
+  function moveViewfinder(x, y) {
+    const hw = CAMERA.w / 2, hh = CAMERA.h / 2, m = 6;
+    const cx = Math.min(Math.max(x, hw + m), window.innerWidth - hw - m);
+    const cy = Math.min(Math.max(y, hh + m), window.innerHeight - hh - m);
+    state.touchPoint = { x: cx, y: cy };
     if (!el.touchReticle) return;
-    el.touchReticle.style.left = x + "px";
-    el.touchReticle.style.top = y + "px";
+    el.touchReticle.style.left = cx + "px";
+    el.touchReticle.style.top = cy + "px";
   }
 
   function onTouchMove(e) {
-    if (state.touchMode !== "aim") return;
-    moveReticle(e.clientX, e.clientY);
+    if (state.touchMode !== "camera") return;
+    moveViewfinder(e.clientX, e.clientY);
   }
 
   function onTouchClick(e) {
-    if (state.touchMode === "aim") {
-      e.preventDefault();
-      lockTouchSpot(e.clientX, e.clientY);
-    } else if (state.touchMode === "prompt") {
-      // Clicking away from the pill backs out but keeps the shot ("filming it").
-      if (el.touchReticle && !el.touchReticle.contains(e.target)) closeTouch(true, true);
-    }
+    if (state.touchMode !== "camera") return;
+    e.preventDefault();
+    takePhoto();
   }
 
-  // Lock the reticle to a spot and grow it into the prompt field. The center is
-  // clamped so the expanded pill stays fully on screen near a viewport edge.
-  function lockTouchSpot(x, y) {
-    state.touchMode = "prompt";
-    const halfW = 176, halfH = 28, margin = 12;
-    const cx = Math.min(Math.max(x, halfW + margin), window.innerWidth - halfW - margin);
-    const cy = Math.min(Math.max(y, halfH + margin), window.innerHeight - halfH - margin);
-    moveReticle(cx, cy);
-    // Remember the ORIGINAL touched point (not the clamped pill center) so the
-    // steer describes where the player actually aimed.
-    state.touchPoint = { x, y };
-    if (el.touchLayer) el.touchLayer.classList.add("prompting");
-    if (el.touchReticle) el.touchReticle.classList.add("prompting");
-    Sound.open();
-    // Investigate: grab a texture of the patch of world under the hand. This is
-    // the raw material future mechanics build prompts from (see investigation.js).
-    captureTouchInvestigation(x, y);
-    setTimeout(() => { if (el.touchInput) el.touchInput.focus(); }, 90);
+  function updateFrameNo() {
+    if (!el.cameraFrameNo) return;
+    const n = (window.CaptureStore ? photoCount() : 0) + 1;
+    el.cameraFrameNo.textContent = "FRAME " + String(n).padStart(2, "0");
   }
 
-  // Grab a bounding-box texture AROUND (and under) the reticle and file it in
-  // the CaptureStore as an "investigation". Fires a small ceremonial flash so
-  // the grab feels physical. Runs best-effort — if the capture layer isn't
-  // loaded or nothing is on screen, the TOUCH flow still works unchanged.
-  function captureTouchInvestigation(x, y) {
-    state.touchCaptureId = null;
-    // Ceremony: the hand presses in and a ring flares out from the spot.
-    if (el.touchReticle) {
-      el.touchReticle.classList.remove("grabbed");
-      void el.touchReticle.offsetWidth; // reflow so the pulse restarts
-      el.touchReticle.classList.add("grabbed");
-    }
-    fireCaptureFlash(x, y);
-    try { Sound.glitch(); } catch (_) {}
+  function photoCount() {
+    if (!window.CaptureStore) return 0;
+    return window.CaptureStore.list().filter((r) => r.kind === "photograph").length;
+  }
+
+  // Fire the shutter ceremony and photograph the framed rectangle.
+  function takePhoto() {
+    const pt = state.touchPoint || { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+    // Immediate feedback: shutter blades + flash + sound, regardless of capture.
+    fireShutter();
+    Sound.shutter();
 
     if (!window.SceneCapture || !window.CaptureStore) return;
-    const where = describeTouchRegion({ x, y });
+    const where = describeTouchRegion(pt);
     const turn = (state.lastStatus && state.lastStatus.turn != null)
       ? state.lastStatus.turn : null;
-    Promise.resolve(window.SceneCapture.captureRegion({ x, y }))
+    Promise.resolve(window.SceneCapture.captureRect({ x: pt.x, y: pt.y, w: CAMERA.w, h: CAMERA.h, thumb: 360 }))
       .then((cap) => {
-        if (!cap) return;
+        if (!cap) { showRendererToast("Nothing to photograph"); return; }
         const rec = window.CaptureStore.add({
-          kind: "investigation",
+          kind: "photograph",
           thumb: cap.dataUrl,
           width: cap.width,
           height: cap.height,
           source: cap.source,
-          box: cap.box,
-          point: { x, y },
+          point: { x: pt.x, y: pt.y },
           region: where.label,
           turn,
         });
-        // Remember which capture belongs to this locked spot so submitTouch can
-        // attach the prompt the player types to the very texture they grabbed.
-        state.touchCaptureId = rec ? rec.id : null;
+        renderPhotoRoll(rec ? rec.id : null);
+        updateFrameNo();
       })
-      .catch((err) => console.warn("[standalone] investigation capture failed:", err));
+      .catch((err) => console.warn("[standalone] photo capture failed:", err));
   }
 
-  function fireCaptureFlash(x, y) {
-    const f = el.touchCaptureFlash;
-    if (!f) return;
-    f.style.left = x + "px";
-    f.style.top = y + "px";
-    f.classList.remove("fire");
-    void f.offsetWidth; // reflow so the animation retriggers
-    f.classList.add("fire");
+  function fireShutter() {
+    const s = el.cameraShutter;
+    if (!s) return;
+    s.classList.remove("fire");
+    void s.offsetWidth; // reflow so the animation retriggers
+    s.classList.add("fire");
+    clearTimeout(state._shutterTimer);
+    state._shutterTimer = setTimeout(() => s.classList.remove("fire"), 340);
   }
 
-  // clear   — wipe the pending prompt text.
-  // filmed  — the player backed out WITHOUT acting; if a shot was taken this
-  //           session, acknowledge it ("just filming it"). The texture itself
-  //           already lives in CaptureStore, so escaping never loses it.
-  function closeTouch(clear, filmed) {
+  function closeCamera() {
     if (!state.touchMode) return;
-    if (filmed && state.touchCaptureId) {
-      showRendererToast("\uD83D\uDCF7 Shot filed to evidence");
-    }
     state.touchMode = null;
-    state.touchCaptureId = null;
-    if (el.touchLayer) {
-      el.touchLayer.classList.add("hidden");
-      el.touchLayer.classList.remove("prompting");
-    }
-    if (el.touchReticle) el.touchReticle.classList.remove("prompting", "grabbed");
+    if (el.touchLayer) el.touchLayer.classList.add("hidden");
     if (el.realtimeBtn) el.realtimeBtn.classList.remove("aiming");
+    if (el.photoRoll) el.photoRoll.classList.add("hidden");
     document.body.classList.remove("touch-aiming");
-    if (clear && el.touchInput) el.touchInput.value = "";
-    if (el.touchInput && document.activeElement === el.touchInput) el.touchInput.blur();
   }
 
-  // Turn the reticle's viewport position into a human phrase ("at the top-left
-  // of the view") so the action can anchor the change to that region.
+  // Turn the viewfinder's viewport position into a human region label, stored
+  // with each photo (useful metadata for later mechanics).
   function describeTouchRegion(pt) {
     if (!pt) return { label: "the scene", phrase: "" };
     const fx = pt.x / Math.max(1, window.innerWidth);
@@ -1606,42 +1589,46 @@
     return { label, phrase: "at " + label };
   }
 
-  // Submitting a TOUCH prompt now runs a FULL ACTION TURN (not a realtime video
-  // steer): the action text + the evidence texture we shot at this spot are
-  // posted to /api/choose, and the backend seeds this turn's img2img on that
-  // evidence — e.g. "move over and investigate the radio tower" + the shot of
-  // the radio tower. Leaving the field empty (or hitting Esc) just keeps the
-  // shot — "filming it" — and runs no turn.
-  function submitTouch(e) {
-    e.preventDefault();
-    if (!el.touchInput) return;
-    const text = el.touchInput.value.trim();
-    // No action typed → this was just a shot. Keep it; run nothing.
-    if (!text || state.gameOver) { closeTouch(true, !state.gameOver); return; }
-    // Full turns are gated on the pipeline being idle (the old realtime steer
-    // was not). If a turn is resolving, keep the shot and let them act after.
-    if (state.processing) {
-      showRendererToast("Turn resolving — shot filed, act after it lands");
-      closeTouch(true);
-      return;
+  // ---- Film roll + lightbox ----
+
+  // Render the roll of photographs (newest first). `justShotId` animates the
+  // freshly taken shot flying in. Also keeps the hub count badge in sync.
+  function renderPhotoRoll(justShotId) {
+    const photos = window.CaptureStore
+      ? window.CaptureStore.list().filter((r) => r.kind === "photograph")
+      : [];
+    // Hub count badge.
+    if (el.photoCount) {
+      el.photoCount.textContent = String(photos.length);
+      el.photoCount.classList.toggle("hidden", photos.length === 0);
     }
-    // Pull the evidence texture shot when this spot was locked.
-    let evidence = null;
-    if (state.touchCaptureId && window.CaptureStore) {
-      const rec = window.CaptureStore.get(state.touchCaptureId);
-      evidence = rec && rec.thumb ? rec.thumb : null;
-      window.CaptureStore.update(state.touchCaptureId, { prompt: text, used: true });
+    if (!el.photoRollList) return;
+    el.photoRollList.innerHTML = "";
+    photos.forEach((rec) => {
+      if (!rec.thumb) return;
+      const img = document.createElement("img");
+      img.className = "roll-photo" + (rec.id === justShotId ? " just-shot" : "");
+      img.src = rec.thumb;
+      img.alt = "photo of " + (rec.region || "the scene");
+      img.addEventListener("click", (ev) => { ev.stopPropagation(); openPhotoViewer(rec.id); });
+      el.photoRollList.appendChild(img);
+    });
+  }
+
+  function openPhotoViewer(id) {
+    const rec = window.CaptureStore ? window.CaptureStore.get(id) : null;
+    if (!rec || !rec.thumb || !el.photoViewer) return;
+    if (el.photoViewerImg) el.photoViewerImg.src = rec.thumb;
+    if (el.photoViewerMeta) {
+      const when = rec.createdAt ? new Date(rec.createdAt).toLocaleTimeString() : "";
+      el.photoViewerMeta.textContent = [rec.region || "the scene", when].filter(Boolean).join("  \u00B7  ");
     }
-    const where = describeTouchRegion(state.touchPoint);
-    // Anchor the action to where the player looked so the new scene lands there.
-    const action = where.phrase ? (text + " (" + where.phrase + ")") : text;
-    Sound.submit();
-    showRendererToast(evidence
-      ? "Investigating " + where.label + "\u2026"
-      : "Acting on " + where.label + "\u2026");
-    // Resolve a real turn, seeding img2img with the evidence we captured.
-    makeChoice(action, state.currentPromptId, { frame: evidence, touchRegion: where.label });
-    closeTouch(true);
+    el.photoViewer.classList.remove("hidden");
+    Sound.open();
+  }
+
+  function closePhotoViewer() {
+    if (el.photoViewer) el.photoViewer.classList.add("hidden");
   }
 
   function closeFreeWill(clear) {
@@ -2018,6 +2005,11 @@
   // ------------------------------------------------------------------
 
   function onKeydown(e) {
+    // The photo lightbox owns Esc while open.
+    if (el.photoViewer && !el.photoViewer.classList.contains("hidden")) {
+      if (e.key === "Escape") closePhotoViewer();
+      return;
+    }
     // Tape playback owns the keyboard while open.
     if (tapeIsOpen()) {
       if (e.key === "Escape" || e.key.toLowerCase() === "t") closeTape();
@@ -2030,10 +2022,10 @@
       if (e.key === "Escape") closeFreeWill(true); // Esc closes the gate
       return;
     }
-    // TOUCH tool owns the keyboard while armed: Esc cancels; other keys pass
-    // through so the locked-spot prompt types normally.
+    // Camera owns the keyboard while armed: Space/Enter shoots, Esc exits.
     if (state.touchMode) {
-      if (e.key === "Escape") closeTouch(true, true); // back out — keep the shot ("just filming it")
+      if (e.key === "Escape") closeCamera();
+      else if (e.key === " " || e.key === "Spacebar" || e.key === "Enter") { e.preventDefault(); takePhoto(); }
       return;
     }
     // While dead, only R (restart) is meaningful.
@@ -2057,8 +2049,8 @@
       toggleAutoPlay();
     } else if (e.key.toLowerCase() === "f") {
       openFreeWill();
-    } else if (e.key.toLowerCase() === "h") {
-      openTouch(); // realtime TOUCH tool (no-op outside realtime mode)
+    } else if (e.key.toLowerCase() === "c" || e.key.toLowerCase() === "h") {
+      openCamera(); // camera / photography tool
     } else if (e.key.toLowerCase() === "l") {
       RtLog.toggle(); // show/hide the world-model inspector log
     } else if (e.key.toLowerCase() === "g") {
@@ -2099,12 +2091,18 @@
     }
     el.deathRestart.addEventListener("click", resetGame);
     el.freeWillBtn.addEventListener("click", openFreeWill);
-    if (el.realtimeBtn) el.realtimeBtn.addEventListener("click", openTouch);
+    if (el.realtimeBtn) el.realtimeBtn.addEventListener("click", openCamera);
     if (el.touchLayer) {
       el.touchLayer.addEventListener("mousemove", onTouchMove);
       el.touchLayer.addEventListener("click", onTouchClick);
     }
-    if (el.touchForm) el.touchForm.addEventListener("submit", submitTouch);
+    // Lightbox: clicking the backdrop (or its image) closes it.
+    if (el.photoViewer) el.photoViewer.addEventListener("click", closePhotoViewer);
+    // Keep the film roll + hub count badge in sync with the capture store
+    // (persisted across reloads), and render whatever's already there.
+    if (window.CaptureStore) {
+      window.CaptureStore.subscribe(() => renderPhotoRoll());
+    }
     el.forwardBtn.addEventListener("click", moveForward);
     el.tapeBtn.addEventListener("click", openTape);
     el.tapePlayPause.addEventListener("click", toggleTapePlay);

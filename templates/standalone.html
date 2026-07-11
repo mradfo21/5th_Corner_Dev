@@ -132,40 +132,52 @@
     <button id="free-will-btn" type="button" title="Type your own action (F)">
       <span class="fw-icon">✎</span><span class="fw-label">ACT</span>
     </button>
-    <!-- "TOUCH" tool (realtime mode only): arms an aiming reticle you steer with
-         the mouse; a click locks a spot and SHOOTS a small evidence texture of
-         that patch of the world. Typing an action then resolves a FULL TURN
-         whose new scene is generated img2img from that evidence (e.g. "move over
-         and investigate the radio tower" + the shot of the tower). Backing out
-         without typing just keeps the shot — "filming it". -->
-    <button id="realtime-btn" type="button" title="Investigate a spot — shoot it, then act on it (H)">
-      <span class="rt-icon">✋</span><span class="rt-label">TOUCH</span>
+    <!-- CAMERA tool: arms a viewfinder you steer with the mouse; a click SHOOTS a
+         photograph of the framed patch of the world — no prompting, just pure
+         photography with a shutter, a flash, a sound, and the shot flying into
+         your film roll. Works in both still-image and realtime modes. -->
+    <button id="realtime-btn" type="button" title="Camera — frame a shot and photograph the world (C)">
+      <span class="rt-icon">📷</span><span class="rt-label">PHOTO</span>
+      <span id="photo-count" class="hidden" aria-hidden="true">0</span>
     </button>
   </div>
 
-  <!-- TOUCH tool overlay: a full-screen aiming surface. Armed by the TOUCH hub,
-       a small reticle (a reaching hand) tracks the cursor; clicking locks it to
-       a spot, SHOOTS an evidence texture of that patch of the world, and expands
-       into a prompt field. Typing an action resolves a full turn seeded (img2img)
-       by that evidence; leaving it empty just keeps the shot. Realtime mode only. -->
+  <!-- CAMERA overlay: a full-screen viewfinder surface. Armed by the camera hub,
+       a framing reticle (corner brackets + crosshair) tracks the cursor; clicking
+       fires the shutter and captures the framed rectangle into the film roll.
+       No prompting — just satisfying photography. -->
   <div id="touch-layer" class="hidden" aria-hidden="true">
-    <div id="touch-reticle">
-      <!-- A reaching/pointing hand — the player's own hand entering the frame to
-           touch and investigate the world (was a magnifying glass). -->
-      <svg class="touch-hand" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-           stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <path d="M18 11V6a2 2 0 0 0-2-2 2 2 0 0 0-2 2"></path>
-        <path d="M14 10V4a2 2 0 0 0-2-2 2 2 0 0 0-2 2v2"></path>
-        <path d="M10 10.5V6a2 2 0 0 0-2-2 2 2 0 0 0-2 2v8"></path>
-        <path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"></path>
-      </svg>
-      <form id="touch-form" autocomplete="off">
-        <input id="touch-input" type="text" placeholder="act on what you found — or Esc to just keep the shot…" maxlength="200">
-        <button id="touch-submit" type="submit">SEND</button>
-      </form>
+    <div id="touch-reticle" class="viewfinder">
+      <span class="vf-corner tl" aria-hidden="true"></span>
+      <span class="vf-corner tr" aria-hidden="true"></span>
+      <span class="vf-corner bl" aria-hidden="true"></span>
+      <span class="vf-corner br" aria-hidden="true"></span>
+      <span class="vf-cross" aria-hidden="true"></span>
+      <span class="vf-rec" aria-hidden="true">● REC</span>
     </div>
-    <!-- Fired by JS at the moment an investigation texture is captured. -->
-    <div id="touch-capture-flash" aria-hidden="true"></div>
+    <div id="camera-hud" aria-hidden="true">
+      <span id="camera-frame-no">FRAME 01</span>
+      <span class="camera-hint">click to shoot &middot; Esc to exit</span>
+    </div>
+  </div>
+
+  <!-- Shutter ceremony: black blades snap shut then open, with a quick flash. -->
+  <div id="camera-shutter" aria-hidden="true">
+    <div class="shutter-blade top"></div>
+    <div class="shutter-blade bottom"></div>
+    <div class="shutter-flash"></div>
+  </div>
+
+  <!-- Film roll: the strip of photographs you've taken this session. -->
+  <div id="photo-roll" class="hidden" aria-hidden="true">
+    <div class="roll-label">FILM</div>
+    <div id="photo-roll-list"></div>
+  </div>
+
+  <!-- Lightbox: click a photo in the roll to view it larger. -->
+  <div id="photo-viewer" class="hidden" aria-hidden="true">
+    <img id="photo-viewer-img" alt="captured photograph">
+    <div id="photo-viewer-meta"></div>
   </div>
 
   <!-- (Session controls now live in #control-rail, top-right.) -->
