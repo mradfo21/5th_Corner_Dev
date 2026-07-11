@@ -586,9 +586,10 @@ class TestRealtimeRenderer(unittest.TestCase):
         finally:
             page.close()
 
-    def test_realtime_scan_is_realtime_only(self):
-        """SCAN is a realtime instrument: switching to still-image mode must hide
-        the SCAN hub and tear down any active scan overlay."""
+    def test_realtime_scan_persists_across_renderer_switch(self):
+        """SCAN works in BOTH renderers, so switching from realtime to still
+        images must NOT tear it down — the hub stays available and the overlay
+        stays armed (it re-maps its tags to the still on the next scan)."""
         page = self._new_realtime_page()
         scene_items = [
             {"id": 1, "type": "narrative", "content": "Intro."},
@@ -604,13 +605,91 @@ class TestRealtimeRenderer(unittest.TestCase):
             page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
             page.evaluate("document.getElementById('scan-btn').click()")
             self.assertTrue(page.evaluate("document.getElementById('scan-btn').classList.contains('scanning')"))
-            # Switch to still images via the renderer toggle -> SCAN tears down.
+            # Switch to still images via the renderer toggle -> SCAN STAYS armed.
             page.evaluate("document.getElementById('btn-renderer').click()")
-            page.wait_for_function("document.getElementById('scan-layer').classList.contains('hidden')", timeout=5000)
-            self.assertFalse(page.evaluate("document.getElementById('scan-btn').classList.contains('scanning')"))
-            self.assertFalse(page.evaluate("document.body.classList.contains('realtime-on')"))
+            page.wait_for_function("document.body.classList.contains('realtime-on') === false", timeout=5000)
+            self.assertTrue(page.evaluate("document.getElementById('scan-btn').classList.contains('scanning')"),
+                            "SCAN must stay armed after switching to still images")
+            self.assertFalse(page.evaluate("document.getElementById('scan-layer').classList.contains('hidden')"),
+                             "the scan overlay must stay open across the renderer switch")
+            # The SCAN hub remains visible in stills mode (unlike TOUCH).
+            self.assertNotEqual(page.evaluate("getComputedStyle(document.getElementById('scan-btn')).display"), "none")
+            self.assertEqual(page.evaluate("getComputedStyle(document.getElementById('realtime-btn')).display"), "none")
         except Exception:
-            print("\n=== REACTOR CONSOLE LOG (scan-realtime-only) ===\n" + self._dump_logs())
+            print("\n=== REACTOR CONSOLE LOG (scan-switch) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
+    def test_scan_tool_works_in_stills_mode(self):
+        """SCAN must also work with the still-image renderer: arm it, scan the
+        current still (not a video), tags twinkle in, and a tag's + button
+        commits a full turn anchored on that object — no realtime video needed."""
+        page = self._new_realtime_page()
+        scene_items = [
+            {"id": 1, "type": "narrative", "content": "Intro."},
+            {"id": 2, "type": "scene_image", "content": "", "image_url": TINY_PNG_DATA_URL,
+             "metadata": {"prompt": "scene one", "base": "A dim corridor.", "hard_transition": False}},
+            {"id": 3, "type": "player_choice_prompt", "content": "?", "choices": [{"text": "Go"}]},
+        ]
+        chooses = []
+        choose_bodies = []
+        detects = []
+        page.route("**/api/reset", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(scene_items)))
+        page.route("**/api/feed*", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
+
+        def choose_handler(route):
+            try:
+                choose_bodies.append(route.request.post_data)
+            except Exception:
+                choose_bodies.append(None)
+            chooses.append(route.request.url)
+            route.fulfill(status=200, content_type="application/json", body="[]")
+        page.route("**/api/choose", choose_handler)
+
+        def detect_handler(route):
+            detects.append(route.request.url)
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({
+                "objects": [{"label": "steel door", "cx": 0.5, "cy": 0.5, "w": 0.2, "h": 0.3}]}))
+        page.route("**/api/detect", detect_handler)
+        try:
+            # Force the STILL-image renderer (no realtime video).
+            page.goto(f"{self.base_url}/standalone?renderer=image", wait_until="domcontentloaded")
+            page.wait_for_selector("#scan-btn", state="attached", timeout=10000)
+            # SCAN hub is available in stills mode too.
+            self.assertNotEqual(page.evaluate("getComputedStyle(document.getElementById('scan-btn')).display"), "none")
+            # The still must be on screen (a scene background is set).
+            page.wait_for_function(
+                "(document.getElementById('sceneA').style.backgroundImage||"
+                "document.getElementById('sceneB').style.backgroundImage||'').length > 0",
+                timeout=10000,
+            )
+            # Arm SCAN -> it scans the STILL and tags twinkle in.
+            page.evaluate("document.getElementById('scan-btn').click()")
+            self.assertTrue(page.evaluate("document.getElementById('scan-btn').classList.contains('scanning')"))
+            page.wait_for_function("document.querySelectorAll('#scan-tags .scan-tag').length >= 1", timeout=10000)
+            self.assertGreaterEqual(len(detects), 1, "SCAN never called /api/detect in stills mode")
+            labels = page.evaluate("Array.from(document.querySelectorAll('.scan-tag-label')).map(e=>e.textContent)")
+            self.assertIn("steel door", labels)
+            # Poke the tag -> commits a full turn anchored on the object.
+            page.evaluate("document.querySelector('.scan-tag .scan-tag-act').click()")
+            page.evaluate(
+                """() => {
+                    const tag = document.querySelector('.scan-tag.acting');
+                    tag.querySelector('.scan-tag-form input').value = 'open it';
+                    tag.querySelector('.scan-tag-form').dispatchEvent(new Event('submit', {cancelable:true, bubbles:true}));
+                }"""
+            )
+            for _ in range(60):
+                if chooses:
+                    break
+                page.wait_for_timeout(100)
+            self.assertGreaterEqual(len(chooses), 1, f"stills SCAN interact didn't commit a turn. logs:\n{self._dump_logs()}")
+            choice = json.loads(choose_bodies[0] or "{}").get("choice") or ""
+            self.assertTrue(choice.startswith("INTERACT WITH: steel door"),
+                            f"action must be prefixed + anchored on the object; got {choice!r}")
+        except Exception:
+            print("\n=== CONSOLE LOG (scan-stills) ===\n" + self._dump_logs())
             raise
         finally:
             page.close()

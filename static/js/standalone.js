@@ -135,6 +135,9 @@
     scanTagActing: null,        // tag element with its inline interact prompt open
     scanIdleTimer: null,        // periodic re-scan while armed
     scanMoveTimer: null,        // debounced re-scan after the cursor settles
+    scanSrcSize: null,          // {w,h} of the last scanned source (video or still), for cover-mapping tags
+    currentStillUrl: null,      // last still shown via setScene (stills-mode SCAN source)
+    scanStillImg: null,         // cached <img> of the current still, for canvas capture
     autoPlay: false,
     autoTimer: null,
     autoDeadline: 0,            // realtime: latest time we'll wait for the new video before advancing anyway
@@ -571,6 +574,7 @@
 
   function setScene(imageUrl, opts) {
     if (!imageUrl) return;
+    state.currentStillUrl = imageUrl; // remember for stills-mode SCAN capture
     const silent = !!(opts && opts.silent);
     const incoming = state.activeScene === "A" ? el.sceneB : el.sceneA;
     const outgoing = state.activeScene === "A" ? el.sceneA : el.sceneB;
@@ -896,7 +900,10 @@
         hideGuideThumbnail();
         hideCaptureThumbnail();
       }
-      if (mode !== "reactor") closeScan(); // scan is realtime-only
+      // SCAN works in BOTH renderers — keep it armed across a LIVE/STILL
+      // switch, just drop the tags so they re-map to the new source on the
+      // next scan (the video and the still cover the viewport differently).
+      if (state.scanOn) { state.scanSrcSize = null; clearScanTags(); }
       updateRendererButton();
     },
 
@@ -1769,8 +1776,9 @@
   // the world model's video, and the objects it recognizes twinkle in as
   // floating "starfield" tags anchored where they actually sit. Each tag
   // carries a little button that opens an inline prompt to ACT on THAT exact
-  // thing — a full turn (consequence + a freshly generated guide image), so it
-  // makes meaningful change to the world. Realtime mode only.
+  // thing — a full turn (consequence + a freshly generated scene), so it makes
+  // meaningful change to the world. Works in BOTH renderers: it scans the live
+  // video frame in realtime mode, or the current still in image mode.
   //
   // Engineering notes:
   //  • Detection is an LLM round-trip, so calls are throttled (a floor between
@@ -1789,16 +1797,72 @@
   const SCAN_MOVE_SETTLE_MS = 600;    // re-scan this long after the cursor settles
   const SCAN_NEAR_RADIUS = 150;       // px: how close the cursor "finds" a tag
 
-  function scanAvailable() {
+  // SCAN works in BOTH renderers:
+  //  • realtime (reactor): scans the live video frame.
+  //  • stills (image): scans the current scene still.
+  function scanInRealtime() {
     return Renderer.mode === "reactor" && Renderer.reactorAvailable() &&
       window.ReactorRenderer.isShowing && window.ReactorRenderer.isShowing();
+  }
+
+  // A loaded <img> of the current still (stills mode), cached per URL, or null
+  // while it hasn't decoded yet. Served same-origin (/images/…) so it can be
+  // drawn to a canvas without tainting it.
+  function getStillImage() {
+    const url = state.currentStillUrl ||
+      (Renderer.lastScene && Renderer.lastScene.imageUrl) || null;
+    if (!url) return null;
+    if (!state.scanStillImg || state.scanStillImg.getAttribute("data-src") !== url) {
+      const img = new Image();
+      img.setAttribute("data-src", url);
+      img.src = url;
+      state.scanStillImg = img;
+    }
+    const img = state.scanStillImg;
+    return (img && img.complete && img.naturalWidth > 0) ? img : null;
+  }
+
+  function scanAvailable() {
+    if (scanInRealtime()) return true;
+    // Stills mode: scannable once the current scene still has decoded.
+    return Renderer.mode !== "reactor" && !!getStillImage();
+  }
+
+  // Grab the current scene as a JPEG data URL + its intrinsic size (for
+  // cover-mapping tags), from whichever renderer is live.
+  function captureScanFrame() {
+    if (scanInRealtime()) {
+      const frame = window.ReactorRenderer.captureFrame
+        ? window.ReactorRenderer.captureFrame(640) : null;
+      const size = (window.ReactorRenderer.getVideoSize && window.ReactorRenderer.getVideoSize()) || null;
+      return frame ? { frame, size } : null;
+    }
+    const img = getStillImage();
+    if (!img) return null;
+    try {
+      const cap = 640;
+      const scale = Math.min(1, cap / img.naturalWidth);
+      const w = Math.max(1, Math.round(img.naturalWidth * scale));
+      const h = Math.max(1, Math.round(img.naturalHeight * scale));
+      const c = document.createElement("canvas");
+      c.width = w; c.height = h;
+      c.getContext("2d").drawImage(img, 0, 0, w, h);
+      return { frame: c.toDataURL("image/jpeg", 0.72), size: { w: img.naturalWidth, h: img.naturalHeight } };
+    } catch (e) {
+      console.warn("[standalone] still capture failed:", e);
+      return null;
+    }
   }
 
   function openScan() {
     if (state.scanOn) { closeScan(); return; } // toggle off if already armed
     if (state.gameOver || state.freeWillOpen || state.touchMode || tapeIsOpen()) return;
-    if (Renderer.mode !== "reactor" || !Renderer.reactorAvailable()) {
-      showRendererToast("Scan needs realtime video");
+    // Need SOMETHING to scan: a live realtime video, or a scene still.
+    const canScan = scanInRealtime() ||
+      (Renderer.mode === "reactor" && Renderer.reactorAvailable()) ||
+      !!(state.currentStillUrl || (Renderer.lastScene && Renderer.lastScene.imageUrl));
+    if (!canScan) {
+      showRendererToast("Scan needs a scene first");
       return;
     }
     state.scanOn = true;
@@ -1810,7 +1874,7 @@
     state.scanObjects = [];
     // Park the sweep glow at center until the cursor moves.
     moveScanCursor(window.innerWidth / 2, window.innerHeight / 2);
-    setScanHint(scanAvailable() ? "scanning the scene…" : "waiting for the live feed…");
+    setScanHint(scanAvailable() ? "scanning the scene…" : "waiting for the scene…");
     Sound.scan();
     runScan(true);
     scheduleScanTick();
@@ -1854,11 +1918,13 @@
     el.scanCursor.style.top = y + "px";
   }
 
-  // Map normalized (0..1) frame coordinates onto the live video's object-fit:
-  // cover display rect so a tag lands exactly over its object on screen.
+  // Map normalized (0..1) frame coordinates onto the on-screen scene's
+  // object-fit/background-size: cover display rect (video OR still) so a tag
+  // lands exactly over its object on screen.
   function mapNormToScreen(nx, ny) {
     const W = window.innerWidth, H = window.innerHeight;
-    const size = (window.ReactorRenderer.getVideoSize && window.ReactorRenderer.getVideoSize()) || null;
+    const size = state.scanSrcSize ||
+      (window.ReactorRenderer.getVideoSize && window.ReactorRenderer.getVideoSize()) || null;
     if (!size || !size.w || !size.h) return { x: nx * W, y: ny * H };
     const scale = Math.max(W / size.w, H / size.h);
     const dw = size.w * scale, dh = size.h * scale;
@@ -1911,23 +1977,22 @@
     if (state.scanTagActing) return; // never disturb an open interact prompt
     if (state.processing) return;    // don't scan mid-turn (the scene is re-anchoring)
     if (!scanAvailable()) {
-      if (!el.scanTags || !el.scanTags.children.length) setScanHint("waiting for the live feed…");
+      if (!el.scanTags || !el.scanTags.children.length) setScanHint("waiting for the scene…");
       return;
     }
     const now = Date.now();
     if (!force && now - state.scanLastTs < SCAN_MIN_INTERVAL_MS) return;
-    const frame = window.ReactorRenderer.captureFrame
-      ? window.ReactorRenderer.captureFrame(640)
-      : null;
-    if (!frame) {
-      if (!el.scanTags || !el.scanTags.children.length) setScanHint("waiting for the live feed…");
+    const cap = captureScanFrame();
+    if (!cap || !cap.frame) {
+      if (!el.scanTags || !el.scanTags.children.length) setScanHint("waiting for the scene…");
       return;
     }
+    if (cap.size) state.scanSrcSize = cap.size; // for cover-mapping the tags
     state.scanBusy = true;
     state.scanLastTs = now;
     document.body.classList.add("scan-busy");
     if (!el.scanTags || !el.scanTags.children.length) setScanHint("scanning the scene…");
-    postJSON("/api/detect", { frame })
+    postJSON("/api/detect", { frame: cap.frame })
       .then((res) => {
         if (!state.scanOn) return;
         const objs = (res && Array.isArray(res.objects)) ? res.objects : [];
