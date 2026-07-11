@@ -1333,10 +1333,12 @@ body.realtime-on #realtime-btn { display: flex; }
    Only shown in realtime mode (body.realtime-on) and when not user-hidden. */
 #rt-log {
   position: fixed;
-  right: calc(env(safe-area-inset-right, 0px) + 8px);
-  top: calc(env(safe-area-inset-top, 0px) + 210px);
+  right: calc(env(safe-area-inset-right, 0px) + 10px);
+  /* Sit BELOW the control rail (top-right, 6 buttons ~= 370px tall) and extend
+     down toward the action zone — its own column on the right edge. */
+  top: calc(env(safe-area-inset-top, 0px) + 430px);
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 96px);
   width: 250px;
-  max-height: min(52vh, 460px);
   z-index: 9;
   display: none;
   flex-direction: column;
@@ -1377,6 +1379,8 @@ body.realtime-on.rt-log-on #rt-log { display: flex; }
   list-style: none;
   margin: 0;
   padding: 4px 6px;
+  flex: 1 1 auto;      /* fill the panel height between the header and bottom */
+  min-height: 0;       /* allow the list to shrink so overflow-y can scroll */
   overflow-y: auto;
   overflow-x: hidden;
   font-size: 10px;
@@ -1564,4 +1568,11 @@ body.realtime-on.rt-log-on #rt-log { display: flex; }
   .rail-btn { min-height: 32px; width: 38px; padding: 3px 2px; }
   .rail-ico { font-size: 14px; }
   .rail-lbl { display: none; }
+
+  /* Rail is shorter here — tuck the world-model log just below it. */
+  #rt-log {
+    top: calc(env(safe-area-inset-top, 0px) + 232px);
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 70px);
+    width: 210px;
+  }
 }
