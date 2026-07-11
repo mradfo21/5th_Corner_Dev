@@ -139,6 +139,24 @@
     <button id="realtime-btn" type="button" title="Touch the live world — aim a spot, then change it (H)">
       <span class="rt-icon">✋</span><span class="rt-label">TOUCH</span>
     </button>
+    <!-- Realtime "SCAN" tool (realtime mode only): arms the object scanner.
+         Drag across the live scene and the world model names what it sees with
+         floating starfield tags; each tag has a little button to play with that
+         exact thing. Realtime-only; hidden otherwise. -->
+    <button id="scan-btn" type="button" title="Scan the live world — reveal what's in the scene (S)">
+      <span class="scan-icon">◎</span><span class="scan-label">SCAN</span>
+    </button>
+  </div>
+
+  <!-- SCAN tool overlay: a full-screen scanning surface. Armed by the SCAN hub,
+       a scanner reticle sweeps under the cursor as you drag across the scene and
+       "starfield" tags twinkle in over whatever the world model recognizes.
+       Each tag carries a small button that anchors a live interaction to that
+       exact object. Realtime mode only; hidden otherwise. -->
+  <div id="scan-layer" class="hidden" aria-hidden="true">
+    <div id="scan-cursor" aria-hidden="true"></div>
+    <div id="scan-tags"></div>
+    <div id="scan-hint" class="scan-hint">drag across the scene to scan…</div>
   </div>
 
   <!-- TOUCH tool overlay: a full-screen aiming surface. Armed by the TOUCH hub,

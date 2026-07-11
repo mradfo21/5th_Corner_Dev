@@ -663,6 +663,14 @@
       const v = rstate.video || document.getElementById("reactor-video");
       return !!(v && v.videoWidth > 0 && !rstate.freezeActive);
     },
+    // Intrinsic size of the live video track, so callers can map normalized
+    // frame coordinates (e.g. object-detection boxes) onto the object-fit:cover
+    // display rect. Returns null when no real frames are flowing yet.
+    getVideoSize: () => {
+      const v = rstate.video || document.getElementById("reactor-video");
+      if (!v || !v.videoWidth || !v.videoHeight) return null;
+      return { w: v.videoWidth, h: v.videoHeight };
+    },
     onStatus: null,
     onEvent: null,
     // fn(imageUrl, data) — fired when a guide image is integrated into the world.

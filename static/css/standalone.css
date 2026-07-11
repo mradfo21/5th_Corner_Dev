@@ -953,6 +953,247 @@ body.touch-aiming #free-will-btn { opacity: 0.2; pointer-events: none; }
   color: #ffe9cc;
 }
 
+/* ============================================================
+   SCAN tool — realtime object recognition ("starfield" tags)
+   A cool-white/cyan instrument (distinct from amber TOUCH) that names what the
+   live world model is showing and lets you poke any of it.
+   ============================================================ */
+
+/* SCAN hub: mirrors the TOUCH hub on the LEFT of the ACT hub. Cyan accent +
+   scanner glyph so it reads as its own instrument. Realtime mode only. */
+#scan-btn {
+  position: absolute;
+  left: 50%;
+  bottom: 0;
+  transform: translateX(-85px);
+  width: 51px;
+  height: 51px;
+  border-radius: 50%;
+  background: none;
+  border: 1px solid rgba(140, 217, 255, 0.6);
+  color: #bfe9ff;
+  font-family: inherit;
+  cursor: pointer;
+  display: none; /* revealed only in realtime mode */
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.9);
+  box-shadow: inset 0 0 12px rgba(0,0,0,0.5);
+  transition: border-color 0.16s, box-shadow 0.16s, transform 0.1s, opacity 0.22s;
+}
+body.realtime-on #scan-btn { display: flex; }
+#scan-btn:hover {
+  border-color: rgba(140, 217, 255, 1);
+  box-shadow: inset 0 0 12px rgba(0,0,0,0.5), 0 0 22px rgba(140, 217, 255, 0.5);
+  transform: translateX(-85px) scale(1.08);
+}
+#scan-btn:active { transform: translateX(-85px) scale(0.94); }
+.scan-icon { font-size: 15px; line-height: 1; opacity: 0.98; }
+.scan-label { font-size: 7px; letter-spacing: 0.12em; opacity: 0.85; }
+
+/* Armed: the ring glows and the glyph slowly spins like a sweeping scanner. */
+#scan-btn.scanning {
+  border-color: rgba(140, 217, 255, 1);
+  box-shadow: inset 0 0 12px rgba(0,0,0,0.5), 0 0 24px rgba(140, 217, 255, 0.6);
+}
+#scan-btn.scanning .scan-icon {
+  display: inline-block;
+  animation: scan-spin 2.4s linear infinite;
+}
+@keyframes scan-spin { to { transform: rotate(360deg); } }
+
+#action-wheel.fw-open #scan-btn { opacity: 0; pointer-events: none; }
+#action-wheel.turn-active #scan-btn { opacity: 0; pointer-events: none; }
+
+/* SCAN overlay: NON-modal — it does NOT capture the pointer, so game choices
+   and controls stay clickable while it's armed. Only its tags/cursor are
+   interactive. It hosts the sweep glow, the starfield tags, and the hint. */
+#scan-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 34;
+  pointer-events: none;
+}
+#scan-layer.hidden { display: none; }
+
+/* Sweep glow that trails the cursor while scanning — the "you are looking
+   here" beam. Purely decorative (pointer-events: none). */
+#scan-cursor {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 220px;
+  height: 220px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  pointer-events: none;
+  background: radial-gradient(circle,
+    rgba(140, 217, 255, 0.16) 0%,
+    rgba(140, 217, 255, 0.06) 34%,
+    rgba(140, 217, 255, 0) 68%);
+  opacity: 0.85;
+  transition: opacity 0.3s ease;
+}
+/* Ring pulse while a detection request is in flight. */
+body.scan-busy #scan-cursor::after {
+  content: "";
+  position: absolute;
+  inset: 78px;
+  border-radius: 50%;
+  border: 1px solid rgba(140, 217, 255, 0.5);
+  animation: scan-ping 1.1s ease-out infinite;
+}
+@keyframes scan-ping {
+  0%   { transform: scale(0.4); opacity: 0.9; }
+  100% { transform: scale(1.8); opacity: 0; }
+}
+
+#scan-tags { position: absolute; inset: 0; pointer-events: none; }
+
+/* A starfield tag: a star point + label, twinkling in over its object. */
+.scan-tag {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px 3px 6px;
+  border-radius: 20px;
+  white-space: nowrap;
+  pointer-events: auto;
+  color: #eaf7ff;
+  background: rgba(6, 14, 22, 0.5);
+  border: 1px solid rgba(140, 217, 255, 0.42);
+  box-shadow: 0 0 14px rgba(140, 217, 255, 0.25), inset 0 0 10px rgba(0,0,0,0.4);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  text-shadow: 0 1px 4px rgba(0,0,0,0.95);
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  opacity: 0;
+  animation: scan-twinkle-in 0.5s ease-out var(--twk, 0ms) forwards;
+  transition: border-color 0.16s, box-shadow 0.16s, transform 0.16s;
+  z-index: 1;
+}
+@keyframes scan-twinkle-in {
+  0%   { opacity: 0; transform: translate(-50%, -50%) scale(0.4); filter: blur(2px); }
+  60%  { opacity: 1; transform: translate(-50%, -50%) scale(1.12); filter: blur(0); }
+  100% { opacity: 0.92; transform: translate(-50%, -50%) scale(1); filter: blur(0); }
+}
+
+/* The star point twinkles softly forever so the field feels alive. */
+.scan-star {
+  font-size: 11px;
+  line-height: 1;
+  color: #bfe9ff;
+  filter: drop-shadow(0 0 4px rgba(140, 217, 255, 0.9));
+  animation: scan-star-twinkle 2.6s ease-in-out infinite;
+}
+@keyframes scan-star-twinkle {
+  0%, 100% { opacity: 0.55; transform: scale(0.85) rotate(0deg); }
+  50%      { opacity: 1; transform: scale(1.12) rotate(45deg); }
+}
+
+.scan-tag-label { font-size: 12px; opacity: 0.96; }
+
+/* The "extra little button" — press it to play with this exact thing. */
+.scan-tag-act {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(140, 217, 255, 0.6);
+  background: rgba(140, 217, 255, 0.1);
+  color: #dff3ff;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 15px;
+  cursor: pointer;
+  transition: background 0.14s, border-color 0.14s, transform 0.1s;
+}
+.scan-tag-act:hover {
+  background: rgba(140, 217, 255, 0.28);
+  border-color: rgba(140, 217, 255, 1);
+  transform: scale(1.12);
+}
+
+/* The cursor is near this tag: brighten it so dragging over the scene "finds"
+   the things in it. */
+.scan-tag.near {
+  border-color: rgba(140, 217, 255, 0.9);
+  box-shadow: 0 0 22px rgba(140, 217, 255, 0.5), inset 0 0 10px rgba(0,0,0,0.4);
+  transform: translate(-50%, -50%) scale(1.06);
+  z-index: 3;
+}
+
+/* Poked: a quick confirming flash when a live nudge fires. */
+.scan-tag.poked {
+  animation: scan-poked 0.85s ease-out;
+}
+@keyframes scan-poked {
+  0%   { box-shadow: 0 0 0 rgba(140, 217, 255, 0); }
+  30%  { box-shadow: 0 0 30px rgba(190, 233, 255, 0.9); border-color: #fff; }
+  100% { box-shadow: 0 0 0 rgba(140, 217, 255, 0); }
+}
+
+/* Inline interact prompt, revealed when the + button is pressed. */
+.scan-tag-form { display: none; align-items: center; gap: 6px; }
+.scan-tag.acting {
+  z-index: 5;
+  border-color: rgba(140, 217, 255, 0.95);
+  box-shadow: 0 0 26px rgba(140, 217, 255, 0.55), inset 0 0 10px rgba(0,0,0,0.5);
+}
+.scan-tag.acting .scan-tag-act { display: none; }
+.scan-tag.acting .scan-tag-form { display: flex; }
+.scan-tag-form input {
+  width: 150px;
+  max-width: 42vw;
+  background: none;
+  border: none;
+  border-bottom: 1px solid rgba(140, 217, 255, 0.55);
+  color: #eaf7ff;
+  font-family: inherit;
+  font-size: 12px;
+  padding: 2px 2px;
+  outline: none;
+}
+.scan-tag-form input::placeholder { color: rgba(190, 233, 255, 0.5); }
+.scan-tag-form input:focus { border-bottom-color: rgba(140, 217, 255, 0.95); }
+.scan-tag-form button {
+  flex: 0 0 auto;
+  background: none;
+  border: 1px solid rgba(140, 217, 255, 0.55);
+  color: #bfe9ff;
+  font-family: inherit;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  padding: 3px 7px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+.scan-tag-form button:hover { border-color: rgba(140, 217, 255, 0.95); color: #eaf7ff; }
+
+/* Hint line near the bottom, above the action wheel. */
+#scan-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 118px;
+  transform: translateX(-50%);
+  pointer-events: none;
+  color: rgba(190, 233, 255, 0.82);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.95);
+  padding: 4px 10px;
+  border-radius: 10px;
+  background: rgba(6, 14, 22, 0.4);
+  border: 1px solid rgba(140, 217, 255, 0.2);
+}
+#scan-hint.hidden { display: none; }
+
 /* ---------- Control rail (vertical bar, top-right) ---------- */
 
 #control-rail {
