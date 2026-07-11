@@ -4,7 +4,13 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>SOMEWHERE // Standalone</title>
-<link href="https://fonts.googleapis.com/css2?family=VT323&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<!-- Load fonts without blocking first paint / the load event: fetch as a
+     non-blocking stylesheet, then promote to a real stylesheet on load. The
+     monospace fallback in CSS renders immediately if fonts are slow/unavailable. -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=VT323&family=Share+Tech+Mono&display=swap" media="print" onload="this.media='all'">
+<noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=VT323&family=Share+Tech+Mono&display=swap"></noscript>
 <link rel="stylesheet" href="{{ url_for('static', filename='css/standalone.css') }}?v={{ asset_version }}">
 </head>
 <body>
