@@ -562,6 +562,36 @@ def create_feed_item(type: str, content: str, image_url: Optional[str] = None, c
         feed_item["metadata"] = metadata
     return feed_item
 
+
+def _feed_append(container, item):
+    """Append ONE feed item to a feed_log, stamping its id at APPEND time so the
+    log is always ordered by id.
+
+    Feed ids used to be assigned at create time (create_feed_item) but appended
+    later. Under the realtime concurrency (turn thread + /api/observe + scene
+    image + reground all writing), an item created earlier could be appended
+    AFTER one created later, leaving feed_log out of id order. The client tracks
+    the highest id it has seen and asks /api/feed for `id > since_id`, so a lower
+    id appended afterward is filtered out forever — the browser then polls an
+    empty feed and the turn appears to freeze. Stamping the id at append time
+    (always under WORLD_STATE_LOCK, which serialises appends) guarantees append
+    order == id order, so nothing is ever skipped. Returns the item.
+    """
+    item["id"] = get_next_feed_item_id()
+    if isinstance(container, dict):
+        container.setdefault("feed_log", []).append(item)
+    else:
+        container.append(item)
+    return item
+
+
+def _feed_extend(container, items):
+    """Append several feed items in order, stamping each id at append time.
+    See _feed_append. Returns the items list."""
+    for it in items:
+        _feed_append(container, it)
+    return items
+
 # Dummy log_error if not present, for robustness
 def log_error(message: str):
     print(f"ERROR: {message}", file=sys.stderr, flush=True)
@@ -3324,13 +3354,14 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
         ]
 
         # Item pickup detection (feed notification; inventory itself is in state).
+        _inventory_update = None
         try:
             from items import detect_item_pickups, add_items_to_inventory, ITEMS
             current_inventory = state.get("inventory", [])
             picked_up = detect_item_pickups(dispatch_text, current_inventory)
             if picked_up:
                 updated_inventory, didnt_fit = add_items_to_inventory(current_inventory, picked_up)
-                state["inventory"] = updated_inventory
+                _inventory_update = updated_inventory
                 names = [ITEMS[i]["display"] for i in picked_up if i in ITEMS]
                 if names:
                     turn_items.append(create_feed_item(type="inventory_pickup", content=f"\U0001F392 **Picked up:** {', '.join(names)}"))
@@ -3340,9 +3371,17 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
         except Exception as e_pick:
             log_error(f"Error detecting item pickups: {e_pick}")
 
+        # Atomic append (reload inside the lock) so concurrent realtime writers
+        # (/api/observe, scene-image, reground) can't clobber these feed items —
+        # the bug that made SCAN/realtime turns "freeze" (narrative + choices
+        # vanished from feed_log and the client polled an empty feed forever).
         with WORLD_STATE_LOCK:
-            state.setdefault("feed_log", []).extend(turn_items)
-            _save_state(state, SID)
+            st = _load_state(SID)
+            if _inventory_update is not None:
+                st["inventory"] = _inventory_update
+            _feed_extend(st, turn_items)
+            _save_state(st, SID)
+            state = st
 
         # ── DEATH: single mechanism — the Phase 1 player_alive verdict ──
         if not player_alive:
@@ -3363,10 +3402,12 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                 image_url=state.get("current_image_url"),
             )
             with WORLD_STATE_LOCK:
-                state.setdefault("feed_log", []).append(game_over_item)
-                state.setdefault("feed_log", []).append(game_over_choices)
-                state["turn_count"] = int(state.get("turn_count", 0)) + 1
-                _save_state(state, SID)
+                st = _load_state(SID)
+                _feed_append(st, game_over_item)
+                _feed_append(st, game_over_choices)
+                st["turn_count"] = int(st.get("turn_count", 0)) + 1
+                _save_state(st, SID)
+                state = st
             return
 
         # Remember the pre-turn image so the async vision reground below can tell
@@ -3402,12 +3443,14 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
         )
 
         with WORLD_STATE_LOCK:
-            state.setdefault("feed_log", []).append(prompt_item)
-            state["turn_count"] = int(state.get("turn_count", 0)) + 1
+            st = _load_state(SID)
+            _feed_append(st, prompt_item)
+            st["turn_count"] = int(st.get("turn_count", 0)) + 1
             MAX_FEED_LOG_ITEMS = 100  # keep feed_log manageable
-            if len(state.get("feed_log", [])) > MAX_FEED_LOG_ITEMS:
-                state["feed_log"] = state["feed_log"][-MAX_FEED_LOG_ITEMS:]
-            _save_state(state, SID)
+            if len(st.get("feed_log", [])) > MAX_FEED_LOG_ITEMS:
+                st["feed_log"] = st["feed_log"][-MAX_FEED_LOG_ITEMS:]
+            _save_state(st, SID)
+            state = st
 
         # ── Vision reground (non-blocking): once THIS turn's guide image has
         # rendered, regenerate the choices from what's ACTUALLY on screen and
@@ -3427,7 +3470,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             critical_error_item = create_feed_item(type="error_event", content=f"System critical error during turn processing: {e_critical}")
             with WORLD_STATE_LOCK:
                 current_state_for_err = state if ('state' in globals() and state) else _load_state(SID)
-                current_state_for_err.setdefault("feed_log", []).append(critical_error_item)
+                _feed_append(current_state_for_err, critical_error_item)
                 _save_state(current_state_for_err, SID)
         except Exception as e_final_log:
             log_error(f"Could not even log critical error to feed_log: {e_final_log}")
@@ -3524,7 +3567,7 @@ def _generate_and_append_scene_image(caption: str, dispatch: str, choice: str, f
             st['current_image_prompt'] = image_prompt
             st['current_render_prompt'] = render_prompt
             st['current_render_base'] = render_base
-            st.setdefault('feed_log', []).append(item)
+            _feed_append(st, item)
             _save_state(st, session_id)
             state = st
 
@@ -3800,10 +3843,16 @@ def api_choose():
             content=f"{player_choice_text}", # Display the choice text directly
             metadata={"raw_choice": player_choice_text, "context_id": context_item_id}
         )
+        # Atomic read-modify-write: reload the freshest state INSIDE the lock
+        # before appending, so a concurrent writer (the realtime /api/observe
+        # fast-path, scene-image thread, or a reground worker) can't have its
+        # save clobbered — and ours can't be clobbered by a stale snapshot.
         with WORLD_STATE_LOCK:
-            state.setdefault('feed_log', []).append(player_action_item)
-            state['last_choice'] = player_choice_text
-            _save_state(state)        
+            st = _load_state()
+            _feed_append(st, player_action_item)
+            st['last_choice'] = player_choice_text
+            _save_state(st)
+            state = st
         if DEBUG_MODE: print(f"[DEBUG] api_choose - Player action item ID {player_action_item['id']} logged. Starting background thread for _process_turn_background.", flush=True)
 
         # 2. Start background processing for the rest of the turn
@@ -4075,7 +4124,7 @@ def _spawn_observe_reground(fpath: str, web: str, session_id: str, prompt_id):
             with WORLD_STATE_LOCK:
                 st = _load_state(session_id)
                 st['choices'] = [{"text": t} for t in texts]
-                st.setdefault('feed_log', []).append(item)
+                _feed_append(st, item)
                 _save_state(st, session_id)
                 state = st
             print(f"[OBSERVE] re-grounded on video frame; {len(texts)} choices", flush=True)

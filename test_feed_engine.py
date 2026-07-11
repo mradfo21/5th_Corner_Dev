@@ -146,6 +146,68 @@ class TestFeedEngineContinuity(unittest.TestCase):
         self._advance_turn("Move forward carefully", last_id)
         self.assertGreaterEqual(self._status()["chaos"], 1)
 
+    def test_realtime_concurrent_write_not_clobbered_by_turn(self):
+        """Regression for the realtime SCAN/observe freeze.
+
+        A concurrent state write that lands DURING a turn — e.g. the realtime
+        /api/observe fast-path saving the live video frame as current_image_url,
+        or a scene_image feed item — must NOT be clobbered by the turn thread
+        appending its feed items from a state snapshot it loaded BEFORE taking
+        the lock. That lost-update race made realtime turns silently drop feed
+        items, so the browser polled an empty feed forever (freeze) and the
+        video never re-anchored (went black). SCAN made it reproducible because
+        it keeps the live video active, so /api/observe + /api/detect fire
+        during the turn."""
+        initial = self._reset()
+        last_id = initial[-1]["id"]
+
+        import items as items_mod
+        orig_detect = items_mod.detect_item_pickups
+        injected = {"done": False}
+
+        def racing_detect(dispatch, inventory):
+            # Runs inside _process_turn_background, in the exact window between
+            # its out-of-lock state load and its feed_log append. Simulate a
+            # realtime writer saving state concurrently (a scene_image feed item
+            # + current_image_url), exactly as /api/observe / the scene-image
+            # thread do in realtime mode.
+            if not injected["done"]:
+                injected["done"] = True
+                with engine.WORLD_STATE_LOCK:
+                    st = engine._load_state("default")
+                    st["current_image_url"] = "/images/RACE_MARKER.png"
+                    st.setdefault("feed_log", []).append(
+                        engine.create_feed_item(
+                            type="scene_image", content="",
+                            image_url="/images/RACE_MARKER.png",
+                        )
+                    )
+                    engine._save_state(st, "default")
+                    engine.state = st
+            return orig_detect(dispatch, inventory)
+
+        items_mod.detect_item_pickups = racing_detect
+        try:
+            self._advance_turn("Move forward carefully", last_id)
+        finally:
+            items_mod.detect_item_pickups = orig_detect
+
+        feed = self._feed(0)
+        # The concurrent realtime write survived the turn's feed appends...
+        self.assertTrue(
+            any(i.get("image_url") == "/images/RACE_MARKER.png" for i in feed),
+            "a concurrent realtime state write was clobbered by the turn thread",
+        )
+        # ...and the turn still resolved with a narrative + a fresh choice prompt
+        # (i.e. the client would NOT freeze on an empty feed).
+        types = [i.get("type") for i in feed]
+        self.assertIn("narrative_event", types)
+        self.assertIn("player_choice_prompt", types)
+        # ids remain unique + monotonic (no lost/duplicated ids from the race).
+        ids = [i["id"] for i in feed]
+        self.assertEqual(ids, sorted(ids))
+        self.assertEqual(len(ids), len(set(ids)))
+
 
 if __name__ == "__main__":
     unittest.main()
