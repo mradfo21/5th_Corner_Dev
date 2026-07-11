@@ -3213,15 +3213,16 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                 _save_state(state, SID)
             return
 
-        # ── Scene image FIRST, then choices DERIVED FROM IT (vision-grounded) ──
-        # We're already on a background thread (the HTTP response returned the
-        # player_action echo immediately), so generating the image here and then
-        # the choices doesn't block the client. Crucially, the choices are now
-        # grounded on the ACTUAL rendered image via vision — options reflect
-        # what's really on screen instead of going stale off the dispatch text.
-        # (write_history=False: the choice phase writes the image into the history
-        # entry it appends, so there's no img2img-continuity race.)
-        _scene = _generate_and_append_scene_image(
+        # Remember the pre-turn image so the async vision reground below can tell
+        # when THIS turn's new guide image has actually landed.
+        _prev_image_url = state.get("current_image_url")
+
+        # ── Stream the scene image asynchronously (FAST — never block choices on
+        # the slow render, or the turn/ceremony stalls on the last step waiting
+        # for the prompt). The choices are re-grounded on the rendered image via
+        # a NON-BLOCKING vision pass below, so they stop going stale without
+        # gating the whole turn on image + vision. ──
+        _spawn_scene_image_async(
             caption=vision_dispatch_text or dispatch_text,
             dispatch=dispatch_text,
             choice=choice,
@@ -3229,17 +3230,12 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             world_prompt=state.get("world_prompt", ""),
             hard_transition=bool(p1.get("hard_transition", False)),
             session_id=SID,
-            write_history=False,
         )
-        _scene_img = _scene.get("img_path") if _scene else None
-        _scene_img_prompt = _scene.get("image_prompt") if _scene else ""
 
-        # ── PHASE 2: choices, vision-grounded on the image we just rendered ──
-        # (If image generation is disabled/failed, _scene_img is None and this
-        # degrades gracefully to the prior text-grounded behavior.)
+        # ── PHASE 2: fast text-grounded choices so the turn resolves promptly. ──
         p2 = advance_turn_choices_deferred(
-            _scene_img, dispatch_text, vision_dispatch_text, choice,
-            _scene_img_prompt, p1.get("hard_transition", False), SID,
+            None, dispatch_text, vision_dispatch_text, choice,
+            "", p1.get("hard_transition", False), SID,
         )
         state = _load_state(SID)
 
@@ -3256,6 +3252,17 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             if len(state.get("feed_log", [])) > MAX_FEED_LOG_ITEMS:
                 state["feed_log"] = state["feed_log"][-MAX_FEED_LOG_ITEMS:]
             _save_state(state, SID)
+
+        # ── Vision reground (non-blocking): once THIS turn's guide image has
+        # rendered, regenerate the choices from what's ACTUALLY on screen and
+        # push them as a choices_revised item the client swaps in place — so the
+        # options reflect the real scene instead of the dispatch text. Bounded +
+        # guarded; if the image never lands it simply gives up. This is what
+        # makes choices image-derived WITHOUT stalling the turn on the render. ──
+        try:
+            _spawn_scene_choices_reground(prompt_item.get("id"), _prev_image_url, SID)
+        except Exception as _e_reground:
+            log_error(f"[REGROUND] spawn failed: {_e_reground}")
 
     except Exception as e_critical:
         log_error(f"Critical unhandled error in _process_turn_background thread: {e_critical}")
@@ -3762,6 +3769,36 @@ def api_observe():
         log_error(f"[OBSERVE] failed: {e}")
         _tb.print_exc()
         return jsonify({"error": str(e)}), 500
+
+
+def _spawn_scene_choices_reground(prompt_id, prev_image_url: str, session_id: str = 'default'):
+    """Wait (bounded) for THIS turn's guide image to render, then reground the
+    live choices on it via vision and push a choices_revised item. Runs entirely
+    off the turn's critical path so it can NEVER stall/hang the turn (the prompt
+    is already live); if the image never lands it just gives up. Reuses the
+    observe reground pipeline so there's one grounding path."""
+    if not WORLD_IMAGE_ENABLED or not VISION_ENABLED:
+        return
+
+    def _worker():
+        try:
+            img_dir = _get_image_dir(session_id)
+            for _ in range(80):  # ~20s: wait for the async render to land
+                st = _load_state(session_id)
+                cur = st.get('current_image_url')
+                if cur and cur != prev_image_url:
+                    fpath = os.path.join(str(img_dir), os.path.basename(cur))
+                    if os.path.exists(fpath):
+                        # Hand off to the shared reground pipeline (vision +
+                        # regenerate choices + push choices_revised).
+                        _spawn_observe_reground(fpath, cur, session_id, prompt_id)
+                        return
+                time.sleep(0.25)
+            print(f"[REGROUND] guide image never landed for {session_id}; skipping", flush=True)
+        except Exception as e:
+            log_error(f"[REGROUND] worker failed: {e}")
+
+    threading.Thread(target=_worker, daemon=True).start()
 
 
 def _spawn_observe_reground(fpath: str, web: str, session_id: str, prompt_id):
