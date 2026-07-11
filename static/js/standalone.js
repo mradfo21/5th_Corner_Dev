@@ -474,6 +474,22 @@
     el.sceneFlash.classList.add("flash");
   }
 
+  // Wipe BOTH still layers immediately (no crossfade) so the current scene image
+  // vanishes the instant it's called — used on reset so the dead run's image
+  // can't linger or bleed back through under a hidden/fading video.
+  function clearSceneLayers() {
+    [el.sceneA, el.sceneB].forEach((s) => {
+      if (!s) return;
+      const prev = s.style.transition;
+      s.style.transition = "none"; // kill the fade — this must be instant
+      s.classList.remove("scene-active");
+      s.style.backgroundImage = "";
+      void s.offsetWidth; // flush the change before restoring the transition
+      s.style.transition = prev || "";
+    });
+    state.activeScene = "A";
+  }
+
   // ------------------------------------------------------------------
   // Renderer facade — swap between the classic still-image renderer and the
   // Reactor realtime world-model renderer without the rest of the game caring.
@@ -1103,9 +1119,14 @@
     try {
       stopPolling(); // avoid a mid-reset poll racing the rebuilt feed
       exitGameOver();
-      // New run → reset the realtime world model so it doesn't carry the dead
-      // run's world into the fresh intro (the next scene prompt re-starts it).
-      if (Renderer.mode === "reactor" && Renderer.reactorAvailable()) {
+      // Wipe the current visuals IMMEDIATELY and permanently: blank both still
+      // layers and reset the realtime world model (which hides + suppresses the
+      // live video and drains its queue). This runs regardless of the active
+      // renderer so nothing from the dead run — image or video — can linger or
+      // come back after the restart.
+      clearSceneLayers();
+      hideGuideThumbnail();
+      if (Renderer.reactorAvailable()) {
         try { window.ReactorRenderer.reset(); } catch (_) {}
       }
       Renderer.lastScene = null;
