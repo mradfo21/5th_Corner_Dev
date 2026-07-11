@@ -1544,12 +1544,18 @@
       clearTimeout(state.observeTimer);
       Sound.start(); // new tape / game begins
       Ceremony.abort(); // cancel any mid-turn pipeline from the prior run
-      showVeil("Reawakening the tape...");
+      // Restart runs the SAME gamified generation pipeline as a normal turn: the
+      // progress bar takes over the play button's spot at the bottom and parks on
+      // "Guide Image Rendering" until the fresh run's first scene is on screen —
+      // instead of a bare spinner over a black screen.
+      Ceremony.begin();
       el.prose.innerHTML = "";
       el.choices.innerHTML = "";
       state.lastId = 0;
       state.renderedIds = new Set();
-      state.awaitingResolution = false;
+      // Let the fresh run's feed items (consequence → world updating → scene) drive
+      // and resolve the ceremony, exactly like a normal generation.
+      state.awaitingResolution = true;
       state.gameOver = false;
       state.currentPromptId = null;
       state.lastAdvancedPromptId = null;
@@ -1558,8 +1564,11 @@
       renderInventory([]);
       startTimecode();
       const items = await postJSON("/api/reset", {});
+      // Do NOT hide the veil here: the ceremony now owns the progress bar and
+      // fades itself once the first scene lands (player_choice_prompt →
+      // Ceremony.complete, then the guide-image step resolves on scene_image).
+      // The guide-image fallback timer guarantees it can never spin forever.
       renderItems(items);
-      hideVeil();
       refreshStatus();
     } catch (err) {
       console.error("[standalone] resetGame failed:", err);
