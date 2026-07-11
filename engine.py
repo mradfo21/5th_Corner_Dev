@@ -1782,41 +1782,66 @@ def build_image_prompt(
     return prompt
 
 # Stable "scene bible" anchor for the realtime world model (Reactor/LingBot World 2).
-# Per LingBot's prompt guide, every prompt must carry a consistent subject/style
-# and an explicit camera framing. We keep this constant across turns so the live
-# video maintains one look while the scene text evolves. Style-only (NO location)
-# so location comes from the per-turn scene description.
+#
+# LingBot World 2 is a first-image + [realtime text + action] world model, NOT a
+# normal text-to-video model. Its prompt guide
+# (https://docs.reactor.inc/model-api-reference/lingbot/prompt-guide) is explicit:
+#   • Open with the POV declaration ("a first-person video of…") so the model
+#     doesn't fall back to a third-person / game framing.
+#   • For first-person environment scenes with no controlled avatar, you can drop
+#     camera-framing language entirely — just POV + world + one atmosphere phrase.
+#   • Keep MOTION VERBS out of the base. "the camera drifts as if walking" is a
+#     camera-motion verb that fights the (idle) action signal and produces motion
+#     you can't stop.
+#   • If something unwanted shows up, describe its opposite explicitly.
+#
+# The previous anchor stacked aesthetic first ("First-person handheld camcorder
+# POV … camera drifting … as if held while walking"). Combined with a per-turn
+# "Motion: the view shifts as you walk forward" beat and NO explicit negative,
+# that reads to a game-trained world model as an FPS — so it kept hallucinating a
+# weapon (a machine-gun view-model) at the bottom of the frame. This rewrite
+# leads with a clean POV, keeps motion out of the base, states one atmosphere
+# phrase, and explicitly forbids the FPS furniture (weapon / hands / HUD).
+# Style-only (NO location) — location comes from the per-turn scene description.
 REALTIME_STYLE_ANCHOR = os.getenv(
     "REALTIME_STYLE_ANCHOR",
-    "First-person handheld camcorder POV, 1993 analog VHS home-video footage, "
-    "heavy film grain and chromatic aberration, slightly desaturated, low-light "
-    "dread and horror atmosphere. Medium-wide shot, the camera drifting slightly "
-    "as if held while walking",
+    "A first-person point-of-view video seen through a person's own eyes, "
+    "looking straight ahead. Grainy 1993 VHS home-camcorder footage, slightly "
+    "desaturated with soft analog haze and a tense, low-light horror mood. "
+    "No weapons, no gun, no hands or arms in view, no crosshair, HUD, or "
+    "video-game interface — only the raw environment.",
 )
 
 
 def realtime_action_beat(choice: str = "") -> str:
-    """The single 'one new element per prompt' motion clause for an action.
+    """An optional world EVENT overlay for a live nudge (SHAPE tool).
 
-    Kept in sync with the client (standalone.js) so an action can be injected
-    into the live video instantly — against the current scene — before the full
-    turn resolves.
+    Note: the per-turn scene prompt does NOT carry this beat anymore — the engine
+    regenerates the visual scene each turn, so the consequence of an action is
+    already baked into the new scene description. Adding a camera/player motion
+    clause on top only fought the (idle) action signal and triggered the FPS look.
+
+    This remains for the instant client-side nudge, framed as an additive world
+    event (per LingBot's layered-composition guide) rather than a "the view
+    shifts as you…" camera move. Kept in sync with the client (standalone.js).
     """
     c = (choice or "").strip().rstrip(".")
     if not c or c.lower() in ("intro", "initialize simulation"):
         return ""
-    return f"Motion: the view shifts as you {c[0].lower() + c[1:]}."
+    return f"An event unfolds in the scene: {c}."
 
 
 def build_realtime_base(visual_scene: str = "", narrative: str = "") -> str:
-    """The stable part of a realtime prompt: style/camera anchor + physical scene
-    description (no action beat). The client recombines this with the live action
-    for instant, seamless steering."""
+    """The stable part of a realtime prompt: style/POV anchor + physical scene
+    description (no action beat). Follows LingBot's base-prompt structure —
+    POV up front, world/object layers from the scene text, one atmosphere
+    phrase — with motion verbs kept out so live action signals win."""
     scene = (visual_scene or narrative or "").strip().replace("\n", " ")
     scene = _sanitize_for_image_generation(scene)
-    # Keep it focused; overly long prompts dilute the signal for the video model.
-    if len(scene) > 600:
-        scene = scene[:597].rstrip() + "..."
+    # Keep it focused; overly long prompts dilute the signal and LingBot silently
+    # truncates past ~500 tokens. Leave room for the anchor by capping the scene.
+    if len(scene) > 480:
+        scene = scene[:477].rstrip() + "..."
     parts = [REALTIME_STYLE_ANCHOR.rstrip(". ") + "."]
     if scene:
         parts.append(scene)
@@ -1830,14 +1855,19 @@ def build_realtime_prompt(visual_scene: str = "", narrative: str = "", choice: s
     with model-specific control text — spatial anchors, camera-distance math,
     anti-border/anti-person rules, img2img continuity clauses, world-state dumps).
     Feeding that to a video world model produces incoherent output. Instead we
-    follow LingBot's prompt guide: a consistent style/camera anchor + a physical
-    scene description (which already covers near/mid/far + lighting) + one action
-    beat. Everything is sanitized the same way as the image prompt so we don't
-    regress on content filtering.
+    follow LingBot's prompt guide: lead with a POV declaration + a physical scene
+    description (which already covers near/mid/far + lighting) as ONE consistent
+    static world. We deliberately do NOT append a per-turn motion beat — the
+    scene text already reflects the result of the action, and a "you walk
+    forward" clause on top only fought the idle action signal and read as an FPS
+    (the machine-gun hallucination). Everything is sanitized the same way as the
+    image prompt so we don't regress on content filtering.
+
+    ``choice`` is accepted for backwards compatibility but no longer alters the
+    per-turn prompt; live action nudges go through ``realtime_action_beat`` on
+    the client instead.
     """
-    base = build_realtime_base(visual_scene, narrative)
-    beat = realtime_action_beat(choice)
-    return base + (" " + beat if beat else "")
+    return build_realtime_base(visual_scene, narrative)
 
 
 def _build_vhs_prompt(base_prompt: str, use_img2img: bool = False) -> str:

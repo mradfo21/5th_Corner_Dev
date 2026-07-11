@@ -873,7 +873,10 @@
       // so the nudge blends with the current shot instead of resetting it.
       const base = this.lastBase || (this.lastScene && this.lastScene.prompt) || "";
       if (!base) return false;
-      const beat = "Motion: the view shifts as you " + a.charAt(0).toLowerCase() + a.slice(1) + ".";
+      // Frame the nudge as an additive WORLD EVENT (per LingBot's layered guide),
+      // NOT a "the view shifts as you…" camera move — that FPS phrasing made the
+      // world model draw a weapon/HUD. Mirrors realtime_action_beat() server-side.
+      const beat = "An event unfolds in the scene: " + a + ".";
       window.ReactorRenderer.applyScene({
         prompt: base + " " + beat,
         imageUrl: null,           // same scene — just re-steer, no image swap
