@@ -521,13 +521,67 @@ class TestRealtimeRenderer(unittest.TestCase):
                 page.wait_for_timeout(100)
             self.assertGreaterEqual(len(chooses), 1, f"SCAN interact must resolve a FULL turn (/api/choose). logs:\n{self._dump_logs()}")
             payload = json.loads(choose_bodies[0] or "{}")
-            self.assertIn("crate", (payload.get("choice") or "").lower(),
-                          f"the committed action must be anchored on the object; got {payload!r}")
+            choice = payload.get("choice") or ""
+            # Structured: prefixed with the selected object, then the typed action.
+            self.assertTrue(choice.startswith("INTERACT WITH: wooden crate"),
+                            f"action must be prefixed 'INTERACT WITH: <object>'; got {choice!r}")
+            self.assertIn("kick it open", choice.lower(), f"typed action must be appended; got {choice!r}")
             # A full turn is NOT a live re-steer: no set_prompt hot-swap fired.
             cmds = page.evaluate("window.__MOCK_CMDS__ || []")
             self.assertNotIn("set_prompt", cmds, "SCAN interact must commit a turn, not live-steer the stream")
         except Exception:
             print("\n=== REACTOR CONSOLE LOG (scan) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
+    def test_realtime_scan_empty_prompt_defaults_to_interact(self):
+        """Submitting a tag with NO typed text must still commit a full turn whose
+        action is exactly the structured prefix 'INTERACT WITH: <object>'."""
+        page = self._new_realtime_page()
+        scene_items = [
+            {"id": 1, "type": "narrative", "content": "Intro."},
+            {"id": 2, "type": "scene_image", "content": "", "image_url": TINY_PNG_DATA_URL,
+             "metadata": {"prompt": "scene one", "base": "First-person VHS. A loading dock.", "hard_transition": False}},
+            {"id": 3, "type": "player_choice_prompt", "content": "?", "choices": [{"text": "Go"}]},
+        ]
+        choose_bodies = []
+        page.route("**/api/reset", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(scene_items)))
+        page.route("**/api/feed*", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
+        page.route("**/api/detect", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps({
+            "objects": [{"label": "rusty valve", "cx": 0.4, "cy": 0.45, "w": 0.2, "h": 0.2}]})))
+
+        def choose_handler(route):
+            try:
+                choose_bodies.append(route.request.post_data)
+            except Exception:
+                choose_bodies.append(None)
+            route.fulfill(status=200, content_type="application/json", body="[]")
+        page.route("**/api/choose", choose_handler)
+        try:
+            page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
+            page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
+            page.evaluate("document.getElementById('scan-btn').click()")
+            page.wait_for_function("document.querySelectorAll('#scan-tags .scan-tag').length >= 1", timeout=10000)
+            # Open the tag prompt and submit with an EMPTY input.
+            page.evaluate("document.querySelector('.scan-tag .scan-tag-act').click()")
+            page.evaluate(
+                """() => {
+                    const tag = document.querySelector('.scan-tag.acting');
+                    tag.querySelector('.scan-tag-form input').value = '';
+                    tag.querySelector('.scan-tag-form').dispatchEvent(new Event('submit', {cancelable:true, bubbles:true}));
+                }"""
+            )
+            for _ in range(60):
+                if choose_bodies:
+                    break
+                page.wait_for_timeout(100)
+            self.assertGreaterEqual(len(choose_bodies), 1, f"empty tag submit must still commit a turn. logs:\n{self._dump_logs()}")
+            choice = (json.loads(choose_bodies[0] or "{}").get("choice") or "").strip()
+            self.assertEqual(choice, "INTERACT WITH: rusty valve",
+                             f"empty prompt must default to the bare prefix; got {choice!r}")
+        except Exception:
+            print("\n=== REACTOR CONSOLE LOG (scan-empty) ===\n" + self._dump_logs())
             raise
         finally:
             page.close()

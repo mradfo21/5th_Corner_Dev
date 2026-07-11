@@ -2044,7 +2044,7 @@
     const input = document.createElement("input");
     input.type = "text";
     input.maxLength = 120;
-    input.placeholder = obj.label + " — do what?";
+    input.placeholder = "interact with " + obj.label + "… (or how?)";
     const send = document.createElement("button");
     send.type = "submit";
     send.textContent = "GO";
@@ -2083,16 +2083,17 @@
 
   function submitTagPrompt(tag, text) {
     const obj = tag._obj || { label: "it" };
-    if (!text || state.gameOver) { closeTagPrompt(tag, true); return; }
+    if (state.gameOver) { closeTagPrompt(tag, true); return; }
     // A tag interaction commits a FULL TURN grounded on this object (consequence
     // + a freshly generated guide image), not a live re-steer — so poking a tag
     // makes meaningful change to the world, exactly like ACT / choices do.
     if (state.processing) { showRendererToast("The world is still resolving…"); return; }
-    // Compose a self-contained action so the turn is anchored on this object
-    // even if the player's phrasing referred to it as "it".
-    const act = text.replace(/\.+$/, "").trim();
-    const mentionsIt = act.toLowerCase().includes(obj.label.toLowerCase());
-    const action = mentionsIt ? act : act + " \u2014 the " + obj.label;
+    // Structured action: always prefixed with the selected object so the turn is
+    // anchored on it. Any typed action is appended; with NO text, the prefix
+    // alone ("INTERACT WITH: <object>") IS the action.
+    const act = (text || "").replace(/\.+$/, "").trim();
+    const prefix = "INTERACT WITH: " + obj.label;
+    const action = act ? prefix + " \u2014 " + act : prefix;
     Sound.submit();
     closeTagPrompt(tag, true);
     showRendererToast("Acting on the " + obj.label + "\u2026");
