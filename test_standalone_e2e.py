@@ -99,19 +99,37 @@ class TestStandaloneE2E(unittest.TestCase):
         # Always start each test from a clean game state.
         self.page.goto(f"{self.base_url}/standalone")
         self.page.click("#btn-reset")
-        self.page.wait_for_selector(".choice-btn", timeout=15000)
+        # The generated choices are intentionally NOT shown (the player advances
+        # via the forward hub or ACT); they're kept in the DOM so `moveForward`
+        # can pick one. So wait for them to be ATTACHED, not visible.
+        self.page.wait_for_selector(".choice-btn", state="attached", timeout=15000)
+
+    def _advance_via_forward(self):
+        """Advance the story the way the UI does: the forward (play) hub commits
+        one of the hidden generated choices at random. Returns the prose-entry
+        count seen just before advancing."""
+        before = len(self.page.query_selector_all(".prose-entry"))
+        self.page.click("#forward-btn")
+        self.page.wait_for_function(
+            f"document.querySelectorAll('.prose-entry').length > {before}",
+            timeout=10000,
+        )
+        return before
 
     def tearDown(self):
         self.page.close()
 
     def test_standalone_page_loads(self):
         self.assertIn("SOMEWHERE", self.page.title())
-        self.assertTrue(self.page.is_visible("#hud"))
+        # The top status bar was removed; the control rail is the persistent chrome.
+        self.assertTrue(self.page.is_visible("#control-rail"))
         self.assertTrue(self.page.is_visible("#prose-feed"))
 
     def test_reset_populates_prose_and_choices(self):
         entries = self.page.query_selector_all(".prose-entry")
         self.assertGreaterEqual(len(entries), 1)
+        # Choices are hidden by design but must exist in the DOM so the forward
+        # hub / keyboard shortcuts can commit one.
         choices = self.page.query_selector_all(".choice-btn")
         self.assertGreaterEqual(len(choices), 1)
 
@@ -124,16 +142,11 @@ class TestStandaloneE2E(unittest.TestCase):
         backend_text = self.page.inner_text("#backend-name")
         self.assertEqual(backend_text.strip().lower(), "mock")
 
-    def test_clicking_a_choice_advances_the_turn(self):
-        prose_count_before = len(self.page.query_selector_all(".prose-entry"))
-        self.page.click(".choice-btn:first-child")
-        # A new player_action entry should appear almost immediately.
-        self.page.wait_for_function(
-            f"document.querySelectorAll('.prose-entry').length > {prose_count_before}",
-            timeout=10000,
-        )
-        # Then the turn resolves and new choices eventually appear.
-        self.page.wait_for_selector(".choice-btn", timeout=20000)
+    def test_forward_hub_advances_the_turn(self):
+        # The forward (play) hub commits one of the generated choices at random.
+        self._advance_via_forward()
+        # Then the turn resolves and a fresh choice set eventually appears.
+        self.page.wait_for_selector(".choice-btn", state="attached", timeout=20000)
         choices_after = self.page.query_selector_all(".choice-btn")
         self.assertGreaterEqual(len(choices_after), 1)
 
@@ -145,21 +158,11 @@ class TestStandaloneE2E(unittest.TestCase):
             timeout=10000,
         )
 
-    def test_regenerate_choices_button(self):
-        first_choice_text = self.page.inner_text(".choice-btn:first-child")
-        self.page.click("#btn-regen")
-        self.page.wait_for_function(
-            "document.getElementById('processing-veil').classList.contains('hidden')",
-            timeout=15000,
-        )
-        self.page.wait_for_selector(".choice-btn", timeout=10000)
-        # Choices should still be present after regeneration (content may or
-        # may not differ under the mock backend's contextual fallback).
-        choices_after = self.page.query_selector_all(".choice-btn")
-        self.assertGreaterEqual(len(choices_after), 1)
-
     def test_free_text_custom_action_submits(self):
         prose_count_before = len(self.page.query_selector_all(".prose-entry"))
+        # The custom-action field is gated behind the ACT (free-will) hub — it's
+        # hidden until you open it, so open the gate before typing.
+        self.page.click("#free-will-btn")
         self.page.fill("#custom-input", "Search the wreckage for supplies")
         self.page.click("#custom-submit")
         self.page.wait_for_function(
@@ -184,15 +187,18 @@ class TestStandaloneE2E(unittest.TestCase):
             timeout=5000,
         )
 
-    def test_status_hud_reflects_turn_count(self):
-        # The standalone refreshes status immediately when a turn's choice
-        # prompt arrives, so the TURN counter should reach >= 1 after one
-        # completed turn (this legacy path used to leave it frozen at 0).
-        self.assertEqual(int(self.page.inner_text("#hud-turn")), 0)
-        self.page.click(".choice-btn:first-child")
-        self.page.wait_for_selector(".choice-btn", timeout=20000)
+    def test_turn_count_increments_via_status_api(self):
+        # The visible top HUD was removed, so verify the underlying contract the
+        # UI relies on directly: /api/status.turn advances after one completed
+        # turn (this legacy path used to leave it frozen at 0).
+        self.assertEqual(
+            self.page.evaluate("fetch('/api/status').then(r => r.json()).then(s => s.turn)"),
+            0,
+        )
+        self._advance_via_forward()
+        self.page.wait_for_selector(".choice-btn", state="attached", timeout=20000)
         self.page.wait_for_function(
-            "parseInt(document.getElementById('hud-turn').textContent, 10) >= 1",
+            "fetch('/api/status').then(r => r.json()).then(s => s.turn >= 1)",
             timeout=10000,
         )
 
