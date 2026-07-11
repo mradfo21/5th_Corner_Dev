@@ -456,10 +456,19 @@ class TestRealtimeRenderer(unittest.TestCase):
             {"id": 3, "type": "player_choice_prompt", "content": "?", "choices": [{"text": "Go"}]},
         ]
         chooses = []
+        choose_bodies = []
         detects = []
         page.route("**/api/reset", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(scene_items)))
         page.route("**/api/feed*", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
-        page.route("**/api/choose", lambda r: (chooses.append(r.request.url), r.fulfill(status=200, content_type="application/json", body="[]")))
+
+        def choose_handler(route):
+            try:
+                choose_bodies.append(route.request.post_data)
+            except Exception:
+                choose_bodies.append(None)
+            chooses.append(route.request.url)
+            route.fulfill(status=200, content_type="application/json", body="[]")
+        page.route("**/api/choose", choose_handler)
         # Mock object recognition: two things the player can poke.
         def detect_handler(route):
             detects.append(route.request.url)
@@ -487,10 +496,15 @@ class TestRealtimeRenderer(unittest.TestCase):
             self.assertIn("steel door", labels)
             # Every tag carries its little interact button.
             self.assertTrue(page.evaluate("!!document.querySelector('.scan-tag .scan-tag-act')"))
-            # Poke the first tag -> its inline prompt opens.
-            page.evaluate("document.querySelector('.scan-tag .scan-tag-act').click()")
+            # Poke the first (wooden crate) tag -> its inline prompt opens.
+            page.evaluate("""() => {
+                const tag = Array.from(document.querySelectorAll('.scan-tag'))
+                    .find(t => t.querySelector('.scan-tag-label').textContent === 'wooden crate');
+                tag.querySelector('.scan-tag-act').click();
+            }""")
             self.assertTrue(page.evaluate("!!document.querySelector('.scan-tag.acting')"))
-            # Type an interaction and submit -> a LIVE steer (set_prompt), no turn.
+            # Type an interaction and submit -> a FULL TURN (/api/choose) that
+            # regenerates the scene, anchored on the object — NOT a live steer.
             page.evaluate("window.__MOCK_CMDS__ = []")
             page.evaluate(
                 """() => {
@@ -500,11 +514,18 @@ class TestRealtimeRenderer(unittest.TestCase):
                     tag.querySelector('.scan-tag-form').dispatchEvent(new Event('submit', {cancelable:true, bubbles:true}));
                 }"""
             )
-            page.wait_for_function("(window.__MOCK_CMDS__||[]).includes('set_prompt')", timeout=8000)
+            # Wait (Python-side) for the /api/choose call the full turn makes.
+            for _ in range(60):
+                if chooses:
+                    break
+                page.wait_for_timeout(100)
+            self.assertGreaterEqual(len(chooses), 1, f"SCAN interact must resolve a FULL turn (/api/choose). logs:\n{self._dump_logs()}")
+            payload = json.loads(choose_bodies[0] or "{}")
+            self.assertIn("crate", (payload.get("choice") or "").lower(),
+                          f"the committed action must be anchored on the object; got {payload!r}")
+            # A full turn is NOT a live re-steer: no set_prompt hot-swap fired.
             cmds = page.evaluate("window.__MOCK_CMDS__ || []")
-            self.assertIn("set_prompt", cmds, f"SCAN tag didn't steer the live stream. logs:\n{self._dump_logs()}")
-            self.assertNotIn("reset", cmds, "SCAN interact must NOT re-anchor (no reset / scene change)")
-            self.assertEqual(len(chooses), 0, "SCAN interact must NOT resolve a turn (no /api/choose)")
+            self.assertNotIn("set_prompt", cmds, "SCAN interact must commit a turn, not live-steer the stream")
         except Exception:
             print("\n=== REACTOR CONSOLE LOG (scan) ===\n" + self._dump_logs())
             raise
