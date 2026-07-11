@@ -118,6 +118,7 @@
     observedPromptId: null,     // guard: observe at most once per decision point
     turnResolved: false,        // the turn's pipeline finished (choices are live)
     turnImageLoaded: false,     // this turn's new frame has arrived on screen
+    imagesEnabled: true,        // server has image gen on (from /api/status) — else skip the guide-image wait
     finishTimer: null,          // fallback: fade the progress bar back to play
   };
 
@@ -274,14 +275,22 @@
       { key: "world_update",  label: "World\nUpdating",        glyph: "\u27F3", sound: "cereWorldUpdate" },   // ⟳
       { key: "world_respond", label: "World\nResponding",      glyph: "\u25C8", sound: "cereWorldRespond" },  // ◈
       { key: "actions",       label: "Actions\nGenerating",    glyph: "\u22D4", sound: "cereActions" },       // ⋔
+      // The guide image is the slowest stage and lands AFTER choices, so it gets
+      // its own step that stays "rendering" (spinning) until the still actually
+      // arrives — otherwise the app looks frozen while it generates.
+      { key: "guide_image",   label: "Guide Image\nRendering", glyph: "\u25A6", sound: "cereWorldUpdate" },   // ▦
     ];
     const IDX = {};
     STEPS.forEach((s, i) => { IDX[s.key] = i; });
+    const IMG_STEP = STEPS.length - 1;      // the guide-image step (last)
     const DWELL_MS = 460;      // minimum time each step is shown (so it registers)
     // After the turn resolves we keep the (green) progress bar in the play
     // button's spot until the new frame actually loads, then fade back to play.
     const FADE_AFTER_IMAGE_MS = 520;   // brief hold once the image is on screen
-    const IMAGE_WAIT_FALLBACK_MS = 6000; // never strand the bar (no_images / gen fail)
+    // The guide-image step spins until the still lands. Image gen can be slow —
+    // that's the whole point of showing it — so give it a generous window before
+    // we resolve anyway (so a failed/absent image can't spin forever).
+    const GUIDE_IMAGE_FALLBACK_MS = 30000;
 
     let built = false;
     let active = false;
@@ -290,7 +299,8 @@
     let dwellTimer = null;
     let doneTimer = null;
     let noteTimer = null;
-    let completing = false; // animating through the final steps to the resolve flourish
+    let completing = false; // animating through the logic steps toward the guide-image wait
+    let awaitingImage = false; // parked on the guide-image step, waiting for the still
 
     function build() {
       if (built || !el.ceremonySteps) return;
@@ -328,30 +338,45 @@
 
     function pump() {
       if (dwellTimer) return;                 // still dwelling on the current step
-      if (cur >= target) {                    // caught up
-        if (completing) finishFlourish();     // reached the last step -> resolve
+      if (cur >= target) {                    // caught up on the logic steps
+        if (completing) enterGuideImageWait(); // …now park on the guide-image step
         return;
       }
       enter(cur + 1);
       dwellTimer = setTimeout(() => { dwellTimer = null; pump(); }, DWELL_MS);
     }
 
-    // The resolve flourish, run once the tracker has ANIMATED through to the
-    // last step — so World Responding / Actions Generating actually light up in
-    // sequence instead of being snapped straight to done on turn resolution.
-    function finishFlourish() {
+    // Once the logic steps (…Actions Generating) have animated through, PARK on
+    // the guide-image step as an active spinner — so the wait for the (slow)
+    // still reads as live progress, not a frozen app. Resolves when the image
+    // arrives (imageLoaded) or the fallback fires.
+    function enterGuideImageWait() {
       completing = false;
+      awaitingImage = true;
+      enter(IMG_STEP); // guide-image dot goes active/pulsing
+      api.note("\u25A6 Rendering the guide image\u2026", { tick: false });
+      // If the still is already here (or there's no image to wait for), resolve now.
+      if (state.turnImageLoaded || state.imagesEnabled === false) resolveGuideImage();
+    }
+
+    // The guide image landed (or the fallback fired): mark everything done, flash
+    // green, then fade the bar back to the play button.
+    function resolveGuideImage() {
+      if (!awaitingImage && cur >= IMG_STEP && el.ceremony && el.ceremony.classList.contains("resolved")) return;
+      awaitingImage = false;
+      completing = false;
+      clearTimeout(dwellTimer); dwellTimer = null;
       if (el.ceremonySteps) {
         Array.from(el.ceremonySteps.children).forEach((n) => { n.classList.remove("active", "beat"); n.classList.add("done"); });
       }
+      cur = STEPS.length - 1;
       if (el.ceremony) el.ceremony.classList.add("resolved");
-      api.note("\u2713 World updated", { tick: false });
+      api.note("\u2713 Guide image ready", { tick: false });
       Sound.cereDone();
       active = false;
       clearTimeout(doneTimer);
       clearTimeout(state.finishTimer);
-      state.finishTimer = setTimeout(() => api.finish(), IMAGE_WAIT_FALLBACK_MS);
-      api._tryFinish();
+      doneTimer = setTimeout(hideVeil, FADE_AFTER_IMAGE_MS);
     }
 
     const api = {
@@ -362,6 +387,7 @@
         clearTimeout(state.finishTimer);
         active = true;
         completing = false;
+        awaitingImage = false;
         cur = -1; target = -1;
         state.processing = true;
         state.turnResolved = false;
@@ -409,20 +435,20 @@
       // flash green, sound the affirmation, then fade. Releases input gating.
       complete() {
         if (!active) { hideVeil(); return; }
-        // ANIMATE through any remaining steps (World Responding, Actions
-        // Generating) rather than snapping them to done — the back half of the
-        // pipeline actually lights up in sequence. The green resolve flourish
-        // (finishFlourish) runs once we reach the final step. Choices are
-        // already live, so release input right away even while it animates.
-        target = STEPS.length - 1;
+        // ANIMATE through the logic steps (World Responding, Actions Generating)
+        // in sequence, THEN park on the guide-image step as a live spinner until
+        // the still actually renders (enterGuideImageWait / resolveGuideImage) —
+        // so the final image-gen wait shows progress instead of a frozen app.
+        // Choices are already live, so release input right away.
+        target = IMG_STEP - 1; // animate up to "Actions Generating"
         completing = true;
         state.processing = false; // choices are live — let the player act
         state.turnResolved = true;
-        // Hold the resolved bar until this turn's frame loads, then fade it back
-        // to the play button. Fallback so a missing image never strands the bar.
+        // Never spin forever: if the guide image never lands, resolve anyway
+        // after a generous window (image gen is legitimately slow).
         clearTimeout(doneTimer);
         clearTimeout(state.finishTimer);
-        state.finishTimer = setTimeout(() => this.finish(), IMAGE_WAIT_FALLBACK_MS);
+        state.finishTimer = setTimeout(() => resolveGuideImage(), GUIDE_IMAGE_FALLBACK_MS);
         pump();
       },
 
@@ -430,7 +456,11 @@
       // resolved, fade the progress bar back to the play button.
       imageLoaded() {
         state.turnImageLoaded = true;
-        this._tryFinish();
+        // If we're parked on the guide-image step waiting for the still, this is
+        // the signal to complete + fade. (If it arrives before we've parked, the
+        // flag above lets enterGuideImageWait resolve immediately.)
+        if (awaitingImage) resolveGuideImage();
+        else this._tryFinish();
       },
 
       _tryFinish() {
@@ -450,6 +480,7 @@
       abort() {
         active = false;
         completing = false;
+        awaitingImage = false;
         clearTimeout(dwellTimer); dwellTimer = null;
         clearTimeout(doneTimer); doneTimer = null;
       },
@@ -1579,6 +1610,7 @@
       const phaseText = s.alive === false ? "deceased" : (s.phase ?? "normal");
       changed = setHud(el.hudPhase, "phase", phaseText) || changed;
       if (el.backendName) el.backendName.textContent = s.backend ?? "unknown";
+      if (typeof s.image_enabled === "boolean") state.imagesEnabled = s.image_enabled;
       renderInventory(s.inventory);
       if (el.hudTimeWrap && el.hudTime) {
         if (s.time_of_day) {
