@@ -219,6 +219,8 @@
       submit() { tone(700, 0.05, "square", 0.05); tone(1050, 0.11, "square", 0.045, 0.05); }, // custom action sent
       open() { tone([420, 760], 0.14, "triangle", 0.05); },    // free-will input reveal
       toggle() { tone(300, 0.04, "square", 0.04); },           // UI toggle click
+      scan() { tone([320, 1180], 0.34, "sine", 0.028); tone(1180, 0.12, "sine", 0.02, 0.24); }, // SCAN armed — radar sweep
+      ping() { tone([1300, 1850], 0.10, "sine", 0.03); tone(2500, 0.07, "sine", 0.018, 0.05); }, // tags land — starfield shimmer
       // ---- Ceremony: one distinct cue per pipeline step, so the player HEARS
       // the world working through each stage. ----
       cereAction() { tone(300, 0.05, "square", 0.06); tone([300, 620], 0.14, "square", 0.05, 0.05); },   // action selected — decisive commit
@@ -673,6 +675,7 @@
             console.warn("[standalone] realtime renderer unavailable — falling back to stills");
             Renderer.mode = "image"; // reflect reality; keep stored pref intact
             showRendererToast("Realtime unavailable — showing stills");
+            closeScan(); // scan is realtime-only — tear it down on fallback
             hideGuideThumbnail();
             // Tear down the realtime layers (video + freeze) and paint the last
             // known still so the fallback isn't a blank/black screen.
@@ -1567,15 +1570,28 @@
 
   // ------------------------------------------------------------------
   // SCAN tool — realtime object recognition. Arming it turns the live scene
-  // into a scanning surface: dragging the cursor sweeps a reticle across the
-  // world model's video, and the objects it recognizes twinkle in as floating
-  // "starfield" tags anchored where they actually sit. Each tag carries a
-  // little button that opens an inline prompt to play with THAT exact thing —
-  // an instant live steer, no full turn. Realtime mode only.
+  // into a scanning surface: moving/dragging the cursor sweeps a beam across
+  // the world model's video, and the objects it recognizes twinkle in as
+  // floating "starfield" tags anchored where they actually sit. Each tag
+  // carries a little button that opens an inline prompt to play with THAT exact
+  // thing — an instant live steer, no full turn. Realtime mode only.
+  //
+  // Engineering notes:
+  //  • Detection is an LLM round-trip, so calls are throttled (a floor between
+  //    hits) and the drag provides the *feel* of continuous scanning.
+  //  • Tags are RECONCILED by label between scans (kept + repositioned, added
+  //    with a twinkle, removed with a fade) so a refresh never churns the whole
+  //    field or yanks a tag out from under the cursor.
+  //  • A scan NEVER runs while a tag's interact prompt is open, so typing is
+  //    never interrupted or wiped.
+  //  • Works with mouse (move/drag) and touch (tap/drag); the overlay is
+  //    non-modal so the game's choices/controls stay live underneath.
   // ------------------------------------------------------------------
   const SCAN_MIN_INTERVAL_MS = 2400;  // floor between /api/detect calls (LLM latency)
-  const SCAN_IDLE_INTERVAL_MS = 6000; // auto re-scan cadence while armed
-  const SCAN_MOVE_SETTLE_MS = 650;    // re-scan this long after the cursor settles
+  const SCAN_IDLE_INTERVAL_MS = 6500; // auto re-scan cadence while armed + live
+  const SCAN_WAIT_INTERVAL_MS = 1200; // faster retry cadence while waiting for the feed
+  const SCAN_MOVE_SETTLE_MS = 600;    // re-scan this long after the cursor settles
+  const SCAN_NEAR_RADIUS = 150;       // px: how close the cursor "finds" a tag
 
   function scanAvailable() {
     return Renderer.mode === "reactor" && Renderer.reactorAvailable() &&
@@ -1583,10 +1599,14 @@
   }
 
   function openScan() {
-    if (state.gameOver || state.freeWillOpen || state.touchMode) return;
-    if (Renderer.mode !== "reactor" || !Renderer.reactorAvailable()) return;
     if (state.scanOn) { closeScan(); return; } // toggle off if already armed
+    if (state.gameOver || state.freeWillOpen || state.touchMode || tapeIsOpen()) return;
+    if (Renderer.mode !== "reactor" || !Renderer.reactorAvailable()) {
+      showRendererToast("Scan needs realtime video");
+      return;
+    }
     state.scanOn = true;
+    state.scanTagActing = null;
     if (el.scanBtn) el.scanBtn.classList.add("scanning");
     document.body.classList.add("scan-arming");
     if (el.scanLayer) el.scanLayer.classList.remove("hidden");
@@ -1594,23 +1614,36 @@
     state.scanObjects = [];
     // Park the sweep glow at center until the cursor moves.
     moveScanCursor(window.innerWidth / 2, window.innerHeight / 2);
-    setScanHint(scanAvailable() ? "scanning…" : "waiting for the live feed…");
-    Sound.open();
+    setScanHint(scanAvailable() ? "scanning the scene…" : "waiting for the live feed…");
+    Sound.scan();
     runScan(true);
-    clearInterval(state.scanIdleTimer);
-    state.scanIdleTimer = setInterval(() => { if (state.scanOn) runScan(false); }, SCAN_IDLE_INTERVAL_MS);
+    scheduleScanTick();
   }
 
   function closeScan() {
     if (!state.scanOn) return;
     state.scanOn = false;
     state.scanTagActing = null;
-    clearInterval(state.scanIdleTimer); state.scanIdleTimer = null;
+    clearTimeout(state.scanIdleTimer); state.scanIdleTimer = null;
     clearTimeout(state.scanMoveTimer); state.scanMoveTimer = null;
     if (el.scanBtn) el.scanBtn.classList.remove("scanning");
     document.body.classList.remove("scan-arming", "scan-busy");
     if (el.scanLayer) el.scanLayer.classList.add("hidden");
     if (el.scanTags) el.scanTags.innerHTML = "";
+    state.scanObjects = [];
+  }
+
+  // Self-scheduling re-scan: brisk while waiting for the feed, relaxed once
+  // live, and it never fires while a tag prompt is open (guarded in runScan).
+  function scheduleScanTick() {
+    clearTimeout(state.scanIdleTimer);
+    if (!state.scanOn) return;
+    const delay = scanAvailable() ? SCAN_IDLE_INTERVAL_MS : SCAN_WAIT_INTERVAL_MS;
+    state.scanIdleTimer = setTimeout(() => {
+      if (!state.scanOn) return;
+      runScan(false);
+      scheduleScanTick();
+    }, delay);
   }
 
   function setScanHint(text) {
@@ -1641,10 +1674,24 @@
     if (!state.scanOn) return;
     moveScanCursor(e.clientX, e.clientY);
     highlightNearestTag(e.clientX, e.clientY);
-    // Dragging across the scene keeps the perception fresh: re-scan once the
-    // cursor settles, but never faster than the throttle floor.
+    // Moving across the scene keeps perception fresh: re-scan once the cursor
+    // settles, but never faster than the throttle floor (handled in runScan).
     clearTimeout(state.scanMoveTimer);
     state.scanMoveTimer = setTimeout(() => { if (state.scanOn) runScan(false); }, SCAN_MOVE_SETTLE_MS);
+  }
+
+  // Touch/tap on the scene (no hover on mobile): jump the beam there and scan.
+  // Ignore taps that land on interactive UI so tapping a choice/control/tag
+  // doesn't fire a wasted scan.
+  function onScanTap(e) {
+    if (!state.scanOn) return;
+    const t = e.target;
+    if (t && t.closest && t.closest(
+      "#action-wheel, #control-rail, #scan-tags, #scan-btn, #tape-overlay, " +
+      "#death-overlay, #rt-log, button, a, input, form"
+    )) return;
+    moveScanCursor(e.clientX, e.clientY);
+    runScan(false);
   }
 
   function highlightNearestTag(x, y) {
@@ -1653,20 +1700,21 @@
     if (!tags.length) return;
     let best = null, bestD = Infinity;
     for (const t of tags) {
+      if (t.classList.contains("leaving")) continue;
       const tx = parseFloat(t.dataset.sx || "0"), ty = parseFloat(t.dataset.sy || "0");
       const d = (tx - x) * (tx - x) + (ty - y) * (ty - y);
       if (d < bestD) { bestD = d; best = t; }
     }
-    // Only flag as "near" within a reasonable radius so far-away tags stay calm.
-    const near = best && bestD < (130 * 130);
+    const near = best && bestD < (SCAN_NEAR_RADIUS * SCAN_NEAR_RADIUS);
     for (const t of tags) t.classList.toggle("near", near && t === best);
   }
 
   function runScan(force) {
     if (!state.scanOn) return;
     if (state.scanBusy) return;
+    if (state.scanTagActing) return; // never disturb an open interact prompt
     if (!scanAvailable()) {
-      setScanHint("waiting for the live feed…");
+      if (!el.scanTags || !el.scanTags.children.length) setScanHint("waiting for the live feed…");
       return;
     }
     const now = Date.now();
@@ -1674,22 +1722,28 @@
     const frame = window.ReactorRenderer.captureFrame
       ? window.ReactorRenderer.captureFrame(640)
       : null;
-    if (!frame) { setScanHint("waiting for the live feed…"); return; }
+    if (!frame) {
+      if (!el.scanTags || !el.scanTags.children.length) setScanHint("waiting for the live feed…");
+      return;
+    }
     state.scanBusy = true;
     state.scanLastTs = now;
     document.body.classList.add("scan-busy");
-    setScanHint("scanning…");
+    if (!el.scanTags || !el.scanTags.children.length) setScanHint("scanning the scene…");
     postJSON("/api/detect", { frame })
       .then((res) => {
         if (!state.scanOn) return;
         const objs = (res && Array.isArray(res.objects)) ? res.objects : [];
-        state.scanObjects = objs;
-        renderScanTags(objs);
-        setScanHint(objs.length ? "" : "nothing distinct in view — drag to keep scanning");
+        const hadTags = el.scanTags && el.scanTags.children.length > 0;
+        reconcileScanTags(objs);
+        if (objs.length && !hadTags) Sound.ping(); // first tags of a fresh field
+        setScanHint(objs.length ? "" : "nothing distinct in view — move to keep scanning");
       })
       .catch((err) => {
         console.warn("[standalone] scan failed:", err);
-        if (state.scanOn) setScanHint("scan hiccup — drag to retry");
+        if (state.scanOn && (!el.scanTags || !el.scanTags.children.length)) {
+          setScanHint("scan hiccup — move to retry");
+        }
       })
       .finally(() => {
         state.scanBusy = false;
@@ -1697,25 +1751,58 @@
       });
   }
 
-  function renderScanTags(objects) {
+  // Reconcile the on-screen tags against a fresh detection: keep + reposition
+  // ones that persist, twinkle in new ones, fade out the gone — so a refresh
+  // reads as the field breathing, not a hard redraw.
+  function reconcileScanTags(objects) {
     if (!el.scanTags) return;
-    el.scanTags.innerHTML = "";
-    state.scanTagActing = null;
-    objects.forEach((obj, i) => {
-      const tag = buildScanTag(obj);
-      // Stagger the twinkle-in so they light up like a starfield.
-      tag.style.setProperty("--twk", (i * 70) + "ms");
-      el.scanTags.appendChild(tag);
-      positionScanTag(tag, obj);
+    const existing = new Map();
+    Array.from(el.scanTags.children).forEach((t) => {
+      if (t._label) existing.set(t._label, t);
     });
+    const nextLabels = new Set();
+    objects.forEach((obj, i) => {
+      nextLabels.add(obj.label);
+      let tag = existing.get(obj.label);
+      if (tag) {
+        tag._obj = obj;
+        tag.classList.remove("leaving");
+        positionScanTag(tag); // CSS transitions the move
+      } else {
+        tag = buildScanTag(obj);
+        tag.style.setProperty("--twk", (i * 70) + "ms");
+        el.scanTags.appendChild(tag);
+        positionScanTag(tag);
+        // Enable position transitions only AFTER first placement so a new tag
+        // twinkles in at its spot instead of sliding in from the corner; on
+        // later scans the persistent tag then glides to its new position.
+        requestAnimationFrame(() => tag.classList.add("scan-live"));
+      }
+    });
+    // Retire tags no longer detected (but keep one being actively poked).
+    existing.forEach((tag, label) => {
+      if (nextLabels.has(label)) return;
+      if (tag === state.scanTagActing) return;
+      tag.classList.add("leaving");
+      setTimeout(() => {
+        if (tag.parentNode && tag.classList.contains("leaving")) tag.remove();
+      }, 420);
+    });
+    state.scanObjects = objects.slice();
   }
 
-  function positionScanTag(tag, obj) {
+  function positionScanTag(tag) {
+    const obj = tag._obj;
+    if (!obj) return;
     const p = mapNormToScreen(obj.cx, obj.cy);
-    // Keep tags on screen and OUT of the bottom control zone (action wheel /
+    // Keep tags on screen and OUT of the bottom control zone (action wheel +
     // hint) so labels near an edge stay readable and never sit on the buttons.
-    const x = Math.min(Math.max(p.x, 60), window.innerWidth - 60);
-    const y = Math.min(Math.max(p.y, 44), window.innerHeight - 150);
+    // The bottom margin tracks the actual wheel height so it's right on phones
+    // (taller wheel) and desktop alike.
+    const wheelH = (el.actionWheel && el.actionWheel.offsetHeight) || 110;
+    const bottomSafe = Math.max(150, wheelH + 56);
+    const x = Math.min(Math.max(p.x, 62), window.innerWidth - 62);
+    const y = Math.min(Math.max(p.y, 48), Math.max(80, window.innerHeight - bottomSafe));
     tag.style.left = x + "px";
     tag.style.top = y + "px";
     tag.dataset.sx = x;
@@ -1725,6 +1812,13 @@
   function buildScanTag(obj) {
     const tag = document.createElement("div");
     tag.className = "scan-tag";
+    tag._obj = obj;
+    tag._label = obj.label;
+    // Once the twinkle-in finishes, hand off to a static "shown" state so the
+    // finished animation's fill can't override hover/near/acting transforms.
+    tag.addEventListener("animationend", (e) => {
+      if (e.target === tag && e.animationName === "scan-twinkle-in") tag.classList.add("shown");
+    });
 
     const star = document.createElement("span");
     star.className = "scan-star";
@@ -1738,12 +1832,13 @@
     const act = document.createElement("button");
     act.type = "button";
     act.className = "scan-tag-act";
-    act.textContent = "+";
+    act.setAttribute("aria-label", "Play with the " + obj.label);
     act.title = "Play with the " + obj.label;
+    act.textContent = "+";
     act.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopPropagation();
-      openTagPrompt(tag, obj);
+      openTagPrompt(tag);
     });
 
     // Inline prompt (hidden until the + button is pressed).
@@ -1761,7 +1856,7 @@
     form.appendChild(send);
     form.addEventListener("submit", (e) => {
       e.preventDefault();
-      submitTagPrompt(tag, obj, input.value.trim());
+      submitTagPrompt(tag, input.value.trim());
     });
 
     tag.appendChild(star);
@@ -1771,26 +1866,33 @@
     return tag;
   }
 
-  function openTagPrompt(tag, obj) {
-    // Only one open at a time — collapse any other.
+  function openTagPrompt(tag) {
     if (state.scanTagActing && state.scanTagActing !== tag) {
       state.scanTagActing.classList.remove("acting");
     }
     state.scanTagActing = tag;
     tag.classList.add("acting");
+    tag.classList.remove("near");
     Sound.open();
     const input = tag.querySelector(".scan-tag-form input");
-    setTimeout(() => { if (input) input.focus(); }, 60);
+    setTimeout(() => { if (input) { try { input.focus({ preventScroll: true }); } catch (_) { input.focus(); } } }, 70);
   }
 
-  function submitTagPrompt(tag, obj, text) {
-    if (!text) { tag.classList.remove("acting"); state.scanTagActing = null; return; }
+  function closeTagPrompt(tag, clear) {
+    if (!tag) return;
+    tag.classList.remove("acting");
+    if (clear) { const inp = tag.querySelector(".scan-tag-form input"); if (inp) inp.value = ""; }
+    if (state.scanTagActing === tag) state.scanTagActing = null;
+  }
+
+  function submitTagPrompt(tag, text) {
+    const obj = tag._obj || { label: "it" };
+    if (!text || state.gameOver) { closeTagPrompt(tag, true); return; }
     // Anchor the live nudge to this exact object so the change lands on it.
     const where = { label: obj.label, phrase: "at the " + obj.label };
     const ok = Renderer.steerRealtime(text, where);
     Sound.submit();
-    tag.classList.remove("acting");
-    state.scanTagActing = null;
+    closeTagPrompt(tag, true);
     tag.classList.add("poked");
     setTimeout(() => tag.classList.remove("poked"), 900);
     showRendererToast(ok ? "Nudged the " + obj.label : "Realtime not ready yet");
@@ -1803,24 +1905,15 @@
     el.scanTags.innerHTML = "";
     state.scanObjects = [];
     state.scanTagActing = null;
-    if (state.scanOn) setScanHint("scanning…");
+    if (state.scanOn) setScanHint("scanning the scene…");
   }
 
   function repositionScanTags() {
     if (!state.scanOn || !el.scanTags) return;
-    Array.from(el.scanTags.children).forEach((tag, i) => {
-      const obj = state.scanObjects[i];
-      if (obj) positionScanTag(tag, obj);
-    });
+    Array.from(el.scanTags.children).forEach((tag) => positionScanTag(tag));
   }
 
-  function toggleScan() {
-    if (Renderer.mode !== "reactor" || !Renderer.reactorAvailable()) {
-      showRendererToast("Scan needs realtime video");
-      return;
-    }
-    openScan(); // openScan toggles off when already armed
-  }
+  function toggleScan() { openScan(); } // openScan toggles off when already armed
 
   function closeFreeWill(clear) {
     if (!state.freeWillOpen) return;
@@ -2046,6 +2139,7 @@
 
   async function openTape() {
     if (tapeIsOpen()) return;
+    closeScan(); // no scan overlay behind the tape player
     Sound.start();
     try {
       const data = await getJSON("/api/tape");
@@ -2212,10 +2306,7 @@
     // it, everything else types normally.
     if (el.scanTags && el.scanTags.contains(document.activeElement) &&
         document.activeElement.tagName === "INPUT") {
-      if (e.key === "Escape" && state.scanTagActing) {
-        state.scanTagActing.classList.remove("acting");
-        state.scanTagActing = null;
-      }
+      if (e.key === "Escape" && state.scanTagActing) closeTagPrompt(state.scanTagActing, true);
       return;
     }
     // TOUCH tool owns the keyboard while armed: Esc cancels; other keys pass
@@ -2298,8 +2389,9 @@
     if (el.touchForm) el.touchForm.addEventListener("submit", submitTouch);
     if (el.scanBtn) el.scanBtn.addEventListener("click", toggleScan);
     // SCAN is non-modal: its overlay doesn't capture the pointer (so choices and
-    // controls stay live), so we watch pointer moves globally while it's armed.
+    // controls stay live), so we watch pointer moves/taps globally while armed.
     window.addEventListener("pointermove", onScanMove);
+    window.addEventListener("pointerdown", onScanTap); // touch/tap-to-scan (mobile)
     window.addEventListener("resize", repositionScanTags);
     el.forwardBtn.addEventListener("click", moveForward);
     el.tapeBtn.addEventListener("click", openTape);
