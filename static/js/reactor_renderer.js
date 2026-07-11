@@ -349,7 +349,13 @@
   }
 
   async function cmd(name, data) {
-    emitEvent("command_sent", { command: name });
+    // Surface the payload (prompt text / whether an image seed rides along) so
+    // the world-model inspector can show EXACTLY what we send to the model.
+    emitEvent("command_sent", {
+      command: name,
+      prompt: (data && typeof data.prompt === "string") ? data.prompt : null,
+      hasImage: !!(data && data.image),
+    });
     return rstate.reactor.sendCommand(name, data || {});
   }
 

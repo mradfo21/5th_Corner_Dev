@@ -1328,6 +1328,82 @@ body.realtime-on #realtime-btn { display: flex; }
   50% { opacity: 0.15; }
 }
 
+/* ---------- World-model inspector log ---------- */
+/* Subtle, right-side sequential console of realtime prompts + model events.
+   Only shown in realtime mode (body.realtime-on) and when not user-hidden. */
+#rt-log {
+  position: fixed;
+  right: calc(env(safe-area-inset-right, 0px) + 8px);
+  top: calc(env(safe-area-inset-top, 0px) + 210px);
+  width: 250px;
+  max-height: min(52vh, 460px);
+  z-index: 9;
+  display: none;
+  flex-direction: column;
+  background: rgba(4, 10, 8, 0.52);
+  border: 1px solid rgba(142, 255, 193, 0.18);
+  border-radius: 6px;
+  backdrop-filter: blur(2px);
+  font-family: 'Share Tech Mono', monospace;
+  color: rgba(216, 240, 228, 0.82);
+  overflow: hidden;
+  pointer-events: auto;
+}
+body.realtime-on.rt-log-on #rt-log { display: flex; }
+
+.rt-log-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 8px;
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  color: rgba(142, 255, 193, 0.7);
+  border-bottom: 1px solid rgba(142, 255, 193, 0.14);
+  background: rgba(0, 0, 0, 0.25);
+}
+.rt-log-hide {
+  background: none;
+  border: none;
+  color: rgba(216, 240, 228, 0.5);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  padding: 0 2px;
+}
+.rt-log-hide:hover { color: rgba(255, 120, 120, 0.9); }
+
+.rt-log-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 6px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  font-size: 10px;
+  line-height: 1.35;
+  scrollbar-width: thin;
+}
+.rt-log-list::-webkit-scrollbar { width: 6px; }
+.rt-log-list::-webkit-scrollbar-thumb { background: rgba(142,255,193,0.2); border-radius: 3px; }
+
+.rt-e {
+  display: block;
+  margin: 1px 0;
+  white-space: normal;
+  word-break: break-word;
+  animation: rt-e-in 0.25s ease-out;
+}
+@keyframes rt-e-in { from { opacity: 0; transform: translateX(6px); } to { opacity: 1; transform: none; } }
+.rt-t { color: rgba(216,240,228,0.35); margin-right: 5px; }
+.rt-m { color: rgba(216,240,228,0.9); }
+.rt-d { color: rgba(216,240,228,0.5); }           /* detail (prompt text) */
+.rt-e.rt-prompt .rt-m { color: #ffcf94; }          /* prompts we send in — amber */
+.rt-e.rt-img .rt-m    { color: #c8a2ff; }          /* image-gen prompt — violet */
+.rt-e.rt-ok .rt-m     { color: #8effc1; }          /* accepted / live — green */
+.rt-e.rt-error .rt-m  { color: #ff8a8a; }          /* errors / stalls — red */
+.rt-e.rt-status .rt-m { color: rgba(142,255,193,0.75); }
+.rt-e.rt-dim .rt-m    { color: rgba(216,240,228,0.55); }  /* chunks / state — dim */
+
 /* ---------- Backend tag ---------- */
 
 #backend-tag {

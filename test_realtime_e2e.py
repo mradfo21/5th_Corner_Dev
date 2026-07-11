@@ -355,6 +355,38 @@ class TestRealtimeRenderer(unittest.TestCase):
         finally:
             page.close()
 
+    def test_world_model_inspector_logs_prompts_and_events(self):
+        """The right-side world-model inspector must sequentially log what we SEND
+        (set_prompt with the prompt text) and what the model REPORTS (accepted /
+        generation started / video live), so the black box is inspectable."""
+        page = self._new_realtime_page()
+        try:
+            page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
+            page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isReady() === true", timeout=15000)
+            page.evaluate(
+                "(img) => window.ReactorRenderer.applyScene({prompt: 'A dark drainage pipe, vein-like growth ahead', imageUrl: img, hardTransition: false})",
+                TINY_PNG_DATA_URL,
+            )
+            page.wait_for_function("window.ReactorRenderer.isShowing() === true", timeout=15000)
+            # The log panel exists and is shown in realtime mode.
+            self.assertNotEqual(page.evaluate("getComputedStyle(document.getElementById('rt-log')).display"), "none")
+            # Wait for log entries to accumulate.
+            page.wait_for_function("document.querySelectorAll('#rt-log-list .rt-e').length >= 3", timeout=8000)
+            text = page.evaluate("document.getElementById('rt-log-list').innerText")
+            self.assertIn("set_prompt", text, f"inspector didn't log the prompt we sent. log:\n{text}")
+            # It logged the actual prompt text we injected.
+            self.assertIn("drainage pipe", text, f"inspector didn't show the injected prompt text. log:\n{text}")
+            # And a model lifecycle signal (accepted / generation / live).
+            self.assertTrue(
+                any(k in text for k in ("accepted", "generation started", "video live")),
+                f"inspector didn't log any model lifecycle event. log:\n{text}",
+            )
+        except Exception:
+            print("\n=== REACTOR CONSOLE LOG (inspector) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
     def test_realtime_shape_tool_steers_live_without_a_turn(self):
         """The realtime SHAPE tool must be visible in /realtime and submit a LIVE
         steer (a set_prompt hot-swap on the running stream) WITHOUT resolving a
