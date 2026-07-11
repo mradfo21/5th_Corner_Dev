@@ -1916,6 +1916,11 @@ body.reactor-available.rt-log-on #rt-log { display: flex; }
   border-color: rgba(255, 207, 148, 0.8);
   color: rgba(255, 207, 148, 0.95);
 }
+/* When the highlighted (active) button is also connecting, keep its text black
+   so it stays legible on the green fill — only the amber border signals pending. */
+.rt-model-btn.active.pending {
+  color: #061a11;
+}
 .rt-model-btn .rt-model-dot { opacity: 0.6; margin-right: 3px; }
 .rt-model-btn.active .rt-model-dot { opacity: 1; }
 
