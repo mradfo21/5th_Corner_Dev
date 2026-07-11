@@ -47,6 +47,10 @@
     customInput: document.getElementById("custom-input"),
     freeWillBtn: document.getElementById("free-will-btn"),
     realtimeBtn: document.getElementById("realtime-btn"),
+    touchLayer: document.getElementById("touch-layer"),
+    touchReticle: document.getElementById("touch-reticle"),
+    touchForm: document.getElementById("touch-form"),
+    touchInput: document.getElementById("touch-input"),
     forwardBtn: document.getElementById("forward-btn"),
     actionWheel: document.getElementById("action-wheel"),
     veil: document.getElementById("processing-veil"),
@@ -109,6 +113,8 @@
     lastStatus: {},
     freeWillOpen: false,
     inputMode: "act",           // custom input intent: "act" (full turn) | "steer" (realtime nudge)
+    touchMode: null,            // TOUCH tool state: null | "aim" (reticle tracks cursor) | "prompt" (spot locked, field open)
+    touchPoint: null,           // {x, y} viewport coords of the reticle / locked spot
     autoPlay: false,
     autoTimer: null,
     autoDeadline: 0,            // realtime: latest time we'll wait for the new video before advancing anyway
@@ -898,7 +904,7 @@
     // deliberately separate from ACT/choices, which resolve a full turn and
     // change the scene. Returns true if it steered, false if realtime isn't
     // ready (no live scene to build on yet).
-    steerRealtime(text) {
+    steerRealtime(text, where) {
       if (this.mode !== "reactor" || !this.reactorAvailable()) return false;
       const a = (text || "").trim().replace(/\.+$/, "");
       if (!a) return false;
@@ -906,7 +912,12 @@
       // so the nudge blends with the current shot instead of resetting it.
       const base = this.lastBase || (this.lastScene && this.lastScene.prompt) || "";
       if (!base) return false;
-      const beat = "Motion: the view shifts as you " + a.charAt(0).toLowerCase() + a.slice(1) + ".";
+      const act = a.charAt(0).toLowerCase() + a.slice(1);
+      // Anchor the nudge to the spot the player touched, when one was given, so
+      // the change lands where they aimed instead of across the whole frame.
+      const beat = (where && where.phrase)
+        ? "Motion: " + where.phrase + ", " + act + "."
+        : "Motion: the view shifts as you " + act + ".";
       window.ReactorRenderer.applyScene({
         prompt: base + " " + beat,
         imageUrl: null,           // same scene — just re-steer, no image swap
@@ -1431,18 +1442,110 @@
     setTimeout(() => el.customInput.focus(), 60);
   }
 
-  // Open the same input in REALTIME "shape" mode: submitting steers the live
-  // video instantly instead of resolving a turn. Allowed even mid-turn (that's
-  // the point — instant feedback), only blocked when dead or already open.
-  function openRealtime() {
-    if (state.gameOver || state.freeWillOpen) return;
+  // ------------------------------------------------------------------
+  // TOUCH tool — a spatial, in-world steer. Arming it fades the hub and turns
+  // the whole scene into an aiming surface: a reticle (magnifying glass) tracks
+  // the cursor, a click locks it to a spot and expands it into a prompt field,
+  // and submitting steers the LIVE video at that location. Instant, no turn —
+  // allowed even mid-turn (that's the point), only blocked when dead / already
+  // aiming / while the bottom ACT input is open.
+  // ------------------------------------------------------------------
+  function openTouch() {
+    if (state.gameOver || state.freeWillOpen || state.touchMode) return;
     if (Renderer.mode !== "reactor" || !Renderer.reactorAvailable()) return;
-    state.freeWillOpen = true;
-    state.inputMode = "steer";
-    el.actionWheel.classList.add("fw-open", "steer-open");
-    if (el.customInput) el.customInput.setAttribute("placeholder", "shape the live moment\u2026");
+    state.touchMode = "aim";
+    if (el.realtimeBtn) el.realtimeBtn.classList.add("aiming");
+    document.body.classList.add("touch-aiming");
+    if (el.touchReticle) el.touchReticle.classList.remove("prompting");
+    if (el.touchLayer) el.touchLayer.classList.remove("prompting");
+    if (el.touchInput) el.touchInput.value = "";
+    // Start the reticle where it was last, else at the center of the view.
+    const start = state.touchPoint ||
+      { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+    moveReticle(start.x, start.y);
+    if (el.touchLayer) el.touchLayer.classList.remove("hidden");
     Sound.open();
-    setTimeout(() => el.customInput.focus(), 60);
+  }
+
+  function moveReticle(x, y) {
+    state.touchPoint = { x, y };
+    if (!el.touchReticle) return;
+    el.touchReticle.style.left = x + "px";
+    el.touchReticle.style.top = y + "px";
+  }
+
+  function onTouchMove(e) {
+    if (state.touchMode !== "aim") return;
+    moveReticle(e.clientX, e.clientY);
+  }
+
+  function onTouchClick(e) {
+    if (state.touchMode === "aim") {
+      e.preventDefault();
+      lockTouchSpot(e.clientX, e.clientY);
+    } else if (state.touchMode === "prompt") {
+      // Clicking away from the pill cancels; clicks inside it edit the prompt.
+      if (el.touchReticle && !el.touchReticle.contains(e.target)) closeTouch(true);
+    }
+  }
+
+  // Lock the reticle to a spot and grow it into the prompt field. The center is
+  // clamped so the expanded pill stays fully on screen near a viewport edge.
+  function lockTouchSpot(x, y) {
+    state.touchMode = "prompt";
+    const halfW = 176, halfH = 28, margin = 12;
+    const cx = Math.min(Math.max(x, halfW + margin), window.innerWidth - halfW - margin);
+    const cy = Math.min(Math.max(y, halfH + margin), window.innerHeight - halfH - margin);
+    moveReticle(cx, cy);
+    // Remember the ORIGINAL touched point (not the clamped pill center) so the
+    // steer describes where the player actually aimed.
+    state.touchPoint = { x, y };
+    if (el.touchLayer) el.touchLayer.classList.add("prompting");
+    if (el.touchReticle) el.touchReticle.classList.add("prompting");
+    Sound.open();
+    setTimeout(() => { if (el.touchInput) el.touchInput.focus(); }, 90);
+  }
+
+  function closeTouch(clear) {
+    if (!state.touchMode) return;
+    state.touchMode = null;
+    if (el.touchLayer) {
+      el.touchLayer.classList.add("hidden");
+      el.touchLayer.classList.remove("prompting");
+    }
+    if (el.touchReticle) el.touchReticle.classList.remove("prompting");
+    if (el.realtimeBtn) el.realtimeBtn.classList.remove("aiming");
+    document.body.classList.remove("touch-aiming");
+    if (clear && el.touchInput) el.touchInput.value = "";
+    if (el.touchInput && document.activeElement === el.touchInput) el.touchInput.blur();
+  }
+
+  // Turn the reticle's viewport position into a human phrase ("at the top-left
+  // of the view") so the steer can anchor the change to that region.
+  function describeTouchRegion(pt) {
+    if (!pt) return { label: "the scene", phrase: "" };
+    const fx = pt.x / Math.max(1, window.innerWidth);
+    const fy = pt.y / Math.max(1, window.innerHeight);
+    const h = fx < 0.34 ? "left" : fx > 0.66 ? "right" : "center";
+    const v = fy < 0.34 ? "top" : fy > 0.66 ? "bottom" : "middle";
+    let label;
+    if (h === "center" && v === "middle") label = "the center of the view";
+    else if (h === "center") label = "the " + v + " of the view";
+    else if (v === "middle") label = "the " + h + " of the view";
+    else label = "the " + v + "-" + h + " of the view";
+    return { label, phrase: "at " + label };
+  }
+
+  function submitTouch(e) {
+    e.preventDefault();
+    if (!el.touchInput) return;
+    const text = el.touchInput.value.trim();
+    if (!text || state.gameOver) { closeTouch(true); return; }
+    const where = describeTouchRegion(state.touchPoint);
+    const ok = Renderer.steerRealtime(text, where);
+    Sound.submit();
+    closeTouch(true);
+    showRendererToast(ok ? "Touched " + where.label : "Realtime not ready yet");
   }
 
   function closeFreeWill(clear) {
@@ -1831,6 +1934,12 @@
       if (e.key === "Escape") closeFreeWill(true); // Esc closes the gate
       return;
     }
+    // TOUCH tool owns the keyboard while armed: Esc cancels; other keys pass
+    // through so the locked-spot prompt types normally.
+    if (state.touchMode) {
+      if (e.key === "Escape") closeTouch(true);
+      return;
+    }
     // While dead, only R (restart) is meaningful.
     if (state.gameOver) {
       if (e.key.toLowerCase() === "r") resetGame();
@@ -1853,7 +1962,7 @@
     } else if (e.key.toLowerCase() === "f") {
       openFreeWill();
     } else if (e.key.toLowerCase() === "h") {
-      openRealtime(); // realtime SHAPE tool (no-op outside realtime mode)
+      openTouch(); // realtime TOUCH tool (no-op outside realtime mode)
     } else if (e.key.toLowerCase() === "l") {
       RtLog.toggle(); // show/hide the world-model inspector log
     } else if (e.key.toLowerCase() === "g") {
@@ -1894,7 +2003,12 @@
     }
     el.deathRestart.addEventListener("click", resetGame);
     el.freeWillBtn.addEventListener("click", openFreeWill);
-    if (el.realtimeBtn) el.realtimeBtn.addEventListener("click", openRealtime);
+    if (el.realtimeBtn) el.realtimeBtn.addEventListener("click", openTouch);
+    if (el.touchLayer) {
+      el.touchLayer.addEventListener("mousemove", onTouchMove);
+      el.touchLayer.addEventListener("click", onTouchClick);
+    }
+    if (el.touchForm) el.touchForm.addEventListener("submit", submitTouch);
     el.forwardBtn.addEventListener("click", moveForward);
     el.tapeBtn.addEventListener("click", openTape);
     el.tapePlayPause.addEventListener("click", toggleTapePlay);
