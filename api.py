@@ -92,10 +92,9 @@ def _standalone_asset_version():
 
 @app.route('/standalone', methods=['GET'])
 def serve_standalone():
-    """Serve the standalone immersive UI. Unlike engine.py's own '/' route,
-    this does NOT reset the game on load — the player's in-progress session
-    (if any) is preserved across page refreshes; use the Reset button (or
-    POST /api/reset) to start over."""
+    """Serve the standalone immersive UI. Loading (or reloading) this page
+    auto-restarts the game from scratch — the client bootstrap always POSTs
+    /api/reset on load, so every visit begins a fresh run."""
     return render_template('standalone.html', asset_version=_standalone_asset_version())
 
 

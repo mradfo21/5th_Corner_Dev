@@ -1627,33 +1627,16 @@
   }
 
   // ------------------------------------------------------------------
-  // Bootstrap — decide between resuming an existing session and starting fresh
+  // Bootstrap — every visit / reload starts a fresh run from scratch
   // ------------------------------------------------------------------
 
   /**
-   * On load, look at the existing feed. If a session is already in progress
-   * (has content, including an active choice prompt or a game-over), resume it
-   * so a page refresh doesn't wipe the player's run. If the session is empty
-   * or has no actionable prompt (a cold visit or a stale/half-written state),
-   * start a fresh game automatically so a first-time visitor immediately sees
-   * the intro and choices instead of a blank screen.
+   * On load (including a plain page reload of /standalone or /realtime) we
+   * always restart the game from scratch rather than resuming the in-progress
+   * session. Visiting the URL is treated as "begin a new run" — the intro and
+   * choices (and, in realtime, a fresh world-model stage) come up immediately.
    */
   async function bootstrap() {
-    try {
-      const items = await getJSON(`/api/feed?since_id=0`);
-      if (Array.isArray(items) && items.length) {
-        renderItems(items);
-        const hasPrompt = items.some((i) => i.type === "player_choice_prompt");
-        const isDead = items.some((i) => i.type === "game_over");
-        if (hasPrompt || isDead) {
-          hideVeil();
-          return; // resume the in-progress run
-        }
-      }
-    } catch (err) {
-      console.error("[standalone] bootstrap feed check failed:", err);
-    }
-    // Cold start (or unusable session) → begin a new game.
     await resetGame();
   }
 

@@ -312,6 +312,25 @@ class TestRealtimeRenderer(unittest.TestCase):
         finally:
             page.close()
 
+    def test_loading_realtime_auto_restarts(self):
+        """Loading /realtime must auto-restart from scratch: the client bootstrap
+        POSTs /api/reset on load (no resuming the in-progress session)."""
+        page = self._new_realtime_page()
+        resets = []
+        page.on("request", lambda r: (
+            resets.append(r.url) if (r.method == "POST" and r.url.rstrip("/").endswith("/api/reset")) else None
+        ))
+        try:
+            page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
+            # The fresh-start reset should be issued shortly after load.
+            waited = 0
+            while not resets and waited < 8000:
+                page.wait_for_timeout(250)
+                waited += 250
+            self.assertTrue(resets, f"/api/reset was not POSTed on load. logs:\n{self._dump_logs()}")
+        finally:
+            page.close()
+
     def test_no_underlying_still_in_realtime_and_freeze_covers_reanchor(self):
         """The user-facing contract: in /realtime the underlying Gemini still is
         NEVER painted (so the original image can't flash between guide images),
@@ -390,20 +409,21 @@ class TestRealtimeRenderer(unittest.TestCase):
             },
         ]
 
-        def feed_handler(route):
-            q = urllib.parse.urlparse(route.request.url).query
-            since = int((urllib.parse.parse_qs(q).get("since_id", ["0"]) or ["0"])[0])
-            body = json.dumps(scene_items if since < 3 else [])
-            route.fulfill(status=200, content_type="application/json", body=body)
+        # Loading /realtime auto-restarts, so the fresh intro (with the guide
+        # scene_image) comes back from POST /api/reset. Feed polling returns
+        # nothing new after that.
+        def reset_handler(route):
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(scene_items))
 
-        page.route("**/api/feed*", feed_handler)
+        page.route("**/api/reset", reset_handler)
+        page.route("**/api/feed*", lambda route: route.fulfill(status=200, content_type="application/json", body="[]"))
 
         try:
             page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
             page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isReady() === true", timeout=15000)
-            # The scene_image is delivered by bootstrap's feed read; the realtime
-            # renderer must establish and reveal the live video with no manual
-            # ReactorRenderer calls.
+            # The scene_image is delivered by the auto-restart's /api/reset; the
+            # realtime renderer must establish and reveal the live video with no
+            # manual ReactorRenderer calls.
             page.wait_for_function("window.ReactorRenderer.isShowing() === true", timeout=15000)
             cmds = page.evaluate("window.__MOCK_CMDS__ || []")
             self.assertIn("start", cmds, f"realtime never started from the feed. logs:\n{self._dump_logs()}")
