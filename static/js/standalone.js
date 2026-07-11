@@ -581,9 +581,10 @@
       if (this.reactorAvailable()) {
         window.ReactorRenderer.onStatus = (s) => {
           if (s === "error" && Renderer.mode === "reactor") {
-            console.warn("[standalone] realtime renderer unavailable — falling back to stills");
+            const why = (window.ReactorRenderer.getTelemetry && window.ReactorRenderer.getTelemetry().errorReason) || "";
+            console.warn("[standalone] realtime renderer unavailable — falling back to stills", why);
             Renderer.mode = "image"; // reflect reality; keep stored pref intact
-            showRendererToast("Realtime unavailable — showing stills");
+            showRendererToast(why ? ("Realtime unavailable: " + why) : "Realtime unavailable — showing stills", 5200);
             // We suppressed the still while realtime was expected; now that we've
             // fallen back, paint it so the screen isn't left blank.
             if (Renderer.lastScene && Renderer.lastScene.imageUrl) setScene(Renderer.lastScene.imageUrl);
@@ -815,7 +816,7 @@
   // Small transient on-screen note so it's obvious which renderer is active
   // (useful while testing / toggling with the G key).
   let _rendererToastTimer = null;
-  function showRendererToast(text) {
+  function showRendererToast(text, durationMs) {
     let toast = document.getElementById("renderer-toast");
     if (!toast) {
       toast = document.createElement("div");
@@ -826,7 +827,7 @@
     toast.textContent = text;
     toast.classList.add("show");
     clearTimeout(_rendererToastTimer);
-    _rendererToastTimer = setTimeout(() => toast.classList.remove("show"), 2200);
+    _rendererToastTimer = setTimeout(() => toast.classList.remove("show"), durationMs || 2200);
   }
 
   // ------------------------------------------------------------------
@@ -865,7 +866,7 @@
       const fpsTxt = (fps >= 10 ? Math.round(fps) : fps.toFixed(1)) + " fps";
       let phase, label, detail = "";
 
-      if (t.status === "error") { phase = "rt-error"; label = "UNAVAILABLE"; detail = "showing stills"; }
+      if (t.status === "error") { phase = "rt-error"; label = "UNAVAILABLE"; detail = t.errorReason || "showing stills"; }
       else if (t.status === "off" || !t.active) { phase = "rt-error"; label = "OFF"; }
       else if (t.connecting || t.status === "connecting") { phase = "rt-connecting"; label = "CONNECTING"; }
       else if (t.deferred) { phase = "rt-warn"; label = "WAITING FOR SEED"; detail = "no reference frame yet"; }

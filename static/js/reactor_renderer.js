@@ -65,6 +65,7 @@
     cfg: { model_name: FALLBACK_MODEL, enabled: false },
     connecting: false,
     status: "off",
+    errorReason: "",       // why realtime last failed to start (surfaced in UI)
     showSuppressed: false, // keep the video hidden during reset gaps
     frameWatch: false,
     frameWatchTimer: null,
@@ -457,18 +458,31 @@
     emitEvent(t, d);
   }
 
+  // Fail an enable attempt with a specific, user-visible reason so it's never a
+  // silent "nothing happened when I toggled".
+  function failEnable(reason) {
+    rstate.errorReason = reason;
+    log("enable failed:", reason);
+    rstate.connecting = false;
+    setStatus("error");
+    return false;
+  }
+
   async function enable() {
     if (rstate.active || rstate.connecting) return true;
     rstate.connecting = true;
+    rstate.errorReason = "";
     setStatus("connecting");
     try {
       await loadConfig();
-      if (!rstate.cfg.enabled) { log("disabled: no REACTOR_API_KEY on server"); rstate.connecting = false; setStatus("error"); return false; }
+      if (!rstate.cfg.enabled) {
+        return failEnable("not configured — no REACTOR_API_KEY on the server");
+      }
       let sdk;
       try { sdk = await import(/* @vite-ignore */ SDK_URL); }
-      catch (err) { log("SDK import failed", err); rstate.connecting = false; setStatus("error"); return false; }
+      catch (err) { return failEnable("SDK failed to load (network/CDN blocked): " + ((err && err.message) || err)); }
       const Reactor = sdk.Reactor || (sdk.default && sdk.default.Reactor);
-      if (!Reactor) { log("SDK missing Reactor export"); rstate.connecting = false; setStatus("error"); return false; }
+      if (!Reactor) { return failEnable("SDK missing Reactor export"); }
 
       const reactor = new Reactor({ modelName: rstate.cfg.model_name || FALLBACK_MODEL });
       rstate.reactor = reactor;
@@ -486,8 +500,11 @@
         if (e && e.recoverable === false) setStatus("error");
       });
 
-      const jwt = await fetchToken();
+      let jwt;
+      try { jwt = await fetchToken(); }
+      catch (err) { await disable(); return failEnable("token exchange failed: " + ((err && err.message) || err)); }
       rstate.active = true;
+      rstate.errorReason = "";
       // Reset the live-signal meter for this session and start sampling.
       tele.frames = 0; tele.chunks = 0; tele.fps = 0;
       tele.generating = false; tele.deferred = false;
@@ -499,11 +516,8 @@
       rstate.connecting = false;
       return true;
     } catch (err) {
-      log("enable failed", err);
-      rstate.connecting = false;
-      setStatus("error");
       await disable();
-      return false;
+      return failEnable("connect failed: " + ((err && err.message) || err));
     }
   }
 
@@ -603,6 +617,7 @@
       const showing = !!(v && !v.classList.contains("hidden") && v.videoWidth > 0);
       return {
         status: rstate.status,
+        errorReason: rstate.errorReason || "",
         active: rstate.active,
         connecting: rstate.connecting,
         ready: rstate.ready,
