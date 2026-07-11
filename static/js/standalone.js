@@ -1909,6 +1909,7 @@
     if (!state.scanOn) return;
     if (state.scanBusy) return;
     if (state.scanTagActing) return; // never disturb an open interact prompt
+    if (state.processing) return;    // don't scan mid-turn (the scene is re-anchoring)
     if (!scanAvailable()) {
       if (!el.scanTags || !el.scanTags.children.length) setScanHint("waiting for the live feed…");
       return;
