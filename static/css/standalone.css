@@ -690,8 +690,17 @@ body.realtime-on #realtime-btn { display: flex; }
   transform: translateX(34px) scale(1.08);
 }
 #realtime-btn:active { transform: translateX(34px) scale(0.94); }
-.rt-icon { font-size: 15px; line-height: 1; opacity: 0.98; }
-.rt-label { font-size: 7px; letter-spacing: 0.12em; opacity: 0.85; }
+.rt-icon { font-size: 15px; line-height: 1; opacity: 0.98; transition: opacity 0.22s; }
+.rt-label { font-size: 7px; letter-spacing: 0.12em; opacity: 0.85; transition: opacity 0.22s; }
+
+/* TOUCH armed: while the aiming reticle is live, the hub's icon/label fade out
+   and the ring glows amber so it reads as an active instrument, not a button. */
+#realtime-btn.aiming {
+  border-color: rgba(255, 186, 89, 1);
+  box-shadow: inset 0 0 12px rgba(0,0,0,0.5), 0 0 24px rgba(255, 186, 89, 0.6);
+}
+#realtime-btn.aiming .rt-icon,
+#realtime-btn.aiming .rt-label { opacity: 0; }
 
 @keyframes fw-idle-glow {
   0%, 100% { box-shadow: inset 0 0 12px rgba(0,0,0,0.5), 0 0 0 rgba(142,255,193,0); }
@@ -810,6 +819,138 @@ body.realtime-on #realtime-btn { display: flex; }
 #custom-submit:hover {
   border-color: rgba(142, 255, 193, 0.95);
   color: #eafff2;
+}
+
+/* ---------- TOUCH tool: aiming reticle → location prompt ---------- */
+
+/* Full-screen aiming surface. Captures the cursor so only the reticle shows,
+   making the whole live scene feel touchable. */
+#touch-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 35;
+  cursor: none;
+}
+#touch-layer.hidden { display: none; }
+/* Once a spot is locked, the OS cursor comes back so the prompt is usable. */
+#touch-layer.prompting { cursor: default; }
+
+/* While aiming, the other bottom hubs recede so attention stays on the scene. */
+body.touch-aiming #forward-btn,
+body.touch-aiming #free-will-btn { opacity: 0.2; pointer-events: none; }
+
+/* The reticle: a small circle + magnifying glass in aim mode; it grows into a
+   pill-shaped prompt field once a spot is chosen. Positioned via left/top (set
+   in JS) and centered on that point. */
+#touch-reticle {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  gap: 0;
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 186, 89, 0.9);
+  background: rgba(10, 7, 2, 0.5);
+  color: #ffcf94;
+  box-shadow: inset 0 0 14px rgba(0,0,0,0.55), 0 0 22px rgba(255, 186, 89, 0.4);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  overflow: hidden;
+  animation: touch-reticle-pulse 1.8s ease-in-out infinite;
+  transition:
+    width 0.36s cubic-bezier(0.2, 0.9, 0.25, 1.12),
+    border-radius 0.3s ease,
+    gap 0.3s ease,
+    padding 0.3s ease,
+    box-shadow 0.24s ease;
+  will-change: left, top, width;
+}
+
+@keyframes touch-reticle-pulse {
+  0%, 100% { box-shadow: inset 0 0 14px rgba(0,0,0,0.55), 0 0 16px rgba(255, 186, 89, 0.32); }
+  50%      { box-shadow: inset 0 0 14px rgba(0,0,0,0.55), 0 0 28px rgba(255, 186, 89, 0.55); }
+}
+
+.touch-glass {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  margin: 0;
+  filter: drop-shadow(0 1px 3px rgba(0,0,0,0.9));
+  pointer-events: none;
+  transition: width 0.24s ease, height 0.24s ease, margin 0.3s ease;
+}
+
+/* Prompt field lives inside the reticle; hidden until the reticle expands. */
+#touch-form {
+  display: none;
+  flex: 1;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Locked to a spot: reticle expands into a pill and reveals the prompt. */
+#touch-reticle.prompting {
+  width: 340px;
+  max-width: 92vw;
+  border-radius: 26px;
+  gap: 8px;
+  padding: 0 12px 0 14px;
+  cursor: text;
+  animation: none;
+}
+#touch-reticle.prompting .touch-glass {
+  width: 18px;
+  height: 18px;
+  margin-right: 2px;
+}
+#touch-reticle.prompting #touch-form {
+  display: flex;
+  animation: touch-form-in 0.3s ease 0.1s backwards;
+}
+
+@keyframes touch-form-in {
+  from { opacity: 0; transform: translateX(-6px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+#touch-input {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  border-bottom: 1px solid rgba(255, 186, 89, 0.55);
+  color: #ffe9cc;
+  font-family: inherit;
+  font-size: 14px;
+  padding: 6px 4px;
+  outline: none;
+}
+#touch-input:focus { border-bottom-color: rgba(255, 186, 89, 0.95); }
+#touch-input::placeholder { color: rgba(255, 207, 148, 0.55); }
+
+#touch-submit {
+  flex: 0 0 auto;
+  background: none;
+  border: 1px solid rgba(255, 186, 89, 0.55);
+  color: #ffcf94;
+  font-family: inherit;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  padding: 6px 11px;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: border-color 0.14s, color 0.14s;
+}
+#touch-submit:hover {
+  border-color: rgba(255, 186, 89, 0.95);
+  color: #ffe9cc;
 }
 
 /* ---------- Control rail (vertical bar, top-right) ---------- */

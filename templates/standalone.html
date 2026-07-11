@@ -117,12 +117,31 @@
     <button id="free-will-btn" type="button" title="Type your own action (F)">
       <span class="fw-icon">✎</span><span class="fw-label">ACT</span>
     </button>
-    <!-- Realtime "SHAPE" tool (realtime mode only): submits a LIVE prompt that
-         steers the running video instantly — a quick nudge to the world, as
-         opposed to ACT/choices which resolve a full turn and change the scene. -->
-    <button id="realtime-btn" type="button" title="Shape the live world — instant realtime nudge (H)">
+    <!-- Realtime "TOUCH" tool (realtime mode only): arms an aiming reticle you
+         steer with the mouse; a second click drops a location prompt that
+         changes the live world right at that spot — instant, no full turn,
+         opposed to ACT/choices which resolve a turn and change the scene. -->
+    <button id="realtime-btn" type="button" title="Touch the live world — aim a spot, then change it (H)">
       <span class="rt-icon">✋</span><span class="rt-label">TOUCH</span>
     </button>
+  </div>
+
+  <!-- TOUCH tool overlay: a full-screen aiming surface. Armed by the TOUCH hub,
+       a small reticle (magnifying glass) tracks the cursor; clicking locks it to
+       a spot and expands it into a prompt field so you can change that exact
+       location of the live world. Realtime mode only; hidden otherwise. -->
+  <div id="touch-layer" class="hidden" aria-hidden="true">
+    <div id="touch-reticle">
+      <svg class="touch-glass" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="10.5" cy="10.5" r="6.5"></circle>
+        <line x1="15.4" y1="15.4" x2="21" y2="21"></line>
+      </svg>
+      <form id="touch-form" autocomplete="off">
+        <input id="touch-input" type="text" placeholder="change this spot…" maxlength="200">
+        <button id="touch-submit" type="submit">SEND</button>
+      </form>
+    </div>
   </div>
 
   <!-- (Session controls now live in #control-rail, top-right.) -->

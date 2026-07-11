@@ -355,10 +355,11 @@ class TestRealtimeRenderer(unittest.TestCase):
         finally:
             page.close()
 
-    def test_realtime_shape_tool_steers_live_without_a_turn(self):
-        """The realtime SHAPE tool must be visible in /realtime and submit a LIVE
-        steer (a set_prompt hot-swap on the running stream) WITHOUT resolving a
-        turn (no /api/choose) and WITHOUT a re-anchor (no reset)."""
+    def test_realtime_touch_tool_steers_live_without_a_turn(self):
+        """The realtime TOUCH tool must be visible in /realtime and, once armed
+        (aiming) and locked to a spot (prompt), submit a LIVE steer (a set_prompt
+        hot-swap on the running stream) WITHOUT resolving a turn (no /api/choose)
+        and WITHOUT a re-anchor (no reset)."""
         page = self._new_realtime_page()
         scene_items = [
             {"id": 1, "type": "narrative", "content": "Intro."},
@@ -373,27 +374,34 @@ class TestRealtimeRenderer(unittest.TestCase):
         try:
             page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
             page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
-            # The SHAPE tool is revealed in realtime mode.
+            # The TOUCH tool is revealed in realtime mode.
             self.assertNotEqual(page.evaluate("getComputedStyle(document.getElementById('realtime-btn')).display"), "none")
-            # Open it -> steer-open input mode.
+            # Arm it -> aiming mode: the hub fades and the reticle layer opens.
             page.evaluate("document.getElementById('realtime-btn').click()")
-            self.assertTrue(page.evaluate("document.getElementById('action-wheel').classList.contains('steer-open')"))
-            # Submit a live nudge and watch for a set_prompt hot-swap (no reset).
+            self.assertTrue(page.evaluate("document.getElementById('realtime-btn').classList.contains('aiming')"))
+            self.assertFalse(page.evaluate("document.getElementById('touch-layer').classList.contains('hidden')"))
+            # Click a spot -> the reticle locks and expands into a prompt field.
+            page.evaluate(
+                """() => document.getElementById('touch-layer').dispatchEvent(
+                    new MouseEvent('click', {clientX: 220, clientY: 160, cancelable:true, bubbles:true}))"""
+            )
+            self.assertTrue(page.evaluate("document.getElementById('touch-reticle').classList.contains('prompting')"))
+            # Submit a live nudge at that spot and watch for a set_prompt hot-swap (no reset).
             page.evaluate("window.__MOCK_CMDS__ = []")
             page.evaluate(
                 """() => {
-                    const inp = document.getElementById('custom-input');
+                    const inp = document.getElementById('touch-input');
                     inp.value = 'smash the crates open';
-                    document.getElementById('custom-form').dispatchEvent(new Event('submit', {cancelable:true, bubbles:true}));
+                    document.getElementById('touch-form').dispatchEvent(new Event('submit', {cancelable:true, bubbles:true}));
                 }"""
             )
             page.wait_for_function("(window.__MOCK_CMDS__||[]).includes('set_prompt')", timeout=8000)
             cmds = page.evaluate("window.__MOCK_CMDS__ || []")
-            self.assertIn("set_prompt", cmds, f"SHAPE didn't steer the live stream. logs:\n{self._dump_logs()}")
-            self.assertNotIn("reset", cmds, "SHAPE must NOT re-anchor (no reset / scene change)")
-            self.assertEqual(len(chooses), 0, "SHAPE must NOT resolve a turn (no /api/choose)")
+            self.assertIn("set_prompt", cmds, f"TOUCH didn't steer the live stream. logs:\n{self._dump_logs()}")
+            self.assertNotIn("reset", cmds, "TOUCH must NOT re-anchor (no reset / scene change)")
+            self.assertEqual(len(chooses), 0, "TOUCH must NOT resolve a turn (no /api/choose)")
         except Exception:
-            print("\n=== REACTOR CONSOLE LOG (shape) ===\n" + self._dump_logs())
+            print("\n=== REACTOR CONSOLE LOG (touch) ===\n" + self._dump_logs())
             raise
         finally:
             page.close()
