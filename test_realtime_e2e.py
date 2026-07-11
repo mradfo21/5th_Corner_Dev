@@ -147,12 +147,15 @@ class TestRealtimeRenderer(unittest.TestCase):
         env["REACTOR_API_KEY"] = "test-key-not-used"
         env["SCENE_RENDERER"] = "reactor"
 
+        # Discard the server's stdout/stderr rather than piping it: an unread
+        # PIPE fills its OS buffer and can deadlock the mock server under load.
+        # Nothing here reads the server's output, so DEVNULL is the safe sink.
         cls.server_proc = subprocess.Popen(
             [sys.executable, "run_local.py", "--mock", "--no-browser", "--port", str(cls.port)],
             cwd=str(ROOT),
             env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
         if not _wait_for_health(cls.base_url):
             cls.server_proc.terminate()

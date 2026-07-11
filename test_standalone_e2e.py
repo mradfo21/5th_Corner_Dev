@@ -67,12 +67,16 @@ class TestStandaloneE2E(unittest.TestCase):
         env["OPENAI_API_KEY"] = ""
         env["ANTHROPIC_API_KEY"] = ""
 
+        # Discard the server's stdout/stderr rather than piping it: the mock
+        # server logs verbosely per request, and an unread PIPE fills its OS
+        # buffer and deadlocks the server (page loads then hang). Nothing here
+        # reads the server's output, so DEVNULL is the safe sink.
         cls.server_proc = subprocess.Popen(
             [sys.executable, "run_local.py", "--mock", "--no-browser", "--port", str(cls.port)],
             cwd=str(ROOT),
             env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
 
         if not _wait_for_health(cls.base_url):
