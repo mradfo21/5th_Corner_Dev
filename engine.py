@@ -1461,6 +1461,33 @@ def _save_img(b64: str, caption: str, session_id: str = 'default') -> str:
     # Return relative path from session root
     return f"images/{path.name}"
 
+
+def _save_uploaded_frame(frame_b64: str, session_id: str = 'default', prefix: str = 'evidence') -> Optional[str]:
+    """Decode a client-uploaded frame (a data-URL or bare base64 string) and
+    write it to the session image dir. Returns the ABSOLUTE path on disk (for
+    use as an img2img reference), or None if the payload is missing/invalid.
+
+    Shared by the TOUCH "investigate this spot" flow (evidence-seeded turns) and
+    reusable by any future capture (e.g. the journalist photograph mechanic).
+    """
+    if not frame_b64:
+        return None
+    try:
+        m = re.match(r'^data:image/[^;]+;base64,(.*)$', frame_b64, re.DOTALL)
+        raw = m.group(1) if m else frame_b64
+        img_bytes = base64.b64decode(raw)
+        if len(img_bytes) < 512:
+            return None
+        img_dir = Path(_get_image_dir(session_id))
+        img_dir.mkdir(parents=True, exist_ok=True)
+        fname = f"{prefix}_{int(time.time() * 1000)}.png"
+        fpath = img_dir / fname
+        fpath.write_bytes(img_bytes)
+        return str(fpath)
+    except Exception as e:
+        log_error(f"[EVIDENCE] failed to save uploaded frame: {e}")
+        return None
+
 # _vision_is_inside removed - was expensive and never used in StoryGen
 # _generate_burn_in removed - was never called and caused timecode overlays
 
@@ -1890,13 +1917,18 @@ def _build_vhs_prompt(base_prompt: str, use_img2img: bool = False) -> str:
     return full_prompt
 
 
-def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optional[str] = None, previous_caption: Optional[str] = None, previous_mode: Optional[str] = None, strength: float = 0.25, image_description: str = "", time_of_day: Optional[str] = None, use_edit_mode: bool = False, frame_idx: int = 0, dispatch: str = "", world_prompt: str = "", hard_transition: bool = False, is_timeout_penalty: bool = False, session_id: str = 'default') -> Optional[tuple[str, str, Optional[str]]]:
+def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optional[str] = None, previous_caption: Optional[str] = None, previous_mode: Optional[str] = None, strength: float = 0.25, image_description: str = "", time_of_day: Optional[str] = None, use_edit_mode: bool = False, frame_idx: int = 0, dispatch: str = "", world_prompt: str = "", hard_transition: bool = False, is_timeout_penalty: bool = False, session_id: str = 'default', reference_override_path: Optional[Any] = None) -> Optional[tuple[str, str, Optional[str]]]:
     """Generate image and return (image_path, prompt_used, video_path).
     
     video_path is None for non-Veo providers or when video generation fails/disabled.
     
     time_of_day: If None, will use state['time_of_day'] for consistency
     session_id: Session ID for storing images in correct directory
+    reference_override_path: Optional path (or list of paths) to an image the
+        player captured/investigated (TOUCH evidence). When set, it is used as
+        the PRIMARY img2img reference for this frame — the new scene is composed
+        around what the player actually looked at — with the most recent history
+        frame kept as a secondary style/continuity anchor. (Gemini provider.)
     """
     global _last_image_path
     import random
@@ -2161,8 +2193,18 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
             print(f"[IMG] Using Google Gemini (Nano Banana) provider")
             from gemini_image_utils import generate_with_gemini, generate_gemini_img2img
             
+            # Evidence override (TOUCH investigate): normalize to a list of paths
+            # that actually exist on disk. When present we force img2img and put
+            # the investigated shot FIRST so the new scene composes around it.
+            evidence_refs = []
+            if reference_override_path:
+                _ev = reference_override_path if isinstance(reference_override_path, (list, tuple)) else [reference_override_path]
+                evidence_refs = [str(p) for p in _ev if p and os.path.exists(str(p))]
+                if evidence_refs:
+                    print(f"[IMG GENERATION] EVIDENCE OVERRIDE active — {len(evidence_refs)} investigated ref(s) will seed img2img")
+            
             # Use img2img for ALL frames with history (style continuity + movement instructions)
-            if prev_img_paths_list and frame_idx > 0:
+            if (prev_img_paths_list or evidence_refs) and frame_idx > 0:
                 # For hard transitions (location changes), use ONLY 1 reference for lighting/aesthetic
                 # For normal transitions, use full reference set for composition continuity
                 print(f"\n{'='*70}")
@@ -2185,6 +2227,14 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                 else:
                     ref_images_to_use = prev_img_paths_list[:1]  # ONLY most recent for strongest continuity
                     print(f"[IMG GENERATION] Normal transition - using 1 reference image (most recent frame)")
+                
+                # Investigated evidence leads the reference set: the new scene is
+                # composed around exactly what the player looked at, with the last
+                # frame kept as a secondary style/continuity anchor. Cap at 2.
+                if evidence_refs:
+                    ref_images_to_use = evidence_refs + [r for r in ref_images_to_use if r not in evidence_refs]
+                    ref_images_to_use = ref_images_to_use[:2]
+                    print(f"[IMG GENERATION] Evidence-seeded reference set ({len(ref_images_to_use)}): evidence first, continuity second")
                 
                 print(f"[IMG GENERATION] References being passed to API:")
                 for i, ref in enumerate(ref_images_to_use):
@@ -3123,7 +3173,7 @@ def extract_scene_elements(*args):
     return nouns
 
 # RENAMED from advance_turn
-def _process_turn_background(choice: str, initial_player_action_item_id: int, signal_file_path: Optional[str] = None):
+def _process_turn_background(choice: str, initial_player_action_item_id: int, signal_file_path: Optional[str] = None, evidence_image_path: Optional[str] = None):
     """Standalone feed turn — a thin adapter over the canonical two-phase
     session pipeline.
 
@@ -3200,6 +3250,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                 world_prompt=state.get("world_prompt", ""),
                 hard_transition=bool(p1.get("hard_transition", False)),
                 session_id=SID,
+                reference_override_path=evidence_image_path,
             )
             game_over_item = create_feed_item(type="game_over", content="You have succumbed to the horrors. The transmission ends.")
             game_over_choices = _structure_choices_for_feed(
@@ -3230,6 +3281,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             world_prompt=state.get("world_prompt", ""),
             hard_transition=bool(p1.get("hard_transition", False)),
             session_id=SID,
+            reference_override_path=evidence_image_path,
         )
 
         # ── PHASE 2: fast text-grounded choices so the turn resolves promptly. ──
@@ -3305,7 +3357,8 @@ def _structure_choices_for_feed(choice_texts: List[str], prompt_text: str = "Wha
 
 def _generate_and_append_scene_image(caption: str, dispatch: str, choice: str, frame_idx: int,
                                      world_prompt: str, hard_transition: bool = False,
-                                     session_id: str = 'default', write_history: bool = True):
+                                     session_id: str = 'default', write_history: bool = True,
+                                     reference_override_path: Optional[str] = None):
     """Generate the scene image, append the scene_image feed item, and update
     session state. Returns {'img_path','web_url','image_prompt','render_prompt'}
     or None on failure / when image generation is disabled.
@@ -3334,6 +3387,7 @@ def _generate_and_append_scene_image(caption: str, dispatch: str, choice: str, f
             hard_transition=hard_transition,
             frame_idx=frame_idx,
             session_id=session_id,
+            reference_override_path=reference_override_path,
         )
         img_path = result[0] if result else None
         if not img_path:
@@ -3405,7 +3459,7 @@ def _generate_and_append_scene_image(caption: str, dispatch: str, choice: str, f
 
 def _spawn_scene_image_async(caption: str, dispatch: str, choice: str, frame_idx: int,
                              world_prompt: str, hard_transition: bool = False,
-                             session_id: str = 'default'):
+                             session_id: str = 'default', reference_override_path: Optional[str] = None):
     """Generate a scene image OFF the turn's critical path (death + intro paths,
     where choices are produced in parallel). The browser polls /api/feed and
     streams the scene in. For the main turn loop we instead generate the image
@@ -3417,7 +3471,8 @@ def _spawn_scene_image_async(caption: str, dispatch: str, choice: str, frame_idx
         target=_generate_and_append_scene_image,
         kwargs=dict(caption=caption, dispatch=dispatch, choice=choice, frame_idx=frame_idx,
                     world_prompt=world_prompt, hard_transition=hard_transition,
-                    session_id=session_id, write_history=True),
+                    session_id=session_id, write_history=True,
+                    reference_override_path=reference_override_path),
         daemon=True,
     ).start()
 
@@ -3636,6 +3691,16 @@ def api_choose():
         player_choice_text = data['choice']
         context_item_id = data.get('context_item_id') # Optional, for context
 
+        # Optional evidence texture shot by the TOUCH tool: a data-URL / base64
+        # frame of the exact spot the player investigated. When present we save
+        # it and seed THIS turn's img2img on it, so the new scene is generated
+        # from what the player actually looked at (not just the last frame).
+        evidence_image_path = _save_uploaded_frame(
+            data.get('frame'), session_id='default', prefix='evidence'
+        )
+        if evidence_image_path:
+            print(f"[EVIDENCE] api_choose seeded turn with investigated frame: {evidence_image_path}", flush=True)
+
         if DEBUG_MODE: print(f"[DEBUG] api_choose received choice: '{player_choice_text}', context_id: {context_item_id}. Current state ID: {id(state)}", flush=True)
 
         # 1. Immediately create and log the Player Action
@@ -3656,7 +3721,7 @@ def api_choose():
         temp_signal_file = ROOT / f"thread_signal_{player_action_item['id']}.tmp" # Use the correct ID here
         
         try:
-            thread = threading.Thread(target=_process_turn_background, args=(player_choice_text, player_action_item['id'], str(temp_signal_file)))
+            thread = threading.Thread(target=_process_turn_background, args=(player_choice_text, player_action_item['id'], str(temp_signal_file), evidence_image_path))
             # thread.daemon = True # Allow main program to exit even if threads are running. Temporarily commenting out for testing.
             thread.start()            
             # Check for signal from thread via temp file
