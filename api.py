@@ -207,6 +207,11 @@ def api_reactor_config():
         "enabled": bool(os.getenv("REACTOR_API_KEY")),
         "renderer": getattr(engine, "SCENE_RENDERER", "image"),
         "model_name": os.getenv("REACTOR_MODEL", "reactor/lingbot-world-2"),
+        # Whether the client re-seeds the world model with each turn's fresh
+        # guide still (set_image + blend). On by default so generated images
+        # actually steer the live sim; set REACTOR_RESEED=0 to disable if it
+        # causes visible jumps on a given model.
+        "reseed": os.getenv("REACTOR_RESEED", "1").strip().lower() not in ("0", "false", "no", "off"),
     })
 
 

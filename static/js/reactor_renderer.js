@@ -45,6 +45,10 @@
   const FALLBACK_MODEL = "reactor/lingbot-world-2";
   // How long to wait for the seed image to decode before starting anyway.
   const IMAGE_ACCEPT_TIMEOUT_MS = 6000;
+  // Whether to re-seed the world model with each turn's fresh guide still
+  // (set_image + blend) so the generated images actually steer the live sim.
+  // Server can flip it off via REACTOR_RESEED=0 (see /api/reactor/config).
+  let RESEED_LIVE = true;
 
   const rstate = {
     reactor: null,
@@ -189,6 +193,7 @@
       const r = await fetch("/api/reactor/config");
       if (r.ok) rstate.cfg = await r.json();
     } catch (err) { log("config fetch failed, using defaults", err); }
+    if (rstate.cfg && rstate.cfg.reseed === false) RESEED_LIVE = false;
     return rstate.cfg;
   }
 
@@ -339,8 +344,13 @@
     rstate.pending = null;
     if (!s.prompt) return;
 
-    // Dedupe pure re-sends of the same prompt while already running.
-    if (rstate.started && s.prompt === rstate.lastPrompt && !s.hardTransition) return;
+    // Dedupe pure re-sends: same prompt AND no fresh guide image to seed. A
+    // scene that carries a NEW still must pass through even when the prompt is
+    // unchanged (the narrative already set the prompt), so the guide image is
+    // actually pushed into the model instead of being silently dropped.
+    const samePrompt = s.prompt === rstate.lastPrompt;
+    const newImage = !!(s.imageUrl && s.imageUrl !== rstate.lastImageUrl);
+    if (rstate.started && samePrompt && !newImage && !s.hardTransition) return;
 
     rstate.applying = true;
     let deferred = false;
@@ -362,10 +372,25 @@
         deferred = !(await establish(s));
         if (!deferred) log("hard transition re-staged");
       } else {
-        // Same location: hot-swap the prompt; the video evolves continuously.
-        await cmd("set_prompt", { prompt: s.prompt });
-        rstate.lastPrompt = s.prompt;
-        log("re-steered:", s.prompt.slice(0, 80));
+        // Same location. If a fresh guide still arrived, re-seed the world model
+        // with it (BLEND, so the video morphs smoothly toward our composition)
+        // — this is how the per-turn guide images actually steer the realtime
+        // sim. Then hot-swap the scene prompt. Controlled by REACTOR_RESEED.
+        if (RESEED_LIVE && newImage) {
+          const ref = await uploadStill(s.imageUrl);
+          if (ref) {
+            try {
+              await cmd("set_image", { image: ref, transition: "blend" });
+              emitEvent("reseed", { transition: "blend" });
+              log("re-seeded guide image (blend)");
+            } catch (err) { log("re-seed set_image failed", err); }
+          }
+        }
+        if (!samePrompt) {
+          await cmd("set_prompt", { prompt: s.prompt });
+          rstate.lastPrompt = s.prompt;
+          log("re-steered:", s.prompt.slice(0, 80));
+        }
       }
     } catch (err) {
       log("apply scene failed", err);
