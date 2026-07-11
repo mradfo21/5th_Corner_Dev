@@ -51,6 +51,7 @@
     touchReticle: document.getElementById("touch-reticle"),
     touchForm: document.getElementById("touch-form"),
     touchInput: document.getElementById("touch-input"),
+    touchCaptureFlash: document.getElementById("touch-capture-flash"),
     forwardBtn: document.getElementById("forward-btn"),
     actionWheel: document.getElementById("action-wheel"),
     veil: document.getElementById("processing-veil"),
@@ -115,6 +116,7 @@
     inputMode: "act",           // custom input intent: "act" (full turn) | "steer" (realtime nudge)
     touchMode: null,            // TOUCH tool state: null | "aim" (reticle tracks cursor) | "prompt" (spot locked, field open)
     touchPoint: null,           // {x, y} viewport coords of the reticle / locked spot
+    touchCaptureId: null,       // id of the investigation texture captured for the current locked spot
     autoPlay: false,
     autoTimer: null,
     autoDeadline: 0,            // realtime: latest time we'll wait for the new video before advancing anyway
@@ -1503,17 +1505,71 @@
     if (el.touchLayer) el.touchLayer.classList.add("prompting");
     if (el.touchReticle) el.touchReticle.classList.add("prompting");
     Sound.open();
+    // Investigate: grab a texture of the patch of world under the hand. This is
+    // the raw material future mechanics build prompts from (see investigation.js).
+    captureTouchInvestigation(x, y);
     setTimeout(() => { if (el.touchInput) el.touchInput.focus(); }, 90);
+  }
+
+  // Grab a bounding-box texture AROUND (and under) the reticle and file it in
+  // the CaptureStore as an "investigation". Fires a small ceremonial flash so
+  // the grab feels physical. Runs best-effort — if the capture layer isn't
+  // loaded or nothing is on screen, the TOUCH flow still works unchanged.
+  function captureTouchInvestigation(x, y) {
+    state.touchCaptureId = null;
+    // Ceremony: the hand presses in and a ring flares out from the spot.
+    if (el.touchReticle) {
+      el.touchReticle.classList.remove("grabbed");
+      void el.touchReticle.offsetWidth; // reflow so the pulse restarts
+      el.touchReticle.classList.add("grabbed");
+    }
+    fireCaptureFlash(x, y);
+    try { Sound.glitch(); } catch (_) {}
+
+    if (!window.SceneCapture || !window.CaptureStore) return;
+    const where = describeTouchRegion({ x, y });
+    const turn = (state.lastStatus && state.lastStatus.turn != null)
+      ? state.lastStatus.turn : null;
+    Promise.resolve(window.SceneCapture.captureRegion({ x, y }))
+      .then((cap) => {
+        if (!cap) return;
+        const rec = window.CaptureStore.add({
+          kind: "investigation",
+          thumb: cap.dataUrl,
+          width: cap.width,
+          height: cap.height,
+          source: cap.source,
+          box: cap.box,
+          point: { x, y },
+          region: where.label,
+          turn,
+        });
+        // Remember which capture belongs to this locked spot so submitTouch can
+        // attach the prompt the player types to the very texture they grabbed.
+        state.touchCaptureId = rec ? rec.id : null;
+      })
+      .catch((err) => console.warn("[standalone] investigation capture failed:", err));
+  }
+
+  function fireCaptureFlash(x, y) {
+    const f = el.touchCaptureFlash;
+    if (!f) return;
+    f.style.left = x + "px";
+    f.style.top = y + "px";
+    f.classList.remove("fire");
+    void f.offsetWidth; // reflow so the animation retriggers
+    f.classList.add("fire");
   }
 
   function closeTouch(clear) {
     if (!state.touchMode) return;
     state.touchMode = null;
+    state.touchCaptureId = null;
     if (el.touchLayer) {
       el.touchLayer.classList.add("hidden");
       el.touchLayer.classList.remove("prompting");
     }
-    if (el.touchReticle) el.touchReticle.classList.remove("prompting");
+    if (el.touchReticle) el.touchReticle.classList.remove("prompting", "grabbed");
     if (el.realtimeBtn) el.realtimeBtn.classList.remove("aiming");
     document.body.classList.remove("touch-aiming");
     if (clear && el.touchInput) el.touchInput.value = "";
@@ -1542,6 +1598,11 @@
     const text = el.touchInput.value.trim();
     if (!text || state.gameOver) { closeTouch(true); return; }
     const where = describeTouchRegion(state.touchPoint);
+    // Attach what the player asked for to the texture they investigated, so the
+    // stored capture carries both the patch of world AND the intent behind it.
+    if (state.touchCaptureId && window.CaptureStore) {
+      window.CaptureStore.update(state.touchCaptureId, { prompt: text, used: true });
+    }
     const ok = Renderer.steerRealtime(text, where);
     Sound.submit();
     closeTouch(true);

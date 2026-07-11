@@ -81,11 +81,16 @@ def _standalone_asset_version():
         css = os.path.getmtime("static/css/standalone.css")
         js = os.path.getmtime("static/js/standalone.js")
         rjs = 0
+        ijs = 0
         try:
             rjs = os.path.getmtime("static/js/reactor_renderer.js")
         except Exception:
             pass
-        return str(int(max(css, js, rjs)))
+        try:
+            ijs = os.path.getmtime("static/js/investigation.js")
+        except Exception:
+            pass
+        return str(int(max(css, js, rjs, ijs)))
     except Exception:
         return "0"
 
