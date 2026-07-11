@@ -285,6 +285,114 @@ html, body {
   100% { opacity: 0; background: rgba(255,255,255,0); }
 }
 
+/* ---------- Transition glitch (VCR static / tracking distortion) ----------
+   Fired over every scene/video hand-off to mask the switch like a tape jumping
+   between segments: a burst of grayscale static (feTurbulence), an RGB-split
+   tearing band, and a bright tracking bar that jumps down the frame. Sits above
+   the scene + video layers but below the HUD/veil so controls stay usable. */
+#scene-glitch {
+  position: fixed;
+  inset: 0;
+  z-index: 7;
+  pointer-events: none;
+  opacity: 0;
+  overflow: hidden;
+  /* Grayscale static noise; screen-blended so it reads as bright VCR snow. */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 150px 150px;
+  mix-blend-mode: screen;
+  will-change: opacity, background-position;
+}
+
+#scene-glitch::before,
+#scene-glitch::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* RGB-split / color-fringe tearing across the whole frame. */
+#scene-glitch::before {
+  inset: 0;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(255, 0, 90, 0) 0px,
+    rgba(255, 0, 90, 0.16) 2px,
+    rgba(0, 240, 255, 0.14) 4px,
+    rgba(0, 0, 0, 0) 8px
+  );
+  mix-blend-mode: screen;
+}
+
+/* Bright horizontal tracking bar that jumps down the frame. */
+#scene-glitch::after {
+  height: 26px;
+  top: -40px;
+  background: linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.55) 50%,
+    rgba(255, 255, 255, 0) 100%
+  );
+  mix-blend-mode: screen;
+  filter: blur(0.5px);
+}
+
+#scene-glitch.burst {
+  animation: glitch-static 0.62s steps(2, jump-none) 1;
+}
+#scene-glitch.burst::before {
+  animation: glitch-tear 0.62s steps(3, jump-none) 1;
+}
+#scene-glitch.burst::after {
+  animation: glitch-band 0.62s steps(1, jump-none) 1;
+}
+
+@keyframes glitch-static {
+  0%   { opacity: 0;    background-position: 0 0; }
+  8%   { opacity: 0.8;  background-position: 0 0; }
+  22%  { opacity: 0.45; background-position: -46px 14px; }
+  38%  { opacity: 0.85; background-position: 34px -22px; }
+  55%  { opacity: 0.4;  background-position: -22px 10px; }
+  74%  { opacity: 0.6;  background-position: 20px -8px; }
+  100% { opacity: 0;    background-position: 0 0; }
+}
+
+@keyframes glitch-tear {
+  0%   { opacity: 0;   transform: translateX(0)     scaleY(1); }
+  14%  { opacity: 0.9; transform: translateX(-9px)  scaleY(1.03); }
+  30%  { opacity: 0.4; transform: translateX(11px)  scaleY(0.98); }
+  50%  { opacity: 0.8; transform: translateX(-6px)  scaleY(1.02); }
+  70%  { opacity: 0.3; transform: translateX(5px)   scaleY(1); }
+  100% { opacity: 0;   transform: translateX(0)     scaleY(1); }
+}
+
+@keyframes glitch-band {
+  0%   { top: -40px; opacity: 0; }
+  10%  { top: 18%;   opacity: 0.85; }
+  26%  { top: 54%;   opacity: 0.5; }
+  46%  { top: 33%;   opacity: 0.9; }
+  66%  { top: 77%;   opacity: 0.4; }
+  85%  { top: 8%;    opacity: 0.6; }
+  100% { top: 120%;  opacity: 0; }
+}
+
+/* Respect reduced-motion: keep a brief, still-ish flicker instead of the full
+   jittering distortion. */
+@media (prefers-reduced-motion: reduce) {
+  #scene-glitch.burst { animation: glitch-static-soft 0.4s ease-out 1; }
+  #scene-glitch.burst::before,
+  #scene-glitch.burst::after { animation: none; }
+  @keyframes glitch-static-soft {
+    0% { opacity: 0; }
+    30% { opacity: 0.5; }
+    100% { opacity: 0; }
+  }
+}
+
 /* ---------- Inventory HUD ---------- */
 
 #inventory-hud {

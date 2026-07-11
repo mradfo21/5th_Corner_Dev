@@ -20,6 +20,10 @@
        as a graceful fallback if Reactor is unavailable. -->
   <video id="reactor-video" class="reactor-video hidden" autoplay playsinline muted></video>
   <div id="scene-flash"></div>
+  <!-- VCR distortion burst: a heavy static/tracking glitch fired over scene and
+       video transitions (image swap, realtime re-anchor, reveal, reset) so the
+       hand-off is masked like a tape jumping between segments. -->
+  <div id="scene-glitch" aria-hidden="true"></div>
   <div class="scene-scrim"></div>
 
   <!-- VHS overlay: grain + scanlines + tracking glitch + timecode -->

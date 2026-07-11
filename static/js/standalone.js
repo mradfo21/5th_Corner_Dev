@@ -33,6 +33,7 @@
     sceneA: document.getElementById("sceneA"),
     sceneB: document.getElementById("sceneB"),
     sceneFlash: document.getElementById("scene-flash"),
+    sceneGlitch: document.getElementById("scene-glitch"),
     prose: document.getElementById("prose-feed"),
     choices: document.getElementById("choices-container"),
     customForm: document.getElementById("custom-form"),
@@ -145,8 +146,34 @@
       osc.start(t0);
       osc.stop(t0 + dur + 0.02);
     }
+    // A short burst of filtered white noise — the audible "shhk" of a VCR
+    // jumping between tape segments, played under the transition glitch.
+    function noise(dur, vol) {
+      if (!state.soundEnabled) return;
+      const c = ensure();
+      if (!c) return;
+      const t0 = c.currentTime;
+      const len = Math.max(1, Math.floor(c.sampleRate * (dur || 0.22)));
+      const buf = c.createBuffer(1, len, c.sampleRate);
+      const data = buf.getChannelData(0);
+      for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1);
+      const src = c.createBufferSource();
+      src.buffer = buf;
+      const bp = c.createBiquadFilter();
+      bp.type = "bandpass";
+      bp.frequency.value = 2600;
+      bp.Q.value = 0.6;
+      const gain = c.createGain();
+      gain.gain.setValueAtTime(0.0001, t0);
+      gain.gain.exponentialRampToValueAtTime(vol || 0.05, t0 + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + (dur || 0.22));
+      src.connect(bp); bp.connect(gain); gain.connect(c.destination);
+      src.start(t0);
+      src.stop(t0 + (dur || 0.22) + 0.02);
+    }
     return {
       resume() { ensure(); },
+      glitch() { noise(0.24, 0.055); },                        // VCR transition static burst
       text() { tone(430, 0.09, "sine", 0.045); },              // narrative / world text lands
       pickup() { tone([600, 900], 0.16, "triangle", 0.06); },  // item pickup
       choices() { tone(680, 0.07, "triangle", 0.05); tone(920, 0.09, "triangle", 0.045, 0.07); }, // choices ready
@@ -460,10 +487,11 @@
     incoming.classList.add("scene-active");
     outgoing.classList.remove("scene-active");
     state.activeScene = state.activeScene === "A" ? "B" : "A";
-    // Skip the white scene flash when we're staging a still *behind* the live
-    // video (silent). The flash overlay sits above the video, so firing it here
-    // would strobe over the running stream.
-    if (!silent) flashScene();
+    // Skip the white scene flash AND the VCR glitch when we're staging a still
+    // *behind* the live video (silent): both overlays sit above the video, so
+    // firing them here would strobe over the running stream. The re-anchor's own
+    // glitch (on the reactor 'reset' command) masks that hand-off instead.
+    if (!silent) { flashScene(); glitchTransition(); }
   }
 
   function flashScene() {
@@ -472,6 +500,22 @@
     // Force reflow so the animation can re-trigger on consecutive scene swaps.
     void el.sceneFlash.offsetWidth;
     el.sceneFlash.classList.add("flash");
+  }
+
+  // Fire the VCR distortion burst over the current frame to mask a transition
+  // (image swap, realtime re-anchor/reveal, or reset). Re-triggering restarts
+  // the burst and extends it, so back-to-back transitions read as one longer
+  // patch of static rather than a stutter.
+  let _glitchTimer = null;
+  function glitchTransition(ms) {
+    const g = el.sceneGlitch;
+    if (!g) return;
+    g.classList.remove("burst");
+    void g.offsetWidth; // reflow so the animation restarts on rapid re-triggers
+    g.classList.add("burst");
+    clearTimeout(_glitchTimer);
+    _glitchTimer = setTimeout(() => g.classList.remove("burst"), ms || 640);
+    try { Sound.glitch(); } catch (_) {}
   }
 
   // Wipe BOTH still layers immediately (no crossfade) so the current scene image
@@ -557,8 +601,17 @@
         // so the player sees the video pipeline working too: prompts submitted,
         // seed accepted, stream live, state/chunks updating.
         window.ReactorRenderer.onEvent = (name, data) => {
-          if (Renderer.mode !== "reactor" || !Ceremony.isActive()) return;
           const d = data || {};
+          // VCR static over realtime transitions, independent of the ceremony
+          // overlay: the re-anchor (world 'reset' before re-staging on a new
+          // guide image) and the still→video reveal are the visible hand-offs.
+          if (Renderer.mode === "reactor") {
+            if (name === "video_showing" ||
+                (name === "command_sent" && d.command === "reset")) {
+              glitchTransition();
+            }
+          }
+          if (Renderer.mode !== "reactor" || !Ceremony.isActive()) return;
           switch (name) {
             case "command_sent": {
               const cmdNote = {
@@ -1125,6 +1178,7 @@
       // renderer so nothing from the dead run — image or video — can linger or
       // come back after the restart.
       clearSceneLayers();
+      glitchTransition(820); // VCR static over the wipe so the cut isn't abrupt
       hideGuideThumbnail();
       if (Renderer.reactorAvailable()) {
         try { window.ReactorRenderer.reset(); } catch (_) {}
