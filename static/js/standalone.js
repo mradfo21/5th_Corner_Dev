@@ -102,6 +102,9 @@
     lastAdvancedPromptId: null, // guard: auto-advance at most once per prompt
     observeTimer: null,         // debounce for feeding the video frame to the sim
     observedPromptId: null,     // guard: observe at most once per decision point
+    turnResolved: false,        // the turn's pipeline finished (choices are live)
+    turnImageLoaded: false,     // this turn's new frame has arrived on screen
+    finishTimer: null,          // fallback: fade the progress bar back to play
   };
 
   // ------------------------------------------------------------------
@@ -207,7 +210,12 @@
 
   function hideVeil() {
     state.processing = false;
+    state.turnResolved = false;
+    state.turnImageLoaded = false;
+    clearTimeout(state.finishTimer);
     el.veil.classList.add("hidden");
+    // Fade the play button back in — the progress bar occupied its spot.
+    if (el.actionWheel) el.actionWheel.classList.remove("turn-active");
     Ceremony.reset();
   }
 
@@ -230,7 +238,10 @@
     const IDX = {};
     STEPS.forEach((s, i) => { IDX[s.key] = i; });
     const DWELL_MS = 460;      // minimum time each step is shown (so it registers)
-    const RESOLVE_HOLD_MS = 1050;
+    // After the turn resolves we keep the (green) progress bar in the play
+    // button's spot until the new frame actually loads, then fade back to play.
+    const FADE_AFTER_IMAGE_MS = 520;   // brief hold once the image is on screen
+    const IMAGE_WAIT_FALLBACK_MS = 6000; // never strand the bar (no_images / gen fail)
 
     let built = false;
     let active = false;
@@ -286,9 +297,14 @@
       begin() {
         build();
         clearTimeout(doneTimer); clearTimeout(dwellTimer); dwellTimer = null;
+        clearTimeout(state.finishTimer);
         active = true;
         cur = -1; target = -1;
         state.processing = true;
+        state.turnResolved = false;
+        state.turnImageLoaded = false;
+        // The progress bar takes over the play button's spot for the turn.
+        if (el.actionWheel) el.actionWheel.classList.add("turn-active");
         // Reset all chips to pending.
         if (el.ceremonySteps) {
           Array.from(el.ceremonySteps.children).forEach((n) => n.classList.remove("active", "done", "beat"));
@@ -344,8 +360,33 @@
         Sound.cereDone();
         state.processing = false; // choices are live — let the player act
         active = false;
+        state.turnResolved = true;
+        // Hold the resolved bar until this turn's frame loads, then fade it back
+        // to the play button. Fallback so a missing image never strands the bar.
         clearTimeout(doneTimer);
-        doneTimer = setTimeout(hideVeil, RESOLVE_HOLD_MS);
+        clearTimeout(state.finishTimer);
+        state.finishTimer = setTimeout(() => this.finish(), IMAGE_WAIT_FALLBACK_MS);
+        this._tryFinish();
+      },
+
+      // The new frame for this turn is on screen. If the pipeline has already
+      // resolved, fade the progress bar back to the play button.
+      imageLoaded() {
+        state.turnImageLoaded = true;
+        this._tryFinish();
+      },
+
+      _tryFinish() {
+        if (state.turnResolved && state.turnImageLoaded) this.finish();
+      },
+
+      // Fade the resolved progress bar out, restoring the play button.
+      finish() {
+        if (!state.turnResolved) return;
+        state.turnResolved = false;
+        clearTimeout(state.finishTimer);
+        clearTimeout(doneTimer);
+        doneTimer = setTimeout(hideVeil, FADE_AFTER_IMAGE_MS);
       },
 
       // Tear down without the resolve flourish (error / game over / reset).
@@ -922,6 +963,9 @@
           Ceremony.reach("world_respond");
           Ceremony.reach("actions");
         }
+        // The new frame is on screen — fade the progress bar back to the play
+        // button (once the pipeline has also resolved).
+        Ceremony.imageLoaded();
         // Auto-play: the new frame just rendered — submit the next turn now
         // (minus a tiny beat), so advancement is gated only by generation lag.
         if (state.autoPlay) scheduleAutoAdvance(AUTOPLAY_FRAME_DELAY_MS);

@@ -537,8 +537,18 @@ html, body {
 
 .fw-icon { font-size: 14px; opacity: 0.95; }
 .fw-label { font-size: 7px; letter-spacing: 0.12em; opacity: 0.85; }
-.forward-icon { display: inline-flex; opacity: 0.95; }
-.forward-icon svg { width: 22px; height: 22px; display: block; }
+/* Play triangle — nudged right 1px so it reads optically centered in the ring. */
+.forward-icon { display: inline-flex; opacity: 0.95; transform: translateX(1px); }
+.forward-icon svg { width: 20px; height: 20px; display: block; }
+
+/* While a turn resolves, the progress bar occupies the play button's spot, so
+   fade the play + ACT hubs (and choices) out — less UI, one thing at a time. */
+#action-wheel.turn-active #forward-btn,
+#action-wheel.turn-active #free-will-btn {
+  opacity: 0;
+  pointer-events: none;
+  animation: none;
+}
 
 /* Free-will input: hidden until the ACT hub is tapped, then expands over the wheel. */
 #custom-form {
@@ -819,9 +829,9 @@ html, body {
   inset: 0;
   z-index: 20;
   display: flex;
-  align-items: flex-end;      /* status line sits low, above the action zone */
+  align-items: flex-end;      /* the progress bar takes the play button's spot */
   justify-content: center;
-  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 200px);
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 3vh + 34px);
   pointer-events: none;       /* never intercept taps on the scene/controls */
   /* No full-screen dimming — the generated scene stays fully visible.
      Only the compact status line is shown while a turn resolves. */
