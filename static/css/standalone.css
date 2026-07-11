@@ -1350,6 +1350,50 @@ body.realtime-on #realtime-btn { display: flex; }
   pointer-events: auto;
 }
 body.realtime-on.rt-log-on #rt-log { display: flex; }
+/* Keep the log (and its model switcher) reachable whenever the realtime renderer
+   is available — even in still mode — so you can flip world models to test. */
+body.reactor-available.rt-log-on #rt-log { display: flex; }
+
+/* ---------- World-model switcher (in the log head) ---------- */
+.rt-log-models {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(142, 255, 193, 0.14);
+  background: rgba(0, 0, 0, 0.18);
+}
+.rt-model-btn {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 6px;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(216, 240, 228, 0.7);
+  background: rgba(142, 255, 193, 0.06);
+  border: 1px solid rgba(142, 255, 193, 0.2);
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.rt-model-btn:hover { background: rgba(142, 255, 193, 0.14); color: rgba(216, 240, 228, 0.95); }
+.rt-model-btn.active {
+  color: #061a11;
+  background: rgba(142, 255, 193, 0.85);
+  border-color: rgba(142, 255, 193, 0.95);
+  font-weight: 700;
+}
+.rt-model-btn.pending {
+  border-color: rgba(255, 207, 148, 0.8);
+  color: rgba(255, 207, 148, 0.95);
+}
+.rt-model-btn .rt-model-dot { opacity: 0.6; margin-right: 3px; }
+.rt-model-btn.active .rt-model-dot { opacity: 1; }
 
 .rt-log-head {
   display: flex;

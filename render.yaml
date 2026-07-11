@@ -37,6 +37,13 @@ services:
         sync: false
       - key: REACTOR_MODEL
         value: "reactor/lingbot-world-2"
+      # Default world model the mid-game switcher starts on ("lingbot-world-2"
+      # or "helios"). Players can flip between them live from the WORLD MODEL log.
+      - key: REACTOR_WORLD_MODEL
+        value: "lingbot-world-2"
+      # SDK model name for Helios (the second model in the base pair).
+      - key: REACTOR_HELIOS_MODEL
+        value: "reactor/helios"
       # Default scene renderer: "reactor" (realtime video) or "image" (Gemini
       # stills). The web client auto-falls back to stills if Reactor is
       # unavailable, and can override per-session via ?renderer= / the toggle.

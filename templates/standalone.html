@@ -105,6 +105,10 @@
       <span class="rt-log-title">WORLD MODEL</span>
       <button id="rt-log-hide" class="rt-log-hide" type="button" title="Hide (L)">&#10005;</button>
     </div>
+    <!-- Mid-game world-model switcher: flip between the still renderer and each
+         Reactor world model live (see WORLD_MODEL_SWITCHING_PLAN.md). Buttons are
+         populated from /api/reactor/config. -->
+    <div id="rt-log-models" class="rt-log-models" role="group" aria-label="Switch world model"></div>
     <ol id="rt-log-list" class="rt-log-list" aria-live="polite"></ol>
   </aside>
 

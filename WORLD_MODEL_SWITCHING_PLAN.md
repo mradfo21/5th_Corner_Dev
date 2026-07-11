@@ -13,6 +13,14 @@ facade, plus a session-swap + a UI selector, so we can flip world models the sam
 already flip between the still-image and realtime renderers — without the rest of the
 game caring.
 
+> **Status — base pair implemented (testable):** the driver abstraction (§3), the live
+> session swap (§4), the backend model registry (§5.1), and a simple **switcher UI
+> attached to the world-model log** (§5.2) are now in the code for the LingBot World 2 +
+> Helios base pair. Open the standalone view, press **L** to reveal the WORLD MODEL log,
+> and click **Stills / LingBot World 2 / Helios** to flip live. Live video for each model
+> still needs a real browser + a configured `REACTOR_API_KEY` (WebRTC + GPU) to fully
+> validate; without a key the switcher falls back to stills.
+
 ---
 
 ## 1. What Reactor gives us (the base pair)

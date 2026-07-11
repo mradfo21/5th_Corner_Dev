@@ -72,6 +72,7 @@
     rtLog: document.getElementById("rt-log"),
     rtLogList: document.getElementById("rt-log-list"),
     rtLogHide: document.getElementById("rt-log-hide"),
+    rtLogModels: document.getElementById("rt-log-models"),
     deathOverlay: document.getElementById("death-overlay"),
     deathMessage: document.getElementById("death-message"),
     deathRestart: document.getElementById("death-restart"),
@@ -771,13 +772,26 @@
           try { Sound.scene(); } catch (_) {}
           showGuideThumbnail(imageUrl);
         };
+        // The active world model changed (mid-game swap) — reflect it in the
+        // switcher, the log, and a transient toast.
+        window.ReactorRenderer.onModel = (id, label) => {
+          RtLog.push("status", "\u21C4 world model \u00B7 " + (label || id));
+          showRendererToast("World model: " + (label || id));
+          if (Ceremony.isActive()) Ceremony.note("\u21C4 World model \u2192 " + (label || id));
+          updateModelSwitcher();
+        };
+        // The log + switcher stay reachable whenever realtime is available so you
+        // can flip world models even from still mode.
+        document.body.classList.add("reactor-available");
       }
       RtLog.init();
+      buildModelSwitcher();
       // In realtime mode, connect eagerly so the GPU session is warming while
       // the intro scene generates — the video then starts as soon as the first
       // scene prompt arrives. (Falls back to stills if it can't connect.)
       if (this.mode === "reactor" && this.reactorAvailable()) {
         window.ReactorRenderer.enable().then((ok) => {
+          buildModelSwitcher(); // config may refine the model list/labels
           if (ok && Renderer.lastScene) window.ReactorRenderer.applyScene(Renderer.lastScene);
         });
       }
@@ -841,6 +855,7 @@
       if (mode === "reactor" && this.reactorAvailable()) {
         showRendererToast("Realtime video — connecting…");
         window.ReactorRenderer.enable().then((ok) => {
+          buildModelSwitcher(); // config may refine the model list/labels
           // Steer the current scene immediately so switching mid-game shows
           // something without waiting for the next turn.
           if (ok && Renderer.lastScene) window.ReactorRenderer.applyScene(Renderer.lastScene);
@@ -855,6 +870,21 @@
 
     toggle() {
       this.setMode(this.mode === "reactor" ? "image" : "reactor");
+    },
+
+    // Switch to a specific world model live, mid-game (from the switcher UI).
+    // Ensures we're in realtime mode, then swaps the model on the running
+    // session (or picks it up on connect if realtime was just enabled).
+    setWorldModel(id) {
+      if (!this.reactorAvailable()) { showRendererToast("Realtime unavailable"); return; }
+      if (this.mode !== "reactor") {
+        // Enabling realtime connects with the chosen model directly (no swap).
+        try { window.ReactorRenderer.setModel(id); } catch (_) {}
+        this.setMode("reactor");
+      } else {
+        window.ReactorRenderer.setModel(id);
+      }
+      updateModelSwitcher();
     },
 
     // Vision loop: once the realtime video has settled on a scene, feed the
@@ -943,6 +973,64 @@
         : status === "connecting"
           ? "Renderer: realtime — connecting…"
           : "Renderer: realtime — showing stills until it connects (G)";
+    updateModelSwitcher();
+  }
+
+  // ------------------------------------------------------------------
+  // World-model switcher — a simple segmented control in the log head to flip
+  // between the still renderer and each Reactor world model live, mid-game.
+  // ------------------------------------------------------------------
+  function makeModelBtn(id, label) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "rt-model-btn";
+    b.dataset.model = id;
+    const dot = document.createElement("span");
+    dot.className = "rt-model-dot";
+    dot.textContent = id === "__image__" ? "\u25CE" : "\u25C9"; // ◎ still / ◉ live
+    const txt = document.createElement("span");
+    txt.textContent = label;
+    b.appendChild(dot);
+    b.appendChild(txt);
+    b.title = id === "__image__"
+      ? "Still images (Gemini)"
+      : "Realtime world model: " + label;
+    b.addEventListener("click", () => {
+      if (id === "__image__") Renderer.setMode("image");
+      else Renderer.setWorldModel(id);
+      updateModelSwitcher();
+    });
+    return b;
+  }
+
+  function buildModelSwitcher() {
+    const wrap = el.rtLogModels;
+    if (!wrap) return;
+    wrap.innerHTML = "";
+    wrap.appendChild(makeModelBtn("__image__", "Stills"));
+    const models = (Renderer.reactorAvailable() && window.ReactorRenderer.getModels)
+      ? window.ReactorRenderer.getModels()
+      : [];
+    models.forEach((m) => wrap.appendChild(makeModelBtn(m.id, m.label)));
+    updateModelSwitcher();
+  }
+
+  function updateModelSwitcher() {
+    const wrap = el.rtLogModels;
+    if (!wrap) return;
+    const inReactor = Renderer.mode === "reactor" && Renderer.reactorAvailable();
+    const activeModel = (inReactor && window.ReactorRenderer.getModel)
+      ? window.ReactorRenderer.getModel()
+      : null;
+    const status = (inReactor && window.ReactorRenderer.getStatus)
+      ? window.ReactorRenderer.getStatus()
+      : "off";
+    Array.prototype.forEach.call(wrap.children, (b) => {
+      const id = b.dataset.model;
+      const isActive = id === "__image__" ? !inReactor : (inReactor && id === activeModel);
+      b.classList.toggle("active", isActive);
+      b.classList.toggle("pending", isActive && id !== "__image__" && status === "connecting");
+    });
   }
 
   // ------------------------------------------------------------------

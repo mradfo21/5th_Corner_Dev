@@ -382,6 +382,42 @@ VEO_MODE_ENABLED    = False # DISABLED by default - use video generation instead
 # unconfigured/unavailable, and players can flip renderers from the UI.
 SCENE_RENDERER = os.getenv("SCENE_RENDERER", "reactor")
 
+# ── Realtime world-model registry ─────────────────────────────────────────────
+# The two Reactor world models we build around form the base pair the web client
+# can switch between LIVE, mid-game (see WORLD_MODEL_SWITCHING_PLAN.md). Each
+# entry advertises the SDK model name the browser passes to `new Reactor(...)`
+# and whether the model needs a seed image to start:
+#   • lingbot-world-2 — image-conditioned; reference image locked once a run
+#     starts, so a new guide image forces a fresh stage. (requires_seed_image)
+#   • helios          — text/image-to-video; a new guide image blends in-stream
+#     with no reset, so it can start text-only.
+# REACTOR_WORLD_MODEL picks the server default; REACTOR_MODEL stays as the
+# back-compat SDK name for whichever model is the default.
+REACTOR_WORLD_MODEL = os.getenv("REACTOR_WORLD_MODEL", "lingbot-world-2")
+_DEFAULT_LINGBOT_SDK = os.getenv("REACTOR_MODEL", "reactor/lingbot-world-2")
+AVAILABLE_WORLD_MODELS = [
+    {
+        "id": "lingbot-world-2",
+        "label": "LingBot World 2",
+        "sdk_name": _DEFAULT_LINGBOT_SDK,
+        "requires_seed_image": True,
+    },
+    {
+        "id": "helios",
+        "label": "Helios",
+        "sdk_name": os.getenv("REACTOR_HELIOS_MODEL", "reactor/helios"),
+        "requires_seed_image": False,
+    },
+]
+
+
+def world_model_sdk_name(model_id: str) -> str:
+    """SDK model string for a world-model id (falls back to the id itself)."""
+    for m in AVAILABLE_WORLD_MODELS:
+        if m["id"] == model_id:
+            return m["sdk_name"]
+    return model_id
+
 # Guard so the (slow, LLM-backed) realtime "vision" re-grounding never stacks up.
 _observe_reground_active = False
 
