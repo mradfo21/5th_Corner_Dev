@@ -429,6 +429,13 @@
     rstate.lastImageUrl = null;
     rstate.lastRef = null;
     rstate.paused = false;
+    // Drop anything still queued/staged from the previous run so a stale scene
+    // (e.g. the dead run's opening image) can't flush in after the reset. Reset
+    // MUST fully clear the queue — otherwise the old image reappears/regenerates
+    // and throws the fresh run off.
+    rstate.pending = null;
+    rstate.stagingGuideUrl = null;
+    rstate.guideImageUrl = null;
     // Hide the (now-stale) video during the reset gap so the fresh still shows
     // until the new run's first frame is ready — no old-scene bleed-through.
     rstate.showSuppressed = true;

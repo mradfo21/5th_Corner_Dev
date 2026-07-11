@@ -451,15 +451,19 @@
   // Scene rendering
   // ------------------------------------------------------------------
 
-  function setScene(imageUrl) {
+  function setScene(imageUrl, opts) {
     if (!imageUrl) return;
+    const silent = !!(opts && opts.silent);
     const incoming = state.activeScene === "A" ? el.sceneB : el.sceneA;
     const outgoing = state.activeScene === "A" ? el.sceneA : el.sceneB;
     incoming.style.backgroundImage = `url('${imageUrl}')`;
     incoming.classList.add("scene-active");
     outgoing.classList.remove("scene-active");
     state.activeScene = state.activeScene === "A" ? "B" : "A";
-    flashScene();
+    // Skip the white scene flash when we're staging a still *behind* the live
+    // video (silent). The flash overlay sits above the video, so firing it here
+    // would strobe over the running stream.
+    if (!silent) flashScene();
   }
 
   function flashScene() {
@@ -619,6 +623,9 @@
         imageUrl: imageUrl || null,
         hardTransition: !!(meta && meta.hard_transition),
       };
+      // The still we last knew about — used to detect a NEW guide image (a
+      // re-anchor boundary) before we merge this update in.
+      const prevImageUrl = (this.lastScene && this.lastScene.imageUrl) || null;
       // Remember the latest scene we can (re)start realtime from. A steer needs
       // BOTH a prompt and an image, but not every feed item carries both — a
       // player_choice_prompt, for instance, rides the current still with no
@@ -635,12 +642,28 @@
       }
       if (meta && meta.base) this.lastBase = meta.base;
       if (this.mode === "reactor" && this.reactorAvailable()) {
+        // A brand-new still is a guide-image re-anchor: the reactor renderer
+        // resets and briefly hides the live video while it re-stages on this
+        // exact frame.
+        const newGuideImage = !!(imageUrl && imageUrl !== prevImageUrl);
         if (scene.prompt) window.ReactorRenderer.applyScene(scene);
-        // Paint the still ONLY while the live video isn't actually covering the
-        // screen (connecting, reset gap, or fallback). Once the video is showing
-        // real frames it's the single source of truth — repainting stills under
-        // it is what caused the "image → video → old image" flicker.
-        if (imageUrl && !window.ReactorRenderer.isShowing()) setScene(imageUrl);
+        if (imageUrl) {
+          if (!window.ReactorRenderer.isShowing()) {
+            // Video isn't covering the screen (connecting, reset gap, fallback):
+            // show the still normally, with the scene flash.
+            setScene(imageUrl);
+          } else if (newGuideImage) {
+            // The live video is up but a NEW guide image just arrived. The
+            // reactor renderer is about to reset + hide the video to re-anchor on
+            // this frame. Stage the NEW still behind the video NOW (silently, so
+            // no flash strobes over the live stream) so the re-anchor gap reveals
+            // the new guide image — not the stale previous/opening scene. This is
+            // what kills the "flash the original image, then switch" artifact.
+            setScene(imageUrl, { silent: true });
+          }
+          // Same still already on screen under a live video: leave it. Repainting
+          // it there is what caused the old "image → video → old image" flicker.
+        }
         return;
       }
       if (imageUrl) setScene(imageUrl);
@@ -711,11 +734,13 @@
       state.observeTimer = setTimeout(attempt, 2600); // let the video settle first
     },
 
-    // Inject a player's action into the live video IMMEDIATELY — steering the
-    // CURRENT scene with the action as a motion beat — so the world model reacts
-    // the instant a choice is made, well before the backend turn (LLM + image)
-    // resolves. When the resolved scene_image arrives it re-steers to the new
-    // scene. No-op unless realtime is live and we have a scene to build on.
+    // Steer the CURRENT live video with an action as a motion beat, against the
+    // scene already on screen. This is NO LONGER called on every choice: doing
+    // so made the original scene's video play the action before its new guide
+    // image had formed, which looked wrong. The action now rides the new guide
+    // image's stream instead (its render prompt already carries the beat). Kept
+    // as a facade capability for callers that want an explicit instant steer.
+    // No-op unless realtime is live and we have a scene to build on.
     steerAction(action) {
       if (this.mode !== "reactor" || !this.reactorAvailable() || !this.lastBase) return;
       const a = (action || "").trim().replace(/\.+$/, "");
@@ -1121,9 +1146,14 @@
     el.choices.innerHTML = "";
     Ceremony.begin(); // light up the turn pipeline — starting with "action selected"
     state.awaitingResolution = true;
-    // Seamless realtime: steer the live video with this action NOW, before the
-    // backend turn resolves — the world model starts reacting immediately.
-    Renderer.steerAction(choiceText);
+    // NOTE: we deliberately do NOT steer the CURRENT live video with the action
+    // here. Injecting the action into the video the instant a choice is made
+    // meant the ORIGINAL scene's video started playing the action before its new
+    // guide image had formed — which looked wrong. The action is now applied
+    // only when the new guide image has been generated and its video is running:
+    // the re-anchor (see Renderer.applyScene / ReactorRenderer) starts the new
+    // guide-image stream with the render prompt, which already carries this
+    // action beat (build_realtime_prompt, server-side).
     try {
       const items = await postJSON("/api/choose", {
         choice: choiceText,
