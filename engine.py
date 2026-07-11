@@ -3373,28 +3373,61 @@ def _generate_and_append_scene_image(caption: str, dispatch: str, choice: str, f
             state = st
 
         if write_history:
-            # Write the absolute image path back into THIS turn's history entry so
-            # the NEXT turn's img2img can use it for continuity. frame_idx ==
-            # len(history)+1 at turn start, so after the parallel choice append
-            # this turn's entry is at index frame_idx-1; wait briefly for it.
-            hist = _load_history(session_id)
-            target_idx = int(frame_idx) - 1
-            for _ in range(40):  # up to ~10s: append is quick, image is slow
-                if 0 <= target_idx < len(hist):
-                    break
-                time.sleep(0.25)
+            # Write the absolute image path back into history so the NEXT turn's
+            # img2img can use this frame for continuity.
+            if int(frame_idx) == 0:
+                # INTRO (frame 0): the opening image never goes through
+                # advance_turn_choices_deferred, so no history entry exists for it
+                # yet. Seed history[0] ourselves — otherwise the FIRST player turn
+                # finds no reference frame and falls back to text-to-image, so the
+                # very first image never passes itself to the second via img2img
+                # (breaking visual continuity right at the start of the game).
                 hist = _load_history(session_id)
-            if 0 <= target_idx < len(hist):
-                hist[target_idx]["image"] = img_path
-                hist[target_idx]["image_url"] = img_path
-                _save_history(hist, session_id)
-                history = hist
-            elif hist:
-                print(f"[SCENE IMG] WARN: turn entry idx {target_idx} absent (len={len(hist)}); writing hist[-1]")
-                hist[-1]["image"] = img_path
-                hist[-1]["image_url"] = img_path
-                _save_history(hist, session_id)
-                history = hist
+                if not hist:
+                    intro_entry = {
+                        "choice":            choice,
+                        "dispatch":          dispatch,
+                        # vision_dispatch is REQUIRED by the img2img reference gate
+                        # in _gen_image (it skips entries missing it).
+                        "vision_dispatch":   caption or dispatch,
+                        "world_prompt":      world_prompt,
+                        "image":             img_path,
+                        "image_url":         img_path,
+                        "analysis_image":    img_path,
+                        "image_prompt":      image_prompt,
+                        "hard_transition":   bool(hard_transition),
+                    }
+                    hist.append(intro_entry)
+                    _save_history(hist, session_id)
+                    history = hist
+                    print(f"[SCENE IMG] intro frame seeded into history[0] for img2img continuity: {img_path}")
+                else:
+                    # A player turn already appended before the (async) intro image
+                    # landed. Seeding now would reorder history, so skip — the intro
+                    # still shows in the feed, we just don't chain off it this game.
+                    print(f"[SCENE IMG] intro image arrived after a turn was appended (len={len(hist)}); skipping history seed to avoid reordering")
+            else:
+                # Regular turn: frame_idx == len(history)+1 at turn start, so after
+                # the parallel choice append this turn's entry is at index
+                # frame_idx-1; wait briefly for it.
+                hist = _load_history(session_id)
+                target_idx = int(frame_idx) - 1
+                for _ in range(40):  # up to ~10s: append is quick, image is slow
+                    if 0 <= target_idx < len(hist):
+                        break
+                    time.sleep(0.25)
+                    hist = _load_history(session_id)
+                if 0 <= target_idx < len(hist):
+                    hist[target_idx]["image"] = img_path
+                    hist[target_idx]["image_url"] = img_path
+                    _save_history(hist, session_id)
+                    history = hist
+                elif hist:
+                    print(f"[SCENE IMG] WARN: turn entry idx {target_idx} absent (len={len(hist)}); writing hist[-1]")
+                    hist[-1]["image"] = img_path
+                    hist[-1]["image_url"] = img_path
+                    _save_history(hist, session_id)
+                    history = hist
         print(f"[SCENE IMG] scene appended for {session_id}: {web}", flush=True)
         return {"img_path": img_path, "web_url": web,
                 "image_prompt": image_prompt, "render_prompt": render_prompt}
