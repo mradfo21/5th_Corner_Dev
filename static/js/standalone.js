@@ -1573,8 +1573,9 @@
   // into a scanning surface: moving/dragging the cursor sweeps a beam across
   // the world model's video, and the objects it recognizes twinkle in as
   // floating "starfield" tags anchored where they actually sit. Each tag
-  // carries a little button that opens an inline prompt to play with THAT exact
-  // thing — an instant live steer, no full turn. Realtime mode only.
+  // carries a little button that opens an inline prompt to ACT on THAT exact
+  // thing — a full turn (consequence + a freshly generated guide image), so it
+  // makes meaningful change to the world. Realtime mode only.
   //
   // Engineering notes:
   //  • Detection is an LLM round-trip, so calls are throttled (a floor between
@@ -1888,14 +1889,21 @@
   function submitTagPrompt(tag, text) {
     const obj = tag._obj || { label: "it" };
     if (!text || state.gameOver) { closeTagPrompt(tag, true); return; }
-    // Anchor the live nudge to this exact object so the change lands on it.
-    const where = { label: obj.label, phrase: "at the " + obj.label };
-    const ok = Renderer.steerRealtime(text, where);
+    // A tag interaction commits a FULL TURN grounded on this object (consequence
+    // + a freshly generated guide image), not a live re-steer — so poking a tag
+    // makes meaningful change to the world, exactly like ACT / choices do.
+    if (state.processing) { showRendererToast("The world is still resolving…"); return; }
+    // Compose a self-contained action so the turn is anchored on this object
+    // even if the player's phrasing referred to it as "it".
+    const act = text.replace(/\.+$/, "").trim();
+    const mentionsIt = act.toLowerCase().includes(obj.label.toLowerCase());
+    const action = mentionsIt ? act : act + " \u2014 the " + obj.label;
     Sound.submit();
     closeTagPrompt(tag, true);
-    tag.classList.add("poked");
-    setTimeout(() => tag.classList.remove("poked"), 900);
-    showRendererToast(ok ? "Nudged the " + obj.label : "Realtime not ready yet");
+    showRendererToast("Acting on the " + obj.label + "\u2026");
+    // makeChoice runs the full pipeline and clears the (now stale) scan tags;
+    // SCAN stays armed, so fresh tags twinkle back in over the new scene.
+    makeChoice(action, null);
   }
 
   // Drop the current tags (e.g. when a turn changes the scene) so stale labels
