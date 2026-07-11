@@ -10,8 +10,15 @@
   const STATUS_INTERVAL_MS = 4000;
   const FAST_POLL_INTERVAL_MS = 800; // used right after a choice, while waiting for the turn to resolve
   const FAST_POLL_TIMEOUT_MS = 45000; // give up waiting fast after this long and fall back to normal polling
-  const AUTOPLAY_FRAME_DELAY_MS = 350;  // advance almost immediately once the new frame renders
+  const AUTOPLAY_FRAME_DELAY_MS = 350;  // (image mode) advance almost immediately once the new still renders
   const AUTOPLAY_FALLBACK_MS = 6000;    // if no image arrives, advance anyway after this
+  // Realtime auto-play: the "frame" is the live video, not the scene_image feed
+  // item. Advance only after the NEW scene's video is actually on screen, then
+  // let it PLAY for this watch window so the world visibly evolves. Advancing off
+  // the scene_image feed item (before the re-anchor established) stacked resets
+  // faster than the model could re-stage and blacked out the stream.
+  const AUTOPLAY_REALTIME_WATCH_MS = (typeof window !== "undefined" && window.__AUTOPLAY_WATCH_MS__) || 7000;   // let the live video play this long before advancing
+  const AUTOPLAY_REALTIME_MAX_WAIT_MS = 20000; // never wait longer than this for the video to appear
 
   // Show a small thumbnail preview of each guide image as it's integrated into
   // the realtime world model. Flip to false (or set localStorage
@@ -99,6 +106,7 @@
     freeWillOpen: false,
     autoPlay: false,
     autoTimer: null,
+    autoDeadline: 0,            // realtime: latest time we'll wait for the new video before advancing anyway
     currentPromptId: null,     // id of the latest choice prompt (the live decision point)
     lastAdvancedPromptId: null, // guard: auto-advance at most once per prompt
     observeTimer: null,         // debounce for feeding the video frame to the sim
@@ -633,6 +641,13 @@
                 (name === "command_sent" && d.command === "reset")) {
               glitchTransition();
             }
+            // Realtime auto-play advances off the LIVE video, not the scene_image
+            // feed item: once the new scene is actually on screen, let it play for
+            // the watch window, then advance. This is what stops auto-play from
+            // stacking re-anchors and blacking out the stream.
+            if (name === "video_showing" && state.autoPlay) {
+              scheduleAutoAdvance(AUTOPLAY_REALTIME_WATCH_MS);
+            }
           }
           if (Renderer.mode !== "reactor" || !Ceremony.isActive()) return;
           switch (name) {
@@ -1068,9 +1083,11 @@
         // The new frame is on screen — fade the progress bar back to the play
         // button (once the pipeline has also resolved).
         Ceremony.imageLoaded();
-        // Auto-play: the new frame just rendered — submit the next turn now
-        // (minus a tiny beat), so advancement is gated only by generation lag.
-        if (state.autoPlay) scheduleAutoAdvance(AUTOPLAY_FRAME_DELAY_MS);
+        // Auto-play (IMAGE mode only): the still just rendered — advance soon.
+        // In REALTIME the scene_image feed item is NOT the on-screen frame (the
+        // video re-anchor is still establishing), so realtime auto-advance is
+        // driven by the reactor 'video_showing' event instead — see Renderer.init.
+        if (state.autoPlay && Renderer.mode !== "reactor") scheduleAutoAdvance(AUTOPLAY_FRAME_DELAY_MS);
         return;
 
       case "game_over":
@@ -1100,6 +1117,9 @@
         // New decision point: these are now the live/latest choices. Auto-play
         // will advance against THIS prompt (and only once).
         state.currentPromptId = item.id;
+        // Realtime: cap how long auto-play waits for this turn's video to show
+        // before advancing anyway (so a stalled stream can't freeze the loop).
+        state.autoDeadline = Date.now() + AUTOPLAY_REALTIME_MAX_WAIT_MS;
         refreshStatus(); // reflect turn/chaos/inventory promptly, not on the 4s tick
         // Feed the settled video frame back into the sim so choices match what's
         // actually on screen (realtime "vision"). No-op outside realtime mode.
@@ -1294,14 +1314,23 @@
       // point — so a late/stale frame can't fire against newer choices, and we
       // always commit one of the CURRENT prompt's choices (frame + choices in
       // lockstep).
-      if (state.autoPlay && !state.processing && !state.gameOver &&
-          !state.freeWillOpen && !tapeIsOpen() &&
-          el.choices.children.length &&
-          state.currentPromptId != null &&
-          state.currentPromptId !== state.lastAdvancedPromptId) {
-        state.lastAdvancedPromptId = state.currentPromptId;
-        moveForward();
+      if (!(state.autoPlay && !state.processing && !state.gameOver &&
+            !state.freeWillOpen && !tapeIsOpen() &&
+            el.choices.children.length &&
+            state.currentPromptId != null &&
+            state.currentPromptId !== state.lastAdvancedPromptId)) return;
+      // Realtime: never advance until the NEW scene's video is genuinely on
+      // screen. Advancing while it's still re-staging stacks resets faster than
+      // the world model can keep up and blacks out the stream. Wait and retry,
+      // but honor the deadline so a stalled stream can't freeze the loop.
+      if (Renderer.mode === "reactor" && Renderer.reactorAvailable() &&
+          !window.ReactorRenderer.isShowing() &&
+          Date.now() < (state.autoDeadline || 0)) {
+        scheduleAutoAdvance(1200);
+        return;
       }
+      state.lastAdvancedPromptId = state.currentPromptId;
+      moveForward();
     }, delay == null ? AUTOPLAY_FALLBACK_MS : delay);
   }
 
@@ -1310,8 +1339,16 @@
     el.autoplayBtn.classList.toggle("on", on);
     el.autoplayLabel.textContent = on ? "STOP" : "AUTO";
     el.autoplayBtn.title = on ? "Stop auto-play (P)" : "Auto-play — advance on its own (P)";
-    if (on) scheduleAutoAdvance(AUTOPLAY_FRAME_DELAY_MS); // start advancing right away
-    else clearTimeout(state.autoTimer);  // pause
+    if (on) {
+      // In realtime, let the current video play a watch window (and never advance
+      // before it's on screen); in image mode, advance almost immediately.
+      state.autoDeadline = Date.now() + AUTOPLAY_REALTIME_MAX_WAIT_MS;
+      const initial = (Renderer.mode === "reactor" && Renderer.reactorAvailable())
+        ? AUTOPLAY_REALTIME_WATCH_MS : AUTOPLAY_FRAME_DELAY_MS;
+      scheduleAutoAdvance(initial);
+    } else {
+      clearTimeout(state.autoTimer);  // pause
+    }
   }
 
   function toggleAutoPlay() {

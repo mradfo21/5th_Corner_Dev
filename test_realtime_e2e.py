@@ -312,6 +312,49 @@ class TestRealtimeRenderer(unittest.TestCase):
         finally:
             page.close()
 
+    def test_realtime_autoplay_waits_for_video_and_does_not_storm(self):
+        """Realtime auto-play must advance off the LIVE video (after it shows +
+        a watch window), not off the scene_image feed item — and must not fire a
+        storm of /api/choose that stacks re-anchors and blacks out the stream."""
+        page = self._new_realtime_page()
+        page.add_init_script("window.__AUTOPLAY_WATCH_MS__ = 800;")  # short watch for the test
+
+        scene_items = [
+            {"id": 1, "type": "narrative", "content": "Intro."},
+            {"id": 2, "type": "scene_image", "content": "", "image_url": TINY_PNG_DATA_URL,
+             "metadata": {"prompt": "scene one", "base": "scene one", "hard_transition": False}},
+            {"id": 3, "type": "player_choice_prompt", "content": "?", "choices": [{"text": "Go"}, {"text": "Wait"}]},
+        ]
+        chooses = []
+        page.route("**/api/reset", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(scene_items)))
+        page.route("**/api/feed*", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
+        # /api/choose accepts the advance but returns NO new prompt, so auto-play
+        # has nothing new to advance to — it must NOT keep firing.
+        def choose_handler(route):
+            chooses.append(route.request.url)
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps([{"id": 100 + len(chooses), "type": "player_action", "content": "you go"}]))
+        page.route("**/api/choose", choose_handler)
+
+        try:
+            page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
+            page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
+            # Turn on auto-play.
+            page.evaluate("() => document.getElementById('autoplay-btn').click()")
+            # It should advance ONCE after the (short) watch window…
+            waited = 0
+            while len(chooses) < 1 and waited < 8000:
+                page.wait_for_timeout(200); waited += 200
+            self.assertGreaterEqual(len(chooses), 1, f"auto-play never advanced. logs:\n{self._dump_logs()}")
+            # …and then STOP (no new prompt arrived), rather than storming.
+            page.wait_for_timeout(2500)
+            self.assertLessEqual(len(chooses), 1, f"auto-play stormed /api/choose ({len(chooses)}x) — would stack re-anchors")
+        except Exception:
+            print("\n=== REACTOR CONSOLE LOG (autoplay) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
     def test_ceremony_animates_all_five_steps_to_done(self):
         """The turn pipeline (Action → Consequence → World Updating → World
         Responding → Actions Generating) must animate through ALL steps and
