@@ -19,6 +19,13 @@
        stream replaces the still when connected, and the still shows through
        as a graceful fallback if Reactor is unavailable. -->
   <video id="reactor-video" class="reactor-video hidden" autoplay playsinline muted></video>
+  <!-- Realtime "back buffer": a canvas that holds the seed guide image (first
+       scene) or the last live video frame (while re-anchoring onto a new guide
+       image), so the live video can be re-staged underneath WITHOUT ever
+       exposing a black gap or the underlying Gemini still. It fades out the
+       instant genuinely new video frames arrive — a single-session double
+       buffer. Only used by the realtime (reactor) renderer. -->
+  <canvas id="reactor-freeze" class="reactor-freeze" aria-hidden="true"></canvas>
   <div id="scene-flash"></div>
   <!-- VCR distortion burst: a heavy static/tracking glitch fired over scene and
        video transitions (image swap, realtime re-anchor, reveal, reset) so the

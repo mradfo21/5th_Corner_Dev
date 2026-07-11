@@ -51,6 +51,13 @@
   const FALLBACK_MODEL = "reactor/lingbot-world-2";
   // How long to wait for the seed image to decode before starting anyway.
   const IMAGE_ACCEPT_TIMEOUT_MS = 6000;
+  // After we issue `start`, how long to wait for real decoded video frames
+  // before declaring the stream stalled. If this fires, the model accepted our
+  // commands but no `main_video` frames arrived — a server/session/model issue,
+  // NOT a client bug. The still fallback stays on screen; we log + emit a
+  // diagnostic so the exact stall point is visible in the browser console.
+  // Overridable (e.g. from tests) via a window global.
+  const REVEAL_WATCHDOG_MS = (typeof window !== "undefined" && window.__REACTOR_REVEAL_WATCHDOG_MS__) || 12000;
 
   const rstate = {
     reactor: null,
@@ -69,10 +76,18 @@
     cfg: { model_name: FALLBACK_MODEL, enabled: false },
     connecting: false,
     status: "off",
-    showSuppressed: false, // keep the video hidden during reset gaps
     frameWatch: false,
     frameWatchTimer: null,
     applying: false,       // flush() re-entrancy guard (establishing is async)
+    revealWatchdog: null,  // timer: warns if start never yields video frames
+    // Freeze back-buffer (single-session double buffer): a canvas that covers
+    // the video with the seed image / last live frame during warmup + re-anchor
+    // so the switch never exposes black or the underlying still.
+    freeze: null,
+    freezeActive: false,   // freeze canvas is currently covering the video
+    freezeArmed: false,    // waiting for the first NEW frame to fade it out
+    freezeArmTs: 0,
+    freezeFallbackTimer: null,
   };
 
   // Event waiters keyed by model message type, so command flows can await a
@@ -130,6 +145,82 @@
     return rstate.video;
   }
 
+  function getFreeze() {
+    if (!rstate.freeze) rstate.freeze = document.getElementById("reactor-freeze");
+    return rstate.freeze;
+  }
+
+  // Show the freeze buffer (already painted) — covering the video. `instant`
+  // snaps it on with no fade (used when grabbing the last frame as we tear the
+  // old stream down, so there's no flicker before it covers).
+  function showFreeze(instant) {
+    const f = getFreeze();
+    if (!f) return;
+    rstate.freezeActive = true;
+    if (instant) { f.classList.add("instant"); void f.offsetWidth; }
+    f.classList.add("show");
+    if (instant) { void f.offsetWidth; f.classList.remove("instant"); }
+  }
+
+  // Crossfade the freeze buffer out, revealing the live video underneath.
+  function hideFreeze() {
+    const f = getFreeze();
+    if (!f) return;
+    rstate.freezeActive = false;
+    f.classList.remove("show");
+  }
+
+  // Snapshot the current live video frame onto the freeze canvas and show it
+  // instantly, so we can re-stage the stream beneath without a black gap.
+  // Returns true if a frame was captured.
+  function captureVideoToFreeze() {
+    const v = getVideo(), f = getFreeze();
+    if (!v || !f || !v.videoWidth) return false;
+    try {
+      f.width = v.videoWidth;
+      f.height = v.videoHeight;
+      f.getContext("2d").drawImage(v, 0, 0, f.width, f.height);
+      showFreeze(true);
+      return true;
+    } catch (e) { log("freeze capture failed", e); return false; }
+  }
+
+  // Paint the seed guide image onto the freeze canvas (async image load) so the
+  // very first scene shows the intended composition immediately instead of a
+  // black video while the stream warms up.
+  function paintSeedToFreeze(imageUrl) {
+    const f = getFreeze();
+    if (!f || !imageUrl) return;
+    const img = new Image();
+    img.onload = () => {
+      try {
+        f.width = img.naturalWidth || 1280;
+        f.height = img.naturalHeight || 720;
+        f.getContext("2d").drawImage(img, 0, 0, f.width, f.height);
+        showFreeze(true);
+      } catch (e) { log("seed paint failed", e); }
+    };
+    img.onerror = () => {};
+    img.src = imageUrl;
+  }
+
+  // Arm the freeze reveal: once a genuinely NEW video frame is presented after
+  // `start`, crossfade the freeze out. A frozen stream presents no new frames,
+  // so requestVideoFrameCallback stays silent until real frames flow — that's
+  // our precise "the new scene is actually on screen now" trigger.
+  function armFreezeReveal() {
+    rstate.freezeArmed = true;
+    rstate.freezeArmTs = Date.now();
+    if (rstate.freezeFallbackTimer) clearTimeout(rstate.freezeFallbackTimer);
+    // Fallback for browsers without requestVideoFrameCallback: reveal after a
+    // short grace period. (Modern Safari/Chrome use the frame callback path.)
+    if (getVideo() && typeof getVideo().requestVideoFrameCallback !== "function") {
+      rstate.freezeFallbackTimer = setTimeout(() => {
+        if (rstate.freezeArmed) { rstate.freezeArmed = false; hideFreeze(); emitEvent("video_showing", {}); }
+      }, 1800);
+    }
+  }
+
   async function loadConfig() {
     try {
       const r = await fetch("/api/reactor/config");
@@ -155,25 +246,63 @@
     const video = getVideo();
     if (!video) return;
     video.srcObject = stream || new MediaStream([track]);
+    // The video is ALWAYS visible; the freeze back-buffer (canvas) covers it
+    // during warmup + re-anchor so there's never a black gap or an underlying
+    // still showing through. The freeze fades out once real frames arrive.
+    video.classList.remove("hidden");
     video.play().catch(() => {});
-    // Keep the video hidden until it actually produces decoded frames, so the
-    // still image stays on screen until the world model is genuinely "ready to
-    // go" — no black or old-frame takeover, no flashing between still and video.
     startFrameWatch(video);
-    log("main_video attached (awaiting first frame)");
+    log("main_video attached (freeze covers until first frame)");
   }
 
-  // Reveal the video the moment it has real decoded frames (videoWidth > 0),
-  // unless we're mid-reset. This is the single hand-off from still -> video.
-  function revealIfFrames(video) {
-    if (rstate.showSuppressed) return;
-    if (video.videoWidth > 0) {
-      if (video.classList.contains("hidden")) {
-        video.classList.remove("hidden");
-        emitEvent("video_showing", {}); // first real frame is on screen
-      }
-      if (rstate.status !== "live") setStatus("live");
+  // Called on every presented video frame. Marks the stream live, and — when a
+  // reveal is armed — treats the frame as the new scene actually being on
+  // screen, so it crossfades the freeze buffer out.
+  function onPresentedFrame(video) {
+    if (video.videoWidth <= 0) return;
+    clearRevealWatchdog(); // frames are flowing — the stream is healthy
+    // A full reset hides the video for a clean wipe; genuine frames un-hide it
+    // (a re-anchor keeps it visible under the freeze, so this is a no-op there).
+    if (video.classList.contains("hidden")) video.classList.remove("hidden");
+    if (rstate.status !== "live") setStatus("live");
+    if (rstate.freezeArmed) {
+      // Ignore stray callbacks in the first beat after arming so we don't reveal
+      // the (still-old) frame before the new scene has actually rendered.
+      if (Date.now() - rstate.freezeArmTs < 200) return;
+      rstate.freezeArmed = false;
+      if (rstate.freezeFallbackTimer) { clearTimeout(rstate.freezeFallbackTimer); rstate.freezeFallbackTimer = null; }
+      hideFreeze();
+      emitEvent("video_showing", {}); // the fresh scene is now on screen
     }
+  }
+
+  // After `start`, warn (once) if no decoded video frames show up in time. This
+  // is the diagnostic that turns a silent "realtime never starts" into a clear,
+  // reportable signal: commands were accepted but the model produced no video.
+  function armRevealWatchdog() {
+    clearRevealWatchdog();
+    rstate.revealWatchdog = setTimeout(() => {
+      rstate.revealWatchdog = null;
+      const v = getVideo();
+      const showing = !!(v && v.videoWidth > 0 && !rstate.freezeActive);
+      if (showing) return;
+      log(
+        "WARNING: `start` was issued but no video frames arrived after",
+        REVEAL_WATCHDOG_MS + "ms.",
+        "Realtime is stalled (model/session produced no main_video) — the still",
+        "fallback stays on screen. Check for command_error events / the Reactor",
+        "session, this is not a client rendering bug."
+      );
+      // Purely diagnostic: the still fallback is already on screen and status
+      // stays "connecting" (we never reached "live"), so realtime can still
+      // recover on late frames or the next guide image — we don't permanently
+      // disable it on a single stall.
+      emitEvent("video_stalled", { afterMs: REVEAL_WATCHDOG_MS });
+    }, REVEAL_WATCHDOG_MS);
+  }
+
+  function clearRevealWatchdog() {
+    if (rstate.revealWatchdog) { clearTimeout(rstate.revealWatchdog); rstate.revealWatchdog = null; }
   }
 
   function startFrameWatch(video) {
@@ -182,17 +311,17 @@
     if (typeof video.requestVideoFrameCallback === "function") {
       const cb = () => {
         if (!rstate.reactor) { rstate.frameWatch = false; return; }
-        revealIfFrames(video);
+        onPresentedFrame(video);
         try { video.requestVideoFrameCallback(cb); } catch (_) { rstate.frameWatch = false; }
       };
       try { video.requestVideoFrameCallback(cb); } catch (_) { rstate.frameWatch = false; }
     } else {
-      const onp = () => revealIfFrames(video);
+      const onp = () => onPresentedFrame(video);
       video.addEventListener("playing", onp);
       video.addEventListener("timeupdate", onp);
       rstate.frameWatchTimer = setInterval(() => {
         if (!rstate.reactor) { clearInterval(rstate.frameWatchTimer); rstate.frameWatch = false; return; }
-        revealIfFrames(video);
+        onPresentedFrame(video);
       }, 400);
     }
   }
@@ -230,10 +359,16 @@
   // Returns true once generation has started, false if it had to defer (no
   // reference image available yet).
   async function establish(s) {
+    // Make sure SOMETHING intended is on screen while we stage: if the freeze
+    // buffer isn't already covering (i.e. this isn't a re-anchor that grabbed
+    // the last live frame), paint the seed guide image so we never show a black
+    // video during warmup.
+    if (!rstate.freezeActive && s.imageUrl) paintSeedToFreeze(s.imageUrl);
+
     const ref = await uploadStill(s.imageUrl);
     if (!ref) {
-      // LingBot World 2 cannot start without a reference image. Keep the still
-      // fallback on screen and retry when a scene with an image arrives.
+      // LingBot World 2 cannot start without a reference image. Keep the freeze
+      // (seed) on screen and retry when a scene with an image arrives.
       log("no reference image yet — deferring start (LingBot requires one)");
       return false;
     }
@@ -244,11 +379,12 @@
     await cmd("set_image", { image: ref });
     await cmd("set_prompt", { prompt: s.prompt });
     await imageReady; // let the seed decode so the first chunk starts from it
-    rstate.showSuppressed = false; // allow the video to reveal once frames flow
     await cmd("start", {});
     rstate.started = true;
     rstate.lastPrompt = s.prompt;
     emitEvent("stage_started", { prompt: s.prompt });
+    armFreezeReveal();   // crossfade the freeze out on the first NEW frame
+    armRevealWatchdog(); // surface it loudly if no frames ever arrive
     log("generation started (image-conditioned)");
     return true;
   }
@@ -280,18 +416,18 @@
       } else if (s.hardTransition || newGuideImage) {
         // New guide image (every turn that draws one) or a location change.
         // LingBot's reference image is locked for the life of a run, so moving
-        // onto a new frame means a fresh stage: reset, hide the stale video
-        // during the gap, and re-establish from the new still + prompt. This is
-        // the "vignette to vignette" blend — each run is anchored (strength 1)
-        // on the exact guide image the engine drew, so the video can't drift.
+        // onto a new frame means a fresh stage: reset, then re-establish from
+        // the new still + prompt. To make the switch seamless we FREEZE the last
+        // live frame onto the back-buffer canvas first (a single-session double
+        // buffer) and keep the video visible underneath — so the tear-down never
+        // exposes black or the underlying still, and we crossfade to the fresh
+        // stream the instant its first new frame arrives.
+        captureVideoToFreeze();
         try { await cmd("reset", {}); } catch (err) { log("reset failed", err); }
         rstate.started = false;
         rstate.lastPrompt = null;
         rstate.lastRef = null;
         rstate.lastImageUrl = null;
-        rstate.showSuppressed = true;
-        const v = getVideo();
-        if (v) v.classList.add("hidden");
         deferred = !(await establish(s));
         if (!deferred) log(s.hardTransition ? "hard transition re-staged" : "re-anchored on new guide image");
       } else {
@@ -411,11 +547,16 @@
     rstate.lastImageUrl = null;
     rstate.lastRef = null;
     rstate.stagingGuideUrl = null;
-    rstate.showSuppressed = false;
     rstate.frameWatch = false;
+    rstate.freezeArmed = false;
+    clearRevealWatchdog();
+    if (rstate.freezeFallbackTimer) { clearTimeout(rstate.freezeFallbackTimer); rstate.freezeFallbackTimer = null; }
     if (rstate.frameWatchTimer) { clearInterval(rstate.frameWatchTimer); rstate.frameWatchTimer = null; }
     const video = getVideo();
     if (video) { video.classList.add("hidden"); try { video.srcObject = null; } catch (_) {} }
+    // Drop the freeze cover so the still fallback (image mode) shows cleanly.
+    const f = getFreeze();
+    if (f) { rstate.freezeActive = false; f.classList.remove("show"); }
     const r = rstate.reactor;
     rstate.reactor = null;
     rstate.active = false;
@@ -436,9 +577,15 @@
     rstate.pending = null;
     rstate.stagingGuideUrl = null;
     rstate.guideImageUrl = null;
-    // Hide the (now-stale) video during the reset gap so the fresh still shows
-    // until the new run's first frame is ready — no old-scene bleed-through.
-    rstate.showSuppressed = true;
+    rstate.freezeArmed = false;
+    clearRevealWatchdog();
+    if (rstate.freezeFallbackTimer) { clearTimeout(rstate.freezeFallbackTimer); rstate.freezeFallbackTimer = null; }
+    // A game reset is a CLEAN WIPE (unlike a per-turn re-anchor, which freezes
+    // the last frame for a seamless switch): drop the freeze cover and hide the
+    // video so the dead run's scene is gone immediately. The fresh run paints
+    // its seed onto the freeze and reveals its own video when it establishes.
+    const f = getFreeze();
+    if (f) { rstate.freezeActive = false; f.classList.remove("show"); }
     const v = getVideo();
     if (v) v.classList.add("hidden");
     if (rstate.status === "live") setStatus("connecting");
@@ -463,7 +610,9 @@
   // actually sees. Returns null if the video isn't showing real frames.
   function captureFrame(maxW) {
     const v = rstate.video || document.getElementById("reactor-video");
-    if (!v || !v.videoWidth || v.classList.contains("hidden")) return null;
+    // Only read the LIVE video — not while the freeze buffer is covering it
+    // (that frame isn't the current scene the model is actually rendering).
+    if (!v || !v.videoWidth || rstate.freezeActive) return null;
     const cap = maxW || 512;
     const scale = Math.min(1, cap / v.videoWidth);
     const w = Math.max(1, Math.round(v.videoWidth * scale));
@@ -486,11 +635,11 @@
     isReady: () => rstate.ready,
     // The last guide image actually integrated into the live world model.
     getGuideImage: () => rstate.guideImageUrl || null,
-    // True only when the video is actually on-screen with decoded frames — the
-    // signal the client uses to stop repainting the still behind it.
+    // True only when the LIVE video is actually on-screen (decoded frames and
+    // the freeze back-buffer is not covering it).
     isShowing: () => {
       const v = rstate.video || document.getElementById("reactor-video");
-      return !!(v && !v.classList.contains("hidden") && v.videoWidth > 0);
+      return !!(v && v.videoWidth > 0 && !rstate.freezeActive);
     },
     onStatus: null,
     onEvent: null,

@@ -592,6 +592,10 @@
             Renderer.mode = "image"; // reflect reality; keep stored pref intact
             showRendererToast("Realtime unavailable — showing stills");
             hideGuideThumbnail();
+            // Tear down the realtime layers (video + freeze) and paint the last
+            // known still so the fallback isn't a blank/black screen.
+            try { window.ReactorRenderer.disable(); } catch (_) {}
+            if (Renderer.lastScene && Renderer.lastScene.imageUrl) setScene(Renderer.lastScene.imageUrl);
           } else if (s === "live" && Renderer.mode === "reactor") {
             showRendererToast("Realtime video — live");
           }
@@ -651,6 +655,9 @@
               return;
             }
             case "generation_reset": Ceremony.note("\u25CC World cleared"); return;
+            case "video_stalled":
+              Ceremony.note("\u26A0 Stream stalled \u00B7 no video \u2014 showing stills", { tick: false });
+              return;
             case "command_error":
               Ceremony.note("\u26A0 " + (d.reason || d.command || "error"), { tick: false });
               return;
@@ -692,9 +699,6 @@
         imageUrl: imageUrl || null,
         hardTransition: !!(meta && meta.hard_transition),
       };
-      // The still we last knew about — used to detect a NEW guide image (a
-      // re-anchor boundary) before we merge this update in.
-      const prevImageUrl = (this.lastScene && this.lastScene.imageUrl) || null;
       // Remember the latest scene we can (re)start realtime from. A steer needs
       // BOTH a prompt and an image, but not every feed item carries both — a
       // player_choice_prompt, for instance, rides the current still with no
@@ -711,28 +715,13 @@
       }
       if (meta && meta.base) this.lastBase = meta.base;
       if (this.mode === "reactor" && this.reactorAvailable()) {
-        // A brand-new still is a guide-image re-anchor: the reactor renderer
-        // resets and briefly hides the live video while it re-stages on this
-        // exact frame.
-        const newGuideImage = !!(imageUrl && imageUrl !== prevImageUrl);
+        // Realtime mode: the reactor renderer OWNS the screen. It shows the live
+        // video plus a freeze back-buffer (the seed guide image on the first
+        // scene, or the last live frame while re-anchoring onto a new guide
+        // image) so switches are seamless. We deliberately do NOT paint the
+        // Gemini still here — painting it under the video is exactly what made
+        // the ORIGINAL image flash between guide images.
         if (scene.prompt) window.ReactorRenderer.applyScene(scene);
-        if (imageUrl) {
-          if (!window.ReactorRenderer.isShowing()) {
-            // Video isn't covering the screen (connecting, reset gap, fallback):
-            // show the still normally, with the scene flash.
-            setScene(imageUrl);
-          } else if (newGuideImage) {
-            // The live video is up but a NEW guide image just arrived. The
-            // reactor renderer is about to reset + hide the video to re-anchor on
-            // this frame. Stage the NEW still behind the video NOW (silently, so
-            // no flash strobes over the live stream) so the re-anchor gap reveals
-            // the new guide image — not the stale previous/opening scene. This is
-            // what kills the "flash the original image, then switch" artifact.
-            setScene(imageUrl, { silent: true });
-          }
-          // Same still already on screen under a live video: leave it. Repainting
-          // it there is what caused the old "image → video → old image" flicker.
-        }
         return;
       }
       if (imageUrl) setScene(imageUrl);
