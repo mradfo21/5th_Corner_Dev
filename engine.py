@@ -1330,6 +1330,162 @@ def _vision_describe(image_path: str) -> str:
     result = _vision_analyze_all(image_path)
     return result["description"]
 
+
+def _detect_objects(image_path: str, max_items: int = 8) -> list:
+    """Realtime object recognition for the live scene.
+
+    Ask Gemini for the prominent, interactable things visible in a frame and
+    their 2D bounding boxes, so the standalone UI can float "starfield" tags
+    over the live video where each object actually sits. This powers the SCAN
+    tool: the player drags across the scene and the world names what it sees.
+
+    Returns a list of dicts (at most ``max_items``), each:
+        {"label": str, "cx": float, "cy": float, "w": float, "h": float}
+    where cx/cy are the box CENTER and w/h its size, all normalized 0..1
+    relative to the frame. Returns [] on any failure (never raises).
+    """
+    import base64
+    import json as _json
+    import re as _re
+    import requests
+
+    if not LLM_ENABLED or not VISION_ENABLED or not GEMINI_API_KEY:
+        return []
+
+    try:
+        full_path = _resolve_image_path(image_path)
+        if not full_path or not os.path.exists(full_path):
+            return []
+
+        from pathlib import Path
+        full_path_obj = Path(full_path)
+        small_path = full_path_obj.parent / full_path_obj.name.replace(".png", "_small.png")
+        use_path = small_path if small_path.exists() else full_path_obj
+
+        with open(use_path, "rb") as f:
+            image_bytes = f.read()
+        image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+
+        mime_type = "image/png"
+        if str(use_path).lower().endswith((".jpg", ".jpeg")):
+            mime_type = "image/jpeg"
+
+        detect_prompt = (
+            "Detect the prominent, distinct things a person could look at or "
+            "interact with in this image (objects, tools, doors, exits, "
+            "figures, creatures, vehicles, hazards). "
+            f"Return AT MOST {max_items} of the most salient. "
+            "Respond with ONLY a JSON array, no prose, no code fences. Each item: "
+            '{\"label\": \"<1-3 word noun, lowercase>\", '
+            '\"box_2d\": [ymin, xmin, ymax, xmax]}. '
+            "Box coordinates are integers normalized to 0-1000 "
+            "(y is top-to-bottom, x is left-to-right). "
+            "Prefer specific, concrete labels over vague ones. "
+            "Skip generic background like 'sky', 'ground', 'wall' unless notable."
+        )
+
+        api_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent"
+        headers = {
+            "x-goog-api-key": GEMINI_API_KEY,
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "contents": [{
+                "parts": [
+                    {"inlineData": {"mimeType": mime_type, "data": image_b64}},
+                    {"text": detect_prompt},
+                ]
+            }],
+            "generationConfig": {
+                "thinkingConfig": {"thinkingBudget": 0},
+                "temperature": 0.4,
+                "maxOutputTokens": 700,
+                "responseMimeType": "application/json",
+            },
+            "safetySettings": [
+                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+            ],
+        }
+
+        response = requests.post(api_url, headers=headers, json=payload, timeout=20)
+        response.raise_for_status()
+        result = response.json()
+
+        candidates = result.get("candidates") or []
+        if not candidates:
+            return []
+        parts = (candidates[0].get("content") or {}).get("parts") or []
+        full_text = "".join(p.get("text", "") for p in parts).strip()
+        if not full_text:
+            return []
+
+        # Be forgiving: strip code fences and pull out the JSON array if the
+        # model wrapped it in any prose despite instructions.
+        cleaned = _re.sub(r"^```(?:json)?|```$", "", full_text.strip(), flags=_re.MULTILINE).strip()
+        try:
+            parsed = _json.loads(cleaned)
+        except Exception:
+            m = _re.search(r"\[.*\]", cleaned, _re.DOTALL)
+            if not m:
+                return []
+            try:
+                parsed = _json.loads(m.group(0))
+            except Exception:
+                return []
+
+        if not isinstance(parsed, list):
+            return []
+
+        objects = []
+        seen = set()
+        for entry in parsed:
+            if not isinstance(entry, dict):
+                continue
+            label = str(entry.get("label") or "").strip().lower()
+            box = entry.get("box_2d") or entry.get("box") or entry.get("bbox")
+            if not label or not isinstance(box, (list, tuple)) or len(box) < 4:
+                continue
+            try:
+                ymin, xmin, ymax, xmax = (float(box[0]), float(box[1]), float(box[2]), float(box[3]))
+            except Exception:
+                continue
+            # Normalize the 0-1000 grid to 0..1, guarding against swapped bounds.
+            ymin, ymax = sorted((ymin / 1000.0, ymax / 1000.0))
+            xmin, xmax = sorted((xmin / 1000.0, xmax / 1000.0))
+            cx = max(0.0, min(1.0, (xmin + xmax) / 2.0))
+            cy = max(0.0, min(1.0, (ymin + ymax) / 2.0))
+            w = max(0.0, min(1.0, xmax - xmin))
+            h = max(0.0, min(1.0, ymax - ymin))
+            # Drop degenerate or full-frame boxes (not useful as a tag point).
+            if w <= 0.001 or h <= 0.001 or (w >= 0.98 and h >= 0.98):
+                continue
+            key = label[:24]
+            if key in seen:
+                continue
+            seen.add(key)
+            objects.append({
+                "label": label[:40],
+                "cx": round(cx, 4),
+                "cy": round(cy, 4),
+                "w": round(w, 4),
+                "h": round(h, 4),
+            })
+            if len(objects) >= max_items:
+                break
+
+        return objects
+    except requests.exceptions.HTTPError as e:
+        safe_e = str(e).encode("ascii", "replace").decode("ascii")
+        print(f"[DETECT ERROR] Gemini API HTTP error: {safe_e}")
+        return []
+    except Exception as e:
+        safe_e = str(e).encode("ascii", "replace").decode("ascii")
+        print(f"[DETECT ERROR] Failed to detect objects: {safe_e}")
+        return []
+
 # ───────── world report (with vision‑desc) ─────────────────────────────────
 def _world_report() -> str:
     base = narrative_tmpl.format(
@@ -3399,34 +3555,71 @@ def _generate_and_append_scene_image(caption: str, dispatch: str, choice: str, f
             state = st
 
         if write_history:
-            # Write the absolute image path back into THIS turn's history entry so
-            # the NEXT turn's img2img can use it for continuity. frame_idx ==
-            # len(history)+1 at turn start, so after the parallel choice append
-            # this turn's entry is at index frame_idx-1; wait briefly for it.
-            hist = _load_history(session_id)
-            target_idx = int(frame_idx) - 1
-            for _ in range(40):  # up to ~10s: append is quick, image is slow
-                if 0 <= target_idx < len(hist):
-                    break
-                time.sleep(0.25)
+            # Write the absolute image path back into history so the NEXT turn's
+            # img2img can use this frame for continuity.
+            if int(frame_idx) == 0:
+                # INTRO (frame 0): the opening image never goes through
+                # advance_turn_choices_deferred, so no history entry exists for it
+                # yet. Seed history[0] ourselves — otherwise the FIRST player turn
+                # finds no reference frame and falls back to text-to-image, so the
+                # very first image never passes itself to the second via img2img
+                # (breaking visual continuity right at the start of the game).
                 hist = _load_history(session_id)
-            if 0 <= target_idx < len(hist):
-                hist[target_idx]["image"] = img_path
-                hist[target_idx]["image_url"] = img_path
-                # Record the original high-fidelity guide still separately so it
-                # survives even after a realtime frame later overwrites 'image'
-                # (see _ingest_realtime_frame) — it stays available as a
-                # secondary img2img quality reference.
-                hist[target_idx]["guide_image"] = img_path
-                _save_history(hist, session_id)
-                history = hist
-            elif hist:
-                print(f"[SCENE IMG] WARN: turn entry idx {target_idx} absent (len={len(hist)}); writing hist[-1]")
-                hist[-1]["image"] = img_path
-                hist[-1]["image_url"] = img_path
-                hist[-1]["guide_image"] = img_path
-                _save_history(hist, session_id)
-                history = hist
+                if not hist:
+                    intro_entry = {
+                        "choice":            choice,
+                        "dispatch":          dispatch,
+                        # vision_dispatch is REQUIRED by the img2img reference gate
+                        # in _gen_image (it skips entries missing it).
+                        "vision_dispatch":   caption or dispatch,
+                        "world_prompt":      world_prompt,
+                        "image":             img_path,
+                        "image_url":         img_path,
+                        "analysis_image":    img_path,
+                        # Original hi-fi guide still, preserved so a later realtime
+                        # frame overwriting 'image' still leaves it as a secondary
+                        # img2img quality reference (see _ingest_realtime_frame).
+                        "guide_image":       img_path,
+                        "image_prompt":      image_prompt,
+                        "hard_transition":   bool(hard_transition),
+                    }
+                    hist.append(intro_entry)
+                    _save_history(hist, session_id)
+                    history = hist
+                    print(f"[SCENE IMG] intro frame seeded into history[0] for img2img continuity: {img_path}")
+                else:
+                    # A player turn already appended before the (async) intro image
+                    # landed. Seeding now would reorder history, so skip — the intro
+                    # still shows in the feed, we just don't chain off it this game.
+                    print(f"[SCENE IMG] intro image arrived after a turn was appended (len={len(hist)}); skipping history seed to avoid reordering")
+            else:
+                # Regular turn: frame_idx == len(history)+1 at turn start, so after
+                # the parallel choice append this turn's entry is at index
+                # frame_idx-1; wait briefly for it.
+                hist = _load_history(session_id)
+                target_idx = int(frame_idx) - 1
+                for _ in range(40):  # up to ~10s: append is quick, image is slow
+                    if 0 <= target_idx < len(hist):
+                        break
+                    time.sleep(0.25)
+                    hist = _load_history(session_id)
+                if 0 <= target_idx < len(hist):
+                    hist[target_idx]["image"] = img_path
+                    hist[target_idx]["image_url"] = img_path
+                    # Record the original high-fidelity guide still separately so it
+                    # survives even after a realtime frame later overwrites 'image'
+                    # (see _ingest_realtime_frame) — it stays available as a
+                    # secondary img2img quality reference.
+                    hist[target_idx]["guide_image"] = img_path
+                    _save_history(hist, session_id)
+                    history = hist
+                elif hist:
+                    print(f"[SCENE IMG] WARN: turn entry idx {target_idx} absent (len={len(hist)}); writing hist[-1]")
+                    hist[-1]["image"] = img_path
+                    hist[-1]["image_url"] = img_path
+                    hist[-1]["guide_image"] = img_path
+                    _save_history(hist, session_id)
+                    history = hist
         print(f"[SCENE IMG] scene appended for {session_id}: {web}", flush=True)
         return {"img_path": img_path, "web_url": web,
                 "image_prompt": image_prompt, "render_prompt": render_prompt}
@@ -3850,6 +4043,56 @@ def api_observe():
         log_error(f"[OBSERVE] failed: {e}")
         _tb.print_exc()
         return jsonify({"error": str(e)}), 500
+
+
+def api_detect():
+    """Realtime object recognition for the SCAN tool.
+
+    Accepts the frame currently on screen (a JPEG data URL captured client-side
+    from the live world-model video) and returns the prominent, interactable
+    things visible in it plus WHERE they are, so the standalone UI can float
+    "starfield" tags over the live scene where each object actually sits — and
+    let the player poke any of them.
+
+    Request JSON:  {"frame": "data:image/jpeg;base64,..."}
+    Response JSON: {"objects": [{"label", "cx", "cy", "w", "h"}, ...]}
+    Coordinates are normalized 0..1 (cx/cy = box center, w/h = box size).
+
+    This is a stateless, read-only perception call: unlike /api/observe it does
+    NOT mutate world state, history, or choices — it just names what's on screen.
+    """
+    import base64 as _b64, re as _re, time as _time
+    from pathlib import Path as _Path
+    try:
+        data = request.get_json(silent=True) or {}
+        frame_b64 = data.get('frame')
+        session_id = data.get('session_id', 'default')
+        if not frame_b64:
+            return jsonify({"error": "missing frame"}), 400
+        m = _re.match(r'^data:image/[^;]+;base64,(.*)$', frame_b64, _re.DOTALL)
+        raw = m.group(1) if m else frame_b64
+        try:
+            img_bytes = _b64.b64decode(raw)
+        except Exception:
+            return jsonify({"error": "bad frame encoding"}), 400
+        if len(img_bytes) < 512:
+            return jsonify({"error": "frame too small"}), 400
+
+        img_dir = _Path(_get_image_dir(session_id))
+        img_dir.mkdir(parents=True, exist_ok=True)
+        # Reuse a single scratch file per session: these detection grabs are
+        # throughput-heavy and disposable (not canonical stills), so there's no
+        # reason to accumulate them on disk.
+        fpath = img_dir / "scan_frame.jpg"
+        fpath.write_bytes(img_bytes)
+
+        objects = _detect_objects(str(fpath))
+        return jsonify({"objects": objects or []})
+    except Exception as e:
+        import traceback as _tb
+        log_error(f"[DETECT] failed: {e}")
+        _tb.print_exc()
+        return jsonify({"error": str(e), "objects": []}), 500
 
 
 def _spawn_scene_choices_reground(prompt_id, prev_image_url: str, session_id: str = 'default'):
