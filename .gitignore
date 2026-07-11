@@ -38,6 +38,7 @@ test_*.py
 !test_experience_mode.py
 !test_providers.py
 !test_standalone_e2e.py
+!test_realtime_e2e.py
 !test_feed_engine.py
 !test_no_images_simulation.py
 !test_choices_robustness.py
