@@ -26,6 +26,13 @@
   // hide it — the notification + re-anchor still happen either way.
   const GUIDE_THUMBNAIL_ENABLED = true;
 
+  // Debug/verification preview: show the EXACT realtime frame captured at
+  // act-time and sent to the server as the primary img2img reference, so it's
+  // visually verifiable that the live world-model texture (not a stale still)
+  // is what actually drives the next guide image. Toggle off via build flag or
+  // localStorage "capture_thumbnail" = "off" (the preview's own ✕ button).
+  const CAPTURE_THUMBNAIL_ENABLED = true;
+
   const INTERIM_MESSAGES = [
     "Transmitting...",
     "Static crackles across the channel...",
@@ -887,6 +894,7 @@
         showRendererToast("Still images");
         try { window.ReactorRenderer.disable(); } catch (_) {}
         hideGuideThumbnail();
+        hideCaptureThumbnail();
       }
       if (mode !== "reactor") closeScan(); // scan is realtime-only
       updateRendererButton();
@@ -1202,6 +1210,64 @@
 
   function hideGuideThumbnail() {
     const wrap = document.getElementById("guide-thumb");
+    if (wrap) wrap.classList.remove("show");
+  }
+
+  // ------------------------------------------------------------------
+  // Captured-texture preview — shows the EXACT frame grabbed from the live
+  // world-model video at act-time and handed to the backend as the primary
+  // img2img reference (act_frame → _ingest_realtime_frame). This is the
+  // "captured texture" verification view: if it shows the current melty live
+  // frame (not the crisp Gemini still), you can confirm the realtime state is
+  // what's being passed to img2img.
+  // ------------------------------------------------------------------
+  function captureThumbHidden() {
+    if (!CAPTURE_THUMBNAIL_ENABLED) return true;
+    try { return localStorage.getItem("capture_thumbnail") === "off"; } catch (_) { return false; }
+  }
+
+  function ensureCaptureThumb() {
+    let wrap = document.getElementById("capture-thumb");
+    if (wrap) return wrap;
+    wrap = document.createElement("div");
+    wrap.id = "capture-thumb";
+    wrap.className = "guide-thumb capture-thumb";
+    const img = document.createElement("img");
+    img.className = "guide-thumb-img";
+    img.alt = "Realtime frame captured and passed to img2img";
+    const label = document.createElement("div");
+    label.className = "guide-thumb-label";
+    label.textContent = "CAPTURED \u2192 IMG2IMG";
+    const hide = document.createElement("button");
+    hide.type = "button";
+    hide.className = "guide-thumb-hide";
+    hide.title = "Hide captured-frame preview";
+    hide.textContent = "\u2715";
+    hide.addEventListener("click", () => {
+      try { localStorage.setItem("capture_thumbnail", "off"); } catch (_) {}
+      hideCaptureThumbnail();
+    });
+    wrap.appendChild(img);
+    wrap.appendChild(label);
+    wrap.appendChild(hide);
+    document.body.appendChild(wrap);
+    return wrap;
+  }
+
+  // dataUrl is the exact JPEG data URL sent to /api/choose as act_frame.
+  function showCaptureThumbnail(dataUrl) {
+    if (captureThumbHidden() || !dataUrl) return;
+    const wrap = ensureCaptureThumb();
+    const img = wrap.querySelector(".guide-thumb-img");
+    if (img) img.setAttribute("src", dataUrl);
+    wrap.classList.add("show");
+    wrap.classList.remove("pulse");
+    void wrap.offsetWidth; // reflow to restart the animation
+    wrap.classList.add("pulse");
+  }
+
+  function hideCaptureThumbnail() {
+    const wrap = document.getElementById("capture-thumb");
     if (wrap) wrap.classList.remove("show");
   }
 
@@ -1541,6 +1607,14 @@
       }
     } catch (_) {
       actFrame = null;
+    }
+    // Verification: surface the exact texture we're about to hand img2img (or
+    // note when nothing was captured, so a silent miss is obvious).
+    if (actFrame) {
+      showCaptureThumbnail(actFrame);
+      RtLog.push("img", "\u25C8 captured live frame \u2192 img2img");
+    } else if (Renderer.mode === "reactor") {
+      RtLog.push("img", "\u26A0 no live frame captured (still mode / not yet showing)");
     }
     try {
       const items = await postJSON("/api/choose", {

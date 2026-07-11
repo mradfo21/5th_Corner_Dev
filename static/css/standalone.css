@@ -1510,6 +1510,22 @@ body.scan-busy #scan-cursor::after {
 
 .guide-thumb:hover .guide-thumb-hide { opacity: 1; }
 
+/* Captured-texture preview — the exact live frame handed to img2img. Stacked
+   directly above the GUIDE preview with a distinct amber accent so the input
+   (captured realtime frame) is never confused with the output (guide still). */
+.capture-thumb {
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 14px + 74px + 8px);
+  border-color: rgba(255, 196, 106, 0.42);
+}
+.capture-thumb .guide-thumb-label { color: #ffd8a0; }
+.capture-thumb .guide-thumb-hide { border-color: rgba(255, 196, 106, 0.35); }
+.capture-thumb.pulse { animation: capture-thumb-pulse 0.9s ease-out; }
+@keyframes capture-thumb-pulse {
+  0%   { box-shadow: 0 0 0 rgba(255, 196, 106, 0.0), 0 4px 16px rgba(0,0,0,0.55); }
+  30%  { box-shadow: 0 0 18px rgba(255, 196, 106, 0.55), 0 4px 16px rgba(0,0,0,0.55); }
+  100% { box-shadow: 0 0 0 rgba(255, 196, 106, 0.0), 0 4px 16px rgba(0,0,0,0.55); }
+}
+
 /* Brief green pulse when a new guide frame re-anchors the world. */
 .guide-thumb.pulse { animation: guide-thumb-pulse 0.9s ease-out; }
 @keyframes guide-thumb-pulse {
