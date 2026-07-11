@@ -195,9 +195,12 @@ class TestStandaloneE2E(unittest.TestCase):
         # The visible top HUD was removed, so verify the underlying contract the
         # UI relies on directly: /api/status.turn advances after one completed
         # turn (this legacy path used to leave it frozen at 0).
-        self.assertEqual(
-            self.page.evaluate("fetch('/api/status').then(r => r.json()).then(s => s.turn)"),
-            0,
+        # setUp's reset is applied asynchronously server-side, so wait for the
+        # turn to settle back to 0 before asserting the baseline — otherwise a
+        # prior test's turn can still be read in and this races to a false fail.
+        self.page.wait_for_function(
+            "fetch('/api/status').then(r => r.json()).then(s => s.turn === 0)",
+            timeout=10000,
         )
         self._advance_via_forward()
         self.page.wait_for_selector(".choice-btn", state="attached", timeout=20000)
