@@ -3213,8 +3213,15 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                 _save_state(state, SID)
             return
 
-        # ── Stream the scene image asynchronously (don't block choices on it) ──
-        _spawn_scene_image_async(
+        # ── Scene image FIRST, then choices DERIVED FROM IT (vision-grounded) ──
+        # We're already on a background thread (the HTTP response returned the
+        # player_action echo immediately), so generating the image here and then
+        # the choices doesn't block the client. Crucially, the choices are now
+        # grounded on the ACTUAL rendered image via vision — options reflect
+        # what's really on screen instead of going stale off the dispatch text.
+        # (write_history=False: the choice phase writes the image into the history
+        # entry it appends, so there's no img2img-continuity race.)
+        _scene = _generate_and_append_scene_image(
             caption=vision_dispatch_text or dispatch_text,
             dispatch=dispatch_text,
             choice=choice,
@@ -3222,12 +3229,17 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             world_prompt=state.get("world_prompt", ""),
             hard_transition=bool(p1.get("hard_transition", False)),
             session_id=SID,
+            write_history=False,
         )
+        _scene_img = _scene.get("img_path") if _scene else None
+        _scene_img_prompt = _scene.get("image_prompt") if _scene else ""
 
-        # ── PHASE 2: choices (text-grounded; image streams in separately) ──
+        # ── PHASE 2: choices, vision-grounded on the image we just rendered ──
+        # (If image generation is disabled/failed, _scene_img is None and this
+        # degrades gracefully to the prior text-grounded behavior.)
         p2 = advance_turn_choices_deferred(
-            None, dispatch_text, vision_dispatch_text, choice,
-            "", p1.get("hard_transition", False), SID,
+            _scene_img, dispatch_text, vision_dispatch_text, choice,
+            _scene_img_prompt, p1.get("hard_transition", False), SID,
         )
         state = _load_state(SID)
 
@@ -3284,87 +3296,80 @@ def _structure_choices_for_feed(choice_texts: List[str], prompt_text: str = "Wha
         image_url=image_url
     )
 
-def _spawn_scene_image_async(caption: str, dispatch: str, choice: str, frame_idx: int,
-                             world_prompt: str, hard_transition: bool = False,
-                             session_id: str = 'default'):
-    """Generate a scene image in the background and append it to the session
-    feed when ready, so the turn/intro HTTP response never blocks on the slow
-    image call. The browser polls /api/feed and streams the scene in.
+def _generate_and_append_scene_image(caption: str, dispatch: str, choice: str, frame_idx: int,
+                                     world_prompt: str, hard_transition: bool = False,
+                                     session_id: str = 'default', write_history: bool = True):
+    """Generate the scene image, append the scene_image feed item, and update
+    session state. Returns {'img_path','web_url','image_prompt','render_prompt'}
+    or None on failure / when image generation is disabled.
+
+    write_history controls the history img2img-continuity write:
+      • True  — write the image into THIS turn's history entry ourselves. Used by
+                the async/death/intro paths, where choices were produced in
+                PARALLEL, so we must wait for their entry to land and target it.
+      • False — the caller sequences the choice phase AFTER us and hands our
+                img_path to advance_turn_choices_deferred, which writes the image
+                into the entry it appends — so there's no race and nothing to do.
     """
+    global state, history
     if not WORLD_IMAGE_ENABLED:
-        return
+        return None
+    try:
+        # _gen_image reads the module-global `history` to collect img2img
+        # reference frames — make sure it reflects this session.
+        history = _load_history(session_id)
+        result = _gen_image(
+            caption=caption or dispatch,
+            mode="normal",
+            choice=choice,
+            dispatch=dispatch,
+            world_prompt=world_prompt,
+            hard_transition=hard_transition,
+            frame_idx=frame_idx,
+            session_id=session_id,
+        )
+        img_path = result[0] if result else None
+        if not img_path:
+            return None
+        web = _to_web_image_url(img_path)
+        # Two different prompts for two different renderers:
+        #   • image_prompt (result[1]) — the diffusion prompt used for the
+        #     Gemini still; kept in state for debugging only.
+        #   • render_prompt — a clean, video-model-appropriate scene bible
+        #     used to STEER Reactor/Helios (see build_realtime_prompt). This
+        #     is what we hand the standalone client via metadata.prompt.
+        image_prompt = result[1] if len(result) > 1 else ""
+        render_base = build_realtime_base(visual_scene=caption, narrative=dispatch)
+        render_prompt = build_realtime_prompt(
+            visual_scene=caption, narrative=dispatch, choice=choice
+        )
+        item = create_feed_item(
+            type="scene_image",
+            content="",
+            image_url=web,
+            metadata={
+                "prompt": render_prompt,
+                # 'base' (style + scene, no action) lets the client re-steer
+                # instantly with the next action before the turn resolves.
+                "base": render_base,
+                "hard_transition": bool(hard_transition),
+            },
+        )
+        with WORLD_STATE_LOCK:
+            st = _load_state(session_id)
+            st['current_image_url'] = web
+            st['current_image_prompt'] = image_prompt
+            st['current_render_prompt'] = render_prompt
+            st['current_render_base'] = render_base
+            st.setdefault('feed_log', []).append(item)
+            _save_state(st, session_id)
+            state = st
 
-    def _worker():
-        global state, history
-        try:
-            # _gen_image reads the module-global `history` to collect img2img
-            # reference frames — make sure it reflects this session.
-            history = _load_history(session_id)
-            result = _gen_image(
-                caption=caption or dispatch,
-                mode="normal",
-                choice=choice,
-                dispatch=dispatch,
-                world_prompt=world_prompt,
-                hard_transition=hard_transition,
-                frame_idx=frame_idx,
-                session_id=session_id,
-            )
-            img_path = result[0] if result else None
-            if not img_path:
-                return
-            web = _to_web_image_url(img_path)
-            # Two different prompts for two different renderers:
-            #   • image_prompt (result[1]) — the diffusion prompt used for the
-            #     Gemini still; kept in state for debugging only.
-            #   • render_prompt — a clean, video-model-appropriate scene bible
-            #     used to STEER Reactor/Helios (see build_realtime_prompt). This
-            #     is what we hand the standalone client via metadata.prompt.
-            # The still (image_url) also rides along so the realtime renderer can
-            # condition the world model on our exact composition (image-to-video)
-            # at scene starts / location changes.
-            image_prompt = result[1] if len(result) > 1 else ""
-            render_base = build_realtime_base(visual_scene=caption, narrative=dispatch)
-            render_prompt = build_realtime_prompt(
-                visual_scene=caption, narrative=dispatch, choice=choice
-            )
-            item = create_feed_item(
-                type="scene_image",
-                content="",
-                image_url=web,
-                metadata={
-                    "prompt": render_prompt,
-                    # 'base' (style + scene, no action) lets the client re-steer
-                    # instantly with the next action before the turn resolves.
-                    "base": render_base,
-                    "hard_transition": bool(hard_transition),
-                },
-            )
-            with WORLD_STATE_LOCK:
-                st = _load_state(session_id)
-                st['current_image_url'] = web
-                st['current_image_prompt'] = image_prompt
-                st['current_render_prompt'] = render_prompt
-                st['current_render_base'] = render_base
-                st.setdefault('feed_log', []).append(item)
-                _save_state(st, session_id)
-                state = st
-
+        if write_history:
             # Write the absolute image path back into THIS turn's history entry so
-            # the NEXT turn's img2img can use it for continuity. Done OUTSIDE the
-            # world-state lock: it may briefly wait for the parallel choice step to
-            # append the entry, and we must not hold the lock (blocking state saves
-            # / feed polling) while sleeping.
-            #
-            # This image is generated in parallel with choice generation
-            # (advance_turn_choices_deferred), which appends this turn's entry.
-            # Blindly writing hist[-1] used to race: if the image finished before
-            # that append landed, hist[-1] was still the PREVIOUS turn, so we
-            # overwrote the wrong frame's image AND left this turn's frame imageless
-            # — which then made the next turn reach back to an older scene.
-            # frame_idx == len(history)+1 at turn start, so after the append this
-            # turn's entry is at index frame_idx-1. Target that exact slot, waiting
-            # briefly for the append if it hasn't happened yet.
+            # the NEXT turn's img2img can use it for continuity. frame_idx ==
+            # len(history)+1 at turn start, so after the parallel choice append
+            # this turn's entry is at index frame_idx-1; wait briefly for it.
             hist = _load_history(session_id)
             target_idx = int(frame_idx) - 1
             for _ in range(40):  # up to ~10s: append is quick, image is slow
@@ -3378,18 +3383,36 @@ def _spawn_scene_image_async(caption: str, dispatch: str, choice: str, frame_idx
                 _save_history(hist, session_id)
                 history = hist
             elif hist:
-                # Fallback: append never materialised (shouldn't happen) — attach
-                # to the most recent entry so at least continuity isn't lost.
-                print(f"[ASYNC IMG] WARN: turn entry idx {target_idx} absent (len={len(hist)}); writing hist[-1]")
+                print(f"[SCENE IMG] WARN: turn entry idx {target_idx} absent (len={len(hist)}); writing hist[-1]")
                 hist[-1]["image"] = img_path
                 hist[-1]["image_url"] = img_path
                 _save_history(hist, session_id)
                 history = hist
-            print(f"[ASYNC IMG] scene appended for {session_id}: {web}", flush=True)
-        except Exception as e:
-            log_error(f"[ASYNC IMG] failed: {e}")
+        print(f"[SCENE IMG] scene appended for {session_id}: {web}", flush=True)
+        return {"img_path": img_path, "web_url": web,
+                "image_prompt": image_prompt, "render_prompt": render_prompt}
+    except Exception as e:
+        log_error(f"[SCENE IMG] failed: {e}")
+        return None
 
-    threading.Thread(target=_worker, daemon=True).start()
+
+def _spawn_scene_image_async(caption: str, dispatch: str, choice: str, frame_idx: int,
+                             world_prompt: str, hard_transition: bool = False,
+                             session_id: str = 'default'):
+    """Generate a scene image OFF the turn's critical path (death + intro paths,
+    where choices are produced in parallel). The browser polls /api/feed and
+    streams the scene in. For the main turn loop we instead generate the image
+    synchronously and derive the choices from it — see _process_turn_background.
+    """
+    if not WORLD_IMAGE_ENABLED:
+        return
+    threading.Thread(
+        target=_generate_and_append_scene_image,
+        kwargs=dict(caption=caption, dispatch=dispatch, choice=choice, frame_idx=frame_idx,
+                    world_prompt=world_prompt, hard_transition=hard_transition,
+                    session_id=session_id, write_history=True),
+        daemon=True,
+    ).start()
 
 
 def _evolve_world_async(session_id: str, consequence_summary: str, vision_dispatch: str):
