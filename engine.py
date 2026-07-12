@@ -2423,16 +2423,26 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                 else:
                     ref_images_to_use = prev_img_paths_list[:1]  # ONLY most recent for strongest continuity
                     print(f"[IMG GENERATION] Normal transition - using 1 reference image (most recent frame)")
-                    # DUAL-REFERENCE REALTIME ANCHOR: when the most-recent frame is
-                    # a LIVE world-model capture (act-time / observe), also pass the
-                    # original high-fidelity guide still. Ref 1 (live frame) drives
-                    # spatial/state continuity so the next guide image evolves from
-                    # what's actually on screen; ref 2 (guide still) anchors image
-                    # quality/aesthetic. Only added on normal transitions — hard
-                    # cuts and Frame 1 intentionally stay single-reference.
-                    if primary_guide_image_path and primary_guide_image_path not in ref_images_to_use:
-                        ref_images_to_use = [ref_images_to_use[0], primary_guide_image_path]
-                        print(f"[IMG GENERATION] Realtime dual-ref ENABLED: live frame + guide still ({os.path.basename(primary_guide_image_path)})")
+
+                # REALTIME QUALITY GUARD: the most-recent reference may be a LIVE
+                # world-model screenshot (act-time / observe capture). Those frames
+                # are often melty / low-fidelity, so they must NOT be the MAIN img2img
+                # influence — Gemini weights the FIRST reference most heavily, and
+                # letting the live frame lead produced ugly, degraded images. When the
+                # original high-fidelity guide still is available (primary_guide_image_path),
+                # make the GUIDE STILL the PRIMARY influence and demote the live frame
+                # to a SECONDARY spatial anchor (or drop it entirely on single-reference
+                # hard cuts / Frame 1, where a clean aesthetic anchor matters most).
+                if primary_guide_image_path:
+                    live_frame = ref_images_to_use[0] if ref_images_to_use else None
+                    if hard_transition or frame_idx == 1:
+                        ref_images_to_use = [primary_guide_image_path]
+                        print(f"[IMG GENERATION] Realtime: guide still as sole reference (quality anchor) [{os.path.basename(primary_guide_image_path)}]")
+                    else:
+                        ref_images_to_use = [primary_guide_image_path]
+                        if live_frame and live_frame != primary_guide_image_path:
+                            ref_images_to_use.append(live_frame)
+                        print(f"[IMG GENERATION] Realtime dual-ref: guide still PRIMARY (quality/aesthetic) + live frame SECONDARY (spatial) [{os.path.basename(primary_guide_image_path)}]")
                 
                 print(f"[IMG GENERATION] References being passed to API:")
                 for i, ref in enumerate(ref_images_to_use):
