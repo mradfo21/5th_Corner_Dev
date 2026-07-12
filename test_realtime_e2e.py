@@ -694,6 +694,111 @@ class TestRealtimeRenderer(unittest.TestCase):
         finally:
             page.close()
 
+    def test_touch_reticle_is_a_hand_and_captures_a_specimen(self):
+        """The TOUCH reticle must be a HAND (not a magnifying glass), and locking
+        a spot must lift an 'investigation' specimen: crop the region under the
+        reticle, file it (POST /api/investigate with the texture + note), and show
+        it in the case-file tray. window.Investigations exposes the store."""
+        page = self._new_realtime_page()
+        scene_items = [
+            {"id": 1, "type": "narrative", "content": "Intro."},
+            {"id": 2, "type": "scene_image", "content": "", "image_url": TINY_PNG_DATA_URL,
+             "metadata": {"prompt": "scene one", "base": "A loading dock.", "hard_transition": False}},
+            {"id": 3, "type": "player_choice_prompt", "content": "?", "choices": [{"text": "Go"}]},
+        ]
+        investigates = []
+        page.route("**/api/reset", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(scene_items)))
+        page.route("**/api/feed*", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
+        page.route("**/api/choose", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
+
+        def inv_handler(route):
+            investigates.append(route.request.post_data)
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps({"ok": True, "id": 999, "image_url": "/images/inv.jpg", "kind": "touch"}))
+        page.route("**/api/investigate", inv_handler)
+        try:
+            page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
+            page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
+            # The reticle is a HAND (the .touch-hand svg), not a magnifying glass.
+            self.assertTrue(page.evaluate("!!document.querySelector('#touch-reticle .touch-hand')"))
+            self.assertIsNone(page.evaluate("document.querySelector('#touch-reticle .touch-glass')"))
+            # window.Investigations infra is exposed.
+            self.assertTrue(page.evaluate("!!(window.Investigations && window.Investigations.all)"))
+            # Arm TOUCH and lock a spot -> captures a specimen.
+            page.evaluate("document.getElementById('realtime-btn').click()")
+            self.assertTrue(page.evaluate("document.getElementById('realtime-btn').classList.contains('aiming')"))
+            page.evaluate(
+                """() => document.getElementById('touch-layer').dispatchEvent(
+                    new MouseEvent('click', {clientX: 400, clientY: 260, cancelable:true, bubbles:true}))"""
+            )
+            self.assertTrue(page.evaluate("document.getElementById('touch-reticle').classList.contains('prompting')"))
+            # Submit the prompt -> files the specimen (POST /api/investigate).
+            page.evaluate(
+                """() => {
+                    document.getElementById('touch-input').value = 'pry it open';
+                    document.getElementById('touch-form').dispatchEvent(new Event('submit', {cancelable:true, bubbles:true}));
+                }"""
+            )
+            for _ in range(60):
+                if investigates:
+                    break
+                page.wait_for_timeout(100)
+            self.assertGreaterEqual(len(investigates), 1, f"TOUCH must file an investigation. logs:\n{self._dump_logs()}")
+            payload = json.loads(investigates[0] or "{}")
+            self.assertEqual(payload.get("kind"), "touch")
+            self.assertTrue((payload.get("texture") or "").startswith("data:image"), "must send a cropped texture")
+            self.assertEqual(payload.get("note"), "pry it open")
+            self.assertIsInstance(payload.get("region"), dict)
+            # The specimen appears in the case-file tray.
+            page.wait_for_function("document.querySelectorAll('#investigations-strip .inv-thumb').length >= 1", timeout=8000)
+            self.assertFalse(page.evaluate("document.getElementById('investigations-tray').classList.contains('hidden')"))
+            self.assertGreaterEqual(page.evaluate("window.Investigations.all().length"), 1)
+        except Exception:
+            print("\n=== CONSOLE LOG (touch-specimen) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
+    def test_photograph_mechanic_files_a_photo_specimen(self):
+        """The photograph groundwork: pressing C captures a framed subset of the
+        scene as a 'photo' specimen (POST /api/investigate kind=photo) and files
+        it to the case file with a shutter."""
+        page = self._new_realtime_page()
+        scene_items = [
+            {"id": 1, "type": "narrative", "content": "Intro."},
+            {"id": 2, "type": "scene_image", "content": "", "image_url": TINY_PNG_DATA_URL,
+             "metadata": {"prompt": "scene one", "base": "A loading dock.", "hard_transition": False}},
+            {"id": 3, "type": "player_choice_prompt", "content": "?", "choices": [{"text": "Go"}]},
+        ]
+        investigates = []
+        page.route("**/api/reset", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(scene_items)))
+        page.route("**/api/feed*", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
+
+        def inv_handler(route):
+            investigates.append(route.request.post_data)
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps({"ok": True, "id": 1, "image_url": "/images/photo.jpg", "kind": "photo"}))
+        page.route("**/api/investigate", inv_handler)
+        try:
+            page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
+            page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
+            # Press C -> capturePhoto.
+            page.evaluate("document.dispatchEvent(new KeyboardEvent('keydown', {key: 'c', bubbles: true}))")
+            for _ in range(60):
+                if investigates:
+                    break
+                page.wait_for_timeout(100)
+            self.assertGreaterEqual(len(investigates), 1, f"C must file a photo specimen. logs:\n{self._dump_logs()}")
+            payload = json.loads(investigates[0] or "{}")
+            self.assertEqual(payload.get("kind"), "photo")
+            self.assertTrue((payload.get("texture") or "").startswith("data:image"))
+            page.wait_for_function("document.querySelectorAll('#investigations-strip .inv-thumb.kind-photo').length >= 1", timeout=8000)
+        except Exception:
+            print("\n=== CONSOLE LOG (photo) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
     def test_ceremony_animates_all_steps_to_done(self):
         """The turn pipeline (Action → Consequence → World Updating → World
         Responding → Actions Generating → Guide Image) must animate through ALL

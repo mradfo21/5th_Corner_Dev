@@ -166,15 +166,20 @@
   </div>
 
   <!-- TOUCH tool overlay: a full-screen aiming surface. Armed by the TOUCH hub,
-       a small reticle (magnifying glass) tracks the cursor; clicking locks it to
-       a spot and expands it into a prompt field so you can change that exact
-       location of the live world. Realtime mode only; hidden otherwise. -->
+       a reticle shaped like a HAND tracks the cursor; clicking locks it to a
+       spot (capturing an "investigation" texture of the area under it) and
+       expands into a prompt field so you can change that exact location. Works
+       in both renderers. -->
   <div id="touch-layer" class="hidden" aria-hidden="true">
+    <!-- Framing brackets show the region being captured as an investigation. -->
+    <div id="touch-capture-frame" aria-hidden="true"></div>
     <div id="touch-reticle">
-      <svg class="touch-glass" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-           stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-        <circle cx="10.5" cy="10.5" r="6.5"></circle>
-        <line x1="15.4" y1="15.4" x2="21" y2="21"></line>
+      <svg class="touch-hand" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M18 11V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2"></path>
+        <path d="M14 10V4a2 2 0 0 0-2-2a2 2 0 0 0-2 2v2"></path>
+        <path d="M10 10.5V6a2 2 0 0 0-2-2a2 2 0 0 0-2 2v8"></path>
+        <path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"></path>
       </svg>
       <form id="touch-form" autocomplete="off">
         <input id="touch-input" type="text" placeholder="change this spot…" maxlength="200">
@@ -182,6 +187,14 @@
       </form>
     </div>
   </div>
+
+  <!-- Investigations tray: a subtle "case file" of specimen thumbnails captured
+       from the scene (via TOUCH, or the photograph mechanic). Clicking one seeds
+       an action referencing it. Hidden until the first specimen is captured. -->
+  <aside id="investigations-tray" class="hidden" aria-label="Captured specimens">
+    <div class="inv-tray-label">CASE FILE</div>
+    <div id="investigations-strip"></div>
+  </aside>
 
   <!-- (Session controls now live in #control-rail, top-right.) -->
 
