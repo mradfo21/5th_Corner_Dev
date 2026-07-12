@@ -899,6 +899,42 @@ class TestRealtimeRenderer(unittest.TestCase):
         finally:
             page.close()
 
+    def test_realtime_paints_still_floor_so_never_black(self):
+        """Anti-black safety net: in realtime mode the Gemini still is painted as
+        a SILENT floor on the scene layer (beneath the live video), so if the
+        video can't present frames (warming up / stalled / autoplay-blocked) the
+        player sees the still instead of a black screen. Delivered via the real
+        feed flow (Renderer.applyScene), not ReactorRenderer directly."""
+        page = self._new_realtime_page()
+        scene_items = [
+            {"id": 1, "type": "narrative", "content": "Intro."},
+            {"id": 2, "type": "scene_image", "content": "", "image_url": TINY_PNG_DATA_URL,
+             "metadata": {"prompt": "scene one", "base": "A dock.", "hard_transition": False}},
+            {"id": 3, "type": "player_choice_prompt", "content": "?", "choices": [{"text": "Go"}]},
+        ]
+        page.route("**/api/reset", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(scene_items)))
+        page.route("**/api/feed*", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
+        try:
+            page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
+            page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isReady() === true", timeout=15000)
+            # The still floor gets painted onto a scene layer via Renderer.applyScene.
+            page.wait_for_function(
+                "(document.getElementById('sceneA').style.backgroundImage||"
+                "document.getElementById('sceneB').style.backgroundImage||'').length > 0",
+                timeout=10000,
+            )
+            floor = page.evaluate(
+                "document.getElementById('sceneA').style.backgroundImage || document.getElementById('sceneB').style.backgroundImage || ''"
+            )
+            self.assertIn("data:image", floor, "the still floor must be painted so realtime is never just black")
+            # And the live video still reveals on top of the floor.
+            page.wait_for_function("window.ReactorRenderer.isShowing() === true", timeout=15000)
+        except Exception:
+            print("\n=== REACTOR CONSOLE LOG (still-floor) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
     def test_realtime_starts_from_feed_scene_image(self):
         """FAITHFUL full-flow reproduction: don't touch ReactorRenderer directly.
         Instead deliver a scene_image through /api/feed exactly like the backend
