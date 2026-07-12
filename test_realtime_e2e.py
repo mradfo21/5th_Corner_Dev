@@ -390,53 +390,64 @@ class TestRealtimeRenderer(unittest.TestCase):
         finally:
             page.close()
 
-    def test_realtime_touch_tool_steers_live_without_a_turn(self):
-        """The realtime TOUCH tool must be visible in /realtime and, once armed
-        (aiming) and locked to a spot (prompt), submit a LIVE steer (a set_prompt
-        hot-swap on the running stream) WITHOUT resolving a turn (no /api/choose)
-        and WITHOUT a re-anchor (no reset)."""
+    def test_camera_tap_captures_evidence(self):
+        """The camera (SNAP) tool: armed from the hub, a TAP on the scene captures
+        a photo of that spot as 'evidence' — files it (POST /api/investigate
+        kind=photo), pops the evidence flourish, and adds it to the case file —
+        WITHOUT resolving a turn (no /api/choose) or steering the stream (no
+        set_prompt). Pointer-driven so it works on touch/iOS."""
         page = self._new_realtime_page()
         scene_items = [
             {"id": 1, "type": "narrative", "content": "Intro."},
             {"id": 2, "type": "scene_image", "content": "", "image_url": TINY_PNG_DATA_URL,
-             "metadata": {"prompt": "scene one", "base": "First-person VHS. A loading dock.", "hard_transition": False}},
+             "metadata": {"prompt": "scene one", "base": "A loading dock.", "hard_transition": False}},
             {"id": 3, "type": "player_choice_prompt", "content": "?", "choices": [{"text": "Go"}]},
         ]
         chooses = []
+        investigates = []
         page.route("**/api/reset", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(scene_items)))
         page.route("**/api/feed*", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
         page.route("**/api/choose", lambda r: (chooses.append(r.request.url), r.fulfill(status=200, content_type="application/json", body="[]")))
+
+        def inv_handler(route):
+            investigates.append(route.request.post_data)
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps({"ok": True, "id": 7, "image_url": "/images/e.jpg", "kind": "photo"}))
+        page.route("**/api/investigate", inv_handler)
         try:
             page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
             page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
-            # The TOUCH tool is revealed in realtime mode.
+            # The camera hub is shown; the reticle is a CAMERA (not a hand/glass).
             self.assertNotEqual(page.evaluate("getComputedStyle(document.getElementById('realtime-btn')).display"), "none")
-            # Arm it -> aiming mode: the hub fades and the reticle layer opens.
+            self.assertTrue(page.evaluate("!!document.querySelector('#touch-reticle .touch-cam')"))
+            self.assertIsNone(page.evaluate("document.querySelector('#touch-reticle .touch-hand')"))
+            # Arm it, then TAP a spot via a pointer event (works on touch/iOS).
             page.evaluate("document.getElementById('realtime-btn').click()")
             self.assertTrue(page.evaluate("document.getElementById('realtime-btn').classList.contains('aiming')"))
-            self.assertFalse(page.evaluate("document.getElementById('touch-layer').classList.contains('hidden')"))
-            # Click a spot -> the reticle locks and expands into a prompt field.
-            page.evaluate(
-                """() => document.getElementById('touch-layer').dispatchEvent(
-                    new MouseEvent('click', {clientX: 220, clientY: 160, cancelable:true, bubbles:true}))"""
-            )
-            self.assertTrue(page.evaluate("document.getElementById('touch-reticle').classList.contains('prompting')"))
-            # Submit a live nudge at that spot and watch for a set_prompt hot-swap (no reset).
             page.evaluate("window.__MOCK_CMDS__ = []")
             page.evaluate(
-                """() => {
-                    const inp = document.getElementById('touch-input');
-                    inp.value = 'smash the crates open';
-                    document.getElementById('touch-form').dispatchEvent(new Event('submit', {cancelable:true, bubbles:true}));
-                }"""
+                """() => document.getElementById('touch-layer').dispatchEvent(
+                    new PointerEvent('pointerdown', {clientX: 240, clientY: 200, cancelable:true, bubbles:true}))"""
             )
-            page.wait_for_function("(window.__MOCK_CMDS__||[]).includes('set_prompt')", timeout=8000)
+            # It files a photo specimen...
+            for _ in range(60):
+                if investigates:
+                    break
+                page.wait_for_timeout(100)
+            self.assertGreaterEqual(len(investigates), 1, f"a tap must capture a photo. logs:\n{self._dump_logs()}")
+            payload = json.loads(investigates[0] or "{}")
+            self.assertEqual(payload.get("kind"), "photo")
+            self.assertTrue((payload.get("texture") or "").startswith("data:image"))
+            # ...pops the evidence flourish...
+            self.assertTrue(page.evaluate("document.getElementById('evidence-card').classList.contains('show')"))
+            # ...adds it to the case file...
+            page.wait_for_function("document.querySelectorAll('#investigations-strip .inv-thumb').length >= 1", timeout=8000)
+            # ...and does NOT steer or resolve a turn.
             cmds = page.evaluate("window.__MOCK_CMDS__ || []")
-            self.assertIn("set_prompt", cmds, f"TOUCH didn't steer the live stream. logs:\n{self._dump_logs()}")
-            self.assertNotIn("reset", cmds, "TOUCH must NOT re-anchor (no reset / scene change)")
-            self.assertEqual(len(chooses), 0, "TOUCH must NOT resolve a turn (no /api/choose)")
+            self.assertNotIn("set_prompt", cmds, "camera capture must not steer the stream")
+            self.assertEqual(len(chooses), 0, "camera capture must not resolve a turn")
         except Exception:
-            print("\n=== REACTOR CONSOLE LOG (touch) ===\n" + self._dump_logs())
+            print("\n=== REACTOR CONSOLE LOG (camera) ===\n" + self._dump_logs())
             raise
         finally:
             page.close()
@@ -694,11 +705,10 @@ class TestRealtimeRenderer(unittest.TestCase):
         finally:
             page.close()
 
-    def test_touch_reticle_is_a_hand_and_captures_a_specimen(self):
-        """The TOUCH reticle must be a HAND (not a magnifying glass), and locking
-        a spot must lift an 'investigation' specimen: crop the region under the
-        reticle, file it (POST /api/investigate with the texture + note), and show
-        it in the case-file tray. window.Investigations exposes the store."""
+    def test_scan_ceases_when_tag_action_submitted(self):
+        """Submitting a SCAN tag action must END the scan session (close the
+        overlay + clear the labels) rather than leaving tags hovering over the
+        scene while the turn plays out."""
         page = self._new_realtime_page()
         scene_items = [
             {"id": 1, "type": "narrative", "content": "Intro."},
@@ -706,55 +716,34 @@ class TestRealtimeRenderer(unittest.TestCase):
              "metadata": {"prompt": "scene one", "base": "A loading dock.", "hard_transition": False}},
             {"id": 3, "type": "player_choice_prompt", "content": "?", "choices": [{"text": "Go"}]},
         ]
-        investigates = []
         page.route("**/api/reset", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(scene_items)))
         page.route("**/api/feed*", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
         page.route("**/api/choose", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
-
-        def inv_handler(route):
-            investigates.append(route.request.post_data)
-            route.fulfill(status=200, content_type="application/json",
-                          body=json.dumps({"ok": True, "id": 999, "image_url": "/images/inv.jpg", "kind": "touch"}))
-        page.route("**/api/investigate", inv_handler)
+        page.route("**/api/detect", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps({
+            "objects": [{"label": "wooden crate", "cx": 0.3, "cy": 0.45, "w": 0.2, "h": 0.2}]})))
         try:
             page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
             page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
-            # The reticle is a HAND (the .touch-hand svg), not a magnifying glass.
-            self.assertTrue(page.evaluate("!!document.querySelector('#touch-reticle .touch-hand')"))
-            self.assertIsNone(page.evaluate("document.querySelector('#touch-reticle .touch-glass')"))
-            # window.Investigations infra is exposed.
-            self.assertTrue(page.evaluate("!!(window.Investigations && window.Investigations.all)"))
-            # Arm TOUCH and lock a spot -> captures a specimen.
-            page.evaluate("document.getElementById('realtime-btn').click()")
-            self.assertTrue(page.evaluate("document.getElementById('realtime-btn').classList.contains('aiming')"))
-            page.evaluate(
-                """() => document.getElementById('touch-layer').dispatchEvent(
-                    new MouseEvent('click', {clientX: 400, clientY: 260, cancelable:true, bubbles:true}))"""
-            )
-            self.assertTrue(page.evaluate("document.getElementById('touch-reticle').classList.contains('prompting')"))
-            # Submit the prompt -> files the specimen (POST /api/investigate).
+            page.evaluate("document.getElementById('scan-btn').click()")
+            page.wait_for_function("document.querySelectorAll('#scan-tags .scan-tag').length >= 1", timeout=10000)
+            # Poke a tag, type "go", submit -> scan must CEASE.
+            page.evaluate("document.querySelector('.scan-tag .scan-tag-act').click()")
             page.evaluate(
                 """() => {
-                    document.getElementById('touch-input').value = 'pry it open';
-                    document.getElementById('touch-form').dispatchEvent(new Event('submit', {cancelable:true, bubbles:true}));
+                    const tag = document.querySelector('.scan-tag.acting');
+                    tag.querySelector('.scan-tag-form input').value = 'go';
+                    tag.querySelector('.scan-tag-form').dispatchEvent(new Event('submit', {cancelable:true, bubbles:true}));
                 }"""
             )
-            for _ in range(60):
-                if investigates:
-                    break
-                page.wait_for_timeout(100)
-            self.assertGreaterEqual(len(investigates), 1, f"TOUCH must file an investigation. logs:\n{self._dump_logs()}")
-            payload = json.loads(investigates[0] or "{}")
-            self.assertEqual(payload.get("kind"), "touch")
-            self.assertTrue((payload.get("texture") or "").startswith("data:image"), "must send a cropped texture")
-            self.assertEqual(payload.get("note"), "pry it open")
-            self.assertIsInstance(payload.get("region"), dict)
-            # The specimen appears in the case-file tray.
-            page.wait_for_function("document.querySelectorAll('#investigations-strip .inv-thumb').length >= 1", timeout=8000)
-            self.assertFalse(page.evaluate("document.getElementById('investigations-tray').classList.contains('hidden')"))
-            self.assertGreaterEqual(page.evaluate("window.Investigations.all().length"), 1)
+            # Scan overlay closes, the SCAN hub is no longer armed, and the labels
+            # are gone.
+            page.wait_for_function("document.getElementById('scan-layer').classList.contains('hidden')", timeout=6000)
+            self.assertFalse(page.evaluate("document.getElementById('scan-btn').classList.contains('scanning')"),
+                             "SCAN must cease (un-arm) after submitting a tag action")
+            self.assertEqual(page.evaluate("document.querySelectorAll('#scan-tags .scan-tag').length"), 0,
+                             "SCAN labels must be cleared after submitting a tag action")
         except Exception:
-            print("\n=== CONSOLE LOG (touch-specimen) ===\n" + self._dump_logs())
+            print("\n=== CONSOLE LOG (scan-cease) ===\n" + self._dump_logs())
             raise
         finally:
             page.close()

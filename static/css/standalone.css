@@ -876,81 +876,86 @@ body.touch-aiming #free-will-btn { opacity: 0.2; pointer-events: none; }
   50%      { box-shadow: inset 0 0 14px rgba(0,0,0,0.55), 0 0 28px rgba(255, 186, 89, 0.55); }
 }
 
-.touch-hand {
+.touch-cam {
   flex: 0 0 auto;
   width: 24px;
   height: 24px;
   margin: 0;
   filter: drop-shadow(0 1px 3px rgba(0,0,0,0.9));
   pointer-events: none;
-  transition: width 0.24s ease, height 0.24s ease, margin 0.3s ease;
 }
 
-/* Prompt field lives inside the reticle; hidden until the reticle expands. */
-#touch-form {
-  display: none;
-  flex: 1;
-  min-width: 0;
-  align-items: center;
-  gap: 8px;
+/* Camera capture hint, centered above the action wheel. */
+.touch-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 128px;
+  transform: translateX(-50%);
+  pointer-events: none;
+  color: rgba(255, 207, 148, 0.9);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.95);
+  padding: 5px 12px;
+  border-radius: 12px;
+  background: rgba(20, 12, 4, 0.45);
+  border: 1px solid rgba(255, 186, 89, 0.25);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  animation: scan-hint-pulse 2.6s ease-in-out infinite;
 }
 
-/* Locked to a spot: reticle expands into a pill and reveals the prompt. */
-#touch-reticle.prompting {
-  width: 340px;
-  max-width: 92vw;
-  border-radius: 26px;
-  gap: 8px;
-  padding: 0 12px 0 14px;
-  cursor: text;
-  animation: none;
+/* Evidence flourish: the captured photo pops up big, holds, then files itself
+   down into the CASE FILE tray (bottom-left) and fades — a satisfying
+   "gathered evidence" beat. */
+#evidence-card {
+  position: fixed;
+  left: 50%;
+  top: 42%;
+  z-index: 46;
+  width: min(56vw, 230px);
+  padding: 10px 10px 30px;
+  background: #ece5d6;
+  border-radius: 4px;
+  box-shadow: 0 16px 46px rgba(0,0,0,0.75), 0 2px 0 rgba(255,255,255,0.4) inset;
+  transform: translate(-50%, -50%) scale(0.5);
+  opacity: 0;
+  pointer-events: none;
 }
-#touch-reticle.prompting .touch-hand {
-  width: 18px;
-  height: 18px;
-  margin-right: 2px;
+#evidence-card.hidden { display: none; }
+#evidence-card.show { animation: evidence-pop 0.5s cubic-bezier(0.2, 0.9, 0.25, 1.25) forwards; }
+#evidence-card.filing { animation: evidence-file 0.68s cubic-bezier(0.4, 0.0, 0.7, 1) forwards; }
+.evidence-photo {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  background-size: cover;
+  background-position: center;
+  background-color: #0c0c0c;
+  filter: saturate(0.92) contrast(1.06);
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,0.35);
 }
-#touch-reticle.prompting #touch-form {
-  display: flex;
-  animation: touch-form-in 0.3s ease 0.1s backwards;
-}
-
-@keyframes touch-form-in {
-  from { opacity: 0; transform: translateX(-6px); }
-  to   { opacity: 1; transform: translateX(0); }
-}
-
-#touch-input {
-  flex: 1;
-  min-width: 0;
-  background: none;
-  border: none;
-  border-bottom: 1px solid rgba(255, 186, 89, 0.55);
-  color: #ffe9cc;
-  font-family: inherit;
-  font-size: 14px;
-  padding: 6px 4px;
-  outline: none;
-}
-#touch-input:focus { border-bottom-color: rgba(255, 186, 89, 0.95); }
-#touch-input::placeholder { color: rgba(255, 207, 148, 0.55); }
-
-#touch-submit {
-  flex: 0 0 auto;
-  background: none;
-  border: 1px solid rgba(255, 186, 89, 0.55);
-  color: #ffcf94;
+.evidence-cap {
+  margin-top: 9px;
+  text-align: center;
   font-family: inherit;
   font-size: 11px;
-  letter-spacing: 0.08em;
-  padding: 6px 11px;
-  border-radius: 3px;
-  cursor: pointer;
-  transition: border-color 0.14s, color 0.14s;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #a52f2f;
 }
-#touch-submit:hover {
-  border-color: rgba(255, 186, 89, 0.95);
-  color: #ffe9cc;
+@keyframes evidence-pop {
+  0%   { opacity: 0; transform: translate(-50%, -50%) scale(0.5) rotate(-7deg); }
+  55%  { opacity: 1; transform: translate(-50%, -50%) scale(1.07) rotate(2.5deg); }
+  100% { opacity: 1; transform: translate(-50%, -50%) scale(1) rotate(-1.5deg); }
+}
+@keyframes evidence-file {
+  0%   { opacity: 1; transform: translate(-50%, -50%) scale(1) rotate(-1.5deg); }
+  100% { opacity: 0; transform: translate(calc(-50% - 38vw), calc(-50% + 42vh)) scale(0.18) rotate(-16deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #evidence-card.show, #evidence-card.filing { animation-duration: 0.01s; }
+  .touch-hint { animation: none; }
 }
 
 /* Investigation capture frame — corner brackets that show the region the TOUCH

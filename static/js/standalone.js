@@ -64,6 +64,8 @@
     scanTags: document.getElementById("scan-tags"),
     scanHint: document.getElementById("scan-hint"),
     touchCaptureFrame: document.getElementById("touch-capture-frame"),
+    touchHint: document.getElementById("touch-hint"),
+    evidenceCard: document.getElementById("evidence-card"),
     investigationsTray: document.getElementById("investigations-tray"),
     investigationsStrip: document.getElementById("investigations-strip"),
     forwardBtn: document.getElementById("forward-btn"),
@@ -143,6 +145,7 @@
     scanSrcSize: null,          // {w,h} of the last scanned source (video or still), for cover-mapping tags
     currentStillUrl: null,      // last still shown via setScene (stills-mode SCAN source)
     scanStillImg: null,         // cached <img> of the current still, for canvas capture
+    evidenceTimer: null,        // evidence flourish hold-then-file timer
     autoPlay: false,
     autoTimer: null,
     autoDeadline: 0,            // realtime: latest time we'll wait for the new video before advancing anyway
@@ -1560,7 +1563,7 @@
       stopPolling(); // avoid a mid-reset poll racing the rebuilt feed
       exitGameOver();
       closeScan(); // drop any scan tags/overlay from the dead run
-      closeTouch(true); // drop any TOUCH overlay/pending specimen
+      closeTouch(); // drop any camera overlay
       state.selectedInvestigation = null;
       try { Investigations.clear(); } catch (_) {} // the case file is per-run
       // Wipe the current visuals IMMEDIATELY and permanently: blank both still
@@ -1873,24 +1876,20 @@
   window.Investigations = Investigations;
 
   // ------------------------------------------------------------------
-  // TOUCH tool — a spatial, in-world steer. Arming it fades the hub and turns
-  // the whole scene into an aiming surface: a HAND reticle tracks the cursor, a
-  // click locks it to a spot (capturing an investigation texture of the area
-  // under it) and expands into a prompt field, and submitting steers the scene
-  // at that location. Instant, no turn — allowed even mid-turn (that's the
-  // point), only blocked when dead / already
-  // aiming / while the bottom ACT input is open.
+  // CAMERA (SNAP) tool — arming it turns the whole scene into a capture surface:
+  // a CAMERA reticle follows the pointer/finger, and a tap/click shoots a photo
+  // of the region under it — collected as "evidence" in the case file with a
+  // satisfying flourish. Pointer-driven so it works on iOS (tap = capture).
+  // Realtime mode only (captures the live world-model frame).
   // ------------------------------------------------------------------
   function openTouch() {
-    if (state.gameOver || state.freeWillOpen || state.touchMode) return;
+    if (state.gameOver || state.freeWillOpen) return;
+    if (state.touchMode) { closeTouch(); return; } // toggle off if already armed
     if (Renderer.mode !== "reactor" || !Renderer.reactorAvailable()) return;
     closeScan(); // the two realtime instruments are mutually exclusive
     state.touchMode = "aim";
     if (el.realtimeBtn) el.realtimeBtn.classList.add("aiming");
     document.body.classList.add("touch-aiming");
-    if (el.touchReticle) el.touchReticle.classList.remove("prompting");
-    if (el.touchLayer) el.touchLayer.classList.remove("prompting");
-    if (el.touchInput) el.touchInput.value = "";
     // Start the reticle where it was last, else at the center of the view.
     const start = state.touchPoint ||
       { x: window.innerWidth / 2, y: window.innerHeight / 2 };
@@ -1905,9 +1904,8 @@
       el.touchReticle.style.left = x + "px";
       el.touchReticle.style.top = y + "px";
     }
-    // While aiming, the capture frame tracks the hand so you see exactly what
-    // region will be lifted as a specimen.
-    if (el.touchCaptureFrame && state.touchMode === "aim") {
+    // The capture frame tracks the camera so you see exactly what will be shot.
+    if (el.touchCaptureFrame) {
       const b = investBoxPx();
       el.touchCaptureFrame.style.width = b + "px";
       el.touchCaptureFrame.style.height = b + "px";
@@ -1916,73 +1914,54 @@
     }
   }
 
+  // Pointer-driven so it works with mouse (hover) AND touch (drag) alike.
   function onTouchMove(e) {
     if (state.touchMode !== "aim") return;
     moveReticle(e.clientX, e.clientY);
   }
 
-  function onTouchClick(e) {
-    if (state.touchMode === "aim") {
-      e.preventDefault();
-      lockTouchSpot(e.clientX, e.clientY);
-    } else if (state.touchMode === "prompt") {
-      // Clicking away from the pill cancels; clicks inside it edit the prompt.
-      if (el.touchReticle && !el.touchReticle.contains(e.target)) closeTouch(true);
-    }
+  // A tap/click captures a photo at that exact spot. On iOS there's no hover, so
+  // the reticle snaps to the tap and shoots — that's the whole interaction.
+  function onTouchDown(e) {
+    if (state.touchMode !== "aim") return;
+    e.preventDefault();
+    captureAt(e.clientX, e.clientY);
   }
 
-  // Lock the reticle to a spot and grow it into the prompt field. The center is
-  // clamped so the expanded pill stays fully on screen near a viewport edge.
-  function lockTouchSpot(x, y) {
-    // Lift an investigation texture of the area under the reticle FIRST — before
-    // it morphs into a prompt pill and before the live frame drifts — so the
-    // specimen is exactly what the player pointed at.
+  // Take the shot: crop the region under the reticle, flash, sound, file it to
+  // the case file, and pop the satisfying evidence flourish. Stays armed so you
+  // can keep gathering evidence tap after tap.
+  function captureAt(x, y) {
+    moveReticle(x, y);
     const boxPx = investBoxPx();
     const region = screenBoxToNorm(x, y, boxPx);
-    const texture = captureSceneRegion(region, 256);
-    state.pendingInvestigation = texture ? { screen: { x, y }, region, texture } : null;
+    const texture = captureSceneRegion(region, 320);
+    if (!texture) { showRendererToast("Couldn't capture — hold steady"); return; }
+    // Frame flash + camera flash + shutter for a tactile "snap".
     if (el.touchCaptureFrame) {
-      el.touchCaptureFrame.style.left = x + "px";
-      el.touchCaptureFrame.style.top = y + "px";
       el.touchCaptureFrame.classList.remove("grab");
-      void el.touchCaptureFrame.offsetWidth; // restart the flash on rapid re-locks
-      if (texture) el.touchCaptureFrame.classList.add("grab");
+      void el.touchCaptureFrame.offsetWidth;
+      el.touchCaptureFrame.classList.add("grab");
     }
-    if (el.touchReticle && texture) el.touchReticle.classList.add("holding");
-    if (texture) Sound.grab();
-
-    state.touchMode = "prompt";
-    const halfW = 176, halfH = 28, margin = 12;
-    const cx = Math.min(Math.max(x, halfW + margin), window.innerWidth - halfW - margin);
-    const cy = Math.min(Math.max(y, halfH + margin), window.innerHeight - halfH - margin);
-    moveReticle(cx, cy);
-    // Remember the ORIGINAL touched point (not the clamped pill center) so the
-    // steer describes where the player actually aimed.
-    state.touchPoint = { x, y };
-    if (el.touchLayer) el.touchLayer.classList.add("prompting");
-    if (el.touchReticle) el.touchReticle.classList.add("prompting");
-    Sound.open();
-    setTimeout(() => { if (el.touchInput) el.touchInput.focus(); }, 90);
+    flashScene();
+    try { Sound.shutter(); } catch (_) {}
+    Investigations.store({
+      texture, region, kind: "photo", label: describeTouchRegion({ x, y }).label,
+    });
+    showEvidence(texture);
   }
 
-  function closeTouch(clear) {
+  function closeTouch() {
     if (!state.touchMode) return;
     state.touchMode = null;
-    if (el.touchLayer) {
-      el.touchLayer.classList.add("hidden");
-      el.touchLayer.classList.remove("prompting");
-    }
-    if (el.touchReticle) el.touchReticle.classList.remove("prompting", "holding");
+    if (el.touchLayer) el.touchLayer.classList.add("hidden");
+    if (el.touchReticle) el.touchReticle.classList.remove("holding");
     if (el.touchCaptureFrame) el.touchCaptureFrame.classList.remove("grab");
     if (el.realtimeBtn) el.realtimeBtn.classList.remove("aiming");
     document.body.classList.remove("touch-aiming");
-    state.pendingInvestigation = null;
-    if (clear && el.touchInput) el.touchInput.value = "";
-    if (el.touchInput && document.activeElement === el.touchInput) el.touchInput.blur();
   }
 
-  // Turn the reticle's viewport position into a human phrase ("at the top-left
-  // of the view") so the steer can anchor the change to that region.
+  // Turn a viewport position into a human region phrase (used to label evidence).
   function describeTouchRegion(pt) {
     if (!pt) return { label: "the scene", phrase: "" };
     const fx = pt.x / Math.max(1, window.innerWidth);
@@ -1997,44 +1976,41 @@
     return { label, phrase: "at " + label };
   }
 
-  function submitTouch(e) {
-    e.preventDefault();
-    if (!el.touchInput) return;
-    const text = el.touchInput.value.trim();
-    if (!text || state.gameOver) { closeTouch(true); return; }
-    const where = describeTouchRegion(state.touchPoint);
-    // Bank the specimen captured at lock, tagged with what the player did to it,
-    // so this investigation becomes reusable material later.
-    if (state.pendingInvestigation && state.pendingInvestigation.texture) {
-      Investigations.store({
-        texture: state.pendingInvestigation.texture,
-        region: state.pendingInvestigation.region,
-        kind: "touch",
-        note: text,
-        label: where.label,
-      });
-    }
-    const ok = Renderer.steerRealtime(text, where);
-    Sound.submit();
-    closeTouch(true);
-    showRendererToast(ok ? "Touched " + where.label : "Realtime not ready yet");
+  // The satisfying "gathered evidence" flourish: the freshly captured photo pops
+  // up big for a beat, then files itself down into the CASE FILE tray and fades.
+  function showEvidence(texture) {
+    if (!el.evidenceCard || !texture) return;
+    const photo = el.evidenceCard.querySelector(".evidence-photo");
+    if (photo) photo.style.backgroundImage = `url('${texture}')`;
+    clearTimeout(state.evidenceTimer);
+    el.evidenceCard.classList.remove("hidden", "filing", "show");
+    void el.evidenceCard.offsetWidth; // restart the animation
+    el.evidenceCard.classList.add("show");
+    state.evidenceTimer = setTimeout(() => {
+      el.evidenceCard.classList.add("filing"); // fly down into the case file + fade
+      state.evidenceTimer = setTimeout(() => {
+        el.evidenceCard.classList.remove("show", "filing");
+        el.evidenceCard.classList.add("hidden");
+      }, 680);
+    }, 1000);
   }
 
   // ------------------------------------------------------------------
-  // PHOTOGRAPH — journalist capture groundwork. Grabs a larger framed subset of
-  // the current scene with a shutter flash + sound, stored as a "photo" specimen
-  // in the same case file. Reuses the investigation capture plumbing; the full
-  // framing/ceremony UI can grow from here. Bound to the C key.
+  // PHOTOGRAPH (C key) — a quick CENTERED snapshot using the same camera +
+  // evidence plumbing as the SNAP tool (which captures where you tap).
   // ------------------------------------------------------------------
   function capturePhoto() {
     if (state.gameOver) return;
     if (!currentSourceSize()) { showRendererToast("Nothing to photograph yet"); return; }
     const center = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
-    const boxPx = Math.round(Math.min(window.innerWidth, window.innerHeight) * 0.62);
-    flashScene();            // shutter flash over the frame
+    const boxPx = Math.round(Math.min(window.innerWidth, window.innerHeight) * 0.5);
+    const region = screenBoxToNorm(center.x, center.y, boxPx);
+    const texture = captureSceneRegion(region, 512);
+    if (!texture) { showRendererToast("Couldn't capture the frame"); return; }
+    flashScene();
     try { Sound.shutter(); } catch (_) {}
-    const entry = Investigations.capture({ screen: center, boxPx, kind: "photo", outSize: 512 });
-    showRendererToast(entry ? "Photo filed to the case file" : "Couldn't capture the frame");
+    Investigations.store({ texture, region, kind: "photo", label: "the center of the view" });
+    showEvidence(texture);
   }
 
   // ------------------------------------------------------------------
@@ -2430,8 +2406,9 @@
     Sound.submit();
     closeTagPrompt(tag, true);
     showRendererToast("Acting on the " + obj.label + "\u2026");
-    // makeChoice runs the full pipeline and clears the (now stale) scan tags;
-    // SCAN stays armed, so fresh tags twinkle back in over the new scene.
+    // Committing an action ENDS the scan session — the labels shouldn't keep
+    // hovering over the scene while the turn plays out. Re-arm SCAN to look again.
+    closeScan();
     makeChoice(action, null);
   }
 
@@ -2846,10 +2823,9 @@
       if (e.key === "Escape" && state.scanTagActing) closeTagPrompt(state.scanTagActing, true);
       return;
     }
-    // TOUCH tool owns the keyboard while armed: Esc cancels; other keys pass
-    // through so the locked-spot prompt types normally.
+    // Camera (SNAP) tool owns the keyboard while armed: Esc or H closes it.
     if (state.touchMode) {
-      if (e.key === "Escape") closeTouch(true);
+      if (e.key === "Escape" || e.key.toLowerCase() === "h") closeTouch();
       return;
     }
     // While dead, only R (restart) is meaningful.
@@ -2874,7 +2850,7 @@
     } else if (e.key.toLowerCase() === "f") {
       openFreeWill();
     } else if (e.key.toLowerCase() === "h") {
-      openTouch(); // realtime TOUCH tool (no-op outside realtime mode)
+      openTouch(); // camera (SNAP) tool — tap to capture evidence
     } else if (e.key.toLowerCase() === "s") {
       toggleScan(); // SCAN tool (works in both renderers)
     } else if (e.key.toLowerCase() === "c") {
@@ -2922,10 +2898,11 @@
     el.freeWillBtn.addEventListener("click", openFreeWill);
     if (el.realtimeBtn) el.realtimeBtn.addEventListener("click", openTouch);
     if (el.touchLayer) {
-      el.touchLayer.addEventListener("mousemove", onTouchMove);
-      el.touchLayer.addEventListener("click", onTouchClick);
+      // Pointer events cover mouse (hover to aim) AND touch (drag to aim, tap to
+      // shoot) — so the camera works on iOS where mousemove never fires.
+      el.touchLayer.addEventListener("pointermove", onTouchMove);
+      el.touchLayer.addEventListener("pointerdown", onTouchDown);
     }
-    if (el.touchForm) el.touchForm.addEventListener("submit", submitTouch);
     if (el.scanBtn) el.scanBtn.addEventListener("click", toggleScan);
     // SCAN is non-modal: its overlay doesn't capture the pointer (so choices and
     // controls stay live), so we watch pointer moves/taps globally while armed.
