@@ -56,6 +56,9 @@
     scanCursor: document.getElementById("scan-cursor"),
     scanTags: document.getElementById("scan-tags"),
     scanHint: document.getElementById("scan-hint"),
+    touchCaptureFrame: document.getElementById("touch-capture-frame"),
+    investigationsTray: document.getElementById("investigations-tray"),
+    investigationsStrip: document.getElementById("investigations-strip"),
     forwardBtn: document.getElementById("forward-btn"),
     actionWheel: document.getElementById("action-wheel"),
     veil: document.getElementById("processing-veil"),
@@ -120,6 +123,8 @@
     inputMode: "act",           // custom input intent: "act" (full turn) | "steer" (realtime nudge)
     touchMode: null,            // TOUCH tool state: null | "aim" (reticle tracks cursor) | "prompt" (spot locked, field open)
     touchPoint: null,           // {x, y} viewport coords of the reticle / locked spot
+    pendingInvestigation: null, // {screen, region, texture} captured at TOUCH lock, finalized on submit
+    selectedInvestigation: null,// a specimen chosen from the tray to inform the next action
     scanOn: false,              // SCAN tool armed (object-recognition tags over the live video)
     scanBusy: false,            // a detection request is in flight
     scanLastTs: 0,              // last time we hit /api/detect (throttle drag scans)
@@ -224,6 +229,8 @@
       toggle() { tone(300, 0.04, "square", 0.04); },           // UI toggle click
       scan() { tone([320, 1180], 0.34, "sine", 0.028); tone(1180, 0.12, "sine", 0.02, 0.24); }, // SCAN armed — radar sweep
       ping() { tone([1300, 1850], 0.10, "sine", 0.03); tone(2500, 0.07, "sine", 0.018, 0.05); }, // tags land — starfield shimmer
+      grab() { tone(900, 0.03, "square", 0.045); tone([700, 340], 0.10, "triangle", 0.04, 0.02); }, // TOUCH specimen captured
+      shutter() { tone(1500, 0.015, "square", 0.055); noise(0.05, 0.035); tone(760, 0.03, "square", 0.05, 0.03); }, // camera shutter
       // ---- Ceremony: one distinct cue per pipeline step, so the player HEARS
       // the world working through each stage. ----
       cereAction() { tone(300, 0.05, "square", 0.06); tone([300, 620], 0.14, "square", 0.05, 0.05); },   // action selected — decisive commit
@@ -1380,6 +1387,9 @@
       stopPolling(); // avoid a mid-reset poll racing the rebuilt feed
       exitGameOver();
       closeScan(); // drop any scan tags/overlay from the dead run
+      closeTouch(true); // drop any TOUCH overlay/pending specimen
+      state.selectedInvestigation = null;
+      try { Investigations.clear(); } catch (_) {} // the case file is per-run
       // Wipe the current visuals IMMEDIATELY and permanently: blank both still
       // layers and reset the realtime world model (which hides + suppresses the
       // live video and drains its queue). This runs regardless of the active
@@ -1438,10 +1448,17 @@
     // the re-anchor (see Renderer.applyScene / ReactorRenderer) starts the new
     // guide-image stream with the render prompt, which already carries this
     // action beat (build_realtime_prompt, server-side).
+    // If a captured specimen is armed, ride its id along with the action so the
+    // backend can (in future) ground the turn on what the player examined. The
+    // engine ignores unknown fields today — this is forward infrastructure.
+    const investigationId = state.selectedInvestigation ? state.selectedInvestigation.id : null;
+    state.selectedInvestigation = null;
+    try { Investigations.render(); } catch (_) {} // drop the selection highlight
     try {
       const items = await postJSON("/api/choose", {
         choice: choiceText,
         context_item_id: contextItemId,
+        investigation_id: investigationId,
       });
       renderItems(items); // immediately shows the player_action echo
       beginFastPolling();
@@ -1469,11 +1486,185 @@
   }
 
   // ------------------------------------------------------------------
+  // Scene-region capture — the shared plumbing behind "investigation" textures.
+  // Crops a piece of the CURRENT scene (live video frame OR the still) into a
+  // small square JPEG the player collects as a specimen. This is the raw
+  // material for scene-driven prompt mechanics: interacting with the world by
+  // referencing what you looked at closely.
+  // ------------------------------------------------------------------
+
+  // Intrinsic size of whatever is currently on screen (video or still), for
+  // mapping between screen space and the source frame.
+  function currentSourceSize() {
+    if (scanInRealtime()) {
+      return (window.ReactorRenderer.getVideoSize && window.ReactorRenderer.getVideoSize()) || null;
+    }
+    const img = getStillImage();
+    return img ? { w: img.naturalWidth, h: img.naturalHeight } : null;
+  }
+
+  // Inverse of mapNormToScreen: screen px -> normalized (0..1) source coords,
+  // accounting for the object-fit/background-size: cover crop.
+  function screenToNorm(x, y) {
+    const W = window.innerWidth, H = window.innerHeight;
+    const size = currentSourceSize();
+    if (!size || !size.w || !size.h) return { x: x / W, y: y / H };
+    const scale = Math.max(W / size.w, H / size.h);
+    const dw = size.w * scale, dh = size.h * scale;
+    const ox = (W - dw) / 2, oy = (H - dh) / 2;
+    return { x: (x - ox) / dw, y: (y - oy) / dh };
+  }
+
+  // A screen-space square (center + size in px) as a normalized source box.
+  function screenBoxToNorm(cx, cy, sizePx) {
+    const a = screenToNorm(cx - sizePx / 2, cy - sizePx / 2);
+    const b = screenToNorm(cx + sizePx / 2, cy + sizePx / 2);
+    const x = Math.max(0, Math.min(a.x, b.x));
+    const y = Math.max(0, Math.min(a.y, b.y));
+    const w = Math.min(1 - x, Math.abs(b.x - a.x));
+    const h = Math.min(1 - y, Math.abs(b.y - a.y));
+    return { x, y, w: Math.max(0.02, w), h: Math.max(0.02, h) };
+  }
+
+  // Default on-screen size of the capture box (px), tuned to the viewport.
+  function investBoxPx() {
+    return Math.round(Math.min(320, Math.max(140, Math.min(window.innerWidth, window.innerHeight) * 0.26)));
+  }
+
+  // Crop a normalized region of the current scene to a square JPEG data URL.
+  // Uses the live video in realtime mode, or the current still in image mode.
+  function captureSceneRegion(normBox, outSize) {
+    const out = outSize || 256;
+    if (scanInRealtime()) {
+      return window.ReactorRenderer.captureRegion
+        ? window.ReactorRenderer.captureRegion(normBox, out) : null;
+    }
+    const img = getStillImage();
+    if (!img) return null;
+    try {
+      const vw = img.naturalWidth, vh = img.naturalHeight;
+      let sx = Math.max(0, Math.min(1, normBox.x)) * vw;
+      let sy = Math.max(0, Math.min(1, normBox.y)) * vh;
+      let sw = Math.max(1, Math.min(1, normBox.w) * vw);
+      let sh = Math.max(1, Math.min(1, normBox.h) * vh);
+      if (sx + sw > vw) sw = vw - sx;
+      if (sy + sh > vh) sh = vh - sy;
+      const c = document.createElement("canvas");
+      c.width = out; c.height = out;
+      c.getContext("2d").drawImage(img, sx, sy, sw, sh, 0, 0, out, out);
+      return c.toDataURL("image/jpeg", 0.82);
+    } catch (e) {
+      console.warn("[standalone] region capture failed:", e);
+      return null;
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Investigations — the "case file" of captured specimen textures.
+  // In-memory + localStorage, mirrored to the server (/api/investigate). This
+  // is deliberately front-loaded infrastructure: the textures are collected now
+  // so future mechanics can build prompts from them (examine an object, compose
+  // a photo-journalist dispatch, seed img2img from a close-up, etc.).
+  // Exposed as window.Investigations for iteration.
+  // ------------------------------------------------------------------
+  const Investigations = (function () {
+    const KEY = "investigations_v1";
+    const MAX = 60;
+    let items = [];
+    try {
+      const raw = localStorage.getItem(KEY);
+      if (raw) items = JSON.parse(raw) || [];
+    } catch (_) { items = []; }
+
+    function persist() {
+      try { localStorage.setItem(KEY, JSON.stringify(items.slice(-MAX))); } catch (_) {}
+    }
+
+    function render() {
+      if (!el.investigationsStrip || !el.investigationsTray) return;
+      el.investigationsTray.classList.toggle("hidden", items.length === 0);
+      const recent = items.slice(-12).reverse();
+      el.investigationsStrip.innerHTML = "";
+      recent.forEach((it) => {
+        const t = document.createElement("div");
+        t.className = "inv-thumb kind-" + (it.kind || "touch");
+        if (state.selectedInvestigation && state.selectedInvestigation.id === it.id) t.classList.add("selected");
+        const src = it.texture || it.imageUrl;
+        if (src) t.style.backgroundImage = `url('${src}')`;
+        t.title = (it.note || it.label || (it.kind === "photo" ? "photograph" : "specimen")) + " — click to use in an action";
+        const k = document.createElement("span");
+        k.className = "inv-kind";
+        k.textContent = it.kind === "photo" ? "\uD83D\uDCF7" : "\u270B"; // 📷 / ✋
+        t.appendChild(k);
+        t.addEventListener("click", () => use(it));
+        el.investigationsStrip.appendChild(t);
+      });
+    }
+
+    // Store an already-captured specimen (texture + region), mirror to server.
+    function store(spec) {
+      if (!spec || !spec.texture) return null;
+      const entry = {
+        id: Date.now(),
+        kind: spec.kind || "touch",
+        note: spec.note || "",
+        label: spec.label || "",
+        region: spec.region || null,
+        texture: spec.texture,
+        ts: Date.now(),
+        imageUrl: null,
+      };
+      items.push(entry);
+      if (items.length > MAX) items = items.slice(-MAX);
+      persist();
+      render();
+      postJSON("/api/investigate", {
+        texture: entry.texture, region: entry.region,
+        kind: entry.kind, note: entry.note, label: entry.label,
+      }).then((res) => {
+        if (res && res.image_url) { entry.imageUrl = res.image_url; entry.id = res.id || entry.id; persist(); }
+      }).catch((err) => console.warn("[standalone] investigate save failed:", err));
+      return entry;
+    }
+
+    // Capture a fresh specimen from the scene around a screen point, then store.
+    function capture(opts) {
+      opts = opts || {};
+      const boxPx = opts.boxPx || investBoxPx();
+      const sp = opts.screen || { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+      const region = screenBoxToNorm(sp.x, sp.y, boxPx);
+      const texture = captureSceneRegion(region, opts.outSize || 256);
+      if (!texture) return null;
+      return store({ texture, region, kind: opts.kind, note: opts.note, label: opts.label });
+    }
+
+    // First "prompt driven by a thumbnail" hook: selecting a specimen arms it as
+    // context for the next action (sent to the backend as investigation_id) and
+    // opens the ACT input so you can act on what you examined.
+    function use(entry) {
+      state.selectedInvestigation = entry;
+      try { document.dispatchEvent(new CustomEvent("investigation:select", { detail: entry })); } catch (_) {}
+      render(); // reflect the selection highlight
+      if (!state.gameOver && !state.processing) openFreeWill();
+      Sound.select();
+      showRendererToast((entry.kind === "photo" ? "Photo" : "Specimen") + " loaded — describe your action");
+    }
+
+    return {
+      capture, store, render, use,
+      all: () => items.slice(),
+      clear() { items = []; persist(); render(); },
+    };
+  })();
+  window.Investigations = Investigations;
+
+  // ------------------------------------------------------------------
   // TOUCH tool — a spatial, in-world steer. Arming it fades the hub and turns
-  // the whole scene into an aiming surface: a reticle (magnifying glass) tracks
-  // the cursor, a click locks it to a spot and expands it into a prompt field,
-  // and submitting steers the LIVE video at that location. Instant, no turn —
-  // allowed even mid-turn (that's the point), only blocked when dead / already
+  // the whole scene into an aiming surface: a HAND reticle tracks the cursor, a
+  // click locks it to a spot (capturing an investigation texture of the area
+  // under it) and expands into a prompt field, and submitting steers the scene
+  // at that location. Instant, no turn — allowed even mid-turn (that's the
+  // point), only blocked when dead / already
   // aiming / while the bottom ACT input is open.
   // ------------------------------------------------------------------
   function openTouch() {
@@ -1496,9 +1687,19 @@
 
   function moveReticle(x, y) {
     state.touchPoint = { x, y };
-    if (!el.touchReticle) return;
-    el.touchReticle.style.left = x + "px";
-    el.touchReticle.style.top = y + "px";
+    if (el.touchReticle) {
+      el.touchReticle.style.left = x + "px";
+      el.touchReticle.style.top = y + "px";
+    }
+    // While aiming, the capture frame tracks the hand so you see exactly what
+    // region will be lifted as a specimen.
+    if (el.touchCaptureFrame && state.touchMode === "aim") {
+      const b = investBoxPx();
+      el.touchCaptureFrame.style.width = b + "px";
+      el.touchCaptureFrame.style.height = b + "px";
+      el.touchCaptureFrame.style.left = x + "px";
+      el.touchCaptureFrame.style.top = y + "px";
+    }
   }
 
   function onTouchMove(e) {
@@ -1519,6 +1720,23 @@
   // Lock the reticle to a spot and grow it into the prompt field. The center is
   // clamped so the expanded pill stays fully on screen near a viewport edge.
   function lockTouchSpot(x, y) {
+    // Lift an investigation texture of the area under the reticle FIRST — before
+    // it morphs into a prompt pill and before the live frame drifts — so the
+    // specimen is exactly what the player pointed at.
+    const boxPx = investBoxPx();
+    const region = screenBoxToNorm(x, y, boxPx);
+    const texture = captureSceneRegion(region, 256);
+    state.pendingInvestigation = texture ? { screen: { x, y }, region, texture } : null;
+    if (el.touchCaptureFrame) {
+      el.touchCaptureFrame.style.left = x + "px";
+      el.touchCaptureFrame.style.top = y + "px";
+      el.touchCaptureFrame.classList.remove("grab");
+      void el.touchCaptureFrame.offsetWidth; // restart the flash on rapid re-locks
+      if (texture) el.touchCaptureFrame.classList.add("grab");
+    }
+    if (el.touchReticle && texture) el.touchReticle.classList.add("holding");
+    if (texture) Sound.grab();
+
     state.touchMode = "prompt";
     const halfW = 176, halfH = 28, margin = 12;
     const cx = Math.min(Math.max(x, halfW + margin), window.innerWidth - halfW - margin);
@@ -1540,9 +1758,11 @@
       el.touchLayer.classList.add("hidden");
       el.touchLayer.classList.remove("prompting");
     }
-    if (el.touchReticle) el.touchReticle.classList.remove("prompting");
+    if (el.touchReticle) el.touchReticle.classList.remove("prompting", "holding");
+    if (el.touchCaptureFrame) el.touchCaptureFrame.classList.remove("grab");
     if (el.realtimeBtn) el.realtimeBtn.classList.remove("aiming");
     document.body.classList.remove("touch-aiming");
+    state.pendingInvestigation = null;
     if (clear && el.touchInput) el.touchInput.value = "";
     if (el.touchInput && document.activeElement === el.touchInput) el.touchInput.blur();
   }
@@ -1569,10 +1789,38 @@
     const text = el.touchInput.value.trim();
     if (!text || state.gameOver) { closeTouch(true); return; }
     const where = describeTouchRegion(state.touchPoint);
+    // Bank the specimen captured at lock, tagged with what the player did to it,
+    // so this investigation becomes reusable material later.
+    if (state.pendingInvestigation && state.pendingInvestigation.texture) {
+      Investigations.store({
+        texture: state.pendingInvestigation.texture,
+        region: state.pendingInvestigation.region,
+        kind: "touch",
+        note: text,
+        label: where.label,
+      });
+    }
     const ok = Renderer.steerRealtime(text, where);
     Sound.submit();
     closeTouch(true);
     showRendererToast(ok ? "Touched " + where.label : "Realtime not ready yet");
+  }
+
+  // ------------------------------------------------------------------
+  // PHOTOGRAPH — journalist capture groundwork. Grabs a larger framed subset of
+  // the current scene with a shutter flash + sound, stored as a "photo" specimen
+  // in the same case file. Reuses the investigation capture plumbing; the full
+  // framing/ceremony UI can grow from here. Bound to the C key.
+  // ------------------------------------------------------------------
+  function capturePhoto() {
+    if (state.gameOver) return;
+    if (!currentSourceSize()) { showRendererToast("Nothing to photograph yet"); return; }
+    const center = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+    const boxPx = Math.round(Math.min(window.innerWidth, window.innerHeight) * 0.62);
+    flashScene();            // shutter flash over the frame
+    try { Sound.shutter(); } catch (_) {}
+    const entry = Investigations.capture({ screen: center, boxPx, kind: "photo", outSize: 512 });
+    showRendererToast(entry ? "Photo filed to the case file" : "Couldn't capture the frame");
   }
 
   // ------------------------------------------------------------------
@@ -2414,7 +2662,9 @@
     } else if (e.key.toLowerCase() === "h") {
       openTouch(); // realtime TOUCH tool (no-op outside realtime mode)
     } else if (e.key.toLowerCase() === "s") {
-      toggleScan(); // realtime SCAN tool (no-op outside realtime mode)
+      toggleScan(); // SCAN tool (works in both renderers)
+    } else if (e.key.toLowerCase() === "c") {
+      capturePhoto(); // journalist photograph — file a specimen to the case file
     } else if (e.key.toLowerCase() === "l") {
       RtLog.toggle(); // show/hide the world-model inspector log
     } else if (e.key.toLowerCase() === "g") {
@@ -2485,6 +2735,7 @@
     document.addEventListener("keydown", unlockAudio, { once: true });
 
     Renderer.init(); // async: resolves default renderer + warms realtime session
+    try { Investigations.render(); } catch (_) {} // show any persisted case file
     initVhsGrain();
     initKeyboardInset();
     startTimecode();

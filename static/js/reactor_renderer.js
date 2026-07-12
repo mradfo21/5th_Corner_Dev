@@ -650,8 +650,30 @@
     }
   }
 
+  // Crop a NORMALIZED sub-rect {x,y,w,h} (0..1) of the current live video frame
+  // to a square JPEG data URL — the "investigation texture" the TOUCH tool grabs
+  // from around/under the reticle. Returns null unless real frames are showing.
+  function captureRegion(box, outSize) {
+    const v = rstate.video || document.getElementById("reactor-video");
+    if (!v || !v.videoWidth || rstate.freezeActive || !box) return null;
+    const vw = v.videoWidth, vh = v.videoHeight;
+    let sx = Math.max(0, Math.min(1, box.x || 0)) * vw;
+    let sy = Math.max(0, Math.min(1, box.y || 0)) * vh;
+    let sw = Math.max(1, Math.min(1, box.w || 0) * vw);
+    let sh = Math.max(1, Math.min(1, box.h || 0) * vh);
+    if (sx + sw > vw) sw = vw - sx;
+    if (sy + sh > vh) sh = vh - sy;
+    const out = outSize || 256;
+    try {
+      const c = document.createElement("canvas");
+      c.width = out; c.height = out;
+      c.getContext("2d").drawImage(v, sx, sy, sw, sh, 0, 0, out, out);
+      return c.toDataURL("image/jpeg", 0.82);
+    } catch (e) { log("captureRegion failed", e); return null; }
+  }
+
   window.ReactorRenderer = {
-    enable, disable, applyScene, setPrompt, reset, pause, resume, captureFrame,
+    enable, disable, applyScene, setPrompt, reset, pause, resume, captureFrame, captureRegion,
     getStatus: () => rstate.status,
     isActive: () => rstate.active,
     isReady: () => rstate.ready,
