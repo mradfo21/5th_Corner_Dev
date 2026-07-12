@@ -19,6 +19,7 @@
   // faster than the model could re-stage and blacked out the stream.
   const AUTOPLAY_REALTIME_WATCH_MS = (typeof window !== "undefined" && window.__AUTOPLAY_WATCH_MS__) || 7000;   // let the live video play this long before advancing
   const AUTOPLAY_REALTIME_MAX_WAIT_MS = 20000; // never wait longer than this for the video to appear
+  const REALTIME_MAX_RETRIES = 3; // transient realtime errors retry before falling back to stills
 
   // Show a small thumbnail preview of each guide image as it's integrated into
   // the realtime world model. Flip to false (or set localStorage
@@ -708,7 +709,27 @@
         window.ReactorRenderer.onStatus = (s) => {
           RtLog.push("status", "status \u00B7 " + s);
           if (s === "error" && Renderer.mode === "reactor") {
-            console.warn("[standalone] realtime renderer unavailable — falling back to stills");
+            // A realtime error is often TRANSIENT (a first-attempt WebRTC/ICE or
+            // session hiccup, common on mobile/iOS). Don't permanently drop to
+            // stills on the first failure — that left the player stuck on
+            // "Realtime unavailable" forever. Retry a couple times before giving
+            // up, so realtime self-heals.
+            Renderer._rtRetries = (Renderer._rtRetries || 0) + 1;
+            if (Renderer._rtRetries <= REALTIME_MAX_RETRIES) {
+              console.warn("[standalone] realtime error — retry", Renderer._rtRetries);
+              showRendererToast("Realtime reconnecting…");
+              try { window.ReactorRenderer.disable(); } catch (_) {}
+              clearTimeout(Renderer._rtRetryTimer);
+              Renderer._rtRetryTimer = setTimeout(() => {
+                if (Renderer.mode !== "reactor" || !Renderer.reactorAvailable()) return;
+                window.ReactorRenderer.enable().then((ok) => {
+                  if (ok && Renderer.lastScene) window.ReactorRenderer.applyScene(Renderer.lastScene);
+                });
+              }, 1600 * Renderer._rtRetries);
+              updateRendererButton();
+              return;
+            }
+            console.warn("[standalone] realtime unavailable after retries — falling back to stills");
             Renderer.mode = "image"; // reflect reality; keep stored pref intact
             showRendererToast("Realtime unavailable — showing stills");
             closeScan(); // scan is realtime-only — tear it down on fallback
@@ -718,7 +739,11 @@
             try { window.ReactorRenderer.disable(); } catch (_) {}
             if (Renderer.lastScene && Renderer.lastScene.imageUrl) setScene(Renderer.lastScene.imageUrl);
           } else if (s === "live" && Renderer.mode === "reactor") {
+            Renderer._rtRetries = 0; // healthy again — reset the retry budget
             showRendererToast("Realtime video — live");
+          } else if (s === "ready" || s === "connecting") {
+            // Progress means the session is alive; don't hold a stale error count.
+            if (s === "ready") Renderer._rtRetries = 0;
           }
           updateRendererButton();
         };

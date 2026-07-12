@@ -67,6 +67,14 @@ export class Reactor {
   async connect(jwt) {
     this._jwt = jwt;
     window.__MOCK_REACTOR_CONNECTED__ = true;
+    // Simulate a TRANSIENT connect error on the first attempt only (mirrors a
+    // flaky first WebRTC/session attempt on mobile). The client should retry
+    // and recover rather than sticking on "Realtime unavailable".
+    if (window.__MOCK_ERROR_ONCE__ && !window.__MOCK_ERRORED__) {
+      window.__MOCK_ERRORED__ = true;
+      setTimeout(() => this._emit("error", { recoverable: false, message: "transient mock error" }), 20);
+      return true;
+    }
     setTimeout(() => this._emit("statusChanged", "ready"), 20);
     return true;
   }
@@ -884,6 +892,34 @@ class TestRealtimeRenderer(unittest.TestCase):
             self.assertTrue(all(bg in ("none", "") for bg in still_bgs), f"a Gemini still was painted in realtime mode: {still_bgs}")
         except Exception:
             print("\n=== REACTOR CONSOLE LOG (no-still/freeze) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
+    def test_realtime_recovers_from_transient_error(self):
+        """A transient realtime error (flaky first WebRTC/session attempt, common
+        on mobile) must NOT permanently drop to stills with 'Realtime
+        unavailable' — the client retries and self-heals back to live video."""
+        page = self._new_realtime_page()
+        page.add_init_script("window.__MOCK_ERROR_ONCE__ = true;")
+        scene_items = [
+            {"id": 1, "type": "narrative", "content": "Intro."},
+            {"id": 2, "type": "scene_image", "content": "", "image_url": TINY_PNG_DATA_URL,
+             "metadata": {"prompt": "scene one", "base": "A dock.", "hard_transition": False}},
+            {"id": 3, "type": "player_choice_prompt", "content": "?", "choices": [{"text": "Go"}]},
+        ]
+        page.route("**/api/reset", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(scene_items)))
+        page.route("**/api/feed*", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
+        try:
+            page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
+            page.wait_for_function("window.ReactorRenderer !== undefined", timeout=10000)
+            # The first connect errors; after retry the live video must reveal.
+            page.wait_for_function("window.ReactorRenderer.isShowing() === true", timeout=20000)
+            self.assertTrue(page.evaluate("window.__MOCK_ERRORED__ === true"), "the transient error path must have fired")
+            # And it must NOT have fallen back to stills.
+            self.assertFalse(page.evaluate("document.body.classList.contains('realtime-on') === false && !!document.getElementById('reactor-video').classList.contains('hidden')"))
+        except Exception:
+            print("\n=== REACTOR CONSOLE LOG (rt-recover) ===\n" + self._dump_logs())
             raise
         finally:
             page.close()
