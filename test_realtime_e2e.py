@@ -935,6 +935,48 @@ class TestRealtimeRenderer(unittest.TestCase):
         finally:
             page.close()
 
+    def test_realtime_no_frames_shows_still_not_black(self):
+        """The exact 'just black' failure: the model accepts commands but never
+        produces video frames (mirrors iOS Low Power Mode blocking autoplay, or a
+        stalled stream). The <video> must stay HIDDEN (so a black non-playing
+        video can't cover the scene) and the Gemini still floor must be visible —
+        i.e. the player sees the still, not black."""
+        page = self._new_realtime_page()
+        # Suppress the mock video track + shorten the watchdog.
+        page.add_init_script("window.__MOCK_NO_VIDEO__ = true; window.__REACTOR_REVEAL_WATCHDOG_MS__ = 1500;")
+        scene_items = [
+            {"id": 1, "type": "narrative", "content": "Intro."},
+            {"id": 2, "type": "scene_image", "content": "", "image_url": TINY_PNG_DATA_URL,
+             "metadata": {"prompt": "scene one", "base": "A dock.", "hard_transition": False}},
+            {"id": 3, "type": "player_choice_prompt", "content": "?", "choices": [{"text": "Go"}]},
+        ]
+        page.route("**/api/reset", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(scene_items)))
+        page.route("**/api/feed*", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
+        try:
+            page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
+            page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isReady() === true", timeout=15000)
+            # The still floor is painted so there's something to see...
+            page.wait_for_function(
+                "(document.getElementById('sceneA').style.backgroundImage||"
+                "document.getElementById('sceneB').style.backgroundImage||'').length > 0",
+                timeout=10000,
+            )
+            page.wait_for_timeout(2500)  # let the reveal watchdog window pass
+            # ...no frames ever arrive, so the video must NOT be showing...
+            self.assertFalse(page.evaluate("window.ReactorRenderer.isShowing()"))
+            # ...and the black video must stay HIDDEN so it can't cover the still.
+            self.assertTrue(page.evaluate("document.getElementById('reactor-video').classList.contains('hidden')"),
+                            "black non-playing video must stay hidden so it can't cover the still")
+            floor = page.evaluate(
+                "document.getElementById('sceneA').style.backgroundImage || document.getElementById('sceneB').style.backgroundImage || ''"
+            )
+            self.assertIn("data:image", floor, "the still must be visible (not black) when the video has no frames")
+        except Exception:
+            print("\n=== REACTOR CONSOLE LOG (no-frames-still) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
     def test_realtime_starts_from_feed_scene_image(self):
         """FAITHFUL full-flow reproduction: don't touch ReactorRenderer directly.
         Instead deliver a scene_image through /api/feed exactly like the backend
