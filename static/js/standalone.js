@@ -583,8 +583,22 @@
     if (!imageUrl) return;
     state.currentStillUrl = imageUrl; // remember for stills-mode SCAN capture
     const silent = !!(opts && opts.silent);
+    const instant = !!(opts && opts.instant);
     const incoming = state.activeScene === "A" ? el.sceneB : el.sceneA;
     const outgoing = state.activeScene === "A" ? el.sceneA : el.sceneB;
+    // `instant` swaps with NO crossfade — used to keep a silent still "floor"
+    // under the realtime video without any visible transition/flash.
+    if (instant) {
+      const prevT = incoming.style.transition;
+      incoming.style.transition = "none";
+      incoming.style.backgroundImage = `url('${imageUrl}')`;
+      incoming.classList.add("scene-active");
+      outgoing.classList.remove("scene-active");
+      void incoming.offsetWidth; // flush before restoring the transition
+      incoming.style.transition = prevT || "";
+      state.activeScene = state.activeScene === "A" ? "B" : "A";
+      return;
+    }
     incoming.style.backgroundImage = `url('${imageUrl}')`;
     incoming.classList.add("scene-active");
     outgoing.classList.remove("scene-active");
@@ -868,12 +882,17 @@
       }
       if (meta && meta.base) this.lastBase = meta.base;
       if (this.mode === "reactor" && this.reactorAvailable()) {
-        // Realtime mode: the reactor renderer OWNS the screen. It shows the live
-        // video plus a freeze back-buffer (the seed guide image on the first
-        // scene, or the last live frame while re-anchoring onto a new guide
-        // image) so switches are seamless. We deliberately do NOT paint the
-        // Gemini still here — painting it under the video is exactly what made
-        // the ORIGINAL image flash between guide images.
+        // Realtime mode: the reactor renderer OWNS the screen (live video + a
+        // freeze back-buffer). But we ALSO paint the Gemini still as a SILENT,
+        // instant floor on the scene layer beneath the video/freeze. That floor
+        // is invisible during healthy playback (the opaque video covers it) but
+        // becomes the safety net whenever the live video can't present frames —
+        // warming up, stalled, or autoplay-blocked (e.g. iOS Low Power Mode) —
+        // so realtime is never "just black". Instant + silent = no crossfade,
+        // so it never flashes between guide images (the reason it was omitted
+        // before; the freeze buffer covers re-anchors, so the floor stays hidden
+        // during them).
+        if (scene.imageUrl) setScene(scene.imageUrl, { silent: true, instant: true });
         if (scene.prompt) window.ReactorRenderer.applyScene(scene);
         return;
       }

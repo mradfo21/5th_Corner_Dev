@@ -301,13 +301,17 @@
     const video = getVideo();
     if (!video) return;
     video.srcObject = stream || new MediaStream([track]);
-    // The video is ALWAYS visible; the freeze back-buffer (canvas) covers it
-    // during warmup + re-anchor so there's never a black gap or an underlying
-    // still showing through. The freeze fades out once real frames arrive.
-    video.classList.remove("hidden");
+    // Keep the video HIDDEN until it actually presents a decoded frame
+    // (onPresentedFrame un-hides it). A <video> that has attached but isn't
+    // painting yet — warming up, or autoplay-blocked (e.g. iOS Low Power Mode)
+    // — renders BLACK, and since it sits above the still scene layers that black
+    // would cover the seed image, leaving the player staring at a black screen.
+    // Staying hidden lets the seed still / freeze buffer show through until real
+    // frames flow, so realtime is never "just black".
+    video.classList.add("hidden");
     video.play().catch(() => {});
     startFrameWatch(video);
-    log("main_video attached (freeze covers until first frame)");
+    log("main_video attached (hidden until first decoded frame)");
   }
 
   // Called on every presented video frame. Marks the stream live, and — when a
