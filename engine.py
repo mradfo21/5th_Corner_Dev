@@ -4026,6 +4026,86 @@ def api_detect():
         return jsonify({"error": str(e), "objects": []}), 500
 
 
+def api_investigate():
+    """Store an 'investigation' texture the player captured from the scene.
+
+    The TOUCH tool (and, later, a 'photograph' mechanic) crops a small thumbnail
+    from the region around/under the reticle — a close-up specimen of what the
+    player is looking at. This persists that crop to disk and records its
+    metadata in state['investigations'] so it can seed future scene-driven
+    prompt mechanics (interacting with the world by referencing what you've
+    examined closely).
+
+    Request JSON: {texture: dataURL, region?:{x,y,w,h} (0..1), kind?, note?, label?}
+    Response JSON: the stored entry {id, kind, label, note, region, image_url, ts}.
+    The crop is saved as investigation_<ts>.jpg — a .jpg, so (like scan/observe
+    grabs) it never leaks into the .png-only VHS tape.
+    """
+    import base64 as _b64, re as _re, time as _time
+    from pathlib import Path as _Path
+    global state
+    try:
+        data = request.get_json(silent=True) or {}
+        tex = data.get('texture')
+        session_id = data.get('session_id', 'default')
+        kind = (str(data.get('kind') or 'touch'))[:24]
+        note = (str(data.get('note') or ''))[:400]
+        label = (str(data.get('label') or ''))[:120]
+        region = data.get('region') if isinstance(data.get('region'), dict) else None
+        if not tex:
+            return jsonify({"error": "missing texture"}), 400
+        m = _re.match(r'^data:image/[^;]+;base64,(.*)$', tex, _re.DOTALL)
+        raw = m.group(1) if m else tex
+        try:
+            img_bytes = _b64.b64decode(raw)
+        except Exception:
+            return jsonify({"error": "bad texture encoding"}), 400
+        if len(img_bytes) < 64:
+            return jsonify({"error": "texture too small"}), 400
+
+        img_dir = _Path(_get_image_dir(session_id))
+        img_dir.mkdir(parents=True, exist_ok=True)
+        ts = int(_time.time() * 1000)
+        fname = f"investigation_{ts}.jpg"
+        (img_dir / fname).write_bytes(img_bytes)
+        entry = {
+            "id": ts,
+            "kind": kind,
+            "label": label,
+            "note": note,
+            "region": region,
+            "image_url": f"/images/{fname}",
+            "ts": ts,
+        }
+        MAX_INVESTIGATIONS = 60  # keep the case file bounded
+        with WORLD_STATE_LOCK:
+            st = _load_state(session_id)
+            invs = st.setdefault('investigations', [])
+            invs.append(entry)
+            if len(invs) > MAX_INVESTIGATIONS:
+                del invs[:-MAX_INVESTIGATIONS]
+            _save_state(st, session_id)
+            state = st
+        print(f"[INVESTIGATE] stored {kind} specimen {fname}", flush=True)
+        return jsonify({"ok": True, **entry})
+    except Exception as e:
+        log_error(f"[INVESTIGATE] failed: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+def api_investigations():
+    """List stored investigation textures for the session (most recent first)."""
+    try:
+        session_id = request.args.get('session_id', 'default')
+        st = _load_state(session_id)
+        invs = list(st.get('investigations', []))
+        invs.reverse()
+        return jsonify({"investigations": invs})
+    except Exception as e:
+        log_error(f"[INVESTIGATE] list failed: {e}")
+        return jsonify({"investigations": []}), 500
+
+
 def _spawn_scene_choices_reground(prompt_id, prev_image_url: str, session_id: str = 'default'):
     """Wait (bounded) for THIS turn's guide image to render, then reground the
     live choices on it via vision and push a choices_revised item. Runs entirely

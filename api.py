@@ -52,6 +52,12 @@ app.add_url_rule('/api/observe', 'standalone_api_observe', engine.api_observe, m
 # it plus their positions so the UI can float "starfield" tags. Stateless /
 # read-only (does not mutate the sim). See engine.api_detect.
 app.add_url_rule('/api/detect', 'standalone_api_detect', engine.api_detect, methods=['POST'])
+# Investigation textures: the client crops a small thumbnail from the scene
+# around/under the TOUCH reticle (or, later, a "photograph") and stores it here.
+# These specimens persist to disk + state['investigations'] as raw material for
+# future scene-driven prompt mechanics. See engine.api_investigate.
+app.add_url_rule('/api/investigate', 'standalone_api_investigate', engine.api_investigate, methods=['POST'])
+app.add_url_rule('/api/investigations', 'standalone_api_investigations', engine.api_investigations, methods=['GET'])
 
 
 @app.route('/images/<filename>', methods=['GET'])
