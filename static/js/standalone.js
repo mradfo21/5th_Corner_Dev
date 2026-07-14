@@ -1275,6 +1275,16 @@
                   d.command === "set_shot" || d.command === "scene_cut")
                 RtLog.push("prompt", "\u2192 " + d.command, RtLog.clip(d.prompt, 160));
               else if (d.command === "set_image") RtLog.push("prompt", "\u2192 set_image", d.hasImage ? "[seed image]" : "");
+              else if (d.command === "set_move_longitudinal" || d.command === "set_move_lateral" ||
+                       d.command === "set_look_horizontal" || d.command === "set_look_vertical" ||
+                       d.command === "set_rotation_speed_deg") {
+                const nice = {
+                  set_move_longitudinal: "move", set_move_lateral: "strafe",
+                  set_look_horizontal: "turn", set_look_vertical: "look",
+                  set_rotation_speed_deg: "turn speed",
+                }[d.command];
+                RtLog.push("prompt", "\u25B8 " + nice, d.value != null ? String(d.value) : "");
+              }
               else RtLog.push(null, "\u2192 " + d.command);
               break;
             case "capabilities": RtLog.push("status", "\u25C6 model commands", RtLog.clip((d.commands || []).join(", "), 140)); break;
@@ -1890,280 +1900,312 @@
   // ------------------------------------------------------------------
   // Movement joystick — the realtime "EXPLORE" instrument.
   //
-  // Turns the LIVE world-model video into a place you can walk around in. Drag
-  // the stick (mouse or touch) in any of 360°, or hold W/A/S/D (arrow keys work
-  // too) on a keyboard; the further you push and the longer you hold, the
-  // faster you go (acceleration). While engaged we re-steer the running stream
-  // with a first-person CAMERA-motion beat — a prompt hot-swap on the next chunk
-  // (no full turn, no new guide image), exactly like the SHAPE nudge — so the
-  // viewpoint keeps travelling in the chosen heading and the world reveals more
-  // of itself. Only active in realtime video mode (a still image has nothing to
-  // steer). The steers show up live in the WORLD MODEL log (L) as set_prompt
-  // camera moves — the same reactor log the LingBot World 2 model reads.
+  // Turns the LIVE world-model video into a place you can actually walk around
+  // in. It drives LingBot World 2's NATIVE navigable-video control axes (the
+  // real thing — a `set_prompt` "camera moves" beat does not move the camera):
+  //
+  //   • set_move_longitudinal  forward / back  (W / S · stick up-down)
+  //   • set_look_horizontal     turn left/right (A / D · ← → · stick left-right)
+  //   • set_move_lateral        strafe          (Q / E)
+  //   • set_look_vertical       look up/down     (↑ / ↓)
+  //   • set_rotation_speed_deg  turn speed — ramps with hold time / stick push
+  //                             (this is where "acceleration" is native)
+  //
+  // These axes are PERSISTENT: the model holds each value across chunks until we
+  // change it, so we set on press / stick-push and idle on release (a matching
+  // keyup, or the world keeps moving). The joystick is a drive+steer stick:
+  // up/down moves, left/right turns, so a single stick (incl. touch) can explore
+  // freely; the keyboard adds strafing (Q/E) and pitch (↑/↓). Models that don't
+  // expose these axes (Helios and other blend-family) fall back to a prompt
+  // camera nudge. Only active in realtime video mode. Every command shows up in
+  // the WORLD MODEL log (L) — the same reactor surface LingBot World 2 reads.
   // ------------------------------------------------------------------
   const Movement = (function () {
-    const SEND_HEARTBEAT_MS = 900;   // refresh the sustained camera steer at least this often
-    const MIN_SEND_GAP_MS = 260;     // never fire re-steers faster than this
-    const RAMP_MS = 1500;            // acceleration: time held to reach top speed
-    const DIR_RESEND_DEG = 30;       // re-steer early once the heading turns this much
-    const DEADZONE = 0.14;           // ignore tiny stick wiggle near the center
-    const TICK_MS = 80;              // visual + send loop cadence
+    const RAMP_MS = 1400;            // turn acceleration: time held to reach top speed
+    const DEADZONE = 0.2;            // ignore tiny stick wiggle near the center
+    const TICK_MS = 90;              // visual + drive loop cadence
+    const ROT_MIN = 8;               // deg/latent-frame at the start of a turn
+    const ROT_MAX = 26;              // deg/latent-frame at full turn (0..30 allowed)
+    const FALLBACK_SEND_MS = 950;    // prompt-fallback (non-LingBot) re-steer cadence
 
-    // 8-way headings on a compass where 0° = forward (up), 90° = right, etc.
-    // Each carries the first-person camera clause we feed the world model.
-    const HEADINGS = [
-      { label: "FORWARD",    arrow: 0,   tick: "n", phrase: "the camera pushes forward, advancing deeper into the scene" },
-      { label: "FWD-RIGHT",  arrow: 45,  tick: "e", phrase: "the camera advances forward and to the right, curving rightward into the scene" },
-      { label: "RIGHT",      arrow: 90,  tick: "e", phrase: "the camera strafes and pans to the right, sweeping the view rightward" },
-      { label: "BACK-RIGHT", arrow: 135, tick: "e", phrase: "the camera eases backward and to the right, drawing away to the right" },
-      { label: "BACK",       arrow: 180, tick: "s", phrase: "the camera pulls backward, retreating and revealing more of the surroundings" },
-      { label: "BACK-LEFT",  arrow: 225, tick: "w", phrase: "the camera eases backward and to the left, drawing away to the left" },
-      { label: "LEFT",       arrow: 270, tick: "w", phrase: "the camera strafes and pans to the left, sweeping the view leftward" },
-      { label: "FWD-LEFT",   arrow: 315, tick: "w", phrase: "the camera advances forward and to the left, curving leftward into the scene" },
-    ];
-    const SPEEDS = [
-      { tier: 0, tag: "DRIFT", phrase: "drifting slowly, a gentle gliding motion" },
-      { tier: 1, tag: "WALK",  phrase: "at a steady walking pace, smooth and continuous" },
-      { tier: 2, tag: "RUN",   phrase: "moving quickly, rushing ahead with strong motion and speed" },
-    ];
-
-    let radius = 44;                 // px travel radius of the nub
-    const vec = { x: 0, y: 0 };      // stick vector in SCREEN space: x right+, y down+ (−y = forward)
-    let mag = 0;                     // stick magnitude 0..1
-    let engaged = false;
-    let source = null;               // "pointer" | "keys"
-    let pointerId = null;
-    const keys = new Set();          // held movement directions: up|down|left|right
-    let rampStart = 0;
-    let loopTimer = null;
-    let movedThisEngage = false;
-    let warnedNotReady = false;
-    let lastSentLabel = null;
-    let lastSentTier = -1;
-    let lastSentTs = 0;
-
-    function enabled() {
-      return Renderer.mode === "reactor" && Renderer.reactorAvailable();
-    }
-
-    // Map a keyboard key to a movement direction (WASD + arrows). null = not ours.
+    // Keyboard → semantic drive tokens. WASD drives (A/D turn), Q/E strafe,
+    // arrows look (←/→ turn, ↑/↓ pitch). null = not a movement key.
     function keyFor(key) {
       switch ((key || "").toLowerCase()) {
-        case "w": case "arrowup": return "up";
-        case "s": case "arrowdown": return "down";
-        case "a": case "arrowleft": return "left";
-        case "d": case "arrowright": return "right";
+        case "w": return "fwd";
+        case "s": return "back";
+        case "a": case "arrowleft": return "turnL";
+        case "d": case "arrowright": return "turnR";
+        case "q": return "strafeL";
+        case "e": return "strafeR";
+        case "arrowup": return "pitchU";
+        case "arrowdown": return "pitchD";
         default: return null;
       }
     }
 
-    function headingDeg() {
-      // 0° = forward(up). atan2(x, -y): up→0, right→90, down→180, left→270.
-      let d = Math.atan2(vec.x, -vec.y) * 180 / Math.PI;
-      if (d < 0) d += 360;
-      return d;
+    const vec = { x: 0, y: 0 };      // stick vector, SCREEN space: x right+, y down+
+    let mag = 0;                     // stick magnitude 0..1
+    let radius = 44;                 // px travel radius of the nub
+    let pointerActive = false;
+    let pointerId = null;
+    const keys = new Set();          // held drive tokens
+    let engaged = false;
+    let rampStart = 0;
+    let loopTimer = null;
+    let warnedNotReady = false;
+    // Last axis values pushed to the model, so we only send on change.
+    const sent = { longitudinal: "idle", lateral: "idle", lookH: "idle", lookV: "idle", rot: null };
+    let lastFallbackTs = 0;
+    let lastFallbackKey = null;
+
+    function enabled() {
+      return Renderer.mode === "reactor" && Renderer.reactorAvailable();
     }
-    function headingFor(deg) {
-      const idx = Math.round(deg / 45) % 8;
-      return HEADINGS[idx];
-    }
-    function speedFor(eff) {
-      return eff < 0.4 ? SPEEDS[0] : eff < 0.74 ? SPEEDS[1] : SPEEDS[2];
-    }
-    // Effective speed eases in from a floor so movement registers immediately,
-    // then accelerates to full over RAMP_MS — the "acceleration" the stick and
-    // keys share.
-    function effSpeed() {
-      const ramp = Math.min(1, (Date.now() - rampStart) / RAMP_MS);
-      return mag * (0.36 + 0.64 * ramp);
+    function nativeMotion() {
+      return enabled() && window.ReactorRenderer.motionSupported &&
+        window.ReactorRenderer.motionSupported();
     }
 
     function setVar(node, name, val) { if (node) node.style.setProperty(name, val); }
 
-    function updateVisual(eff) {
+    // Compose the desired axis state from the keyboard + pointer inputs. Keys win
+    // per-axis where non-idle; the pointer supplies drive + turn otherwise.
+    function compose() {
+      // Keyboard contribution.
+      let lon = keys.has("fwd") && !keys.has("back") ? "forward"
+              : keys.has("back") && !keys.has("fwd") ? "back" : "idle";
+      let lat = keys.has("strafeL") && !keys.has("strafeR") ? "strafe_left"
+              : keys.has("strafeR") && !keys.has("strafeL") ? "strafe_right" : "idle";
+      let lh  = keys.has("turnL") && !keys.has("turnR") ? "left"
+              : keys.has("turnR") && !keys.has("turnL") ? "right" : "idle";
+      let lv  = keys.has("pitchU") && !keys.has("pitchD") ? "up"
+              : keys.has("pitchD") && !keys.has("pitchU") ? "down" : "idle";
+      const keyTurning = lh !== "idle";
+      // Pointer contribution (drive + steer): up/down move, left/right turn.
+      let ptrTurnMag = 0;
+      if (pointerActive) {
+        if (lon === "idle") lon = vec.y < -DEADZONE ? "forward" : vec.y > DEADZONE ? "back" : "idle";
+        if (lh === "idle") {
+          lh = vec.x < -DEADZONE ? "left" : vec.x > DEADZONE ? "right" : "idle";
+          if (lh !== "idle") ptrTurnMag = Math.min(1, (Math.abs(vec.x) - DEADZONE) / (1 - DEADZONE));
+        }
+      }
+      // Turn speed (deg/frame): acceleration comes from key hold-time ramp, or
+      // from how far the stick is pushed sideways.
+      let rot = null;
+      if (lh !== "idle") {
+        if (keyTurning) {
+          const ramp = Math.min(1, (Date.now() - rampStart) / RAMP_MS);
+          rot = ROT_MIN + (ROT_MAX - ROT_MIN) * ramp;
+        } else {
+          rot = ROT_MIN + (ROT_MAX - ROT_MIN) * ptrTurnMag;
+        }
+      }
+      return { longitudinal: lon, lateral: lat, lookH: lh, lookV: lv, rot: rot, turnMag: ptrTurnMag };
+    }
+
+    // Push changed axes to the world model (native LingBot control).
+    function driveNative(st) {
+      const R = window.ReactorRenderer;
+      let moved = false;
+      const push = (axis, val) => {
+        if (sent[axis] === val) return;
+        sent[axis] = val;
+        R.setAxis(axis, val); // logged authoritatively via the command_sent event
+        if (val !== "idle") moved = true;
+      };
+      push("longitudinal", st.longitudinal);
+      push("lateral", st.lateral);
+      push("lookH", st.lookH);
+      push("lookV", st.lookV);
+      if (st.rot != null && Math.round(st.rot) !== Math.round(sent.rot == null ? -1 : sent.rot)) {
+        sent.rot = st.rot;
+        R.setRotationSpeed(st.rot);
+      }
+      if (moved && !window.ReactorRenderer.isShowing() && !warnedNotReady) {
+        warnedNotReady = true;
+        showRendererToast("Exploring \u2014 the live world catches up in a moment");
+      }
+    }
+
+    // Fallback for models without native movement axes: nudge with a prompt.
+    function driveFallback(st, label) {
+      const now = Date.now();
+      if (label === "still") return;
+      if (label === lastFallbackKey && now - lastFallbackTs < FALLBACK_SEND_MS) return;
+      lastFallbackKey = label; lastFallbackTs = now;
+      const phrase = fallbackPhrase(st);
+      if (!phrase) return;
+      const ok = Renderer.steerMovement("Camera: " + phrase +
+        ". Smooth continuous first-person motion, the environment flowing past.");
+      if (ok) RtLog.push("prompt", "\u25B8 camera \u00B7 " + label.toLowerCase());
+      else if (!warnedNotReady) { warnedNotReady = true; showRendererToast("Live video is warming up \u2014 explore in a moment"); }
+    }
+    function fallbackPhrase(st) {
+      const p = [];
+      if (st.longitudinal === "forward") p.push("the camera pushes forward, deeper into the scene");
+      else if (st.longitudinal === "back") p.push("the camera pulls backward, retreating");
+      if (st.lookH === "left") p.push("turning to look left");
+      else if (st.lookH === "right") p.push("turning to look right");
+      if (st.lateral === "strafe_left") p.push("sliding to the left");
+      else if (st.lateral === "strafe_right") p.push("sliding to the right");
+      if (st.lookV === "up") p.push("tilting up");
+      else if (st.lookV === "down") p.push("tilting down");
+      return p.join(", ");
+    }
+
+    // A short human label for the readout + log from the composed state.
+    function actionLabel(st) {
+      const p = [];
+      if (st.longitudinal === "forward") p.push("FWD");
+      else if (st.longitudinal === "back") p.push("BACK");
+      if (st.lookH === "left") p.push("TURN L");
+      else if (st.lookH === "right") p.push("TURN R");
+      if (st.lateral === "strafe_left") p.push("STRAFE L");
+      else if (st.lateral === "strafe_right") p.push("STRAFE R");
+      if (st.lookV === "up") p.push("LOOK UP");
+      else if (st.lookV === "down") p.push("LOOK DN");
+      return p.length ? p.join(" + ") : "still";
+    }
+
+    function updateVisual(st) {
       if (!el.movePad) return;
-      setVar(el.moveNub, "--mx", (vec.x * radius).toFixed(1) + "px");
-      setVar(el.moveNub, "--my", (vec.y * radius).toFixed(1) + "px");
-      setVar(el.movePad, "--thrust", (engaged ? Math.max(0, eff) : 0).toFixed(3));
-      const moving = engaged && mag > DEADZONE;
-      const deg = moving ? headingDeg() : 0;
-      const h = moving ? headingFor(deg) : null;
-      setVar(el.moveArrow, "--dir", (h ? h.arrow : 0) + "deg");
-      // Light the rim tick we're heading toward.
+      // Nub position: pointer uses its real vector; keys synthesize one from the
+      // active axes so the knob shows the drive direction.
+      let nx = vec.x, ny = vec.y;
+      if (!pointerActive) {
+        nx = st.lookH === "left" ? -0.85 : st.lookH === "right" ? 0.85
+           : st.lateral === "strafe_left" ? -0.85 : st.lateral === "strafe_right" ? 0.85 : 0;
+        ny = st.longitudinal === "forward" ? -0.85 : st.longitudinal === "back" ? 0.85
+           : st.lookV === "up" ? -0.6 : st.lookV === "down" ? 0.6 : 0;
+      }
+      setVar(el.moveNub, "--mx", (nx * radius).toFixed(1) + "px");
+      setVar(el.moveNub, "--my", (ny * radius).toFixed(1) + "px");
+      const moving = st.longitudinal !== "idle" || st.lateral !== "idle" || st.lookH !== "idle" || st.lookV !== "idle";
+      const thrust = pointerActive ? mag : (moving ? Math.min(1, (Date.now() - rampStart) / RAMP_MS * 0.6 + 0.4) : 0);
+      setVar(el.movePad, "--thrust", (engaged && moving ? thrust : 0).toFixed(3));
+      let deg = 0;
+      if (moving) deg = (Math.atan2(nx, -ny) * 180 / Math.PI + 360) % 360;
+      setVar(el.moveArrow, "--dir", deg.toFixed(0) + "deg");
       const ticks = el.movePad.querySelectorAll(".move-tick");
       ticks.forEach((t) => t.classList.remove("lit"));
-      if (h) {
-        const lit = el.movePad.querySelector(".move-tick-" + h.tick);
-        if (lit) lit.classList.add("lit");
-      }
-      if (el.moveReadout) {
-        el.moveReadout.textContent = moving ? (h.label + " \u00B7 " + speedFor(eff).tag) : "EXPLORE";
-      }
-      if (el.moveNub) {
-        el.moveNub.setAttribute("aria-valuetext",
-          moving ? (h.label.toLowerCase() + ", " + speedFor(eff).tag.toLowerCase()) : "centered");
-      }
-    }
-
-    function buildBeat(h, s) {
-      return "Camera: " + h.phrase + ", " + s.phrase +
-        ". Smooth continuous first-person tracking motion; the environment flows " +
-        "past with parallax and depth as the viewpoint travels.";
-    }
-
-    // Fire a sustained camera steer for the current heading/speed when it has
-    // changed enough or the heartbeat is due. Deduped re-sends are cheap (the
-    // reactor renderer drops an identical prompt), so a held direction just
-    // keeps the world moving without log spam.
-    function maybeSend(eff) {
-      if (eff <= DEADZONE || mag <= DEADZONE) return;
-      const now = Date.now();
-      const h = headingFor(headingDeg());
-      const s = speedFor(eff);
-      const changed = h.label !== lastSentLabel || s.tier !== lastSentTier;
-      const heartbeat = now - lastSentTs >= SEND_HEARTBEAT_MS;
-      if (!changed && !heartbeat) return;
-      if (now - lastSentTs < MIN_SEND_GAP_MS && !changed) return;
-      const ok = Renderer.steerMovement(buildBeat(h, s));
-      if (!ok) {
-        if (!warnedNotReady) {
-          warnedNotReady = true;
-          showRendererToast("Live video is warming up \u2014 explore in a moment");
-        }
-        return;
-      }
-      movedThisEngage = true;
-      lastSentTs = now;
-      if (changed) {
-        if (h.label !== lastSentLabel) { try { Sound.hover(); } catch (_) {} }
-        RtLog.push("prompt", "\u25B8 move \u00B7 " + h.label.toLowerCase(), "(" + s.tag.toLowerCase() + ")");
-        if (Ceremony.isActive()) Ceremony.note("\u25B8 Camera \u00B7 " + h.label.toLowerCase());
-      }
-      lastSentLabel = h.label;
-      lastSentTier = s.tier;
+      const lit = (cls) => { const n = el.movePad.querySelector(".move-tick-" + cls); if (n) n.classList.add("lit"); };
+      if (st.longitudinal === "forward") lit("n");
+      if (st.longitudinal === "back") lit("s");
+      if (st.lookH === "left" || st.lateral === "strafe_left") lit("w");
+      if (st.lookH === "right" || st.lateral === "strafe_right") lit("e");
+      const label = actionLabel(st);
+      if (el.moveReadout) el.moveReadout.textContent = moving ? label : "EXPLORE";
+      if (el.moveNub) el.moveNub.setAttribute("aria-valuetext", moving ? label.toLowerCase() : "centered");
     }
 
     function tick() {
       if (!engaged) return;
-      const eff = effSpeed();
-      updateVisual(eff);
-      maybeSend(eff);
+      const st = compose();
+      updateVisual(st);
+      const label = actionLabel(st);
+      if (nativeMotion()) driveNative(st);
+      else driveFallback(st, label);
     }
 
-    function startLoop() {
-      if (loopTimer) return;
-      loopTimer = setInterval(tick, TICK_MS);
-    }
-    function stopLoop() {
-      if (loopTimer) { clearInterval(loopTimer); loopTimer = null; }
-    }
+    function startLoop() { if (!loopTimer) loopTimer = setInterval(tick, TICK_MS); }
+    function stopLoop() { if (loopTimer) { clearInterval(loopTimer); loopTimer = null; } }
 
-    function engage(src) {
-      if (engaged) { source = source || src; return; }
+    function engage() {
+      if (engaged) return;
       engaged = true;
-      source = src;
       rampStart = Date.now();
-      movedThisEngage = false;
       warnedNotReady = false;
-      lastSentLabel = null;
-      lastSentTier = -1;
-      lastSentTs = 0;
       if (el.movePad) el.movePad.classList.add("engaged");
       try { Sound.press(); } catch (_) {}
       startLoop();
-      tick(); // respond immediately, no first-frame delay
+      tick(); // respond immediately
+    }
+
+    function stopAll() {
+      // Idle every axis so the camera comes to rest (persistent state!).
+      if (nativeMotion() && window.ReactorRenderer.stopMotion) window.ReactorRenderer.stopMotion();
+      else if (enabled() && (sent.longitudinal !== "idle" || sent.lookH !== "idle" || sent.lateral !== "idle" || sent.lookV !== "idle")) {
+        Renderer.steerMovement("Camera: the viewpoint eases to a halt and holds steady, the scene settling into a calm, stable shot.");
+      }
+      sent.longitudinal = "idle"; sent.lateral = "idle"; sent.lookH = "idle"; sent.lookV = "idle";
+      lastFallbackKey = null;
     }
 
     function disengage() {
       if (!engaged) return;
       engaged = false;
-      source = null;
+      pointerActive = false;
       pointerId = null;
       keys.clear();
       vec.x = 0; vec.y = 0; mag = 0;
       stopLoop();
       if (el.movePad) el.movePad.classList.remove("engaged");
       if (el.moveNub) el.moveNub.classList.remove("dragging");
-      updateVisual(0);
-      // Bring the camera to rest so the world stops travelling instead of
-      // coasting on the last motion prompt.
-      if (movedThisEngage) {
-        Renderer.steerMovement(
-          "Camera: the viewpoint eases to a halt and holds steady, the scene " +
-          "settling into a calm, stable shot."
-        );
-        RtLog.push("dim", "\u25A0 move \u00B7 stop");
-      }
-      lastSentLabel = null;
-      lastSentTier = -1;
+      updateVisual({ longitudinal: "idle", lateral: "idle", lookH: "idle", lookV: "idle" });
+      stopAll();
+      RtLog.push("dim", "\u25A0 camera \u00B7 rest");
     }
 
     // ---- Pointer (mouse / touch) ----
     function measure() {
       if (!el.movePad) return;
       const r = el.movePad.getBoundingClientRect();
-      // travel = pad radius minus the nub's half-size, so the knob stays inside.
       radius = Math.max(24, r.width / 2 - (el.moveNub ? el.moveNub.offsetWidth / 2 : 22) + 6);
     }
     function updateFromPointer(clientX, clientY) {
       const r = el.movePad.getBoundingClientRect();
-      const cx = r.left + r.width / 2;
-      const cy = r.top + r.height / 2;
-      let dx = clientX - cx;
-      let dy = clientY - cy;
+      const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+      let dx = clientX - cx, dy = clientY - cy;
       const dist = Math.hypot(dx, dy);
       if (dist > radius) { dx = dx / dist * radius; dy = dy / dist * radius; }
-      vec.x = dx / radius;
-      vec.y = dy / radius;
+      vec.x = dx / radius; vec.y = dy / radius;
       mag = Math.min(1, dist / radius);
     }
     function onPointerDown(e) {
       if (!enabled()) { showRendererToast("Switch to LIVE video to explore (G)"); return; }
       measure();
+      pointerActive = true;
       pointerId = e.pointerId;
       try { el.movePad.setPointerCapture(e.pointerId); } catch (_) {}
       if (el.moveNub) el.moveNub.classList.add("dragging");
-      engage("pointer");
+      engage();
       updateFromPointer(e.clientX, e.clientY);
       tick();
       e.preventDefault();
     }
     function onPointerMove(e) {
-      if (!engaged || source !== "pointer" || e.pointerId !== pointerId) return;
+      if (!pointerActive || e.pointerId !== pointerId) return;
       updateFromPointer(e.clientX, e.clientY);
       e.preventDefault();
     }
     function onPointerUp(e) {
-      if (source !== "pointer" || e.pointerId !== pointerId) return;
+      if (!pointerActive || e.pointerId !== pointerId) return;
       try { el.movePad.releasePointerCapture(e.pointerId); } catch (_) {}
-      disengage();
+      pointerActive = false;
+      if (el.moveNub) el.moveNub.classList.remove("dragging");
+      if (keys.size === 0) disengage();
+      else { vec.x = 0; vec.y = 0; mag = 0; tick(); }
     }
 
-    // ---- Keyboard (WASD + arrows) ----
-    function recomputeKeys() {
-      const x = (keys.has("right") ? 1 : 0) - (keys.has("left") ? 1 : 0);
-      const y = (keys.has("down") ? 1 : 0) - (keys.has("up") ? 1 : 0);
-      if (x === 0 && y === 0) { vec.x = 0; vec.y = 0; mag = 0; return; }
-      const len = Math.hypot(x, y);
-      vec.x = x / len; vec.y = y / len; mag = 1; // keys = full push; speed via ramp
-    }
-    function pressKey(dir) {
-      if (!enabled() || !dir) return false;
-      if (!keys.has(dir)) {
-        keys.add(dir);
-        engage("keys");
-        recomputeKeys();
+    // ---- Keyboard ----
+    function pressKey(tok) {
+      if (!enabled() || !tok) return false;
+      if (!keys.has(tok)) {
+        keys.add(tok);
+        engage();
         tick();
       }
       return true;
     }
-    function releaseKey(dir) {
-      if (!dir || !keys.has(dir)) return;
-      keys.delete(dir);
-      if (keys.size === 0) { disengage(); return; }
-      recomputeKeys();
+    function releaseKey(tok) {
+      if (!tok || !keys.has(tok)) return;
+      keys.delete(tok);
+      if (keys.size === 0 && !pointerActive) disengage();
+      else tick();
     }
-    function releaseAll() { if (source === "keys" || keys.size) disengage(); }
+    function releaseAll() { if (engaged) disengage(); }
 
     function init() {
       if (!el.movePad) return;
@@ -2171,12 +2213,12 @@
       el.movePad.addEventListener("pointermove", onPointerMove);
       el.movePad.addEventListener("pointerup", onPointerUp);
       el.movePad.addEventListener("pointercancel", onPointerUp);
-      el.movePad.addEventListener("lostpointercapture", () => { if (source === "pointer") disengage(); });
+      el.movePad.addEventListener("lostpointercapture", () => { if (pointerActive) { pointerActive = false; if (keys.size === 0) disengage(); } });
       el.movePad.addEventListener("contextmenu", (e) => e.preventDefault());
       window.addEventListener("resize", measure);
       window.addEventListener("blur", releaseAll);
       measure();
-      updateVisual(0);
+      updateVisual({ longitudinal: "idle", lateral: "idle", lookH: "idle", lookV: "idle" });
     }
 
     return { init, enabled, keyFor, pressKey, releaseKey, releaseAll };
@@ -5789,11 +5831,12 @@
       if (e.key.toLowerCase() === "r") resetGame();
       return;
     }
-    // Movement joystick owns W/A/S/D (and the arrow keys) while realtime video
-    // is on — hold to travel, release to stop. This intentionally reassigns
-    // those keys (D no longer toggles the debug log; use the DEBUG button) and
-    // ArrowUp (advance is still on Space / the play button) in LIVE mode only;
-    // in still mode Movement is disabled and the keys keep their old meaning.
+    // Movement joystick owns the drive keys while realtime video is on — hold to
+    // travel, release to stop: W/S move fwd/back, A/D (and ←/→) turn, Q/E strafe,
+    // ↑/↓ look up/down. This intentionally reassigns those keys in LIVE mode only
+    // (D no longer toggles the debug log — use the DEBUG button; advance is still
+    // on Space / the play button). In still mode Movement is disabled and the
+    // keys keep their old meaning.
     if (Movement.enabled() && !e.ctrlKey && !e.metaKey && !e.altKey) {
       const mk = Movement.keyFor(e.key);
       if (mk) {
