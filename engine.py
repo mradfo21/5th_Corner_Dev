@@ -706,9 +706,16 @@ LLM_ENABLED = True
 
 VISION_ENABLED = True  # ENABLED for production
 
-# Use Gemini by default (OpenAI is legacy)
+# LEGACY boot variable only — NOT used for routing. Actual per-frame image
+# generation routes on ai_provider_manager.get_image_provider() (see _gen_image),
+# which reads ai_config.json at runtime. Kept for backwards compatibility/logging.
 IMAGE_PROVIDER = CONFIG.get("IMAGE_PROVIDER", "gemini").lower()
-print(f"[ENGINE INIT] IMAGE_PROVIDER: {IMAGE_PROVIDER}")
+print(f"[ENGINE INIT] IMAGE_PROVIDER (legacy, unused for routing): {IMAGE_PROVIDER}")
+try:
+    print(f"[ENGINE INIT] Runtime image provider (ai_config.json): "
+          f"{ai_provider_manager.get_image_provider()}/{ai_provider_manager.get_image_model()}")
+except Exception as _img_prov_err:
+    print(f"[ENGINE INIT] Could not read runtime image provider: {_img_prov_err}")
 
 # Track the last dispatch image path for vision continuity
 _last_image_path: Optional[str] = None

@@ -286,6 +286,8 @@ def api_status():
             "time_of_day": s.get("time_of_day", ""),
             "inventory": inventory,
             "backend": ai_provider_manager.active_backend("chat"),
+            "image_provider": ai_provider_manager.get_image_provider(),
+            "image_model": ai_provider_manager.get_image_model(),
             "image_enabled": engine.IMAGE_ENABLED,
             # Renderer selection + the latest scene prompt, so the standalone
             # client can steer the Reactor realtime world model with the same
