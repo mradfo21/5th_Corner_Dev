@@ -221,6 +221,119 @@
   };
 
   // ------------------------------------------------------------------
+  // Device — one source of truth for "is this a phone or a desktop?".
+  //
+  // The game is full-bleed and the generated media (4:3 stills, 16:9 realtime
+  // video) is authored for a wide desktop canvas. On a desktop we WANT that
+  // cinematic full-bleed crop; on a portrait phone the same `cover` fit throws
+  // away most of the frame. Rather than sprinkle `window.innerWidth` checks
+  // everywhere, we resolve the device once and stamp the <html> element with
+  // classes the CSS keys off of:
+  //   .is-mobile / .is-desktop   — coarse pointer + phone-sized viewport (or UA)
+  //   .is-touch  / .is-pointer   — whether touch is the primary input
+  //   .is-portrait / .is-landscape
+  // JS can also read Device.isMobile() etc. Everything stays reactive to
+  // resize / orientation changes and to a phone being rotated mid-run.
+  // ------------------------------------------------------------------
+  const Device = (function () {
+    const root = document.documentElement;
+    let listeners = [];
+    const mm = (q) => (window.matchMedia ? window.matchMedia(q) : { matches: false, addEventListener: () => {}, addListener: () => {} });
+    const state = { mobile: false, touch: false, portrait: false };
+
+    function detectTouch() {
+      try {
+        if (mm("(pointer: coarse)").matches) return true;
+        if (navigator.maxTouchPoints > 0) return true;
+        if ("ontouchstart" in window) return true;
+      } catch (_) {}
+      return false;
+    }
+
+    function detectMobile(touch) {
+      // A phone/tablet is: a touch-primary device whose *shortest* side is
+      // small enough that a desktop-cinematic crop would hurt, OR a device
+      // that reports a mobile user-agent. Desktops with touchscreens (large
+      // viewport, fine pointer available) stay in "desktop" mode.
+      let uaMobile = false;
+      try {
+        const ua = navigator.userAgent || "";
+        uaMobile = /Android|iPhone|iPad|iPod|Windows Phone|webOS|BlackBerry|Mobile/i.test(ua);
+        // Modern iPadOS reports as desktop Safari; catch it via touch + Mac.
+        if (!uaMobile && /Macintosh/.test(ua) && navigator.maxTouchPoints > 1) uaMobile = true;
+      } catch (_) {}
+      const shortSide = Math.min(window.innerWidth || 0, window.innerHeight || 0);
+      const finePointer = (function () { try { return mm("(pointer: fine)").matches; } catch (_) { return false; } })();
+      // Small viewport + touch-primary (no fine pointer) => phone-class.
+      const smallTouch = touch && !finePointer && shortSide > 0 && shortSide <= 820;
+      return uaMobile || smallTouch;
+    }
+
+    function apply() {
+      const touch = detectTouch();
+      const mobile = detectMobile(touch);
+      const portrait = (window.innerHeight || 0) >= (window.innerWidth || 0);
+      const changed = mobile !== state.mobile || touch !== state.touch || portrait !== state.portrait;
+      state.mobile = mobile; state.touch = touch; state.portrait = portrait;
+      root.classList.toggle("is-mobile", mobile);
+      root.classList.toggle("is-desktop", !mobile);
+      root.classList.toggle("is-touch", touch);
+      root.classList.toggle("is-pointer", !touch);
+      root.classList.toggle("is-portrait", portrait);
+      root.classList.toggle("is-landscape", !portrait);
+      if (changed) listeners.forEach((fn) => { try { fn(state); } catch (_) {} });
+      return state;
+    }
+
+    let _raf = 0;
+    function onChange() {
+      // Coalesce bursts of resize events (mobile URL-bar show/hide fires many).
+      if (_raf) cancelAnimationFrame(_raf);
+      _raf = requestAnimationFrame(apply);
+    }
+
+    function init() {
+      apply();
+      window.addEventListener("resize", onChange, { passive: true });
+      window.addEventListener("orientationchange", onChange, { passive: true });
+      try {
+        // React the instant the primary pointer type changes (e.g. a tablet
+        // docking a mouse) without waiting for a resize.
+        mm("(pointer: coarse)").addEventListener("change", onChange);
+      } catch (_) {
+        try { mm("(pointer: coarse)").addListener(onChange); } catch (_) {}
+      }
+      return state;
+    }
+
+    return {
+      init,
+      refresh: apply,
+      onChange(fn) { if (typeof fn === "function") listeners.push(fn); },
+      isMobile() { return state.mobile; },
+      isDesktop() { return !state.mobile; },
+      isTouch() { return state.touch; },
+      isPortrait() { return state.portrait; },
+    };
+  })();
+  // Expose for debugging / other scripts (e.g. the reactor renderer).
+  try { window.__DEVICE__ = Device; } catch (_) {}
+
+  // The scene media (still background / realtime video) is displayed `cover` on
+  // desktops and landscape phones, but `contain` on PORTRAIT phones (see the
+  // "MOBILE MEDIA FIT" CSS). The SCAN hotspots and PHOTO markers map model-space
+  // (0..1) coordinates onto the *displayed* media rect, so they must use the
+  // exact same fit the CSS uses — otherwise every tag/marker drifts on a phone.
+  function isContainFit() {
+    return Device.isMobile() && Device.isPortrait();
+  }
+  // Scale that maps a source (sw x sh) into the viewport (W x H) under the
+  // current fit: max() = cover (fill + crop), min() = contain (fit + letterbox).
+  function mediaFitScale(W, H, sw, sh) {
+    return isContainFit() ? Math.min(W / sw, H / sh) : Math.max(W / sw, H / sh);
+  }
+
+  // ------------------------------------------------------------------
   // Sound — tiny WebAudio synth (no assets; gated on first user gesture)
   // ------------------------------------------------------------------
   const Sound = (function () {
@@ -2370,7 +2483,7 @@
     }
     const size = currentSourceSize();
     if (!size || !size.w || !size.h) return { x: x / W, y: y / H };
-    const scale = Math.max(W / size.w, H / size.h);
+    const scale = mediaFitScale(W, H, size.w, size.h);
     const dw = size.w * scale, dh = size.h * scale;
     const ox = (W - dw) / 2, oy = (H - dh) / 2;
     return { x: (x - ox) / dw, y: (y - oy) / dh };
@@ -3060,7 +3173,7 @@
     let x, y;
     if (!size || !size.w || !size.h) { x = cx * W; y = cy * H; }
     else {
-      const scale = Math.max(W / size.w, H / size.h);
+      const scale = mediaFitScale(W, H, size.w, size.h);
       const dw = size.w * scale, dh = size.h * scale;
       const ox = (W - dw) / 2, oy = (H - dh) / 2;
       x = ox + cx * dw; y = oy + cy * dh;
@@ -3587,7 +3700,7 @@
     const size = state.scanSrcSize ||
       (window.ReactorRenderer.getVideoSize && window.ReactorRenderer.getVideoSize()) || null;
     if (!size || !size.w || !size.h) return { x: nx * W, y: ny * H };
-    const scale = Math.max(W / size.w, H / size.h);
+    const scale = mediaFitScale(W, H, size.w, size.h);
     const dw = size.w * scale, dh = size.h * scale;
     const ox = (W - dw) / 2, oy = (H - dh) / 2;
     return { x: ox + nx * dw, y: oy + ny * dh };
@@ -4865,6 +4978,10 @@
   // ------------------------------------------------------------------
 
   function init() {
+    // Resolve mobile vs desktop first so every later init (and the CSS) can
+    // adapt: phones get a "truly mobile" layout + media fit, desktops keep the
+    // cinematic full-bleed experience.
+    Device.init();
     el.btnReset.addEventListener("click", resetGame);
     el.btnVhs.addEventListener("click", toggleVhs);
     el.btnSnd.addEventListener("click", toggleSound);
