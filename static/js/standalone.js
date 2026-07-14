@@ -3887,6 +3887,9 @@
   function ambientScanAllowed() {
     if (state.gameOver || state.touchMode || state.freeWillOpen) return false;
     if (typeof tapeIsOpen === "function" && tapeIsOpen()) return false;
+    // Don't surface hotspots behind an open conversation — they'd sit under the
+    // TALK panel. They're re-armed when the conversation closes.
+    if (typeof Talk !== "undefined" && Talk.isOpen && Talk.isOpen()) return false;
     return scanAvailable();
   }
 
@@ -4727,6 +4730,10 @@
       setTimeout(() => {
         el.talkOverlay.classList.add("hidden");
         el.talkLog.innerHTML = "";
+        // Re-arm the ambient OCR overlay the conversation replaced, and refresh
+        // detection for the current scene (mirrors camera/tape/free-will close).
+        updateAmbientScan();
+        schedulePrewarm(250);
       }, 260);
       subject = null;
       messages = [];
@@ -4752,6 +4759,30 @@
   try {
     if (typeof location !== "undefined" && /(?:\?|&)talkdev\b/.test(location.search)) {
       window.__TALK__ = Talk;
+      window.__STARTTALK__ = (obj) => startTalk(null, obj); // real entry (closes scan first)
+      // Scan/OCR observability for QA (dev-gated): inspect the ambient overlay
+      // state and force a still so hotspot behavior is testable without a live
+      // image backend.
+      window.__SCAN__ = {
+        on: () => state.scanOn,
+        hidden: () => !!(el.scanLayer && el.scanLayer.classList.contains("hidden")),
+        available: () => scanAvailable(),
+        // Prime a decoded still + force image mode so the ambient overlay can
+        // arm without a live image/reactor backend (QA only).
+        forceStill: (url) => new Promise((res) => {
+          const img = new Image();
+          img.setAttribute("data-src", url);
+          img.onload = () => {
+            state.currentStillUrl = url;
+            state.scanStillImg = img;
+            try { Renderer.mode = "image"; } catch (_) {}
+            updateAmbientScan();
+            res(true);
+          };
+          img.onerror = () => res(false);
+          img.src = url;
+        }),
+      };
     }
   } catch (_) {}
 
