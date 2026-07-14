@@ -1371,50 +1371,48 @@ body.scan-busy #scan-cursor::after {
 }
 
 /* Inline interact prompt, revealed when the + button is pressed. */
-.scan-tag-form { display: none; align-items: center; gap: 6px; }
+/* Inline action bar: sleek icon buttons revealed when a tag is tapped. */
+.scan-tag-actions { display: none; align-items: center; gap: 6px; }
 .scan-tag.acting {
   z-index: 6;
-  cursor: text;
   border-color: rgba(180, 233, 255, 0.95);
-  background: rgba(8, 18, 28, 0.85);
+  background: rgba(8, 18, 28, 0.9);
   box-shadow: 0 0 28px rgba(140, 217, 255, 0.6), inset 0 0 10px rgba(0,0,0,0.5);
   transform: translate(-50%, -50%) scale(1.02);
 }
 .scan-tag.acting::before { display: none; }
 .scan-tag.acting .scan-tag-act { display: none; }
-.scan-tag.acting .scan-tag-form { display: flex; animation: scan-form-in 0.24s ease backwards; }
-@keyframes scan-form-in {
-  from { opacity: 0; transform: translateX(-6px); }
-  to   { opacity: 1; transform: translateX(0); }
-}
-.scan-tag-form input {
-  width: 154px;
-  max-width: 44vw;
-  background: none;
-  border: none;
-  border-bottom: 1px solid rgba(140, 217, 255, 0.55);
-  color: #eaf7ff;
-  font-family: inherit;
-  font-size: 12px;
-  padding: 2px 2px;
-  outline: none;
-}
-.scan-tag-form input::placeholder { color: rgba(190, 233, 255, 0.5); }
-.scan-tag-form input:focus { border-bottom-color: rgba(140, 217, 255, 0.95); }
-.scan-tag-form button {
-  flex: 0 0 auto;
-  background: rgba(140, 217, 255, 0.12);
-  border: 1px solid rgba(140, 217, 255, 0.55);
-  color: #bfe9ff;
-  font-family: inherit;
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  padding: 3px 8px;
-  border-radius: 3px;
+.scan-tag.acting .scan-tag-actions { display: flex; }
+
+.scan-action {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 4px 8px 3px;
+  border-radius: 9px;
+  border: 1px solid rgba(140, 217, 255, 0.45);
+  background: rgba(140, 217, 255, 0.08);
+  color: #dff3ff;
   cursor: pointer;
-  transition: background 0.14s, border-color 0.14s, color 0.14s;
+  transition: background 0.14s, border-color 0.14s, transform 0.1s, box-shadow 0.14s;
+  animation: scan-action-in 0.26s cubic-bezier(0.2, 0.9, 0.25, 1.2) backwards;
 }
-.scan-tag-form button:hover { background: rgba(140, 217, 255, 0.28); border-color: rgba(140, 217, 255, 0.95); color: #eaf7ff; }
+.scan-action:nth-child(2) { animation-delay: 0.05s; }
+.scan-action:hover {
+  background: rgba(140, 217, 255, 0.28);
+  border-color: rgba(180, 233, 255, 1);
+  box-shadow: 0 0 14px rgba(140, 217, 255, 0.55);
+  transform: translateY(-1px);
+}
+.scan-action:active { transform: scale(0.94); }
+.scan-action-ico { width: 17px; height: 17px; display: block; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.8)); }
+.scan-action-lbl { font-size: 7px; letter-spacing: 0.1em; opacity: 0.9; line-height: 1; }
+@keyframes scan-action-in {
+  from { opacity: 0; transform: translateY(4px) scale(0.7); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
 
 /* Hint line, centered above the action wheel. */
 #scan-hint {
@@ -2261,8 +2259,6 @@ body.reactor-available.rt-log-on #rt-log { display: flex; }
 
   /* Keep the scan hint clear of the (taller) mobile action wheel. */
   #scan-hint { bottom: calc(env(safe-area-inset-bottom, 0px) + 196px); font-size: 10px; }
-  /* 16px input prevents iOS Safari from auto-zooming on focus. */
-  .scan-tag-form input { font-size: 16px; }
 
   /* 16px input prevents iOS Safari from auto-zooming on focus. */
   #custom-input { font-size: 16px; }

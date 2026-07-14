@@ -2339,6 +2339,24 @@
     tag.dataset.sy = y;
   }
 
+  // The actions a player can take on a detected object. Each composes a clean,
+  // natural prompt from the verb + the object's own name — no typing. The
+  // consequence LLM (server-side) already turns that intent into an in-world,
+  // exciting outcome + a fresh scene, so there's no need for a separate
+  // "action-writing" LLM. Add more verbs here to grow the vocabulary.
+  const SCAN_ACTIONS = [
+    {
+      id: "move", label: "MOVE TO", title: "Move to",
+      phrase: (o) => "Move to the " + o + ".",
+      icon: '<svg class="scan-action-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2v20M2 12h20"/><path d="M9 5l3-3 3 3M9 19l3 3 3-3M5 9l-3 3 3 3M19 9l3 3-3 3"/></svg>',
+    },
+    {
+      id: "interact", label: "INTERACT", title: "Interact with",
+      phrase: (o) => "Interact with the " + o + ".",
+      icon: '<svg class="scan-action-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 13V5a2 2 0 0 1 4 0v6"/><path d="M12 11V4a2 2 0 0 1 4 0v7"/><path d="M16 11V7a2 2 0 0 1 4 0v8a6 6 0 0 1-6 6h-2a6 6 0 0 1-5-2.7l-2.8-4a2 2 0 0 1 3.1-2.5L9 14"/></svg>',
+    },
+  ];
+
   function buildScanTag(obj) {
     const tag = document.createElement("div");
     tag.className = "scan-tag";
@@ -2358,12 +2376,12 @@
     label.className = "scan-tag-label";
     label.textContent = obj.label;
 
-    // The "extra little button" the player uses to interact with the thing.
+    // The "act" affordance: tap to reveal this thing's action icons.
     const act = document.createElement("button");
     act.type = "button";
     act.className = "scan-tag-act";
-    act.setAttribute("aria-label", "Play with the " + obj.label);
-    act.title = "Play with the " + obj.label;
+    act.setAttribute("aria-label", "Choose an action for the " + obj.label);
+    act.title = "Act on the " + obj.label;
     act.textContent = "+";
     act.addEventListener("click", (e) => {
       e.preventDefault();
@@ -2371,31 +2389,33 @@
       openTagPrompt(tag);
     });
 
-    // Inline prompt (hidden until the + button is pressed).
-    const form = document.createElement("form");
-    form.className = "scan-tag-form";
-    form.autocomplete = "off";
-    const input = document.createElement("input");
-    input.type = "text";
-    input.maxLength = 120;
-    input.placeholder = "interact with " + obj.label + "… (or how?)";
-    const send = document.createElement("button");
-    send.type = "submit";
-    send.textContent = "GO";
-    form.appendChild(input);
-    form.appendChild(send);
-    form.addEventListener("submit", (e) => {
-      e.preventDefault();
-      submitTagPrompt(tag, input.value.trim());
+    // Inline action bar (hidden until the + is pressed): one sleek icon per
+    // action. No typing — tapping an icon composes the prompt and commits a turn.
+    const actions = document.createElement("div");
+    actions.className = "scan-tag-actions";
+    SCAN_ACTIONS.forEach((a) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "scan-action scan-action-" + a.id;
+      b.title = a.title + " the " + obj.label;
+      b.setAttribute("aria-label", a.title + " the " + obj.label);
+      b.innerHTML = a.icon + '<span class="scan-action-lbl">' + a.label + "</span>";
+      b.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        commitScanAction(tag, a);
+      });
+      actions.appendChild(b);
     });
 
     tag.appendChild(star);
     tag.appendChild(label);
     tag.appendChild(act);
-    tag.appendChild(form);
+    tag.appendChild(actions);
     return tag;
   }
 
+  // Reveal a tag's action icons (only one tag's bar open at a time).
   function openTagPrompt(tag) {
     if (state.scanTagActing && state.scanTagActing !== tag) {
       state.scanTagActing.classList.remove("acting");
@@ -2404,37 +2424,29 @@
     tag.classList.add("acting");
     tag.classList.remove("near");
     Sound.open();
-    const input = tag.querySelector(".scan-tag-form input");
-    setTimeout(() => { if (input) { try { input.focus({ preventScroll: true }); } catch (_) { input.focus(); } } }, 70);
   }
 
-  function closeTagPrompt(tag, clear) {
+  function closeTagPrompt(tag) {
     if (!tag) return;
     tag.classList.remove("acting");
-    if (clear) { const inp = tag.querySelector(".scan-tag-form input"); if (inp) inp.value = ""; }
     if (state.scanTagActing === tag) state.scanTagActing = null;
   }
 
-  function submitTagPrompt(tag, text) {
+  // Commit a chosen action on a detected object: compose the prompt from the
+  // verb + the object's name and resolve a FULL turn (consequence + fresh
+  // scene) via the existing pipeline. No typing, no separate action LLM.
+  function commitScanAction(tag, action) {
     const obj = tag._obj || { label: "it" };
-    if (state.gameOver) { closeTagPrompt(tag, true); return; }
-    // A tag interaction commits a FULL TURN grounded on this object (consequence
-    // + a freshly generated guide image), not a live re-steer — so poking a tag
-    // makes meaningful change to the world, exactly like ACT / choices do.
+    if (state.gameOver) { closeTagPrompt(tag); return; }
     if (state.processing) { showRendererToast("The world is still resolving…"); return; }
-    // Structured action: always prefixed with the selected object so the turn is
-    // anchored on it. Any typed action is appended; with NO text, the prefix
-    // alone ("INTERACT WITH: <object>") IS the action.
-    const act = (text || "").replace(/\.+$/, "").trim();
-    const prefix = "INTERACT WITH: " + obj.label;
-    const action = act ? prefix + " \u2014 " + act : prefix;
+    const phrase = action.phrase(obj.label);
     Sound.submit();
-    closeTagPrompt(tag, true);
-    showRendererToast("Acting on the " + obj.label + "\u2026");
+    closeTagPrompt(tag);
+    showRendererToast(action.title + " the " + obj.label + "\u2026");
     // Committing an action ENDS the scan session — the labels shouldn't keep
     // hovering over the scene while the turn plays out. Re-arm SCAN to look again.
     closeScan();
-    makeChoice(action, null);
+    makeChoice(phrase, null);
   }
 
   // Drop the current tags (e.g. when a turn changes the scene) so stale labels
@@ -2841,11 +2853,9 @@
       if (e.key === "Escape") closeFreeWill(true); // Esc closes the gate
       return;
     }
-    // A scan tag's inline prompt owns the keyboard while focused: Esc collapses
-    // it, everything else types normally.
-    if (el.scanTags && el.scanTags.contains(document.activeElement) &&
-        document.activeElement.tagName === "INPUT") {
-      if (e.key === "Escape" && state.scanTagActing) closeTagPrompt(state.scanTagActing, true);
+    // A scan tag's action bar is open: Esc collapses it (keeps scanning).
+    if (state.scanTagActing && e.key === "Escape") {
+      closeTagPrompt(state.scanTagActing);
       return;
     }
     // Camera (SNAP) tool owns the keyboard while armed: Esc or H closes it.
