@@ -1192,6 +1192,49 @@ body.touch-aiming #touch-capture-frame { opacity: 0.85; }
   pointer-events: none;
 }
 .touch-lock.show { opacity: 1; }
+/* The lock badge is colour-graded by live FOCUS so you can feel a shot sharpen:
+   amber = soft, green = sharp, bright cyan-green = perfect. */
+.touch-lock.focus-soft    { color: #ffcf88; }
+.touch-lock.focus-sharp   { color: #aaffcd; }
+.touch-lock.focus-perfect { color: #b6ffe6; text-shadow: 0 1px 4px rgba(0,0,0,0.95), 0 0 12px rgba(150,255,215,0.7); }
+
+/* The ✓ that stamps a documented (spent) subject — hidden until earned. */
+.photo-target .pt-check {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 16px;
+  font-weight: 700;
+  color: rgba(150, 255, 195, 0.95);
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.95);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+/* DOCUMENTED: this subject is spent — dim it right down, stamp a ✓, and never
+   let it read as a live target again. */
+.photo-target.documented { opacity: 0.34; }
+.photo-target.documented .pt-check { opacity: 1; }
+.photo-target.documented .pt-label { color: rgba(150, 255, 195, 0.7); }
+.photo-target.documented::before,
+.photo-target.documented::after,
+.photo-target.documented .pt-tr,
+.photo-target.documented .pt-bl { border-color: rgba(150, 255, 195, 0.5); }
+.photo-target.documented.in-frame { animation: none; } /* spent things don't pulse */
+
+/* Capture frame FOCUS grade — the border tightens from amber → green → bright
+   as the framed subject snaps into focus, so the skill read is instant. */
+#touch-capture-frame.focus-soft {
+  border-color: rgba(255, 207, 148, 0.9);
+  box-shadow: 0 0 16px rgba(255, 186, 89, 0.35), inset 0 0 18px rgba(255, 186, 89, 0.1);
+}
+#touch-capture-frame.focus-soft::before,
+#touch-capture-frame.focus-soft::after { border-color: rgba(255, 219, 170, 1); }
+#touch-capture-frame.focus-perfect {
+  border-color: rgba(150, 255, 215, 1);
+  box-shadow: 0 0 30px rgba(150, 255, 215, 0.6), inset 0 0 22px rgba(150, 255, 215, 0.18);
+}
 
 @media (prefers-reduced-motion: reduce) {
   .photo-target { transition: none; }
@@ -3395,6 +3438,22 @@ body.touch-aiming .touch-zoom { opacity: 0.9; }
   transform: translateY(-1px);
 }
 .receipt-item .ri-rare { background: #d59bff; color: #17061f; }
+/* ON FILE — a duplicate subject that pays nothing (document-once). */
+.receipt-item .ri-onfile {
+  display: inline-block;
+  font-size: 8px;
+  letter-spacing: 0.1em;
+  background: rgba(200, 200, 210, 0.22);
+  color: rgba(230, 232, 240, 0.82);
+  padding: 0 3px;
+  border-radius: 2px;
+  margin-left: 4px;
+  transform: translateY(-1px);
+}
+.receipt-item.on-file { opacity: 0.52; }
+.receipt-item.on-file .ri-pts { color: rgba(230, 232, 240, 0.5); font-weight: 500; }
+/* A focus penalty (soft frame) reads in cool red so the cost is legible. */
+.receipt-item.penalty .ri-pts { color: #ff9a8c; }
 .receipt-item .ri-note { grid-column: 1 / -1; font-size: 9px; letter-spacing: 0.02em; color: rgba(243, 236, 220, 0.62); }
 .receipt-item .ri-note:empty { display: none; }
 .receipt-item .ri-stars { color: #ffcf88; letter-spacing: 1px; }
