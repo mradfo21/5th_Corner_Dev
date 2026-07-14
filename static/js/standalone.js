@@ -1977,11 +1977,11 @@
   // the WORLD MODEL log (L) — the same reactor surface LingBot World 2 reads.
   // ------------------------------------------------------------------
   const Movement = (function () {
-    const RAMP_MS = 1400;            // turn acceleration: time held to reach top speed
+    const RAMP_MS = 2000;            // turn acceleration: time held to reach top speed
     const DEADZONE = 0.2;            // ignore tiny stick wiggle near the center
     const TICK_MS = 90;              // visual + drive loop cadence
-    const ROT_MIN = 8;               // deg/latent-frame at the start of a turn
-    const ROT_MAX = 26;              // deg/latent-frame at full turn (0..30 allowed)
+    const ROT_MIN = 4;               // deg/latent-frame at the start of a turn
+    const ROT_MAX = 13;              // deg/latent-frame at full turn (0..30 allowed)
     const FALLBACK_SEND_MS = 950;    // prompt-fallback (non-LingBot) re-steer cadence
 
     // Keyboard → semantic drive tokens. WASD drives (A/D turn), Q/E strafe,
