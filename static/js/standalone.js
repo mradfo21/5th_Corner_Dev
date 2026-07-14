@@ -507,6 +507,8 @@
       },
     };
   })();
+  // Expose for debugging + e2e (mirrors window.ReactorRenderer).
+  try { window.SceneAudio = SceneAudio; } catch (_) {}
 
   // ------------------------------------------------------------------
   // Haptics — physical vibration feedback on devices that support it (mobile).
