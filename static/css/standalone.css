@@ -204,8 +204,17 @@ html, body {
   scrollbar-width: none;
   /* Subtle, ambient — the scene is the star. */
   opacity: 0.52;
+  transition: opacity 0.5s ease;
 }
 #prose-feed::-webkit-scrollbar { display: none; }
+
+/* Boot gate: on a fresh run, keep the narrative text hidden until the world is
+   actually on screen (a still lands or the realtime feed goes live). Otherwise
+   floating text hangs over a black void while the first scene renders. */
+body.awaiting-first-scene #prose-feed {
+  opacity: 0;
+  pointer-events: none;
+}
 
 .prose-entry {
   margin: 0;
@@ -690,6 +699,12 @@ html, body {
   transition: border-color 0.16s, box-shadow 0.16s, transform 0.1s, opacity 0.22s;
 }
 body.realtime-on #realtime-btn { display: flex; }
+/* Boot gate: hide the SNAP camera tool alongside the rest of the UI until the
+   first frame of a fresh run is on screen (see #prose-feed above). */
+body.awaiting-first-scene #realtime-btn {
+  opacity: 0;
+  pointer-events: none;
+}
 #realtime-btn:hover {
   border-color: rgba(255, 186, 89, 1);
   box-shadow: inset 0 0 12px rgba(0,0,0,0.5), 0 0 22px rgba(255, 186, 89, 0.5);
