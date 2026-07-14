@@ -78,9 +78,6 @@
     talkSend: document.getElementById("talk-send"),
     talkClose: document.getElementById("talk-close"),
     talkModeToggle: document.getElementById("talk-mode-toggle"),
-    talkVoice: document.getElementById("talk-voice"),
-    talkVoiceMount: document.getElementById("talk-voice-mount"),
-    talkVoiceNote: document.getElementById("talk-voice-note"),
     talkVoiceBtn: document.getElementById("talk-voice-btn"),
     talkVoiceName: document.getElementById("talk-voice-name"),
     talkVoiceMenu: document.getElementById("talk-voice-menu"),
@@ -174,6 +171,7 @@
     awaitingResolution: false,
     gameOver: false,
     soundEnabled: true,
+    audioUnlocked: false,       // true after the first user gesture (autoplay ok)
     renderedIds: new Set(), // guard against rendering the same feed item twice
     lastStatus: {},
     freeWillOpen: false,
@@ -2181,8 +2179,11 @@
     state.gameOver = true;
     state.awaitingResolution = false;
     Talk.close(); // end any conversation — the run is over
-    Narrator.stop(); // silence any narration
+    Narrator.stop(); // silence any in-progress narration
     clearTurnWatchdog();
+    // A closing narrated line over the death screen (the player has interacted,
+    // so audio is unlocked). Fires once, after the death overlay settles.
+    if (state.audioUnlocked) setTimeout(() => { if (state.gameOver) Narrator.epitaph(); }, 1600);
     closeScan(); // no scanning over the death screen
     hideVeil();
     el.choices.innerHTML = "";
@@ -2419,6 +2420,10 @@
       // The guide-image fallback timer guarantees it can never spin forever.
       renderItems(items);
       refreshStatus();
+      // A narrated cold open once the first scene has had a moment to land —
+      // only if audio is already unlocked (a real gesture happened), so it
+      // speaks rather than silently failing autoplay.
+      setTimeout(() => Narrator.coldOpen(), 4200);
     } catch (err) {
       console.error("[standalone] resetGame failed:", err);
       hideVeil();
@@ -2470,6 +2475,7 @@
     const actionSource = (opts && opts.source) || null;
     closeFreeWill(true); // picking any action closes the free-will gate
     clearScanTags();      // the scene is about to change — drop stale scan tags
+    Narrator.stop();      // stop narration about the scene we're leaving
     el.choices.innerHTML = "";
     Ceremony.begin(); // light up the turn pipeline — starting with "action selected"
     state.awaitingResolution = true;
@@ -4173,6 +4179,8 @@
     try { selectedVoiceId = localStorage.getItem("talk_voice_id") || ""; } catch (_) {}
     let lastSession = null;
     let switching = false;
+    let wasAutoPlay = false;     // restore auto-play on close if we paused it
+    let lastFocus = null;        // restore focus on close (a11y)
 
     function isOpen() { return open; }
 
@@ -4225,11 +4233,12 @@
       convo = null;
       micMuted = false;
       open = true;
-      // Auto-play shouldn't advance the world mid-conversation.
+      lastFocus = document.activeElement;
+      Narrator.stop(); // a two-way conversation takes over from ambient narration
+      // Auto-play shouldn't advance the world mid-conversation (restore on close).
+      wasAutoPlay = state.autoPlay;
       if (state.autoPlay) setAutoPlay(false);
       el.talkLog.innerHTML = "";
-      if (el.talkVoice) el.talkVoice.classList.add("hidden"); // legacy widget mount — unused
-      if (el.talkVoiceMount) el.talkVoiceMount.innerHTML = "";
       el.talkModeToggle.classList.add("hidden");
       el.talkModeToggle.classList.remove("muted");
       el.talkForm.classList.remove("hidden");
@@ -4264,6 +4273,7 @@
 
     function beginText(opening, note) {
       mode = "text";
+      switching = false; // terminal state — clear any in-flight voice-switch lock
       setSub(note || "text transmission");
       setOrbState("idle");
       el.talkModeToggle.classList.add("hidden");
@@ -4410,7 +4420,9 @@
     // call is live, reconnects the channel with the new voice (the character
     // re-greets you in the new voice). The typed transcript is preserved.
     async function changeVoice(voiceId) {
-      if (!voiceId) return;
+      if (!voiceId || voiceId === selectedVoiceId && switching) return;
+      if (switching) return; // a switch is already reconnecting — ignore rapid clicks
+      const prev = selectedVoiceId;
       selectedVoiceId = voiceId;
       try { localStorage.setItem("talk_voice_id", voiceId); } catch (_) {}
       if (el.talkVoiceName) el.talkVoiceName.textContent = voiceName(voiceId);
@@ -4418,13 +4430,20 @@
       closeVoiceMenu();
       Sound.toggle();
       if (mode !== "voice" || !open) return;
+      if (voiceId === prev) return; // no change to a live call
       switching = true;
       setSub("switching voice…"); setOrbState("connecting");
+      el.talkVoiceBtn && el.talkVoiceBtn.classList.add("switching");
       if (convo) { try { await convo.endSession(); } catch (_) {} convo = null; }
       let session = null;
-      try { session = await postJSON("/api/talk/session", { subject, voice_id: voiceId }); } catch (e) { console.warn("[talk] reconnect failed:", e); }
+      // Reuse the current opening line so the reconnect doesn't burn an LLM call
+      // just to regenerate an identical greeting.
+      const reuseOpening = (lastSession && lastSession.context && lastSession.context.opening_line) || "";
+      try { session = await postJSON("/api/talk/session", { subject, voice_id: voiceId, opening_line: reuseOpening }); }
+      catch (e) { console.warn("[talk] reconnect failed:", e); }
+      el.talkVoiceBtn && el.talkVoiceBtn.classList.remove("switching");
       if (!open) return;
-      if (!session || session.mode !== "voice") { switching = false; return; }
+      if (!session || session.mode !== "voice") { switching = false; setSub("voice unavailable"); return; }
       addLine("assistant", "\u2014 now speaking as " + voiceName(voiceId) + " \u2014");
       beginVoice(session, (session.context && session.context.opening_line) || "");
     }
@@ -4489,15 +4508,24 @@
       document.body.classList.remove("talking");
       setTimeout(() => {
         el.talkOverlay.classList.add("hidden");
-        if (el.talkVoiceMount) el.talkVoiceMount.innerHTML = "";
         el.talkLog.innerHTML = "";
       }, 260);
       subject = null;
       messages = [];
       mode = "text";
+      // Restore what we paused/where focus was.
+      if (wasAutoPlay && !state.gameOver) { wasAutoPlay = false; setAutoPlay(true); }
+      if (lastFocus && typeof lastFocus.focus === "function") { try { lastFocus.focus(); } catch (_) {} }
+      lastFocus = null;
     }
 
-    return { start, close, isOpen, micToggle, send, toggleVoiceMenu, closeVoiceMenu };
+    // Escape handler: collapse the voice menu first, else end the conversation.
+    function onEscape() {
+      if (el.talkVoiceMenu && !el.talkVoiceMenu.classList.contains("hidden")) { closeVoiceMenu(); return; }
+      close();
+    }
+
+    return { start, close, isOpen, micToggle, send, toggleVoiceMenu, closeVoiceMenu, onEscape };
   })();
 
   // QA hook: expose the real Talk controller ONLY when explicitly requested via
@@ -4534,6 +4562,7 @@
     let busy = false;
     let audioEl = null;
     let queue = [];
+    let gen = 0; // generation token — bumped by stop() to abort in-flight work
 
     function isBusy() { return busy || playing; }
 
@@ -4541,6 +4570,10 @@
       if (el.narratorSpeaker) el.narratorSpeaker.textContent = speaker ? speaker.toUpperCase() : "";
       if (el.narratorLine) el.narratorLine.textContent = text || "";
       if (!el.narratorBar) return;
+      // Sit the caption ABOVE the action wheel so it never covers the controls
+      // (the wheel is taller on phones — track its real height).
+      const wheelH = (el.actionWheel && el.actionWheel.offsetHeight) || 120;
+      el.narratorBar.style.bottom = "calc(env(safe-area-inset-bottom, 0px) + " + (wheelH + 22) + "px)";
       el.narratorBar.classList.remove("hidden");
       el.narratorBar.setAttribute("aria-hidden", "false");
       requestAnimationFrame(() => el.narratorBar.classList.add("narrator-in"));
@@ -4574,18 +4607,17 @@
           const seg = queue.shift();
           show(seg.character, seg.text);
           Sound.talkLine();
-          if (seg.audio) {
+          const timed = () => setTimeout(next, Math.max(2400, (seg.text || "").length * 55));
+          // Respect the SND mute (the narrator's voice is ambient) — show the
+          // line as a timed subtitle instead of playing audio.
+          if (seg.audio && state.soundEnabled !== false) {
             stopAudio();
             audioEl = new Audio(seg.audio);
             audioEl.onended = next;
             audioEl.onerror = () => setTimeout(next, 900);
-            audioEl.play().catch(() => {
-              // Autoplay blocked (no gesture) — fall back to a timed subtitle.
-              setTimeout(next, Math.max(2400, (seg.text || "").length * 55));
-            });
+            audioEl.play().catch(timed); // autoplay blocked → timed subtitle
           } else {
-            // No audio (voice not configured) — show as a timed subtitle.
-            setTimeout(next, Math.max(2400, (seg.text || "").length * 55));
+            timed();
           }
         };
         next();
@@ -4596,7 +4628,10 @@
     // `opts.multi` (default true) allows a multi-voice radio-play.
     async function narrate(opts) {
       opts = opts || {};
+      // A live two-way conversation owns the audio channel — don't talk over it.
+      if (Talk.isOpen()) { showRendererToast("End the conversation to hear the narrator"); return; }
       if (busy || playing) { stop(); return; }
+      const myGen = ++gen;
       busy = true;
       if (el.narratorBtn) el.narratorBtn.classList.add("on");
       show("narrator", "\u2026");
@@ -4605,13 +4640,15 @@
         const res = await postJSON("/api/narrator/worldbuild", {
           multi: opts.multi !== false, speak: true, focus: opts.focus || "",
         });
+        // Aborted (stop() called) or superseded while we were fetching.
+        if (myGen !== gen) return;
         const segs = (res && res.segments) || [];
-        if (!segs.length) { show("narrator", "The channel is silent."); setTimeout(hide, 1800); return; }
+        if (!segs.length) { show("narrator", "The channel is silent."); setTimeout(() => { if (myGen === gen) hide(); }, 1800); return; }
+        busy = false;
         await play(segs);
       } catch (e) {
         console.warn("[narrator] failed:", e);
-        show("narrator", "The signal breaks up\u2026");
-        setTimeout(hide, 1800);
+        if (myGen === gen) { show("narrator", "The signal breaks up\u2026"); setTimeout(() => { if (myGen === gen) hide(); }, 1800); }
       } finally {
         busy = false;
         if (!playing && el.narratorBtn) el.narratorBtn.classList.remove("on");
@@ -4619,6 +4656,7 @@
     }
 
     function stop() {
+      gen++; // abort any in-flight worldbuild fetch / pending timers
       playing = false;
       busy = false;
       queue = [];
@@ -4627,7 +4665,34 @@
       hide();
     }
 
-    return { narrate, stop, isBusy };
+    // Learn whether server-side voice (TTS) is configured, and reflect it on the
+    // control's tooltip so it's clear when narration will be text-only.
+    let voiceAvailable = null;
+    async function preflight() {
+      try {
+        const c = await getJSON("/api/narrator/cast");
+        voiceAvailable = !!(c && c.voice_available);
+      } catch (_) { voiceAvailable = null; }
+      if (el.narratorBtn) {
+        el.narratorBtn.title = voiceAvailable === false
+          ? "Narrator — world-building subtitles (voice not configured) (N)"
+          : "Narrator — a voice frames the world (N)";
+      }
+    }
+
+    // A cold open at the start of a run — only when audio is already unlocked
+    // (a prior gesture) so it actually speaks rather than silently failing.
+    function coldOpen() {
+      if (!state.audioUnlocked || state.gameOver || Talk.isOpen() || isBusy()) return;
+      narrate({ multi: true, focus: "A cold open as the investigation begins: set the scene and the dread of this place." });
+    }
+
+    // A final, funereal line over the death screen.
+    function epitaph() {
+      narrate({ multi: false, focus: "The investigator has just died here. Deliver a single, final, funereal line about their end." });
+    }
+
+    return { narrate, stop, isBusy, preflight, coldOpen, epitaph };
   })();
 
   function toggleNarrator() {
@@ -4976,6 +5041,8 @@
     if (ico) ico.textContent = state.soundEnabled ? "\u266A" : "\u2715"; // ♪ / ✕
     if (state.soundEnabled) { Sound.resume(); Sound.select(); }
     try { SceneAudio.setEnabled(state.soundEnabled); } catch (_) {}
+    // Muting silences the narrator's ambient voice too (it plays real audio).
+    if (!state.soundEnabled) { try { Narrator.stop(); } catch (_) {} }
   }
 
   function initVhsGrain() {
@@ -5036,7 +5103,7 @@
     // input handles typing/Enter itself. Swallow everything else so global
     // shortcuts (number choices, R, V…) don't fire behind the panel.
     if (Talk.isOpen()) {
-      if (e.key === "Escape") { e.preventDefault(); Talk.close(); }
+      if (e.key === "Escape") { e.preventDefault(); Talk.onEscape(); }
       return;
     }
     // Tape playback owns the keyboard while open.
@@ -5200,9 +5267,13 @@
 
     // Browsers block audio until a user gesture; unlock the context on the
     // first interaction so feedback sounds work for the rest of the session.
-    const unlockAudio = () => { Sound.resume(); };
+    // We also remember that audio is now unlocked so the narrator can auto-play
+    // (e.g. a cold open on a new run) without a broken/silent autoplay attempt.
+    const unlockAudio = () => { Sound.resume(); state.audioUnlocked = true; };
     document.addEventListener("pointerdown", unlockAudio, { once: true });
     document.addEventListener("keydown", unlockAudio, { once: true });
+    // Learn whether narrator VOICE is available so the control can say so.
+    Narrator.preflight();
 
     Renderer.init(); // async: resolves default renderer + warms realtime session
     try { Investigations.render(); } catch (_) {} // show any persisted case file
