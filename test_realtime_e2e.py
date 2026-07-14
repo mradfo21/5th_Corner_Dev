@@ -808,23 +808,24 @@ class TestRealtimeRenderer(unittest.TestCase):
             # INTERACT and MOVE TO action icons are offered (no typing).
             self.assertTrue(page.evaluate("!!document.querySelector('.scan-tag.acting .scan-action-interact')"))
             self.assertTrue(page.evaluate("!!document.querySelector('.scan-tag.acting .scan-action-move')"))
-            # Tap INTERACT -> a FULL TURN (/api/choose) with the composed prompt.
+            # Tap INTERACT in realtime -> a LIVE re-steer of the running stream (a
+            # set_prompt hot-swap), NOT a full turn: the world model injects the
+            # event in place, so /api/choose is never called and no reset fires.
             page.evaluate("window.__MOCK_CMDS__ = []")
             page.evaluate("document.querySelector('.scan-tag.acting .scan-action-interact').click()")
-            # Wait (Python-side) for the /api/choose call the full turn makes.
-            for _ in range(60):
-                if chooses:
-                    break
-                page.wait_for_timeout(100)
-            self.assertGreaterEqual(len(chooses), 1, f"SCAN action must resolve a FULL turn (/api/choose). logs:\n{self._dump_logs()}")
-            payload = json.loads(choose_bodies[0] or "{}")
-            choice = payload.get("choice") or ""
-            # The composed prompt is verb + the detected object's name.
-            self.assertEqual(choice.strip(), "Interact with the wooden crate.",
-                             f"action must be composed from verb + object; got {choice!r}")
-            # A full turn is NOT a live re-steer: no set_prompt hot-swap fired.
+            # INSTANT press-ceremony: a ring pulse blooms at the object the moment
+            # the button is pressed — proof of the press that does NOT depend on
+            # the world model reacting (it's spawned synchronously in the handler).
+            self.assertGreaterEqual(
+                page.evaluate("document.querySelectorAll('#scan-layer .scan-pulse.scan-pulse-interact').length"), 1,
+                f"INTERACT must show an instant pulse at the object. logs:\n{self._dump_logs()}")
+            # The live steer is a synchronous set_prompt on the running stream.
+            page.wait_for_function("(window.__MOCK_CMDS__ || []).includes('set_prompt')", timeout=5000)
             cmds = page.evaluate("window.__MOCK_CMDS__ || []")
-            self.assertNotIn("set_prompt", cmds, "SCAN action must commit a turn, not live-steer the stream")
+            self.assertIn("set_prompt", cmds, "realtime INTERACT must live-steer the stream (world-model event injection)")
+            # Give any (erroneous) turn a moment to fire, then assert none did.
+            page.wait_for_timeout(500)
+            self.assertEqual(len(chooses), 0, f"realtime INTERACT must NOT resolve a full turn (/api/choose). logs:\n{self._dump_logs()}")
         except Exception:
             print("\n=== REACTOR CONSOLE LOG (scan) ===\n" + self._dump_logs())
             raise
@@ -912,9 +913,9 @@ class TestRealtimeRenderer(unittest.TestCase):
             page.close()
 
     def test_realtime_scan_move_action(self):
-        """MOVE TO on a non-enterable object composes an APPROACH prompt (naming
-        the object + a forward-movement cue so the scene actually changes) and
-        commits a full turn — no typing."""
+        """MOVE TO on a non-enterable object composes a RELOCATION prompt (naming
+        the object + a hard-transition cue so the scenery fully changes) and
+        commits a full turn — no typing. MOVE always changes the scene."""
         page = self._new_realtime_page()
         scene_items = [
             {"id": 1, "type": "narrative", "content": "Intro."},
@@ -943,17 +944,23 @@ class TestRealtimeRenderer(unittest.TestCase):
             page.evaluate("document.querySelector('.scan-tag').click()")
             page.wait_for_function("!!document.querySelector('.scan-tag.acting .scan-action-move')", timeout=5000)
             page.evaluate("document.querySelector('.scan-tag.acting .scan-action-move').click()")
+            # INSTANT press-ceremony: MOVE also blooms a ring pulse at the object
+            # the moment it's pressed (spawned synchronously, survives the tag
+            # clear that the committing turn triggers).
+            self.assertGreaterEqual(
+                page.evaluate("document.querySelectorAll('#scan-layer .scan-pulse.scan-pulse-move').length"), 1,
+                f"MOVE must show an instant pulse at the object. logs:\n{self._dump_logs()}")
             for _ in range(60):
                 if choose_bodies:
                     break
                 page.wait_for_timeout(100)
             self.assertGreaterEqual(len(choose_bodies), 1, f"MOVE action must commit a turn. logs:\n{self._dump_logs()}")
             choice = (json.loads(choose_bodies[0] or "{}").get("choice") or "").strip().lower()
-            # A non-enterable object -> APPROACH phrasing (forward movement cue so
-            # the scene actually changes), naming the object.
+            # A non-enterable object -> RELOCATION phrasing ("cross over" is a
+            # hard-transition trigger so the scenery fully changes), naming the
+            # object. MOVE is always a full change of scenery, never a static drift.
             self.assertIn("rusty valve", choice, f"move action must name the object; got {choice!r}")
-            self.assertIn("approach", choice, f"move-to-approach must cue forward movement; got {choice!r}")
-            self.assertNotIn("enter the", choice, f"a valve is not enterable; got {choice!r}")
+            self.assertIn("cross over", choice, f"move must cue a full change of scenery (hard transition); got {choice!r}")
         except Exception:
             print("\n=== REACTOR CONSOLE LOG (scan-move) ===\n" + self._dump_logs())
             raise
