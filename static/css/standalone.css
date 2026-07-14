@@ -27,7 +27,9 @@ html, body {
   background-position: center;
   background-color: #050505;
   opacity: 0;
-  transition: opacity 1.5s ease-in-out;
+  transition: opacity 1.5s ease-in-out, transform 0.3s cubic-bezier(0.2, 0.7, 0.2, 1);
+  transform-origin: 50% 50%;
+  will-change: transform;
   z-index: 0;
   filter: saturate(0.9) contrast(1.05);
 }
@@ -49,7 +51,9 @@ html, body {
   z-index: 0;
   filter: saturate(0.9) contrast(1.05);
   opacity: 1;
-  transition: opacity 0.8s ease-in-out;
+  transition: opacity 0.8s ease-in-out, transform 0.3s cubic-bezier(0.2, 0.7, 0.2, 1);
+  transform-origin: 50% 50%;
+  will-change: transform;
 }
 
 .reactor-video.hidden {
@@ -73,7 +77,9 @@ html, body {
   filter: saturate(0.9) contrast(1.05);
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.5s ease-in-out;
+  transition: opacity 0.5s ease-in-out, transform 0.3s cubic-bezier(0.2, 0.7, 0.2, 1);
+  transform-origin: 50% 50%;
+  will-change: transform;
 }
 
 .reactor-freeze.show {
@@ -830,6 +836,9 @@ body.realtime-on #realtime-btn { display: flex; }
   inset: 0;
   z-index: 35;
   cursor: none;
+  /* Own all touch gestures so the browser never scrolls/pinch-zooms the page
+     out from under the camera; we drive pinch-to-zoom ourselves. */
+  touch-action: none;
 }
 #touch-layer.hidden { display: none; }
 /* Once a spot is locked, the OS cursor comes back so the prompt is usable. */
@@ -1371,50 +1380,48 @@ body.scan-busy #scan-cursor::after {
 }
 
 /* Inline interact prompt, revealed when the + button is pressed. */
-.scan-tag-form { display: none; align-items: center; gap: 6px; }
+/* Inline action bar: sleek icon buttons revealed when a tag is tapped. */
+.scan-tag-actions { display: none; align-items: center; gap: 6px; }
 .scan-tag.acting {
   z-index: 6;
-  cursor: text;
   border-color: rgba(180, 233, 255, 0.95);
-  background: rgba(8, 18, 28, 0.85);
+  background: rgba(8, 18, 28, 0.9);
   box-shadow: 0 0 28px rgba(140, 217, 255, 0.6), inset 0 0 10px rgba(0,0,0,0.5);
   transform: translate(-50%, -50%) scale(1.02);
 }
 .scan-tag.acting::before { display: none; }
 .scan-tag.acting .scan-tag-act { display: none; }
-.scan-tag.acting .scan-tag-form { display: flex; animation: scan-form-in 0.24s ease backwards; }
-@keyframes scan-form-in {
-  from { opacity: 0; transform: translateX(-6px); }
-  to   { opacity: 1; transform: translateX(0); }
-}
-.scan-tag-form input {
-  width: 154px;
-  max-width: 44vw;
-  background: none;
-  border: none;
-  border-bottom: 1px solid rgba(140, 217, 255, 0.55);
-  color: #eaf7ff;
-  font-family: inherit;
-  font-size: 12px;
-  padding: 2px 2px;
-  outline: none;
-}
-.scan-tag-form input::placeholder { color: rgba(190, 233, 255, 0.5); }
-.scan-tag-form input:focus { border-bottom-color: rgba(140, 217, 255, 0.95); }
-.scan-tag-form button {
-  flex: 0 0 auto;
-  background: rgba(140, 217, 255, 0.12);
-  border: 1px solid rgba(140, 217, 255, 0.55);
-  color: #bfe9ff;
-  font-family: inherit;
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  padding: 3px 8px;
-  border-radius: 3px;
+.scan-tag.acting .scan-tag-actions { display: flex; }
+
+.scan-action {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  padding: 4px 8px 3px;
+  border-radius: 9px;
+  border: 1px solid rgba(140, 217, 255, 0.45);
+  background: rgba(140, 217, 255, 0.08);
+  color: #dff3ff;
   cursor: pointer;
-  transition: background 0.14s, border-color 0.14s, color 0.14s;
+  transition: background 0.14s, border-color 0.14s, transform 0.1s, box-shadow 0.14s;
+  animation: scan-action-in 0.26s cubic-bezier(0.2, 0.9, 0.25, 1.2) backwards;
 }
-.scan-tag-form button:hover { background: rgba(140, 217, 255, 0.28); border-color: rgba(140, 217, 255, 0.95); color: #eaf7ff; }
+.scan-action:nth-child(2) { animation-delay: 0.05s; }
+.scan-action:hover {
+  background: rgba(140, 217, 255, 0.28);
+  border-color: rgba(180, 233, 255, 1);
+  box-shadow: 0 0 14px rgba(140, 217, 255, 0.55);
+  transform: translateY(-1px);
+}
+.scan-action:active { transform: scale(0.94); }
+.scan-action-ico { width: 17px; height: 17px; display: block; filter: drop-shadow(0 1px 2px rgba(0,0,0,0.8)); }
+.scan-action-lbl { font-size: 7px; letter-spacing: 0.1em; opacity: 0.9; line-height: 1; }
+@keyframes scan-action-in {
+  from { opacity: 0; transform: translateY(4px) scale(0.7); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
 
 /* Hint line, centered above the action wheel. */
 #scan-hint {
@@ -2379,8 +2386,9 @@ body.reactor-available.rt-log-on #rt-log { display: flex; }
 
   /* Keep the scan hint clear of the (taller) mobile action wheel. */
   #scan-hint { bottom: calc(env(safe-area-inset-bottom, 0px) + 196px); font-size: 10px; }
-  /* 16px input prevents iOS Safari from auto-zooming on focus. */
-  .scan-tag-form input { font-size: 16px; }
+  /* Comfortable touch targets for the action icons on phones. */
+  .scan-action { padding: 7px 11px 5px; }
+  .scan-action-ico { width: 19px; height: 19px; }
 
   /* 16px input prevents iOS Safari from auto-zooming on focus. */
   #custom-input { font-size: 16px; }
@@ -2418,4 +2426,293 @@ body.reactor-available.rt-log-on #rt-log { display: flex; }
     right: calc(env(safe-area-inset-right, 0px) + 62px);
     width: 210px;
   }
+}
+
+/* ============================================================
+   PHOTO MODE: optical zoom viewfinder, EVIDENCE score HUD, and
+   the item-by-item scoring "receipt".
+   ============================================================ */
+
+/* Viewfinder darkening while the camera is armed — a soft vignette that reads
+   as looking through an eyepiece and focuses attention on the framed subject. */
+#touch-layer::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  box-shadow: inset 0 0 clamp(80px, 22vmin, 260px) clamp(20px, 6vmin, 70px) rgba(0, 0, 0, 0.55);
+  opacity: 0;
+  transition: opacity 0.35s ease;
+}
+body.touch-aiming #touch-layer::after { opacity: 1; }
+
+/* Live zoom readout, pinned near the reticle stack (bottom-center of frame). */
+.touch-zoom {
+  position: absolute;
+  left: 50%;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 232px);
+  transform: translateX(-50%);
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 13px;
+  letter-spacing: 0.14em;
+  color: rgba(255, 214, 158, 0.95);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+  padding: 2px 8px;
+  border: 1px solid rgba(255, 186, 89, 0.4);
+  border-radius: 4px;
+  background: rgba(10, 8, 4, 0.42);
+  opacity: 0;
+  transition: opacity 0.2s ease, transform 0.12s ease;
+  pointer-events: none;
+}
+body.touch-aiming .touch-zoom { opacity: 0.9; }
+.touch-zoom.bump { transform: translateX(-50%) scale(1.18); }
+
+/* ---------- EVIDENCE score HUD (top-center) ---------- */
+#evidence-hud {
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 12px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 12;
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  padding: 5px 12px;
+  border-radius: 5px;
+  background: rgba(6, 10, 8, 0.5);
+  border: 1px solid rgba(255, 210, 120, 0.32);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  font-family: 'Share Tech Mono', monospace;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+  white-space: nowrap;
+}
+#evidence-hud.hidden { display: none; }
+#evidence-hud .ev-mark {
+  color: rgba(255, 208, 120, 0.95);
+  font-size: 12px;
+  transform: translateY(1px);
+}
+#evidence-hud .ev-label {
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: rgba(232, 224, 200, 0.6);
+}
+#evidence-hud .ev-total {
+  font-family: 'VT323', monospace;
+  font-size: 22px;
+  line-height: 1;
+  color: #ffe1a6;
+  letter-spacing: 0.04em;
+}
+#evidence-hud .ev-shots {
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: rgba(232, 224, 200, 0.4);
+  text-transform: uppercase;
+}
+#evidence-hud.bump { animation: evidence-hud-bump 0.4s ease-out; }
+@keyframes evidence-hud-bump {
+  0%   { transform: translateX(-50%) scale(1); }
+  35%  { transform: translateX(-50%) scale(1.13); border-color: rgba(255, 224, 150, 0.9); }
+  100% { transform: translateX(-50%) scale(1); }
+}
+
+/* ---------- Photo appraisal RECEIPT (top-right, left of the control rail) ---------- */
+#photo-receipt {
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 44px);
+  right: calc(env(safe-area-inset-right, 0px) + 66px);
+  z-index: 12;
+  width: min(300px, 64vw);
+  pointer-events: none;
+  font-family: 'Share Tech Mono', monospace;
+  color: #211c12;
+  transform: translateY(-14px);
+  opacity: 0;
+  transition: opacity 0.28s ease, transform 0.28s cubic-bezier(0.2, 0.9, 0.25, 1.15);
+}
+#photo-receipt.hidden { display: none; }
+#photo-receipt.show { opacity: 1; transform: translateY(0); }
+#photo-receipt.leaving { opacity: 0; transform: translateY(-14px) scale(0.98); }
+
+.receipt-body {
+  position: relative;
+  background:
+    repeating-linear-gradient(0deg, rgba(0,0,0,0.028) 0 2px, transparent 2px 4px),
+    linear-gradient(180deg, #f3ecdc 0%, #e7ddc6 100%);
+  padding: 12px 13px 14px;
+  border-radius: 2px;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.6), inset 0 0 0 1px rgba(0, 0, 0, 0.08);
+  clip-path: none;
+}
+/* Torn thermal-paper edge along the bottom. */
+.receipt-perf {
+  height: 8px;
+  margin-right: 0;
+  background:
+    linear-gradient(-45deg, transparent 66%, #e7ddc6 67%) 0 0 / 10px 8px repeat-x,
+    linear-gradient(45deg, transparent 66%, #e7ddc6 67%) 5px 0 / 10px 8px repeat-x;
+  filter: drop-shadow(0 8px 10px rgba(0, 0, 0, 0.45));
+}
+
+.receipt-head {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  border-bottom: 1px dashed rgba(33, 28, 18, 0.4);
+  padding-bottom: 9px;
+}
+.receipt-photo {
+  width: 48px;
+  height: 48px;
+  flex: 0 0 auto;
+  background-size: cover;
+  background-position: center;
+  background-color: #1a1712;
+  border: 1px solid rgba(33, 28, 18, 0.5);
+  filter: saturate(0.9) contrast(1.05) sepia(0.12);
+}
+#photo-receipt.developing .receipt-photo { animation: receipt-develop 1s ease-in-out infinite alternate; }
+@keyframes receipt-develop { from { filter: saturate(0.2) contrast(0.9) brightness(0.7); } to { filter: saturate(0.9) contrast(1.05); } }
+.receipt-headtext { min-width: 0; }
+.receipt-title {
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  font-weight: 700;
+}
+.receipt-status {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: rgba(33, 28, 18, 0.62);
+  text-transform: uppercase;
+  margin-top: 2px;
+}
+.receipt-caption {
+  font-size: 10.5px;
+  line-height: 1.35;
+  font-style: italic;
+  color: rgba(33, 28, 18, 0.72);
+  margin: 8px 0 4px;
+  min-height: 0;
+}
+.receipt-caption:empty { display: none; }
+
+.receipt-items {
+  list-style: none;
+  margin: 4px 0 0;
+  padding: 0;
+}
+.receipt-item {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: baseline;
+  column-gap: 6px;
+  padding: 3px 0;
+  border-bottom: 1px dotted rgba(33, 28, 18, 0.22);
+  animation: receipt-print 0.34s cubic-bezier(0.2, 0.9, 0.25, 1.1) both;
+}
+@keyframes receipt-print {
+  from { opacity: 0; transform: translateY(-6px); clip-path: inset(0 0 100% 0); }
+  to   { opacity: 1; transform: translateY(0); clip-path: inset(0 0 0 0); }
+}
+.receipt-item .ri-label {
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.receipt-item .ri-pts {
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #7a3d12;
+  justify-self: end;
+}
+.receipt-item .ri-new {
+  display: inline-block;
+  font-size: 8px;
+  letter-spacing: 0.1em;
+  background: #7a3d12;
+  color: #f3ecdc;
+  padding: 0 3px;
+  border-radius: 2px;
+  margin-left: 4px;
+  transform: translateY(-1px);
+}
+.receipt-item .ri-note {
+  grid-column: 1 / -1;
+  font-size: 9px;
+  letter-spacing: 0.02em;
+  color: rgba(33, 28, 18, 0.55);
+  margin-top: 1px;
+}
+.receipt-item .ri-note:empty { display: none; }
+.receipt-item .ri-stars { color: #b5822f; letter-spacing: 1px; }
+
+.receipt-subtotal {
+  display: flex;
+  align-items: baseline;
+  gap: 2px;
+  margin-top: 9px;
+  padding-top: 7px;
+  border-top: 1px solid rgba(33, 28, 18, 0.5);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+#photo-receipt.tallied .receipt-subtotal { opacity: 1; }
+.receipt-subtotal .rs-label { text-transform: uppercase; }
+.receipt-subtotal .rs-dots { flex: 1 1 auto; overflow: hidden; color: rgba(33,28,18,0.4); }
+.receipt-subtotal .rs-val { color: #7a3d12; }
+
+.receipt-stamp {
+  margin-top: 8px;
+  text-align: center;
+  font-family: 'VT323', monospace;
+  font-size: 19px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #a52f2f;
+  border: 2px solid #a52f2f;
+  border-radius: 4px;
+  padding: 2px 6px;
+  opacity: 0;
+}
+.receipt-stamp:empty { display: none; border: none; padding: 0; margin: 0; }
+.receipt-stamp.stamped { animation: receipt-stamp-in 0.4s cubic-bezier(0.2, 0.9, 0.25, 1.4) forwards; }
+@keyframes receipt-stamp-in {
+  0%   { opacity: 0; transform: scale(1.8) rotate(-8deg); }
+  60%  { opacity: 1; transform: scale(0.92) rotate(-3deg); }
+  100% { opacity: 0.96; transform: scale(1) rotate(-3.5deg); }
+}
+/* Rating tiers tint the stamp. */
+.receipt-stamp.tier-0 { color: #6b6b6b; border-color: #6b6b6b; }
+.receipt-stamp.tier-1 { color: #7a5a2f; border-color: #7a5a2f; }
+.receipt-stamp.tier-2 { color: #a52f2f; border-color: #a52f2f; }
+.receipt-stamp.tier-3 { color: #b5822f; border-color: #b5822f; }
+.receipt-stamp.tier-4 { color: #8a2fb5; border-color: #8a2fb5; }
+
+@media (prefers-reduced-motion: reduce) {
+  #photo-receipt, #photo-receipt.show, #photo-receipt.leaving,
+  .receipt-item, .receipt-stamp.stamped, #evidence-hud.bump,
+  #photo-receipt.developing .receipt-photo {
+    animation: none !important;
+    transition: opacity 0.12s ease !important;
+  }
+  .scene, .reactor-video, .reactor-freeze { transition: opacity 1.5s ease-in-out !important; }
+}
+
+/* Phones: pull the receipt to the top-right corner (rail labels hide there) and
+   narrow it so it never crowds the prose or the rail. */
+@media (max-width: 720px) {
+  #photo-receipt { right: calc(env(safe-area-inset-right, 0px) + 56px); width: min(260px, 62vw); top: calc(env(safe-area-inset-top, 0px) + 40px); }
+  #evidence-hud { top: calc(env(safe-area-inset-top, 0px) + 8px); padding: 4px 9px; }
+  #evidence-hud .ev-total { font-size: 18px; }
+  .touch-zoom { bottom: calc(env(safe-area-inset-bottom, 0px) + 250px); }
 }

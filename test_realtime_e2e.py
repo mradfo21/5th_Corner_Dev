@@ -403,11 +403,14 @@ class TestRealtimeRenderer(unittest.TestCase):
             page.close()
 
     def test_camera_tap_captures_evidence(self):
-        """The camera (SNAP) tool: armed from the hub, a TAP on the scene captures
-        a photo of that spot as 'evidence' — files it (POST /api/investigate
-        kind=photo), pops the evidence flourish, and adds it to the case file —
-        WITHOUT resolving a turn (no /api/choose) or steering the stream (no
-        set_prompt). Pointer-driven so it works on touch/iOS."""
+        """The camera (SNAP) tool: armed from the hub, a single-finger TAP
+        (press + release) on the scene captures a photo of that spot as
+        'evidence' — files it (POST /api/investigate kind=photo), prints the
+        scoring RECEIPT (which reveals appraised items and lights the EVIDENCE
+        HUD), and adds it to the case file — WITHOUT resolving a turn (no
+        /api/choose) or steering the stream (no set_prompt). Pointer-driven so
+        it works on touch/iOS; the shot fires on release so a pinch never fires
+        a stray capture."""
         page = self._new_realtime_page()
         scene_items = [
             {"id": 1, "type": "narrative", "content": "Intro."},
@@ -426,6 +429,18 @@ class TestRealtimeRenderer(unittest.TestCase):
             route.fulfill(status=200, content_type="application/json",
                           body=json.dumps({"ok": True, "id": 7, "image_url": "/images/e.jpg", "kind": "photo"}))
         page.route("**/api/investigate", inv_handler)
+
+        # Mock the appraisal so the receipt reveal + score are deterministic.
+        def photo_handler(route):
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({
+                "items": [
+                    {"label": "rusted valve", "interest": 4, "note": "recently turned"},
+                    {"label": "wet boot print", "interest": 3, "note": "leads left"},
+                ],
+                "caption": "A tight frame on the dripping valve.",
+                "mood": "ominous",
+            }))
+        page.route("**/api/photo", photo_handler)
         try:
             page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
             page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
@@ -433,13 +448,17 @@ class TestRealtimeRenderer(unittest.TestCase):
             self.assertNotEqual(page.evaluate("getComputedStyle(document.getElementById('realtime-btn')).display"), "none")
             self.assertTrue(page.evaluate("!!document.querySelector('#touch-reticle .touch-cam')"))
             self.assertIsNone(page.evaluate("document.querySelector('#touch-reticle .touch-hand')"))
-            # Arm it, then TAP a spot via a pointer event (works on touch/iOS).
+            # Arm it, then TAP a spot via press+release pointer events (touch/iOS).
             page.evaluate("document.getElementById('realtime-btn').click()")
             self.assertTrue(page.evaluate("document.getElementById('realtime-btn').classList.contains('aiming')"))
             page.evaluate("window.__MOCK_CMDS__ = []")
             page.evaluate(
-                """() => document.getElementById('touch-layer').dispatchEvent(
-                    new PointerEvent('pointerdown', {clientX: 240, clientY: 200, cancelable:true, bubbles:true}))"""
+                """() => {
+                    const L = document.getElementById('touch-layer');
+                    const o = {clientX: 240, clientY: 200, pointerId: 1, cancelable: true, bubbles: true};
+                    L.dispatchEvent(new PointerEvent('pointerdown', o));
+                    L.dispatchEvent(new PointerEvent('pointerup', o));
+                }"""
             )
             # It files a photo specimen...
             for _ in range(60):
@@ -450,8 +469,14 @@ class TestRealtimeRenderer(unittest.TestCase):
             payload = json.loads(investigates[0] or "{}")
             self.assertEqual(payload.get("kind"), "photo")
             self.assertTrue((payload.get("texture") or "").startswith("data:image"))
-            # ...pops the evidence flourish...
-            self.assertTrue(page.evaluate("document.getElementById('evidence-card').classList.contains('show')"))
+            # ...prints the receipt and reveals the appraised items...
+            page.wait_for_function("document.getElementById('photo-receipt').classList.contains('show')", timeout=6000)
+            page.wait_for_function("document.querySelectorAll('#photo-receipt .receipt-item').length >= 1", timeout=8000)
+            # ...lights the EVIDENCE score HUD with points on the board...
+            page.wait_for_function(
+                "!document.getElementById('evidence-hud').classList.contains('hidden')", timeout=6000)
+            page.wait_for_function(
+                "Number(document.querySelector('#evidence-hud .ev-total').getAttribute('data-val')) > 0", timeout=8000)
             # ...adds it to the case file...
             page.wait_for_function("document.querySelectorAll('#investigations-strip .inv-thumb').length >= 1", timeout=8000)
             # ...and does NOT steer or resolve a turn.
@@ -460,6 +485,63 @@ class TestRealtimeRenderer(unittest.TestCase):
             self.assertEqual(len(chooses), 0, "camera capture must not resolve a turn")
         except Exception:
             print("\n=== REACTOR CONSOLE LOG (camera) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
+    def test_camera_zoom_scales_scene_and_suppresses_pinch_capture(self):
+        """Optical zoom: while the camera is armed, the mouse wheel magnifies the
+        scene (a CSS transform on the video layer) within bounds, the readout
+        tracks it, and a two-finger PINCH zooms WITHOUT firing a capture (no
+        /api/investigate) — only a clean single-finger tap shoots."""
+        page = self._new_realtime_page()
+        scene_items = [
+            {"id": 1, "type": "narrative", "content": "Intro."},
+            {"id": 2, "type": "scene_image", "content": "", "image_url": TINY_PNG_DATA_URL,
+             "metadata": {"prompt": "scene one", "base": "A loading dock.", "hard_transition": False}},
+            {"id": 3, "type": "player_choice_prompt", "content": "?", "choices": [{"text": "Go"}]},
+        ]
+        investigates = []
+        page.route("**/api/reset", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(scene_items)))
+        page.route("**/api/feed*", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
+        page.route("**/api/photo", lambda r: r.fulfill(status=200, content_type="application/json", body='{"items":[]}'))
+        page.route("**/api/investigate", lambda r: (investigates.append(r.request.post_data),
+                   r.fulfill(status=200, content_type="application/json", body='{"ok":true,"id":1,"kind":"photo"}')))
+        try:
+            page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
+            page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
+            # Arm the camera -> a gentle push-in scales the scene right away.
+            page.evaluate("document.getElementById('realtime-btn').click()")
+            page.wait_for_function("(document.getElementById('reactor-video').style.transform || '').indexOf('scale(') === 0", timeout=4000)
+            z_armed = page.evaluate("parseFloat(document.getElementById('touch-zoom').textContent)")
+            self.assertGreater(z_armed, 1.0, "arming should push gently into the scene")
+
+            # Wheel up (deltaY < 0) zooms IN: the readout climbs and the layer scales up.
+            page.evaluate("""() => document.getElementById('touch-layer').dispatchEvent(
+                new WheelEvent('wheel', {deltaY: -600, cancelable: true, bubbles: true}))""")
+            z_in = page.evaluate("parseFloat(document.getElementById('touch-zoom').textContent)")
+            self.assertGreater(z_in, z_armed, "wheel up must zoom in")
+            self.assertIn("scale(", page.evaluate("document.getElementById('reactor-video').style.transform"))
+
+            # A big wheel-down clamps back to the wide bound (1.0x, transform cleared).
+            page.evaluate("""() => document.getElementById('touch-layer').dispatchEvent(
+                new WheelEvent('wheel', {deltaY: 6000, cancelable: true, bubbles: true}))""")
+            z_min = page.evaluate("parseFloat(document.getElementById('touch-zoom').textContent)")
+            self.assertAlmostEqual(z_min, 1.0, places=1)
+
+            # A two-finger PINCH must NOT capture (only single-finger release does).
+            page.evaluate("""() => {
+                const L = document.getElementById('touch-layer');
+                L.dispatchEvent(new PointerEvent('pointerdown', {pointerId: 11, clientX: 200, clientY: 200, cancelable:true, bubbles:true}));
+                L.dispatchEvent(new PointerEvent('pointerdown', {pointerId: 12, clientX: 300, clientY: 200, cancelable:true, bubbles:true}));
+                L.dispatchEvent(new PointerEvent('pointermove', {pointerId: 12, clientX: 380, clientY: 200, cancelable:true, bubbles:true}));
+                L.dispatchEvent(new PointerEvent('pointerup', {pointerId: 12, clientX: 380, clientY: 200, cancelable:true, bubbles:true}));
+                L.dispatchEvent(new PointerEvent('pointerup', {pointerId: 11, clientX: 200, clientY: 200, cancelable:true, bubbles:true}));
+            }""")
+            page.wait_for_timeout(400)
+            self.assertEqual(len(investigates), 0, "a pinch gesture must not fire a capture")
+        except Exception:
+            print("\n=== REACTOR CONSOLE LOG (camera-zoom) ===\n" + self._dump_logs())
             raise
         finally:
             page.close()
@@ -517,50 +599,44 @@ class TestRealtimeRenderer(unittest.TestCase):
             labels = page.evaluate("Array.from(document.querySelectorAll('.scan-tag-label')).map(e=>e.textContent)")
             self.assertIn("wooden crate", labels)
             self.assertIn("steel door", labels)
-            # Every tag carries its little interact button.
+            # Every tag carries its little act button.
             self.assertTrue(page.evaluate("!!document.querySelector('.scan-tag .scan-tag-act')"))
-            # Poke the first (wooden crate) tag -> its inline prompt opens.
+            # Poke the first (wooden crate) tag -> its action icons appear.
             page.evaluate("""() => {
                 const tag = Array.from(document.querySelectorAll('.scan-tag'))
                     .find(t => t.querySelector('.scan-tag-label').textContent === 'wooden crate');
                 tag.querySelector('.scan-tag-act').click();
             }""")
             self.assertTrue(page.evaluate("!!document.querySelector('.scan-tag.acting')"))
-            # Type an interaction and submit -> a FULL TURN (/api/choose) that
-            # regenerates the scene, anchored on the object — NOT a live steer.
+            # INTERACT and MOVE TO action icons are offered (no typing).
+            self.assertTrue(page.evaluate("!!document.querySelector('.scan-tag.acting .scan-action-interact')"))
+            self.assertTrue(page.evaluate("!!document.querySelector('.scan-tag.acting .scan-action-move')"))
+            # Tap INTERACT -> a FULL TURN (/api/choose) with the composed prompt.
             page.evaluate("window.__MOCK_CMDS__ = []")
-            page.evaluate(
-                """() => {
-                    const tag = document.querySelector('.scan-tag.acting');
-                    const inp = tag.querySelector('.scan-tag-form input');
-                    inp.value = 'kick it open';
-                    tag.querySelector('.scan-tag-form').dispatchEvent(new Event('submit', {cancelable:true, bubbles:true}));
-                }"""
-            )
+            page.evaluate("document.querySelector('.scan-tag.acting .scan-action-interact').click()")
             # Wait (Python-side) for the /api/choose call the full turn makes.
             for _ in range(60):
                 if chooses:
                     break
                 page.wait_for_timeout(100)
-            self.assertGreaterEqual(len(chooses), 1, f"SCAN interact must resolve a FULL turn (/api/choose). logs:\n{self._dump_logs()}")
+            self.assertGreaterEqual(len(chooses), 1, f"SCAN action must resolve a FULL turn (/api/choose). logs:\n{self._dump_logs()}")
             payload = json.loads(choose_bodies[0] or "{}")
             choice = payload.get("choice") or ""
-            # Structured: prefixed with the selected object, then the typed action.
-            self.assertTrue(choice.startswith("INTERACT WITH: wooden crate"),
-                            f"action must be prefixed 'INTERACT WITH: <object>'; got {choice!r}")
-            self.assertIn("kick it open", choice.lower(), f"typed action must be appended; got {choice!r}")
+            # The composed prompt is verb + the detected object's name.
+            self.assertEqual(choice.strip(), "Interact with the wooden crate.",
+                             f"action must be composed from verb + object; got {choice!r}")
             # A full turn is NOT a live re-steer: no set_prompt hot-swap fired.
             cmds = page.evaluate("window.__MOCK_CMDS__ || []")
-            self.assertNotIn("set_prompt", cmds, "SCAN interact must commit a turn, not live-steer the stream")
+            self.assertNotIn("set_prompt", cmds, "SCAN action must commit a turn, not live-steer the stream")
         except Exception:
             print("\n=== REACTOR CONSOLE LOG (scan) ===\n" + self._dump_logs())
             raise
         finally:
             page.close()
 
-    def test_realtime_scan_empty_prompt_defaults_to_interact(self):
-        """Submitting a tag with NO typed text must still commit a full turn whose
-        action is exactly the structured prefix 'INTERACT WITH: <object>'."""
+    def test_realtime_scan_move_action(self):
+        """The MOVE TO action icon must compose 'Move to the <object>.' from the
+        detected object's name and commit a full turn — no typing."""
         page = self._new_realtime_page()
         scene_items = [
             {"id": 1, "type": "narrative", "content": "Intro."},
@@ -586,25 +662,20 @@ class TestRealtimeRenderer(unittest.TestCase):
             page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
             page.evaluate("document.getElementById('scan-btn').click()")
             page.wait_for_function("document.querySelectorAll('#scan-tags .scan-tag').length >= 1", timeout=10000)
-            # Open the tag prompt and submit with an EMPTY input.
+            # Open the tag's action icons and tap MOVE TO (no typing).
             page.evaluate("document.querySelector('.scan-tag .scan-tag-act').click()")
-            page.evaluate(
-                """() => {
-                    const tag = document.querySelector('.scan-tag.acting');
-                    tag.querySelector('.scan-tag-form input').value = '';
-                    tag.querySelector('.scan-tag-form').dispatchEvent(new Event('submit', {cancelable:true, bubbles:true}));
-                }"""
-            )
+            page.wait_for_function("!!document.querySelector('.scan-tag.acting .scan-action-move')", timeout=5000)
+            page.evaluate("document.querySelector('.scan-tag.acting .scan-action-move').click()")
             for _ in range(60):
                 if choose_bodies:
                     break
                 page.wait_for_timeout(100)
-            self.assertGreaterEqual(len(choose_bodies), 1, f"empty tag submit must still commit a turn. logs:\n{self._dump_logs()}")
+            self.assertGreaterEqual(len(choose_bodies), 1, f"MOVE action must commit a turn. logs:\n{self._dump_logs()}")
             choice = (json.loads(choose_bodies[0] or "{}").get("choice") or "").strip()
-            self.assertEqual(choice, "INTERACT WITH: rusty valve",
-                             f"empty prompt must default to the bare prefix; got {choice!r}")
+            self.assertEqual(choice, "Move to the rusty valve.",
+                             f"MOVE action must compose 'Move to the <object>.'; got {choice!r}")
         except Exception:
-            print("\n=== REACTOR CONSOLE LOG (scan-empty) ===\n" + self._dump_logs())
+            print("\n=== REACTOR CONSOLE LOG (scan-move) ===\n" + self._dump_logs())
             raise
         finally:
             page.close()
@@ -694,23 +765,18 @@ class TestRealtimeRenderer(unittest.TestCase):
             self.assertGreaterEqual(len(detects), 1, "SCAN never called /api/detect in stills mode")
             labels = page.evaluate("Array.from(document.querySelectorAll('.scan-tag-label')).map(e=>e.textContent)")
             self.assertIn("steel door", labels)
-            # Poke the tag -> commits a full turn anchored on the object.
+            # Poke the tag, tap INTERACT -> commits a full turn on the object.
             page.evaluate("document.querySelector('.scan-tag .scan-tag-act').click()")
-            page.evaluate(
-                """() => {
-                    const tag = document.querySelector('.scan-tag.acting');
-                    tag.querySelector('.scan-tag-form input').value = 'open it';
-                    tag.querySelector('.scan-tag-form').dispatchEvent(new Event('submit', {cancelable:true, bubbles:true}));
-                }"""
-            )
+            page.wait_for_function("!!document.querySelector('.scan-tag.acting .scan-action-interact')", timeout=5000)
+            page.evaluate("document.querySelector('.scan-tag.acting .scan-action-interact').click()")
             for _ in range(60):
                 if chooses:
                     break
                 page.wait_for_timeout(100)
-            self.assertGreaterEqual(len(chooses), 1, f"stills SCAN interact didn't commit a turn. logs:\n{self._dump_logs()}")
+            self.assertGreaterEqual(len(chooses), 1, f"stills SCAN action didn't commit a turn. logs:\n{self._dump_logs()}")
             choice = json.loads(choose_bodies[0] or "{}").get("choice") or ""
-            self.assertTrue(choice.startswith("INTERACT WITH: steel door"),
-                            f"action must be prefixed + anchored on the object; got {choice!r}")
+            self.assertEqual(choice.strip(), "Interact with the steel door.",
+                             f"action must be composed from verb + object; got {choice!r}")
         except Exception:
             print("\n=== CONSOLE LOG (scan-stills) ===\n" + self._dump_logs())
             raise
@@ -738,15 +804,10 @@ class TestRealtimeRenderer(unittest.TestCase):
             page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
             page.evaluate("document.getElementById('scan-btn').click()")
             page.wait_for_function("document.querySelectorAll('#scan-tags .scan-tag').length >= 1", timeout=10000)
-            # Poke a tag, type "go", submit -> scan must CEASE.
+            # Poke a tag, tap an action icon -> scan must CEASE.
             page.evaluate("document.querySelector('.scan-tag .scan-tag-act').click()")
-            page.evaluate(
-                """() => {
-                    const tag = document.querySelector('.scan-tag.acting');
-                    tag.querySelector('.scan-tag-form input').value = 'go';
-                    tag.querySelector('.scan-tag-form').dispatchEvent(new Event('submit', {cancelable:true, bubbles:true}));
-                }"""
-            )
+            page.wait_for_function("!!document.querySelector('.scan-tag.acting .scan-action-interact')", timeout=5000)
+            page.evaluate("document.querySelector('.scan-tag.acting .scan-action-interact').click()")
             # Scan overlay closes, the SCAN hub is no longer armed, and the labels
             # are gone.
             page.wait_for_function("document.getElementById('scan-layer').classList.contains('hidden')", timeout=6000)

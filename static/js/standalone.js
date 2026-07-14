@@ -47,6 +47,8 @@
   const el = {
     sceneA: document.getElementById("sceneA"),
     sceneB: document.getElementById("sceneB"),
+    reactorVideo: document.getElementById("reactor-video"),
+    reactorFreeze: document.getElementById("reactor-freeze"),
     sceneFlash: document.getElementById("scene-flash"),
     sceneGlitch: document.getElementById("scene-glitch"),
     prose: document.getElementById("prose-feed"),
@@ -66,7 +68,10 @@
     scanHint: document.getElementById("scan-hint"),
     touchCaptureFrame: document.getElementById("touch-capture-frame"),
     touchHint: document.getElementById("touch-hint"),
+    touchZoom: document.getElementById("touch-zoom"),
     evidenceCard: document.getElementById("evidence-card"),
+    evidenceHud: document.getElementById("evidence-hud"),
+    photoReceipt: document.getElementById("photo-receipt"),
     investigationsTray: document.getElementById("investigations-tray"),
     investigationsStrip: document.getElementById("investigations-strip"),
     forwardBtn: document.getElementById("forward-btn"),
@@ -139,6 +144,12 @@
     inputMode: "act",           // custom input intent: "act" (full turn) | "steer" (realtime nudge)
     touchMode: null,            // TOUCH tool state: null | "aim" (reticle tracks cursor) | "prompt" (spot locked, field open)
     touchPoint: null,           // {x, y} viewport coords of the reticle / locked spot
+    photoZoom: 1,               // optical zoom magnification while the camera is armed (1..PHOTO_ZOOM_MAX)
+    photoPointers: new Map(),   // active pointers on the camera layer, for pinch-to-zoom
+    pinchBase: null,            // {dist, zoom} anchor captured when a two-finger pinch begins
+    pinchActive: false,         // true once 2 fingers are down (suppresses the shot until release)
+    receiptTimers: [],          // pending setTimeouts driving the sequential receipt reveal
+    receiptToken: 0,            // bumped per capture so a newer shot cancels an older reveal
     pendingInvestigation: null, // {screen, region, texture} captured at TOUCH lock, finalized on submit
     selectedInvestigation: null,// a specimen chosen from the tray to inform the next action
     scanOn: false,              // SCAN tool armed (object-recognition tags over the live video)
@@ -256,6 +267,13 @@
       ping() { tone([1300, 1850], 0.10, "sine", 0.03); tone(2500, 0.07, "sine", 0.018, 0.05); }, // tags land — starfield shimmer
       grab() { tone(900, 0.03, "square", 0.045); tone([700, 340], 0.10, "triangle", 0.04, 0.02); }, // TOUCH specimen captured
       shutter() { tone(1500, 0.015, "square", 0.055); noise(0.05, 0.035); tone(760, 0.03, "square", 0.05, 0.03); }, // camera shutter
+      // ---- Photo receipt: printing, per-item reveals, score rolls, stamp ----
+      receiptOpen() { noise(0.09, 0.03); tone(240, 0.05, "square", 0.03); tone(360, 0.06, "triangle", 0.03, 0.04); }, // paper feeds out
+      // Each revealed item chimes a little HIGHER than the last — a rising combo.
+      itemReveal(step) { const f = 680 + (step || 0) * 110; tone(f, 0.045, "square", 0.05); tone(f * 1.5, 0.07, "sine", 0.03, 0.03); },
+      scoreTick() { tone(1500, 0.02, "square", 0.028); },        // rolling score counter blip
+      stamp() { tone([170, 80], 0.16, "sawtooth", 0.07); noise(0.06, 0.05); tone(90, 0.12, "sine", 0.05, 0.02); }, // rating stamp thunk
+      zoom(t) { const f = 420 + Math.max(0, Math.min(1, t || 0)) * 900; tone(f, 0.03, "sine", 0.025); }, // lens zoom tick
       // ---- Ceremony: one distinct cue per pipeline step, so the player HEARS
       // the world working through each stage. ----
       cereAction() { tone(300, 0.05, "square", 0.06); tone([300, 620], 0.14, "square", 0.05, 0.05); },   // action selected — decisive commit
@@ -605,6 +623,14 @@
     const div = document.createElement("div");
     div.textContent = str == null ? "" : String(str);
     return div.innerHTML;
+  }
+
+  // Honor the OS "reduce motion" setting so the receipt/score flourishes fall
+  // back to instant reveals instead of animating.
+  function prefersReducedMotion() {
+    try {
+      return window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    } catch (_) { return false; }
   }
 
   // Render a small subset of markdown (the engine emits **bold** in some
@@ -1756,6 +1782,8 @@
       exitGameOver();
       closeScan(); // drop any scan tags/overlay from the dead run
       closeTouch(); // drop any camera overlay
+      try { Photo.hide(); Photo.clearTimers(); } catch (_) {} // kill any in-flight receipt
+      try { Evidence.reset(); } catch (_) {} // the EVIDENCE score is per-run
       state.selectedInvestigation = null;
       try { Investigations.clear(); } catch (_) {} // the case file is per-run
       // Wipe the current visuals IMMEDIATELY and permanently: blank both still
@@ -1914,9 +1942,18 @@
   }
 
   // Inverse of mapNormToScreen: screen px -> normalized (0..1) source coords,
-  // accounting for the object-fit/background-size: cover crop.
+  // accounting for the object-fit/background-size: cover crop AND any optical
+  // zoom transform on the scene (so the capture crop matches the framed view).
   function screenToNorm(x, y) {
     const W = window.innerWidth, H = window.innerHeight;
+    // Undo the scene's zoom transform first: a screen point maps back to the
+    // pre-transform layer point p = O + (screen - O) / scale, where O is the
+    // transform origin (viewport center).
+    const t = getSceneTransform();
+    if (t && t.scale !== 1) {
+      x = t.ox + (x - t.ox) / t.scale;
+      y = t.oy + (y - t.oy) / t.scale;
+    }
     const size = currentSourceSize();
     if (!size || !size.w || !size.h) return { x: x / W, y: y / H };
     const scale = Math.max(W / size.w, H / size.h);
@@ -2069,6 +2106,298 @@
   window.Investigations = Investigations;
 
   // ------------------------------------------------------------------
+  // Evidence — the run's photography SCORE. Every photo is appraised and its
+  // findings tally into a persistent (per-run) total shown in the top HUD.
+  // Tracks which subjects have already been photographed so re-shooting the
+  // same thing pays less than finding something NEW — rewarding exploration.
+  // Exposed as window.Evidence so future engine hooks can read the score.
+  // ------------------------------------------------------------------
+  const Evidence = (function () {
+    const KEY = "evidence_v1";
+    let total = 0, shots = 0;
+    let seen = new Set();
+    try {
+      const raw = JSON.parse(localStorage.getItem(KEY) || "null");
+      if (raw && typeof raw === "object") {
+        total = Number(raw.total) || 0;
+        shots = Number(raw.shots) || 0;
+        seen = new Set(Array.isArray(raw.seen) ? raw.seen : []);
+      }
+    } catch (_) {}
+
+    function persist() {
+      try { localStorage.setItem(KEY, JSON.stringify({ total, shots, seen: [...seen] })); } catch (_) {}
+    }
+
+    function fmt(n) { return Math.round(n).toLocaleString("en-US"); }
+
+    // Roll the HUD number from its current display value up to `total`, ticking
+    // as it climbs — so points visibly accrue rather than snapping.
+    function renderHud(animate) {
+      if (!el.evidenceHud) return;
+      el.evidenceHud.classList.remove("hidden");
+      const totalEl = el.evidenceHud.querySelector(".ev-total");
+      const shotsEl = el.evidenceHud.querySelector(".ev-shots");
+      if (shotsEl) shotsEl.textContent = shots ? (shots + (shots === 1 ? " shot" : " shots")) : "";
+      if (!totalEl) return;
+      const from = Number(totalEl.getAttribute("data-val")) || 0;
+      const to = total;
+      totalEl.setAttribute("data-val", String(to));
+      if (!animate || from === to || prefersReducedMotion()) {
+        totalEl.textContent = fmt(to);
+        return;
+      }
+      el.evidenceHud.classList.remove("bump");
+      void el.evidenceHud.offsetWidth;
+      el.evidenceHud.classList.add("bump");
+      const t0 = performance.now();
+      const dur = Math.min(900, 220 + Math.abs(to - from) * 1.4);
+      let lastTick = 0;
+      function step(now) {
+        const p = Math.min(1, (now - t0) / dur);
+        const eased = 1 - Math.pow(1 - p, 3);
+        const v = from + (to - from) * eased;
+        totalEl.textContent = fmt(v);
+        if (now - lastTick > 55) { try { Sound.scoreTick(); } catch (_) {} lastTick = now; }
+        if (p < 1) requestAnimationFrame(step);
+        else totalEl.textContent = fmt(to);
+      }
+      requestAnimationFrame(step);
+    }
+
+    return {
+      total: () => total,
+      shots: () => shots,
+      isNew: (label) => !!label && !seen.has(String(label).toLowerCase()),
+      markSeen: (label) => { if (label) seen.add(String(label).toLowerCase()); },
+      addShot: () => { shots += 1; },
+      add(points) { total = Math.max(0, total + (Number(points) || 0)); persist(); renderHud(true); },
+      renderHud,
+      reset() {
+        total = 0; shots = 0; seen = new Set(); persist();
+        if (el.evidenceHud) {
+          el.evidenceHud.classList.add("hidden");
+          const t = el.evidenceHud.querySelector(".ev-total");
+          if (t) { t.textContent = "0"; t.setAttribute("data-val", "0"); }
+        }
+      },
+    };
+  })();
+  window.Evidence = Evidence;
+
+  // ------------------------------------------------------------------
+  // Photo — the reward loop that ties a capture to feedback + score. On capture
+  // it files the specimen to the CASE FILE (as before), then prints a "receipt"
+  // in the top-right: the shot develops, its contents are named and revealed
+  // one at a time (each with a rising chime + points), and a rating stamp lands.
+  // A newer capture cancels an in-flight reveal so receipts never stack.
+  // ------------------------------------------------------------------
+  const Photo = (function () {
+    const STAGGER_MS = 380;       // gap between item reveals
+    const HOLD_MS = 3200;         // how long the finished receipt lingers
+    const BASE_PER_INTEREST = 40; // points per interest point (1..5)
+    const NOVELTY_BONUS = 60;     // first time a subject is photographed this run
+    const CONSOLATION = 10;       // an "undeveloped" shot still pays a little
+
+    const TIERS = [
+      { min: 0,   tier: 0, label: "UNDEVELOPED" },
+      { min: 1,   tier: 1, label: "SNAPSHOT" },
+      { min: 150, tier: 2, label: "EVIDENCE" },
+      { min: 350, tier: 3, label: "KEY EVIDENCE" },
+      { min: 600, tier: 4, label: "SMOKING GUN" },
+    ];
+    function ratingFor(shotTotal) {
+      let r = TIERS[0];
+      for (const t of TIERS) if (shotTotal >= t.min) r = t;
+      return r;
+    }
+
+    function clearTimers() {
+      state.receiptTimers.forEach((t) => clearTimeout(t));
+      state.receiptTimers = [];
+    }
+    function later(fn, ms) { const t = setTimeout(fn, ms); state.receiptTimers.push(t); return t; }
+
+    function els() {
+      const r = el.photoReceipt;
+      if (!r) return null;
+      return {
+        root: r,
+        photo: r.querySelector(".receipt-photo"),
+        status: r.querySelector(".receipt-status"),
+        caption: r.querySelector(".receipt-caption"),
+        items: r.querySelector(".receipt-items"),
+        subtotal: r.querySelector(".receipt-subtotal"),
+        subVal: r.querySelector(".receipt-subtotal .rs-val"),
+        stamp: r.querySelector(".receipt-stamp"),
+      };
+    }
+
+    function hide() {
+      const r = el.photoReceipt;
+      if (!r) return;
+      clearTimers();
+      r.classList.add("leaving");
+      r.classList.remove("show");
+      later(() => {
+        r.classList.add("hidden");
+        r.classList.remove("leaving", "developing", "tallied");
+      }, 320);
+    }
+
+    // Entry point from the two capture paths. `spec` = {texture, region, kind, label}.
+    function capture(spec) {
+      if (!spec || !spec.texture) return;
+      // File the specimen exactly as before (case file + server mirror).
+      try { Investigations.store(spec); } catch (_) {}
+      reveal(spec.texture);
+    }
+
+    function reveal(texture) {
+      const parts = els();
+      if (!parts) return;
+      const token = ++state.receiptToken; // invalidate any older reveal
+      clearTimers();
+
+      // Reset + open the receipt in its "developing" state.
+      parts.items.innerHTML = "";
+      parts.caption.textContent = "";
+      parts.stamp.textContent = "";
+      parts.stamp.className = "receipt-stamp";
+      if (parts.subVal) parts.subVal.textContent = "+0";
+      parts.status.textContent = "DEVELOPING\u2026";
+      if (parts.photo && texture) parts.photo.style.backgroundImage = `url('${texture}')`;
+      parts.root.classList.remove("hidden", "leaving", "tallied");
+      parts.root.classList.add("developing");
+      void parts.root.offsetWidth;
+      parts.root.classList.add("show");
+      try { Sound.receiptOpen(); } catch (_) {}
+
+      postJSON("/api/photo", { frame: texture })
+        .then((res) => { if (token === state.receiptToken) printReceipt(token, res || {}); })
+        .catch((err) => {
+          console.warn("[standalone] photo appraise failed:", err);
+          if (token === state.receiptToken) printReceipt(token, { items: [] });
+        });
+    }
+
+    function printReceipt(token, appraisal) {
+      const parts = els();
+      if (!parts || token !== state.receiptToken) return;
+      parts.root.classList.remove("developing");
+      const items = Array.isArray(appraisal.items) ? appraisal.items : [];
+      Evidence.addShot();
+
+      if (!items.length) {
+        // Nothing legible — a gentle consolation so it never feels punishing.
+        parts.status.textContent = "NO CLEAR EVIDENCE";
+        if (appraisal.caption) parts.caption.textContent = appraisal.caption;
+        Evidence.add(CONSOLATION);   // a small pity payout so it never feels punishing
+        finishStamp(token, 0);       // ...but the shot itself rates UNDEVELOPED
+        scheduleDismiss(token);
+        return;
+      }
+
+      parts.status.textContent = "EVIDENCE LOGGED";
+      if (appraisal.caption) parts.caption.textContent = "\u201C" + appraisal.caption + "\u201D";
+
+      let shotTotal = 0;
+      const reduced = prefersReducedMotion();
+      items.forEach((it, i) => {
+        const delay = reduced ? 0 : i * STAGGER_MS;
+        later(() => {
+          if (token !== state.receiptToken) return;
+          const label = String(it.label || "?");
+          const interest = Math.max(1, Math.min(5, Number(it.interest) || 2));
+          const isNew = Evidence.isNew(label);
+          let pts = interest * BASE_PER_INTEREST + (isNew ? NOVELTY_BONUS : 0);
+          Evidence.markSeen(label);
+          shotTotal += pts;
+          appendItemRow(parts, { label, interest, note: it.note, pts, isNew, step: i });
+          if (parts.subVal) parts.subVal.textContent = "+" + Math.round(shotTotal);
+          try { Sound.itemReveal(i); } catch (_) {}
+          Evidence.add(pts); // each find visibly bumps the TOP score
+        }, delay);
+      });
+
+      // After the last item: composition combo, subtotal, rating stamp.
+      const afterItems = reduced ? 10 : items.length * STAGGER_MS + 220;
+      later(() => {
+        if (token !== state.receiptToken) return;
+        parts.root.classList.add("tallied");
+        // Busier, well-composed shots earn an escalating combo on top.
+        let combo = 0;
+        if (items.length >= 2) {
+          combo = Math.round(shotTotal * 0.15 * (items.length - 1));
+          shotTotal += combo;
+          if (parts.subVal) parts.subVal.textContent = "+" + Math.round(shotTotal);
+          appendComboRow(parts, combo, items.length);
+          Evidence.add(combo);
+        }
+        finishStamp(token, shotTotal);
+        scheduleDismiss(token);
+      }, afterItems);
+    }
+
+    function appendItemRow(parts, o) {
+      const li = document.createElement("li");
+      li.className = "receipt-item";
+      const stars = "\u2605".repeat(o.interest) + "\u2606".repeat(5 - o.interest);
+      const label = document.createElement("span");
+      label.className = "ri-label";
+      label.textContent = o.label;
+      if (o.isNew) {
+        const nw = document.createElement("span");
+        nw.className = "ri-new";
+        nw.textContent = "NEW";
+        label.appendChild(nw);
+      }
+      const pts = document.createElement("span");
+      pts.className = "ri-pts";
+      pts.textContent = "+" + Math.round(o.pts);
+      const note = document.createElement("span");
+      note.className = "ri-note";
+      note.innerHTML = `<span class="ri-stars">${stars}</span>` + (o.note ? "  " + escapeHtml(o.note) : "");
+      li.appendChild(label);
+      li.appendChild(pts);
+      li.appendChild(note);
+      parts.items.appendChild(li);
+    }
+
+    function appendComboRow(parts, combo, n) {
+      const li = document.createElement("li");
+      li.className = "receipt-item";
+      const label = document.createElement("span");
+      label.className = "ri-label";
+      label.textContent = "composition \u00d7" + n;
+      const pts = document.createElement("span");
+      pts.className = "ri-pts";
+      pts.textContent = "+" + Math.round(combo);
+      li.appendChild(label);
+      li.appendChild(pts);
+      parts.items.appendChild(li);
+    }
+
+    function finishStamp(token, shotTotal) {
+      const parts = els();
+      if (!parts || token !== state.receiptToken) return;
+      const r = ratingFor(shotTotal);
+      parts.stamp.textContent = r.label;
+      parts.stamp.className = "receipt-stamp tier-" + r.tier;
+      void parts.stamp.offsetWidth;
+      parts.stamp.classList.add("stamped");
+      try { Sound.stamp(); } catch (_) {}
+    }
+
+    function scheduleDismiss(token) {
+      later(() => { if (token === state.receiptToken) hide(); }, HOLD_MS);
+    }
+
+    return { capture, reveal, hide, clearTimers };
+  })();
+  window.Photo = Photo;
+
+  // ------------------------------------------------------------------
   // CAMERA (SNAP) tool — arming it turns the whole scene into a capture surface:
   // a CAMERA reticle follows the pointer/finger, and a tap/click shoots a photo
   // of the region under it — collected as "evidence" in the case file with a
@@ -2083,12 +2412,83 @@
     state.touchMode = "aim";
     if (el.realtimeBtn) el.realtimeBtn.classList.add("aiming");
     document.body.classList.add("touch-aiming");
+    // Raising the "camera" pushes gently into the scene (a viewfinder feel).
+    state.photoPointers.clear();
+    state.pinchBase = null;
+    state.pinchActive = false;
+    setPhotoZoom(PHOTO_ZOOM_ARMED, { silent: true, force: true });
     // Start the reticle where it was last, else at the center of the view.
     const start = state.touchPoint ||
       { x: window.innerWidth / 2, y: window.innerHeight / 2 };
     moveReticle(start.x, start.y);
     if (el.touchLayer) el.touchLayer.classList.remove("hidden");
     Sound.open();
+  }
+
+  // ------------------------------------------------------------------
+  // Optical zoom — while the camera is armed, scroll (mouse) or pinch (touch)
+  // magnifies the whole scene around its center. The capture crop is derived
+  // from the framed (magnified) view, so zooming in genuinely captures a
+  // tighter, telephoto slice — and gives a deeper sense of leaning in to look.
+  // ------------------------------------------------------------------
+  const PHOTO_ZOOM_MIN = 1.0;    // full wide
+  const PHOTO_ZOOM_MAX = 3.0;    // max telephoto (reasonable bound)
+  const PHOTO_ZOOM_ARMED = 1.12; // gentle push-in the instant the camera is raised
+
+  function clampZoom(z) { return Math.max(PHOTO_ZOOM_MIN, Math.min(PHOTO_ZOOM_MAX, z)); }
+
+  // The scene transform currently applied (identity unless the camera is armed).
+  // Centralized so the capture crop math can invert it. Origin = viewport center
+  // (matches the CSS transform-origin), so the magnified view never "swims" as
+  // the reticle moves.
+  function getSceneTransform() {
+    const scale = state.touchMode ? (state.photoZoom || 1) : 1;
+    return { scale, ox: window.innerWidth / 2, oy: window.innerHeight / 2 };
+  }
+
+  function applySceneZoom() {
+    const z = state.touchMode ? (state.photoZoom || 1) : 1;
+    const val = z === 1 ? "" : `scale(${z.toFixed(4)})`;
+    [el.sceneA, el.sceneB, el.reactorVideo, el.reactorFreeze].forEach((n) => {
+      if (n) n.style.transform = val;
+    });
+    if (el.touchZoom) {
+      el.touchZoom.innerHTML = (state.photoZoom || 1).toFixed(1) + "&times;";
+      el.touchZoom.classList.remove("bump");
+      void el.touchZoom.offsetWidth;
+      el.touchZoom.classList.add("bump");
+    }
+  }
+
+  function setPhotoZoom(z, opts) {
+    opts = opts || {};
+    const clamped = clampZoom(z);
+    if (!opts.force && Math.abs(clamped - state.photoZoom) < 0.004) return;
+    state.photoZoom = clamped;
+    applySceneZoom();
+    if (!opts.silent) {
+      try { Sound.zoom((clamped - PHOTO_ZOOM_MIN) / (PHOTO_ZOOM_MAX - PHOTO_ZOOM_MIN)); } catch (_) {}
+    }
+  }
+
+  function clearSceneZoom() {
+    state.photoZoom = 1;
+    [el.sceneA, el.sceneB, el.reactorVideo, el.reactorFreeze].forEach((n) => {
+      if (n) n.style.transform = "";
+    });
+  }
+
+  function photoPointerDist() {
+    const pts = [...state.photoPointers.values()];
+    if (pts.length < 2) return 0;
+    return Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+  }
+
+  // Mouse wheel = smooth multiplicative zoom (down = out, up = in).
+  function onTouchWheel(e) {
+    if (state.touchMode !== "aim") return;
+    e.preventDefault();
+    setPhotoZoom(state.photoZoom * Math.exp(-e.deltaY * 0.0015));
   }
 
   function moveReticle(x, y) {
@@ -2108,17 +2508,46 @@
   }
 
   // Pointer-driven so it works with mouse (hover) AND touch (drag) alike.
+  // Two fingers down pinch-to-zoom instead of aiming; a lone pointer aims.
   function onTouchMove(e) {
     if (state.touchMode !== "aim") return;
+    if (state.photoPointers.has(e.pointerId)) {
+      state.photoPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    }
+    if (state.photoPointers.size >= 2 && state.pinchBase) {
+      const d = photoPointerDist();
+      if (d > 0 && state.pinchBase.dist > 0) {
+        setPhotoZoom(state.pinchBase.zoom * (d / state.pinchBase.dist));
+      }
+      return; // don't move the reticle mid-pinch
+    }
     moveReticle(e.clientX, e.clientY);
   }
 
-  // A tap/click captures a photo at that exact spot. On iOS there's no hover, so
-  // the reticle snaps to the tap and shoots — that's the whole interaction.
+  // Press to aim; a clean single-pointer release shoots. A second finger turns
+  // the gesture into a pinch (and suppresses the shot) so zoom never fires a
+  // stray capture. On desktop, hover aims and a click (down+up) shoots.
   function onTouchDown(e) {
     if (state.touchMode !== "aim") return;
     e.preventDefault();
-    captureAt(e.clientX, e.clientY);
+    state.photoPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (state.photoPointers.size === 1) {
+      moveReticle(e.clientX, e.clientY);
+    } else if (state.photoPointers.size === 2) {
+      state.pinchActive = true;
+      state.pinchBase = { dist: photoPointerDist(), zoom: state.photoZoom };
+    }
+  }
+
+  function onTouchUp(e) {
+    if (!state.photoPointers.has(e.pointerId)) return;
+    const wasSingle = state.photoPointers.size === 1;
+    state.photoPointers.delete(e.pointerId);
+    if (state.touchMode === "aim" && wasSingle && !state.pinchActive && e.type === "pointerup") {
+      captureAt(e.clientX, e.clientY); // shoot on a clean single-finger release
+    }
+    if (state.photoPointers.size < 2) state.pinchBase = null;
+    if (state.photoPointers.size === 0) state.pinchActive = false;
   }
 
   // Take the shot: crop the region under the reticle, flash, sound, file it to
@@ -2138,15 +2567,19 @@
     }
     flashScene();
     try { Sound.shutter(); } catch (_) {}
-    Investigations.store({
+    Photo.capture({
       texture, region, kind: "photo", label: describeTouchRegion({ x, y }).label,
     });
-    showEvidence(texture);
   }
 
   function closeTouch() {
     if (!state.touchMode) return;
     state.touchMode = null;
+    // Release the viewfinder magnification back to full wide.
+    state.photoPointers.clear();
+    state.pinchBase = null;
+    state.pinchActive = false;
+    clearSceneZoom();
     if (el.touchLayer) el.touchLayer.classList.add("hidden");
     if (el.touchReticle) el.touchReticle.classList.remove("holding");
     if (el.touchCaptureFrame) el.touchCaptureFrame.classList.remove("grab");
@@ -2202,8 +2635,7 @@
     if (!texture) { showRendererToast("Couldn't capture the frame"); return; }
     flashScene();
     try { Sound.shutter(); } catch (_) {}
-    Investigations.store({ texture, region, kind: "photo", label: "the center of the view" });
-    showEvidence(texture);
+    Photo.capture({ texture, region, kind: "photo", label: "the center of the view" });
   }
 
   // ------------------------------------------------------------------
@@ -2507,6 +2939,24 @@
     tag.dataset.sy = y;
   }
 
+  // The actions a player can take on a detected object. Each composes a clean,
+  // natural prompt from the verb + the object's own name — no typing. The
+  // consequence LLM (server-side) already turns that intent into an in-world,
+  // exciting outcome + a fresh scene, so there's no need for a separate
+  // "action-writing" LLM. Add more verbs here to grow the vocabulary.
+  const SCAN_ACTIONS = [
+    {
+      id: "move", label: "MOVE TO", title: "Move to",
+      phrase: (o) => "Move to the " + o + ".",
+      icon: '<svg class="scan-action-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2v20M2 12h20"/><path d="M9 5l3-3 3 3M9 19l3 3 3-3M5 9l-3 3 3 3M19 9l3 3-3 3"/></svg>',
+    },
+    {
+      id: "interact", label: "INTERACT", title: "Interact with",
+      phrase: (o) => "Interact with the " + o + ".",
+      icon: '<svg class="scan-action-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 13V5a2 2 0 0 1 4 0v6"/><path d="M12 11V4a2 2 0 0 1 4 0v7"/><path d="M16 11V7a2 2 0 0 1 4 0v8a6 6 0 0 1-6 6h-2a6 6 0 0 1-5-2.7l-2.8-4a2 2 0 0 1 3.1-2.5L9 14"/></svg>',
+    },
+  ];
+
   function buildScanTag(obj) {
     const tag = document.createElement("div");
     tag.className = "scan-tag";
@@ -2526,12 +2976,12 @@
     label.className = "scan-tag-label";
     label.textContent = obj.label;
 
-    // The "extra little button" the player uses to interact with the thing.
+    // The "act" affordance: tap to reveal this thing's action icons.
     const act = document.createElement("button");
     act.type = "button";
     act.className = "scan-tag-act";
-    act.setAttribute("aria-label", "Play with the " + obj.label);
-    act.title = "Play with the " + obj.label;
+    act.setAttribute("aria-label", "Choose an action for the " + obj.label);
+    act.title = "Act on the " + obj.label;
     act.textContent = "+";
     act.addEventListener("click", (e) => {
       e.preventDefault();
@@ -2539,31 +2989,33 @@
       openTagPrompt(tag);
     });
 
-    // Inline prompt (hidden until the + button is pressed).
-    const form = document.createElement("form");
-    form.className = "scan-tag-form";
-    form.autocomplete = "off";
-    const input = document.createElement("input");
-    input.type = "text";
-    input.maxLength = 120;
-    input.placeholder = "interact with " + obj.label + "… (or how?)";
-    const send = document.createElement("button");
-    send.type = "submit";
-    send.textContent = "GO";
-    form.appendChild(input);
-    form.appendChild(send);
-    form.addEventListener("submit", (e) => {
-      e.preventDefault();
-      submitTagPrompt(tag, input.value.trim());
+    // Inline action bar (hidden until the + is pressed): one sleek icon per
+    // action. No typing — tapping an icon composes the prompt and commits a turn.
+    const actions = document.createElement("div");
+    actions.className = "scan-tag-actions";
+    SCAN_ACTIONS.forEach((a) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "scan-action scan-action-" + a.id;
+      b.title = a.title + " the " + obj.label;
+      b.setAttribute("aria-label", a.title + " the " + obj.label);
+      b.innerHTML = a.icon + '<span class="scan-action-lbl">' + a.label + "</span>";
+      b.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        commitScanAction(tag, a);
+      });
+      actions.appendChild(b);
     });
 
     tag.appendChild(star);
     tag.appendChild(label);
     tag.appendChild(act);
-    tag.appendChild(form);
+    tag.appendChild(actions);
     return tag;
   }
 
+  // Reveal a tag's action icons (only one tag's bar open at a time).
   function openTagPrompt(tag) {
     if (state.scanTagActing && state.scanTagActing !== tag) {
       state.scanTagActing.classList.remove("acting");
@@ -2572,37 +3024,48 @@
     tag.classList.add("acting");
     tag.classList.remove("near");
     Sound.open();
-    const input = tag.querySelector(".scan-tag-form input");
-    setTimeout(() => { if (input) { try { input.focus({ preventScroll: true }); } catch (_) { input.focus(); } } }, 70);
+    // The expanded action bar is wider than the tag — clamp its center so the
+    // whole box stays on screen even when the object sits near a viewport edge
+    // (otherwise the action icons clip off the side). Use offsetWidth (stable
+    // layout width) + a buffer (font-swap can widen the label after measuring,
+    // and the acting scale adds a hair). The clamp only moves EDGE tags.
+    const fitOnScreen = () => {
+      if (state.scanTagActing !== tag) return;
+      const m = 12;
+      const half = tag.offsetWidth / 2 + 26;
+      const W = window.innerWidth;
+      const cx = parseFloat(tag.style.left || "0");
+      const clamped = Math.max(m + half, Math.min(W - m - half, cx));
+      if (Math.abs(clamped - cx) > 0.5) {
+        tag.style.left = clamped + "px";
+        tag.dataset.sx = String(clamped);
+      }
+    };
+    requestAnimationFrame(fitOnScreen);
+    setTimeout(fitOnScreen, 260); // re-clamp after the font/animation settles
   }
 
-  function closeTagPrompt(tag, clear) {
+  function closeTagPrompt(tag) {
     if (!tag) return;
     tag.classList.remove("acting");
-    if (clear) { const inp = tag.querySelector(".scan-tag-form input"); if (inp) inp.value = ""; }
     if (state.scanTagActing === tag) state.scanTagActing = null;
   }
 
-  function submitTagPrompt(tag, text) {
+  // Commit a chosen action on a detected object: compose the prompt from the
+  // verb + the object's name and resolve a FULL turn (consequence + fresh
+  // scene) via the existing pipeline. No typing, no separate action LLM.
+  function commitScanAction(tag, action) {
     const obj = tag._obj || { label: "it" };
-    if (state.gameOver) { closeTagPrompt(tag, true); return; }
-    // A tag interaction commits a FULL TURN grounded on this object (consequence
-    // + a freshly generated guide image), not a live re-steer — so poking a tag
-    // makes meaningful change to the world, exactly like ACT / choices do.
+    if (state.gameOver) { closeTagPrompt(tag); return; }
     if (state.processing) { showRendererToast("The world is still resolving…"); return; }
-    // Structured action: always prefixed with the selected object so the turn is
-    // anchored on it. Any typed action is appended; with NO text, the prefix
-    // alone ("INTERACT WITH: <object>") IS the action.
-    const act = (text || "").replace(/\.+$/, "").trim();
-    const prefix = "INTERACT WITH: " + obj.label;
-    const action = act ? prefix + " \u2014 " + act : prefix;
+    const phrase = action.phrase(obj.label);
     Sound.submit();
-    closeTagPrompt(tag, true);
-    showRendererToast("Acting on the " + obj.label + "\u2026");
+    closeTagPrompt(tag);
+    showRendererToast(action.title + " the " + obj.label + "\u2026");
     // Committing an action ENDS the scan session — the labels shouldn't keep
     // hovering over the scene while the turn plays out. Re-arm SCAN to look again.
     closeScan();
-    makeChoice(action, null);
+    makeChoice(phrase, null);
   }
 
   // Drop the current tags (e.g. when a turn changes the scene) so stale labels
@@ -3009,11 +3472,9 @@
       if (e.key === "Escape") closeFreeWill(true); // Esc closes the gate
       return;
     }
-    // A scan tag's inline prompt owns the keyboard while focused: Esc collapses
-    // it, everything else types normally.
-    if (el.scanTags && el.scanTags.contains(document.activeElement) &&
-        document.activeElement.tagName === "INPUT") {
-      if (e.key === "Escape" && state.scanTagActing) closeTagPrompt(state.scanTagActing, true);
+    // A scan tag's action bar is open: Esc collapses it (keeps scanning).
+    if (state.scanTagActing && e.key === "Escape") {
+      closeTagPrompt(state.scanTagActing);
       return;
     }
     // Camera (SNAP) tool owns the keyboard while armed: Esc or H closes it.
@@ -3100,6 +3561,10 @@
       // shoot) — so the camera works on iOS where mousemove never fires.
       el.touchLayer.addEventListener("pointermove", onTouchMove);
       el.touchLayer.addEventListener("pointerdown", onTouchDown);
+      el.touchLayer.addEventListener("pointerup", onTouchUp);
+      el.touchLayer.addEventListener("pointercancel", onTouchUp);
+      // Scroll to zoom (needs passive:false so we can preventDefault the page).
+      el.touchLayer.addEventListener("wheel", onTouchWheel, { passive: false });
     }
     if (el.scanBtn) el.scanBtn.addEventListener("click", toggleScan);
     // SCAN is non-modal: its overlay doesn't capture the pointer (so choices and
