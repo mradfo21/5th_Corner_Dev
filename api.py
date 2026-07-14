@@ -114,10 +114,35 @@ def serve_legacy_image(filename):
             Path(engine._get_image_dir('default')) / safe_filename,  # standalone/web session
             Path("images") / safe_filename,                          # legacy/global fallback
         ]
+        # The feed served to the web ('default' session) can reference frames a
+        # different process wrote under another session directory (e.g. the
+        # Discord bot uses `sessions/<channel_id>/images/`). Rather than 404 a
+        # frame that exists on disk under a sibling session, scan every session
+        # image dir before giving up.
+        try:
+            sessions_root = Path("sessions")
+            if sessions_root.is_dir():
+                for session_dir in sorted(sessions_root.iterdir()):
+                    if session_dir.name == 'default':
+                        continue  # already covered above
+                    candidate = session_dir / "images" / safe_filename
+                    if candidate not in candidates:
+                        candidates.append(candidate)
+        except Exception:
+            pass  # best-effort widening; never let it break the primary lookup
         mimetype = 'image/gif' if safe_filename.lower().endswith('.gif') else 'image/png'
         for image_path in candidates:
             if image_path.exists():
                 return send_file(str(image_path), mimetype=mimetype)
+        # Last resort: fall back to the downsampled sibling ('<name>_small.png')
+        # if the full-resolution frame is unavailable (Gemini/Krea always write
+        # both). Better a smaller frame than a broken image in the UI.
+        if safe_filename.lower().endswith('.png') and not safe_filename.lower().endswith('_small.png'):
+            small_name = safe_filename[:-4] + '_small.png'
+            for image_path in candidates:
+                small_path = image_path.with_name(small_name)
+                if small_path.exists():
+                    return send_file(str(small_path), mimetype='image/png')
         return error_response("Image not found", code=404)
     except Exception as e:
         traceback.print_exc()
