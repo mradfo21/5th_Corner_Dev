@@ -832,6 +832,56 @@ class TestRealtimeRenderer(unittest.TestCase):
         finally:
             page.close()
 
+    def test_realtime_interact_steers_without_a_cached_scene_base(self):
+        """Regression: INTERACT must inject a LIVE world-model event even when the
+        standalone layer never cached a scene bible (Renderer.lastBase/lastScene
+        are null) — the exact state native movement/exploration mode leaves the
+        renderer in. It must re-steer the RUNNING stream (set_prompt) via the
+        reactor's live prompt fallback, NOT silently drop to a full turn (which
+        would pop the progress bar for what should be an instant poke)."""
+        page = self._new_realtime_page()
+        scene_items = [
+            {"id": 1, "type": "narrative", "content": "Intro."},
+            {"id": 2, "type": "scene_image", "content": "", "image_url": TINY_PNG_DATA_URL,
+             "metadata": {"prompt": "scene one", "base": "First-person VHS. A canyon.", "hard_transition": False}},
+            {"id": 3, "type": "player_choice_prompt", "content": "?", "choices": [{"text": "Go"}]},
+        ]
+        chooses = []
+        page.route("**/api/reset", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(scene_items)))
+        page.route("**/api/feed*", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
+        page.route("**/api/detect", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps({
+            "objects": [{"label": "rusty valve", "cx": 0.4, "cy": 0.45, "w": 0.2, "h": 0.2}]})))
+
+        def choose_handler(route):
+            chooses.append(route.request.url)
+            route.fulfill(status=200, content_type="application/json", body="[]")
+        page.route("**/api/choose", choose_handler)
+        try:
+            page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
+            page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
+            page.wait_for_function("document.querySelectorAll('#scan-tags .scan-tag').length >= 1", timeout=12000)
+            # Simulate native-movement state: wipe the standalone layer's cached
+            # scene bible so the ONLY base source left is the reactor's live prompt.
+            page.evaluate("window.__Renderer.lastBase = null; window.__Renderer.lastScene = null;")
+            # The reactor is running a prompt (it established the stream), so the
+            # steer base must resolve via getPrompt() and never be empty.
+            self.assertTrue(page.evaluate("!!(window.__Renderer.steerBase && window.__Renderer.steerBase())"),
+                            f"steer base must never be empty while realtime is live. logs:\n{self._dump_logs()}")
+            page.evaluate("document.querySelector('.scan-tag').click()")
+            page.wait_for_function("!!document.querySelector('.scan-tag.acting .scan-action-interact')", timeout=5000)
+            page.evaluate("window.__MOCK_CMDS__ = []")
+            page.evaluate("document.querySelector('.scan-tag.acting .scan-action-interact').click()")
+            # Must live-steer the running stream, NOT resolve a full turn.
+            page.wait_for_function("(window.__MOCK_CMDS__ || []).includes('set_prompt')", timeout=5000)
+            page.wait_for_timeout(500)
+            self.assertEqual(len(chooses), 0,
+                             f"INTERACT with no cached base must still steer live, not pop a turn. logs:\n{self._dump_logs()}")
+        except Exception:
+            print("\n=== REACTOR CONSOLE LOG (scan-no-base) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
     def test_ambient_hotspots_appear_without_a_button(self):
         """There is no SCAN button: once a scene is on screen, detection runs
         automatically AND the interaction hotspots (starfield tags) render on

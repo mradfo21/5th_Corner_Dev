@@ -1570,14 +1570,29 @@
     // deliberately separate from ACT/choices, which resolve a full turn and
     // change the scene. Returns true if it steered, false if realtime isn't
     // ready (no live scene to build on yet).
+    // Resolve the "scene bible" (style + physical scene) a live re-steer builds
+    // on. Prefers the stable base, then the last scene prompt the feed carried,
+    // then the prompt the reactor stream is ACTUALLY running (which native
+    // movement/exploration mode sets without a feed scene_image), and finally a
+    // neutral first-person floor — so a re-steer can ALWAYS fire while the world
+    // model is live, instead of silently failing back to a full turn.
+    steerBase() {
+      const fromReactor = (this.reactorAvailable() && window.ReactorRenderer.getPrompt)
+        ? window.ReactorRenderer.getPrompt() : null;
+      return this.lastBase
+        || (this.lastScene && this.lastScene.prompt)
+        || (typeof state !== "undefined" && state.lastScenePrompt)
+        || fromReactor
+        || "First-person cinematic view of the current scene.";
+    },
+
     steerRealtime(text, where) {
       if (this.mode !== "reactor" || !this.reactorAvailable()) return false;
       const a = (text || "").trim().replace(/\.+$/, "");
       if (!a) return false;
       // Build on the stable scene bible (style + physical scene, no action beat)
       // so the nudge blends with the current shot instead of resetting it.
-      const base = this.lastBase || (this.lastScene && this.lastScene.prompt) || "";
-      if (!base) return false;
+      const base = this.steerBase();
       const act = a.charAt(0).toLowerCase() + a.slice(1);
       // Anchor the nudge to the spot the player touched, when one was given, so
       // the change lands where they aimed instead of across the whole frame.
@@ -1605,8 +1620,7 @@
       if (!b) return false;
       // Build on the stable scene bible so the move blends with the current shot
       // (same anchor steerRealtime uses) instead of regenerating the scene.
-      const base = this.lastBase || (this.lastScene && this.lastScene.prompt) || "";
-      if (!base) return false;
+      const base = this.steerBase();
       window.ReactorRenderer.applyScene({
         prompt: base + " " + b,
         imageUrl: null,           // same scene — pure camera re-steer, no image swap
