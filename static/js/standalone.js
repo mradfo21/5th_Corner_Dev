@@ -2765,24 +2765,23 @@
   }
 
   // ------------------------------------------------------------------
-  // SCAN tool — realtime object recognition. Arming it turns the live scene
-  // into a scanning surface: moving/dragging the cursor sweeps a beam across
-  // the world model's video, and the objects it recognizes twinkle in as
-  // floating "starfield" tags anchored where they actually sit. Each tag
-  // carries a little button that opens an inline prompt to ACT on THAT exact
-  // thing — a full turn (consequence + a freshly generated scene), so it makes
-  // meaningful change to the world. Works in BOTH renderers: it scans the live
-  // video frame in realtime mode, or the current still in image mode.
+  // Ambient interaction hotspots — object recognition with NO button. Whenever a
+  // scene is on screen, the objects the model recognizes surface as floating
+  // "starfield" tags anchored where they actually sit. Hovering near a tag
+  // highlights it; clicking it opens an inline action bar to ACT on THAT exact
+  // thing — a full turn (consequence + a freshly generated scene). Works in BOTH
+  // renderers: it reads the live video frame in realtime mode, or the current
+  // still in image mode.
   //
   // Engineering notes:
-  //  • Detection is an LLM round-trip, so calls are throttled (a floor between
-  //    hits) and the drag provides the *feel* of continuous scanning.
-  //  • Tags are RECONCILED by label between scans (kept + repositioned, added
+  //  • Detection is an LLM round-trip, so it's throttled (a floor between hits)
+  //    and always DEFERS around a turn (never competes with the turn's own LLM
+  //    calls). It runs once per scene and, in realtime, on hover-settle.
+  //  • Tags are RECONCILED by label between passes (kept + repositioned, added
   //    with a twinkle, removed with a fade) so a refresh never churns the whole
   //    field or yanks a tag out from under the cursor.
-  //  • A scan NEVER runs while a tag's interact prompt is open, so typing is
-  //    never interrupted or wiped.
-  //  • Works with mouse (move/drag) and touch (tap/drag); the overlay is
+  //  • A detection pass NEVER runs while a tag's action bar is open.
+  //  • Works with mouse (hover) and touch (tap the tag); the overlay is
   //    non-modal so the game's choices/controls stay live underneath.
   // ------------------------------------------------------------------
   const SCAN_MOVE_SETTLE_MS = 600;    // re-detect this long after the cursor settles (realtime)
