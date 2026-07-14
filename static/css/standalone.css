@@ -1135,6 +1135,11 @@ body.realtime-on #forward-btn { bottom: 126px; }
 /* While a turn resolves, recede the joystick with the rest of the cluster. */
 #action-wheel.turn-active #move-pad { opacity: 0; pointer-events: none; }
 
+/* While the camera is being driven, the OCR hotspots/choices are hidden (they're
+   detected against a drifting frame, so they're inaccurate). They regenerate and
+   fade back in once movement stops. Belt-and-suspenders on top of closeScan(). */
+body.moving #scan-layer { opacity: 0 !important; pointer-events: none !important; }
+
 @media (prefers-reduced-motion: reduce) {
   body.realtime-on #move-pad:not(.engaged) .move-ring { animation: none; }
   .move-nub { transition: border-color 0.18s, box-shadow 0.25s; }

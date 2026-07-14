@@ -301,6 +301,62 @@ class TestMovementMode(unittest.TestCase):
         finally:
             page.close()
 
+    def test_ocr_hotspots_hide_while_moving_and_regenerate_on_stop(self):
+        """The OCR hotspots (and the choices grounded on them) are inaccurate
+        while the camera travels: they must hide the moment movement starts, no
+        detection runs while moving, and once you stop they re-detect and reappear."""
+        page = self._new_realtime_page()
+        # Fast settle + no turn cooldown so the post-stop re-detect fires quickly.
+        page.add_init_script("window.__MOVE_SETTLE_MS__ = 250; window.__SCAN_TURN_COOLDOWN_MS__ = 0;")
+        scene_items = [
+            {"id": 1, "type": "narrative", "content": "Intro."},
+            {"id": 2, "type": "scene_image", "content": "", "image_url": TINY_PNG_DATA_URL,
+             "metadata": {"prompt": "scene one", "base": "First-person VHS. A loading dock.", "hard_transition": False}},
+            {"id": 3, "type": "player_choice_prompt", "content": "?", "choices": [{"text": "Go"}]},
+        ]
+        detects = []
+        page.route("**/api/reset", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(scene_items)))
+        page.route("**/api/feed*", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
+        page.route("**/api/choose", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
+
+        def detect_handler(route):
+            detects.append(route.request.url)
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({
+                "objects": [
+                    {"label": "wooden crate", "cx": 0.3, "cy": 0.45, "w": 0.2, "h": 0.2},
+                    {"label": "steel door", "cx": 0.72, "cy": 0.5, "w": 0.15, "h": 0.4},
+                ]
+            }))
+        page.route("**/api/detect", detect_handler)
+        try:
+            page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
+            page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
+            # Hotspots appear on their own once the scene is on screen.
+            page.wait_for_function("document.querySelectorAll('#scan-tags .scan-tag').length >= 1", timeout=12000)
+            self.assertFalse(page.evaluate("document.getElementById('scan-layer').classList.contains('hidden')"))
+
+            # Start moving -> hotspots hide (body.moving, scan-layer hidden).
+            page.keyboard.down("w")
+            page.wait_for_function("document.body.classList.contains('moving')", timeout=4000)
+            page.wait_for_function("document.getElementById('scan-layer').classList.contains('hidden')", timeout=4000)
+
+            # No detection runs while moving.
+            before = len(detects)
+            page.wait_for_timeout(700)
+            self.assertEqual(len(detects), before, "detection must not run while the camera moves")
+
+            # Stop -> movement clears, and hotspots re-detect + reappear.
+            page.keyboard.up("w")
+            page.wait_for_function("!document.body.classList.contains('moving')", timeout=4000)
+            page.wait_for_function("document.querySelectorAll('#scan-tags .scan-tag').length >= 1", timeout=8000)
+            self.assertFalse(page.evaluate("document.getElementById('scan-layer').classList.contains('hidden')"))
+            self.assertGreater(len(detects), before, "hotspots must regenerate (re-detect) after stopping")
+        except Exception:
+            print("\n=== CONSOLE LOG (hotspots-while-moving) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
     def test_still_mode_hides_joystick_and_disables_keys(self):
         """In still-image mode there is nothing to steer: the joystick is hidden
         and W/A/S/D do not re-steer anything."""
