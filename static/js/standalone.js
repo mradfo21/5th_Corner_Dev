@@ -1722,7 +1722,7 @@
     b.appendChild(dot);
     b.appendChild(txt);
     b.title = id === "__image__"
-      ? "Still images (Gemini)"
+      ? "Still images (current image provider)"
       : custom
         ? "Experimental world model: " + label
         : "Realtime world model: " + label;
@@ -5773,7 +5773,18 @@
       changed = setHud(el.hudChaos, "chaos", s.chaos ?? 0) || changed;
       const phaseText = s.alive === false ? "deceased" : (s.phase ?? "normal");
       changed = setHud(el.hudPhase, "phase", phaseText) || changed;
-      if (el.backendName) el.backendName.textContent = s.backend ?? "unknown";
+      // Bottom-left HUD shows the IMAGE provider (what actually draws the
+      // world), not the text/chat backend. Krea shows its tier (medium/large).
+      if (el.backendName) {
+        const prov = s.image_provider || s.backend || "unknown";
+        const model = s.image_model || "";
+        let label = prov;
+        if (prov === "krea" && model) {
+          const tier = model.includes("large") ? "large" : (model.includes("medium") ? "medium" : "");
+          label = tier ? ("krea " + tier) : "krea";
+        }
+        el.backendName.textContent = label;
+      }
       if (typeof s.image_enabled === "boolean") state.imagesEnabled = s.image_enabled;
       renderInventory(s.inventory);
       if (el.hudTimeWrap && el.hudTime) {
