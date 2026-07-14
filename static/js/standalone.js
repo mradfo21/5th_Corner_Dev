@@ -86,6 +86,10 @@
     narratorSpeaker: document.getElementById("narrator-speaker"),
     narratorLine: document.getElementById("narrator-line"),
     narratorStop: document.getElementById("narrator-stop"),
+    agentDebugBtn: document.getElementById("agent-debug-btn"),
+    agentLogList: document.getElementById("agent-log-list"),
+    agentLogHide: document.getElementById("agent-log-hide"),
+    agentLogClear: document.getElementById("agent-log-clear"),
     touchCaptureFrame: document.getElementById("touch-capture-frame"),
     touchHint: document.getElementById("touch-hint"),
     touchZoom: document.getElementById("touch-zoom"),
@@ -4278,6 +4282,90 @@
   }
 
   // ------------------------------------------------------------------
+  // Shared ElevenLabs client-SDK loader — used by BOTH the TALK conversation
+  // and the NARRATOR. Loaded lazily and pinned to the 1.x line so a future
+  // breaking release can't change the API out from under us.
+  // ------------------------------------------------------------------
+  const ElevenSDK = (function () {
+    const URL = "https://esm.sh/@elevenlabs/client@1";
+    let p = null;
+    function load() {
+      if (!p) {
+        AgentLog.push("sdk", "loading ElevenLabs SDK\u2026");
+        p = import(/* webpackIgnore: true */ URL)
+          .then((m) => {
+            const C = m.Conversation || (m.default && m.default.Conversation);
+            if (!C) throw new Error("Conversation export missing");
+            AgentLog.push("ok", "SDK loaded");
+            return C;
+          })
+          .catch((e) => { p = null; AgentLog.push("error", "SDK load failed", String(e).slice(0, 120)); throw e; });
+      }
+      return p;
+    }
+    return { load };
+  })();
+
+  // ------------------------------------------------------------------
+  // AGENT DEBUG LOG — a dedicated, toggleable inspector for the voice agents
+  // (TALK + narrator). It records what the agents are doing — session opens,
+  // SDK/connection status, mode changes, transcript lines, voice switches,
+  // narrator segments, and errors — so issues (e.g. "no audio on live") are
+  // diagnosable in the field. Toggle with the DEBUG rail button or the "D" key;
+  // add ?agentdebug to the URL to open it on load.
+  // ------------------------------------------------------------------
+  const AgentLog = (function () {
+    const MAX = 300;
+    function visible() {
+      try { return localStorage.getItem("agent_log") === "on"; } catch (_) { return false; }
+    }
+    function apply() { document.body.classList.toggle("agent-log-on", visible()); }
+    function stamp() {
+      const d = new Date();
+      return String(d.getMinutes()).padStart(2, "0") + ":" + String(d.getSeconds()).padStart(2, "0") +
+        "." + String(d.getMilliseconds()).padStart(3, "0").slice(0, 2);
+    }
+    // kind: ok | error | warn | sdk | voice | narrator | talk | net | dim
+    function push(kind, label, detail) {
+      // Mirror to the console for remote debugging (visible in devtools on live).
+      try { console.log("[agent]", kind || "", label || "", detail || ""); } catch (_) {}
+      const list = el.agentLogList;
+      if (!list) return;
+      const li = document.createElement("li");
+      li.className = "al-e" + (kind ? " al-" + kind : "");
+      const t = document.createElement("span"); t.className = "al-t"; t.textContent = stamp();
+      const m = document.createElement("span"); m.className = "al-m"; m.textContent = label || "";
+      li.appendChild(t); li.appendChild(m);
+      if (detail != null && detail !== "") {
+        const dd = document.createElement("span"); dd.className = "al-d"; dd.textContent = " " + detail;
+        li.appendChild(dd);
+      }
+      const atBottom = list.scrollTop + list.clientHeight >= list.scrollHeight - 24;
+      list.appendChild(li);
+      while (list.children.length > MAX) list.removeChild(list.firstChild);
+      if (atBottom) list.scrollTop = list.scrollHeight;
+    }
+    function toggle() {
+      const on = !visible();
+      try { localStorage.setItem("agent_log", on ? "on" : "off"); } catch (_) {}
+      apply();
+      if (el.narratorBtn) {} // no-op; keeps lints calm
+      push("dim", on ? "\u2014 debug log opened \u2014" : "");
+    }
+    function clip(s, n) {
+      s = (s || "").toString().replace(/\s+/g, " ").trim();
+      return s.length > (n || 140) ? s.slice(0, (n || 140) - 1) + "\u2026" : s;
+    }
+    function init() {
+      try { if (/(?:\?|&)agentdebug\b/.test(location.search)) localStorage.setItem("agent_log", "on"); } catch (_) {}
+      apply();
+      if (el.agentLogHide) el.agentLogHide.addEventListener("click", () => { try { localStorage.setItem("agent_log", "off"); } catch (_) {} apply(); });
+      if (el.agentLogClear) el.agentLogClear.addEventListener("click", () => { if (el.agentLogList) el.agentLogList.innerHTML = ""; });
+    }
+    return { push, toggle, clip, init };
+  })();
+
+  // ------------------------------------------------------------------
   // TALK — a live, story-aware conversation with a SCAN subject that speaks.
   //
   // Kicked off from a tag's TALK action (only shown on things that can speak).
@@ -4299,11 +4387,6 @@
     let mode = "text";          // "text" | "voice"
     let convo = null;           // ElevenLabs SDK Conversation instance (voice)
     let micMuted = false;
-    // Pinned to the 1.x line so a future breaking release can't silently change
-    // the API out from under us. Loaded lazily the first time voice is used.
-    const SDK_URL = "https://esm.sh/@elevenlabs/client@1";
-    let sdkPromise = null;
-
     // Live voice switching: the registry (from the session) + the player's
     // chosen voice (persisted). Changing it live reconnects the voice channel.
     let voices = null;
@@ -4320,14 +4403,7 @@
 
     function setOrbState(s) { if (el.talkOrb) el.talkOrb.dataset.state = s || "idle"; }
 
-    function ensureSdk() {
-      if (!sdkPromise) {
-        sdkPromise = import(/* webpackIgnore: true */ SDK_URL)
-          .then((m) => m.Conversation || (m.default && m.default.Conversation))
-          .catch((e) => { sdkPromise = null; throw e; });
-      }
-      return sdkPromise;
-    }
+    function ensureSdk() { return ElevenSDK.load(); }
 
     function addLine(role, content) {
       const line = document.createElement("div");
@@ -4447,13 +4523,15 @@
         onConnect: () => {
           if (!open) return;
           switching = false;
+          AgentLog.push("ok", "talk connected", subject && subject.label);
           setSub("channel live \u00b7 listening"); setOrbState("listening");
           el.talkModeToggle.classList.remove("hidden");
           el.talkModeToggle.textContent = micMuted ? "UNMUTE" : "MUTE";
           showVoiceControl(session.voice_id);
         },
-        onDisconnect: () => { if (open && mode === "voice") { setSub("channel closed"); setOrbState("idle"); } },
-        onError: (e) => { console.warn("[talk] voice error:", e); },
+        onDisconnect: () => { AgentLog.push("dim", "talk disconnected"); if (open && mode === "voice") { setSub("channel closed"); setOrbState("idle"); } },
+        onError: (e) => { AgentLog.push("error", "talk error", AgentLog.clip(e && (e.message || e), 120)); console.warn("[talk] voice error:", e); },
+        onStatusChange: (s) => { AgentLog.push("dim", "talk status", (s && (s.status || s)) || ""); },
         onModeChange: (m) => {
           if (!open) return;
           const md = (m && (m.mode || m)) || "";
@@ -4465,22 +4543,30 @@
           const src = m.source || m.role;
           const text = (m.message || m.text || "").trim();
           if (!text) return;
-          if (src === "ai" || src === "agent") { addLine("assistant", text); Sound.talkLine(); pulseOrb(); }
-          else if (src === "user") { addLine("user", text); }
+          if (src === "ai" || src === "agent") { addLine("assistant", text); Sound.talkLine(); pulseOrb(); AgentLog.push("talk", subject.label.toUpperCase() + ":", AgentLog.clip(text, 100)); }
+          else if (src === "user") { addLine("user", text); AgentLog.push("dim", "YOU:", AgentLog.clip(text, 100)); }
         },
       };
       // Persona overrides (server sends them only when the agent allows it).
       const a = session.overrides && session.overrides.agent;
-      if (a) {
-        opts.overrides = { agent: {} };
-        if (a.prompt && a.prompt.prompt) opts.overrides.agent.prompt = { prompt: a.prompt.prompt };
-        if (a.first_message) opts.overrides.agent.firstMessage = a.first_message;
-        opts.overrides.agent.language = "en";
+      const tts = session.overrides && session.overrides.tts;
+      if (a || tts) {
+        opts.overrides = {};
+        if (a) {
+          opts.overrides.agent = {};
+          if (a.prompt && a.prompt.prompt) opts.overrides.agent.prompt = { prompt: a.prompt.prompt };
+          if (a.first_message) opts.overrides.agent.firstMessage = a.first_message;
+          opts.overrides.agent.language = "en";
+        }
+        // Voice override — THIS is what actually makes a live voice switch change
+        // the sound (the agent has tts.voice_id override enabled).
+        if (tts && tts.voice_id) opts.overrides.tts = { voiceId: tts.voice_id };
       }
       // A signed URL authorizes private agents (and works for public ones);
       // otherwise connect to a public agent by id.
       if (session.signed_url) opts.signedUrl = session.signed_url;
       else opts.agentId = session.agent_id;
+      AgentLog.push("talk", "opening voice", (session.signed_url ? "signed-url" : "agent " + (session.agent_id || "?")) + " \u00b7 voice " + (session.voice_id || "default"));
 
       try {
         convo = await Conversation.startSession(opts);
@@ -4692,9 +4778,10 @@
   const Narrator = (function () {
     let playing = false;
     let busy = false;
-    let audioEl = null;
-    let queue = [];
-    let gen = 0; // generation token — bumped by stop() to abort in-flight work
+    let gen = 0;                 // bumped by stop() to abort in-flight work
+    let convo = null;            // the active per-segment SDK session
+    let agentCfg = null;         // {agent_id, signed_url} — the narrator's agent
+    let agentAvailable = null;   // did the server advertise a usable agent?
 
     function isBusy() { return busy || playing; }
 
@@ -4702,8 +4789,7 @@
       if (el.narratorSpeaker) el.narratorSpeaker.textContent = speaker ? speaker.toUpperCase() : "";
       if (el.narratorLine) el.narratorLine.textContent = text || "";
       if (!el.narratorBar) return;
-      // Sit the caption ABOVE the action wheel so it never covers the controls
-      // (the wheel is taller on phones — track its real height).
+      // Sit the caption ABOVE the action wheel so it never covers the controls.
       const wheelH = (el.actionWheel && el.actionWheel.offsetHeight) || 120;
       el.narratorBar.style.bottom = "calc(env(safe-area-inset-bottom, 0px) + " + (wheelH + 22) + "px)";
       el.narratorBar.classList.remove("hidden");
@@ -4718,49 +4804,88 @@
       setTimeout(() => { if (!playing) el.narratorBar.classList.add("hidden"); }, 320);
     }
 
-    function stopAudio() {
-      if (audioEl) { try { audioEl.pause(); } catch (_) {} audioEl.onended = null; audioEl.onerror = null; audioEl = null; }
+    async function endConvo() {
+      if (convo) { const c = convo; convo = null; try { await c.endSession(); } catch (_) {} }
     }
 
-    // Play a list of {character, text, audio?} in sequence — subtitle + voice.
-    function play(segments) {
-      return new Promise((resolve) => {
-        queue = (segments || []).slice();
-        playing = true;
-        if (el.narratorBtn) el.narratorBtn.classList.add("on");
-        const next = () => {
-          if (!playing || !queue.length) {
-            playing = false;
-            if (el.narratorBtn) el.narratorBtn.classList.remove("on");
-            hide();
-            resolve();
-            return;
-          }
-          const seg = queue.shift();
-          show(seg.character, seg.text);
-          Sound.talkLine();
-          const timed = () => setTimeout(next, Math.max(2400, (seg.text || "").length * 55));
-          // Respect the SND mute (the narrator's voice is ambient) — show the
-          // line as a timed subtitle instead of playing audio.
-          if (seg.audio && state.soundEnabled !== false) {
-            stopAudio();
-            audioEl = new Audio(seg.audio);
-            audioEl.onended = next;
-            audioEl.onerror = () => setTimeout(next, 900);
-            audioEl.play().catch(timed); // autoplay blocked → timed subtitle
-          } else {
-            timed();
-          }
+    // Speak ONE segment through the generative agent: a short SDK session whose
+    // FIRST MESSAGE is the exact narration line, in the segment's voice. The
+    // agent utters it, we detect it finished (mode → listening, or a hard
+    // timeout), then tear the session down and move on. Mic is muted (one-way).
+    function speakSegment(seg, myGen) {
+      return new Promise(async (resolve) => {
+        show(seg.character, seg.text);
+        Sound.talkLine();
+        AgentLog.push("narrator", (seg.character || "narrator").toUpperCase() + ":", AgentLog.clip(seg.text, 100));
+        // No voice channel possible → timed subtitle.
+        const timed = () => setTimeout(resolve, Math.max(2600, (seg.text || "").length * 60));
+        if (!agentCfg || !agentCfg.agent_id && !agentCfg.signed_url || state.soundEnabled === false) {
+          if (state.soundEnabled === false) AgentLog.push("dim", "muted \u2014 subtitle only");
+          else AgentLog.push("warn", "no narrator agent \u2014 subtitle only");
+          timed();
+          return;
+        }
+        let Conversation, done = false, spoke = false, hardTimer = null;
+        const finish = async (why) => {
+          if (done) return; done = true;
+          clearTimeout(hardTimer);
+          await endConvo();
+          resolve();
         };
-        next();
+        try { Conversation = await ElevenSDK.load(); }
+        catch (e) { AgentLog.push("error", "narrator SDK failed \u2014 subtitle", String(e).slice(0, 80)); timed(); return; }
+        if (myGen !== gen) { resolve(); return; }
+        const opts = {
+          connectionType: "websocket",
+          overrides: {
+            agent: {
+              prompt: { prompt: "You are a disembodied narrator. Utter the first message EXACTLY as written, once, as narration. Then say nothing further and do not ask questions." },
+              firstMessage: seg.text,
+              language: "en",
+            },
+            tts: { voiceId: seg.voice_id },
+          },
+          onConnect: () => { AgentLog.push("ok", "narrator connected", seg.voice_id); },
+          onModeChange: (m) => {
+            const md = (m && (m.mode || m)) || "";
+            if (md === "speaking") spoke = true;
+            // Finished uttering the line → wrap this segment.
+            else if (md === "listening" && spoke) finish("spoke");
+          },
+          onError: (e) => { AgentLog.push("error", "narrator seg error", AgentLog.clip(e && (e.message || e), 100)); finish("error"); },
+          onDisconnect: () => { if (spoke) finish("disconnect"); },
+        };
+        if (agentCfg.signed_url) opts.signedUrl = agentCfg.signed_url; else opts.agentId = agentCfg.agent_id;
+        try {
+          convo = await Conversation.startSession(opts);
+          try { convo.setMicMuted(true); } catch (_) {} // one-way — never listen
+        } catch (e) {
+          AgentLog.push("error", "narrator start failed \u2014 subtitle", AgentLog.clip(e && (e.message || e), 100));
+          convo = null; timed(); return;
+        }
+        if (myGen !== gen) { finish("aborted"); return; }
+        // Safety net: never hang on a segment (long line ≈ read time + buffer).
+        hardTimer = setTimeout(() => finish("timeout"), Math.max(9000, (seg.text || "").length * 90));
       });
     }
 
-    // Generate + speak a world-building narration. `opts.focus` steers it;
-    // `opts.multi` (default true) allows a multi-voice radio-play.
+    async function play(segments, myGen) {
+      playing = true;
+      if (el.narratorBtn) el.narratorBtn.classList.add("on");
+      for (const seg of segments) {
+        if (myGen !== gen || !seg || !(seg.text || "").trim()) continue;
+        await speakSegment(seg, myGen);
+        if (myGen !== gen) break;
+      }
+      playing = false;
+      if (el.narratorBtn) el.narratorBtn.classList.remove("on");
+      if (myGen === gen) hide();
+    }
+
+    // Generate a story-aware narration server-side (LLM), then SPEAK it live via
+    // the generative agent in the browser (no server TTS key required).
     async function narrate(opts) {
       opts = opts || {};
-      // A live two-way conversation owns the audio channel — don't talk over it.
       if (Talk.isOpen()) { showRendererToast("End the conversation to hear the narrator"); return; }
       if (busy || playing) { stop(); return; }
       const myGen = ++gen;
@@ -4768,18 +4893,23 @@
       if (el.narratorBtn) el.narratorBtn.classList.add("on");
       show("narrator", "\u2026");
       Sound.talkOpen();
+      AgentLog.push("narrator", "worldbuild\u2026", opts.focus ? AgentLog.clip(opts.focus, 60) : (opts.multi !== false ? "multi" : "single"));
       try {
+        // speak:false → server returns TEXT + per-line voice + agent config; the
+        // browser voices it as a generative agent.
         const res = await postJSON("/api/narrator/worldbuild", {
-          multi: opts.multi !== false, speak: true, focus: opts.focus || "",
+          multi: opts.multi !== false, speak: false, focus: opts.focus || "",
         });
-        // Aborted (stop() called) or superseded while we were fetching.
         if (myGen !== gen) return;
+        agentCfg = (res && res.agent) || agentCfg;
+        agentAvailable = !!(res && res.agent_available);
         const segs = (res && res.segments) || [];
+        AgentLog.push("dim", "worldbuild \u2192 " + segs.length + " line(s)", agentAvailable ? "agent voice" : "subtitles");
         if (!segs.length) { show("narrator", "The channel is silent."); setTimeout(() => { if (myGen === gen) hide(); }, 1800); return; }
         busy = false;
-        await play(segs);
+        await play(segs, myGen);
       } catch (e) {
-        console.warn("[narrator] failed:", e);
+        AgentLog.push("error", "worldbuild failed", AgentLog.clip(e && (e.message || e), 100));
         if (myGen === gen) { show("narrator", "The signal breaks up\u2026"); setTimeout(() => { if (myGen === gen) hide(); }, 1800); }
       } finally {
         busy = false;
@@ -4788,26 +4918,26 @@
     }
 
     function stop() {
-      gen++; // abort any in-flight worldbuild fetch / pending timers
+      gen++; // abort in-flight worldbuild / segment loop / timers
       playing = false;
       busy = false;
-      queue = [];
-      stopAudio();
+      endConvo();
       if (el.narratorBtn) el.narratorBtn.classList.remove("on");
       hide();
     }
 
-    // Learn whether server-side voice (TTS) is configured, and reflect it on the
-    // control's tooltip so it's clear when narration will be text-only.
-    let voiceAvailable = null;
+    // Learn whether the narrator can SPEAK (a generative agent is configured)
+    // and cache its agent config; reflect it on the control's tooltip.
     async function preflight() {
       try {
         const c = await getJSON("/api/narrator/cast");
-        voiceAvailable = !!(c && c.voice_available);
-      } catch (_) { voiceAvailable = null; }
+        agentAvailable = !!(c && c.agent_available);
+        agentCfg = (c && c.agent) || null;
+        AgentLog.push("narrator", "preflight", "agent " + (agentAvailable ? "ready (" + ((agentCfg && agentCfg.agent_id) || "?") + ")" : "NOT configured") + " \u00b7 tts key " + ((c && c.voice_available) ? "yes" : "no"));
+      } catch (e) { agentAvailable = null; AgentLog.push("warn", "preflight failed", AgentLog.clip(e && (e.message || e), 80)); }
       if (el.narratorBtn) {
-        el.narratorBtn.title = voiceAvailable === false
-          ? "Narrator — world-building subtitles (voice not configured) (N)"
+        el.narratorBtn.title = agentAvailable === false
+          ? "Narrator — world-building subtitles (voice agent not configured) (N)"
           : "Narrator — a voice frames the world (N)";
       }
     }
@@ -5285,6 +5415,8 @@
       openTape();
     } else if (e.key.toLowerCase() === "n") {
       toggleNarrator(); // narrator — a voice frames the world
+    } else if (e.key.toLowerCase() === "d") {
+      AgentLog.toggle(); // voice-agent debug log
     } else if (e.key.toLowerCase() === "p") {
       toggleAutoPlay();
     } else if (e.key.toLowerCase() === "f") {
@@ -5395,6 +5527,8 @@
     });
     if (el.narratorBtn) el.narratorBtn.addEventListener("click", toggleNarrator);
     if (el.narratorStop) el.narratorStop.addEventListener("click", () => Narrator.stop());
+    if (el.agentDebugBtn) el.agentDebugBtn.addEventListener("click", () => AgentLog.toggle());
+    AgentLog.init();
     document.addEventListener("keydown", onKeydown);
 
     // Browsers block audio until a user gesture; unlock the context on the

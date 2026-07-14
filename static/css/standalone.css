@@ -2895,6 +2895,85 @@ body.reactor-available.rt-log-on #rt-log { display: flex; }
 .rt-e.rt-status .rt-m { color: rgba(142,255,193,0.75); }
 .rt-e.rt-dim .rt-m    { color: rgba(216,240,228,0.55); }  /* chunks / state — dim */
 
+/* ---------- Voice-agent debug log (TALK + narrator) ---------- */
+/* Docked LEFT (so it can sit alongside the world-model log on the right).
+   Toggled by the DEBUG rail button / D key via body.agent-log-on. */
+#agent-log {
+  position: fixed;
+  left: calc(env(safe-area-inset-left, 0px) + 10px);
+  top: calc(env(safe-area-inset-top, 0px) + 58px);
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 96px);
+  width: 300px;
+  max-width: calc(100vw - 20px);
+  z-index: 13;
+  display: none;
+  flex-direction: column;
+  background: rgba(12, 8, 4, 0.72);
+  border: 1px solid rgba(255, 196, 120, 0.28);
+  border-radius: 8px;
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+}
+body.agent-log-on #agent-log { display: flex; }
+.agent-log-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 9px;
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  color: rgba(255, 205, 140, 0.85);
+  border-bottom: 1px solid rgba(255, 196, 120, 0.16);
+  background: rgba(0, 0, 0, 0.3);
+}
+.agent-log-title { flex: 1 1 auto; }
+.agent-log-btn {
+  background: none;
+  border: 1px solid rgba(255, 196, 120, 0.25);
+  border-radius: 4px;
+  color: rgba(255, 224, 190, 0.7);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  padding: 2px 6px;
+  line-height: 1.2;
+}
+.agent-log-btn:hover { color: #ffe7bf; border-color: rgba(255, 216, 150, 0.6); }
+.agent-log-list {
+  list-style: none;
+  margin: 0;
+  padding: 5px 8px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 10px;
+  line-height: 1.4;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 196, 120, 0.35) transparent;
+}
+.agent-log-list::-webkit-scrollbar { width: 6px; }
+.agent-log-list::-webkit-scrollbar-thumb { background: rgba(255,196,120,0.3); border-radius: 3px; }
+.al-e { display: block; margin: 1px 0; white-space: normal; word-break: break-word; animation: rt-e-in 0.2s ease-out; }
+.al-t { color: rgba(255,224,190,0.35); margin-right: 5px; }
+.al-m { color: rgba(240,235,225,0.92); }
+.al-d { color: rgba(240,235,225,0.5); }
+.al-e.al-ok .al-m       { color: #8effc1; }
+.al-e.al-error .al-m    { color: #ff8a8a; }
+.al-e.al-warn .al-m     { color: #ffcf94; }
+.al-e.al-sdk .al-m      { color: #c8a2ff; }
+.al-e.al-voice .al-m    { color: #bfe9ff; }
+.al-e.al-talk .al-m     { color: #ffd8a6; }
+.al-e.al-narrator .al-m { color: #bcd2ff; }
+.al-e.al-net .al-m      { color: rgba(142,255,193,0.8); }
+.al-e.al-dim .al-m      { color: rgba(240,235,225,0.5); }
+@media (max-width: 560px) {
+  #agent-log { width: calc(100vw - 20px); top: calc(env(safe-area-inset-top,0px) + 52px); bottom: calc(env(safe-area-inset-bottom,0px) + 200px); }
+}
+
 /* ---------- Backend tag ---------- */
 
 #backend-tag {

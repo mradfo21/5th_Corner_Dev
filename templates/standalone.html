@@ -91,6 +91,9 @@
     <button id="narrator-btn" class="rail-btn" type="button" title="Narrator — a voice frames the world (N)">
       <span class="rail-ico">❋</span><span class="rail-lbl">NARRATE</span>
     </button>
+    <button id="agent-debug-btn" class="rail-btn" type="button" title="Voice-agent debug log (D)">
+      <span class="rail-ico">⌗</span><span class="rail-lbl">DEBUG</span>
+    </button>
     <button id="btn-vhs" class="rail-btn" type="button" title="VHS overlay (V)">
       <span class="rail-ico">▣</span><span class="rail-lbl">VHS</span>
     </button>
@@ -155,6 +158,19 @@
       <div id="rt-music-opts" class="rt-music-opts"></div>
     </div>
     <ol id="rt-log-list" class="rt-log-list" aria-live="polite"></ol>
+  </aside>
+
+  <!-- Voice-agent debug log: a focused inspector for the TALK + narrator agents
+       (session opens, SDK/connection status, mode changes, transcript, voice
+       switches, narrator segments, errors). Toggle with the DEBUG button or D;
+       add ?agentdebug to the URL to open it on load. -->
+  <aside id="agent-log" class="agent-log" aria-label="Voice agent debug log">
+    <div class="agent-log-head">
+      <span class="agent-log-title">AGENT DEBUG</span>
+      <button id="agent-log-clear" class="agent-log-btn" type="button" title="Clear">clear</button>
+      <button id="agent-log-hide" class="agent-log-btn" type="button" title="Hide (D)">&#10005;</button>
+    </div>
+    <ol id="agent-log-list" class="agent-log-list" aria-live="polite"></ol>
   </aside>
 
   <!-- Story log: a detailed, timestamped chronicle of the run — every narrative
