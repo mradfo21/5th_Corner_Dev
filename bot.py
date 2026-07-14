@@ -4174,6 +4174,30 @@ Generate the penalty in valid JSON format. MUST stay in current location. MUST h
         # into the guild, and sync there. If we can't determine a guild
         # (e.g. CHANNEL_ID misconfigured) we fall back to a global sync so
         # the bot still works, just with slower propagation.
+        async def _global_commands_up_to_date() -> bool:
+            """Return True when Discord's already-registered GLOBAL commands match
+            our local command tree.
+
+            Global command updates (``PUT /applications/{id}/commands``) are
+            aggressively rate-limited by Discord. Because the bot re-syncs on
+            every process start — and Render restarts it frequently — blindly
+            calling ``tree.sync()`` each boot triggered a 429 on nearly every
+            launch (the discord.http layer then blocks for minutes retrying).
+            Fetching the existing commands first is a cheap GET, so we only pay
+            the expensive PUT when the command set has actually changed."""
+            try:
+                remote = await bot.tree.fetch_commands()
+            except Exception as e:
+                print(f"[BOT] Could not fetch existing global commands ({e}); will sync.", flush=True)
+                return False
+
+            def _sig(cmd) -> str:
+                return f"{cmd.name}\x1f{(getattr(cmd, 'description', '') or '').strip()}"
+
+            local_sigs = sorted(_sig(c) for c in bot.tree.get_commands())
+            remote_sigs = sorted(_sig(c) for c in remote)
+            return local_sigs == remote_sigs
+
         async def _sync_slash_commands():
             target_guild = None
             try:
@@ -4205,19 +4229,44 @@ Generate the penalty in valid JSON format. MUST stay in current location. MUST h
                             f"to {target_guild.id} (instant): {names}",
                             flush=True,
                         )
-                        # Also kick off a background global sync so the bot
-                        # works in DMs / other guilds eventually. This one is
-                        # slow-propagating but harmless.
+                        # Also make sure the commands are registered GLOBALLY so
+                        # the bot works in DMs / other guilds. Global updates are
+                        # aggressively rate-limited, so only PUT when something
+                        # actually changed — otherwise every restart eats a 429
+                        # and the http layer blocks for minutes retrying.
                         try:
-                            global_synced = await bot.tree.sync()
-                            print(
-                                f"[BOT] Synced {len(global_synced)} global slash command(s) "
-                                f"(propagation up to ~1 hour)",
-                                flush=True,
-                            )
+                            if await _global_commands_up_to_date():
+                                print(
+                                    "[BOT] Global slash commands already up to date; "
+                                    "skipping global sync (avoids 429).",
+                                    flush=True,
+                                )
+                            else:
+                                global_synced = await bot.tree.sync()
+                                print(
+                                    f"[BOT] Synced {len(global_synced)} global slash command(s) "
+                                    f"(propagation up to ~1 hour)",
+                                    flush=True,
+                                )
+                        except discord.HTTPException as e:
+                            if getattr(e, "status", None) == 429:
+                                print(
+                                    "[BOT] Global slash sync rate-limited (429); skipping "
+                                    "(guild sync already active for the primary server).",
+                                    flush=True,
+                                )
+                            else:
+                                print(f"[BOT] Global slash sync skipped: {e}", flush=True)
                         except Exception as e:
                             print(f"[BOT] Global slash sync skipped: {e}", flush=True)
                     else:
+                        if await _global_commands_up_to_date():
+                            print(
+                                "[BOT] Global slash commands already up to date; "
+                                "skipping global sync (avoids 429).",
+                                flush=True,
+                            )
+                            return
                         synced = await bot.tree.sync()
                         print(
                             f"[BOT] Synced {len(synced)} GLOBAL slash command(s) "
