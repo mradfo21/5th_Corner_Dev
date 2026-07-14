@@ -1028,6 +1028,104 @@ body.touch-aiming #touch-capture-frame { opacity: 0.85; }
   40%  { box-shadow: 0 0 26px rgba(255,225,170,0.85), inset 0 0 34px rgba(255,186,89,0.32); transform: translate(-50%,-50%) scale(0.95); }
   100% { box-shadow: inset 0 0 0 rgba(255,186,89,0); transform: translate(-50%,-50%) scale(1); }
 }
+/* SUBJECT LOCKED: a detected target is framed — the shot is worthy evidence. */
+#touch-capture-frame.locked {
+  border-style: solid;
+  border-color: rgba(127, 232, 170, 0.95);
+  box-shadow: 0 0 22px rgba(127, 232, 170, 0.45), inset 0 0 20px rgba(127, 232, 170, 0.12);
+}
+#touch-capture-frame.locked::before,
+#touch-capture-frame.locked::after { border-color: rgba(170, 255, 205, 1); }
+/* MISS: an empty frame — a quick red shake so it reads as "no subject". */
+#touch-capture-frame.miss { animation: touch-miss 0.4s ease-out; }
+@keyframes touch-miss {
+  0%, 100% { transform: translate(-50%, -50%); border-color: rgba(255, 90, 90, 0.9); }
+  25%      { transform: translate(calc(-50% - 7px), -50%); border-color: rgba(255, 90, 90, 1); }
+  75%      { transform: translate(calc(-50% + 7px), -50%); border-color: rgba(255, 90, 90, 1); }
+}
+
+/* ---------- Photographable targets (from live detection) ---------- */
+#touch-targets {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+.photo-target {
+  position: absolute;
+  width: 44px;
+  height: 44px;
+  transform: translate(-50%, -50%);
+  transition: left 0.14s ease-out, top 0.14s ease-out, opacity 0.2s ease;
+  opacity: 0.62;
+}
+.photo-target.off { display: none; }
+/* Corner brackets that read as a targeting reticle over each subject. */
+.photo-target::before,
+.photo-target::after,
+.photo-target .pt-tr,
+.photo-target .pt-bl {
+  content: "";
+  position: absolute;
+  width: 11px;
+  height: 11px;
+  border: 2px solid rgba(255, 214, 158, 0.85);
+}
+.photo-target::before { left: 0; top: 0; border-right: none; border-bottom: none; }
+.photo-target::after  { right: 0; bottom: 0; border-left: none; border-top: none; }
+.photo-target .pt-tr { right: 0; top: 0; border-left: none; border-bottom: none; }
+.photo-target .pt-bl { left: 0; bottom: 0; border-right: none; border-top: none; }
+.photo-target .pt-label {
+  position: absolute;
+  top: calc(100% + 3px);
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(255, 224, 180, 0.85);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.95);
+}
+/* Framed = you'd catch it right now: brighten to green "lock" tint. */
+.photo-target.in-frame {
+  opacity: 1;
+  animation: photo-target-lock 1.1s ease-in-out infinite;
+}
+.photo-target.in-frame::before,
+.photo-target.in-frame::after,
+.photo-target.in-frame .pt-tr,
+.photo-target.in-frame .pt-bl { border-color: rgba(150, 255, 195, 1); }
+.photo-target.in-frame .pt-label { color: rgba(180, 255, 210, 1); font-weight: 700; }
+@keyframes photo-target-lock {
+  0%, 100% { filter: drop-shadow(0 0 2px rgba(127, 232, 170, 0.4)); }
+  50%      { filter: drop-shadow(0 0 8px rgba(127, 232, 170, 0.9)); }
+}
+
+/* Lock-on badge — names the subject currently framed as worthy. */
+.touch-lock {
+  position: absolute;
+  left: 50%;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 262px);
+  transform: translateX(-50%);
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #aaffcd;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.95);
+  opacity: 0;
+  transition: opacity 0.16s ease;
+  pointer-events: none;
+}
+.touch-lock.show { opacity: 1; }
+
+@media (prefers-reduced-motion: reduce) {
+  .photo-target { transition: none; }
+  .photo-target.in-frame { animation: none; }
+  #touch-capture-frame.miss { animation: none; }
+}
 
 /* Reticle glows while it "holds" a freshly captured specimen. */
 #touch-reticle.holding {

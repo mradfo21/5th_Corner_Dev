@@ -441,6 +441,9 @@ class TestRealtimeRenderer(unittest.TestCase):
                 "mood": "ominous",
             }))
         page.route("**/api/photo", photo_handler)
+        # A detected subject dead-center: framing it makes the shot WORTHY.
+        page.route("**/api/detect", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps({
+            "objects": [{"label": "figure", "cx": 0.5, "cy": 0.5, "w": 0.25, "h": 0.4}]})))
         try:
             page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
             page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
@@ -448,14 +451,16 @@ class TestRealtimeRenderer(unittest.TestCase):
             self.assertNotEqual(page.evaluate("getComputedStyle(document.getElementById('realtime-btn')).display"), "none")
             self.assertTrue(page.evaluate("!!document.querySelector('#touch-reticle .touch-cam')"))
             self.assertIsNone(page.evaluate("document.querySelector('#touch-reticle .touch-hand')"))
-            # Arm it, then TAP a spot via press+release pointer events (touch/iOS).
+            # Arm it — photographable targets surface from the live detection.
             page.evaluate("document.getElementById('realtime-btn').click()")
             self.assertTrue(page.evaluate("document.getElementById('realtime-btn').classList.contains('aiming')"))
+            page.wait_for_function("document.querySelectorAll('#touch-targets .photo-target').length >= 1", timeout=8000)
             page.evaluate("window.__MOCK_CMDS__ = []")
+            # TAP the centered subject (press+release) — a worthy shot.
             page.evaluate(
                 """() => {
                     const L = document.getElementById('touch-layer');
-                    const o = {clientX: 240, clientY: 200, pointerId: 1, cancelable: true, bubbles: true};
+                    const o = {clientX: window.innerWidth/2, clientY: window.innerHeight/2, pointerId: 1, cancelable: true, bubbles: true};
                     L.dispatchEvent(new PointerEvent('pointerdown', o));
                     L.dispatchEvent(new PointerEvent('pointerup', o));
                 }"""
@@ -576,6 +581,9 @@ class TestRealtimeRenderer(unittest.TestCase):
         page.route("**/api/photo", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps({
             "items": [{"label": s, "interest": 4, "note": "clue"} for s in subjects],
             "caption": "A dense, telling frame.", "mood": "ominous"})))
+        # A centered detected subject makes the shot worthy (gate).
+        page.route("**/api/detect", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps({
+            "objects": [{"label": "figure", "cx": 0.5, "cy": 0.5, "w": 0.25, "h": 0.4}]})))
         try:
             page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
             page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
@@ -583,10 +591,11 @@ class TestRealtimeRenderer(unittest.TestCase):
             page.evaluate("document.getElementById('realtime-btn').click()")
             page.wait_for_function("!document.getElementById('evidence-hud').classList.contains('hidden')", timeout=5000)
             self.assertIn("/8", page.evaluate("document.querySelector('#evidence-hud .ev-case-count').textContent"))
-            # Take the shot (press + release).
+            page.wait_for_function("document.querySelectorAll('#touch-targets .photo-target').length >= 1", timeout=8000)
+            # Take the shot at the centered subject (press + release).
             page.evaluate("""() => {
                 const L = document.getElementById('touch-layer');
-                const o = {clientX: 640, clientY: 360, pointerId: 1, cancelable: true, bubbles: true};
+                const o = {clientX: window.innerWidth/2, clientY: window.innerHeight/2, pointerId: 1, cancelable: true, bubbles: true};
                 L.dispatchEvent(new PointerEvent('pointerdown', o));
                 L.dispatchEvent(new PointerEvent('pointerup', o));
             }""")
@@ -600,6 +609,63 @@ class TestRealtimeRenderer(unittest.TestCase):
             page.wait_for_function("document.getElementById('case-overlay').classList.contains('hidden')", timeout=8000)
         except Exception:
             print("\n=== REACTOR CONSOLE LOG (win) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
+    def test_photo_worthy_shot_requires_a_framed_subject(self):
+        """A shot only gathers evidence when a DETECTED subject is framed. The
+        live detection floats a target over what you can photograph; shooting
+        empty space misses (no receipt, no /api/photo), while framing the target
+        is worthy (receipt shows). This uses genuine in-game perception data."""
+        page = self._new_realtime_page()
+        scene_items = [
+            {"id": 1, "type": "narrative", "content": "Intro."},
+            {"id": 2, "type": "scene_image", "content": "", "image_url": TINY_PNG_DATA_URL,
+             "metadata": {"prompt": "scene one", "base": "A loading dock.", "hard_transition": False}},
+            {"id": 3, "type": "player_choice_prompt", "content": "?", "choices": [{"text": "Go"}]},
+        ]
+        photos = []
+        page.route("**/api/reset", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(scene_items)))
+        page.route("**/api/feed*", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
+        page.route("**/api/investigate", lambda r: r.fulfill(status=200, content_type="application/json", body='{"ok":true,"id":1,"kind":"photo"}'))
+        page.route("**/api/detect", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps({
+            "objects": [{"label": "figure", "cx": 0.5, "cy": 0.5, "w": 0.25, "h": 0.4}]})))
+
+        def photo_handler(route):
+            photos.append(route.request.url)
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({
+                "items": [{"label": "figure", "interest": 4, "note": "a witness"}], "caption": "There.", "mood": "tense"}))
+        page.route("**/api/photo", photo_handler)
+        try:
+            page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
+            page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
+            page.evaluate("document.getElementById('realtime-btn').click()")
+            page.wait_for_function("document.querySelectorAll('#touch-targets .photo-target').length >= 1", timeout=8000)
+
+            # MISS: shoot a far corner with no subject -> no receipt, no appraisal.
+            page.evaluate("""() => {
+                const L = document.getElementById('touch-layer');
+                const o = {clientX: 60, clientY: 60, pointerId: 2, cancelable: true, bubbles: true};
+                L.dispatchEvent(new PointerEvent('pointerdown', o));
+                L.dispatchEvent(new PointerEvent('pointerup', o));
+            }""")
+            page.wait_for_timeout(700)
+            self.assertEqual(len(photos), 0, "a miss must not appraise the shot")
+            self.assertFalse(page.evaluate("document.getElementById('photo-receipt').classList.contains('show')"),
+                             "a miss must not show the receipt")
+
+            # WORTHY: frame the centered subject -> receipt develops.
+            page.evaluate("""() => {
+                const L = document.getElementById('touch-layer');
+                const o = {clientX: window.innerWidth/2, clientY: window.innerHeight/2, pointerId: 3, cancelable: true, bubbles: true};
+                L.dispatchEvent(new PointerEvent('pointerdown', o));
+                L.dispatchEvent(new PointerEvent('pointerup', o));
+            }""")
+            page.wait_for_function("document.getElementById('photo-receipt').classList.contains('show')", timeout=6000)
+            self.assertGreaterEqual(len(photos), 1, "a worthy shot must appraise the frame")
+        except Exception:
+            print("\n=== REACTOR CONSOLE LOG (worthy) ===\n" + self._dump_logs())
             raise
         finally:
             page.close()
