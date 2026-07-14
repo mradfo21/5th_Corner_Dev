@@ -4458,18 +4458,22 @@
     tag.dataset.sy = y;
   }
 
-  // The actions a player can take on a detected object. Each composes a clean,
-  // natural prompt from the verb + the object's own name — no typing. The
-  // consequence LLM (server-side) already turns that intent into an in-world,
-  // exciting outcome + a fresh scene, so there's no need for a separate
-  // "action-writing" LLM. Add more verbs here to grow the vocabulary.
+  // The actions a player can take on a detected object. They split into two
+  // distinct kinds:
+  //   • MOVE — resolves a FULL turn that RELOCATES you: a full change of scenery
+  //     (hard transition) to a fresh scene composed around the object.
+  //   • INTERACT — injects a LIVE realtime event into the running world model (a
+  //     prompt hot-swap) so the world reacts in place, without changing scene.
+  //   • TALK — opens a live conversation overlay (unchanged).
+  // MOVE composes a clean, natural prompt from the verb + the object's own name;
+  // the consequence LLM (server-side) turns that intent into an in-world outcome
+  // + a fresh scene, so there's no need for a separate "action-writing" LLM.
   // Objects you can go INSIDE / through — a passage, opening, vehicle, or
-  // structure. When "MOVE TO" targets one of these, we phrase it as an ENTRY so
-  // the engine cuts to a fresh interior scene (is_hard_transition fires on
-  // "enter …"); otherwise it's an APPROACH that advances the camera closer
-  // (the movement classifier keys on "approach", so the scene actually changes
-  // instead of drifting in place — which is why plain "move to the X" sometimes
-  // looked static).
+  // structure. When "MOVE TO" targets one of these, we phrase it as an ENTRY
+  // ("enter …"); every other object is phrased as a relocation ("cross over").
+  // Both are hard transitions (is_hard_transition fires on "enter"/"cross
+  // over"), so MOVE always yields a genuinely new scene rather than drifting in
+  // place — which is why plain "move to the X" used to look static.
   const ENTERABLE_RE = /\b(door|doorway|gate|gateway|entrance|entry|hatch|portal|threshold|arch|archway|opening|mouth|maw|tunnel|pipe|duct|corridor|hallway|hall|passage|passageway|stair|stairs|stairway|stairwell|room|building|house|cabin|shack|shed|garage|barn|cave|cavern|vault|chamber|window|breach|gap|hole|vent|shaft|elevator|lift|airlock|tent|bunker|silo|structure|ruin|ruins|store|shop|church|warehouse|facility|lab|laboratory|booth|trailer|van|truck|car|bus|train|carriage|wagon|boat|ship|cockpit|rig|derrick)\b/i;
 
   function moveActionPhrase(o) {
@@ -4477,9 +4481,22 @@
       // "Enter …" -> hard transition -> a genuinely new interior scene.
       return "Enter the " + o + ", moving inside into the space beyond.";
     }
-    // "approach" -> forward_movement -> the camera advances, so the scene visibly
-    // changes as you close in.
-    return "Move toward the " + o + ", approaching until it fills the view.";
+    // MOVE always RELOCATES you — a full change of scenery, not a camera drift
+    // in place. "Cross over" is one of the engine's hard-transition triggers
+    // (is_hard_transition), so the turn cuts to a fresh scene composed around the
+    // object at your new vantage instead of merely advancing the camera.
+    return "Travel to the " + o + ", crossing over to it and arriving at a new vantage where the surroundings have completely changed.";
+  }
+
+  // A short spatial anchor for a detected object, derived from its normalized
+  // center — used to aim a realtime INTERACT event at the spot on screen where
+  // the thing actually is (so the world reacts THERE, not across the whole frame).
+  function objectAnchorPhrase(obj) {
+    const cx = typeof obj.cx === "number" ? obj.cx : 0.5;
+    const cy = typeof obj.cy === "number" ? obj.cy : 0.5;
+    const h = cx < 0.34 ? "left" : cx > 0.66 ? "right" : "center";
+    const v = cy < 0.34 ? "upper " : cy > 0.66 ? "lower " : "";
+    return "at the " + (obj.label || "it") + " (" + v + h + " of the frame)";
   }
 
   // Does this detected thing hold a conversation? The perception layer
@@ -4503,7 +4520,12 @@
       icon: '<svg class="scan-action-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2v20M2 12h20"/><path d="M9 5l3-3 3 3M9 19l3 3 3-3M5 9l-3 3 3 3M19 9l3 3-3 3"/></svg>',
     },
     {
+      // INTERACT injects a LIVE event into the running world model — a realtime
+      // prompt hot-swap on the current stream (no backend turn, no scene change)
+      // so the world reacts to the poke NOW, right where the object sits. Falls
+      // back to a full turn when realtime isn't live (still mode).
       id: "interact", label: "INTERACT", title: "Interact with",
+      realtime: true,
       phrase: (o) => "Interact with the " + o + ".",
       icon: '<svg class="scan-action-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 13V5a2 2 0 0 1 4 0v6"/><path d="M12 11V4a2 2 0 0 1 4 0v7"/><path d="M16 11V7a2 2 0 0 1 4 0v8a6 6 0 0 1-6 6h-2a6 6 0 0 1-5-2.7l-2.8-4a2 2 0 0 1 3.1-2.5L9 14"/></svg>',
     },
@@ -4630,8 +4652,25 @@
   function commitScanAction(tag, action) {
     const obj = tag._obj || { label: "it" };
     if (state.gameOver) { closeTagPrompt(tag); return; }
-    if (state.processing) { showRendererToast("The world is still resolving…"); return; }
     const phrase = action.phrase(obj.label);
+
+    // INTERACT is a LIVE poke: inject a realtime event into the running world
+    // model (a set_prompt hot-swap) so the world reacts in place, right where the
+    // object sits — no backend turn, no scene change. This works even while a
+    // turn is resolving, so it isn't gated on the pipeline being idle. If
+    // realtime isn't live (still mode), fall through to a full turn so INTERACT
+    // still does something.
+    if (action.realtime) {
+      const steered = Renderer.steerRealtime(phrase, { phrase: objectAnchorPhrase(obj) });
+      if (steered) {
+        Sound.submit();
+        closeTagPrompt(tag);
+        showRendererToast(action.title + " the " + obj.label + "\u2026");
+        return;
+      }
+    }
+
+    if (state.processing) { showRendererToast("The world is still resolving…"); return; }
     Sound.submit();
     closeTagPrompt(tag);
     showRendererToast(action.title + " the " + obj.label + "\u2026");
