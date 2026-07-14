@@ -492,8 +492,10 @@ class TestRealtimeRenderer(unittest.TestCase):
     def test_camera_zoom_scales_scene_and_suppresses_pinch_capture(self):
         """Optical zoom: while the camera is armed, the mouse wheel magnifies the
         scene (a CSS transform on the video layer) within bounds, the readout
-        tracks it, and a two-finger PINCH zooms WITHOUT firing a capture (no
-        /api/investigate) — only a clean single-finger tap shoots."""
+        tracks it, the magnification RE-ANCHORS to the reticle as it moves (so
+        the zoomed view follows the aim, FPS-scope style), and a two-finger
+        PINCH zooms WITHOUT firing a capture (no /api/investigate) — only a
+        clean single-finger tap shoots."""
         page = self._new_realtime_page()
         scene_items = [
             {"id": 1, "type": "narrative", "content": "Intro."},
@@ -512,7 +514,7 @@ class TestRealtimeRenderer(unittest.TestCase):
             page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
             # Arm the camera -> a gentle push-in scales the scene right away.
             page.evaluate("document.getElementById('realtime-btn').click()")
-            page.wait_for_function("(document.getElementById('reactor-video').style.transform || '').indexOf('scale(') === 0", timeout=4000)
+            page.wait_for_function("(document.getElementById('reactor-video').style.transform || '').includes('scale(')", timeout=4000)
             z_armed = page.evaluate("parseFloat(document.getElementById('touch-zoom').textContent)")
             self.assertGreater(z_armed, 1.0, "arming should push gently into the scene")
 
@@ -521,7 +523,15 @@ class TestRealtimeRenderer(unittest.TestCase):
                 new WheelEvent('wheel', {deltaY: -600, cancelable: true, bubbles: true}))""")
             z_in = page.evaluate("parseFloat(document.getElementById('touch-zoom').textContent)")
             self.assertGreater(z_in, z_armed, "wheel up must zoom in")
-            self.assertIn("scale(", page.evaluate("document.getElementById('reactor-video').style.transform"))
+            transform_a = page.evaluate("document.getElementById('reactor-video').style.transform")
+            self.assertIn("scale(", transform_a)
+            # The zoom is anchored to the reticle (translate + scale), so moving the
+            # aim point re-anchors the magnified view (it follows the cursor).
+            page.evaluate("""() => document.getElementById('touch-layer').dispatchEvent(
+                new PointerEvent('pointermove', {pointerId: 5, clientX: 120, clientY: 130, cancelable:true, bubbles:true}))""")
+            transform_b = page.evaluate("document.getElementById('reactor-video').style.transform")
+            self.assertIn("translate(", transform_b)
+            self.assertNotEqual(transform_a, transform_b, "zoom must re-anchor to follow the reticle")
 
             # A big wheel-down clamps back to the wide bound (1.0x, transform cleared).
             page.evaluate("""() => document.getElementById('touch-layer').dispatchEvent(

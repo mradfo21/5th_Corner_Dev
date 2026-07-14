@@ -2427,9 +2427,12 @@
 
   // ------------------------------------------------------------------
   // Optical zoom — while the camera is armed, scroll (mouse) or pinch (touch)
-  // magnifies the whole scene around its center. The capture crop is derived
-  // from the framed (magnified) view, so zooming in genuinely captures a
-  // tighter, telephoto slice — and gives a deeper sense of leaning in to look.
+  // magnifies the scene AROUND THE RETICLE (where you're aiming), not the
+  // viewport center. The magnification is anchored to the aim point and the
+  // scene layers carry a CSS transform transition, so as you move the mouse the
+  // zoomed view smoothly glides to follow it — an FPS-scope feel. The capture
+  // crop is derived from the framed (magnified) view, so zooming in genuinely
+  // captures a tighter, telephoto slice of exactly what you're looking at.
   // ------------------------------------------------------------------
   const PHOTO_ZOOM_MIN = 1.0;    // full wide
   const PHOTO_ZOOM_MAX = 3.0;    // max telephoto (reasonable bound)
@@ -2438,26 +2441,33 @@
   function clampZoom(z) { return Math.max(PHOTO_ZOOM_MIN, Math.min(PHOTO_ZOOM_MAX, z)); }
 
   // The scene transform currently applied (identity unless the camera is armed).
-  // Centralized so the capture crop math can invert it. Origin = viewport center
-  // (matches the CSS transform-origin), so the magnified view never "swims" as
-  // the reticle moves.
+  // Centralized so the capture crop math can invert it. The origin is the
+  // RETICLE point: scaling about it keeps whatever is under the reticle locked
+  // under the reticle while everything else magnifies around it.
   function getSceneTransform() {
     const scale = state.touchMode ? (state.photoZoom || 1) : 1;
-    return { scale, ox: window.innerWidth / 2, oy: window.innerHeight / 2 };
+    const p = state.touchPoint || { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+    return { scale, ox: p.x, oy: p.y };
   }
 
-  function applySceneZoom() {
+  // Apply scale-about-reticle as `translate(t) scale(z)` with transform-origin
+  // 0 0, where t = (1 - z) * reticle. Expressing it this way (instead of moving
+  // transform-origin) means only the translate changes as the reticle moves, so
+  // the CSS transform transition can smoothly interpolate the pan — the view
+  // glides to follow the cursor instead of snapping.
+  function applySceneTransform() {
     const z = state.touchMode ? (state.photoZoom || 1) : 1;
-    const val = z === 1 ? "" : `scale(${z.toFixed(4)})`;
+    let val = "";
+    if (z !== 1) {
+      const t = getSceneTransform();
+      const tx = ((1 - z) * t.ox).toFixed(2);
+      const ty = ((1 - z) * t.oy).toFixed(2);
+      val = `translate(${tx}px, ${ty}px) scale(${z.toFixed(4)})`;
+    }
     [el.sceneA, el.sceneB, el.reactorVideo, el.reactorFreeze].forEach((n) => {
       if (n) n.style.transform = val;
     });
-    if (el.touchZoom) {
-      el.touchZoom.innerHTML = (state.photoZoom || 1).toFixed(1) + "&times;";
-      el.touchZoom.classList.remove("bump");
-      void el.touchZoom.offsetWidth;
-      el.touchZoom.classList.add("bump");
-    }
+    if (el.touchZoom) el.touchZoom.innerHTML = (state.photoZoom || 1).toFixed(1) + "&times;";
   }
 
   function setPhotoZoom(z, opts) {
@@ -2465,7 +2475,12 @@
     const clamped = clampZoom(z);
     if (!opts.force && Math.abs(clamped - state.photoZoom) < 0.004) return;
     state.photoZoom = clamped;
-    applySceneZoom();
+    applySceneTransform();
+    if (el.touchZoom) { // pop the readout only on an actual zoom change
+      el.touchZoom.classList.remove("bump");
+      void el.touchZoom.offsetWidth;
+      el.touchZoom.classList.add("bump");
+    }
     if (!opts.silent) {
       try { Sound.zoom((clamped - PHOTO_ZOOM_MIN) / (PHOTO_ZOOM_MAX - PHOTO_ZOOM_MIN)); } catch (_) {}
     }
@@ -2505,6 +2520,9 @@
       el.touchCaptureFrame.style.left = x + "px";
       el.touchCaptureFrame.style.top = y + "px";
     }
+    // Re-anchor the zoom to the new aim point so the magnified view smoothly
+    // follows the reticle (the CSS transform transition does the gliding).
+    if (state.photoZoom && state.photoZoom !== 1) applySceneTransform();
   }
 
   // Pointer-driven so it works with mouse (hover) AND touch (drag) alike.
