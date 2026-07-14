@@ -2048,7 +2048,9 @@
 
   // Default on-screen size of the capture box (px), tuned to the viewport.
   function investBoxPx() {
-    return Math.round(Math.min(320, Math.max(140, Math.min(window.innerWidth, window.innerHeight) * 0.26)));
+    // 2x the original framing — a bigger, more forgiving capture region (this
+    // also scales the on-screen frame and the "in-frame" worthiness tolerance).
+    return Math.round(Math.min(640, Math.max(280, Math.min(window.innerWidth, window.innerHeight) * 0.52)));
   }
 
   // Crop a normalized region of the current scene to a square JPEG data URL.
@@ -2962,7 +2964,7 @@
     });
     if (framed.length) centered = best <= boxPx * 0.3;
     const region = screenBoxToNorm(x, y, boxPx);
-    const texture = captureSceneRegion(region, 320);
+    const texture = captureSceneRegion(region, 512); // larger region → keep detail
     if (!texture) { showRendererToast("Couldn't capture \u2014 hold steady"); return; }
     // Frame flash + camera flash + shutter for a tactile "snap".
     if (el.touchCaptureFrame) {
