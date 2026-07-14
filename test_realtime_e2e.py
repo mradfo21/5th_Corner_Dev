@@ -82,9 +82,34 @@ export class Reactor {
     window.__MOCK_UPLOADS__ = (window.__MOCK_UPLOADS__ || 0) + 1;
     return { id: "file_" + Math.random().toString(36).slice(2) };
   }
+  _emitState() {
+    const a = this._axes;
+    const map = { move_longitudinal: { forward: "w", back: "s" }, move_lateral: { strafe_left: "q", strafe_right: "e" },
+                  look_horizontal: { left: "a", right: "d" }, look_vertical: { up: "i", down: "k" } };
+    const parts = [];
+    ["move_longitudinal", "move_lateral", "look_horizontal", "look_vertical"].forEach((k) => {
+      const t = map[k][a[k]]; if (t) parts.push(t);
+    });
+    this._emit("message", { type: "state", data: {
+      current_action: parts.length ? parts.join("+") : "still",
+      move_longitudinal: a.move_longitudinal, move_lateral: a.move_lateral,
+      look_horizontal: a.look_horizontal, look_vertical: a.look_vertical,
+      rotation_speed_deg: a.rotation_speed_deg, current_chunk: this._chunk || 0,
+    }});
+  }
   async sendCommand(name, data) {
     window.__MOCK_CMDS__ = window.__MOCK_CMDS__ || [];
     window.__MOCK_CMDS__.push(name);
+    // Full record (name + data) so movement tests can assert exact axis values.
+    window.__MOCK_CMD_LOG__ = window.__MOCK_CMD_LOG__ || [];
+    window.__MOCK_CMD_LOG__.push({ name: name, data: data || {} });
+    // Track LingBot World 2's persistent movement/look axes and echo `state`.
+    this._axes = this._axes || { move_longitudinal: "idle", move_lateral: "idle",
+      look_horizontal: "idle", look_vertical: "idle", rotation_speed_deg: 5.0 };
+    const AX = { set_move_longitudinal: "move_longitudinal", set_move_lateral: "move_lateral",
+      set_look_horizontal: "look_horizontal", set_look_vertical: "look_vertical" };
+    if (AX[name]) { this._axes[AX[name]] = (data || {})[AX[name]]; setTimeout(() => this._emitState(), 5); }
+    else if (name === "set_rotation_speed_deg") { this._axes.rotation_speed_deg = (data || {}).rotation_speed_deg; setTimeout(() => this._emitState(), 5); }
     if (name === "set_image") {
       setTimeout(() => this._emit("message", { type: "image_accepted", data: {} }), 10);
     } else if (name === "set_prompt") {
