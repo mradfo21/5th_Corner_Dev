@@ -184,6 +184,7 @@
     photoPointers: new Map(),   // active pointers on the camera layer, for pinch-to-zoom
     pinchBase: null,            // {dist, zoom} anchor captured when a two-finger pinch begins
     pinchActive: false,         // true once 2 fingers are down (suppresses the shot until release)
+    touchGesture: null,         // {id, x0, y0, t0, moved} — tracks a single-finger press so a TAP shoots but a DRAG only re-frames (never auto-fires on release)
     receiptTimers: [],          // pending setTimeouts driving the sequential receipt reveal
     receiptToken: 0,            // bumped per capture so a newer shot cancels an older reveal
     caseWon: false,             // the dossier census hit its target this run (win fired)
@@ -3326,6 +3327,9 @@
 
   function runPhotoDetect(force) {
     if (state.touchMode !== "aim" || state.photoDetectBusy) return;
+    // Never rebuild the target markers while a finger is down — a mid-drag
+    // re-detect makes the brackets flicker/jump under the moving reticle.
+    if (state.photoPointers.size > 0) { schedulePhotoDetect(); return; }
     const now = Date.now();
     if (!force && now - state.photoDetectLast < PHOTO_DETECT_MIN_MS) { schedulePhotoDetect(); return; }
     const cap = captureScanFrame();
@@ -3432,6 +3436,19 @@
     if (state.touchMode === "aim") layoutPhotoTargets();
   }
 
+  // A press counts as a TAP (→ shoot) only if the finger barely moved and lifted
+  // quickly. Anything more is a DRAG — the player is re-framing / panning and
+  // must NOT trigger a capture on release (the old behavior that "felt bad").
+  const TAP_MOVE_PX = 16;   // total travel under this reads as a tap, not a drag
+  const TAP_MAX_MS = 700;   // and only if released within this window (touch only)
+  // Movement past this begins an active drag: we switch the scene pan to 1:1
+  // (no eased chase) so framing feels locked to the finger instead of shaky.
+  const DRAG_START_PX = 6;
+
+  function isTouchPointer(e) {
+    return e && e.pointerType && e.pointerType !== "mouse";
+  }
+
   // Pointer-driven so it works with mouse (hover) AND touch (drag) alike.
   // Two fingers down pinch-to-zoom instead of aiming; a lone pointer aims.
   function onTouchMove(e) {
@@ -3446,21 +3463,37 @@
       }
       return; // don't move the reticle mid-pinch
     }
+    // Track travel for the active single-finger gesture so release can tell a
+    // tap from a drag, and flip on 1:1 tracking the moment it becomes a drag.
+    const g = state.touchGesture;
+    if (g && g.id === e.pointerId) {
+      g.moved = Math.max(g.moved, Math.hypot(e.clientX - g.x0, e.clientY - g.y0));
+      if (g.moved > DRAG_START_PX && !g.dragging) {
+        g.dragging = true;
+        document.body.classList.add("photo-dragging");
+      }
+    }
     moveReticle(e.clientX, e.clientY);
   }
 
-  // Press to aim; a clean single-pointer release shoots. A second finger turns
-  // the gesture into a pinch (and suppresses the shot) so zoom never fires a
-  // stray capture. On desktop, hover aims and a click (down+up) shoots.
+  // Press to aim; a clean single-finger TAP shoots, a DRAG only re-frames. A
+  // second finger turns the gesture into a pinch (and suppresses the shot) so
+  // zoom never fires a stray capture. On desktop, hover aims and a click shoots.
   // Right/middle click is a quick "exit the camera" gesture.
   function onTouchDown(e) {
     if (state.touchMode !== "aim") return;
     if (e.button && e.button !== 0) { e.preventDefault(); closeTouch(); return; }
     e.preventDefault();
+    try { if (el.touchLayer && el.touchLayer.setPointerCapture) el.touchLayer.setPointerCapture(e.pointerId); } catch (_) {}
     state.photoPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (state.photoPointers.size === 1) {
+      state.touchGesture = { id: e.pointerId, x0: e.clientX, y0: e.clientY, t0: Date.now(), moved: 0, dragging: false, touch: isTouchPointer(e) };
       moveReticle(e.clientX, e.clientY);
     } else if (state.photoPointers.size === 2) {
+      // Second finger → pinch. Abandon the single-finger gesture so lifting
+      // after a pinch never fires a capture.
+      state.touchGesture = null;
+      document.body.classList.remove("photo-dragging");
       state.pinchActive = true;
       state.pinchBase = { dist: photoPointerDist(), zoom: state.photoZoom };
     }
@@ -3470,10 +3503,21 @@
     if (!state.photoPointers.has(e.pointerId)) return;
     const wasSingle = state.photoPointers.size === 1;
     state.photoPointers.delete(e.pointerId);
-    if (state.touchMode === "aim" && wasSingle && !state.pinchActive && e.type === "pointerup" &&
-        (!e.button || e.button === 0)) {
-      captureAt(e.clientX, e.clientY); // shoot on a clean single-finger release
+    const g = state.touchGesture;
+    const cleanRelease = state.touchMode === "aim" && wasSingle && !state.pinchActive &&
+      e.type === "pointerup" && (!e.button || e.button === 0);
+    // Only a genuine TAP shoots. For a touch pointer a drag re-frames silently;
+    // a mouse click (essentially zero travel) still shoots as before.
+    if (cleanRelease && g && g.id === e.pointerId) {
+      const elapsed = Date.now() - g.t0;
+      // Small travel = a tap → shoot. (1:1 pan may have engaged at 6px, but a
+      // little finger wobble should still count as a deliberate tap.) A real
+      // drag past TAP_MOVE_PX only re-frames; a long touch-press never fires.
+      const isTap = g.moved <= TAP_MOVE_PX && (!g.touch || elapsed <= TAP_MAX_MS);
+      if (isTap) captureAt(e.clientX, e.clientY);
     }
+    if (g && g.id === e.pointerId) state.touchGesture = null;
+    document.body.classList.remove("photo-dragging");
     if (state.photoPointers.size < 2) state.pinchBase = null;
     if (state.photoPointers.size === 0) state.pinchActive = false;
   }
@@ -3492,6 +3536,8 @@
   function onTouchPointerCleanup(e) {
     if (!state.photoPointers.has(e.pointerId)) return;
     state.photoPointers.delete(e.pointerId);
+    if (state.touchGesture && state.touchGesture.id === e.pointerId) state.touchGesture = null;
+    if (state.photoPointers.size === 0) document.body.classList.remove("photo-dragging");
     if (state.photoPointers.size < 2) state.pinchBase = null;
     if (state.photoPointers.size === 0) state.pinchActive = false;
   }
@@ -3542,8 +3588,10 @@
     state.touchMode = null;
     // Release the viewfinder magnification back to full wide.
     state.photoPointers.clear();
+    state.touchGesture = null;
     state.pinchBase = null;
     state.pinchActive = false;
+    document.body.classList.remove("photo-dragging");
     clearSceneZoom();
     stopPhotoTargeting();
     if (el.touchLayer) el.touchLayer.classList.add("hidden");
