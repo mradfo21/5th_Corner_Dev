@@ -33,6 +33,14 @@
        instant genuinely new video frames arrive — a single-session double
        buffer. Only used by the realtime (reactor) renderer. -->
   <canvas id="reactor-freeze" class="reactor-freeze" aria-hidden="true"></canvas>
+  <!-- Realtime scene fade: a near-black veil that eases OVER the live video +
+       freeze buffer at the start of a re-anchor (a new guide image / hard
+       transition) and lifts once the fresh stream is on screen. It gives the
+       realtime renderer the same "fade down → moment of pause → new scene"
+       beat the still renderer gets for free from its crossfade-to-dark, so
+       advancing time in video mode feels as deliberate as it does with stills.
+       Only driven by the realtime (reactor) renderer. -->
+  <div id="reactor-fade" class="reactor-fade" aria-hidden="true"></div>
   <div id="scene-flash"></div>
   <!-- VCR distortion burst: a heavy static/tracking glitch fired over the actual
        visible hand-off (still image swap, realtime freeze→video reveal, and the
@@ -165,26 +173,17 @@
     <button id="realtime-btn" type="button" title="Camera — tap the scene to photograph. Click again, Esc, or right-click to exit (H)">
       <span class="rt-icon">📷</span><span class="rt-label">PHOTO</span>
     </button>
-    <!-- "SCAN" tool: arms the object scanner. Drag across the scene (live video
-         OR the still image) and the model names what it sees with floating
-         starfield tags; each tag has a little button to act on that exact thing.
-         Works in both renderers. -->
-    <button id="scan-btn" type="button" title="Scan the scene — reveal what's in it (S)">
-      <span class="scan-icon">◎</span><span class="scan-label">SCAN</span>
-    </button>
   </div>
 
-  <!-- SCAN tool overlay: a full-screen scanning surface. Armed by the SCAN hub,
-       a scanner reticle sweeps under the cursor as you drag across the scene and
-       "starfield" tags twinkle in over whatever the model recognizes (from the
-       live video frame in realtime mode, or the current still in image mode).
-       Each tag carries a small button that commits a full action on that exact
-       object (consequence + fresh scene). -->
+  <!-- Ambient interaction hotspots: no button — whenever a scene is on screen
+       (live video in realtime mode, or the current still in image mode) the
+       model quietly names what's interactable as "starfield" tags. Hovering
+       near one highlights it; clicking it opens its actions (which commit a full
+       turn: consequence + fresh scene). Non-modal, so the game's choices and
+       controls stay live underneath. -->
   <div id="scan-layer" class="hidden" aria-hidden="true">
-    <div id="scan-beam" aria-hidden="true"></div>
-    <div id="scan-cursor" aria-hidden="true"></div>
     <div id="scan-tags"></div>
-    <div id="scan-hint" class="scan-hint">move across the scene to scan…</div>
+    <div id="scan-hint" class="scan-hint"></div>
   </div>
 
   <!-- TALK overlay: opened from a SCAN tag's TALK action on a thing that can

@@ -82,6 +82,18 @@
   // by design, so we push this high to make it hew to our guide still as closely
   // as possible. Overridable at runtime via window.__HELIOS_IMAGE_STRENGTH__.
   const HELIOS_IMAGE_STRENGTH = (typeof window !== "undefined" && window.__HELIOS_IMAGE_STRENGTH__) || 0.9;
+  // Scene fade-down beat (matches the still renderer's crossfade-to-dark feel):
+  //   • MIN_HOLD — guarantee the scene stays dark at least this long before the
+  //     new stream is revealed, so a fast re-anchor still reads as a deliberate
+  //     "moment of pause" and never a black flicker.
+  //   • SAFETY — never leave the scene stuck dark if the reveal never fires
+  //     (stalled stream / lost frames); lift the veil regardless after this.
+  //   • BLEND_REVEAL — blend-family models (Helios) stream continuously with no
+  //     discrete "new frame" boundary, so hold the veil this long after the new
+  //     guide image is sent, then reveal the blended-in scene.
+  const SCENE_FADE_MIN_HOLD_MS = 650;
+  const SCENE_FADE_SAFETY_MS = 9000;
+  const SCENE_FADE_BLEND_REVEAL_MS = 1200;
 
   const rstate = {
     reactor: null,
@@ -123,6 +135,14 @@
     freezeArmed: false,    // waiting for the first NEW frame to fade it out
     freezeArmTs: 0,
     freezeFallbackTimer: null,
+    // Scene fade veil (the "fade down → pause → reveal" beat between scenes,
+    // mirroring the still renderer). Distinct from the freeze back-buffer: the
+    // freeze HOLDS a frame to avoid a gap; the fade deliberately goes dark.
+    fade: null,
+    fadeDownActive: false, // the fade veil is currently down (scene darkened)
+    fadeDownTs: 0,
+    fadeUpTimer: null,     // pending reveal (honoring the minimum dark hold)
+    fadeSafetyTimer: null, // failsafe: lift the veil even if no reveal fires
     seedToken: 0,          // bumps every reveal/reset so a slow seed decode that
                            // lands AFTER the stream revealed can't re-cover it
   };
@@ -207,6 +227,87 @@
     f.classList.remove("show");
   }
 
+  function getFadeEl() {
+    if (!rstate.fade) rstate.fade = document.getElementById("reactor-fade");
+    return rstate.fade;
+  }
+
+  // Fade the whole scene down to near-black — the deliberate "moment of pause"
+  // beat at the start of a re-anchor (a new guide image / hard transition), so
+  // advancing time in video mode reads as a clean fade-down → pause → reveal
+  // instead of a hot cut over the live stream. Mirrors the still renderer,
+  // where the outgoing scene crossfades to its dark background before the next
+  // one loads. endSceneFade() lifts it once the fresh scene is on screen.
+  function beginSceneFade() {
+    const f = getFadeEl();
+    if (!f) return;
+    rstate.fadeDownActive = true;
+    rstate.fadeDownTs = Date.now();
+    if (rstate.fadeUpTimer) { clearTimeout(rstate.fadeUpTimer); rstate.fadeUpTimer = null; }
+    f.classList.add("down");
+    // Failsafe: never leave the scene stuck dark if the reveal never fires.
+    if (rstate.fadeSafetyTimer) clearTimeout(rstate.fadeSafetyTimer);
+    rstate.fadeSafetyTimer = setTimeout(() => {
+      rstate.fadeSafetyTimer = null;
+      endSceneFade();
+    }, SCENE_FADE_SAFETY_MS);
+  }
+
+  // Lift the fade veil to reveal the freshly generated scene, then run the
+  // optional `onLifted` callback (used to emit video_showing) — but ONLY once
+  // the veil is genuinely gone, never while it's still opaque. Honors a minimum
+  // dark hold so a fast re-anchor still shows the pause (never a black blink):
+  // if we haven't been dark long enough, defer BOTH the lift and the callback
+  // to the remainder. If no veil is down, the callback runs immediately.
+  function endSceneFade(onLifted) {
+    if (!rstate.fadeDownActive) { if (onLifted) onLifted(); return; }
+    const f = getFadeEl();
+    if (!f) { rstate.fadeDownActive = false; if (onLifted) onLifted(); return; }
+    const elapsed = Date.now() - rstate.fadeDownTs;
+    if (elapsed < SCENE_FADE_MIN_HOLD_MS) {
+      // A lift is already scheduled — let it carry its own callback (this dedupes
+      // racing reveal triggers so video_showing fires once per transition).
+      if (rstate.fadeUpTimer) return;
+      rstate.fadeUpTimer = setTimeout(() => {
+        rstate.fadeUpTimer = null;
+        endSceneFade(onLifted);
+      }, SCENE_FADE_MIN_HOLD_MS - elapsed);
+      return;
+    }
+    rstate.fadeDownActive = false;
+    if (rstate.fadeSafetyTimer) { clearTimeout(rstate.fadeSafetyTimer); rstate.fadeSafetyTimer = null; }
+    if (rstate.fadeUpTimer) { clearTimeout(rstate.fadeUpTimer); rstate.fadeUpTimer = null; }
+    f.classList.remove("down");
+    if (onLifted) onLifted();
+  }
+
+  // Schedule the reveal after `ms` — used by blend-family models (Helios) that
+  // stream continuously and have no discrete "new frame" boundary to reveal on.
+  function scheduleSceneReveal(ms) {
+    if (!rstate.fadeDownActive) return;
+    if (rstate.fadeUpTimer) clearTimeout(rstate.fadeUpTimer);
+    rstate.fadeUpTimer = setTimeout(() => {
+      rstate.fadeUpTimer = null;
+      // A freeze reveal may have already lifted the veil + announced the scene;
+      // don't fire a second video_showing for the same transition.
+      if (!rstate.fadeDownActive) return;
+      // Blend models don't fire the freeze reveal, so announce the new scene
+      // here (glitch mask + ceremony progression + autoplay), matching how the
+      // seed-locked path reveals via video_showing.
+      endSceneFade(() => emitEvent("video_showing", {}));
+    }, ms);
+  }
+
+  // Drop the fade veil immediately (no min-hold, no reveal event) — used on
+  // teardown / reset / disable so a mid-transition fade never sticks on screen.
+  function clearSceneFade() {
+    rstate.fadeDownActive = false;
+    if (rstate.fadeUpTimer) { clearTimeout(rstate.fadeUpTimer); rstate.fadeUpTimer = null; }
+    if (rstate.fadeSafetyTimer) { clearTimeout(rstate.fadeSafetyTimer); rstate.fadeSafetyTimer = null; }
+    const f = getFadeEl();
+    if (f) f.classList.remove("down");
+  }
+
   // Snapshot the current live video frame onto the freeze canvas and show it
   // instantly, so we can re-stage the stream beneath without a black gap.
   // Returns true if a frame was captured.
@@ -261,7 +362,11 @@
     // short grace period. (Modern Safari/Chrome use the frame callback path.)
     if (getVideo() && typeof getVideo().requestVideoFrameCallback !== "function") {
       rstate.freezeFallbackTimer = setTimeout(() => {
-        if (rstate.freezeArmed) { rstate.freezeArmed = false; hideFreeze(); emitEvent("video_showing", {}); }
+        if (rstate.freezeArmed) {
+          rstate.freezeArmed = false;
+          hideFreeze();
+          endSceneFade(() => emitEvent("video_showing", {})); // lift the veil too
+        }
       }, 1800);
     }
   }
@@ -407,7 +512,10 @@
       rstate.seedToken++; // invalidate any still-decoding seed so it can't re-cover us
       if (rstate.freezeFallbackTimer) { clearTimeout(rstate.freezeFallbackTimer); rstate.freezeFallbackTimer = null; }
       hideFreeze();
-      emitEvent("video_showing", {}); // the fresh scene is now on screen
+      // Lift the fade-down veil and announce the fresh scene ONLY once it's
+      // actually visible (endSceneFade honors the minimum dark hold and fires
+      // this immediately when no veil is down).
+      endSceneFade(() => emitEvent("video_showing", {}));
     }
   }
 
@@ -635,8 +743,11 @@
 
   async function applyRunningLingbot(s, ctx) {
     if (s.hardTransition || ctx.newGuideImage) {
-      // A new guide image means a fresh stage (reference image is locked). Freeze
-      // the last live frame first so the tear-down never exposes black/the still.
+      // A new guide image means a fresh stage (reference image is locked). Fade
+      // the scene down for the deliberate "moment of pause" beat, then freeze
+      // the last live frame beneath it as the safety floor (revealed only if the
+      // fresh stream never comes). The freeze reveal lifts the fade.
+      beginSceneFade();
       captureVideoToFreeze();
       try { await cmd("reset", {}); } catch (err) { log("reset failed", err); }
       rstate.started = false;
@@ -645,6 +756,10 @@
       rstate.lastImageUrl = null;
       const ok = await establishLingbot(s);
       if (ok) log(s.hardTransition ? "hard transition re-staged" : "re-anchored on new guide image");
+      // Couldn't re-establish (no reference image / upload failed): lift the fade
+      // so the frozen last frame stays visible during the retry instead of
+      // holding a black veil until the safety timer.
+      else clearSceneFade();
       return ok;
     }
     await cmd("set_prompt", { prompt: s.prompt });
@@ -689,7 +804,12 @@
   }
 
   async function applyRunningHelios(s, ctx) {
-    if ((ctx.newGuideImage || s.hardTransition) && supportsCmd("set_image")) {
+    const reanchor = ctx.newGuideImage || s.hardTransition;
+    if (reanchor && supportsCmd("set_image")) {
+      // Fade the scene down for the "moment of pause" beat before the new guide
+      // image blends in — blend models stream continuously (no reset), so the
+      // fade is what gives advancing time the same deliberate feel stills have.
+      beginSceneFade();
       // Swap the guide image in-stream as a FileRef (same path as establish), at
       // full conditioning strength, so the live video re-anchors on the new still
       // instead of drifting. Blend keeps continuity; a hard transition cuts.
@@ -703,7 +823,10 @@
     }
     await sendScenePrompt(s.prompt, { hardTransition: s.hardTransition });
     rstate.lastPrompt = s.prompt;
-    log("helios/blend: re-steered", (ctx.newGuideImage || s.hardTransition) ? "(image re-anchored)" : "");
+    // If we faded down for a re-anchor, hold the dark beat, then reveal the
+    // blended-in scene (blend models have no freeze reveal to lift the fade).
+    if (reanchor && rstate.fadeDownActive) scheduleSceneReveal(SCENE_FADE_BLEND_REVEAL_MS);
+    log("helios/blend: re-steered", reanchor ? "(image re-anchored)" : "");
     return true;
   }
 
@@ -882,6 +1005,7 @@
     rstate.stagingGuideUrl = null;
     rstate.frameWatch = false;
     rstate.freezeArmed = false;
+    clearSceneFade(); // the freeze cover holds the last frame across the swap
     clearCaps(); // the next model advertises its own command schema
     clearRevealWatchdog();
     if (rstate.freezeFallbackTimer) { clearTimeout(rstate.freezeFallbackTimer); rstate.freezeFallbackTimer = null; }
@@ -958,6 +1082,7 @@
     // Drop the freeze cover so the still fallback (image mode) shows cleanly.
     const f = getFreeze();
     if (f) { rstate.freezeActive = false; f.classList.remove("show"); }
+    clearSceneFade(); // don't leave a fade veil over the still fallback
     const r = rstate.reactor;
     rstate.reactor = null;
     rstate.active = false;
@@ -988,6 +1113,7 @@
     // its seed onto the freeze and reveals its own video when it establishes.
     const f = getFreeze();
     if (f) { rstate.freezeActive = false; f.classList.remove("show"); }
+    clearSceneFade(); // a fresh run wipes clean — no lingering fade veil
     const v = getVideo();
     if (v) v.classList.add("hidden");
     if (rstate.status === "live") setStatus("connecting");

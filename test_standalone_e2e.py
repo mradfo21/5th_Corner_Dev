@@ -228,6 +228,38 @@ class TestStandaloneE2E(unittest.TestCase):
         self.assertTrue(self.page.query_selector("#death-overlay") is not None)
         self.assertTrue(self.page.is_hidden("#death-overlay"))
 
+    def test_scene_audio_requested_for_a_scene(self):
+        # Scoring a scene must POST its descriptor to /api/scene_audio (the
+        # server-side Lyria bridge). Mock mode disables image generation, so we
+        # drive the exposed SceneAudio module directly — the same code path the
+        # scene_image / onGuideImage handlers use — and assert the request the
+        # client makes. Runs fully offline (no key -> server replies audio_url:
+        # null and the client stays silent).
+        self.page.wait_for_function("() => !!window.SceneAudio", timeout=10000)
+        with self.page.expect_request("**/api/scene_audio") as req_info:
+            self.page.evaluate(
+                "() => window.SceneAudio.score('a dark abandoned facility, flickering lights, dread')"
+            )
+        req = req_info.value
+        self.assertEqual(req.method, "POST")
+        self.assertIn("abandoned facility", (req.post_data or ""))
+
+    def test_scene_audio_endpoint_degrades_without_key(self):
+        # With no GEMINI_API_KEY the endpoint must degrade gracefully to
+        # {"audio_url": null} rather than erroring, so the UI simply stays silent.
+        result = self.page.evaluate(
+            """async () => {
+                const r = await fetch('/api/scene_audio', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ prompt: 'a quiet forest at dawn' }),
+                });
+                return { ok: r.ok, body: await r.json() };
+            }"""
+        )
+        self.assertTrue(result["ok"])
+        self.assertIsNone(result["body"].get("audio_url"))
+
 
 if __name__ == "__main__":
     unittest.main()

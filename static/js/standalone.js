@@ -61,9 +61,7 @@
     touchReticle: document.getElementById("touch-reticle"),
     touchForm: document.getElementById("touch-form"),
     touchInput: document.getElementById("touch-input"),
-    scanBtn: document.getElementById("scan-btn"),
     scanLayer: document.getElementById("scan-layer"),
-    scanCursor: document.getElementById("scan-cursor"),
     scanTags: document.getElementById("scan-tags"),
     scanHint: document.getElementById("scan-hint"),
     talkOverlay: document.getElementById("talk-overlay"),
@@ -184,16 +182,16 @@
     photoLockedLabel: null,     // label of the subject currently framed (locked)
     pendingInvestigation: null, // {screen, region, texture} captured at TOUCH lock, finalized on submit
     selectedInvestigation: null,// a specimen chosen from the tray to inform the next action
-    scanOn: false,              // SCAN tool armed (object-recognition tags over the live video)
+    scanOn: false,              // ambient hotspot overlay live (object tags over the scene)
     scanBusy: false,            // a detection request is in flight
-    scanLastTs: 0,              // last time we hit /api/detect (throttle drag scans)
     scanObjects: [],            // last detected objects (normalized coords + labels)
-    scanTagActing: null,        // tag element with its inline interact prompt open
-    scanIdleTimer: null,        // periodic re-scan while armed
-    scanMoveTimer: null,        // debounced re-scan after the cursor settles
+    scanTagActing: null,        // tag element with its inline action bar open
+    scanMoveTimer: null,        // debounced re-detect after the cursor settles (realtime)
     scanSrcSize: null,          // {w,h} of the last scanned source (video or still), for cover-mapping tags
-    scanPrewarm: { objects: [], size: null, ts: 0 }, // background detection cached so SCAN opens instantly
-    scanPrewarmTimer: null,     // debounce for background pre-warm scans
+    scanPrewarm: { objects: [], size: null, ts: 0 }, // last detection cached (renders hotspots instantly)
+    scanPrewarmTimer: null,     // debounce for detection passes
+    lastTurnTs: 0,              // when the last turn was committed/active (pre-warm defers around it)
+    turnWatchdog: null,         // safety timer: recover the UI if a turn never resolves
     currentStillUrl: null,      // last still shown via setScene (stills-mode SCAN source)
     scanStillImg: null,         // cached <img> of the current still, for canvas capture
     evidenceTimer: null,        // evidence flourish hold-then-file timer
@@ -276,6 +274,9 @@
     }
     return {
       resume() { ensure(); },
+      // Shared, gesture-unlocked AudioContext so the ambient scene score
+      // (SceneAudio) rides the same mute + first-gesture gating as the SFX.
+      context() { return ensure(); },
       glitch() { noise(0.24, 0.055); },                        // VCR transition static burst
       text() { tone(430, 0.09, "sine", 0.045); },              // narrative / world text lands
       pickup() { tone([600, 900], 0.16, "triangle", 0.06); },  // item pickup
@@ -331,6 +332,200 @@
       cereNote() { tone(1500, 0.03, "square", 0.028); },       // realtime sub-event tick (prompt sent, chunk rendered…)
     };
   })();
+
+  // ------------------------------------------------------------------
+  // SceneAudio — generated ambient score for the current guide image.
+  //
+  // Each new scene carries a text descriptor (metadata.prompt). We POST it to
+  // /api/scene_audio, which renders a short scene-matched instrumental clip with
+  // Google Lyria RealTime and returns a URL. We loop that clip as an ambient bed
+  // and crossfade to a fresh one whenever the world re-scores. Shares the Sound
+  // synth's AudioContext so it inherits the same mute + first-gesture gating and
+  // silently no-ops when audio is unavailable (no key / offline / stream fail).
+  // ------------------------------------------------------------------
+  const SceneAudio = (function () {
+    let currentUrl = null;      // audio_url currently playing (guards re-triggers)
+    let requestedKey = null;    // last descriptor we requested (dedupe re-renders)
+    let src = null;             // active looping AudioBufferSourceNode
+    let gain = null;            // its GainNode
+    const bufferCache = new Map(); // url -> decoded AudioBuffer
+    const TARGET_VOL = 0.26;    // sit UNDER the UI SFX — it's a bed, not a lead
+    const FADE = 1.4;           // crossfade seconds between scene scores
+
+    function ctx() {
+      try { return Sound.context ? Sound.context() : null; } catch (_) { return null; }
+    }
+
+    async function fetchBuffer(url) {
+      if (bufferCache.has(url)) return bufferCache.get(url);
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error("audio HTTP " + resp.status);
+      const arr = await resp.arrayBuffer();
+      const c = ctx();
+      if (!c) throw new Error("no audio context");
+      const buf = await c.decodeAudioData(arr);
+      bufferCache.set(url, buf);
+      return buf;
+    }
+
+    function stop(fadeOut) {
+      const oldSrc = src, oldGain = gain;
+      src = null; gain = null;
+      if (!oldSrc) return;
+      const c = ctx();
+      try {
+        if (c && oldGain) {
+          const t = c.currentTime;
+          const d = fadeOut == null ? FADE : fadeOut;
+          oldGain.gain.cancelScheduledValues(t);
+          oldGain.gain.setValueAtTime(oldGain.gain.value, t);
+          oldGain.gain.linearRampToValueAtTime(0.0001, t + d);
+          oldSrc.stop(t + d + 0.05);
+        } else {
+          oldSrc.stop();
+        }
+      } catch (_) {}
+    }
+
+    function playBuffer(buf) {
+      const c = ctx();
+      if (!c || !buf) return;
+      const s = c.createBufferSource();
+      s.buffer = buf;
+      s.loop = true;
+      const g = c.createGain();
+      const t = c.currentTime;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.linearRampToValueAtTime(TARGET_VOL, t + FADE);
+      s.connect(g); g.connect(c.destination);
+      try { s.start(); } catch (_) { return; }
+      src = s; gain = g;
+    }
+
+    async function crossfadeTo(url) {
+      try {
+        const buf = await fetchBuffer(url);
+        if (!state.soundEnabled) return;   // muted while we were fetching
+        stop(FADE);
+        playBuffer(buf);
+        currentUrl = url;
+      } catch (_) { /* stay silent on any audio failure */ }
+    }
+
+    // ── Increment 2: realtime streaming backend (opt-in via ?music=stream) ──
+    // Continuously plays PCM pushed from /ws/scene_music, re-steering on each
+    // scene instead of looping a clip. Falls back to nothing (silent) on any
+    // socket/decoder error; the clip path stays the default.
+    const STREAM_MODE = (function () {
+      try { return new URLSearchParams(location.search).get("music") === "stream"; }
+      catch (_) { return false; }
+    })();
+    let ws = null;             // active WebSocket
+    let streamGain = null;     // gain for streamed PCM
+    let streamNextTime = 0;    // scheduling clock (AudioContext time)
+    let wsOpening = false;
+
+    function schedulePCM(arrayBuffer) {
+      const c = ctx();
+      if (!c || !streamGain || !arrayBuffer || arrayBuffer.byteLength < 4) return;
+      const view = new DataView(arrayBuffer);
+      const frames = (arrayBuffer.byteLength / 4) | 0; // 2ch * 16-bit
+      if (frames <= 0) return;
+      const buf = c.createBuffer(2, frames, 48000);
+      const chL = buf.getChannelData(0), chR = buf.getChannelData(1);
+      let o = 0;
+      for (let i = 0; i < frames; i++) {
+        chL[i] = view.getInt16(o, true) / 32768; o += 2;
+        chR[i] = view.getInt16(o, true) / 32768; o += 2;
+      }
+      const s = c.createBufferSource();
+      s.buffer = buf;
+      s.connect(streamGain);
+      const now = c.currentTime;
+      // Keep a small latency cushion; re-prime if we've underrun.
+      if (streamNextTime < now + 0.05) streamNextTime = now + 0.15;
+      try { s.start(streamNextTime); } catch (_) { return; }
+      streamNextTime += buf.duration;
+    }
+
+    function openStream(prompt) {
+      const c = ctx();
+      if (!c || wsOpening || (ws && ws.readyState <= 1)) return;
+      wsOpening = true;
+      streamGain = c.createGain();
+      streamGain.gain.value = TARGET_VOL;
+      streamGain.connect(c.destination);
+      streamNextTime = 0;
+      let sock;
+      try {
+        const proto = location.protocol === "https:" ? "wss:" : "ws:";
+        sock = new WebSocket(proto + "//" + location.host + "/ws/scene_music");
+        sock.binaryType = "arraybuffer";
+      } catch (_) { wsOpening = false; return; }
+      ws = sock;
+      sock.onopen = () => {
+        wsOpening = false;
+        try { sock.send(JSON.stringify({ prompt: prompt || "" })); } catch (_) {}
+      };
+      sock.onmessage = (ev) => {
+        if (!state.soundEnabled) return;
+        if (ev.data instanceof ArrayBuffer) schedulePCM(ev.data);
+      };
+      sock.onerror = () => { wsOpening = false; };
+      sock.onclose = () => { wsOpening = false; if (ws === sock) ws = null; };
+    }
+
+    function steerStream(prompt) {
+      if (ws && ws.readyState === 1) {
+        try { ws.send(JSON.stringify({ prompt: prompt || "" })); } catch (_) {}
+      } else {
+        openStream(prompt);
+      }
+    }
+
+    function closeStream() {
+      try { if (ws) ws.close(); } catch (_) {}
+      ws = null; wsOpening = false;
+      if (streamGain) { try { streamGain.disconnect(); } catch (_) {} streamGain = null; }
+      streamNextTime = 0;
+    }
+
+    return {
+      // Ask for a scene score, then crossfade (clip) or re-steer (stream).
+      // Deduped so repeated renders of the same scene don't re-request.
+      async score(prompt) {
+        if (!state.soundEnabled) return;
+        const key = (prompt == null ? "" : String(prompt)).trim().slice(0, 240);
+        if (!key || key === requestedKey) return;
+        requestedKey = key;
+        if (STREAM_MODE) { steerStream(key); return; }
+        let res;
+        try {
+          res = await postJSON("/api/scene_audio", { prompt: key, session: "default" });
+        } catch (_) { return; }
+        if (!res || !res.audio_url) return;      // unavailable — stay silent
+        if (res.audio_url === currentUrl) return; // same bed already playing
+        crossfadeTo(res.audio_url);
+      },
+      // Follow the global sound toggle: fade out on mute, resume on unmute.
+      setEnabled(on) {
+        if (STREAM_MODE) {
+          if (!on) closeStream();
+          else if (requestedKey) openStream(requestedKey);
+          return;
+        }
+        if (!on) stop(0.4);
+        else if (currentUrl) crossfadeTo(currentUrl);
+      },
+      // Full reset (new game): silence and forget so the next scene re-scores.
+      reset() {
+        stop(0.4); closeStream();
+        currentUrl = null; requestedKey = null;
+      },
+    };
+  })();
+  // Expose for debugging + e2e (mirrors window.ReactorRenderer).
+  try { window.SceneAudio = SceneAudio; } catch (_) {}
 
   // ------------------------------------------------------------------
   // Haptics — physical vibration feedback on devices that support it (mobile).
@@ -711,7 +906,8 @@
   function setScene(imageUrl, opts) {
     if (!imageUrl) return;
     state.currentStillUrl = imageUrl; // remember for stills-mode SCAN capture
-    schedulePrewarm(); // a new scene is on screen — pre-warm SCAN detection
+    schedulePrewarm(); // a new scene is on screen — detect its interaction hotspots
+    updateAmbientScan(); // keep the ambient hotspot overlay live for this scene
     const silent = !!(opts && opts.silent);
     const instant = !!(opts && opts.instant);
     const incoming = state.activeScene === "A" ? el.sceneB : el.sceneA;
@@ -862,7 +1058,7 @@
             console.warn("[standalone] realtime unavailable after retries — falling back to stills");
             Renderer.mode = "image"; // reflect reality; keep stored pref intact
             showRendererToast("Realtime unavailable — showing stills");
-            closeScan(); // scan is realtime-only — tear it down on fallback
+            clearScanTags(); // re-map hotspots onto the still that replaces the video
             hideGuideThumbnail();
             // Tear down the realtime layers (video + freeze) and paint the last
             // known still so the fallback isn't a blank/black screen.
@@ -927,7 +1123,8 @@
             if (name === "video_showing") {
               glitchTransition();
               markSceneVisible(); // the realtime feed is now live on screen
-              schedulePrewarm(); // live scene on screen — pre-warm SCAN detection
+              schedulePrewarm(); // live scene on screen — detect its hotspots
+              updateAmbientScan(); // surface ambient hotspots over the live video
             }
             // Realtime auto-play advances off the LIVE video, not the scene_image
             // feed item: once the new scene is actually on screen, let it play for
@@ -1000,6 +1197,9 @@
           showRendererToast("Guide image integrated");
           if (Ceremony.isActive()) Ceremony.note("\u25C8 Guide image integrated");
           try { Sound.scene(); } catch (_) {}
+          // Re-assert the ambient score on re-anchor (deduped, so it only acts
+          // if the scene descriptor actually changed since the last request).
+          try { SceneAudio.score(state.lastScenePrompt); } catch (_) {}
           showGuideThumbnail(imageUrl);
         };
         // The active world model changed (mid-game swap) — reflect it in the
@@ -1104,10 +1304,12 @@
         hideGuideThumbnail();
         hideCaptureThumbnail();
       }
-      // SCAN works in BOTH renderers — keep it armed across a LIVE/STILL
-      // switch, just drop the tags so they re-map to the new source on the
-      // next scan (the video and the still cover the viewport differently).
-      if (state.scanOn) { state.scanSrcSize = null; clearScanTags(); }
+      // Ambient hotspots work in BOTH renderers — drop the tags so they re-map
+      // to the new source (video vs still cover the viewport differently), then
+      // re-detect for the switched-in source.
+      state.scanSrcSize = null;
+      clearScanTags();
+      updateAmbientScan();
       updateRendererButton();
     },
 
@@ -1696,6 +1898,7 @@
     state.gameOver = true;
     state.awaitingResolution = false;
     Talk.close(); // end any conversation — the run is over
+    clearTurnWatchdog();
     closeScan(); // no scanning over the death screen
     hideVeil();
     el.choices.innerHTML = "";
@@ -1730,6 +1933,12 @@
         Ceremony.reach("world_update");
       }
       Renderer.applyScene(item.image_url, item.metadata && item.metadata.prompt, item.metadata);
+      // Re-score the ambient bed from this scene's descriptor. Works for both
+      // the still (image) and realtime (reactor) renderers since both flow the
+      // guide image + prompt through here.
+      const scenePrompt = (item.metadata && item.metadata.prompt) || item.content || "";
+      state.lastScenePrompt = scenePrompt;
+      try { SceneAudio.score(scenePrompt); } catch (_) {}
     }
 
     switch (item.type) {
@@ -1766,6 +1975,8 @@
       case "player_choice_prompt":
         // The engine pairs a death with a "GAME OVER" restart prompt; when
         // we're in the death state we let the overlay own restart instead.
+        clearTurnWatchdog();
+        state.lastTurnTs = Date.now(); // post-turn cooldown for pre-warm counts from here
         if (state.gameOver || (item.content || "").toUpperCase() === "GAME OVER") {
           state.gameOver = true;
           el.deathOverlay.classList.remove("hidden");
@@ -1805,6 +2016,7 @@
         return;
 
       case "error_event":
+        clearTurnWatchdog();
         appendProse(item);
         Sound.error();
         Ceremony.abort();
@@ -1864,6 +2076,7 @@
   async function resetGame() {
     try {
       stopPolling(); // avoid a mid-reset poll racing the rebuilt feed
+      clearTurnWatchdog(); // don't let a stale turn timer fire into the new run
       exitGameOver();
       Talk.close(); // end any conversation from the prior run
       closeScan(); // drop any scan tags/overlay from the dead run
@@ -1889,6 +2102,8 @@
       Renderer.lastBase = null;
       Renderer.observedPromptId = null;
       clearTimeout(state.observeTimer);
+      state.lastScenePrompt = null;
+      try { SceneAudio.reset(); } catch (_) {} // silence the prior run's bed
       Sound.start(); // new tape / game begins
       try { Haptics.strong(); } catch (_) {}
       Ceremony.abort(); // cancel any mid-turn pipeline from the prior run
@@ -1928,6 +2143,40 @@
     }
   }
 
+  // Turn watchdog: a committed turn must produce a player_choice_prompt within a
+  // bounded time. If the server turn stalls (LLM error / rate-limit / lost feed
+  // item) the ceremony would otherwise sit on the progress bar forever with no
+  // way to act. This guarantees the player is never permanently stuck: we do one
+  // forced feed catch-up, then — if still unresolved — release the UI with
+  // recovery choices so the game can continue.
+  const TURN_WATCHDOG_MS = (typeof window !== "undefined" && window.__TURN_WATCHDOG_MS__) || 26000;
+  function clearTurnWatchdog() {
+    if (state.turnWatchdog) { clearTimeout(state.turnWatchdog); state.turnWatchdog = null; }
+  }
+  function armTurnWatchdog() {
+    clearTurnWatchdog();
+    state.turnWatchdog = setTimeout(async () => {
+      state.turnWatchdog = null;
+      if (!state.awaitingResolution) return; // already resolved
+      try { await pollOnce(); } catch (_) {} // maybe a poll was just missed
+      if (!state.awaitingResolution) return; // catch-up delivered the prompt
+      console.error("[standalone] turn watchdog fired — no resolution; recovering UI");
+      Ceremony.abort();
+      hideVeil();
+      state.awaitingResolution = false;
+      state.lastTurnTs = Date.now();
+      appendProse({ id: -1, type: "error_event", content: "The world hesitated. Choose again." });
+      renderChoices({
+        id: state.currentPromptId || -1,
+        choices: [
+          { text: "Look around." },
+          { text: "Move forward." },
+          { text: "Wait and listen." },
+        ],
+      });
+    }, TURN_WATCHDOG_MS);
+  }
+
   async function makeChoice(choiceText, contextItemId, opts) {
     if (state.processing || state.gameOver) return;
     // `opts.source` marks HOW the action was issued (e.g. a SCAN object
@@ -1939,6 +2188,8 @@
     el.choices.innerHTML = "";
     Ceremony.begin(); // light up the turn pipeline — starting with "action selected"
     state.awaitingResolution = true;
+    state.lastTurnTs = Date.now(); // pre-warm defers around the turn
+    armTurnWatchdog(choiceText, contextItemId);
     // NOTE: we deliberately do NOT steer the CURRENT live video with the action
     // here. Injecting the action into the video the instant a choice is made
     // meant the ORIGINAL scene's video started playing the action before its new
@@ -1996,6 +2247,7 @@
       beginFastPolling();
     } catch (err) {
       console.error("[standalone] makeChoice failed:", err);
+      clearTurnWatchdog();
       hideVeil();
       state.awaitingResolution = false;
       appendProse({ id: -1, type: "error_event", content: `Action failed to send: ${err.message}` });
@@ -3015,6 +3267,7 @@
     if (el.touchCaptureFrame) el.touchCaptureFrame.classList.remove("grab");
     if (el.realtimeBtn) el.realtimeBtn.classList.remove("aiming");
     document.body.classList.remove("touch-aiming");
+    updateAmbientScan(); // hotspots return once the camera is put away
   }
 
   // Turn a viewport position into a human region phrase (used to label evidence).
@@ -3069,31 +3322,27 @@
   }
 
   // ------------------------------------------------------------------
-  // SCAN tool — realtime object recognition. Arming it turns the live scene
-  // into a scanning surface: moving/dragging the cursor sweeps a beam across
-  // the world model's video, and the objects it recognizes twinkle in as
-  // floating "starfield" tags anchored where they actually sit. Each tag
-  // carries a little button that opens an inline prompt to ACT on THAT exact
-  // thing — a full turn (consequence + a freshly generated scene), so it makes
-  // meaningful change to the world. Works in BOTH renderers: it scans the live
-  // video frame in realtime mode, or the current still in image mode.
+  // Ambient interaction hotspots — object recognition with NO button. Whenever a
+  // scene is on screen, the objects the model recognizes surface as floating
+  // "starfield" tags anchored where they actually sit. Hovering near a tag
+  // highlights it; clicking it opens an inline action bar to ACT on THAT exact
+  // thing — a full turn (consequence + a freshly generated scene). Works in BOTH
+  // renderers: it reads the live video frame in realtime mode, or the current
+  // still in image mode.
   //
   // Engineering notes:
-  //  • Detection is an LLM round-trip, so calls are throttled (a floor between
-  //    hits) and the drag provides the *feel* of continuous scanning.
-  //  • Tags are RECONCILED by label between scans (kept + repositioned, added
+  //  • Detection is an LLM round-trip, so it's throttled (a floor between hits)
+  //    and always DEFERS around a turn (never competes with the turn's own LLM
+  //    calls). It runs once per scene and, in realtime, on hover-settle.
+  //  • Tags are RECONCILED by label between passes (kept + repositioned, added
   //    with a twinkle, removed with a fade) so a refresh never churns the whole
   //    field or yanks a tag out from under the cursor.
-  //  • A scan NEVER runs while a tag's interact prompt is open, so typing is
-  //    never interrupted or wiped.
-  //  • Works with mouse (move/drag) and touch (tap/drag); the overlay is
+  //  • A detection pass NEVER runs while a tag's action bar is open.
+  //  • Works with mouse (hover) and touch (tap the tag); the overlay is
   //    non-modal so the game's choices/controls stay live underneath.
   // ------------------------------------------------------------------
-  const SCAN_MIN_INTERVAL_MS = 2400;  // floor between /api/detect calls (LLM latency)
-  const SCAN_IDLE_INTERVAL_MS = 6500; // auto re-scan cadence while armed + live
-  const SCAN_WAIT_INTERVAL_MS = 1200; // faster retry cadence while waiting for the feed
-  const SCAN_MOVE_SETTLE_MS = 600;    // re-scan this long after the cursor settles
-  const SCAN_NEAR_RADIUS = 150;       // px: how close the cursor "finds" a tag
+  const SCAN_MOVE_SETTLE_MS = 600;    // re-detect this long after the cursor settles (realtime)
+  const SCAN_NEAR_RADIUS = 150;       // px: how close the cursor "finds" a hotspot
 
   // SCAN works in BOTH renderers:
   //  • realtime (reactor): scans the live video frame.
@@ -3112,6 +3361,13 @@
     if (!url) return null;
     if (!state.scanStillImg || state.scanStillImg.getAttribute("data-src") !== url) {
       const img = new Image();
+      // This Image exists ONLY to draw the still onto a canvas for detection
+      // (the visible scene is a separate background-image). Request it CORS-clean
+      // so a cross-origin still (e.g. an S3-hosted turn image) doesn't taint the
+      // canvas and silently break capture. Same-origin stills ignore this. If a
+      // cross-origin host lacks CORS headers the capture Image simply won't load
+      // (naturalWidth 0 -> no detection), which never affects the visible scene.
+      img.crossOrigin = "anonymous";
       img.setAttribute("data-src", url);
       img.src = url;
       state.scanStillImg = img;
@@ -3152,51 +3408,61 @@
     }
   }
 
-  function openScan() {
-    if (state.scanOn) { closeScan(); return; } // toggle off if already armed
-    if (state.gameOver || state.freeWillOpen || state.touchMode || tapeIsOpen()) return;
-    // Need SOMETHING to scan: a live realtime video, or a scene still.
-    const canScan = scanInRealtime() ||
-      (Renderer.mode === "reactor" && Renderer.reactorAvailable()) ||
-      !!(state.currentStillUrl || (Renderer.lastScene && Renderer.lastScene.imageUrl));
-    if (!canScan) {
-      showRendererToast("Scan needs a scene first");
-      return;
-    }
+  // Ambient scan is allowed whenever there's a scene to read and no full-screen
+  // instrument (camera, tape, free-will input) or end state is claiming the view.
+  function ambientScanAllowed() {
+    if (state.gameOver || state.touchMode || state.freeWillOpen) return false;
+    if (typeof tapeIsOpen === "function" && tapeIsOpen()) return false;
+    return scanAvailable();
+  }
+
+  // Ambient object hotspots: there's no SCAN button anymore. Whenever a scene is
+  // on screen we quietly surface what's interactable as starfield tags; hovering
+  // near one highlights it and a click opens its actions. This just ensures the
+  // overlay is live and shows whatever we've already detected for this scene
+  // (instantly, from cache) — detection itself runs via prewarmScan (per scene +
+  // on hover-settle in realtime), always deferring around turns.
+  function updateAmbientScan() {
+    if (!ambientScanAllowed()) { closeScan(); return; }
     state.scanOn = true;
-    state.scanTagActing = null;
-    if (el.scanBtn) el.scanBtn.classList.add("scanning");
-    document.body.classList.add("scan-arming");
     if (el.scanLayer) el.scanLayer.classList.remove("hidden");
-    if (el.scanTags) el.scanTags.innerHTML = "";
-    state.scanObjects = [];
-    // Park the sweep glow at center until the cursor moves.
-    moveScanCursor(window.innerWidth / 2, window.innerHeight / 2);
-    Sound.scan();
-    // INSTANT tags: if we pre-warmed detection in the background while the scene
-    // was on screen, show those immediately so SCAN feels responsive — then a
-    // live scan refreshes them.
     const pw = state.scanPrewarm;
     if (pw && pw.objects && pw.objects.length) {
       if (pw.size) state.scanSrcSize = pw.size;
       reconcileScanTags(pw.objects);
       setScanHint("");
-    } else {
-      setScanHint(scanAvailable() ? "scanning the scene…" : "waiting for the scene…");
+    } else if (!el.scanTags || !el.scanTags.children.length) {
+      schedulePrewarm(150); // nothing detected yet — kick a detection now
     }
-    runScan(true);
-    scheduleScanTick();
   }
 
-  // Background pre-warm: run ONE detection when a scene settles (even before the
-  // player opens SCAN) and cache the result, so arming SCAN shows tags instantly.
-  // Never runs while SCAN is armed (the live loop handles that), mid-turn, or
-  // while another detect is in flight; throttled so it's at most one per scene.
+  // Detection pass: read the current scene and cache + render the hotspots.
+  // Runs per scene (via schedulePrewarm on scene settle) and on hover-settle in
+  // realtime (the live video drifts). Throttled, single-flight, and it always
+  // defers around a turn so it can't compete with the turn's own LLM calls.
   const SCAN_PREWARM_MIN_MS = 4000;
+  // Stay off the wire around a turn (don't compete with the turn's own LLM calls).
+  // Test-overridable so e2e can verify post-turn hotspot refresh quickly.
+  const SCAN_PREWARM_TURN_COOLDOWN_MS =
+    (typeof window !== "undefined" && window.__SCAN_TURN_COOLDOWN_MS__) || 9000;
   function prewarmScan() {
-    if (state.scanOn || state.gameOver || state.processing || state.scanBusy) return;
-    if (!scanAvailable()) return;
+    if (state.gameOver || state.scanBusy) return;
+    if (state.scanTagActing) return; // don't reshuffle tags while a bar is open
     const now = Date.now();
+    // Defer to gameplay: never add a background detection call while a turn is
+    // resolving (or just did) — that competes with the turn's own LLM calls and
+    // can rate-limit/slow them. Retry once the game is idle again.
+    if (state.processing || state.awaitingResolution ||
+        (now - (state.lastTurnTs || 0) < SCAN_PREWARM_TURN_COOLDOWN_MS)) {
+      schedulePrewarm(2500);
+      return;
+    }
+    if (!scanAvailable()) {
+      // A still may just not have decoded yet — retry shortly so hotspots still
+      // appear on their own. (Realtime is driven by the video_showing event.)
+      if (Renderer.mode !== "reactor" && state.currentStillUrl) schedulePrewarm(600);
+      return;
+    }
     if (now - (state.scanPrewarm.ts || 0) < SCAN_PREWARM_MIN_MS) return;
     const cap = captureScanFrame();
     if (!cap || !cap.frame) return;
@@ -3206,8 +3472,17 @@
       .then((res) => {
         const objs = (res && Array.isArray(res.objects)) ? res.objects : [];
         state.scanPrewarm = { objects: objs, size: cap.size || null, ts: now };
+        // Render straight onto the ambient overlay so hotspots appear/refresh
+        // without any button press — turning the overlay on if needed.
+        if (ambientScanAllowed() && !state.scanTagActing) {
+          state.scanOn = true;
+          if (el.scanLayer) el.scanLayer.classList.remove("hidden");
+          if (cap.size) state.scanSrcSize = cap.size;
+          reconcileScanTags(objs);
+          setScanHint("");
+        }
       })
-      .catch((err) => { console.warn("[standalone] prewarm scan failed:", err); })
+      .catch((err) => { console.warn("[standalone] scan detect failed:", err); })
       .finally(() => { state.scanBusy = false; });
   }
 
@@ -3216,42 +3491,24 @@
     state.scanPrewarmTimer = setTimeout(prewarmScan, delay == null ? 1200 : delay);
   }
 
+  // Suspend the ambient overlay: hide it and drop its tags. Used when a
+  // full-screen instrument (camera/tape/free-will) or an end state takes over;
+  // updateAmbientScan() brings it back (re-rendering from cache) when they close.
   function closeScan() {
-    if (!state.scanOn) return;
+    if (!state.scanOn && (!el.scanLayer || el.scanLayer.classList.contains("hidden"))) return;
     state.scanOn = false;
     state.scanTagActing = null;
-    clearTimeout(state.scanIdleTimer); state.scanIdleTimer = null;
     clearTimeout(state.scanMoveTimer); state.scanMoveTimer = null;
-    if (el.scanBtn) el.scanBtn.classList.remove("scanning");
-    document.body.classList.remove("scan-arming", "scan-busy");
+    document.body.classList.remove("scan-busy");
     if (el.scanLayer) el.scanLayer.classList.add("hidden");
     if (el.scanTags) el.scanTags.innerHTML = "";
     state.scanObjects = [];
-  }
-
-  // Self-scheduling re-scan: brisk while waiting for the feed, relaxed once
-  // live, and it never fires while a tag prompt is open (guarded in runScan).
-  function scheduleScanTick() {
-    clearTimeout(state.scanIdleTimer);
-    if (!state.scanOn) return;
-    const delay = scanAvailable() ? SCAN_IDLE_INTERVAL_MS : SCAN_WAIT_INTERVAL_MS;
-    state.scanIdleTimer = setTimeout(() => {
-      if (!state.scanOn) return;
-      runScan(false);
-      scheduleScanTick();
-    }, delay);
   }
 
   function setScanHint(text) {
     if (!el.scanHint) return;
     el.scanHint.textContent = text || "";
     el.scanHint.classList.toggle("hidden", !text);
-  }
-
-  function moveScanCursor(x, y) {
-    if (!el.scanCursor) return;
-    el.scanCursor.style.left = x + "px";
-    el.scanCursor.style.top = y + "px";
   }
 
   // Map normalized (0..1) frame coordinates onto the on-screen scene's
@@ -3268,28 +3525,28 @@
     return { x: ox + nx * dw, y: oy + ny * dh };
   }
 
+  // Hover: highlight the interaction possibility nearest the cursor so moving
+  // over the scene "finds" the things in it. In realtime the live video drifts,
+  // so a settle also refreshes detection (throttled + deferred around turns).
   function onScanMove(e) {
     if (!state.scanOn) return;
-    moveScanCursor(e.clientX, e.clientY);
     highlightNearestTag(e.clientX, e.clientY);
-    // Moving across the scene keeps perception fresh: re-scan once the cursor
-    // settles, but never faster than the throttle floor (handled in runScan).
-    clearTimeout(state.scanMoveTimer);
-    state.scanMoveTimer = setTimeout(() => { if (state.scanOn) runScan(false); }, SCAN_MOVE_SETTLE_MS);
+    if (scanInRealtime() && !state.scanTagActing) {
+      clearTimeout(state.scanMoveTimer);
+      state.scanMoveTimer = setTimeout(() => { if (state.scanOn) prewarmScan(); }, SCAN_MOVE_SETTLE_MS);
+    }
   }
 
-  // Touch/tap on the scene (no hover on mobile): jump the beam there and scan.
-  // Ignore taps that land on interactive UI so tapping a choice/control/tag
-  // doesn't fire a wasted scan.
+  // Tapping empty scene (not a tag/control) dismisses an open action bar. On
+  // mobile the tags themselves are tapped directly (their own click handler).
   function onScanTap(e) {
     if (!state.scanOn) return;
     const t = e.target;
     if (t && t.closest && t.closest(
-      "#action-wheel, #control-rail, #scan-tags, #scan-btn, #tape-overlay, " +
+      "#action-wheel, #control-rail, #scan-tags, #tape-overlay, " +
       "#death-overlay, #rt-log, button, a, input, form"
     )) return;
-    moveScanCursor(e.clientX, e.clientY);
-    runScan(false);
+    if (state.scanTagActing) closeTagPrompt(state.scanTagActing);
   }
 
   function highlightNearestTag(x, y) {
@@ -3305,48 +3562,6 @@
     }
     const near = best && bestD < (SCAN_NEAR_RADIUS * SCAN_NEAR_RADIUS);
     for (const t of tags) t.classList.toggle("near", near && t === best);
-  }
-
-  function runScan(force) {
-    if (!state.scanOn) return;
-    if (state.scanBusy) return;
-    if (state.scanTagActing) return; // never disturb an open interact prompt
-    if (state.processing) return;    // don't scan mid-turn (the scene is re-anchoring)
-    if (!scanAvailable()) {
-      if (!el.scanTags || !el.scanTags.children.length) setScanHint("waiting for the scene…");
-      return;
-    }
-    const now = Date.now();
-    if (!force && now - state.scanLastTs < SCAN_MIN_INTERVAL_MS) return;
-    const cap = captureScanFrame();
-    if (!cap || !cap.frame) {
-      if (!el.scanTags || !el.scanTags.children.length) setScanHint("waiting for the scene…");
-      return;
-    }
-    if (cap.size) state.scanSrcSize = cap.size; // for cover-mapping the tags
-    state.scanBusy = true;
-    state.scanLastTs = now;
-    document.body.classList.add("scan-busy");
-    if (!el.scanTags || !el.scanTags.children.length) setScanHint("scanning the scene…");
-    postJSON("/api/detect", { frame: cap.frame })
-      .then((res) => {
-        if (!state.scanOn) return;
-        const objs = (res && Array.isArray(res.objects)) ? res.objects : [];
-        const hadTags = el.scanTags && el.scanTags.children.length > 0;
-        reconcileScanTags(objs);
-        if (objs.length && !hadTags) Sound.ping(); // first tags of a fresh field
-        setScanHint(objs.length ? "" : "nothing distinct in view — move to keep scanning");
-      })
-      .catch((err) => {
-        console.warn("[standalone] scan failed:", err);
-        if (state.scanOn && (!el.scanTags || !el.scanTags.children.length)) {
-          setScanHint("scan hiccup — move to retry");
-        }
-      })
-      .finally(() => {
-        state.scanBusy = false;
-        document.body.classList.remove("scan-busy");
-      });
   }
 
   // Reconcile the on-screen tags against a fresh detection: keep + reposition
@@ -3487,14 +3702,19 @@
     label.className = "scan-tag-label";
     label.textContent = obj.label;
 
-    // The "act" affordance: tap to reveal this thing's action icons.
-    const act = document.createElement("button");
-    act.type = "button";
+    // The "act" affordance: a small marker shown on hover/near. The WHOLE tag is
+    // clickable to reveal its actions (see below), so no button press is needed —
+    // hover to highlight, click to act.
+    const act = document.createElement("span");
     act.className = "scan-tag-act";
-    act.setAttribute("aria-label", "Choose an action for the " + obj.label);
-    act.title = "Act on the " + obj.label;
+    act.setAttribute("aria-hidden", "true");
     act.textContent = "+";
-    act.addEventListener("click", (e) => {
+
+    // Click anywhere on the tag (star/label/marker) to open its actions. The
+    // action buttons themselves stopPropagation, so this only fires from the
+    // tag body. Works for hover-then-click on desktop and a direct tap on mobile.
+    tag.addEventListener("click", (e) => {
+      if (e.target.closest && e.target.closest(".scan-action")) return;
       e.preventDefault();
       e.stopPropagation();
       openTagPrompt(tag);
@@ -3579,9 +3799,8 @@
     Sound.submit();
     closeTagPrompt(tag);
     showRendererToast(action.title + " the " + obj.label + "\u2026");
-    // Committing an action ENDS the scan session — the labels shouldn't keep
-    // hovering over the scene while the turn plays out. Re-arm SCAN to look again.
-    closeScan();
+    // makeChoice clears the tags (the scene is about to change); the ambient
+    // overlay stays live and repopulates hotspots once the new scene settles.
     // Tag the turn as a SCAN object interaction so the story backend escalates
     // risk and forces a consequential, plot-moving outcome (not an inert poke).
     const source = action.id === "move" ? "scan_move" : "scan_interact";
@@ -3891,18 +4110,16 @@
     el.scanTags.innerHTML = "";
     state.scanObjects = [];
     state.scanTagActing = null;
-    // The scene is changing — drop the stale pre-warm so SCAN never opens with
-    // tags from the previous shot; the new scene re-warms once it settles.
+    // The scene is changing — drop the stale detection so hotspots never linger
+    // from the previous shot; the new scene re-detects once it settles.
     state.scanPrewarm = { objects: [], size: null, ts: 0 };
-    if (state.scanOn) setScanHint("scanning the scene…");
+    setScanHint("");
   }
 
   function repositionScanTags() {
     if (!state.scanOn || !el.scanTags) return;
     Array.from(el.scanTags.children).forEach((tag) => positionScanTag(tag));
   }
-
-  function toggleScan() { openScan(); } // openScan toggles off when already armed
 
   function closeFreeWill(clear) {
     if (!state.freeWillOpen) return;
@@ -3913,6 +4130,7 @@
     if (clear) el.customInput.value = "";
     if (document.activeElement === el.customInput) el.customInput.blur();
     if (el.actionWheel) el.actionWheel.style.bottom = ""; // drop any keyboard offset
+    updateAmbientScan(); // hotspots return once the input closes
   }
 
   // "Move forward" — commit to one of the generated actions at random.
@@ -4215,6 +4433,7 @@
     tape.playing = false;
     el.tapeOverlay.classList.add("hidden");
     Sound.toggle();
+    updateAmbientScan(); // hotspots return once the tape deck closes
   }
 
   function toggleSound() {
@@ -4223,6 +4442,7 @@
     const ico = el.btnSnd.querySelector(".rail-ico");
     if (ico) ico.textContent = state.soundEnabled ? "\u266A" : "\u2715"; // ♪ / ✕
     if (state.soundEnabled) { Sound.resume(); Sound.select(); }
+    try { SceneAudio.setEnabled(state.soundEnabled); } catch (_) {}
   }
 
   function initVhsGrain() {
@@ -4337,8 +4557,6 @@
       openFreeWill();
     } else if (e.key.toLowerCase() === "h") {
       openTouch(); // camera (SNAP) tool — tap to capture evidence
-    } else if (e.key.toLowerCase() === "s") {
-      toggleScan(); // SCAN tool (works in both renderers)
     } else if (e.key.toLowerCase() === "c") {
       capturePhoto(); // journalist photograph — file a specimen to the case file
     } else if (e.key.toLowerCase() === "l") {
@@ -4350,7 +4568,7 @@
       e.preventDefault();
       moveForward();
     } else if (e.key === "Escape") {
-      if (state.scanOn) closeScan();
+      if (state.scanTagActing) closeTagPrompt(state.scanTagActing); // dismiss an open action bar
       closeFreeWill(true);
     }
   }
@@ -4406,11 +4624,11 @@
     // button) can't leave the tap/pinch state stuck.
     window.addEventListener("pointerup", onTouchPointerCleanup);
     window.addEventListener("pointercancel", onTouchPointerCleanup);
-    if (el.scanBtn) el.scanBtn.addEventListener("click", toggleScan);
-    // SCAN is non-modal: its overlay doesn't capture the pointer (so choices and
-    // controls stay live), so we watch pointer moves/taps globally while armed.
+    // Ambient hotspots are non-modal: the overlay doesn't capture the pointer
+    // (so choices and controls stay live). We watch pointer moves to highlight
+    // the nearest interaction possibility and taps to dismiss an open bar.
     window.addEventListener("pointermove", onScanMove);
-    window.addEventListener("pointerdown", onScanTap); // touch/tap-to-scan (mobile)
+    window.addEventListener("pointerdown", onScanTap);
     window.addEventListener("resize", repositionScanTags);
     el.forwardBtn.addEventListener("click", moveForward);
     el.tapeBtn.addEventListener("click", openTape);

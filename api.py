@@ -11,9 +11,20 @@ from flask import Flask, request, jsonify, send_file, make_response, render_temp
 from flask_cors import CORS
 import engine
 import ai_provider_manager
+import scene_audio
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
+
+# Optional realtime music streaming (Increment 2). flask-sock is an optional
+# dependency: if it's missing, the /ws/scene_music route simply isn't registered
+# and the client falls back to the clip-loop scene audio. Never let its absence
+# break app startup.
+try:
+    from flask_sock import Sock
+    _sock = Sock(app)
+except Exception:  # noqa: BLE001
+    _sock = None
 
 
 # Allow embedding the game in an iframe (main site + Discord embedded app).
@@ -97,6 +108,69 @@ def serve_legacy_image(filename):
     except Exception as e:
         traceback.print_exc()
         return error_response("Failed to serve image", str(e))
+
+
+@app.route('/api/scene_audio', methods=['POST'])
+def api_scene_audio():
+    """Generate (or reuse a cached) scene-matched instrumental clip for a guide
+    image and return its URL.
+
+    The standalone UI posts the scene descriptor (`metadata.prompt`, already
+    delivered with every `scene_image`) here; we render a short Lyria RealTime
+    clip the client loops as an ambient score, re-scoring on each new scene.
+    Degrades to `{ "audio_url": null }` whenever audio can't be produced (no
+    GEMINI_API_KEY, SDK missing, or stream failure) so the client stays silent
+    instead of erroring."""
+    try:
+        body = request.get_json(silent=True) or {}
+        prompt = (body.get("prompt") or "").strip()
+        session_id = body.get("session") or "default"
+        if not prompt:
+            return jsonify({"audio_url": None, "reason": "no_prompt"})
+        result = scene_audio.get_scene_audio(prompt, session_id=session_id)
+        if not result:
+            return jsonify({"audio_url": None, "reason": "unavailable"})
+        return jsonify(result)
+    except Exception as e:
+        traceback.print_exc()
+        # Never surface a hard error for a non-critical enhancement.
+        return jsonify({"audio_url": None, "reason": "error", "details": str(e)})
+
+
+@app.route('/audio/<filename>', methods=['GET'])
+def serve_scene_audio(filename):
+    """Serve generated scene audio WAVs (mirrors the /images route, with the
+    same path-traversal protection)."""
+    try:
+        path = scene_audio.resolve_audio_path(filename, 'default')
+        if path and path.exists():
+            return send_file(str(path), mimetype='audio/wav')
+        return error_response("Audio not found", code=404)
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to serve audio", str(e))
+
+
+if _sock is not None:
+    @_sock.route('/ws/scene_music')
+    def ws_scene_music(ws):
+        """Realtime scene music stream (Lyria RealTime -> browser).
+
+        The client opens this socket, may send an initial `{"prompt": ...}` steer
+        message, then receives raw 16-bit/48kHz/stereo PCM binary frames. Sending
+        a new `{"prompt": ...}` on each scene re-steers the score live. Opt-in via
+        the standalone UI's ?music=stream flag."""
+        try:
+            first = ws.receive(timeout=5)
+            initial_prompt = ""
+            if first:
+                try:
+                    initial_prompt = (json.loads(first).get("prompt") or "").strip()
+                except Exception:
+                    initial_prompt = ""
+            scene_audio.stream_music_over_ws(ws, initial_prompt)
+        except Exception:
+            traceback.print_exc()
 
 
 def _standalone_asset_version():

@@ -765,25 +765,19 @@ class TestRealtimeRenderer(unittest.TestCase):
         try:
             page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
             page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
-            # The SCAN tool is revealed in realtime mode.
-            self.assertNotEqual(page.evaluate("getComputedStyle(document.getElementById('scan-btn')).display"), "none")
-            # Arm it -> scanning: the overlay opens and an initial scan fires.
-            page.evaluate("document.getElementById('scan-btn').click()")
-            self.assertTrue(page.evaluate("document.getElementById('scan-btn').classList.contains('scanning')"))
+            # Ambient hotspots: NO button — the overlay is live and starfield tags
+            # appear automatically once the scene is on screen.
             self.assertFalse(page.evaluate("document.getElementById('scan-layer').classList.contains('hidden')"))
-            # Starfield tags appear from the recognized objects.
             page.wait_for_function("document.querySelectorAll('#scan-tags .scan-tag').length >= 2", timeout=10000)
-            self.assertGreaterEqual(len(detects), 1, "SCAN never called /api/detect")
+            self.assertGreaterEqual(len(detects), 1, "ambient scan never called /api/detect")
             labels = page.evaluate("Array.from(document.querySelectorAll('.scan-tag-label')).map(e=>e.textContent)")
             self.assertIn("wooden crate", labels)
             self.assertIn("steel door", labels)
-            # Every tag carries its little act button.
-            self.assertTrue(page.evaluate("!!document.querySelector('.scan-tag .scan-tag-act')"))
-            # Poke the first (wooden crate) tag -> its action icons appear.
+            # Clicking a tag (the whole tag is the click target) opens its actions.
             page.evaluate("""() => {
                 const tag = Array.from(document.querySelectorAll('.scan-tag'))
                     .find(t => t.querySelector('.scan-tag-label').textContent === 'wooden crate');
-                tag.querySelector('.scan-tag-act').click();
+                tag.click();
             }""")
             self.assertTrue(page.evaluate("!!document.querySelector('.scan-tag.acting')"))
             # INTERACT and MOVE TO action icons are offered (no typing).
@@ -812,10 +806,10 @@ class TestRealtimeRenderer(unittest.TestCase):
         finally:
             page.close()
 
-    def test_scan_prewarms_detection_in_background(self):
-        """Detection must pre-warm in the background once a scene is on screen —
-        even before SCAN is opened — so arming SCAN shows tags INSTANTLY (from the
-        cache) instead of waiting for the first round-trip."""
+    def test_ambient_hotspots_appear_without_a_button(self):
+        """There is no SCAN button: once a scene is on screen, detection runs
+        automatically AND the interaction hotspots (starfield tags) render on
+        their own — no arming step, no click required."""
         page = self._new_realtime_page()
         scene_items = [
             {"id": 1, "type": "narrative", "content": "Intro."},
@@ -836,22 +830,58 @@ class TestRealtimeRenderer(unittest.TestCase):
         try:
             page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
             page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
-            # The background pre-warm fires WITHOUT the player opening SCAN.
-            for _ in range(90):
-                if detects:
-                    break
-                page.wait_for_timeout(100)
-            self.assertGreaterEqual(len(detects), 1, f"detection must pre-warm in the background. logs:\n{self._dump_logs()}")
-            self.assertFalse(page.evaluate("document.getElementById('scan-btn').classList.contains('scanning')"),
-                             "pre-warm must not arm SCAN by itself")
-            self.assertEqual(page.evaluate("document.querySelectorAll('#scan-tags .scan-tag').length"), 0,
-                             "pre-warm must not render tags before SCAN is opened")
-            # Opening SCAN renders the cached tag IMMEDIATELY (synchronously).
-            page.evaluate("document.getElementById('scan-btn').click()")
-            self.assertGreaterEqual(page.evaluate("document.querySelectorAll('#scan-tags .scan-tag').length"), 1,
-                                    "SCAN must show pre-warmed tags instantly on open")
+            # There is no SCAN button anymore.
+            self.assertIsNone(page.query_selector("#scan-btn"), "the SCAN button must be gone")
+            # Detection fires on its own, and tags render on their own.
+            page.wait_for_function("document.querySelectorAll('#scan-tags .scan-tag').length >= 1", timeout=12000)
+            self.assertGreaterEqual(len(detects), 1, f"ambient detection must run on its own. logs:\n{self._dump_logs()}")
+            self.assertFalse(page.evaluate("document.getElementById('scan-layer').classList.contains('hidden')"),
+                             "the ambient hotspot overlay must be live with a scene on screen")
         except Exception:
-            print("\n=== REACTOR CONSOLE LOG (scan-prewarm) ===\n" + self._dump_logs())
+            print("\n=== REACTOR CONSOLE LOG (ambient-hotspots) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
+    def test_turn_recovers_when_server_never_resolves(self):
+        """A committed turn must never leave the player permanently stuck on the
+        progress bar. If the server turn stalls (LLM error/rate-limit, or a lost
+        feed item) and no player_choice_prompt ever arrives, the client watchdog
+        releases the UI: the veil clears and actionable recovery choices appear so
+        the game can continue."""
+        page = self._new_realtime_page()
+        page.add_init_script("window.__TURN_WATCHDOG_MS__ = 1200;")  # fast watchdog for the test
+        scene_items = [
+            {"id": 1, "type": "narrative", "content": "Intro."},
+            {"id": 2, "type": "scene_image", "content": "", "image_url": TINY_PNG_DATA_URL,
+             "metadata": {"prompt": "scene one", "base": "A dock.", "hard_transition": False}},
+            {"id": 3, "type": "player_choice_prompt", "content": "?", "choices": [{"text": "Go"}]},
+        ]
+        page.route("**/api/reset", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(scene_items)))
+        # The turn NEVER resolves: /api/choose accepts the action but the feed
+        # stays empty forever (no player_choice_prompt is ever delivered).
+        page.route("**/api/feed*", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
+        page.route("**/api/choose", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
+        page.route("**/api/detect", lambda r: r.fulfill(status=200, content_type="application/json", body='{"objects": []}'))
+        try:
+            page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
+            page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
+            # Commit a choice from the intro prompt.
+            page.wait_for_function("document.querySelectorAll('#choices-container .choice-btn').length >= 1", timeout=10000)
+            page.evaluate("document.querySelector('#choices-container .choice-btn').click()")
+            # Veil goes up while the (doomed) turn runs.
+            page.wait_for_function("!document.getElementById('processing-veil').classList.contains('hidden')", timeout=5000)
+            # The watchdog must recover: veil clears and recovery choices appear.
+            page.wait_for_function(
+                "document.getElementById('processing-veil').classList.contains('hidden')", timeout=6000)
+            page.wait_for_function(
+                "Array.from(document.querySelectorAll('#choices-container .choice-btn')).some(b => /move forward/i.test(b.textContent))",
+                timeout=6000)
+            self.assertFalse(
+                page.evaluate("document.querySelectorAll('#choices-container .choice-btn').length === 0"),
+                f"watchdog must restore actionable choices. logs:\n{self._dump_logs()}")
+        except Exception:
+            print("\n=== REACTOR CONSOLE LOG (turn-watchdog) ===\n" + self._dump_logs())
             raise
         finally:
             page.close()
@@ -883,10 +913,9 @@ class TestRealtimeRenderer(unittest.TestCase):
         try:
             page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
             page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
-            page.evaluate("document.getElementById('scan-btn').click()")
-            page.wait_for_function("document.querySelectorAll('#scan-tags .scan-tag').length >= 1", timeout=10000)
-            # Open the tag's action icons and tap MOVE TO (no typing).
-            page.evaluate("document.querySelector('.scan-tag .scan-tag-act').click()")
+            # Ambient hotspots appear on their own; click the tag to open actions.
+            page.wait_for_function("document.querySelectorAll('#scan-tags .scan-tag').length >= 1", timeout=12000)
+            page.evaluate("document.querySelector('.scan-tag').click()")
             page.wait_for_function("!!document.querySelector('.scan-tag.acting .scan-action-move')", timeout=5000)
             page.evaluate("document.querySelector('.scan-tag.acting .scan-action-move').click()")
             for _ in range(60):
@@ -933,9 +962,8 @@ class TestRealtimeRenderer(unittest.TestCase):
         try:
             page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
             page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
-            page.evaluate("document.getElementById('scan-btn').click()")
-            page.wait_for_function("document.querySelectorAll('#scan-tags .scan-tag').length >= 1", timeout=10000)
-            page.evaluate("document.querySelector('.scan-tag .scan-tag-act').click()")
+            page.wait_for_function("document.querySelectorAll('#scan-tags .scan-tag').length >= 1", timeout=12000)
+            page.evaluate("document.querySelector('.scan-tag').click()")
             page.wait_for_function("!!document.querySelector('.scan-tag.acting .scan-action-move')", timeout=5000)
             page.evaluate("document.querySelector('.scan-tag.acting .scan-action-move').click()")
             for _ in range(60):
@@ -952,10 +980,10 @@ class TestRealtimeRenderer(unittest.TestCase):
         finally:
             page.close()
 
-    def test_realtime_scan_persists_across_renderer_switch(self):
-        """SCAN works in BOTH renderers, so switching from realtime to still
-        images must NOT tear it down — the hub stays available and the overlay
-        stays armed (it re-maps its tags to the still on the next scan)."""
+    def test_ambient_hotspots_persist_across_renderer_switch(self):
+        """Ambient hotspots work in BOTH renderers, so switching from realtime to
+        still images must NOT tear them down — the overlay stays live and re-maps
+        its tags onto the still."""
         page = self._new_realtime_page()
         scene_items = [
             {"id": 1, "type": "narrative", "content": "Intro."},
@@ -969,28 +997,25 @@ class TestRealtimeRenderer(unittest.TestCase):
         try:
             page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
             page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
-            page.evaluate("document.getElementById('scan-btn').click()")
-            self.assertTrue(page.evaluate("document.getElementById('scan-btn').classList.contains('scanning')"))
-            # Switch to still images via the renderer toggle -> SCAN STAYS armed.
+            # Ambient overlay is live in realtime.
+            self.assertFalse(page.evaluate("document.getElementById('scan-layer').classList.contains('hidden')"))
+            # Switch to still images via the renderer toggle -> overlay STAYS live.
             page.evaluate("document.getElementById('btn-renderer').click()")
             page.wait_for_function("document.body.classList.contains('realtime-on') === false", timeout=5000)
-            self.assertTrue(page.evaluate("document.getElementById('scan-btn').classList.contains('scanning')"),
-                            "SCAN must stay armed after switching to still images")
             self.assertFalse(page.evaluate("document.getElementById('scan-layer').classList.contains('hidden')"),
-                             "the scan overlay must stay open across the renderer switch")
-            # The SCAN hub remains visible in stills mode (unlike TOUCH).
-            self.assertNotEqual(page.evaluate("getComputedStyle(document.getElementById('scan-btn')).display"), "none")
-            self.assertEqual(page.evaluate("getComputedStyle(document.getElementById('realtime-btn')).display"), "none")
+                             "the ambient hotspot overlay must stay live across the renderer switch")
+            # There is no SCAN button in either renderer.
+            self.assertIsNone(page.query_selector("#scan-btn"), "the SCAN button must be gone")
         except Exception:
-            print("\n=== REACTOR CONSOLE LOG (scan-switch) ===\n" + self._dump_logs())
+            print("\n=== REACTOR CONSOLE LOG (ambient-switch) ===\n" + self._dump_logs())
             raise
         finally:
             page.close()
 
     def test_scan_tool_works_in_stills_mode(self):
-        """SCAN must also work with the still-image renderer: arm it, scan the
-        current still (not a video), tags twinkle in, and a tag's + button
-        commits a full turn anchored on that object — no realtime video needed."""
+        """Ambient hotspots must also work with the still-image renderer: they
+        detect the current still (not a video), tags appear on their own, and
+        clicking a tag commits a full turn anchored on that object."""
         page = self._new_realtime_page()
         scene_items = [
             {"id": 1, "type": "narrative", "content": "Intro."},
@@ -1021,24 +1046,20 @@ class TestRealtimeRenderer(unittest.TestCase):
         try:
             # Force the STILL-image renderer (no realtime video).
             page.goto(f"{self.base_url}/standalone?renderer=image", wait_until="domcontentloaded")
-            page.wait_for_selector("#scan-btn", state="attached", timeout=10000)
-            # SCAN hub is available in stills mode too.
-            self.assertNotEqual(page.evaluate("getComputedStyle(document.getElementById('scan-btn')).display"), "none")
+            page.wait_for_selector("#scan-layer", state="attached", timeout=10000)
             # The still must be on screen (a scene background is set).
             page.wait_for_function(
                 "(document.getElementById('sceneA').style.backgroundImage||"
                 "document.getElementById('sceneB').style.backgroundImage||'').length > 0",
                 timeout=10000,
             )
-            # Arm SCAN -> it scans the STILL and tags twinkle in.
-            page.evaluate("document.getElementById('scan-btn').click()")
-            self.assertTrue(page.evaluate("document.getElementById('scan-btn').classList.contains('scanning')"))
-            page.wait_for_function("document.querySelectorAll('#scan-tags .scan-tag').length >= 1", timeout=10000)
-            self.assertGreaterEqual(len(detects), 1, "SCAN never called /api/detect in stills mode")
+            # Ambient detection scans the STILL and tags appear on their own.
+            page.wait_for_function("document.querySelectorAll('#scan-tags .scan-tag').length >= 1", timeout=12000)
+            self.assertGreaterEqual(len(detects), 1, "ambient scan never called /api/detect in stills mode")
             labels = page.evaluate("Array.from(document.querySelectorAll('.scan-tag-label')).map(e=>e.textContent)")
             self.assertIn("steel door", labels)
-            # Poke the tag, tap INTERACT -> commits a full turn on the object.
-            page.evaluate("document.querySelector('.scan-tag .scan-tag-act').click()")
+            # Click the tag, tap INTERACT -> commits a full turn on the object.
+            page.evaluate("document.querySelector('.scan-tag').click()")
             page.wait_for_function("!!document.querySelector('.scan-tag.acting .scan-action-interact')", timeout=5000)
             page.evaluate("document.querySelector('.scan-tag.acting .scan-action-interact').click()")
             for _ in range(60):
@@ -1055,10 +1076,83 @@ class TestRealtimeRenderer(unittest.TestCase):
         finally:
             page.close()
 
-    def test_scan_ceases_when_tag_action_submitted(self):
-        """Submitting a SCAN tag action must END the scan session (close the
-        overlay + clear the labels) rather than leaving tags hovering over the
-        scene while the turn plays out."""
+    def test_stills_hotspots_refresh_after_a_turn(self):
+        """The key 'works well in stills mode' guarantee: after a turn changes the
+        still, ambient detection must RE-RUN on the new still and surface the new
+        scene's hotspots on its own (the old labels must not persist or vanish
+        forever). Uses a NEW image + different detected objects for the new scene."""
+        page = self._new_realtime_page()
+        # Make the post-turn cooldown short so the refresh detection fires quickly.
+        page.add_init_script("window.__SCAN_TURN_COOLDOWN_MS__ = 400;")
+        SCENE_B_PNG = (
+            "data:image/png;base64,"
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lK3Q6wAAAABJRU5ErkJggg=="
+        )
+        scene_items = [
+            {"id": 1, "type": "narrative", "content": "Intro."},
+            {"id": 2, "type": "scene_image", "content": "", "image_url": TINY_PNG_DATA_URL,
+             "metadata": {"prompt": "scene one", "base": "A dim corridor.", "hard_transition": False}},
+            {"id": 3, "type": "player_choice_prompt", "content": "?", "choices": [{"text": "Go"}]},
+        ]
+        # After the turn, the feed delivers a NEW still + a fresh prompt.
+        next_items = [
+            {"id": 10, "type": "scene_image", "content": "", "image_url": SCENE_B_PNG,
+             "metadata": {"prompt": "scene two", "base": "A flooded vault.", "hard_transition": True}},
+            {"id": 11, "type": "player_choice_prompt", "content": "?", "choices": [{"text": "Onward"}]},
+        ]
+        state = {"chose": False, "detect_calls": 0}
+        page.route("**/api/reset", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(scene_items)))
+
+        def feed_handler(route):
+            body = json.dumps(next_items) if state["chose"] else "[]"
+            route.fulfill(status=200, content_type="application/json", body=body)
+        page.route("**/api/feed*", feed_handler)
+
+        def choose_handler(route):
+            state["chose"] = True
+            route.fulfill(status=200, content_type="application/json", body="[]")
+        page.route("**/api/choose", choose_handler)
+
+        def detect_handler(route):
+            state["detect_calls"] += 1
+            # Different objects before vs after the turn, proving re-detection.
+            label = "old crate" if not state["chose"] else "new lantern"
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({
+                "objects": [{"label": label, "cx": 0.4, "cy": 0.45, "w": 0.2, "h": 0.2}]}))
+        page.route("**/api/detect", detect_handler)
+        try:
+            page.goto(f"{self.base_url}/standalone?renderer=image", wait_until="domcontentloaded")
+            page.wait_for_selector("#scan-layer", state="attached", timeout=10000)
+            page.wait_for_function(
+                "(document.getElementById('sceneA').style.backgroundImage||"
+                "document.getElementById('sceneB').style.backgroundImage||'').length > 0", timeout=10000)
+            # Scene one's hotspot appears on its own.
+            page.wait_for_function(
+                "Array.from(document.querySelectorAll('.scan-tag-label')).some(e=>e.textContent==='old crate')",
+                timeout=12000)
+            # Commit an action on it -> turn resolves via the feed's new scene.
+            page.evaluate("document.querySelector('.scan-tag').click()")
+            page.wait_for_function("!!document.querySelector('.scan-tag.acting .scan-action-interact')", timeout=5000)
+            page.evaluate("document.querySelector('.scan-tag.acting .scan-action-interact').click()")
+            # The NEW scene's hotspot must appear on its own (re-detected).
+            page.wait_for_function(
+                "Array.from(document.querySelectorAll('.scan-tag-label')).some(e=>e.textContent==='new lantern')",
+                timeout=15000)
+            # And the stale label must be gone.
+            self.assertNotIn("old crate", page.evaluate(
+                "Array.from(document.querySelectorAll('.scan-tag-label')).map(e=>e.textContent)"),
+                f"stale hotspot must not persist onto the new scene. logs:\n{self._dump_logs()}")
+        except Exception:
+            print("\n=== CONSOLE LOG (stills-refresh) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
+    def test_scan_action_clears_tags_for_the_turn(self):
+        """Committing a hotspot action must clear the stale labels while the turn
+        plays out (they shouldn't hover over a scene that's about to change). The
+        ambient overlay itself stays live — it repopulates once the new scene
+        settles — but no tags linger during the turn."""
         page = self._new_realtime_page()
         scene_items = [
             {"id": 1, "type": "narrative", "content": "Intro."},
@@ -1074,21 +1168,18 @@ class TestRealtimeRenderer(unittest.TestCase):
         try:
             page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
             page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
-            page.evaluate("document.getElementById('scan-btn').click()")
-            page.wait_for_function("document.querySelectorAll('#scan-tags .scan-tag').length >= 1", timeout=10000)
-            # Poke a tag, tap an action icon -> scan must CEASE.
-            page.evaluate("document.querySelector('.scan-tag .scan-tag-act').click()")
+            page.wait_for_function("document.querySelectorAll('#scan-tags .scan-tag').length >= 1", timeout=12000)
+            # Click a tag, tap an action icon -> tags must clear for the turn.
+            page.evaluate("document.querySelector('.scan-tag').click()")
             page.wait_for_function("!!document.querySelector('.scan-tag.acting .scan-action-interact')", timeout=5000)
             page.evaluate("document.querySelector('.scan-tag.acting .scan-action-interact').click()")
-            # Scan overlay closes, the SCAN hub is no longer armed, and the labels
-            # are gone.
-            page.wait_for_function("document.getElementById('scan-layer').classList.contains('hidden')", timeout=6000)
-            self.assertFalse(page.evaluate("document.getElementById('scan-btn').classList.contains('scanning')"),
-                             "SCAN must cease (un-arm) after submitting a tag action")
-            self.assertEqual(page.evaluate("document.querySelectorAll('#scan-tags .scan-tag').length"), 0,
-                             "SCAN labels must be cleared after submitting a tag action")
+            # The stale labels are gone while the turn resolves...
+            page.wait_for_function("document.querySelectorAll('#scan-tags .scan-tag').length === 0", timeout=6000)
+            # ...but the ambient overlay itself stays live (not torn down).
+            self.assertFalse(page.evaluate("document.getElementById('scan-layer').classList.contains('hidden')"),
+                             "the ambient overlay must remain live after committing an action")
         except Exception:
-            print("\n=== CONSOLE LOG (scan-cease) ===\n" + self._dump_logs())
+            print("\n=== CONSOLE LOG (scan-clear) ===\n" + self._dump_logs())
             raise
         finally:
             page.close()
