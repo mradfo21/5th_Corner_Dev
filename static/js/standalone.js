@@ -2424,6 +2424,25 @@
     tag.classList.add("acting");
     tag.classList.remove("near");
     Sound.open();
+    // The expanded action bar is wider than the tag — clamp its center so the
+    // whole box stays on screen even when the object sits near a viewport edge
+    // (otherwise the action icons clip off the side). Use offsetWidth (stable
+    // layout width) + a buffer (font-swap can widen the label after measuring,
+    // and the acting scale adds a hair). The clamp only moves EDGE tags.
+    const fitOnScreen = () => {
+      if (state.scanTagActing !== tag) return;
+      const m = 12;
+      const half = tag.offsetWidth / 2 + 26;
+      const W = window.innerWidth;
+      const cx = parseFloat(tag.style.left || "0");
+      const clamped = Math.max(m + half, Math.min(W - m - half, cx));
+      if (Math.abs(clamped - cx) > 0.5) {
+        tag.style.left = clamped + "px";
+        tag.dataset.sx = String(clamped);
+      }
+    };
+    requestAnimationFrame(fitOnScreen);
+    setTimeout(fitOnScreen, 260); // re-clamp after the font/animation settles
   }
 
   function closeTagPrompt(tag) {
