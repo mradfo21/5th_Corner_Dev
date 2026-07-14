@@ -2503,11 +2503,12 @@ body.touch-aiming .touch-zoom { opacity: 0.9; }
   transform: translateX(-50%);
   z-index: 12;
   display: flex;
-  align-items: baseline;
-  gap: 7px;
-  padding: 5px 12px;
-  border-radius: 5px;
-  background: rgba(6, 10, 8, 0.5);
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 14px 7px;
+  border-radius: 6px;
+  background: rgba(6, 10, 8, 0.55);
   border: 1px solid rgba(255, 210, 120, 0.32);
   backdrop-filter: blur(3px);
   -webkit-backdrop-filter: blur(3px);
@@ -2516,6 +2517,11 @@ body.touch-aiming .touch-zoom { opacity: 0.9; }
   white-space: nowrap;
 }
 #evidence-hud.hidden { display: none; }
+#evidence-hud .ev-main {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
 #evidence-hud .ev-mark {
   color: rgba(255, 208, 120, 0.95);
   font-size: 12px;
@@ -2534,17 +2540,156 @@ body.touch-aiming .touch-zoom { opacity: 0.9; }
   color: #ffe1a6;
   letter-spacing: 0.04em;
 }
-#evidence-hud .ev-shots {
-  font-size: 9px;
-  letter-spacing: 0.1em;
-  color: rgba(232, 224, 200, 0.4);
-  text-transform: uppercase;
+#evidence-hud .ev-rank {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: #1a1206;
+  background: #ffd27a;
+  border-radius: 3px;
+  padding: 1px 6px;
+  transform: translateY(-1px);
 }
+/* Rank tiers tint the badge from cold to hot. */
+#evidence-hud .ev-rank.rank-D { background: #9aa0a6; }
+#evidence-hud .ev-rank.rank-C { background: #7fd0a0; }
+#evidence-hud .ev-rank.rank-B { background: #86c8ff; }
+#evidence-hud .ev-rank.rank-A { background: #ffd27a; }
+#evidence-hud .ev-rank.rank-S { background: #d59bff; color: #17061f; }
+
+/* CASE FILE census — distinct subjects toward the win condition. */
+#evidence-hud .ev-case {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+}
+#evidence-hud .ev-case-label {
+  font-size: 8px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(232, 224, 200, 0.5);
+}
+#evidence-hud .ev-bar {
+  flex: 1 1 auto;
+  height: 4px;
+  min-width: 70px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+#evidence-hud .ev-bar-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, #7fd0a0, #ffd27a);
+  transition: width 0.5s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+#evidence-hud .ev-case-count {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  color: rgba(232, 224, 200, 0.7);
+}
+#evidence-hud.case-complete .ev-bar-fill { background: linear-gradient(90deg, #ffd27a, #d59bff); }
 #evidence-hud.bump { animation: evidence-hud-bump 0.4s ease-out; }
 @keyframes evidence-hud-bump {
   0%   { transform: translateX(-50%) scale(1); }
-  35%  { transform: translateX(-50%) scale(1.13); border-color: rgba(255, 224, 150, 0.9); }
+  35%  { transform: translateX(-50%) scale(1.1); border-color: rgba(255, 224, 150, 0.9); }
   100% { transform: translateX(-50%) scale(1); }
+}
+/* A brighter pulse when a NEW subject is added to the case file. */
+#evidence-hud.subject { animation: evidence-hud-subject 0.6s ease-out; }
+@keyframes evidence-hud-subject {
+  0%   { transform: translateX(-50%) scale(1); border-color: rgba(127, 208, 160, 0.9); }
+  30%  { transform: translateX(-50%) scale(1.14); border-color: rgba(127, 208, 160, 1); box-shadow: 0 0 20px rgba(127, 208, 160, 0.5); }
+  100% { transform: translateX(-50%) scale(1); }
+}
+
+/* ---------- CASE CLOSED win overlay ---------- */
+#case-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 47;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(circle at center, rgba(10, 30, 20, 0.62), rgba(3, 8, 6, 0.9));
+  animation: death-fade-in 0.9s ease-out;
+}
+#case-overlay.hidden { display: none; }
+.case-inner {
+  text-align: center;
+  font-family: 'Share Tech Mono', monospace;
+  color: #eafff2;
+  padding: 20px;
+  max-width: 92vw;
+}
+.case-badge {
+  font-size: 13px;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: #7fd0a0;
+  margin-bottom: 8px;
+}
+.case-rank {
+  font-family: 'VT323', monospace;
+  font-size: clamp(40px, 12vw, 84px);
+  line-height: 0.95;
+  letter-spacing: 0.06em;
+  color: #ffe1a6;
+  text-shadow: 0 3px 18px rgba(255, 210, 120, 0.45);
+}
+.case-rank span { color: #ffd27a; }
+.case-stats {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px 18px;
+  margin: 14px 0 10px;
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  color: rgba(234, 255, 242, 0.72);
+}
+.case-stats b { color: #ffe1a6; font-family: 'VT323', monospace; font-size: 16px; }
+.case-flavor {
+  font-size: 12px;
+  font-style: italic;
+  color: rgba(234, 255, 242, 0.6);
+  margin: 0 auto 18px;
+  max-width: 42ch;
+  line-height: 1.4;
+}
+.case-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+.case-actions button {
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 13px;
+  letter-spacing: 0.1em;
+  padding: 10px 18px;
+  border-radius: 5px;
+  cursor: pointer;
+  background: rgba(8, 16, 12, 0.6);
+  border: 1px solid rgba(127, 208, 160, 0.5);
+  color: #d6ffe6;
+  transition: background 0.15s, border-color 0.15s, transform 0.1s;
+}
+#case-restart { background: rgba(127, 208, 160, 0.18); border-color: rgba(127, 208, 160, 0.85); }
+.case-actions button:hover { background: rgba(127, 208, 160, 0.28); border-color: rgba(127, 208, 160, 1); }
+.case-actions button:active { transform: scale(0.96); }
+.case-hint {
+  margin-top: 14px;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(234, 255, 242, 0.35);
+}
+@media (prefers-reduced-motion: reduce) {
+  #case-overlay { animation: none; }
+  #evidence-hud.bump, #evidence-hud.subject, #evidence-hud .ev-bar-fill { animation: none !important; transition: none !important; }
 }
 
 /* ---------- Photo appraisal (large shot, top-center, text overlaid) ----------
@@ -2641,7 +2786,8 @@ body.touch-aiming .touch-zoom { opacity: 0.9; }
   white-space: nowrap;
 }
 .receipt-item .ri-pts { font-size: 11.5px; font-weight: 700; color: #ffd27a; justify-self: end; }
-.receipt-item .ri-new {
+.receipt-item .ri-new,
+.receipt-item .ri-rare {
   display: inline-block;
   font-size: 8px;
   letter-spacing: 0.1em;
@@ -2652,6 +2798,7 @@ body.touch-aiming .touch-zoom { opacity: 0.9; }
   margin-left: 4px;
   transform: translateY(-1px);
 }
+.receipt-item .ri-rare { background: #d59bff; color: #17061f; }
 .receipt-item .ri-note { grid-column: 1 / -1; font-size: 9px; letter-spacing: 0.02em; color: rgba(243, 236, 220, 0.62); }
 .receipt-item .ri-note:empty { display: none; }
 .receipt-item .ri-stars { color: #ffcf88; letter-spacing: 1px; }

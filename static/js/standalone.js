@@ -72,6 +72,14 @@
     evidenceCard: document.getElementById("evidence-card"),
     evidenceHud: document.getElementById("evidence-hud"),
     photoReceipt: document.getElementById("photo-receipt"),
+    caseOverlay: document.getElementById("case-overlay"),
+    caseRankLetter: document.getElementById("case-rank-letter"),
+    caseSubjects: document.getElementById("case-subjects"),
+    caseEvidence: document.getElementById("case-evidence"),
+    caseShots: document.getElementById("case-shots"),
+    caseFlavor: document.getElementById("case-flavor"),
+    caseContinue: document.getElementById("case-continue"),
+    caseRestart: document.getElementById("case-restart"),
     investigationsTray: document.getElementById("investigations-tray"),
     investigationsStrip: document.getElementById("investigations-strip"),
     forwardBtn: document.getElementById("forward-btn"),
@@ -150,6 +158,7 @@
     pinchActive: false,         // true once 2 fingers are down (suppresses the shot until release)
     receiptTimers: [],          // pending setTimeouts driving the sequential receipt reveal
     receiptToken: 0,            // bumped per capture so a newer shot cancels an older reveal
+    caseWon: false,             // the dossier census hit its target this run (win fired)
     pendingInvestigation: null, // {screen, region, texture} captured at TOUCH lock, finalized on submit
     selectedInvestigation: null,// a specimen chosen from the tray to inform the next action
     scanOn: false,              // SCAN tool armed (object-recognition tags over the live video)
@@ -277,6 +286,11 @@
       scoreTick() { tone(1500, 0.02, "square", 0.028); },        // rolling score counter blip
       stamp() { tone([170, 80], 0.16, "sawtooth", 0.07); noise(0.06, 0.05); tone(90, 0.12, "sine", 0.05, 0.02); }, // rating stamp thunk
       zoom(t) { const f = 420 + Math.max(0, Math.min(1, t || 0)) * 900; tone(f, 0.03, "sine", 0.025); }, // lens zoom tick
+      newSubject() { tone([700, 1150], 0.10, "triangle", 0.05); tone(1500, 0.10, "sine", 0.04, 0.08); tone(1950, 0.12, "sine", 0.03, 0.16); }, // NEW subject filed to the case
+      caseSolved() { // dossier complete — a rising, triumphant fanfare
+        tone([300, 620], 0.18, "triangle", 0.06); tone([620, 930], 0.2, "triangle", 0.055, 0.14);
+        tone([930, 1400], 0.28, "sine", 0.05, 0.3); tone(1860, 0.5, "sine", 0.045, 0.5); noise(0.12, 0.03);
+      },
       // ---- Ceremony: one distinct cue per pipeline step, so the player HEARS
       // the world working through each stage. ----
       cereAction() { tone(300, 0.05, "square", 0.06); tone([300, 620], 0.14, "square", 0.05, 0.05); },   // action selected — decisive commit
@@ -1824,7 +1838,9 @@
       closeScan(); // drop any scan tags/overlay from the dead run
       closeTouch(); // drop any camera overlay
       try { Photo.hide(); Photo.clearTimers(); } catch (_) {} // kill any in-flight receipt
-      try { Evidence.reset(); } catch (_) {} // the EVIDENCE score is per-run
+      try { hideCaseWin(); } catch (_) {}    // drop the win screen from the prior run
+      state.caseWon = false;
+      try { Evidence.reset(); } catch (_) {} // the EVIDENCE score + case file are per-run
       state.selectedInvestigation = null;
       try { Investigations.clear(); } catch (_) {} // the case file is per-run
       // Wipe the current visuals IMMEDIATELY and permanently: blank both still
@@ -2153,12 +2169,15 @@
   window.Investigations = Investigations;
 
   // ------------------------------------------------------------------
-  // Evidence — the run's photography SCORE. Every photo is appraised and its
-  // findings tally into a persistent (per-run) total shown in the top HUD.
-  // Tracks which subjects have already been photographed so re-shooting the
-  // same thing pays less than finding something NEW — rewarding exploration.
-  // Exposed as window.Evidence so future engine hooks can read the score.
+  // Evidence — the run's photography SCORE + the CASE FILE census that gives
+  // the whole loop a GOAL (a win condition). Drawing on the greats: a
+  // Beyond-Good-&-Evil-style census (document N distinct subjects to close the
+  // case), a Pokémon-Snap-style grade (RANK D→S from your evidence), and
+  // Umurangi-ish legible bonuses so points never feel arbitrary. Every photo is
+  // appraised; new/rare/well-framed subjects pay more and fill the dossier.
+  // Persistent per-run + exposed as window.Evidence for future engine hooks.
   // ------------------------------------------------------------------
+  const CASE_TARGET = 8;   // distinct subjects to document to CLOSE THE CASE (win)
   const Evidence = (function () {
     const KEY = "evidence_v1";
     let total = 0, shots = 0;
@@ -2178,14 +2197,40 @@
 
     function fmt(n) { return Math.round(n).toLocaleString("en-US"); }
 
+    // Photographer's grade from the evidence banked (shown live + on the win
+    // screen). Thresholds are tuned so a completed case lands around A/S.
+    function rankFor(t) {
+      if (t >= 3200) return "S";
+      if (t >= 2200) return "A";
+      if (t >= 1300) return "B";
+      if (t >= 650) return "C";
+      return "D";
+    }
+
+    // Paint the RANK badge + the CASE FILE census bar.
+    function renderCase() {
+      if (!el.evidenceHud) return;
+      const rankEl = el.evidenceHud.querySelector(".ev-rank");
+      if (rankEl) {
+        const r = rankFor(total);
+        rankEl.textContent = "RANK " + r;
+        rankEl.className = "ev-rank rank-" + r;
+      }
+      const count = Math.min(seen.size, CASE_TARGET);
+      const fill = el.evidenceHud.querySelector(".ev-bar-fill");
+      if (fill) fill.style.width = Math.round((count / CASE_TARGET) * 100) + "%";
+      const countEl = el.evidenceHud.querySelector(".ev-case-count");
+      if (countEl) countEl.textContent = seen.size + "/" + CASE_TARGET;
+      el.evidenceHud.classList.toggle("case-complete", seen.size >= CASE_TARGET);
+    }
+
     // Roll the HUD number from its current display value up to `total`, ticking
     // as it climbs — so points visibly accrue rather than snapping.
     function renderHud(animate) {
       if (!el.evidenceHud) return;
       el.evidenceHud.classList.remove("hidden");
+      renderCase();
       const totalEl = el.evidenceHud.querySelector(".ev-total");
-      const shotsEl = el.evidenceHud.querySelector(".ev-shots");
-      if (shotsEl) shotsEl.textContent = shots ? (shots + (shots === 1 ? " shot" : " shots")) : "";
       if (!totalEl) return;
       const from = Number(totalEl.getAttribute("data-val")) || 0;
       const to = total;
@@ -2215,17 +2260,31 @@
     return {
       total: () => total,
       shots: () => shots,
+      uniqueCount: () => seen.size,
+      target: () => CASE_TARGET,
+      rank: () => rankFor(total),
       isNew: (label) => !!label && !seen.has(String(label).toLowerCase()),
       markSeen: (label) => { if (label) seen.add(String(label).toLowerCase()); },
       addShot: () => { shots += 1; },
       add(points) { total = Math.max(0, total + (Number(points) || 0)); persist(); renderHud(true); },
+      // Flash the HUD when a brand-new subject joins the case file.
+      pulseSubject() {
+        if (!el.evidenceHud) return;
+        el.evidenceHud.classList.remove("subject");
+        void el.evidenceHud.offsetWidth;
+        el.evidenceHud.classList.add("subject");
+      },
+      // Show the dossier HUD even before the first point (so the goal is known).
+      reveal() { if (el.evidenceHud) { el.evidenceHud.classList.remove("hidden"); renderCase(); } },
       renderHud,
       reset() {
         total = 0; shots = 0; seen = new Set(); persist();
         if (el.evidenceHud) {
           el.evidenceHud.classList.add("hidden");
+          el.evidenceHud.classList.remove("case-complete");
           const t = el.evidenceHud.querySelector(".ev-total");
           if (t) { t.textContent = "0"; t.setAttribute("data-val", "0"); }
+          renderCase();
         }
       },
     };
@@ -2244,6 +2303,7 @@
     const HOLD_MS = 3200;         // how long the finished receipt lingers
     const BASE_PER_INTEREST = 40; // points per interest point (1..5)
     const NOVELTY_BONUS = 60;     // first time a subject is photographed this run
+    const RARE_BONUS = 80;        // a striking 5-star "rare find" premium
     const CONSOLATION = 10;       // an "undeveloped" shot still pays a little
 
     const TIERS = [
@@ -2292,15 +2352,16 @@
       }, 320);
     }
 
-    // Entry point from the two capture paths. `spec` = {texture, region, kind, label}.
+    // Entry point from the two capture paths.
+    // `spec` = {texture, region, kind, label, zoom}.
     function capture(spec) {
       if (!spec || !spec.texture) return;
       // File the specimen exactly as before (case file + server mirror).
       try { Investigations.store(spec); } catch (_) {}
-      reveal(spec.texture);
+      reveal(spec.texture, spec.zoom || 1);
     }
 
-    function reveal(texture) {
+    function reveal(texture, zoom) {
       const parts = els();
       if (!parts) return;
       const token = ++state.receiptToken; // invalidate any older reveal
@@ -2321,14 +2382,14 @@
       try { Sound.receiptOpen(); } catch (_) {}
 
       postJSON("/api/photo", { frame: texture })
-        .then((res) => { if (token === state.receiptToken) printReceipt(token, res || {}); })
+        .then((res) => { if (token === state.receiptToken) printReceipt(token, res || {}, zoom); })
         .catch((err) => {
           console.warn("[standalone] photo appraise failed:", err);
-          if (token === state.receiptToken) printReceipt(token, { items: [] });
+          if (token === state.receiptToken) printReceipt(token, { items: [] }, zoom);
         });
     }
 
-    function printReceipt(token, appraisal) {
+    function printReceipt(token, appraisal, zoom) {
       const parts = els();
       if (!parts || token !== state.receiptToken) return;
       parts.root.classList.remove("developing");
@@ -2349,6 +2410,7 @@
       if (appraisal.caption) parts.caption.textContent = "\u201C" + appraisal.caption + "\u201D";
 
       let shotTotal = 0;
+      let newCount = 0;
       const reduced = prefersReducedMotion();
       items.forEach((it, i) => {
         const delay = reduced ? 0 : i * STAGGER_MS;
@@ -2357,32 +2419,47 @@
           const label = String(it.label || "?");
           const interest = Math.max(1, Math.min(5, Number(it.interest) || 2));
           const isNew = Evidence.isNew(label);
-          let pts = interest * BASE_PER_INTEREST + (isNew ? NOVELTY_BONUS : 0);
+          const isRare = interest >= 5;
+          // New subjects fill the case file (novelty bonus); rare (5-star) finds
+          // pay a premium. Both are called out so the points read as earned.
+          let pts = interest * BASE_PER_INTEREST + (isNew ? NOVELTY_BONUS : 0) + (isRare ? RARE_BONUS : 0);
           Evidence.markSeen(label);
+          if (isNew) newCount += 1;
           shotTotal += pts;
-          appendItemRow(parts, { label, interest, note: it.note, pts, isNew, step: i });
+          appendItemRow(parts, { label, interest, note: it.note, pts, isNew, isRare });
           if (parts.subVal) parts.subVal.textContent = "+" + Math.round(shotTotal);
-          try { Sound.itemReveal(i); } catch (_) {}
-          Evidence.add(pts); // each find visibly bumps the TOP score
+          if (isNew) { try { Sound.newSubject(); } catch (_) {} Evidence.pulseSubject(); }
+          else { try { Sound.itemReveal(i); } catch (_) {} }
+          Evidence.add(pts); // each find visibly bumps the TOP score + case bar
         }, delay);
       });
 
-      // After the last item: composition combo, subtotal, rating stamp.
+      // After the last item: composition + tight-framing bonuses, then stamp.
       const afterItems = reduced ? 10 : items.length * STAGGER_MS + 220;
       later(() => {
         if (token !== state.receiptToken) return;
         parts.root.classList.add("tallied");
         // Busier, well-composed shots earn an escalating combo on top.
-        let combo = 0;
         if (items.length >= 2) {
-          combo = Math.round(shotTotal * 0.15 * (items.length - 1));
+          const combo = Math.round(shotTotal * 0.15 * (items.length - 1));
           shotTotal += combo;
-          if (parts.subVal) parts.subVal.textContent = "+" + Math.round(shotTotal);
-          appendComboRow(parts, combo, items.length);
+          appendBonusRow(parts, "composition \u00d7" + items.length, combo);
           Evidence.add(combo);
         }
+        // A tight, zoomed-in frame is a "detail shot" — rewards using the zoom.
+        if (zoom && zoom > 1.3) {
+          const framing = Math.round(shotTotal * 0.12 * Math.min(1.5, zoom - 1));
+          if (framing > 0) {
+            shotTotal += framing;
+            appendBonusRow(parts, "tight framing " + zoom.toFixed(1) + "\u00d7", framing);
+            Evidence.add(framing);
+          }
+        }
+        if (parts.subVal) parts.subVal.textContent = "+" + Math.round(shotTotal);
         finishStamp(token, shotTotal);
         scheduleDismiss(token);
+        // The win condition: enough distinct subjects closes the case.
+        maybeCloseCase();
       }, afterItems);
     }
 
@@ -2399,6 +2476,12 @@
         nw.textContent = "NEW";
         label.appendChild(nw);
       }
+      if (o.isRare) {
+        const rr = document.createElement("span");
+        rr.className = "ri-rare";
+        rr.textContent = "RARE";
+        label.appendChild(rr);
+      }
       const pts = document.createElement("span");
       pts.className = "ri-pts";
       pts.textContent = "+" + Math.round(o.pts);
@@ -2411,17 +2494,17 @@
       parts.items.appendChild(li);
     }
 
-    function appendComboRow(parts, combo, n) {
+    function appendBonusRow(parts, labelText, pts) {
       const li = document.createElement("li");
       li.className = "receipt-item";
       const label = document.createElement("span");
       label.className = "ri-label";
-      label.textContent = "composition \u00d7" + n;
-      const pts = document.createElement("span");
-      pts.className = "ri-pts";
-      pts.textContent = "+" + Math.round(combo);
+      label.textContent = labelText;
+      const p = document.createElement("span");
+      p.className = "ri-pts";
+      p.textContent = "+" + Math.round(pts);
       li.appendChild(label);
-      li.appendChild(pts);
+      li.appendChild(p);
       parts.items.appendChild(li);
     }
 
@@ -2445,6 +2528,45 @@
   window.Photo = Photo;
 
   // ------------------------------------------------------------------
+  // Win condition — CLOSE THE CASE. Documenting enough DISTINCT subjects
+  // (the dossier census) completes the assignment and grades the run with a
+  // photographer's RANK. Fires once per run; the player can start a new case
+  // or dismiss and keep shooting the same world.
+  // ------------------------------------------------------------------
+  const CASE_FLAVORS = {
+    S: "A flawless dossier. Every subject catalogued, the whole picture developed.",
+    A: "A sharp, thorough case. The story's in the details you caught.",
+    B: "A solid file — enough evidence to make the pattern undeniable.",
+    C: "The case holds together. A few more angles and it would sing.",
+    D: "Barely a case, but the shutter never lies. It's on the record now.",
+  };
+
+  function maybeCloseCase() {
+    if (state.caseWon) return;
+    if (Evidence.uniqueCount() < Evidence.target()) return;
+    state.caseWon = true;
+    // Let the receipt's stamp land first, then celebrate.
+    setTimeout(showCaseWin, 700);
+  }
+
+  function showCaseWin() {
+    if (!el.caseOverlay || !state.caseWon) return; // a reset may have cancelled it
+    try { Photo.hide(); } catch (_) {} // clear the receipt so the win screen is clean
+    const rank = Evidence.rank();
+    if (el.caseRankLetter) el.caseRankLetter.textContent = rank;
+    if (el.caseSubjects) el.caseSubjects.textContent = String(Evidence.uniqueCount());
+    if (el.caseEvidence) el.caseEvidence.textContent = Evidence.total().toLocaleString("en-US");
+    if (el.caseShots) el.caseShots.textContent = String(Evidence.shots());
+    if (el.caseFlavor) el.caseFlavor.textContent = CASE_FLAVORS[rank] || CASE_FLAVORS.C;
+    el.caseOverlay.classList.remove("hidden");
+    try { Sound.caseSolved(); } catch (_) {}
+  }
+
+  function hideCaseWin() {
+    if (el.caseOverlay) el.caseOverlay.classList.add("hidden");
+  }
+
+  // ------------------------------------------------------------------
   // CAMERA (SNAP) tool — arming it turns the whole scene into a capture surface:
   // a CAMERA reticle follows the pointer/finger, and a tap/click shoots a photo
   // of the region under it — collected as "evidence" in the case file with a
@@ -2464,6 +2586,7 @@
     state.pinchBase = null;
     state.pinchActive = false;
     setPhotoZoom(PHOTO_ZOOM_ARMED, { silent: true, force: true });
+    try { Evidence.reveal(); } catch (_) {} // surface the CASE FILE goal on pickup
     // Start the reticle where it was last, else at the center of the view.
     const start = state.touchPoint ||
       { x: window.innerWidth / 2, y: window.innerHeight / 2 };
@@ -2655,6 +2778,7 @@
     try { Sound.shutter(); } catch (_) {}
     Photo.capture({
       texture, region, kind: "photo", label: describeTouchRegion({ x, y }).label,
+      zoom: state.photoZoom || 1,
     });
   }
 
@@ -2721,7 +2845,7 @@
     if (!texture) { showRendererToast("Couldn't capture the frame"); return; }
     flashScene();
     try { Sound.shutter(); } catch (_) {}
-    Photo.capture({ texture, region, kind: "photo", label: "the center of the view" });
+    Photo.capture({ texture, region, kind: "photo", label: "the center of the view", zoom: state.photoZoom || 1 });
   }
 
   // ------------------------------------------------------------------
@@ -3631,6 +3755,12 @@
       if (e.key === "Escape" || e.key.toLowerCase() === "h") closeTouch();
       return;
     }
+    // Case-closed win screen: R starts a new case, Esc dismisses to keep shooting.
+    if (el.caseOverlay && !el.caseOverlay.classList.contains("hidden")) {
+      if (e.key.toLowerCase() === "r") resetGame();
+      else if (e.key === "Escape") hideCaseWin();
+      return;
+    }
     // While dead, only R (restart) is meaningful.
     if (state.gameOver) {
       if (e.key.toLowerCase() === "r") resetGame();
@@ -3703,6 +3833,8 @@
     Menu.init();
     Tactile.init();
     el.deathRestart.addEventListener("click", resetGame);
+    if (el.caseRestart) el.caseRestart.addEventListener("click", resetGame);
+    if (el.caseContinue) el.caseContinue.addEventListener("click", hideCaseWin);
     el.freeWillBtn.addEventListener("click", openFreeWill);
     if (el.realtimeBtn) el.realtimeBtn.addEventListener("click", openTouch);
     if (el.touchLayer) {
