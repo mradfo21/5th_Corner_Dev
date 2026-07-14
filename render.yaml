@@ -36,11 +36,11 @@ services:
       - key: REACTOR_API_KEY
         sync: false
       # ElevenLabs Conversational AI — powers the SCAN "TALK" mechanic (speak to
-      # people/characters/things the scanner flags as able to talk). The KEY is a
-      # secret used server-side only to mint short-lived signed URLs for the
-      # PRIVATE agent (it never reaches the browser). The AGENT_ID is a public
-      # identifier (also has a committed default); set it here to point at a
-      # different agent. Leave the key unset to fall back to text conversations.
+      # people/characters/things the scanner flags as able to talk). The default
+      # AGENT_ID below is a PUBLIC agent, so live voice works out of the box with
+      # NO secret. ELEVENLABS_API_KEY is OPTIONAL: set it only if you repoint
+      # AGENT_ID at a PRIVATE agent (the server then mints short-lived signed
+      # URLs; the key never reaches the browser).
       - key: ELEVENLABS_API_KEY
         sync: false
       - key: ELEVENLABS_AGENT_ID

@@ -117,11 +117,12 @@ if not GEMINI_API_KEY:
 REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN", CONFIG.get("REPLICATE_API_TOKEN"))
 
 # ── ElevenLabs Conversational AI (the TALK mechanic's voice layer) ──────────
-# The API key is a SECRET (env or gitignored config.json). The agent id is a
-# PUBLIC identifier (it's embedded client-side in the widget), so it's safe to
-# ship a default — a private agent is fine because we mint short-lived signed
-# URLs server-side with the key. Voice mode needs only the agent id; the key is
-# used to sign private-agent sessions and to synthesize voice.
+# The agent id is a PUBLIC identifier (it's sent to the browser to open the
+# call), so it's safe to ship a default. The default agent is PUBLIC, so voice
+# works out of the box with NO secret at all — the client connects by agent id.
+# The API key is an OPTIONAL secret (env or gitignored config.json): when set,
+# the server mints a short-lived signed URL so PRIVATE agents also work without
+# ever exposing the key to the browser.
 ELEVENLABS_API_KEY = (os.getenv("ELEVENLABS_API_KEY") or CONFIG.get("ELEVENLABS_API_KEY") or "").strip()
 ELEVENLABS_AGENT_ID = (os.getenv("ELEVENLABS_AGENT_ID") or CONFIG.get("ELEVENLABS_AGENT_ID")
                        or "agent_1601kxh3rz2hej9swfs75dv33q78").strip()

@@ -3592,32 +3592,47 @@
   // TALK — a live, story-aware conversation with a SCAN subject that speaks.
   //
   // Kicked off from a tag's TALK action (only shown on things that can speak).
-  // It asks the server to open a session: when ElevenLabs is configured the
-  // server returns voice-agent config (agent id / signed url + the story
-  // briefing as dynamic variables + prompt overrides) and we mount the
-  // ElevenLabs Conversational AI widget; otherwise we run a text conversation
-  // via /api/talk/message. Both are grounded in the current scene + recent
-  // beats, so the subject is aware of what's going on. TALK never resolves a
-  // turn — it's a parallel layer of interaction laid over the world.
+  // It asks the server for a session: when ElevenLabs is configured the server
+  // returns voice-agent config (agent id / signed url + the story briefing as
+  // dynamic variables + prompt overrides) and we run a LIVE VOICE conversation
+  // via the ElevenLabs client SDK — real mic in, the character's voice out —
+  // rendered inside this same sleek panel (its transcript is our transcript).
+  // With no agent configured we fall back to a text conversation via
+  // /api/talk/message. Either way the subject is aware of the current scene and
+  // recent beats. TALK never resolves a turn — it's a parallel layer over the
+  // world. You can also TYPE at any time during a voice call.
   // ------------------------------------------------------------------
   const Talk = (function () {
     let open = false;
     let subject = null;         // {label, kind, speaks}
-    let messages = [];          // running transcript [{role, content}]
-    let busy = false;
-    let mode = "text";
-    let widgetEl = null;
-    const ELEVEN_WIDGET_SRC = "https://unpkg.com/@elevenlabs/convai-widget-embed";
+    let messages = [];          // text-mode transcript sent to /api/talk/message
+    let busy = false;           // text-mode request in flight
+    let mode = "text";          // "text" | "voice"
+    let convo = null;           // ElevenLabs SDK Conversation instance (voice)
+    let micMuted = false;
+    // Pinned to the 1.x line so a future breaking release can't silently change
+    // the API out from under us. Loaded lazily the first time voice is used.
+    const SDK_URL = "https://esm.sh/@elevenlabs/client@1";
+    let sdkPromise = null;
 
     function isOpen() { return open; }
 
     function setSub(text) { if (el.talkSub) el.talkSub.textContent = text || ""; }
 
-    function addLine(role, content, opts) {
-      opts = opts || {};
+    function setOrbState(s) { if (el.talkOrb) el.talkOrb.dataset.state = s || "idle"; }
+
+    function ensureSdk() {
+      if (!sdkPromise) {
+        sdkPromise = import(/* webpackIgnore: true */ SDK_URL)
+          .then((m) => m.Conversation || (m.default && m.default.Conversation))
+          .catch((e) => { sdkPromise = null; throw e; });
+      }
+      return sdkPromise;
+    }
+
+    function addLine(role, content) {
       const line = document.createElement("div");
       line.className = "talk-line talk-" + (role === "user" ? "you" : "them");
-      if (opts.pending) line.classList.add("talk-pending");
       const who = document.createElement("span");
       who.className = "talk-who";
       who.textContent = role === "user" ? "YOU" : (subject ? subject.label.toUpperCase() : "—");
@@ -3648,16 +3663,22 @@
       messages = [];
       busy = false;
       mode = "text";
+      convo = null;
+      micMuted = false;
       open = true;
-      // Pause the world's ambient loops while we talk (scan tears down on the
-      // caller side; auto-play shouldn't advance mid-conversation).
+      // Auto-play shouldn't advance the world mid-conversation.
       if (state.autoPlay) setAutoPlay(false);
       el.talkLog.innerHTML = "";
-      el.talkVoice.classList.add("hidden");
-      el.talkVoiceMount.innerHTML = "";
+      if (el.talkVoice) el.talkVoice.classList.add("hidden"); // legacy widget mount — unused
+      if (el.talkVoiceMount) el.talkVoiceMount.innerHTML = "";
       el.talkModeToggle.classList.add("hidden");
+      el.talkModeToggle.classList.remove("muted");
+      el.talkForm.classList.remove("hidden");
+      el.talkInput.value = "";
+      el.talkInput.setAttribute("placeholder", "say something…");
       el.talkName.textContent = subject.label;
       setSub("establishing channel…");
+      setOrbState("connecting");
       el.talkOverlay.classList.remove("hidden");
       el.talkOverlay.setAttribute("aria-hidden", "false");
       document.body.classList.add("talking");
@@ -3671,98 +3692,127 @@
       } catch (err) {
         console.warn("[talk] session failed:", err);
       }
-
       if (!open) return; // closed while awaiting
 
       const opening = (session && session.context && session.context.opening_line) || "";
-      if (session && session.mode === "voice" && session.agent_id) {
+      if (session && session.mode === "voice" && (session.agent_id || session.signed_url)) {
         beginVoice(session, opening);
       } else {
         beginText(opening);
       }
     }
 
-    function beginText(opening) {
+    function beginText(opening, note) {
       mode = "text";
-      setSub("text transmission");
-      el.talkVoice.classList.add("hidden");
-      el.talkForm.classList.remove("hidden");
+      setSub(note || "text transmission");
+      setOrbState("idle");
+      el.talkModeToggle.classList.add("hidden");
+      el.talkInput.setAttribute("placeholder", "say something…");
       if (opening) {
         messages.push({ role: "assistant", content: opening });
         addLine("assistant", opening);
         Sound.talkLine();
+        pulseOrb();
       }
       setTimeout(() => { if (open) el.talkInput.focus(); }, 220);
     }
 
-    // Mount the ElevenLabs Conversational AI widget, seeded with the story
-    // briefing so the voice agent is aware of who it is and what's happening.
-    // Falls back to text if the widget can't initialize.
-    function beginVoice(session, opening) {
+    // Live voice via the ElevenLabs client SDK, rendered into THIS panel: the
+    // agent's spoken lines + our voice transcriptions stream in as bubbles, the
+    // orb reflects listening/speaking, and typing still works (sendUserMessage).
+    // Any failure (SDK blocked, mic denied, connect error) degrades to the
+    // server text conversation so TALK always works.
+    async function beginVoice(session, opening) {
       mode = "voice";
-      setSub("voice channel — live");
-      el.talkVoice.classList.remove("hidden");
-      // Text stays available as a parallel/typed track and a graceful fallback.
-      el.talkModeToggle.classList.remove("hidden");
-      el.talkModeToggle.textContent = "TEXT";
-      if (opening) el.talkVoiceNote.textContent = "\u201C" + opening + "\u201D";
+      setSub("opening channel…");
+      setOrbState("connecting");
+      el.talkInput.setAttribute("placeholder", "speak, or type…");
+
+      let Conversation;
+      try {
+        Conversation = await ensureSdk();
+      } catch (e) {
+        console.warn("[talk] SDK load failed, falling back to text:", e);
+        return beginText(opening, "text transmission (voice unavailable)");
+      }
+      if (!open || mode !== "voice") return;
+
+      const opts = {
+        connectionType: "websocket",
+        dynamicVariables: session.dynamic_variables || {},
+        onConnect: () => {
+          if (!open) return;
+          setSub("channel live \u00b7 listening"); setOrbState("listening");
+          el.talkModeToggle.classList.remove("hidden");
+          el.talkModeToggle.textContent = "MUTE";
+        },
+        onDisconnect: () => { if (open && mode === "voice") { setSub("channel closed"); setOrbState("idle"); } },
+        onError: (e) => { console.warn("[talk] voice error:", e); },
+        onModeChange: (m) => {
+          if (!open) return;
+          const md = (m && (m.mode || m)) || "";
+          if (md === "speaking") { setSub("channel live \u00b7 speaking"); setOrbState("speaking"); }
+          else if (md === "listening") { setSub("channel live \u00b7 listening"); setOrbState("listening"); }
+        },
+        onMessage: (m) => {
+          if (!open || !m) return;
+          const src = m.source || m.role;
+          const text = (m.message || m.text || "").trim();
+          if (!text) return;
+          if (src === "ai" || src === "agent") { addLine("assistant", text); Sound.talkLine(); pulseOrb(); }
+          else if (src === "user") { addLine("user", text); }
+        },
+      };
+      // Persona overrides (server sends them only when the agent allows it).
+      const a = session.overrides && session.overrides.agent;
+      if (a) {
+        opts.overrides = { agent: {} };
+        if (a.prompt && a.prompt.prompt) opts.overrides.agent.prompt = { prompt: a.prompt.prompt };
+        if (a.first_message) opts.overrides.agent.firstMessage = a.first_message;
+        opts.overrides.agent.language = "en";
+      }
+      // A signed URL authorizes private agents (and works for public ones);
+      // otherwise connect to a public agent by id.
+      if (session.signed_url) opts.signedUrl = session.signed_url;
+      else opts.agentId = session.agent_id;
 
       try {
-        loadWidgetScript();
-        const w = document.createElement("elevenlabs-convai");
-        // A signed URL (private agent) is the secure path and is an ALTERNATIVE
-        // to agent-id — use one or the other, not both. Fall back to the bare
-        // agent id for a public agent.
-        if (session.signed_url) w.setAttribute("signed-url", session.signed_url);
-        else w.setAttribute("agent-id", session.agent_id);
-        if (session.dynamic_variables) {
-          w.setAttribute("dynamic-variables", JSON.stringify(session.dynamic_variables));
-        }
-        // Prompt + first-message overrides make the agent BE this character in
-        // this scene. Only applied when the server sent them (i.e. the target
-        // agent has those override fields enabled — otherwise the widget errors).
-        const ov = session.overrides && session.overrides.agent;
-        if (ov && ov.prompt && ov.prompt.prompt) w.setAttribute("override-prompt", ov.prompt.prompt);
-        if (ov && ov.first_message) w.setAttribute("override-first-message", ov.first_message);
-        w.setAttribute("variant", "expanded");
-        widgetEl = w;
-        el.talkVoiceMount.innerHTML = "";
-        el.talkVoiceMount.appendChild(w);
-      } catch (err) {
-        console.warn("[talk] voice widget failed, falling back to text:", err);
-        el.talkModeToggle.classList.add("hidden");
-        beginText(opening);
+        convo = await Conversation.startSession(opts);
+      } catch (e) {
+        console.warn("[talk] voice start failed, falling back to text:", e);
+        convo = null;
+        return beginText(opening, "text transmission (mic unavailable)");
       }
+      if (!open) { try { convo.endSession(); } catch (_) {} convo = null; return; }
+      setTimeout(() => { if (open) el.talkInput.focus(); }, 200);
     }
 
-    function loadWidgetScript() {
-      if (document.getElementById("eleven-convai-embed")) return;
-      const s = document.createElement("script");
-      s.id = "eleven-convai-embed";
-      s.src = ELEVEN_WIDGET_SRC;
-      s.async = true;
-      s.type = "text/javascript";
-      document.head.appendChild(s);
-    }
-
-    function toggleMode() {
-      if (mode === "voice") {
-        // Reveal the typed track (keeps voice mounted above it).
-        mode = "text-in-voice";
-        el.talkForm.classList.remove("hidden");
-        el.talkModeToggle.textContent = "VOICE";
-        setSub("voice + text");
-        setTimeout(() => { if (open) el.talkInput.focus(); }, 100);
-      } else if (mode === "text-in-voice") {
-        mode = "voice";
-        el.talkModeToggle.textContent = "TEXT";
-        setSub("voice channel — live");
-      }
+    // Mic mute toggle (voice mode only) — repurposes the header pill.
+    function micToggle() {
+      if (mode !== "voice" || !convo) return;
+      micMuted = !micMuted;
+      try { convo.setMicMuted(micMuted); } catch (e) { console.warn("[talk] mute failed:", e); }
+      el.talkModeToggle.textContent = micMuted ? "UNMUTE" : "MUTE";
+      el.talkModeToggle.classList.toggle("muted", micMuted);
+      Sound.toggle();
     }
 
     async function send(text) {
       text = (text || "").trim();
-      if (!text || busy || !open) return;
+      if (!text || !open) return;
+
+      // VOICE: hand the typed line to the live agent (it takes its turn).
+      if (mode === "voice") {
+        if (!convo) return;
+        addLine("user", text);
+        el.talkInput.value = "";
+        Sound.submit();
+        try { convo.sendUserMessage(text); } catch (e) { console.warn("[talk] sendUserMessage failed:", e); }
+        return;
+      }
+
+      // TEXT: resolve a reply from the server (story-aware LLM roleplay).
+      if (busy) return;
       busy = true;
       messages.push({ role: "user", content: text });
       addLine("user", text);
@@ -3798,22 +3848,31 @@
       if (!open) return;
       open = false;
       Sound.talkClose();
+      if (convo) { try { convo.endSession(); } catch (_) {} convo = null; }
       el.talkOverlay.classList.remove("talk-in");
       el.talkOverlay.setAttribute("aria-hidden", "true");
       document.body.classList.remove("talking");
-      // Let the fade-out play, then hide + tear down the widget.
       setTimeout(() => {
         el.talkOverlay.classList.add("hidden");
-        el.talkVoiceMount.innerHTML = "";
-        widgetEl = null;
+        if (el.talkVoiceMount) el.talkVoiceMount.innerHTML = "";
         el.talkLog.innerHTML = "";
       }, 260);
       subject = null;
       messages = [];
+      mode = "text";
     }
 
-    return { start, close, isOpen, toggleMode, send };
+    return { start, close, isOpen, micToggle, send };
   })();
+
+  // QA hook: expose the real Talk controller ONLY when explicitly requested via
+  // ?talkdev in the URL, so automated/manual tests can open a conversation
+  // without a live SCAN detection. No-op in normal play.
+  try {
+    if (typeof location !== "undefined" && /(?:\?|&)talkdev\b/.test(location.search)) {
+      window.__TALK__ = Talk;
+    }
+  } catch (_) {}
 
   // Entry point from a SCAN tag's TALK action: close the scan overlay (the
   // conversation takes over) and open the talk layer for this subject.
@@ -4367,7 +4426,7 @@
     }
     if (el.talkClose) el.talkClose.addEventListener("click", () => Talk.close());
     if (el.talkScrim) el.talkScrim.addEventListener("click", () => Talk.close());
-    if (el.talkModeToggle) el.talkModeToggle.addEventListener("click", () => Talk.toggleMode());
+    if (el.talkModeToggle) el.talkModeToggle.addEventListener("click", () => Talk.micToggle());
     document.addEventListener("keydown", onKeydown);
 
     // Browsers block audio until a user gesture; unlock the context on the
