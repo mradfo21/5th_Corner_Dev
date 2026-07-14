@@ -85,6 +85,9 @@
     <button id="tape-btn" class="rail-btn" type="button" title="Play back the tape (T)">
       <span class="rail-ico">▤</span><span class="rail-lbl">TAPE</span>
     </button>
+    <button id="narrator-btn" class="rail-btn" type="button" title="Narrator — a voice frames the world (N)">
+      <span class="rail-ico">❋</span><span class="rail-lbl">NARRATE</span>
+    </button>
     <button id="btn-vhs" class="rail-btn" type="button" title="VHS overlay (V)">
       <span class="rail-ico">▣</span><span class="rail-lbl">VHS</span>
     </button>
@@ -199,9 +202,18 @@
           <div id="talk-name">—</div>
           <div id="talk-sub">establishing channel…</div>
         </div>
-        <button id="talk-mode-toggle" type="button" class="hidden" title="Switch between voice and text">TEXT</button>
+        <!-- Live voice switcher: change the voice this subject speaks with on
+             the fly (reconnects the voice channel). Built from the server voice
+             registry so it grows as new voices are added. -->
+        <button id="talk-voice-btn" type="button" class="hidden" title="Change this voice" aria-haspopup="listbox" aria-expanded="false">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4"/></svg>
+          <span id="talk-voice-name">VOICE</span>
+        </button>
+        <button id="talk-mode-toggle" type="button" class="hidden" title="Mute / unmute your microphone">MUTE</button>
         <button id="talk-close" type="button" title="End the conversation (Esc)" aria-label="End conversation">✕</button>
       </div>
+      <!-- Voice picker popover (populated from the registry). -->
+      <div id="talk-voice-menu" class="hidden" role="listbox" aria-label="Choose a voice"></div>
       <div id="talk-voice" class="hidden">
         <div id="talk-voice-mount"></div>
         <div id="talk-voice-note">Tap to speak — the channel is live.</div>
@@ -213,6 +225,20 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
         </button>
       </form>
+    </div>
+  </div>
+
+  <!-- NARRATOR caption bar: a disembodied voice frames the world. Lower-third
+       subtitles reveal each line as its audio plays; a single narration can
+       hand off between several character voices (a radio-play). -->
+  <div id="narrator-bar" class="hidden" aria-live="polite" aria-hidden="true">
+    <div id="narrator-inner">
+      <span id="narrator-mark" aria-hidden="true">❋</span>
+      <div id="narrator-text">
+        <div id="narrator-speaker"></div>
+        <div id="narrator-line"></div>
+      </div>
+      <button id="narrator-stop" type="button" title="Stop narration" aria-label="Stop narration">✕</button>
     </div>
   </div>
 

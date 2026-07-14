@@ -79,6 +79,14 @@
     talkVoice: document.getElementById("talk-voice"),
     talkVoiceMount: document.getElementById("talk-voice-mount"),
     talkVoiceNote: document.getElementById("talk-voice-note"),
+    talkVoiceBtn: document.getElementById("talk-voice-btn"),
+    talkVoiceName: document.getElementById("talk-voice-name"),
+    talkVoiceMenu: document.getElementById("talk-voice-menu"),
+    narratorBtn: document.getElementById("narrator-btn"),
+    narratorBar: document.getElementById("narrator-bar"),
+    narratorSpeaker: document.getElementById("narrator-speaker"),
+    narratorLine: document.getElementById("narrator-line"),
+    narratorStop: document.getElementById("narrator-stop"),
     touchCaptureFrame: document.getElementById("touch-capture-frame"),
     touchHint: document.getElementById("touch-hint"),
     touchZoom: document.getElementById("touch-zoom"),
@@ -1898,6 +1906,7 @@
     state.gameOver = true;
     state.awaitingResolution = false;
     Talk.close(); // end any conversation — the run is over
+    Narrator.stop(); // silence any narration
     clearTurnWatchdog();
     closeScan(); // no scanning over the death screen
     hideVeil();
@@ -2079,6 +2088,7 @@
       clearTurnWatchdog(); // don't let a stale turn timer fire into the new run
       exitGameOver();
       Talk.close(); // end any conversation from the prior run
+      Narrator.stop(); // silence any narration from the prior run
       closeScan(); // drop any scan tags/overlay from the dead run
       closeTouch(); // drop any camera overlay
       try { Photo.hide(); Photo.clearTimers(); } catch (_) {} // kill any in-flight receipt
@@ -3834,6 +3844,14 @@
     const SDK_URL = "https://esm.sh/@elevenlabs/client@1";
     let sdkPromise = null;
 
+    // Live voice switching: the registry (from the session) + the player's
+    // chosen voice (persisted). Changing it live reconnects the voice channel.
+    let voices = null;
+    let selectedVoiceId = "";
+    try { selectedVoiceId = localStorage.getItem("talk_voice_id") || ""; } catch (_) {}
+    let lastSession = null;
+    let switching = false;
+
     function isOpen() { return open; }
 
     function setSub(text) { if (el.talkSub) el.talkSub.textContent = text || ""; }
@@ -3907,12 +3925,13 @@
 
       let session = null;
       try {
-        session = await postJSON("/api/talk/session", { subject });
+        session = await postJSON("/api/talk/session", { subject, voice_id: selectedVoiceId || undefined });
       } catch (err) {
         console.warn("[talk] session failed:", err);
       }
       if (!open) return; // closed while awaiting
 
+      if (session && session.voices) voices = session.voices;
       const opening = (session && session.context && session.context.opening_line) || "";
       if (session && session.mode === "voice" && (session.agent_id || session.signed_url)) {
         beginVoice(session, opening);
@@ -3943,7 +3962,9 @@
     // server text conversation so TALK always works.
     async function beginVoice(session, opening) {
       mode = "voice";
-      setSub("opening channel…");
+      lastSession = session;
+      if (session && session.voices) voices = session.voices;
+      setSub(switching ? "switching voice…" : "opening channel…");
       setOrbState("connecting");
       el.talkInput.setAttribute("placeholder", "speak, or type…");
 
@@ -3961,9 +3982,11 @@
         dynamicVariables: session.dynamic_variables || {},
         onConnect: () => {
           if (!open) return;
+          switching = false;
           setSub("channel live \u00b7 listening"); setOrbState("listening");
           el.talkModeToggle.classList.remove("hidden");
-          el.talkModeToggle.textContent = "MUTE";
+          el.talkModeToggle.textContent = micMuted ? "UNMUTE" : "MUTE";
+          showVoiceControl(session.voice_id);
         },
         onDisconnect: () => { if (open && mode === "voice") { setSub("channel closed"); setOrbState("idle"); } },
         onError: (e) => { console.warn("[talk] voice error:", e); },
@@ -4016,6 +4039,74 @@
       Sound.toggle();
     }
 
+    // ---- Live voice switching -------------------------------------------
+    function voiceName(id) {
+      const list = (voices && voices.voices) || [];
+      const v = list.find((x) => x.id === id);
+      return v ? v.name : "Voice";
+    }
+
+    function showVoiceControl(currentId) {
+      if (!el.talkVoiceBtn) return;
+      const list = (voices && voices.voices) || [];
+      if (!list.length) { el.talkVoiceBtn.classList.add("hidden"); return; }
+      el.talkVoiceBtn.classList.remove("hidden");
+      if (el.talkVoiceName) el.talkVoiceName.textContent = voiceName(selectedVoiceId || currentId);
+      buildVoiceMenu(currentId);
+    }
+
+    function buildVoiceMenu(currentId) {
+      if (!el.talkVoiceMenu) return;
+      const list = (voices && voices.voices) || [];
+      const active = selectedVoiceId || currentId;
+      el.talkVoiceMenu.innerHTML = "";
+      list.forEach((v) => {
+        const item = document.createElement("button");
+        item.type = "button";
+        item.className = "talk-voice-item" + (v.id === active ? " active" : "");
+        item.setAttribute("role", "option");
+        item.innerHTML = '<span class="tv-name">' + v.name + "</span>" +
+          (v.tag ? '<span class="tv-tag">' + v.tag + "</span>" : "");
+        item.addEventListener("click", (e) => { e.stopPropagation(); changeVoice(v.id); });
+        el.talkVoiceMenu.appendChild(item);
+      });
+    }
+
+    function toggleVoiceMenu() {
+      if (!el.talkVoiceMenu) return;
+      const hidden = el.talkVoiceMenu.classList.toggle("hidden");
+      el.talkVoiceBtn.setAttribute("aria-expanded", String(!hidden));
+      if (!hidden) Sound.open();
+    }
+
+    function closeVoiceMenu() {
+      if (el.talkVoiceMenu) el.talkVoiceMenu.classList.add("hidden");
+      if (el.talkVoiceBtn) el.talkVoiceBtn.setAttribute("aria-expanded", "false");
+    }
+
+    // Change the active voice on the fly. Persists the choice and, if a voice
+    // call is live, reconnects the channel with the new voice (the character
+    // re-greets you in the new voice). The typed transcript is preserved.
+    async function changeVoice(voiceId) {
+      if (!voiceId) return;
+      selectedVoiceId = voiceId;
+      try { localStorage.setItem("talk_voice_id", voiceId); } catch (_) {}
+      if (el.talkVoiceName) el.talkVoiceName.textContent = voiceName(voiceId);
+      buildVoiceMenu(voiceId);
+      closeVoiceMenu();
+      Sound.toggle();
+      if (mode !== "voice" || !open) return;
+      switching = true;
+      setSub("switching voice…"); setOrbState("connecting");
+      if (convo) { try { await convo.endSession(); } catch (_) {} convo = null; }
+      let session = null;
+      try { session = await postJSON("/api/talk/session", { subject, voice_id: voiceId }); } catch (e) { console.warn("[talk] reconnect failed:", e); }
+      if (!open) return;
+      if (!session || session.mode !== "voice") { switching = false; return; }
+      addLine("assistant", "\u2014 now speaking as " + voiceName(voiceId) + " \u2014");
+      beginVoice(session, (session.context && session.context.opening_line) || "");
+    }
+
     async function send(text) {
       text = (text || "").trim();
       if (!text || !open) return;
@@ -4066,8 +4157,11 @@
     function close() {
       if (!open) return;
       open = false;
+      switching = false;
       Sound.talkClose();
       if (convo) { try { convo.endSession(); } catch (_) {} convo = null; }
+      closeVoiceMenu();
+      if (el.talkVoiceBtn) el.talkVoiceBtn.classList.add("hidden");
       el.talkOverlay.classList.remove("talk-in");
       el.talkOverlay.setAttribute("aria-hidden", "true");
       document.body.classList.remove("talking");
@@ -4081,7 +4175,7 @@
       mode = "text";
     }
 
-    return { start, close, isOpen, micToggle, send };
+    return { start, close, isOpen, micToggle, send, toggleVoiceMenu, closeVoiceMenu };
   })();
 
   // QA hook: expose the real Talk controller ONLY when explicitly requested via
@@ -4101,6 +4195,123 @@
     closeTagPrompt(tag);
     closeScan();
     Talk.start(subj);
+  }
+
+  // ------------------------------------------------------------------
+  // NARRATOR — a disembodied voice that frames the world (and can be many).
+  //
+  // A one-way voice OVER the scene (vs. TALK, which is two-way with a subject
+  // IN it). It asks the server to GENERATE a short, story-aware world-building
+  // narration — optionally a radio-play script that hands off between a cast of
+  // voices (narrator / man / woman / elder / creature / machine / warden) — then
+  // plays each line's ElevenLabs audio in sequence with lower-third subtitles.
+  // Built to expand: point it at a focus, auto-narrate scene changes, etc.
+  // ------------------------------------------------------------------
+  const Narrator = (function () {
+    let playing = false;
+    let busy = false;
+    let audioEl = null;
+    let queue = [];
+
+    function isBusy() { return busy || playing; }
+
+    function show(speaker, text) {
+      if (el.narratorSpeaker) el.narratorSpeaker.textContent = speaker ? speaker.toUpperCase() : "";
+      if (el.narratorLine) el.narratorLine.textContent = text || "";
+      if (!el.narratorBar) return;
+      el.narratorBar.classList.remove("hidden");
+      el.narratorBar.setAttribute("aria-hidden", "false");
+      requestAnimationFrame(() => el.narratorBar.classList.add("narrator-in"));
+    }
+
+    function hide() {
+      if (!el.narratorBar) return;
+      el.narratorBar.classList.remove("narrator-in");
+      el.narratorBar.setAttribute("aria-hidden", "true");
+      setTimeout(() => { if (!playing) el.narratorBar.classList.add("hidden"); }, 320);
+    }
+
+    function stopAudio() {
+      if (audioEl) { try { audioEl.pause(); } catch (_) {} audioEl.onended = null; audioEl.onerror = null; audioEl = null; }
+    }
+
+    // Play a list of {character, text, audio?} in sequence — subtitle + voice.
+    function play(segments) {
+      return new Promise((resolve) => {
+        queue = (segments || []).slice();
+        playing = true;
+        if (el.narratorBtn) el.narratorBtn.classList.add("on");
+        const next = () => {
+          if (!playing || !queue.length) {
+            playing = false;
+            if (el.narratorBtn) el.narratorBtn.classList.remove("on");
+            hide();
+            resolve();
+            return;
+          }
+          const seg = queue.shift();
+          show(seg.character, seg.text);
+          Sound.talkLine();
+          if (seg.audio) {
+            stopAudio();
+            audioEl = new Audio(seg.audio);
+            audioEl.onended = next;
+            audioEl.onerror = () => setTimeout(next, 900);
+            audioEl.play().catch(() => {
+              // Autoplay blocked (no gesture) — fall back to a timed subtitle.
+              setTimeout(next, Math.max(2400, (seg.text || "").length * 55));
+            });
+          } else {
+            // No audio (voice not configured) — show as a timed subtitle.
+            setTimeout(next, Math.max(2400, (seg.text || "").length * 55));
+          }
+        };
+        next();
+      });
+    }
+
+    // Generate + speak a world-building narration. `opts.focus` steers it;
+    // `opts.multi` (default true) allows a multi-voice radio-play.
+    async function narrate(opts) {
+      opts = opts || {};
+      if (busy || playing) { stop(); return; }
+      busy = true;
+      if (el.narratorBtn) el.narratorBtn.classList.add("on");
+      show("narrator", "\u2026");
+      Sound.talkOpen();
+      try {
+        const res = await postJSON("/api/narrator/worldbuild", {
+          multi: opts.multi !== false, speak: true, focus: opts.focus || "",
+        });
+        const segs = (res && res.segments) || [];
+        if (!segs.length) { show("narrator", "The channel is silent."); setTimeout(hide, 1800); return; }
+        await play(segs);
+      } catch (e) {
+        console.warn("[narrator] failed:", e);
+        show("narrator", "The signal breaks up\u2026");
+        setTimeout(hide, 1800);
+      } finally {
+        busy = false;
+        if (!playing && el.narratorBtn) el.narratorBtn.classList.remove("on");
+      }
+    }
+
+    function stop() {
+      playing = false;
+      busy = false;
+      queue = [];
+      stopAudio();
+      if (el.narratorBtn) el.narratorBtn.classList.remove("on");
+      hide();
+    }
+
+    return { narrate, stop, isBusy };
+  })();
+
+  function toggleNarrator() {
+    if (state.gameOver) return;
+    if (Narrator.isBusy()) { Narrator.stop(); return; }
+    Narrator.narrate({ multi: true });
   }
 
   // Drop the current tags (e.g. when a turn changes the scene) so stale labels
@@ -4551,6 +4762,8 @@
       toggleSound();
     } else if (e.key.toLowerCase() === "t") {
       openTape();
+    } else if (e.key.toLowerCase() === "n") {
+      toggleNarrator(); // narrator — a voice frames the world
     } else if (e.key.toLowerCase() === "p") {
       toggleAutoPlay();
     } else if (e.key.toLowerCase() === "f") {
@@ -4645,6 +4858,14 @@
     if (el.talkClose) el.talkClose.addEventListener("click", () => Talk.close());
     if (el.talkScrim) el.talkScrim.addEventListener("click", () => Talk.close());
     if (el.talkModeToggle) el.talkModeToggle.addEventListener("click", () => Talk.micToggle());
+    if (el.talkVoiceBtn) el.talkVoiceBtn.addEventListener("click", (e) => { e.stopPropagation(); Talk.toggleVoiceMenu(); });
+    // Click anywhere else in the panel closes the voice menu.
+    if (el.talkPanel) el.talkPanel.addEventListener("click", (e) => {
+      if (el.talkVoiceMenu && !el.talkVoiceMenu.contains(e.target) &&
+          el.talkVoiceBtn && !el.talkVoiceBtn.contains(e.target)) Talk.closeVoiceMenu();
+    });
+    if (el.narratorBtn) el.narratorBtn.addEventListener("click", toggleNarrator);
+    if (el.narratorStop) el.narratorStop.addEventListener("click", () => Narrator.stop());
     document.addEventListener("keydown", onKeydown);
 
     // Browsers block audio until a user gesture; unlock the context on the

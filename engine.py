@@ -136,6 +136,78 @@ ELEVENLABS_ALLOW_OVERRIDES = (os.getenv("ELEVENLABS_ALLOW_OVERRIDES", "1").strip
 print(f"[ENGINE INIT] ElevenLabs TALK: key={'YES' if ELEVENLABS_API_KEY else 'no'}, "
       f"agent={'set' if ELEVENLABS_AGENT_ID else 'none'}, overrides={'on' if ELEVENLABS_ALLOW_OVERRIDES else 'off'}")
 
+# ── Voice registry (data-driven) ────────────────────────────────────────────
+# Shared by the TALK mechanic (live voice switching per subject) and the
+# narrator stream (world-building, possibly voiced as multiple characters).
+# Loaded from voices.json so new voices/characters need NO code change. Env
+# ELEVENLABS_VOICE_ID / ELEVENLABS_NARRATOR_VOICE_ID override the defaults.
+try:
+    VOICES_CONFIG = json.load((ROOT / "voices.json").open(encoding="utf-8"))
+    if not isinstance(VOICES_CONFIG, dict):
+        VOICES_CONFIG = {}
+except Exception as _ve:
+    print(f"[ENGINE INIT] voices.json not loaded ({_ve}); using empty registry")
+    VOICES_CONFIG = {}
+
+ELEVENLABS_NARRATOR_VOICE_ID = (os.getenv("ELEVENLABS_NARRATOR_VOICE_ID")
+                                or VOICES_CONFIG.get("narrator_voice") or "").strip()
+# The default TTS model: turbo is low-latency and great for realtime narration.
+ELEVENLABS_TTS_MODEL = (os.getenv("ELEVENLABS_TTS_MODEL") or "eleven_turbo_v2_5").strip()
+
+
+def _default_voice_id() -> str:
+    return (ELEVENLABS_VOICE_ID or VOICES_CONFIG.get("default_voice") or "cjVigY5qzO86Huf0OWal").strip()
+
+
+def get_voice_registry() -> dict:
+    """The client-facing voice catalog: the selectable voices, the resolved
+    defaults, and the per-kind + named-cast mappings. Safe to expose (no keys)."""
+    voices = VOICES_CONFIG.get("voices") or []
+    # Only surface well-formed entries.
+    clean = [
+        {"id": v.get("id"), "name": v.get("name") or v.get("id"),
+         "tag": v.get("tag", ""), "gender": v.get("gender", "")}
+        for v in voices if isinstance(v, dict) and v.get("id")
+    ]
+    return {
+        "voices": clean,
+        "default": _default_voice_id(),
+        "narrator": ELEVENLABS_NARRATOR_VOICE_ID or _default_voice_id(),
+        "by_kind": VOICES_CONFIG.get("by_kind") or {},
+        "cast": VOICES_CONFIG.get("cast") or {},
+    }
+
+
+def _valid_voice_id(voice_id) -> str:
+    """Return voice_id if it's a known/registered id, else ''. Guards against a
+    client sending an arbitrary/unknown voice into ElevenLabs."""
+    vid = str(voice_id or "").strip()
+    if not vid:
+        return ""
+    known = {v.get("id") for v in (VOICES_CONFIG.get("voices") or []) if isinstance(v, dict)}
+    # Also accept ids referenced by the cast (narrator characters).
+    for c in (VOICES_CONFIG.get("cast") or {}).values():
+        if isinstance(c, dict) and c.get("voice_id"):
+            known.add(c["voice_id"])
+    return vid if vid in known else ""
+
+
+def resolve_voice_for_kind(kind: str) -> str:
+    """Pick the default voice for a SCAN subject kind (person/creature/…)."""
+    by_kind = VOICES_CONFIG.get("by_kind") or {}
+    return (by_kind.get((kind or "").strip().lower()) or _default_voice_id()).strip()
+
+
+def resolve_cast(character: str) -> dict:
+    """Resolve a narrator 'character' name to its voice + TTS settings. Falls
+    back to the narrator voice for an unknown name so narration always speaks."""
+    cast = VOICES_CONFIG.get("cast") or {}
+    key = (character or "narrator").strip().lower()
+    entry = cast.get(key)
+    if not isinstance(entry, dict) or not entry.get("voice_id"):
+        entry = {"voice_id": ELEVENLABS_NARRATOR_VOICE_ID or _default_voice_id()}
+    return entry
+
 # DEBUG: Log API keys at module initialization
 print(f"[ENGINE INIT] GEMINI_API_KEY loaded: {'YES' if GEMINI_API_KEY else 'NO (EMPTY!)'}")
 if GEMINI_API_KEY:
@@ -4857,6 +4929,12 @@ def api_talk_session():
 
         context = build_talk_context(subject, session_id)
 
+        # Resolve the voice: an explicit (validated) client choice wins — this is
+        # what lets the player switch voices LIVE — otherwise fall back to the
+        # per-kind default, then the global default.
+        chosen_voice = _valid_voice_id(data.get("voice_id"))
+        resolved_voice = chosen_voice or resolve_voice_for_kind(context["subject"].get("kind"))
+
         # Dynamic variables + prompt overrides an ElevenLabs agent can consume to
         # stay aware of the story (see ElevenLabs Conversational AI docs).
         sit = context["situation"]
@@ -4888,6 +4966,10 @@ def api_talk_session():
                     "first_message": context["opening_line"],
                 }
             }
+            # Voice override (agent has tts.voice_id override enabled) — this is
+            # how a live voice switch takes effect on the conversational agent.
+            if resolved_voice:
+                overrides["tts"] = {"voice_id": resolved_voice}
 
         agent_id = ELEVENLABS_AGENT_ID
         api_key = ELEVENLABS_API_KEY
@@ -4925,7 +5007,8 @@ def api_talk_session():
             },
             "agent_id": agent_id or None,
             "signed_url": signed_url,
-            "voice_id": ELEVENLABS_VOICE_ID or None,
+            "voice_id": resolved_voice or None,
+            "voices": get_voice_registry(),
             "overrides": overrides,
             "dynamic_variables": dynamic_variables,
         })
@@ -4934,6 +5017,239 @@ def api_talk_session():
         log_error(f"[TALK] session failed: {e}")
         _tb.print_exc()
         return jsonify({"error": str(e), "mode": "text"}), 500
+
+
+def api_talk_voices():
+    """The voice catalog for the TALK mechanic (and narrator). Lets the client
+    render a live voice picker without hardcoding ids. Read-only, no secrets."""
+    try:
+        return jsonify(get_voice_registry())
+    except Exception as e:
+        log_error(f"[TALK] voices failed: {e}")
+        return jsonify({"voices": [], "default": None, "by_kind": {}, "cast": {}}), 500
+
+
+# ═══════════════════════════════════════════════════════════════════
+# NARRATOR STREAM — a voice that frames the world (and can BE many voices)
+#
+# Where TALK is a two-way conversation with a subject IN the scene, the narrator
+# is a one-way voice OVER the scene: world-building, lore, cold opens, stingers.
+# It can speak as a single "archive voice" or as a small CAST (narrator / man /
+# woman / elder / creature / machine / warden…), so a single narration can hand
+# off between characters like a radio play. Built on ElevenLabs text-to-speech
+# so it's a clean, expandable primitive:
+#   • /api/narrator/say       — speak one line (returns audio)
+#   • /api/narrator/narrate   — speak a multi-character script (audio per line)
+#   • /api/narrator/worldbuild— GENERATE a story-aware narration, then (opt) speak
+#   • /api/narrator/cast      — the voices + named cast the client can pick from
+# All read-only; none mutate the sim. Requires ELEVENLABS_API_KEY for audio;
+# without it these degrade to returning text only (never an error).
+# ═══════════════════════════════════════════════════════════════════
+
+def _tts_synthesize(text: str, voice_id: str, settings: dict = None):
+    """Synthesize one line of narration to MP3 bytes via ElevenLabs TTS.
+    Returns bytes on success, or None (never raises)."""
+    text = (text or "").strip()
+    if not text or not ELEVENLABS_API_KEY or not voice_id:
+        return None
+    try:
+        import requests as _rq
+        vs = {"stability": 0.5, "similarity_boost": 0.75}
+        if isinstance(settings, dict):
+            for k in ("stability", "similarity_boost", "style", "speed", "use_speaker_boost"):
+                if k in settings and settings[k] is not None:
+                    vs[k] = settings[k]
+        resp = _rq.post(
+            f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
+            headers={"xi-api-key": ELEVENLABS_API_KEY, "Content-Type": "application/json"},
+            params={"output_format": "mp3_44100_128"},
+            json={"text": text[:2500], "model_id": ELEVENLABS_TTS_MODEL, "voice_settings": vs},
+            timeout=30,
+        )
+        if resp.status_code == 200:
+            return resp.content
+        log_error(f"[NARRATOR] tts {resp.status_code}: {resp.text[:180]}")
+        return None
+    except Exception as e:
+        log_error(f"[NARRATOR] tts failed: {e}")
+        return None
+
+
+def _narrate_segments(segments: list) -> list:
+    """Voice a list of {character, text[, voice_id]} into per-segment results
+    with base64 audio (when a key is configured). Each output segment:
+    {character, text, voice_id, audio?(data-url)}."""
+    import base64 as _b64
+    out = []
+    for seg in (segments or [])[:24]:
+        if not isinstance(seg, dict):
+            continue
+        text = (seg.get("text") or "").strip()
+        if not text:
+            continue
+        character = (seg.get("character") or "narrator").strip().lower()
+        cast = resolve_cast(character)
+        voice_id = _valid_voice_id(seg.get("voice_id")) or cast.get("voice_id") \
+            or ELEVENLABS_NARRATOR_VOICE_ID or _default_voice_id()
+        settings = {k: cast[k] for k in ("stability", "speed", "style", "similarity_boost") if k in cast}
+        entry = {"character": character, "text": text[:2500], "voice_id": voice_id}
+        audio = _tts_synthesize(text, voice_id, settings)
+        if audio:
+            entry["audio"] = "data:audio/mpeg;base64," + _b64.b64encode(audio).decode("ascii")
+        out.append(entry)
+    return out
+
+
+def api_narrator_cast():
+    """The voices + named cast the narrator can speak as (client picker)."""
+    try:
+        reg = get_voice_registry()
+        return jsonify({
+            "voices": reg["voices"],
+            "narrator": reg["narrator"],
+            "cast": reg["cast"],
+            "voice_available": bool(ELEVENLABS_API_KEY),
+        })
+    except Exception as e:
+        log_error(f"[NARRATOR] cast failed: {e}")
+        return jsonify({"voices": [], "cast": {}, "voice_available": False}), 500
+
+
+def api_narrator_say():
+    """Speak one line of narration. Request: {text, voice_id?|character?,
+    settings?}. Returns audio/mpeg (or 503 text JSON if voice isn't configured)."""
+    try:
+        data = request.get_json(silent=True) or {}
+        text = (data.get("text") or "").strip()
+        if not text:
+            return jsonify({"error": "missing text"}), 400
+        if not ELEVENLABS_API_KEY:
+            return jsonify({"error": "narrator voice not configured", "text": text}), 503
+        cast = resolve_cast(data.get("character"))
+        voice_id = _valid_voice_id(data.get("voice_id")) or cast.get("voice_id") \
+            or ELEVENLABS_NARRATOR_VOICE_ID or _default_voice_id()
+        settings = {k: cast[k] for k in ("stability", "speed", "style", "similarity_boost") if k in cast}
+        if isinstance(data.get("settings"), dict):
+            settings.update(data["settings"])
+        audio = _tts_synthesize(text, voice_id, settings)
+        if not audio:
+            return jsonify({"error": "synthesis failed"}), 502
+        from flask import Response as _Resp
+        return _Resp(audio, mimetype="audio/mpeg")
+    except Exception as e:
+        import traceback as _tb
+        log_error(f"[NARRATOR] say failed: {e}")
+        _tb.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+def api_narrator_narrate():
+    """Speak a multi-character script. Request: {segments:[{character,text}]}.
+    Response: {segments:[{character,text,voice_id,audio?}], voice: bool}."""
+    try:
+        data = request.get_json(silent=True) or {}
+        segments = data.get("segments") or []
+        if not isinstance(segments, list) or not segments:
+            return jsonify({"error": "missing segments"}), 400
+        voiced = _narrate_segments(segments)
+        return jsonify({"segments": voiced, "voice": bool(ELEVENLABS_API_KEY)})
+    except Exception as e:
+        import traceback as _tb
+        log_error(f"[NARRATOR] narrate failed: {e}")
+        _tb.print_exc()
+        return jsonify({"error": str(e), "segments": []}), 500
+
+
+def _narrator_script(focus: str, multi: bool, session_id: str) -> list:
+    """Generate a short, story-aware world-building narration as a list of
+    {character, text} segments. `multi` lets it hand off between cast voices."""
+    try:
+        st = _load_state(session_id) or {}
+    except Exception:
+        st = {}
+    try:
+        hist = _load_history(session_id) or []
+    except Exception:
+        hist = []
+    premise = _story_premise()
+    scene = (st.get("world_prompt") or "").strip()
+    recent = []
+    for entry in hist[-3:]:
+        d = (entry.get("dispatch") or "").strip()
+        if d:
+            recent.append(d[:220])
+    recent_block = ("\n\nRECENT EVENTS:\n- " + "\n- ".join(recent)) if recent else ""
+    focus_block = f"\n\nFOCUS THIS NARRATION ON: {focus.strip()}" if (focus or "").strip() else ""
+
+    fallback = [{"character": "narrator",
+                 "text": "The tape hisses. Somewhere past the fence line, the facility keeps its own hours — and it does not keep them for you."}]
+    if not LLM_ENABLED:
+        return fallback
+
+    if multi:
+        cast_names = ", ".join((VOICES_CONFIG.get("cast") or {}).keys()) or "narrator"
+        prompt = (
+            f"You script a 1993 analog-horror world. PREMISE: {premise}"
+            f"{(chr(10)+chr(10)+'CURRENT SCENE: '+scene) if scene else ''}{recent_block}{focus_block}\n\n"
+            f"Write a SHORT radio-play style world-building narration: 2 to 5 lines that hand off between "
+            f"these voices where it fits: {cast_names}. Keep it atmospheric, ominous, concrete — no meta, "
+            f"no stage directions. Respond with ONLY a JSON array, each item "
+            f'{{"character": "<one of the voice names>", "text": "<1-2 sentences>"}}.'
+        )
+        raw = _ask(prompt, temp=0.9, tokens=320, use_lore=True)
+        if _talk_llm_failed(raw):
+            return fallback
+        import json as _json, re as _re
+        cleaned = _re.sub(r"^```(?:json)?|```$", "", (raw or "").strip(), flags=_re.MULTILINE).strip()
+        try:
+            arr = _json.loads(cleaned)
+        except Exception:
+            m = _re.search(r"\[.*\]", cleaned, _re.DOTALL)
+            arr = _json.loads(m.group(0)) if m else None
+        segs = []
+        if isinstance(arr, list):
+            for it in arr[:6]:
+                if isinstance(it, dict) and (it.get("text") or "").strip():
+                    segs.append({"character": (it.get("character") or "narrator").strip().lower(),
+                                 "text": (it.get("text") or "").strip()[:400]})
+        return segs or fallback
+
+    # Single-voice narration.
+    prompt = (
+        f"You are the NARRATOR of a 1993 analog-horror world. PREMISE: {premise}"
+        f"{(chr(10)+chr(10)+'CURRENT SCENE: '+scene) if scene else ''}{recent_block}{focus_block}\n\n"
+        f"Deliver a short, atmospheric world-building narration — 2 to 4 sentences, ominous and concrete, "
+        f"in the voice of a disembodied archive. No meta, no stage directions. Output ONLY the narration."
+    )
+    line = _ask(prompt, temp=0.9, tokens=180, use_lore=True)
+    if _talk_llm_failed(line):
+        return fallback
+    return [{"character": "narrator", "text": (line or "").strip()[:600]}]
+
+
+def api_narrator_worldbuild():
+    """Generate a story-aware world-building narration and (optionally) speak it.
+
+    Request JSON: {"focus"?: str, "multi"?: bool, "speak"?: bool, "session_id"?}
+    Response: {"segments": [{character, text, voice_id?, audio?}], "voice": bool}
+    With speak=false (or no key) it returns text-only segments the client can
+    display and/or send to /api/narrator/narrate later. Read-only."""
+    try:
+        data = request.get_json(silent=True) or {}
+        focus = data.get("focus") or ""
+        multi = bool(data.get("multi"))
+        speak = data.get("speak", True)
+        session_id = data.get("session_id", "default")
+        script = _narrator_script(focus, multi, session_id)
+        if speak and ELEVENLABS_API_KEY:
+            voiced = _narrate_segments(script)
+            return jsonify({"segments": voiced, "voice": True})
+        return jsonify({"segments": script, "voice": False})
+    except Exception as e:
+        import traceback as _tb
+        log_error(f"[NARRATOR] worldbuild failed: {e}")
+        _tb.print_exc()
+        return jsonify({"error": str(e), "segments": []}), 500
 
 
 def api_talk_message():
