@@ -399,11 +399,14 @@ class TestRealtimeRenderer(unittest.TestCase):
             page.close()
 
     def test_camera_tap_captures_evidence(self):
-        """The camera (SNAP) tool: armed from the hub, a TAP on the scene captures
-        a photo of that spot as 'evidence' — files it (POST /api/investigate
-        kind=photo), pops the evidence flourish, and adds it to the case file —
-        WITHOUT resolving a turn (no /api/choose) or steering the stream (no
-        set_prompt). Pointer-driven so it works on touch/iOS."""
+        """The camera (SNAP) tool: armed from the hub, a single-finger TAP
+        (press + release) on the scene captures a photo of that spot as
+        'evidence' — files it (POST /api/investigate kind=photo), prints the
+        scoring RECEIPT (which reveals appraised items and lights the EVIDENCE
+        HUD), and adds it to the case file — WITHOUT resolving a turn (no
+        /api/choose) or steering the stream (no set_prompt). Pointer-driven so
+        it works on touch/iOS; the shot fires on release so a pinch never fires
+        a stray capture."""
         page = self._new_realtime_page()
         scene_items = [
             {"id": 1, "type": "narrative", "content": "Intro."},
@@ -422,6 +425,18 @@ class TestRealtimeRenderer(unittest.TestCase):
             route.fulfill(status=200, content_type="application/json",
                           body=json.dumps({"ok": True, "id": 7, "image_url": "/images/e.jpg", "kind": "photo"}))
         page.route("**/api/investigate", inv_handler)
+
+        # Mock the appraisal so the receipt reveal + score are deterministic.
+        def photo_handler(route):
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({
+                "items": [
+                    {"label": "rusted valve", "interest": 4, "note": "recently turned"},
+                    {"label": "wet boot print", "interest": 3, "note": "leads left"},
+                ],
+                "caption": "A tight frame on the dripping valve.",
+                "mood": "ominous",
+            }))
+        page.route("**/api/photo", photo_handler)
         try:
             page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
             page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
@@ -429,13 +444,17 @@ class TestRealtimeRenderer(unittest.TestCase):
             self.assertNotEqual(page.evaluate("getComputedStyle(document.getElementById('realtime-btn')).display"), "none")
             self.assertTrue(page.evaluate("!!document.querySelector('#touch-reticle .touch-cam')"))
             self.assertIsNone(page.evaluate("document.querySelector('#touch-reticle .touch-hand')"))
-            # Arm it, then TAP a spot via a pointer event (works on touch/iOS).
+            # Arm it, then TAP a spot via press+release pointer events (touch/iOS).
             page.evaluate("document.getElementById('realtime-btn').click()")
             self.assertTrue(page.evaluate("document.getElementById('realtime-btn').classList.contains('aiming')"))
             page.evaluate("window.__MOCK_CMDS__ = []")
             page.evaluate(
-                """() => document.getElementById('touch-layer').dispatchEvent(
-                    new PointerEvent('pointerdown', {clientX: 240, clientY: 200, cancelable:true, bubbles:true}))"""
+                """() => {
+                    const L = document.getElementById('touch-layer');
+                    const o = {clientX: 240, clientY: 200, pointerId: 1, cancelable: true, bubbles: true};
+                    L.dispatchEvent(new PointerEvent('pointerdown', o));
+                    L.dispatchEvent(new PointerEvent('pointerup', o));
+                }"""
             )
             # It files a photo specimen...
             for _ in range(60):
@@ -446,8 +465,14 @@ class TestRealtimeRenderer(unittest.TestCase):
             payload = json.loads(investigates[0] or "{}")
             self.assertEqual(payload.get("kind"), "photo")
             self.assertTrue((payload.get("texture") or "").startswith("data:image"))
-            # ...pops the evidence flourish...
-            self.assertTrue(page.evaluate("document.getElementById('evidence-card').classList.contains('show')"))
+            # ...prints the receipt and reveals the appraised items...
+            page.wait_for_function("document.getElementById('photo-receipt').classList.contains('show')", timeout=6000)
+            page.wait_for_function("document.querySelectorAll('#photo-receipt .receipt-item').length >= 1", timeout=8000)
+            # ...lights the EVIDENCE score HUD with points on the board...
+            page.wait_for_function(
+                "!document.getElementById('evidence-hud').classList.contains('hidden')", timeout=6000)
+            page.wait_for_function(
+                "Number(document.querySelector('#evidence-hud .ev-total').getAttribute('data-val')) > 0", timeout=8000)
             # ...adds it to the case file...
             page.wait_for_function("document.querySelectorAll('#investigations-strip .inv-thumb').length >= 1", timeout=8000)
             # ...and does NOT steer or resolve a turn.
@@ -456,6 +481,63 @@ class TestRealtimeRenderer(unittest.TestCase):
             self.assertEqual(len(chooses), 0, "camera capture must not resolve a turn")
         except Exception:
             print("\n=== REACTOR CONSOLE LOG (camera) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
+    def test_camera_zoom_scales_scene_and_suppresses_pinch_capture(self):
+        """Optical zoom: while the camera is armed, the mouse wheel magnifies the
+        scene (a CSS transform on the video layer) within bounds, the readout
+        tracks it, and a two-finger PINCH zooms WITHOUT firing a capture (no
+        /api/investigate) — only a clean single-finger tap shoots."""
+        page = self._new_realtime_page()
+        scene_items = [
+            {"id": 1, "type": "narrative", "content": "Intro."},
+            {"id": 2, "type": "scene_image", "content": "", "image_url": TINY_PNG_DATA_URL,
+             "metadata": {"prompt": "scene one", "base": "A loading dock.", "hard_transition": False}},
+            {"id": 3, "type": "player_choice_prompt", "content": "?", "choices": [{"text": "Go"}]},
+        ]
+        investigates = []
+        page.route("**/api/reset", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(scene_items)))
+        page.route("**/api/feed*", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
+        page.route("**/api/photo", lambda r: r.fulfill(status=200, content_type="application/json", body='{"items":[]}'))
+        page.route("**/api/investigate", lambda r: (investigates.append(r.request.post_data),
+                   r.fulfill(status=200, content_type="application/json", body='{"ok":true,"id":1,"kind":"photo"}')))
+        try:
+            page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
+            page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
+            # Arm the camera -> a gentle push-in scales the scene right away.
+            page.evaluate("document.getElementById('realtime-btn').click()")
+            page.wait_for_function("(document.getElementById('reactor-video').style.transform || '').indexOf('scale(') === 0", timeout=4000)
+            z_armed = page.evaluate("parseFloat(document.getElementById('touch-zoom').textContent)")
+            self.assertGreater(z_armed, 1.0, "arming should push gently into the scene")
+
+            # Wheel up (deltaY < 0) zooms IN: the readout climbs and the layer scales up.
+            page.evaluate("""() => document.getElementById('touch-layer').dispatchEvent(
+                new WheelEvent('wheel', {deltaY: -600, cancelable: true, bubbles: true}))""")
+            z_in = page.evaluate("parseFloat(document.getElementById('touch-zoom').textContent)")
+            self.assertGreater(z_in, z_armed, "wheel up must zoom in")
+            self.assertIn("scale(", page.evaluate("document.getElementById('reactor-video').style.transform"))
+
+            # A big wheel-down clamps back to the wide bound (1.0x, transform cleared).
+            page.evaluate("""() => document.getElementById('touch-layer').dispatchEvent(
+                new WheelEvent('wheel', {deltaY: 6000, cancelable: true, bubbles: true}))""")
+            z_min = page.evaluate("parseFloat(document.getElementById('touch-zoom').textContent)")
+            self.assertAlmostEqual(z_min, 1.0, places=1)
+
+            # A two-finger PINCH must NOT capture (only single-finger release does).
+            page.evaluate("""() => {
+                const L = document.getElementById('touch-layer');
+                L.dispatchEvent(new PointerEvent('pointerdown', {pointerId: 11, clientX: 200, clientY: 200, cancelable:true, bubbles:true}));
+                L.dispatchEvent(new PointerEvent('pointerdown', {pointerId: 12, clientX: 300, clientY: 200, cancelable:true, bubbles:true}));
+                L.dispatchEvent(new PointerEvent('pointermove', {pointerId: 12, clientX: 380, clientY: 200, cancelable:true, bubbles:true}));
+                L.dispatchEvent(new PointerEvent('pointerup', {pointerId: 12, clientX: 380, clientY: 200, cancelable:true, bubbles:true}));
+                L.dispatchEvent(new PointerEvent('pointerup', {pointerId: 11, clientX: 200, clientY: 200, cancelable:true, bubbles:true}));
+            }""")
+            page.wait_for_timeout(400)
+            self.assertEqual(len(investigates), 0, "a pinch gesture must not fire a capture")
+        except Exception:
+            print("\n=== REACTOR CONSOLE LOG (camera-zoom) ===\n" + self._dump_logs())
             raise
         finally:
             page.close()

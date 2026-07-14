@@ -52,6 +52,11 @@ app.add_url_rule('/api/observe', 'standalone_api_observe', engine.api_observe, m
 # it plus their positions so the UI can float "starfield" tags. Stateless /
 # read-only (does not mutate the sim). See engine.api_detect.
 app.add_url_rule('/api/detect', 'standalone_api_detect', engine.api_detect, methods=['POST'])
+# Photo appraisal for the reward loop: the client posts a captured crop and the
+# engine returns an evidence-style breakdown (notable items + interest rating +
+# a terse "why it matters" note, plus a caption/mood) that the UI prints as a
+# scoring "receipt". Stateless / read-only. See engine.api_photo.
+app.add_url_rule('/api/photo', 'standalone_api_photo', engine.api_photo, methods=['POST'])
 # Investigation textures: the client crops a small thumbnail from the scene
 # around/under the TOUCH reticle (or, later, a "photograph") and stores it here.
 # These specimens persist to disk + state['investigations'] as raw material for
