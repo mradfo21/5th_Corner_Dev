@@ -2655,7 +2655,11 @@
         total = Number(raw.total) || 0;
         shots = Number(raw.shots) || 0;
         seen = new Set(Array.isArray(raw.seen) ? raw.seen : []);
-        spent = new Set(Array.isArray(raw.spent) ? raw.spent : []);
+        // Migrate saves from before "document once": if there's no spent set yet,
+        // treat everything already in the dossier as spent so old subjects don't
+        // resurface as fresh, lockable targets worth zero points.
+        spent = new Set(Array.isArray(raw.spent) ? raw.spent
+          : (Array.isArray(raw.seen) ? raw.seen : []));
       }
     } catch (_) {}
 
@@ -2832,7 +2836,7 @@
       if (!spec || !spec.texture) return;
       // File the specimen exactly as before (case file + server mirror).
       try { Investigations.store(spec); } catch (_) {}
-      reveal(spec.texture, { zoom: spec.zoom || 1, focus: spec.focus, grade: spec.focusGrade });
+      reveal(spec.texture, { zoom: spec.zoom || 1, focus: spec.focus, grade: spec.focusGrade, subject: spec.subject });
     }
 
     function reveal(texture, shot) {
@@ -2867,6 +2871,7 @@
       shot = shot || {};
       const zoom = shot.zoom || 1;
       const grade = shot.grade || null;
+      const subject = shot.subject || null;
       const parts = els();
       if (!parts || token !== state.receiptToken) return;
       parts.root.classList.remove("developing");
@@ -2875,12 +2880,23 @@
 
       if (!items.length) {
         // Nothing legible — a gentle consolation so it never feels punishing.
+        // The POI is NOT spent here: an empty exposure never burns a subject, so
+        // you can line the shot up again.
         parts.status.textContent = "NO CLEAR EVIDENCE";
         if (appraisal.caption) parts.caption.textContent = appraisal.caption;
         Evidence.add(CONSOLATION);   // a small pity payout so it never feels punishing
         finishStamp(token, 0);       // ...but the shot itself rates UNDEVELOPED
         scheduleDismiss(token);
         return;
+      }
+
+      // The shot developed real evidence — NOW the POI is documented (spent), so
+      // the credit (below) and the document-once lockout stay in lockstep. A
+      // cancelled receipt returns above before this runs, so a superseded shot
+      // never spends its subject.
+      if (subject) {
+        Evidence.spend(subject);
+        if (state.touchMode === "aim") layoutPhotoTargets(); // dim its target to a ✓
       }
 
       parts.status.textContent = "EVIDENCE LOGGED";
@@ -3520,9 +3536,6 @@
     const region = screenBoxToNorm(x, y, boxPx);
     const texture = captureSceneRegion(region, 512); // larger region → keep detail
     if (!texture) { showRendererToast("Couldn't capture \u2014 hold steady"); return; }
-    // Spend the subject immediately so its target dims to a ✓ and it can't be
-    // re-farmed while the appraisal is still developing.
-    if (subject) Evidence.spend(subject);
     // Frame flash + camera flash + shutter for a tactile "snap".
     if (el.touchCaptureFrame) {
       el.touchCaptureFrame.classList.remove("grab");
@@ -3531,7 +3544,9 @@
     }
     flashScene();
     try { Sound.shutter(); } catch (_) {}
-    layoutPhotoTargets(); // reflect the fresh ✓ + drop the lock right away
+    // NOTE: the subject is "spent" (document-once) only once the appraisal is
+    // actually credited in printReceipt — never eagerly here, so a cancelled or
+    // empty shot never burns a POI without banking its evidence.
     Photo.capture({
       texture, region, kind: "photo", label: describeTouchRegion({ x, y }).label,
       zoom: state.photoZoom || 1, subject,
@@ -3608,10 +3623,9 @@
     const region = screenBoxToNorm(center.x, center.y, boxPx);
     const texture = captureSceneRegion(region, 512);
     if (!texture) { showRendererToast("Couldn't capture the frame"); return; }
-    if (subject) Evidence.spend(subject);
     flashScene();
     try { Sound.shutter(); } catch (_) {}
-    if (state.touchMode === "aim") layoutPhotoTargets();
+    // Spent only when the appraisal is credited (see printReceipt), not here.
     Photo.capture({
       texture, region, kind: "photo", label: "the center of the view",
       zoom: state.photoZoom || 1, subject,
