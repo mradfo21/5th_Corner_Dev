@@ -95,6 +95,21 @@
   const SCENE_FADE_SAFETY_MS = 9000;
   const SCENE_FADE_BLEND_REVEAL_MS = 1200;
 
+  // Blackout detection + recovery. Some world models, when steered toward
+  // content their OWN safety refuses (a graphic scene), don't error — they
+  // "give up" and stream SOLID BLACK frames. Those are still real frames
+  // (videoWidth>0), so the reveal watchdog — which only catches the ABSENCE of
+  // frames — never fires, and the scene is stuck black forever with no recovery
+  // (the reported "reactor/lingbot freaks out, refusing to draw anything but
+  // black"). We sample presented frames and, if they stay essentially black for
+  // a sustained beat after the stream revealed, treat it as a soft failure: hide
+  // the black video so the still floor painted beneath shows through, and
+  // self-heal the instant real (non-black) frames return.
+  const BLACK_SAMPLE_INTERVAL_MS = 700;   // how often to sample the live frame
+  const BLACK_MEAN_LUMA_MAX = 10;         // 0..255 mean luma below this = "black"
+  const BLACK_PEAK_LUMA_MAX = 24;         // brightest sampled pixel below = "black"
+  const BLACKOUT_AFTER_MS = 2400;         // continuous black this long => blackout
+
   const rstate = {
     reactor: null,
     active: false,
@@ -151,6 +166,13 @@
     fadeSafetyTimer: null, // failsafe: lift the veil even if no reveal fires
     seedToken: 0,          // bumps every reveal/reset so a slow seed decode that
                            // lands AFTER the stream revealed can't re-cover it
+    // Blackout state: the live stream is rendering solid black (model refused
+    // the scene). We hide the black video so the still floor shows, and recover
+    // the moment real frames return.
+    blackout: false,
+    blackSince: 0,         // ts the current run of black frames began (0 = none)
+    lastBlackSampleTs: 0,  // throttle for the luma sample
+    blackCanvas: null,     // tiny offscreen canvas reused for luma sampling
   };
 
   // Event waiters keyed by model message type, so command flows can await a
@@ -361,6 +383,9 @@
   // so requestVideoFrameCallback stays silent until real frames flow — that's
   // our precise "the new scene is actually on screen now" trigger.
   function armFreezeReveal() {
+    // A fresh stage is establishing — drop any prior black run so the new
+    // stream's frames are judged on their own (and un-hide happens on reveal).
+    clearBlackout();
     rstate.freezeArmed = true;
     rstate.freezeArmTs = Date.now();
     if (rstate.freezeFallbackTimer) clearTimeout(rstate.freezeFallbackTimer);
@@ -500,6 +525,74 @@
     log("video track attached:", name, "(freeze covers until first frame)");
   }
 
+  // Sample the current live frame's brightness (downscaled) — true when the
+  // frame is essentially solid black. Cheap: a 32x18 draw + one getImageData.
+  // Returns false on any failure (decode not ready / tainted canvas) so we never
+  // false-trip a blackout.
+  function frameIsBlack(video) {
+    try {
+      let c = rstate.blackCanvas;
+      if (!c) { c = rstate.blackCanvas = document.createElement("canvas"); c.width = 32; c.height = 18; }
+      const ctx = c.getContext("2d", { willReadFrequently: true });
+      if (!ctx) return false;
+      ctx.drawImage(video, 0, 0, c.width, c.height);
+      const data = ctx.getImageData(0, 0, c.width, c.height).data;
+      let sum = 0, peak = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        // Rec.601 luma approximation.
+        const y = (data[i] * 299 + data[i + 1] * 587 + data[i + 2] * 114) / 1000;
+        sum += y;
+        if (y > peak) peak = y;
+      }
+      const mean = sum / (data.length / 4);
+      return mean <= BLACK_MEAN_LUMA_MAX && peak <= BLACK_PEAK_LUMA_MAX;
+    } catch (_) { return false; }
+  }
+
+  // Throttled blackout monitor, driven off presented frames. Only meaningful
+  // once the LIVE stream is what's actually on screen (freeze not covering, not
+  // mid fade-down, run started).
+  function monitorBlackout(video) {
+    if (rstate.freezeActive || rstate.fadeDownActive || !rstate.started) return;
+    const now = Date.now();
+    if (now - rstate.lastBlackSampleTs < BLACK_SAMPLE_INTERVAL_MS) return;
+    rstate.lastBlackSampleTs = now;
+    if (frameIsBlack(video)) {
+      if (!rstate.blackSince) rstate.blackSince = now;
+      if (!rstate.blackout && now - rstate.blackSince >= BLACKOUT_AFTER_MS) enterBlackout();
+    } else {
+      rstate.blackSince = 0;
+      if (rstate.blackout) exitBlackout();
+    }
+  }
+
+  function enterBlackout() {
+    rstate.blackout = true;
+    // Reveal the still floor beneath by hiding the black video. Frames keep
+    // decoding at opacity:0, so we still sample and can self-heal.
+    const v = getVideo();
+    if (v) v.classList.add("hidden");
+    log("WARNING: live stream is rendering solid black (model refused the scene?) —",
+        "hiding the video so the still fallback shows; will restore on recovery.");
+    emitEvent("video_black", {});
+  }
+
+  function exitBlackout() {
+    rstate.blackout = false;
+    const v = getVideo();
+    if (v && rstate.started) v.classList.remove("hidden");
+    log("live stream recovered from black — restoring video");
+    emitEvent("video_recovered", {});
+  }
+
+  // Reset blackout tracking (new stage / teardown / reset). Does NOT un-hide the
+  // video — callers manage visibility for their own transition.
+  function clearBlackout() {
+    rstate.blackout = false;
+    rstate.blackSince = 0;
+    rstate.lastBlackSampleTs = 0;
+  }
+
   // Called on every presented video frame. Marks the stream live, and — when a
   // reveal is armed — treats the frame as the new scene actually being on
   // screen, so it crossfades the freeze buffer out.
@@ -508,7 +601,9 @@
     clearRevealWatchdog(); // frames are flowing — the stream is healthy
     // A full reset hides the video for a clean wipe; genuine frames un-hide it
     // (a re-anchor keeps it visible under the freeze, so this is a no-op there).
-    if (video.classList.contains("hidden")) video.classList.remove("hidden");
+    // During a blackout we deliberately KEEP it hidden (the still floor is
+    // showing) — exitBlackout restores it once real frames return.
+    if (!rstate.blackout && video.classList.contains("hidden")) video.classList.remove("hidden");
     if (rstate.status !== "live") setStatus("live");
     if (rstate.freezeArmed) {
       // Ignore stray callbacks in the first beat after arming so we don't reveal
@@ -523,6 +618,9 @@
       // this immediately when no veil is down).
       endSceneFade(() => emitEvent("video_showing", {}));
     }
+    // Watch for the model streaming solid black (its own safety refusing the
+    // scene) so we can fall back to the still floor instead of holding black.
+    monitorBlackout(video);
   }
 
   // After `start`, warn (once) if no decoded video frames show up in time. This
@@ -666,10 +764,25 @@
     });
   }
 
+  // Commands we KNOW the LingBot (seed_locked) family accepts per the model
+  // docs, even when a given capabilities payload doesn't enumerate them. LingBot
+  // and LingBot World 2 are navigable-video models built for exactly these, so
+  // we must never let a short/omitted caps list suppress movement — that's what
+  // silently broke "I can't move" in production (the SDK advertised caps without
+  // the movement axes, so cmd() skipped every one).
+  const MOVE_COMMANDS = new Set([
+    "set_move_longitudinal", "set_move_lateral",
+    "set_look_horizontal", "set_look_vertical",
+    "set_rotation_speed_deg", "set_camera_pose",
+  ]);
+  function familyDrivesCamera() { return familyFor(rstate.modelId) === "seed_locked"; }
+
   async function cmd(name, data) {
     // Never send a command the model doesn't advertise — skip it cleanly (and
-    // announce the skip) instead of triggering a command_error round-trip.
-    if (!supportsCmd(name)) {
+    // announce the skip) instead of triggering a command_error round-trip. But
+    // the LingBot movement axes are always allowed for the LingBot family even
+    // if capabilities didn't list them (the docs guarantee them).
+    if (!supportsCmd(name) && !(MOVE_COMMANDS.has(name) && familyDrivesCamera())) {
       log("skip unsupported command:", name);
       emitEvent("command_skipped", { command: name });
       return;
@@ -1023,6 +1136,7 @@
     rstate.stagingGuideUrl = null;
     rstate.frameWatch = false;
     rstate.freezeArmed = false;
+    clearBlackout();
     clearSceneFade(); // the freeze cover holds the last frame across the swap
     clearCaps(); // the next model advertises its own command schema
     clearRevealWatchdog();
@@ -1091,6 +1205,7 @@
     rstate.frameWatch = false;
     rstate.freezeArmed = false;
     clearCaps();
+    clearBlackout();
     resetMoveState(); // camera returns to rest for a fresh run
     rstate.seedToken++; // drop any in-flight seed decode from the dead run
     clearRevealWatchdog();
@@ -1123,6 +1238,7 @@
     rstate.stagingGuideUrl = null;
     rstate.guideImageUrl = null;
     rstate.freezeArmed = false;
+    clearBlackout();
     resetMoveState(); // camera returns to rest for a fresh run
     rstate.seedToken++; // drop any in-flight seed decode from the dead run
     clearRevealWatchdog();
@@ -1159,8 +1275,10 @@
   function captureFrame(maxW) {
     const v = rstate.video || document.getElementById("reactor-video");
     // Only read the LIVE video — not while the freeze buffer is covering it
-    // (that frame isn't the current scene the model is actually rendering).
-    if (!v || !v.videoWidth || rstate.freezeActive) return null;
+    // (that frame isn't the current scene the model is actually rendering), and
+    // not during a blackout (the frame is solid black; feeding it to the sim
+    // would derail the story with a "you see nothing" grounding).
+    if (!v || !v.videoWidth || rstate.freezeActive || rstate.blackout) return null;
     const cap = maxW || 512;
     const scale = Math.min(1, cap / v.videoWidth);
     const w = Math.max(1, Math.round(v.videoWidth * scale));
@@ -1181,7 +1299,7 @@
   // from around/under the reticle. Returns null unless real frames are showing.
   function captureRegion(box, outSize) {
     const v = rstate.video || document.getElementById("reactor-video");
-    if (!v || !v.videoWidth || rstate.freezeActive || !box) return null;
+    if (!v || !v.videoWidth || rstate.freezeActive || rstate.blackout || !box) return null;
     const vw = v.videoWidth, vh = v.videoHeight;
     let sx = Math.max(0, Math.min(1, box.x || 0)) * vw;
     let sy = Math.max(0, Math.min(1, box.y || 0)) * vh;
@@ -1217,7 +1335,9 @@
   // haven't arrived yet we optimistically say yes (they load before the first
   // command, and cmd() skips anything genuinely unsupported).
   function motionSupported() {
-    return !knownCaps() || rstate.commandSet.has("set_move_longitudinal");
+    // LingBot (seed_locked) family always drives the camera natively; other
+    // families only if they actually advertise the axes.
+    return familyDrivesCamera() || !knownCaps() || rstate.commandSet.has("set_move_longitudinal");
   }
 
   // Re-assert the currently-held axes after a (re)start. A per-turn re-anchor
@@ -1311,7 +1431,7 @@
     // the freeze back-buffer is not covering it).
     isShowing: () => {
       const v = rstate.video || document.getElementById("reactor-video");
-      return !!(v && v.videoWidth > 0 && !rstate.freezeActive);
+      return !!(v && v.videoWidth > 0 && !rstate.freezeActive && !rstate.blackout);
     },
     // Intrinsic size of the live video track, so callers can map normalized
     // frame coordinates (e.g. object-detection boxes) onto the object-fit:cover

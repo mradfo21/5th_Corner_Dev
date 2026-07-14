@@ -58,7 +58,13 @@ TINY_PNG_DATA_URL = (
 # production — the single hand-off the renderer waits on.
 MOCK_SDK_JS = r"""
 export class Reactor {
-  constructor(opts) { this._h = {}; this._opts = opts || {}; this._timer = null; }
+  constructor(opts) {
+    this._h = {}; this._opts = opts || {}; this._timer = null;
+    // Optional capabilities payload so tests can exercise the production
+    // "capabilities known" path (real SDK advertises a command/track schema).
+    this._caps = (typeof window !== "undefined" && window.__MOCK_CAPS__) || null;
+  }
+  getCapabilities() { return this._caps; }
   on(evt, fn) { (this._h[evt] = this._h[evt] || []).push(fn); }
   _emit(evt) {
     const args = Array.prototype.slice.call(arguments, 1);
@@ -67,6 +73,9 @@ export class Reactor {
   async connect(jwt) {
     this._jwt = jwt;
     window.__MOCK_REACTOR_CONNECTED__ = true;
+    // Advertise the capability schema (if the test set one) before ready, like
+    // the real SDK does — so the renderer's command/track gating runs for real.
+    if (this._caps) setTimeout(() => this._emit("capabilitiesReceived", this._caps), 8);
     // Simulate a TRANSIENT connect error on the first attempt only (mirrors a
     // flaky first WebRTC/session attempt on mobile). The client should retry
     // and recover rather than sticking on "Realtime unavailable".
