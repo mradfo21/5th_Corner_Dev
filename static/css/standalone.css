@@ -2445,6 +2445,110 @@ body.reactor-available.rt-log-on #rt-log { display: flex; }
 }
 
 /* ============================================================
+   MOBILE MEDIA FIT — ease desktop-authored aspect ratios on phones
+   ------------------------------------------------------------
+   All generated media is authored for a wide desktop canvas (4:3 stills,
+   16:9 realtime video). On a desktop the default full-bleed `cover` crop is
+   exactly what we want — cinematic and edge-to-edge. But on a PORTRAIT phone
+   that same crop throws away most of the frame (only a narrow vertical slice
+   of a wide image survives). These rules — gated on the JS-resolved
+   `html.is-mobile` + `.is-portrait` classes — switch the media to a
+   "contain + blurred fill" fit: the WHOLE authored frame is shown sharp and
+   centered, and a blurred, zoomed copy of the same media fills the letterbox
+   gaps so the screen still reads full-bleed instead of dead black bars.
+
+   Landscape phones keep the desktop `cover` fit (a wide screen matches the
+   wide media), so this only kicks in where the mismatch actually hurts.
+   ============================================================ */
+
+/* Stills (the star of the show). The sharp, whole frame rides on ::after; the
+   blurred fill rides on ::before (painted underneath it in DOM/paint order).
+   Both pseudo layers pull the SAME inline background-image via `inherit`, so
+   setScene() keeps working untouched. */
+html.is-mobile.is-portrait .scene {
+  background-repeat: no-repeat;
+}
+html.is-mobile.is-portrait .scene::before,
+html.is-mobile.is-portrait .scene::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: inherit;
+  background-repeat: no-repeat;
+  background-position: center;
+}
+html.is-mobile.is-portrait .scene::before {
+  background-size: cover;
+  transform: scale(1.14);
+  filter: blur(26px) saturate(0.8) brightness(0.5);
+}
+html.is-mobile.is-portrait .scene::after {
+  background-size: contain;
+}
+
+/* Tape playback frames get the same treatment (also background-image divs). */
+html.is-mobile.is-portrait .tape-frame {
+  background-repeat: no-repeat;
+}
+html.is-mobile.is-portrait .tape-frame::before,
+html.is-mobile.is-portrait .tape-frame::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: inherit;
+  background-repeat: no-repeat;
+  background-position: center;
+}
+html.is-mobile.is-portrait .tape-frame::before {
+  background-size: cover;
+  transform: scale(1.14);
+  filter: blur(26px) saturate(0.8) brightness(0.5);
+}
+html.is-mobile.is-portrait .tape-frame::after {
+  background-size: contain;
+}
+
+/* Realtime video + its freeze back-buffer are replaced elements (no usable
+   pseudo-elements), so we fit them with `contain`. The still "floor" staged
+   behind the video is that stream's own guide image — already given the
+   blurred-fill treatment above — so it fills the letterbox gaps coherently. */
+html.is-mobile.is-portrait .reactor-video,
+html.is-mobile.is-portrait .reactor-freeze {
+  object-fit: contain;
+}
+
+/* On very roomy portrait tablets the crop is far less severe, so ease off the
+   blur strength for a cleaner look. */
+@media (min-width: 700px) {
+  html.is-mobile.is-portrait .scene::before,
+  html.is-mobile.is-portrait .tape-frame::before {
+    filter: blur(34px) saturate(0.85) brightness(0.55);
+  }
+}
+
+/* Respect reduced-motion / reduced-data leanings: the blurred fill is purely
+   decorative, so drop it to a flat dark backdrop when motion is reduced. */
+@media (prefers-reduced-motion: reduce) {
+  html.is-mobile.is-portrait .scene::before,
+  html.is-mobile.is-portrait .tape-frame::before {
+    filter: none;
+    background-image: none;
+    background: #050505;
+    transform: none;
+  }
+}
+
+/* ---------- Touch-primary vs pointer-primary affordances ----------
+   On touch devices there is no hover, so hover-only hints never fire; make
+   the always-visible controls a touch more prominent instead. On desktop we
+   keep the quieter, hover-to-reveal styling that suits a mouse. */
+html.is-touch .rail-lbl,
+html.is-touch .fw-label,
+html.is-touch .rt-label {
+  opacity: 0.95;
+}
+
+/* ============================================================
    PHOTO MODE: optical zoom viewfinder, EVIDENCE score HUD, and
    the item-by-item scoring "receipt".
    ============================================================ */
