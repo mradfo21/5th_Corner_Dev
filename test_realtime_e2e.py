@@ -742,6 +742,49 @@ class TestRealtimeRenderer(unittest.TestCase):
         finally:
             page.close()
 
+    def test_turn_recovers_when_server_never_resolves(self):
+        """A committed turn must never leave the player permanently stuck on the
+        progress bar. If the server turn stalls (LLM error/rate-limit, or a lost
+        feed item) and no player_choice_prompt ever arrives, the client watchdog
+        releases the UI: the veil clears and actionable recovery choices appear so
+        the game can continue."""
+        page = self._new_realtime_page()
+        page.add_init_script("window.__TURN_WATCHDOG_MS__ = 1200;")  # fast watchdog for the test
+        scene_items = [
+            {"id": 1, "type": "narrative", "content": "Intro."},
+            {"id": 2, "type": "scene_image", "content": "", "image_url": TINY_PNG_DATA_URL,
+             "metadata": {"prompt": "scene one", "base": "A dock.", "hard_transition": False}},
+            {"id": 3, "type": "player_choice_prompt", "content": "?", "choices": [{"text": "Go"}]},
+        ]
+        page.route("**/api/reset", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(scene_items)))
+        # The turn NEVER resolves: /api/choose accepts the action but the feed
+        # stays empty forever (no player_choice_prompt is ever delivered).
+        page.route("**/api/feed*", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
+        page.route("**/api/choose", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
+        page.route("**/api/detect", lambda r: r.fulfill(status=200, content_type="application/json", body='{"objects": []}'))
+        try:
+            page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
+            page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
+            # Commit a choice from the intro prompt.
+            page.wait_for_function("document.querySelectorAll('#choices-container .choice-btn').length >= 1", timeout=10000)
+            page.evaluate("document.querySelector('#choices-container .choice-btn').click()")
+            # Veil goes up while the (doomed) turn runs.
+            page.wait_for_function("!document.getElementById('processing-veil').classList.contains('hidden')", timeout=5000)
+            # The watchdog must recover: veil clears and recovery choices appear.
+            page.wait_for_function(
+                "document.getElementById('processing-veil').classList.contains('hidden')", timeout=6000)
+            page.wait_for_function(
+                "Array.from(document.querySelectorAll('#choices-container .choice-btn')).some(b => /move forward/i.test(b.textContent))",
+                timeout=6000)
+            self.assertFalse(
+                page.evaluate("document.querySelectorAll('#choices-container .choice-btn').length === 0"),
+                f"watchdog must restore actionable choices. logs:\n{self._dump_logs()}")
+        except Exception:
+            print("\n=== REACTOR CONSOLE LOG (turn-watchdog) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
     def test_realtime_scan_move_action(self):
         """MOVE TO on a non-enterable object composes an APPROACH prompt (naming
         the object + a forward-movement cue so the scene actually changes) and

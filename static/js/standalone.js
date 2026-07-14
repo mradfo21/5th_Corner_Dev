@@ -162,6 +162,8 @@
     scanSrcSize: null,          // {w,h} of the last scanned source (video or still), for cover-mapping tags
     scanPrewarm: { objects: [], size: null, ts: 0 }, // background detection cached so SCAN opens instantly
     scanPrewarmTimer: null,     // debounce for background pre-warm scans
+    lastTurnTs: 0,              // when the last turn was committed/active (pre-warm defers around it)
+    turnWatchdog: null,         // safety timer: recover the UI if a turn never resolves
     currentStillUrl: null,      // last still shown via setScene (stills-mode SCAN source)
     scanStillImg: null,         // cached <img> of the current still, for canvas capture
     evidenceTimer: null,        // evidence flourish hold-then-file timer
@@ -1652,6 +1654,7 @@
   function enterGameOver(message) {
     state.gameOver = true;
     state.awaitingResolution = false;
+    clearTurnWatchdog();
     closeScan(); // no scanning over the death screen
     hideVeil();
     el.choices.innerHTML = "";
@@ -1722,6 +1725,8 @@
       case "player_choice_prompt":
         // The engine pairs a death with a "GAME OVER" restart prompt; when
         // we're in the death state we let the overlay own restart instead.
+        clearTurnWatchdog();
+        state.lastTurnTs = Date.now(); // post-turn cooldown for pre-warm counts from here
         if (state.gameOver || (item.content || "").toUpperCase() === "GAME OVER") {
           state.gameOver = true;
           el.deathOverlay.classList.remove("hidden");
@@ -1761,6 +1766,7 @@
         return;
 
       case "error_event":
+        clearTurnWatchdog();
         appendProse(item);
         Sound.error();
         Ceremony.abort();
@@ -1820,6 +1826,7 @@
   async function resetGame() {
     try {
       stopPolling(); // avoid a mid-reset poll racing the rebuilt feed
+      clearTurnWatchdog(); // don't let a stale turn timer fire into the new run
       exitGameOver();
       closeScan(); // drop any scan tags/overlay from the dead run
       closeTouch(); // drop any camera overlay
@@ -1881,6 +1888,40 @@
     }
   }
 
+  // Turn watchdog: a committed turn must produce a player_choice_prompt within a
+  // bounded time. If the server turn stalls (LLM error / rate-limit / lost feed
+  // item) the ceremony would otherwise sit on the progress bar forever with no
+  // way to act. This guarantees the player is never permanently stuck: we do one
+  // forced feed catch-up, then — if still unresolved — release the UI with
+  // recovery choices so the game can continue.
+  const TURN_WATCHDOG_MS = (typeof window !== "undefined" && window.__TURN_WATCHDOG_MS__) || 26000;
+  function clearTurnWatchdog() {
+    if (state.turnWatchdog) { clearTimeout(state.turnWatchdog); state.turnWatchdog = null; }
+  }
+  function armTurnWatchdog() {
+    clearTurnWatchdog();
+    state.turnWatchdog = setTimeout(async () => {
+      state.turnWatchdog = null;
+      if (!state.awaitingResolution) return; // already resolved
+      try { await pollOnce(); } catch (_) {} // maybe a poll was just missed
+      if (!state.awaitingResolution) return; // catch-up delivered the prompt
+      console.error("[standalone] turn watchdog fired — no resolution; recovering UI");
+      Ceremony.abort();
+      hideVeil();
+      state.awaitingResolution = false;
+      state.lastTurnTs = Date.now();
+      appendProse({ id: -1, type: "error_event", content: "The world hesitated. Choose again." });
+      renderChoices({
+        id: state.currentPromptId || -1,
+        choices: [
+          { text: "Look around." },
+          { text: "Move forward." },
+          { text: "Wait and listen." },
+        ],
+      });
+    }, TURN_WATCHDOG_MS);
+  }
+
   async function makeChoice(choiceText, contextItemId) {
     if (state.processing || state.gameOver) return;
     closeFreeWill(true); // picking any action closes the free-will gate
@@ -1888,6 +1929,8 @@
     el.choices.innerHTML = "";
     Ceremony.begin(); // light up the turn pipeline — starting with "action selected"
     state.awaitingResolution = true;
+    state.lastTurnTs = Date.now(); // pre-warm defers around the turn
+    armTurnWatchdog(choiceText, contextItemId);
     // NOTE: we deliberately do NOT steer the CURRENT live video with the action
     // here. Injecting the action into the video the instant a choice is made
     // meant the ORIGINAL scene's video started playing the action before its new
@@ -1944,6 +1987,7 @@
       beginFastPolling();
     } catch (err) {
       console.error("[standalone] makeChoice failed:", err);
+      clearTurnWatchdog();
       hideVeil();
       state.awaitingResolution = false;
       appendProse({ id: -1, type: "error_event", content: `Action failed to send: ${err.message}` });
@@ -2844,10 +2888,19 @@
   // Never runs while SCAN is armed (the live loop handles that), mid-turn, or
   // while another detect is in flight; throttled so it's at most one per scene.
   const SCAN_PREWARM_MIN_MS = 4000;
+  const SCAN_PREWARM_TURN_COOLDOWN_MS = 9000; // stay off the wire around a turn
   function prewarmScan() {
-    if (state.scanOn || state.gameOver || state.processing || state.scanBusy) return;
-    if (!scanAvailable()) return;
+    if (state.scanOn || state.gameOver || state.scanBusy) return;
     const now = Date.now();
+    // Defer to gameplay: never add a background detection call while a turn is
+    // resolving (or just did) — that competes with the turn's own LLM calls and
+    // can rate-limit/slow them. Retry once the game is idle again.
+    if (state.processing || state.awaitingResolution ||
+        (now - (state.lastTurnTs || 0) < SCAN_PREWARM_TURN_COOLDOWN_MS)) {
+      schedulePrewarm(2500);
+      return;
+    }
+    if (!scanAvailable()) return;
     if (now - (state.scanPrewarm.ts || 0) < SCAN_PREWARM_MIN_MS) return;
     const cap = captureScanFrame();
     if (!cap || !cap.frame) return;
