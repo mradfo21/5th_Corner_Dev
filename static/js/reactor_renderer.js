@@ -48,14 +48,26 @@
   "use strict";
 
   const SDK_URL = "https://esm.sh/@reactor-team/js-sdk@2.12.0";
-  // The base pair of Reactor world models we can switch between live, mid-game
-  // (see WORLD_MODEL_SWITCHING_PLAN.md). Each id maps to a DRIVER (its wire
-  // protocol) below and to SDK metadata advertised by /api/reactor/config.
+  // World models are DATA, not hard-wired code paths. Each model maps to a
+  // DRIVER *family* (its wire protocol) — not a per-id driver — so ANY Reactor
+  // model, including one that ships tomorrow, works with no code change:
+  //   • "seed_locked" (LingBot): reference image locked once a run starts, so a
+  //     new guide image forces a fresh stage (reset + re-establish).
+  //   • "blend" (Helios, and the DEFAULT for anything new/unknown): text/image
+  //     to video; a new guide image blends in-stream with no reset, prompts
+  //     re-steer live.
+  // The model list + protocols come from /api/reactor/config (which itself is
+  // env-driven and open to custom models); these are just pre-config defaults.
   const FALLBACK_MODEL_ID = "lingbot-world-2";
   const FALLBACK_MODEL = "reactor/lingbot-world-2";
+  const FALLBACK_FAMILY = "blend"; // the flexible family unknown models default to
+  const SDK_PREFIX = "reactor/";   // how a bare model id becomes an SDK name
   const DEFAULT_MODELS = [
-    { id: "lingbot-world-2", label: "LingBot World 2", sdk_name: "reactor/lingbot-world-2", requiresSeedImage: true },
-    { id: "helios", label: "Helios", sdk_name: "reactor/helios", requiresSeedImage: false },
+    { id: "lingbot-world-2", label: "LingBot World 2", sdk_name: "reactor/lingbot-world-2", requiresSeedImage: true, protocol: "seed_locked" },
+    { id: "helios", label: "Helios", sdk_name: "reactor/helios", requiresSeedImage: false, protocol: "blend" },
+    { id: "lingbot", label: "LingBot", sdk_name: "reactor/lingbot", requiresSeedImage: true, protocol: "seed_locked" },
+    { id: "longlive-v2", label: "LongLive V2", sdk_name: "reactor/longlive-v2", requiresSeedImage: false, protocol: "blend" },
+    { id: "sana-streaming", label: "Sana Streaming", sdk_name: "reactor/sana-streaming", requiresSeedImage: false, protocol: "blend" },
   ];
   // How long to wait for the seed image to decode before starting anyway.
   const IMAGE_ACCEPT_TIMEOUT_MS = 6000;
@@ -87,6 +99,8 @@
     video: null,
     modelId: null,                 // active world-model id (resolved in enable())
     models: DEFAULT_MODELS.slice(), // available world models (from /api/reactor/config)
+    allowCustom: true,             // may we connect to an unadvertised model id? (from config)
+    sdkPrefix: SDK_PREFIX,         // how a bare id becomes an SDK name (from config)
     lastSceneApplied: null,        // last scene handed to applyScene, for model-swap re-apply
     swapping: false,               // a live model swap is in flight
     cfg: { model_name: FALLBACK_MODEL, enabled: false },
@@ -252,12 +266,18 @@
       const r = await fetch("/api/reactor/config");
       if (r.ok) {
         rstate.cfg = await r.json();
+        if (typeof rstate.cfg.allow_custom_models === "boolean") rstate.allowCustom = rstate.cfg.allow_custom_models;
+        if (rstate.cfg.sdk_name_prefix) rstate.sdkPrefix = rstate.cfg.sdk_name_prefix;
         if (Array.isArray(rstate.cfg.available_models) && rstate.cfg.available_models.length) {
           rstate.models = rstate.cfg.available_models.map((m) => ({
             id: m.id,
             label: m.label || m.id,
             sdk_name: m.sdk_name || m.model_name || m.id,
             requiresSeedImage: !!m.requires_seed_image,
+            // Protocol picks the driver family; default the flexible "blend"
+            // family so a model advertised without one still works.
+            protocol: m.protocol || (m.requires_seed_image ? "seed_locked" : FALLBACK_FAMILY),
+            custom: !!m.custom,
           }));
         }
       }
@@ -269,17 +289,57 @@
   function modelById(id) { return (rstate.models || []).find((m) => m.id === id) || null; }
   function knownModel(id) { return !!modelById(id); }
   function modelLabel(id) { const m = modelById(id); return m ? m.label : id; }
+  function sdkNameFor(id) {
+    if (!id) return rstate.cfg.model_name || FALLBACK_MODEL;
+    // A caller can pass a fully-qualified SDK name directly (contains "/").
+    return id.indexOf("/") >= 0 ? id : (rstate.sdkPrefix || SDK_PREFIX) + id;
+  }
   function modelNameFor(id) {
     const m = modelById(id);
-    return (m && m.sdk_name) || rstate.cfg.model_name || FALLBACK_MODEL;
+    return (m && m.sdk_name) || (id ? sdkNameFor(id) : (rstate.cfg.model_name || FALLBACK_MODEL));
   }
-  // Resolve the active world model: ?model= > localStorage > server default > fallback.
+  function familyFor(id) {
+    const m = modelById(id);
+    return (m && m.protocol) || FALLBACK_FAMILY;
+  }
+  // May we use this model id? Anything advertised, plus any id at all when the
+  // server allows custom models — so a brand-new model is usable immediately.
+  function canUseModel(id) { return !!id && (knownModel(id) || rstate.allowCustom); }
+  // Register a not-yet-advertised model on the fly (used for ?model= / typed-in
+  // custom ids) so the rest of the pipeline treats it like any other model.
+  function ensureModel(id, label, opts) {
+    if (!id) return null;
+    let m = modelById(id);
+    if (m) return m;
+    opts = opts || {};
+    m = {
+      id: id,
+      label: label || id,
+      sdk_name: opts.sdk_name || sdkNameFor(id),
+      requiresSeedImage: !!opts.requiresSeedImage,
+      protocol: opts.protocol || FALLBACK_FAMILY,
+      custom: true,
+    };
+    rstate.models = (rstate.models || []).concat([m]);
+    if (typeof window.ReactorRenderer === "object" && typeof window.ReactorRenderer.onModelsChanged === "function") {
+      try { window.ReactorRenderer.onModelsChanged(); } catch (_) {}
+    }
+    return m;
+  }
+  // Resolve the active world model: ?model= > localStorage > server default >
+  // fallback. Custom ids (not advertised) are accepted + registered when the
+  // server permits, so ?model=<anything-new> just works.
   function resolveModelId() {
-    if (rstate.modelId && knownModel(rstate.modelId)) return rstate.modelId;
+    if (rstate.modelId && canUseModel(rstate.modelId)) return rstate.modelId;
     let q = null, stored = null;
     try { q = new URLSearchParams(location.search).get("model"); } catch (_) {}
     try { stored = localStorage.getItem("world_model"); } catch (_) {}
-    const pick = (id) => (id && knownModel(id) ? id : null);
+    const pick = (id) => {
+      if (!id) return null;
+      if (knownModel(id)) return id;
+      if (rstate.allowCustom) { ensureModel(id); return id; }
+      return null;
+    };
     rstate.modelId = pick(q) || pick(stored) || pick(rstate.cfg.world_model) || FALLBACK_MODEL_ID;
     return rstate.modelId;
   }
@@ -524,11 +584,15 @@
     return true;
   }
 
+  // Drivers are keyed by PROTOCOL FAMILY, not by model id, so every current and
+  // future Reactor model maps onto one of these without a bespoke driver. The
+  // LingBot pair is the "seed_locked" family; the Helios pair is "blend" and is
+  // also the default any unknown/new model falls back to.
   const DRIVERS = {
-    "lingbot-world-2": { establish: establishLingbot, applyRunning: applyRunningLingbot },
-    "helios": { establish: establishHelios, applyRunning: applyRunningHelios },
+    "seed_locked": { establish: establishLingbot, applyRunning: applyRunningLingbot },
+    "blend": { establish: establishHelios, applyRunning: applyRunningHelios },
   };
-  function activeDriver() { return DRIVERS[rstate.modelId] || DRIVERS[FALLBACK_MODEL_ID]; }
+  function activeDriver() { return DRIVERS[familyFor(rstate.modelId)] || DRIVERS[FALLBACK_FAMILY]; }
 
   // Apply the most recent pending scene through the active model's driver.
   async function flush() {
@@ -700,7 +764,11 @@
   // last frame on screen throughout, so the swap reads as a VCR-style hand-off
   // with no black gap. Returns true if the switch was accepted.
   async function setModel(id) {
-    if (!knownModel(id)) { log("unknown world model:", id); return false; }
+    if (!id) return false;
+    if (!knownModel(id)) {
+      if (!rstate.allowCustom) { log("unknown world model (custom disabled):", id); return false; }
+      ensureModel(id); // brand-new / typed-in model — register + use it live
+    }
     if (id === rstate.modelId) return true;
     if (rstate.swapping) return false;
     rstate.swapping = true;
@@ -848,6 +916,16 @@
   window.ReactorRenderer = {
     enable, disable, applyScene, setPrompt, reset, pause, resume, captureFrame, captureRegion,
     setModel,
+    // Register a custom / brand-new Reactor model at runtime (from the UI's
+    // "add model" field), then it's selectable like any other. Returns the id.
+    addModel: (id, label, opts) => {
+      id = (id || "").trim();
+      if (!id) return null;
+      const m = ensureModel(id, label, opts);
+      return m ? m.id : null;
+    },
+    // Whether the server permits connecting to unadvertised model names.
+    allowsCustom: () => !!rstate.allowCustom,
     getStatus: () => rstate.status,
     isActive: () => rstate.active,
     isReady: () => rstate.ready,
@@ -855,6 +933,7 @@
     getModel: () => rstate.modelId,
     getModels: () => (rstate.models || []).map((m) => ({
       id: m.id, label: m.label, active: m.id === rstate.modelId,
+      protocol: m.protocol, custom: !!m.custom,
     })),
     // The last guide image actually integrated into the live world model.
     getGuideImage: () => rstate.guideImageUrl || null,
@@ -878,5 +957,8 @@
     onGuideImage: null,
     // fn(id, label) — fired when the active world model changes.
     onModel: null,
+    // fn() — fired when the available-model list changes (e.g. a custom model
+    // was added), so the switcher UI can rebuild.
+    onModelsChanged: null,
   };
 })();

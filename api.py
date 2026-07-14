@@ -228,6 +228,12 @@ def api_reactor_config():
         "model_name": default_sdk,
         "world_model": default_id,
         "available_models": models,
+        # When true the client may connect to ANY model name a tester types in,
+        # even one not in available_models — so a newly shipped Reactor model is
+        # usable the moment it exists, with no server change. It also tells the
+        # client how to turn a bare id into an SDK name for custom models.
+        "allow_custom_models": bool(getattr(engine, "REACTOR_ALLOW_CUSTOM_MODELS", True)),
+        "sdk_name_prefix": "reactor/",
     })
 
 
