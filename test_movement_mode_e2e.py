@@ -246,6 +246,32 @@ class TestMovementMode(unittest.TestCase):
         finally:
             page.close()
 
+    def test_movement_fires_even_when_caps_omit_the_axes(self):
+        """Production repro: the SDK advertises a capability list that does NOT
+        include the movement axes. The LingBot-family bypass must still send the
+        native command (this is the bug where 'I could never move')."""
+        page = self._new_realtime_page()
+        page.add_init_script(
+            "window.__MOCK_CAPS__ = { commands: "
+            "['set_prompt','set_image','set_seed','start','pause','resume','reset'], "
+            "tracks: [{ name: 'main_video', kind: 'video', direction: 'recvonly' }] };"
+        )
+        try:
+            self._boot_live(page)
+            # Capabilities are known and omit movement — yet motion is supported
+            # for the LingBot family, and the command must actually be sent.
+            self.assertTrue(page.evaluate("() => window.ReactorRenderer.motionSupported()"))
+            self._reset_cmd_log(page)
+            page.keyboard.down("w")
+            self._wait_cmd(page, "set_move_longitudinal", "move_longitudinal", "forward")
+            page.keyboard.up("w")
+            self._wait_cmd(page, "set_move_longitudinal", "move_longitudinal", "idle")
+        except Exception:
+            print("\n=== CONSOLE LOG (caps-omit) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
     def test_joystick_is_centered_with_act_left_and_photo_right(self):
         """Layout contract: in realtime video mode the joystick is the visible
         CENTER of the action cluster, ACT sits to its LEFT, PHOTO to its RIGHT."""
