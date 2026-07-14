@@ -1301,6 +1301,12 @@
     })),
     // The last guide image actually integrated into the live world model.
     getGuideImage: () => rstate.guideImageUrl || null,
+    // The prompt the live stream is currently running (the last one applied to
+    // the model). Lets callers re-steer ON TOP of the running scene even when the
+    // standalone layer never saw a feed scene_image for it (e.g. a stream that
+    // was established directly by native movement/exploration mode).
+    getPrompt: () => rstate.lastPrompt ||
+      (rstate.lastSceneApplied && rstate.lastSceneApplied.prompt) || null,
     // True only when the LIVE video is actually on-screen (decoded frames and
     // the freeze back-buffer is not covering it).
     isShowing: () => {
