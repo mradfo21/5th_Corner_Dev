@@ -1884,6 +1884,9 @@ html.is-touch .touch-hint {
    accents (matching the TALK verb) against the game's cool VHS palette, so a
    conversation feels like a distinct, intimate layer of interaction.
    ============================================================ */
+/* The overlay is just a positioning frame. It NEVER darkens, blurs, or blocks
+   the scene: pointer-events stay off so the world underneath is fully visible
+   and interactive — only the compact panel itself captures input. */
 #talk-overlay {
   position: fixed;
   inset: 0;
@@ -1892,35 +1895,35 @@ html.is-touch .touch-hint {
   align-items: flex-end;
   justify-content: center;
   opacity: 0;
-  transition: opacity 0.24s ease;
+  transition: opacity 0.2s ease;
   pointer-events: none;
 }
-#talk-overlay.talk-in { opacity: 1; pointer-events: auto; }
+#talk-overlay.talk-in { opacity: 1; }
 #talk-overlay.hidden { display: none; }
 
-#talk-scrim {
-  position: absolute;
-  inset: 0;
-  background: radial-gradient(circle at 50% 120%, rgba(40, 26, 8, 0.35), rgba(4, 6, 10, 0.78));
-  backdrop-filter: blur(3px);
-  -webkit-backdrop-filter: blur(3px);
-}
+/* No full-screen scrim — the conversation must not take over the view. */
+#talk-scrim { display: none; }
 
 #talk-panel {
   position: relative;
-  width: min(560px, calc(100vw - 24px));
-  max-height: min(78vh, 720px);
-  margin-bottom: calc(env(safe-area-inset-bottom, 0px) + 18px);
+  pointer-events: auto;
+  width: min(380px, calc(100vw - 32px));
+  max-height: min(44vh, 400px);
+  margin-bottom: calc(env(safe-area-inset-bottom, 0px) + 20px);
   display: flex;
   flex-direction: column;
-  background: linear-gradient(180deg, rgba(14, 16, 22, 0.96), rgba(8, 10, 15, 0.98));
-  border: 1px solid rgba(255, 205, 140, 0.35);
-  border-radius: 16px;
-  box-shadow: 0 0 0 1px rgba(0,0,0,0.5), 0 18px 60px rgba(0,0,0,0.65),
-              0 0 40px rgba(255, 190, 110, 0.14);
+  /* A small, self-contained frosted card. The blur is scoped to the card's own
+     footprint, so it reads as a floating transmission chip over the scene —
+     never a full-screen takeover. */
+  background: linear-gradient(180deg, rgba(15, 17, 23, 0.72), rgba(9, 11, 16, 0.8));
+  backdrop-filter: blur(14px) saturate(1.15);
+  -webkit-backdrop-filter: blur(14px) saturate(1.15);
+  border: 1px solid rgba(255, 205, 140, 0.28);
+  border-radius: 14px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45), 0 0 24px rgba(255, 190, 110, 0.08);
   overflow: hidden;
-  transform: translateY(24px) scale(0.98);
-  transition: transform 0.28s cubic-bezier(0.2, 0.9, 0.25, 1.05);
+  transform: translateY(16px) scale(0.98);
+  transition: transform 0.24s cubic-bezier(0.2, 0.9, 0.25, 1.05);
   font-family: 'Share Tech Mono', monospace;
 }
 #talk-overlay.talk-in #talk-panel { transform: translateY(0) scale(1); }
