@@ -2535,103 +2535,90 @@ body.touch-aiming .touch-zoom { opacity: 0.9; }
   100% { transform: translateX(-50%) scale(1); }
 }
 
-/* ---------- Photo appraisal RECEIPT (top-right, left of the control rail) ---------- */
+/* ---------- Photo appraisal (large shot, top-center, text overlaid) ----------
+   The captured shot is shown large so the player can see their framing; the
+   evidence readout is layered directly onto the image (no opaque card) so the
+   surrounding live view stays visible. */
 #photo-receipt {
   position: fixed;
   top: calc(env(safe-area-inset-top, 0px) + 44px);
-  right: calc(env(safe-area-inset-right, 0px) + 66px);
+  left: 50%;
   z-index: 12;
-  width: min(300px, 64vw);
+  width: min(400px, 40vw);
   pointer-events: none;
   font-family: 'Share Tech Mono', monospace;
-  color: #211c12;
-  transform: translateY(-14px);
+  transform: translateX(-50%) translateY(-12px);
   opacity: 0;
   transition: opacity 0.28s ease, transform 0.28s cubic-bezier(0.2, 0.9, 0.25, 1.15);
 }
 #photo-receipt.hidden { display: none; }
-#photo-receipt.show { opacity: 1; transform: translateY(0); }
-#photo-receipt.leaving { opacity: 0; transform: translateY(-14px) scale(0.98); }
+#photo-receipt.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+#photo-receipt.leaving { opacity: 0; transform: translateX(-50%) translateY(-12px) scale(0.985); }
 
-.receipt-body {
-  position: relative;
-  background:
-    repeating-linear-gradient(0deg, rgba(0,0,0,0.028) 0 2px, transparent 2px 4px),
-    linear-gradient(180deg, #f3ecdc 0%, #e7ddc6 100%);
-  padding: 12px 13px 14px;
-  border-radius: 2px;
-  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.6), inset 0 0 0 1px rgba(0, 0, 0, 0.08);
-  clip-path: none;
-}
-/* Torn thermal-paper edge along the bottom. */
-.receipt-perf {
-  height: 8px;
-  margin-right: 0;
-  background:
-    linear-gradient(-45deg, transparent 66%, #e7ddc6 67%) 0 0 / 10px 8px repeat-x,
-    linear-gradient(45deg, transparent 66%, #e7ddc6 67%) 5px 0 / 10px 8px repeat-x;
-  filter: drop-shadow(0 8px 10px rgba(0, 0, 0, 0.45));
-}
-
-.receipt-head {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  border-bottom: 1px dashed rgba(33, 28, 18, 0.4);
-  padding-bottom: 9px;
-}
+/* The shot itself — big, framed like a developed photo. */
 .receipt-photo {
-  width: 48px;
-  height: 48px;
-  flex: 0 0 auto;
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 1;
   background-size: cover;
   background-position: center;
-  background-color: #1a1712;
-  border: 1px solid rgba(33, 28, 18, 0.5);
-  filter: saturate(0.9) contrast(1.05) sepia(0.12);
+  background-color: #0c0c0c;
+  border: 1px solid rgba(255, 225, 170, 0.5);
+  box-shadow: 0 14px 44px rgba(0, 0, 0, 0.72), inset 0 0 0 1px rgba(0, 0, 0, 0.4);
+  filter: saturate(0.95) contrast(1.06);
+  overflow: hidden;
 }
 #photo-receipt.developing .receipt-photo { animation: receipt-develop 1s ease-in-out infinite alternate; }
-@keyframes receipt-develop { from { filter: saturate(0.2) contrast(0.9) brightness(0.7); } to { filter: saturate(0.9) contrast(1.05); } }
-.receipt-headtext { min-width: 0; }
-.receipt-title {
-  font-size: 11px;
-  letter-spacing: 0.12em;
-  font-weight: 700;
-}
-.receipt-status {
+@keyframes receipt-develop { from { filter: saturate(0.2) contrast(0.9) brightness(0.6); } to { filter: saturate(0.95) contrast(1.06); } }
+
+/* Header strip overlaid on the top of the shot. */
+.receipt-badge {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 9px;
   font-size: 10px;
-  letter-spacing: 0.1em;
-  color: rgba(33, 28, 18, 0.62);
+  letter-spacing: 0.12em;
   text-transform: uppercase;
-  margin-top: 2px;
+  color: #ffe9c2;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.95);
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.55), transparent);
+}
+.receipt-badge .receipt-title { font-weight: 700; }
+.receipt-badge .receipt-status { color: rgba(255, 233, 194, 0.8); }
+
+/* Readout overlaid on the lower part of the shot, over a legibility scrim. */
+.receipt-scrim {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  padding: 26px 10px 9px;
+  background: linear-gradient(0deg, rgba(0,0,0,0.78) 0%, rgba(0,0,0,0.52) 58%, transparent 100%);
+  color: #f3ecdc;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.95);
 }
 .receipt-caption {
   font-size: 10.5px;
-  line-height: 1.35;
+  line-height: 1.3;
   font-style: italic;
-  color: rgba(33, 28, 18, 0.72);
-  margin: 8px 0 4px;
-  min-height: 0;
+  color: rgba(243, 236, 220, 0.88);
+  margin-bottom: 5px;
 }
 .receipt-caption:empty { display: none; }
 
-.receipt-items {
-  list-style: none;
-  margin: 4px 0 0;
-  padding: 0;
-}
+.receipt-items { list-style: none; margin: 0; padding: 0; }
 .receipt-item {
   display: grid;
   grid-template-columns: 1fr auto;
   align-items: baseline;
   column-gap: 6px;
-  padding: 3px 0;
-  border-bottom: 1px dotted rgba(33, 28, 18, 0.22);
+  padding: 2px 0;
   animation: receipt-print 0.34s cubic-bezier(0.2, 0.9, 0.25, 1.1) both;
 }
 @keyframes receipt-print {
-  from { opacity: 0; transform: translateY(-6px); clip-path: inset(0 0 100% 0); }
-  to   { opacity: 1; transform: translateY(0); clip-path: inset(0 0 0 0); }
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 .receipt-item .ri-label {
   font-size: 11.5px;
@@ -2641,40 +2628,29 @@ body.touch-aiming .touch-zoom { opacity: 0.9; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.receipt-item .ri-pts {
-  font-size: 11.5px;
-  font-weight: 700;
-  color: #7a3d12;
-  justify-self: end;
-}
+.receipt-item .ri-pts { font-size: 11.5px; font-weight: 700; color: #ffd27a; justify-self: end; }
 .receipt-item .ri-new {
   display: inline-block;
   font-size: 8px;
   letter-spacing: 0.1em;
-  background: #7a3d12;
-  color: #f3ecdc;
+  background: #ffd27a;
+  color: #1a1206;
   padding: 0 3px;
   border-radius: 2px;
   margin-left: 4px;
   transform: translateY(-1px);
 }
-.receipt-item .ri-note {
-  grid-column: 1 / -1;
-  font-size: 9px;
-  letter-spacing: 0.02em;
-  color: rgba(33, 28, 18, 0.55);
-  margin-top: 1px;
-}
+.receipt-item .ri-note { grid-column: 1 / -1; font-size: 9px; letter-spacing: 0.02em; color: rgba(243, 236, 220, 0.62); }
 .receipt-item .ri-note:empty { display: none; }
-.receipt-item .ri-stars { color: #b5822f; letter-spacing: 1px; }
+.receipt-item .ri-stars { color: #ffcf88; letter-spacing: 1px; }
 
 .receipt-subtotal {
   display: flex;
   align-items: baseline;
   gap: 2px;
-  margin-top: 9px;
-  padding-top: 7px;
-  border-top: 1px solid rgba(33, 28, 18, 0.5);
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px solid rgba(255, 233, 194, 0.4);
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.06em;
@@ -2683,35 +2659,39 @@ body.touch-aiming .touch-zoom { opacity: 0.9; }
 }
 #photo-receipt.tallied .receipt-subtotal { opacity: 1; }
 .receipt-subtotal .rs-label { text-transform: uppercase; }
-.receipt-subtotal .rs-dots { flex: 1 1 auto; overflow: hidden; color: rgba(33,28,18,0.4); }
-.receipt-subtotal .rs-val { color: #7a3d12; }
+.receipt-subtotal .rs-dots { flex: 1 1 auto; overflow: hidden; color: rgba(243, 236, 220, 0.35); }
+.receipt-subtotal .rs-val { color: #ffd27a; }
 
+/* Rating stamp — struck across the middle of the shot like a rubber stamp. */
 .receipt-stamp {
-  margin-top: 8px;
-  text-align: center;
+  position: absolute;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%) rotate(-11deg);
   font-family: 'VT323', monospace;
-  font-size: 19px;
-  letter-spacing: 0.14em;
+  font-size: clamp(22px, 6vw, 34px);
+  letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: #a52f2f;
-  border: 2px solid #a52f2f;
-  border-radius: 4px;
-  padding: 2px 6px;
+  color: #ff5b5b;
+  border: 3px solid #ff5b5b;
+  border-radius: 6px;
+  padding: 1px 12px;
+  background: rgba(0, 0, 0, 0.14);
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.9);
   opacity: 0;
 }
-.receipt-stamp:empty { display: none; border: none; padding: 0; margin: 0; }
+.receipt-stamp:empty { display: none; }
 .receipt-stamp.stamped { animation: receipt-stamp-in 0.4s cubic-bezier(0.2, 0.9, 0.25, 1.4) forwards; }
 @keyframes receipt-stamp-in {
-  0%   { opacity: 0; transform: scale(1.8) rotate(-8deg); }
-  60%  { opacity: 1; transform: scale(0.92) rotate(-3deg); }
-  100% { opacity: 0.96; transform: scale(1) rotate(-3.5deg); }
+  0%   { opacity: 0; transform: translate(-50%, -50%) scale(1.9) rotate(-16deg); }
+  60%  { opacity: 1; transform: translate(-50%, -50%) scale(0.94) rotate(-9deg); }
+  100% { opacity: 0.96; transform: translate(-50%, -50%) scale(1) rotate(-11deg); }
 }
-/* Rating tiers tint the stamp. */
-.receipt-stamp.tier-0 { color: #6b6b6b; border-color: #6b6b6b; }
-.receipt-stamp.tier-1 { color: #7a5a2f; border-color: #7a5a2f; }
-.receipt-stamp.tier-2 { color: #a52f2f; border-color: #a52f2f; }
-.receipt-stamp.tier-3 { color: #b5822f; border-color: #b5822f; }
-.receipt-stamp.tier-4 { color: #8a2fb5; border-color: #8a2fb5; }
+/* Rating tiers tint the stamp (bright, for legibility over the image). */
+.receipt-stamp.tier-0 { color: #cfcfcf; border-color: #cfcfcf; }
+.receipt-stamp.tier-1 { color: #e7b56a; border-color: #e7b56a; }
+.receipt-stamp.tier-2 { color: #ff6b6b; border-color: #ff6b6b; }
+.receipt-stamp.tier-3 { color: #ffcf88; border-color: #ffcf88; }
+.receipt-stamp.tier-4 { color: #d59bff; border-color: #d59bff; }
 
 @media (prefers-reduced-motion: reduce) {
   #photo-receipt, #photo-receipt.show, #photo-receipt.leaving,
@@ -2726,7 +2706,7 @@ body.touch-aiming .touch-zoom { opacity: 0.9; }
 /* Phones: pull the receipt to the top-right corner (rail labels hide there) and
    narrow it so it never crowds the prose or the rail. */
 @media (max-width: 720px) {
-  #photo-receipt { right: calc(env(safe-area-inset-right, 0px) + 56px); width: min(260px, 62vw); top: calc(env(safe-area-inset-top, 0px) + 40px); }
+  #photo-receipt { width: min(320px, 74vw); top: calc(env(safe-area-inset-top, 0px) + 40px); }
   #evidence-hud { top: calc(env(safe-area-inset-top, 0px) + 8px); padding: 4px 9px; }
   #evidence-hud .ev-total { font-size: 18px; }
   .touch-zoom { bottom: calc(env(safe-area-inset-bottom, 0px) + 250px); }
