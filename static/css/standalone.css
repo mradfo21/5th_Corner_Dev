@@ -1220,63 +1220,15 @@ body.touch-aiming #touch-capture-frame { opacity: 0.85; }
 }
 
 /* ============================================================
-   SCAN tool — realtime object recognition ("starfield" tags)
-   A cool-white/cyan instrument (distinct from amber TOUCH) that names what the
-   live world model is showing and lets you poke any of it.
+   Ambient interaction hotspots ("starfield" tags)
+   No button: whenever a scene is on screen, the model quietly names what's
+   interactable. Hover near a tag to highlight it; click it to act. A cool-
+   white/cyan instrument, distinct from the amber camera/TOUCH tool.
    ============================================================ */
 
-/* SCAN hub: mirrors the TOUCH hub on the LEFT of the ACT hub. Cyan accent +
-   scanner glyph so it reads as its own instrument. Realtime mode only. */
-#scan-btn {
-  position: absolute;
-  left: 50%;
-  bottom: 0;
-  transform: translateX(-85px);
-  width: 51px;
-  height: 51px;
-  border-radius: 50%;
-  background: none;
-  border: 1px solid rgba(140, 217, 255, 0.6);
-  color: #bfe9ff;
-  font-family: inherit;
-  cursor: pointer;
-  /* SCAN works in BOTH renderers (live video + still images), so it's always
-     available in the action wheel (unlike TOUCH, which is realtime-only). */
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  text-shadow: 0 1px 4px rgba(0,0,0,0.9);
-  box-shadow: inset 0 0 12px rgba(0,0,0,0.5);
-  transition: border-color 0.16s, box-shadow 0.16s, transform 0.1s, opacity 0.22s;
-}
-#scan-btn:hover {
-  border-color: rgba(140, 217, 255, 1);
-  box-shadow: inset 0 0 12px rgba(0,0,0,0.5), 0 0 22px rgba(140, 217, 255, 0.5);
-  transform: translateX(-85px) scale(1.08);
-}
-#scan-btn:active { transform: translateX(-85px) scale(0.94); }
-.scan-icon { font-size: 15px; line-height: 1; opacity: 0.98; }
-.scan-label { font-size: 7px; letter-spacing: 0.12em; opacity: 0.85; }
-
-/* Armed: the ring glows and the glyph slowly spins like a sweeping scanner. */
-#scan-btn.scanning {
-  border-color: rgba(140, 217, 255, 1);
-  box-shadow: inset 0 0 12px rgba(0,0,0,0.5), 0 0 24px rgba(140, 217, 255, 0.6);
-}
-#scan-btn.scanning .scan-icon {
-  display: inline-block;
-  animation: scan-spin 2.4s linear infinite;
-}
-@keyframes scan-spin { to { transform: rotate(360deg); } }
-
-#action-wheel.fw-open #scan-btn { opacity: 0; pointer-events: none; }
-#action-wheel.turn-active #scan-btn { opacity: 0; pointer-events: none; }
-
-/* SCAN overlay: NON-modal — it does NOT capture the pointer, so game choices
-   and controls stay clickable while it's armed. Only its tags are interactive.
-   It hosts the sweep beam, the cursor glow, the starfield tags, and the hint.
-   A soft vignette tints the scene so the tags read as an instrument overlay. */
+/* Hotspot overlay: NON-modal — it does NOT capture the pointer, so game choices
+   and controls stay clickable. Only its tags are interactive. It's ambient
+   (always on with a scene), so it stays visually quiet — no vignette. */
 #scan-layer {
   position: fixed;
   inset: 0;
@@ -1285,88 +1237,10 @@ body.touch-aiming #touch-capture-frame { opacity: 0.85; }
      clicks from) the game's chrome. */
   z-index: 12;
   pointer-events: none;
-  background: radial-gradient(120% 120% at 50% 42%,
-    rgba(4, 12, 20, 0) 40%, rgba(4, 12, 20, 0.28) 100%);
   animation: scan-layer-in 0.32s ease-out;
 }
 #scan-layer.hidden { display: none; }
 @keyframes scan-layer-in { from { opacity: 0; } to { opacity: 1; } }
-
-/* While scanning, gently recede the narrative so attention (and the tags) sit
-   on the scene itself — you're playing with the world, not reading. */
-body.scan-arming #prose-feed { opacity: 0.5; transition: opacity 0.3s ease; }
-
-/* A faint cyan grid + a sweeping scanline beam while a detection is in flight,
-   so scanning reads as an active instrument doing work. */
-#scan-beam {
-  position: absolute;
-  left: 0; right: 0;
-  top: 0;
-  height: 34%;
-  pointer-events: none;
-  opacity: 0;
-  background: linear-gradient(to bottom,
-    rgba(140, 217, 255, 0) 0%,
-    rgba(140, 217, 255, 0.05) 60%,
-    rgba(180, 235, 255, 0.16) 92%,
-    rgba(200, 240, 255, 0.35) 100%);
-  border-bottom: 1px solid rgba(190, 233, 255, 0.45);
-  box-shadow: 0 0 24px rgba(140, 217, 255, 0.35);
-}
-body.scan-busy #scan-beam {
-  animation: scan-beam-sweep 1.5s cubic-bezier(0.45, 0, 0.55, 1) infinite;
-}
-@keyframes scan-beam-sweep {
-  0%   { opacity: 0; transform: translateY(-40%); }
-  12%  { opacity: 1; }
-  88%  { opacity: 1; }
-  100% { opacity: 0; transform: translateY(320%); }
-}
-
-/* Sweep glow that trails the cursor while scanning — the "you are looking
-   here" beam. Purely decorative (pointer-events: none). */
-#scan-cursor {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  width: 240px;
-  height: 240px;
-  transform: translate(-50%, -50%);
-  border-radius: 50%;
-  pointer-events: none;
-  background: radial-gradient(circle,
-    rgba(140, 217, 255, 0.18) 0%,
-    rgba(140, 217, 255, 0.07) 32%,
-    rgba(140, 217, 255, 0) 66%);
-  opacity: 0.9;
-  transition: left 0.08s linear, top 0.08s linear, opacity 0.3s ease;
-}
-/* A crisp reticle ring at the cursor, always gently breathing. */
-#scan-cursor::before {
-  content: "";
-  position: absolute;
-  inset: 96px;
-  border-radius: 50%;
-  border: 1px solid rgba(140, 217, 255, 0.4);
-  animation: scan-reticle-breathe 2.2s ease-in-out infinite;
-}
-@keyframes scan-reticle-breathe {
-  0%, 100% { transform: scale(0.85); opacity: 0.35; }
-  50%      { transform: scale(1.05); opacity: 0.75; }
-}
-/* Expanding ping while a detection request is in flight. */
-body.scan-busy #scan-cursor::after {
-  content: "";
-  position: absolute;
-  inset: 86px;
-  border-radius: 50%;
-  border: 1px solid rgba(190, 233, 255, 0.6);
-  animation: scan-ping 1.2s ease-out infinite;
-}
-@keyframes scan-ping {
-  0%   { transform: scale(0.35); opacity: 0.9; }
-  100% { transform: scale(2); opacity: 0; }
-}
 
 #scan-tags { position: absolute; inset: 0; pointer-events: none; }
 
@@ -1383,7 +1257,7 @@ body.scan-busy #scan-cursor::after {
   border-radius: 20px;
   white-space: nowrap;
   pointer-events: auto;
-  cursor: default;
+  cursor: pointer;
   color: #eaf7ff;
   background: rgba(6, 14, 22, 0.52);
   border: 1px solid rgba(140, 217, 255, 0.42);
@@ -1395,16 +1269,18 @@ body.scan-busy #scan-cursor::after {
   letter-spacing: 0.02em;
   opacity: 0;
   animation: scan-twinkle-in 0.5s ease-out var(--twk, 0ms) both;
-  transition: border-color 0.18s, box-shadow 0.18s, transform 0.18s;
+  transition: border-color 0.18s, box-shadow 0.18s, transform 0.18s, opacity 0.2s;
   z-index: 1;
 }
-/* After the intro finishes, JS adds `.shown`: this drops the animation so its
-   fill can't lock `transform`, letting hover/near/acting/poked states apply. */
-.scan-tag.shown { animation: none; opacity: 0.94; }
+/* After the twinkle-in finishes, JS adds `.shown`: this drops the animation so
+   its fill can't lock `transform`, letting hover/near/acting/poked states apply.
+   Ambient tags sit QUIET (they're always on) and pop when hovered/near. */
+.scan-tag.shown { animation: none; opacity: 0.6; }
+.scan-tag.shown:hover { opacity: 0.98; }
 /* Position transitions are enabled only after first placement (JS adds this)
    so persistent tags GLIDE to their new spot on each rescan. */
-.scan-tag.scan-live { transition: border-color 0.18s, box-shadow 0.18s, transform 0.18s, left 0.5s ease, top 0.5s ease; }
-.scan-tag.scan-live.shown { transition: border-color 0.18s, box-shadow 0.18s, transform 0.18s, left 0.5s ease, top 0.5s ease; }
+.scan-tag.scan-live { transition: border-color 0.18s, box-shadow 0.18s, transform 0.18s, opacity 0.2s, left 0.5s ease, top 0.5s ease; }
+.scan-tag.scan-live.shown { transition: border-color 0.18s, box-shadow 0.18s, transform 0.18s, opacity 0.2s, left 0.5s ease, top 0.5s ease; }
 @keyframes scan-twinkle-in {
   0%   { opacity: 0; transform: translate(-50%, -50%) scale(0.4); filter: blur(2px); }
   60%  { opacity: 1; transform: translate(-50%, -50%) scale(1.12); filter: blur(0); }
@@ -1455,46 +1331,45 @@ body.scan-busy #scan-cursor::after {
 
 .scan-tag-label { font-size: 12px; opacity: 0.96; }
 
-/* The "extra little button" — press it to play with this exact thing. It gently
-   invites a tap with a slow pulse, and lifts on hover. */
+/* A small "+" marker hinting the tag is actionable. Hidden while the tag sits
+   quiet; it fades in when the tag is highlighted (near/hover) so the whole
+   highlighted tag clearly reads as "click me to act". */
 .scan-tag-act {
   flex: 0 0 auto;
-  width: 19px;
-  height: 19px;
-  padding: 0;
+  width: 17px;
+  height: 17px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border-radius: 50%;
   border: 1px solid rgba(140, 217, 255, 0.65);
-  background: rgba(140, 217, 255, 0.12);
+  background: rgba(140, 217, 255, 0.14);
   color: #dff3ff;
-  font-family: inherit;
-  font-size: 15px;
-  line-height: 16px;
-  cursor: pointer;
-  animation: scan-act-invite 2.4s ease-in-out infinite;
-  transition: background 0.14s, border-color 0.14s, transform 0.12s, box-shadow 0.14s;
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0;
+  transform: scale(0.6);
+  transition: opacity 0.14s, transform 0.14s;
+  pointer-events: none; /* the whole tag is the click target */
 }
-@keyframes scan-act-invite {
-  0%, 100% { box-shadow: 0 0 0 rgba(140, 217, 255, 0); }
-  50%      { box-shadow: 0 0 10px rgba(140, 217, 255, 0.55); }
+.scan-tag.near .scan-tag-act,
+.scan-tag.shown:hover .scan-tag-act {
+  opacity: 1;
+  transform: scale(1);
 }
-.scan-tag-act:hover {
-  background: rgba(140, 217, 255, 0.32);
-  border-color: rgba(140, 217, 255, 1);
-  transform: scale(1.18) rotate(90deg);
-  box-shadow: 0 0 14px rgba(140, 217, 255, 0.7);
-}
-.scan-tag-act:active { transform: scale(0.92); }
 
-/* The cursor is near this tag: brighten + lift it so moving over the scene
-   "finds" the things in it. */
-.scan-tag.near {
+/* The cursor is near this tag (or hovering it): brighten + lift it so moving
+   over the scene "finds" the interaction possibilities in it. */
+.scan-tag.near,
+.scan-tag.shown:hover {
   border-color: rgba(180, 233, 255, 0.95);
   background: rgba(10, 22, 34, 0.62);
   box-shadow: 0 0 24px rgba(140, 217, 255, 0.6), inset 0 0 10px rgba(0,0,0,0.4);
   transform: translate(-50%, -50%) scale(1.09);
   z-index: 3;
 }
-.scan-tag.near .scan-star { animation-duration: 1.2s; }
+.scan-tag.near .scan-star,
+.scan-tag.shown:hover .scan-star { animation-duration: 1.2s; }
 
 /* Poked: a quick confirming flash when a live nudge fires. */
 .scan-tag.poked { animation: scan-poked 0.85s ease-out; }
@@ -1577,10 +1452,10 @@ body.scan-busy #scan-cursor::after {
 /* Reduced-motion: keep the tool legible but calm — no infinite animations. */
 @media (prefers-reduced-motion: reduce) {
   #scan-layer, .scan-tag, .scan-star, .scan-tag::before,
-  .scan-tag-act, #scan-cursor::before, #scan-hint {
+  .scan-tag-act, #scan-hint {
     animation: none !important;
   }
-  .scan-tag { opacity: 0.96; }
+  .scan-tag.shown { opacity: 0.7; }
 }
 
 /* ---------- Menu toggle (top-right corner) ---------- */
@@ -2505,9 +2380,6 @@ body.reactor-available.rt-log-on #rt-log { display: flex; }
   #realtime-btn { width: 48px; height: 48px; transform: translateX(32px); }
   #realtime-btn:hover { transform: translateX(32px) scale(1.08); }
   #realtime-btn:active { transform: translateX(32px) scale(0.94); }
-  #scan-btn { width: 48px; height: 48px; transform: translateX(-80px); }
-  #scan-btn:hover { transform: translateX(-80px) scale(1.08); }
-  #scan-btn:active { transform: translateX(-80px) scale(0.94); }
 
   /* Keep the scan hint clear of the (taller) mobile action wheel. */
   #scan-hint { bottom: calc(env(safe-area-inset-bottom, 0px) + 196px); font-size: 10px; }
@@ -2531,8 +2403,6 @@ body.reactor-available.rt-log-on #rt-log { display: flex; }
   #forward-btn { bottom: 48px; }
   #realtime-btn { width: 42px; height: 42px; transform: translateX(30px); }
   #realtime-btn:hover { transform: translateX(30px) scale(1.08); }
-  #scan-btn { width: 42px; height: 42px; transform: translateX(-74px); }
-  #scan-btn:hover { transform: translateX(-74px) scale(1.08); }
   #scan-hint { bottom: calc(env(safe-area-inset-bottom, 0px) + 150px); }
   #prose-feed { max-height: 40vh; }
 
