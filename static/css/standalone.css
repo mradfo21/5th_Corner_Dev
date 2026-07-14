@@ -2704,6 +2704,53 @@ body.reactor-available.rt-log-on #rt-log { display: flex; }
 }
 #rt-model-go:hover { background: rgba(142, 255, 193, 0.22); color: #eafff2; }
 
+/* ---------- Music volume (preset options in the log head) ---------- */
+.rt-music {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(142, 255, 193, 0.14);
+  background: rgba(0, 0, 0, 0.18);
+}
+.rt-music-label {
+  flex: 0 0 auto;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  color: rgba(142, 255, 193, 0.7);
+}
+.rt-music-opts {
+  display: flex;
+  flex: 1 1 auto;
+  gap: 4px;
+}
+.rt-music-btn {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 6px;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(216, 240, 228, 0.7);
+  background: rgba(142, 255, 193, 0.06);
+  border: 1px solid rgba(142, 255, 193, 0.2);
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.rt-music-btn:hover { background: rgba(142, 255, 193, 0.14); color: rgba(216, 240, 228, 0.95); }
+.rt-music-btn.active {
+  color: #061a11;
+  background: rgba(142, 255, 193, 0.85);
+  border-color: rgba(142, 255, 193, 0.95);
+  font-weight: 700;
+}
+
 .rt-log-head {
   display: flex;
   align-items: center;

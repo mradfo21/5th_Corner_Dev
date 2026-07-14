@@ -139,6 +139,8 @@
     rtLogList: document.getElementById("rt-log-list"),
     rtLogHide: document.getElementById("rt-log-hide"),
     rtLogModels: document.getElementById("rt-log-models"),
+    rtMusic: document.getElementById("rt-music"),
+    rtMusicOpts: document.getElementById("rt-music-opts"),
     deathOverlay: document.getElementById("death-overlay"),
     deathMessage: document.getElementById("death-message"),
     deathRestart: document.getElementById("death-restart"),
@@ -473,8 +475,50 @@
     let src = null;             // active looping AudioBufferSourceNode
     let gain = null;            // its GainNode
     const bufferCache = new Map(); // url -> decoded AudioBuffer
-    const TARGET_VOL = 0.26;    // sit UNDER the UI SFX — it's a bed, not a lead
     const FADE = 1.4;           // crossfade seconds between scene scores
+
+    // Music bed volume — an ambient bed that should sit UNDER the UI SFX, not
+    // compete with it. It's now adjustable live from the debug panel (WORLD
+    // MODEL / L) and persisted per browser. We expose a short list of preset
+    // "options" (Off…Max) rather than a fiddly slider, and default lower than
+    // before (the old 0.26 read as too loud for a background bed).
+    const VOL_KEY = "music_vol";
+    const VOL_PRESETS = [
+      { id: "off",  label: "Off",  value: 0.0  },
+      { id: "low",  label: "Low",  value: 0.06 },
+      { id: "med",  label: "Med",  value: 0.12 },
+      { id: "high", label: "High", value: 0.20 },
+      { id: "max",  label: "Max",  value: 0.30 },
+    ];
+    const DEFAULT_VOL = 0.12;
+    function loadVol() {
+      try {
+        const raw = localStorage.getItem(VOL_KEY);
+        if (raw == null) return DEFAULT_VOL;
+        const v = parseFloat(raw);
+        return (isFinite(v) && v >= 0 && v <= 1) ? v : DEFAULT_VOL;
+      } catch (_) { return DEFAULT_VOL; }
+    }
+    let musicVol = loadVol();   // current bed volume (0..1), the live target
+
+    // Push the current volume onto whatever is playing right now (clip gain
+    // and/or streamed PCM gain) so debug-panel changes take effect instantly,
+    // without waiting for the next scene to re-score. Honors the global mute.
+    function applyLiveVolume() {
+      const c = ctx();
+      const target = state.soundEnabled ? musicVol : 0;
+      if (gain && c) {
+        try {
+          const t = c.currentTime;
+          gain.gain.cancelScheduledValues(t);
+          gain.gain.setValueAtTime(gain.gain.value, t);
+          gain.gain.linearRampToValueAtTime(target, t + 0.25);
+        } catch (_) {}
+      }
+      if (streamGain) {
+        try { streamGain.gain.value = target; } catch (_) {}
+      }
+    }
 
     function ctx() {
       try { return Sound.context ? Sound.context() : null; } catch (_) { return null; }
@@ -520,7 +564,7 @@
       const g = c.createGain();
       const t = c.currentTime;
       g.gain.setValueAtTime(0.0001, t);
-      g.gain.linearRampToValueAtTime(TARGET_VOL, t + FADE);
+      g.gain.linearRampToValueAtTime(musicVol, t + FADE);
       s.connect(g); g.connect(c.destination);
       try { s.start(); } catch (_) { return; }
       src = s; gain = g;
@@ -577,7 +621,7 @@
       if (!c || wsOpening || (ws && ws.readyState <= 1)) return;
       wsOpening = true;
       streamGain = c.createGain();
-      streamGain.gain.value = TARGET_VOL;
+      streamGain.gain.value = state.soundEnabled ? musicVol : 0;
       streamGain.connect(c.destination);
       streamNextTime = 0;
       let sock;
@@ -645,6 +689,19 @@
       reset() {
         stop(0.4); closeStream();
         currentUrl = null; requestedKey = null;
+      },
+      // ── Music volume (debug-panel controlled) ──
+      // The preset "options" shown in the debug panel (Off…Max).
+      volumePresets() { return VOL_PRESETS.map((p) => ({ id: p.id, label: p.label, value: p.value })); },
+      // Current bed volume (0..1).
+      getVolume() { return musicVol; },
+      // Set + persist the bed volume, applying it live to whatever's playing.
+      setVolume(v) {
+        v = Number(v);
+        if (!isFinite(v)) return;
+        musicVol = Math.max(0, Math.min(1, v));
+        try { localStorage.setItem(VOL_KEY, String(musicVol)); } catch (_) {}
+        applyLiveVolume();
       },
     };
   })();
@@ -1343,6 +1400,7 @@
       }
       RtLog.init();
       buildModelSwitcher();
+      buildMusicVolume();
       // In realtime mode, connect eagerly so the GPU session is warming while
       // the intro scene generates — the video then starts as soon as the first
       // scene prompt arrives. (Falls back to stills if it can't connect.)
@@ -1631,6 +1689,51 @@
       const isActive = id === "__image__" ? !inReactor : (inReactor && id === activeModel);
       b.classList.toggle("active", isActive);
       b.classList.toggle("pending", isActive && id !== "__image__" && status === "connecting");
+    });
+  }
+
+  // ------------------------------------------------------------------
+  // Music volume control — preset options in the debug panel (WORLD MODEL / L)
+  // so the ambient bed can be tuned or muted live. Persists via SceneAudio.
+  // ------------------------------------------------------------------
+  function makeMusicBtn(preset) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "rt-music-btn";
+    b.dataset.vol = String(preset.value);
+    b.textContent = preset.label;
+    b.title = "Music volume: " + preset.label;
+    b.addEventListener("click", () => {
+      try { SceneAudio.setVolume(preset.value); } catch (_) {}
+      try { Haptics.tap(); } catch (_) {}
+      updateMusicVolume();
+    });
+    return b;
+  }
+
+  function buildMusicVolume() {
+    const wrap = el.rtMusicOpts;
+    if (!wrap) return;
+    let presets = [];
+    try { presets = SceneAudio.volumePresets ? SceneAudio.volumePresets() : []; } catch (_) {}
+    wrap.innerHTML = "";
+    presets.forEach((p) => wrap.appendChild(makeMusicBtn(p)));
+    updateMusicVolume();
+  }
+
+  function updateMusicVolume() {
+    const wrap = el.rtMusicOpts;
+    if (!wrap || !wrap.children.length) return;
+    let cur = 0;
+    try { cur = SceneAudio.getVolume ? SceneAudio.getVolume() : 0; } catch (_) {}
+    // Highlight the preset closest to the current volume (values are distinct).
+    let best = null, bestD = Infinity;
+    Array.prototype.forEach.call(wrap.children, (b) => {
+      const d = Math.abs(parseFloat(b.dataset.vol) - cur);
+      if (d < bestD) { bestD = d; best = b; }
+    });
+    Array.prototype.forEach.call(wrap.children, (b) => {
+      b.classList.toggle("active", b === best);
     });
   }
 
