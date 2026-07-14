@@ -645,8 +645,9 @@ class TestRealtimeRenderer(unittest.TestCase):
             page.close()
 
     def test_realtime_scan_move_action(self):
-        """The MOVE TO action icon must compose 'Move to the <object>.' from the
-        detected object's name and commit a full turn — no typing."""
+        """MOVE TO on a non-enterable object composes an APPROACH prompt (naming
+        the object + a forward-movement cue so the scene actually changes) and
+        commits a full turn — no typing."""
         page = self._new_realtime_page()
         scene_items = [
             {"id": 1, "type": "narrative", "content": "Intro."},
@@ -681,11 +682,60 @@ class TestRealtimeRenderer(unittest.TestCase):
                     break
                 page.wait_for_timeout(100)
             self.assertGreaterEqual(len(choose_bodies), 1, f"MOVE action must commit a turn. logs:\n{self._dump_logs()}")
-            choice = (json.loads(choose_bodies[0] or "{}").get("choice") or "").strip()
-            self.assertEqual(choice, "Move to the rusty valve.",
-                             f"MOVE action must compose 'Move to the <object>.'; got {choice!r}")
+            choice = (json.loads(choose_bodies[0] or "{}").get("choice") or "").strip().lower()
+            # A non-enterable object -> APPROACH phrasing (forward movement cue so
+            # the scene actually changes), naming the object.
+            self.assertIn("rusty valve", choice, f"move action must name the object; got {choice!r}")
+            self.assertIn("approach", choice, f"move-to-approach must cue forward movement; got {choice!r}")
+            self.assertNotIn("enter the", choice, f"a valve is not enterable; got {choice!r}")
         except Exception:
             print("\n=== REACTOR CONSOLE LOG (scan-move) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
+    def test_realtime_scan_move_enters_a_passage(self):
+        """MOVE TO on an enterable object (door/opening/room/vehicle/…) must phrase
+        the action as an ENTRY ('Enter the <object> …') so the engine cuts to a
+        fresh interior scene instead of drifting in place."""
+        page = self._new_realtime_page()
+        scene_items = [
+            {"id": 1, "type": "narrative", "content": "Intro."},
+            {"id": 2, "type": "scene_image", "content": "", "image_url": TINY_PNG_DATA_URL,
+             "metadata": {"prompt": "scene one", "base": "A loading dock.", "hard_transition": False}},
+            {"id": 3, "type": "player_choice_prompt", "content": "?", "choices": [{"text": "Go"}]},
+        ]
+        choose_bodies = []
+        page.route("**/api/reset", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(scene_items)))
+        page.route("**/api/feed*", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
+        page.route("**/api/detect", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps({
+            "objects": [{"label": "steel door", "cx": 0.5, "cy": 0.45, "w": 0.2, "h": 0.3}]})))
+
+        def choose_handler(route):
+            try:
+                choose_bodies.append(route.request.post_data)
+            except Exception:
+                choose_bodies.append(None)
+            route.fulfill(status=200, content_type="application/json", body="[]")
+        page.route("**/api/choose", choose_handler)
+        try:
+            page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
+            page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
+            page.evaluate("document.getElementById('scan-btn').click()")
+            page.wait_for_function("document.querySelectorAll('#scan-tags .scan-tag').length >= 1", timeout=10000)
+            page.evaluate("document.querySelector('.scan-tag .scan-tag-act').click()")
+            page.wait_for_function("!!document.querySelector('.scan-tag.acting .scan-action-move')", timeout=5000)
+            page.evaluate("document.querySelector('.scan-tag.acting .scan-action-move').click()")
+            for _ in range(60):
+                if choose_bodies:
+                    break
+                page.wait_for_timeout(100)
+            self.assertGreaterEqual(len(choose_bodies), 1, f"MOVE action must commit a turn. logs:\n{self._dump_logs()}")
+            choice = (json.loads(choose_bodies[0] or "{}").get("choice") or "").strip()
+            self.assertTrue(choice.lower().startswith("enter the steel door"),
+                            f"MOVE TO an enterable object must be an entry; got {choice!r}")
+        except Exception:
+            print("\n=== REACTOR CONSOLE LOG (scan-move-enter) ===\n" + self._dump_logs())
             raise
         finally:
             page.close()

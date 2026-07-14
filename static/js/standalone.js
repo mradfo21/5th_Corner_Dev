@@ -2993,10 +2993,29 @@
   // consequence LLM (server-side) already turns that intent into an in-world,
   // exciting outcome + a fresh scene, so there's no need for a separate
   // "action-writing" LLM. Add more verbs here to grow the vocabulary.
+  // Objects you can go INSIDE / through — a passage, opening, vehicle, or
+  // structure. When "MOVE TO" targets one of these, we phrase it as an ENTRY so
+  // the engine cuts to a fresh interior scene (is_hard_transition fires on
+  // "enter …"); otherwise it's an APPROACH that advances the camera closer
+  // (the movement classifier keys on "approach", so the scene actually changes
+  // instead of drifting in place — which is why plain "move to the X" sometimes
+  // looked static).
+  const ENTERABLE_RE = /\b(door|doorway|gate|gateway|entrance|entry|hatch|portal|threshold|arch|archway|opening|mouth|maw|tunnel|pipe|duct|corridor|hallway|hall|passage|passageway|stair|stairs|stairway|stairwell|room|building|house|cabin|shack|shed|garage|barn|cave|cavern|vault|chamber|window|breach|gap|hole|vent|shaft|elevator|lift|airlock|tent|bunker|silo|structure|ruin|ruins|store|shop|church|warehouse|facility|lab|laboratory|booth|trailer|van|truck|car|bus|train|carriage|wagon|boat|ship|cockpit|rig|derrick)\b/i;
+
+  function moveActionPhrase(o) {
+    if (ENTERABLE_RE.test(o)) {
+      // "Enter …" -> hard transition -> a genuinely new interior scene.
+      return "Enter the " + o + ", moving inside into the space beyond.";
+    }
+    // "approach" -> forward_movement -> the camera advances, so the scene visibly
+    // changes as you close in.
+    return "Move toward the " + o + ", approaching until it fills the view.";
+  }
+
   const SCAN_ACTIONS = [
     {
       id: "move", label: "MOVE TO", title: "Move to",
-      phrase: (o) => "Move to the " + o + ".",
+      phrase: moveActionPhrase,
       icon: '<svg class="scan-action-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2v20M2 12h20"/><path d="M9 5l3-3 3 3M9 19l3 3 3-3M5 9l-3 3 3 3M19 9l3 3-3 3"/></svg>',
     },
     {
