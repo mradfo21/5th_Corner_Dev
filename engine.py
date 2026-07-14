@@ -116,6 +116,25 @@ if not GEMINI_API_KEY:
     GEMINI_API_KEY = CONFIG.get("GEMINI_API_KEY", "")
 REPLICATE_API_TOKEN = os.getenv("REPLICATE_API_TOKEN", CONFIG.get("REPLICATE_API_TOKEN"))
 
+# ── ElevenLabs Conversational AI (the TALK mechanic's voice layer) ──────────
+# The API key is a SECRET (env or gitignored config.json). The agent id is a
+# PUBLIC identifier (it's embedded client-side in the widget), so it's safe to
+# ship a default — a private agent is fine because we mint short-lived signed
+# URLs server-side with the key. Voice mode needs only the agent id; the key is
+# used to sign private-agent sessions and to synthesize voice.
+ELEVENLABS_API_KEY = (os.getenv("ELEVENLABS_API_KEY") or CONFIG.get("ELEVENLABS_API_KEY") or "").strip()
+ELEVENLABS_AGENT_ID = (os.getenv("ELEVENLABS_AGENT_ID") or CONFIG.get("ELEVENLABS_AGENT_ID")
+                       or "agent_1601kxh3rz2hej9swfs75dv33q78").strip()
+ELEVENLABS_VOICE_ID = (os.getenv("ELEVENLABS_VOICE_ID") or CONFIG.get("ELEVENLABS_VOICE_ID") or "").strip()
+# Our default agent has prompt + first_message overrides enabled, so we push the
+# full per-subject persona. Set to "0" if you point the agent id at one that
+# does NOT allow overrides (the widget errors otherwise; dynamic variables still
+# keep it story-aware).
+ELEVENLABS_ALLOW_OVERRIDES = (os.getenv("ELEVENLABS_ALLOW_OVERRIDES", "1").strip().lower()
+                              not in ("0", "false", "no", "off"))
+print(f"[ENGINE INIT] ElevenLabs TALK: key={'YES' if ELEVENLABS_API_KEY else 'no'}, "
+      f"agent={'set' if ELEVENLABS_AGENT_ID else 'none'}, overrides={'on' if ELEVENLABS_ALLOW_OVERRIDES else 'off'}")
+
 # DEBUG: Log API keys at module initialization
 print(f"[ENGINE INIT] GEMINI_API_KEY loaded: {'YES' if GEMINI_API_KEY else 'NO (EMPTY!)'}")
 if GEMINI_API_KEY:
@@ -4822,8 +4841,10 @@ def api_talk_session():
           "dynamic_variables": {...} # story variables for the agent/widget
         }
 
-    Voice mode requires ELEVENLABS_API_KEY (+ ELEVENLABS_AGENT_ID). When those
-    are absent — or the token exchange fails — we degrade to text mode, which is
+    Voice mode needs only ELEVENLABS_AGENT_ID (a public agent connects with the
+    bare id). ELEVENLABS_API_KEY additionally mints a short-lived signed URL for
+    a PRIVATE agent — the recommended, more secure setup — without the key ever
+    reaching the browser. With neither set we degrade to text mode, which is
     fully functional via /api/talk/message. Read-only: never mutates the sim.
     """
     try:
@@ -4850,23 +4871,33 @@ def api_talk_session():
             "current_scene": str(sit.get("scene", "")),
             "recent_events": " | ".join(context.get("recent", [])),
         }
-        overrides = {
-            "agent": {
-                "prompt": {"prompt": context["persona_prompt"]},
-                "first_message": context["opening_line"],
-            }
-        }
+        # The opening line is ALSO a dynamic variable so an agent whose dashboard
+        # first-message is "{{opening_line}}" stays story-aware even without
+        # runtime overrides.
+        dynamic_variables["opening_line"] = context["opening_line"]
 
-        agent_id = os.getenv("ELEVENLABS_AGENT_ID", "").strip()
-        api_key = os.getenv("ELEVENLABS_API_KEY", "").strip()
+        # Overrides completely replace the agent's prompt/first-message with the
+        # full per-subject persona. Only send them when allowed (the target agent
+        # must have those override fields enabled, or the widget throws).
+        overrides = None
+        if ELEVENLABS_ALLOW_OVERRIDES:
+            overrides = {
+                "agent": {
+                    "prompt": {"prompt": context["persona_prompt"]},
+                    "first_message": context["opening_line"],
+                }
+            }
+
+        agent_id = ELEVENLABS_AGENT_ID
+        api_key = ELEVENLABS_API_KEY
         signed_url = None
-        mode = "text"
+        # Voice needs only an agent id (public agents connect with it directly).
+        mode = "voice" if agent_id else "text"
 
         if agent_id and api_key:
-            mode = "voice"
             # Private agents need a short-lived signed URL minted server-side so
-            # the API key never reaches the browser. Public agents can connect
-            # with just the agent_id, so a signing failure is non-fatal.
+            # the API key never reaches the browser. A signing failure is
+            # non-fatal: a public agent can still connect with the bare agent_id.
             try:
                 import requests as _rq
                 resp = _rq.get(
@@ -4877,6 +4908,8 @@ def api_talk_session():
                 )
                 if resp.status_code == 200:
                     signed_url = (resp.json() or {}).get("signed_url")
+                else:
+                    log_error(f"[TALK] signed-url {resp.status_code}: {resp.text[:200]}")
             except Exception as e:
                 log_error(f"[TALK] signed-url exchange failed: {e}")
 
@@ -4891,6 +4924,7 @@ def api_talk_session():
             },
             "agent_id": agent_id or None,
             "signed_url": signed_url,
+            "voice_id": ELEVENLABS_VOICE_ID or None,
             "overrides": overrides,
             "dynamic_variables": dynamic_variables,
         })

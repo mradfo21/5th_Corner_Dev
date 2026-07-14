@@ -35,6 +35,21 @@ services:
       # secret used only server-side to mint short-lived browser tokens.
       - key: REACTOR_API_KEY
         sync: false
+      # ElevenLabs Conversational AI — powers the SCAN "TALK" mechanic (speak to
+      # people/characters/things the scanner flags as able to talk). The KEY is a
+      # secret used server-side only to mint short-lived signed URLs for the
+      # PRIVATE agent (it never reaches the browser). The AGENT_ID is a public
+      # identifier (also has a committed default); set it here to point at a
+      # different agent. Leave the key unset to fall back to text conversations.
+      - key: ELEVENLABS_API_KEY
+        sync: false
+      - key: ELEVENLABS_AGENT_ID
+        value: "agent_1601kxh3rz2hej9swfs75dv33q78"
+      # "0" if you repoint AGENT_ID at an agent that does NOT allow prompt/
+      # first-message overrides in its Security settings (else the widget errors;
+      # dynamic variables still keep it story-aware).
+      - key: ELEVENLABS_ALLOW_OVERRIDES
+        value: "1"
       - key: REACTOR_MODEL
         value: "reactor/lingbot-world-2"
       # Default world model the mid-game switcher starts on ("lingbot-world-2"

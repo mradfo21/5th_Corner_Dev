@@ -3710,13 +3710,17 @@
       try {
         loadWidgetScript();
         const w = document.createElement("elevenlabs-convai");
-        w.setAttribute("agent-id", session.agent_id);
+        // A signed URL (private agent) is the secure path and is an ALTERNATIVE
+        // to agent-id — use one or the other, not both. Fall back to the bare
+        // agent id for a public agent.
         if (session.signed_url) w.setAttribute("signed-url", session.signed_url);
+        else w.setAttribute("agent-id", session.agent_id);
         if (session.dynamic_variables) {
           w.setAttribute("dynamic-variables", JSON.stringify(session.dynamic_variables));
         }
         // Prompt + first-message overrides make the agent BE this character in
-        // this scene (requires the agent to allow overrides in its settings).
+        // this scene. Only applied when the server sent them (i.e. the target
+        // agent has those override fields enabled — otherwise the widget errors).
         const ov = session.overrides && session.overrides.agent;
         if (ov && ov.prompt && ov.prompt.prompt) w.setAttribute("override-prompt", ov.prompt.prompt);
         if (ov && ov.first_message) w.setAttribute("override-first-message", ov.first_message);
