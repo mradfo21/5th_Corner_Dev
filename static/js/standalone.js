@@ -174,6 +174,7 @@
     turnImageLoaded: false,     // this turn's new frame has arrived on screen
     imagesEnabled: true,        // server has image gen on (from /api/status) — else skip the guide-image wait
     finishTimer: null,          // fallback: fade the progress bar back to play
+    sceneVisible: false,        // has the first realtime feed / still appeared this run? (gates the prose + SNAP tool on boot)
   };
 
   // ------------------------------------------------------------------
@@ -352,7 +353,25 @@
     el.veil.classList.add("hidden");
     // Fade the play button back in — the progress bar occupied its spot.
     if (el.actionWheel) el.actionWheel.classList.remove("turn-active");
+    // Safety net: never leave the prose + SNAP tool stuck hidden once the boot
+    // veil is gone (covers text-only mode and any path where no frame lands).
+    markSceneVisible();
     Ceremony.reset();
+  }
+
+  // Boot gating: at the start of a new run we hide the narrative text and the
+  // SNAP camera tool until the world is actually on screen (a still lands or the
+  // realtime feed goes live), so a fresh instance doesn't show floating text and
+  // a lone SNAP button over a black void while the first scene renders.
+  function markSceneAwaiting() {
+    state.sceneVisible = false;
+    document.body.classList.add("awaiting-first-scene");
+  }
+
+  function markSceneVisible() {
+    if (state.sceneVisible) return;
+    state.sceneVisible = true;
+    document.body.classList.remove("awaiting-first-scene");
   }
 
   // ------------------------------------------------------------------
@@ -672,7 +691,11 @@
     // *behind* the live video (silent): both overlays sit above the video, so
     // firing them here would strobe over the running stream. The re-anchor's own
     // glitch (on the reactor 'reset' command) masks that hand-off instead.
-    if (!silent) { flashScene(); glitchTransition(); }
+    if (!silent) {
+      flashScene();
+      glitchTransition();
+      markSceneVisible(); // a still is now genuinely on screen
+    }
   }
 
   function flashScene() {
@@ -849,6 +872,7 @@
           if (Renderer.mode === "reactor") {
             if (name === "video_showing") {
               glitchTransition();
+              markSceneVisible(); // the realtime feed is now live on screen
             }
             // Realtime auto-play advances off the LIVE video, not the scene_image
             // feed item: once the new scene is actually on screen, let it play for
@@ -1819,6 +1843,7 @@
       state.gameOver = false;
       state.currentPromptId = null;
       state.lastAdvancedPromptId = null;
+      markSceneAwaiting(); // hide prose + SNAP until this run's first frame lands
       clearTimeout(state.autoTimer);
       closeFreeWill(true);
       renderInventory([]);
