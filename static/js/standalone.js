@@ -144,6 +144,8 @@
     scanIdleTimer: null,        // periodic re-scan while armed
     scanMoveTimer: null,        // debounced re-scan after the cursor settles
     scanSrcSize: null,          // {w,h} of the last scanned source (video or still), for cover-mapping tags
+    scanPrewarm: { objects: [], size: null, ts: 0 }, // background detection cached so SCAN opens instantly
+    scanPrewarmTimer: null,     // debounce for background pre-warm scans
     currentStillUrl: null,      // last still shown via setScene (stills-mode SCAN source)
     scanStillImg: null,         // cached <img> of the current still, for canvas capture
     evidenceTimer: null,        // evidence flourish hold-then-file timer
@@ -586,6 +588,7 @@
   function setScene(imageUrl, opts) {
     if (!imageUrl) return;
     state.currentStillUrl = imageUrl; // remember for stills-mode SCAN capture
+    schedulePrewarm(); // a new scene is on screen — pre-warm SCAN detection
     const silent = !!(opts && opts.silent);
     const instant = !!(opts && opts.instant);
     const incoming = state.activeScene === "A" ? el.sceneB : el.sceneA;
@@ -786,6 +789,7 @@
           if (Renderer.mode === "reactor") {
             if (name === "video_showing") {
               glitchTransition();
+              schedulePrewarm(); // live scene on screen — pre-warm SCAN detection
             }
             // Realtime auto-play advances off the LIVE video, not the scene_image
             // feed item: once the new scene is actually on screen, let it play for
@@ -2142,10 +2146,48 @@
     state.scanObjects = [];
     // Park the sweep glow at center until the cursor moves.
     moveScanCursor(window.innerWidth / 2, window.innerHeight / 2);
-    setScanHint(scanAvailable() ? "scanning the scene…" : "waiting for the scene…");
     Sound.scan();
+    // INSTANT tags: if we pre-warmed detection in the background while the scene
+    // was on screen, show those immediately so SCAN feels responsive — then a
+    // live scan refreshes them.
+    const pw = state.scanPrewarm;
+    if (pw && pw.objects && pw.objects.length) {
+      if (pw.size) state.scanSrcSize = pw.size;
+      reconcileScanTags(pw.objects);
+      setScanHint("");
+    } else {
+      setScanHint(scanAvailable() ? "scanning the scene…" : "waiting for the scene…");
+    }
     runScan(true);
     scheduleScanTick();
+  }
+
+  // Background pre-warm: run ONE detection when a scene settles (even before the
+  // player opens SCAN) and cache the result, so arming SCAN shows tags instantly.
+  // Never runs while SCAN is armed (the live loop handles that), mid-turn, or
+  // while another detect is in flight; throttled so it's at most one per scene.
+  const SCAN_PREWARM_MIN_MS = 4000;
+  function prewarmScan() {
+    if (state.scanOn || state.gameOver || state.processing || state.scanBusy) return;
+    if (!scanAvailable()) return;
+    const now = Date.now();
+    if (now - (state.scanPrewarm.ts || 0) < SCAN_PREWARM_MIN_MS) return;
+    const cap = captureScanFrame();
+    if (!cap || !cap.frame) return;
+    state.scanBusy = true;
+    state.scanPrewarm.ts = now;
+    postJSON("/api/detect", { frame: cap.frame })
+      .then((res) => {
+        const objs = (res && Array.isArray(res.objects)) ? res.objects : [];
+        state.scanPrewarm = { objects: objs, size: cap.size || null, ts: now };
+      })
+      .catch((err) => { console.warn("[standalone] prewarm scan failed:", err); })
+      .finally(() => { state.scanBusy = false; });
+  }
+
+  function schedulePrewarm(delay) {
+    clearTimeout(state.scanPrewarmTimer);
+    state.scanPrewarmTimer = setTimeout(prewarmScan, delay == null ? 1200 : delay);
   }
 
   function closeScan() {
@@ -2494,6 +2536,9 @@
     el.scanTags.innerHTML = "";
     state.scanObjects = [];
     state.scanTagActing = null;
+    // The scene is changing — drop the stale pre-warm so SCAN never opens with
+    // tags from the previous shot; the new scene re-warms once it settles.
+    state.scanPrewarm = { objects: [], size: null, ts: 0 };
     if (state.scanOn) setScanHint("scanning the scene…");
   }
 
