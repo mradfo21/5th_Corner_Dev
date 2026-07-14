@@ -556,6 +556,54 @@ class TestRealtimeRenderer(unittest.TestCase):
         finally:
             page.close()
 
+    def test_photography_win_condition_closes_the_case(self):
+        """The dossier census is the win condition: documenting the target number
+        of DISTINCT subjects closes the case and shows the CASE CLOSED win
+        overlay with a rank grade. The score also fills the case-file bar."""
+        page = self._new_realtime_page()
+        scene_items = [
+            {"id": 1, "type": "narrative", "content": "Intro."},
+            {"id": 2, "type": "scene_image", "content": "", "image_url": TINY_PNG_DATA_URL,
+             "metadata": {"prompt": "scene one", "base": "A loading dock.", "hard_transition": False}},
+            {"id": 3, "type": "player_choice_prompt", "content": "?", "choices": [{"text": "Go"}]},
+        ]
+        page.route("**/api/reset", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(scene_items)))
+        page.route("**/api/feed*", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
+        page.route("**/api/investigate", lambda r: r.fulfill(status=200, content_type="application/json", body='{"ok":true,"id":1,"kind":"photo"}'))
+        # One shot that documents 8 distinct subjects — enough to close the case.
+        subjects = ["figure", "valve", "brush pile", "structure", "lantern",
+                    "crate", "wire", "boot print"]
+        page.route("**/api/photo", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps({
+            "items": [{"label": s, "interest": 4, "note": "clue"} for s in subjects],
+            "caption": "A dense, telling frame.", "mood": "ominous"})))
+        try:
+            page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
+            page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
+            # Arm the camera: the dossier HUD (with the case goal) is revealed.
+            page.evaluate("document.getElementById('realtime-btn').click()")
+            page.wait_for_function("!document.getElementById('evidence-hud').classList.contains('hidden')", timeout=5000)
+            self.assertIn("/8", page.evaluate("document.querySelector('#evidence-hud .ev-case-count').textContent"))
+            # Take the shot (press + release).
+            page.evaluate("""() => {
+                const L = document.getElementById('touch-layer');
+                const o = {clientX: 640, clientY: 360, pointerId: 1, cancelable: true, bubbles: true};
+                L.dispatchEvent(new PointerEvent('pointerdown', o));
+                L.dispatchEvent(new PointerEvent('pointerup', o));
+            }""")
+            # The case closes: the win overlay appears with a rank grade.
+            page.wait_for_function("!document.getElementById('case-overlay').classList.contains('hidden')", timeout=15000)
+            rank = page.evaluate("document.getElementById('case-rank-letter').textContent")
+            self.assertIn(rank, ["D", "C", "B", "A", "S"], f"a rank grade must be shown, got {rank!r}")
+            self.assertEqual(page.evaluate("document.getElementById('case-subjects').textContent"), "8")
+            # Starting a NEW CASE clears the win overlay and resets the census.
+            page.evaluate("document.getElementById('case-restart').click()")
+            page.wait_for_function("document.getElementById('case-overlay').classList.contains('hidden')", timeout=8000)
+        except Exception:
+            print("\n=== REACTOR CONSOLE LOG (win) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
     def test_camera_exits_via_button_rightclick_and_esc(self):
         """Exiting the camera must be simple and forgiving: clicking the PHOTO
         button again toggles it OFF (the controls sit above the capture overlay
