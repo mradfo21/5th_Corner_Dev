@@ -210,6 +210,8 @@
     scanSrcSize: null,          // {w,h} of the last scanned source (video or still), for cover-mapping tags
     scanPrewarm: { objects: [], size: null, ts: 0 }, // last detection cached (renders hotspots instantly)
     scanPrewarmTimer: null,     // debounce for detection passes
+    moving: false,              // camera is being driven (joystick / WASD) — OCR hotspots are hidden + detection paused while moving; they regenerate once you stop
+    moveSettleTimer: null,      // after movement stops, wait for the view to settle before re-detecting hotspots
     lastTurnTs: 0,              // when the last turn was committed/active (pre-warm defers around it)
     turnWatchdog: null,         // safety timer: recover the UI if a turn never resolves
     currentStillUrl: null,      // last still shown via setScene (stills-mode SCAN source)
@@ -1577,6 +1579,12 @@
       const attempt = () => {
         if (state.processing || state.gameOver) return;
         if (state.currentPromptId !== promptId) return; // moved on already
+        // Don't re-ground choices from a frame while the camera is travelling —
+        // it's mid-motion and unrepresentative. Retry once movement stops.
+        if (state.moving) {
+          if (tries++ < 20) state.observeTimer = setTimeout(attempt, 1200);
+          return;
+        }
         // Wait until the video is actually showing real frames before reading it.
         if (!window.ReactorRenderer.isShowing()) {
           if (tries++ < 10) state.observeTimer = setTimeout(attempt, 1500);
@@ -2167,6 +2175,8 @@
       warnedNotReady = false;
       if (el.movePad) el.movePad.classList.add("engaged");
       try { Sound.press(); } catch (_) {}
+      // Hide the OCR hotspots/choices — they're inaccurate while the view moves.
+      try { onMovementStart(); } catch (_) {}
       startLoop();
       tick(); // respond immediately
     }
@@ -2194,6 +2204,8 @@
       updateVisual({ longitudinal: "idle", lateral: "idle", lookH: "idle", lookV: "idle" });
       stopAll();
       RtLog.push("dim", "\u25A0 camera \u00B7 rest");
+      // Regenerate + reveal the OCR hotspots once the view settles.
+      try { onMovementStop(); } catch (_) {}
     }
 
     // ---- Pointer (mouse / touch) ----
@@ -4315,6 +4327,10 @@
   // claiming the view? (Independent of whether a scene is currently readable.)
   function ambientContextAllowed() {
     if (state.gameOver || state.touchMode || state.freeWillOpen) return false;
+    // While the camera is being driven the scene is in motion, so the OCR
+    // hotspots (detected against a drifting frame) are stale/inaccurate — keep
+    // them down. They regenerate when movement stops (see onMovementStop).
+    if (state.moving) return false;
     if (typeof tapeIsOpen === "function" && tapeIsOpen()) return false;
     // Don't surface hotspots behind an open conversation — they'd sit under the
     // TALK panel. They're re-armed when the conversation closes.
@@ -4385,6 +4401,7 @@
     (typeof window !== "undefined" && window.__SCAN_TURN_COOLDOWN_MS__) || 9000;
   function prewarmScan() {
     if (state.gameOver || state.scanBusy) return;
+    if (state.moving) return; // detection while the camera travels is inaccurate
     if (state.scanTagActing) return; // don't reshuffle tags while a bar is open
     const now = Date.now();
     // Defer to gameplay: never add a background detection call while a turn is
@@ -4447,6 +4464,39 @@
     if (!el.scanHint) return;
     el.scanHint.textContent = text || "";
     el.scanHint.classList.toggle("hidden", !text);
+  }
+
+  // ---- Movement ↔ ambient hotspots ----------------------------------------
+  // The OCR hotspots (and the choices grounded on them) are detected against the
+  // current frame, so they're wrong the instant the camera starts travelling.
+  // Hide them the moment movement begins; regenerate + reveal once it stops and
+  // the view has settled on the new vantage.
+  const MOVE_SETTLE_MS = (typeof window !== "undefined" && window.__MOVE_SETTLE_MS__) || 900;
+
+  function onMovementStart() {
+    if (state.moving) return;
+    state.moving = true;
+    // Drop any pending detection / hover re-detect and hide the overlay now.
+    clearTimeout(state.scanPrewarmTimer); state.scanPrewarmTimer = null;
+    clearTimeout(state.scanMoveTimer); state.scanMoveTimer = null;
+    clearTimeout(state.moveSettleTimer); state.moveSettleTimer = null;
+    document.body.classList.add("moving");
+    closeScan();
+  }
+
+  function onMovementStop() {
+    if (!state.moving) return;
+    state.moving = false;
+    document.body.classList.remove("moving");
+    // Let the camera actually settle on the new view, then re-detect from
+    // scratch (drop the stale cache) and bring the fresh hotspots back.
+    clearTimeout(state.moveSettleTimer);
+    state.moveSettleTimer = setTimeout(() => {
+      if (state.moving) return; // started moving again — leave it hidden
+      state.scanPrewarm = { objects: [], size: null, ts: 0 }; // force a fresh detect
+      updateAmbientScan();  // re-arm the overlay (also polls until the view is readable)
+      schedulePrewarm(150); // kick a fresh detection promptly
+    }, MOVE_SETTLE_MS);
   }
 
   // Map normalized (0..1) frame coordinates onto the on-screen scene's
