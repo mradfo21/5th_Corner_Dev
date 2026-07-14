@@ -1497,6 +1497,87 @@ def _vision_describe(image_path: str) -> str:
     return result["description"]
 
 
+# Labels that read as something you could hold a conversation with, even when
+# the vision model forgets to flag `speaks`. Kept deliberately broad (people,
+# figures, sentient creatures, and machines that carry a voice) because a false
+# positive just offers a TALK option the story can gracefully play off, while a
+# false negative silently hides the whole mechanic.
+_SPEAKER_LABEL_RE = re.compile(
+    r"\b("
+    r"person|people|man|men|woman|women|boy|girl|child|children|kid|guy|lady|"
+    r"figure|silhouette|stranger|survivor|soldier|guard|worker|scientist|"
+    r"doctor|nurse|officer|cop|ranger|pilot|driver|operator|technician|"
+    r"crowd|villager|prisoner|captive|hostage|patient|passenger|civilian|"
+    r"face|head|corpse|body|ghost|spirit|apparition|"
+    r"creature|beast|monster|alien|humanoid|android|robot|droid|cyborg|"
+    r"ai|hologram|avatar|puppet|doll|mannequin|statue|"
+    r"radio|intercom|speaker|phone|telephone|handset|walkie|walkie-talkie|"
+    r"transceiver|receiver|terminal|console|computer|monitor|screen|"
+    r"pa system|loudspeaker|megaphone|"
+    r"dog|cat|horse|bird|parrot|crow|raven|snake|wolf|fox|rat|owl"
+    r")\b"
+)
+
+# Kinds the model may return that we consider conversational.
+_SPEAKER_KINDS = {"person", "character", "creature"}
+
+
+def _classify_speaker(label: str, kind_raw, speaks_raw) -> tuple:
+    """Decide a detected thing's ``kind`` and whether it ``speaks``.
+
+    Fuses the vision model's own classification with a label heuristic so the
+    TALK affordance is offered whenever a person, character, sentient creature,
+    or voice-carrying machine is on screen — and withheld for inert scenery.
+
+    Returns ``(kind: str, speaks: bool)`` where kind is one of
+    person/character/creature/animal/machine/object.
+    """
+    valid_kinds = {"person", "character", "creature", "animal", "machine", "object"}
+    kind = str(kind_raw or "").strip().lower()
+    if kind not in valid_kinds:
+        kind = ""
+
+    # Normalize the model's speaks flag (it may arrive as a real bool, a string,
+    # or be absent entirely).
+    speaks = None
+    if isinstance(speaks_raw, bool):
+        speaks = speaks_raw
+    elif isinstance(speaks_raw, str):
+        speaks = speaks_raw.strip().lower() in ("true", "yes", "1")
+
+    label_hit = bool(_SPEAKER_LABEL_RE.search(label or ""))
+
+    # Infer a kind when the model didn't give a usable one.
+    if not kind:
+        if label_hit:
+            if re.search(r"\b(radio|intercom|speaker|phone|telephone|handset|walkie|"
+                         r"walkie-talkie|transceiver|receiver|terminal|console|computer|"
+                         r"monitor|screen|robot|droid|android|cyborg|ai|hologram|"
+                         r"loudspeaker|megaphone|pa system)\b", label):
+                kind = "machine"
+            elif re.search(r"\b(creature|beast|monster|alien|humanoid|ghost|spirit|apparition)\b", label):
+                kind = "creature"
+            elif re.search(r"\b(dog|cat|horse|bird|parrot|crow|raven|snake|wolf|fox|rat|owl)\b", label):
+                kind = "animal"
+            else:
+                kind = "person"
+        else:
+            kind = "object"
+
+    # Decide speaks: honor an explicit model call, else fall back to the kind +
+    # the label heuristic.
+    if speaks is None:
+        speaks = kind in _SPEAKER_KINDS or label_hit
+    else:
+        # Even a model "true" needs a plausible subject; and a model "false" is
+        # overridden when the label very clearly names a speaker (people/voices).
+        speaks = speaks or label_hit
+        if kind == "object" and not label_hit:
+            speaks = False
+
+    return kind, bool(speaks)
+
+
 def _detect_objects(image_path: str, max_items: int = 8) -> list:
     """Realtime object recognition for the live scene.
 
@@ -1506,9 +1587,13 @@ def _detect_objects(image_path: str, max_items: int = 8) -> list:
     tool: the player drags across the scene and the world names what it sees.
 
     Returns a list of dicts (at most ``max_items``), each:
-        {"label": str, "cx": float, "cy": float, "w": float, "h": float}
+        {"label": str, "cx": float, "cy": float, "w": float, "h": float,
+         "kind": str, "speaks": bool}
     where cx/cy are the box CENTER and w/h its size, all normalized 0..1
-    relative to the frame. Returns [] on any failure (never raises).
+    relative to the frame. ``kind`` is one of person/character/creature/
+    animal/machine/object and ``speaks`` marks whether the thing can be TALKED
+    to (drives the SCAN "TALK" affordance). Returns [] on any failure (never
+    raises).
     """
     import base64
     import json as _json
@@ -1543,9 +1628,16 @@ def _detect_objects(image_path: str, max_items: int = 8) -> list:
             f"Return AT MOST {max_items} of the most salient. "
             "Respond with ONLY a JSON array, no prose, no code fences. Each item: "
             '{\"label\": \"<1-3 word noun, lowercase>\", '
-            '\"box_2d\": [ymin, xmin, ymax, xmax]}. '
+            '\"box_2d\": [ymin, xmin, ymax, xmax], '
+            '\"kind\": \"<one of: person, character, creature, animal, machine, object>\", '
+            '\"speaks\": <true|false>}. '
             "Box coordinates are integers normalized to 0-1000 "
             "(y is top-to-bottom, x is left-to-right). "
+            "Set \"speaks\" true ONLY for something that could plausibly hold a "
+            "conversation right now: a visible person, humanoid figure, named "
+            "character, sentient creature, or a talking machine (radio, phone, "
+            "intercom, robot, terminal with a voice). Set it false for inert "
+            "objects, scenery, tools, and plain animals that would not speak. "
             "Prefer specific, concrete labels over vague ones. "
             "Skip generic background like 'sky', 'ground', 'wall' unless notable."
         )
@@ -1632,12 +1724,18 @@ def _detect_objects(image_path: str, max_items: int = 8) -> list:
             if key in seen:
                 continue
             seen.add(key)
+            # Classify whether this thing can be TALKED to. Trust the model's
+            # own call, but backstop it with a label heuristic so the TALK
+            # affordance still appears when the model omits/undercalls the field.
+            kind, speaks = _classify_speaker(label, entry.get("kind"), entry.get("speaks"))
             objects.append({
                 "label": label[:40],
                 "cx": round(cx, 4),
                 "cy": round(cy, 4),
                 "w": round(w, 4),
                 "h": round(h, 4),
+                "kind": kind,
+                "speaks": speaks,
             })
             if len(objects) >= max_items:
                 break
@@ -4528,6 +4626,347 @@ def api_photo():
         log_error(f"[PHOTO] failed: {e}")
         _tb.print_exc()
         return jsonify({"error": str(e), "items": [], "caption": "", "mood": ""}), 500
+
+
+# ═══════════════════════════════════════════════════════════════════
+# TALK — converse with a person / character / thing that speaks
+#
+# The SCAN tool now classifies whether each detected thing can hold a
+# conversation (``speaks``). When the player picks TALK on such a subject we
+# open a dialogue that is AWARE of the story: who the player is, the premise,
+# the current phase/chaos/location, and the last few beats. This awareness is
+# assembled once here and reused two ways:
+#   • text mode (always available) — an LLM roleplays the subject in-world.
+#   • voice mode (when ElevenLabs is configured) — the same briefing is handed
+#     to an ElevenLabs Conversational AI agent as prompt overrides + dynamic
+#     variables, so you can literally speak to the character.
+# Both are stateless/read-only: talking never mutates world state or history.
+# ═══════════════════════════════════════════════════════════════════
+
+def _story_premise() -> str:
+    """The high-level premise the whole simulation runs on (first paragraph of
+    the world-setup prompt), used to ground a conversation partner."""
+    try:
+        raw = (PROMPTS.get("world_initial_state") or "").strip()
+        # First paragraph is the evocative premise; the rest is model direction.
+        premise = raw.split("\n\n")[0].strip()
+        return premise[:600]
+    except Exception:
+        return "An analog-horror investigation. You are a photojournalist documenting something that should not exist."
+
+
+def build_talk_context(subject: dict, session_id: str = "default") -> dict:
+    """Assemble a story-aware briefing for a conversation with ``subject``.
+
+    ``subject`` is the SCAN object the player chose to talk to
+    (``{"label", "kind", "speaks"}``). Returns a JSON-safe dict describing the
+    subject, the current situation, and a ready-to-use persona prompt + opening
+    line. This is the single source of "awareness" shared by the text fallback
+    and the ElevenLabs voice agent.
+    """
+    subject = subject or {}
+    label = str(subject.get("label") or "figure").strip().lower()[:40] or "figure"
+    kind = str(subject.get("kind") or "").strip().lower() or "person"
+
+    try:
+        st = _load_state(session_id) or {}
+    except Exception:
+        st = {}
+    try:
+        hist = _load_history(session_id) or []
+    except Exception:
+        hist = []
+
+    phase = st.get("current_phase", "normal")
+    chaos = st.get("chaos_level", 0)
+    turn = st.get("turn_count", 0)
+    location = st.get("location", "") or ""
+    time_of_day = st.get("time_of_day", "") or ""
+    world_prompt = (st.get("world_prompt") or "").strip()
+
+    inventory = []
+    try:
+        from items import ITEMS
+        for item_id in (st.get("inventory") or []):
+            meta = ITEMS.get(item_id) or {}
+            inventory.append(meta.get("display", item_id))
+    except Exception:
+        inventory = list(st.get("inventory") or [])
+
+    # The last few narrative beats — what just happened, so the character can
+    # react to the moment rather than talking in a vacuum.
+    recent = []
+    for entry in hist[-4:]:
+        d = (entry.get("dispatch") or "").strip()
+        if d:
+            recent.append(d[:280])
+
+    situation = {
+        "phase": phase,
+        "chaos": chaos,
+        "turn": turn,
+        "location": location,
+        "time_of_day": time_of_day,
+        "inventory": inventory,
+        "scene": world_prompt[:400],
+    }
+
+    premise = _story_premise()
+
+    # Compose the persona / system prompt the roleplay LLM (or the ElevenLabs
+    # agent) uses to BE this subject, grounded in the story.
+    kind_hint = {
+        "person": "a person the player has encountered",
+        "character": "a named character in this world",
+        "creature": "a strange, possibly sentient creature",
+        "animal": "an animal that, in this uncanny place, can speak",
+        "machine": "a machine or device carrying a voice (radio / intercom / terminal)",
+    }.get(kind, "someone the player has encountered")
+
+    recent_block = ""
+    if recent:
+        recent_block = "\n\nRECENT EVENTS (most recent last):\n- " + "\n- ".join(recent)
+
+    scene_block = f"\n\nRIGHT NOW: {world_prompt}" if world_prompt else ""
+    loc_bits = ", ".join([b for b in [location.replace("_", " ") if location else "", time_of_day] if b])
+    loc_block = f"\n\nSETTING: {loc_bits}." if loc_bits else ""
+
+    persona_prompt = (
+        f"You ARE the '{label}' — {kind_hint} — inside a 1993 analog-horror world. "
+        f"You are NOT an AI assistant and you must never break character or mention being an AI. "
+        f"Speak in-world, in first person, reacting to what is happening around you.\n\n"
+        f"WORLD PREMISE: {premise}"
+        f"{scene_block}{loc_block}"
+        f"\n\nSTATE: story phase '{phase}', chaos level {chaos}/10, turn {turn}."
+        f"{recent_block}\n\n"
+        f"The person you are speaking to is the investigator/photojournalist exploring this place"
+        + (f" (currently carrying: {', '.join(inventory)})" if inventory else "")
+        + ". Stay consistent with the premise and the recent events. Be atmospheric, terse, and human — "
+        "2-4 sentences per reply, never a monologue. You may be afraid, hostile, cryptic, desperate, or "
+        "helpful depending on who you are and what is happening. Reveal information sparingly and in "
+        "character. If asked something you couldn't know, deflect in a way that fits the scene. "
+        "Never narrate stage directions in asterisks; just speak."
+    )
+
+    # A cold-open first line so the conversation starts with presence.
+    opening_line = _talk_opening_line(label, kind, situation, persona_prompt)
+
+    return {
+        "subject": {"label": label, "kind": kind, "speaks": bool(subject.get("speaks", True))},
+        "premise": premise,
+        "situation": situation,
+        "recent": recent,
+        "persona_prompt": persona_prompt,
+        "opening_line": opening_line,
+    }
+
+
+def _talk_llm_failed(text: str) -> bool:
+    """True when an ``_ask`` result is an error/placeholder sentinel rather than
+    a genuine in-character line, so TALK can fall back gracefully."""
+    t = (text or "").strip().lower()
+    if not t:
+        return True
+    sentinels = (
+        "signal interrupted", "the transmission wavers",
+        "system communications remain static", "narrative paused",
+        "the world holds its breath",
+    )
+    if any(t.startswith(s) or s in t for s in sentinels):
+        return True
+    return t.startswith(("i cannot", "i can't", "as an", "i'm sorry", "i am sorry"))
+
+
+def _talk_opening_line(label: str, kind: str, situation: dict, persona_prompt: str) -> str:
+    """The subject's first line — spoken before the player says anything.
+
+    Uses the LLM when available (grounded in the persona prompt); falls back to
+    a tense, generic-but-fitting line so the mechanic always opens with voice.
+    """
+    fallback = {
+        "machine": f"[the {label} crackles]… is someone there? Say something.",
+        "creature": "…you can see me. Most can't. Why are you still standing there?",
+        "animal": "…you hear me, don't you. Don't act like the others.",
+    }.get(kind, "You. You shouldn't be here. What do you want?")
+
+    if not LLM_ENABLED:
+        return fallback
+    try:
+        prompt = (
+            persona_prompt
+            + "\n\nThe investigator has just turned to face you. Say your FIRST line to them — "
+            "one or two sentences, in character, reacting to this exact moment. Output ONLY the spoken words."
+        )
+        line = _ask(prompt, temp=0.9, tokens=70, use_lore=False)
+        line = (line or "").strip().strip('"').strip()
+        # Guard against the model narrating, refusing, or erroring out.
+        if _talk_llm_failed(line) or len(line) > 320:
+            return fallback
+        return line
+    except Exception:
+        return fallback
+
+
+def api_talk_session():
+    """Open a story-aware conversation with a SCAN subject.
+
+    Request JSON:  {"subject": {"label", "kind", "speaks"}, "session_id"?}
+    Response JSON:
+        {
+          "mode": "voice" | "text",
+          "subject": {...},
+          "context": {premise, situation, recent, opening_line, ...},
+          "agent_id":  <str|null>,   # ElevenLabs Conversational AI agent
+          "signed_url": <str|null>,  # short-lived URL for a private agent
+          "overrides": {...},        # agent prompt + first-message overrides
+          "dynamic_variables": {...} # story variables for the agent/widget
+        }
+
+    Voice mode requires ELEVENLABS_API_KEY (+ ELEVENLABS_AGENT_ID). When those
+    are absent — or the token exchange fails — we degrade to text mode, which is
+    fully functional via /api/talk/message. Read-only: never mutates the sim.
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        subject = data.get("subject") or {}
+        session_id = data.get("session_id", "default")
+        if not isinstance(subject, dict) or not (subject.get("label") or "").strip():
+            return jsonify({"error": "missing subject"}), 400
+
+        context = build_talk_context(subject, session_id)
+
+        # Dynamic variables + prompt overrides an ElevenLabs agent can consume to
+        # stay aware of the story (see ElevenLabs Conversational AI docs).
+        sit = context["situation"]
+        dynamic_variables = {
+            "subject_label": context["subject"]["label"],
+            "subject_kind": context["subject"]["kind"],
+            "story_premise": context["premise"],
+            "story_phase": str(sit.get("phase", "")),
+            "chaos_level": str(sit.get("chaos", "")),
+            "turn": str(sit.get("turn", "")),
+            "location": str(sit.get("location", "")),
+            "time_of_day": str(sit.get("time_of_day", "")),
+            "current_scene": str(sit.get("scene", "")),
+            "recent_events": " | ".join(context.get("recent", [])),
+        }
+        overrides = {
+            "agent": {
+                "prompt": {"prompt": context["persona_prompt"]},
+                "first_message": context["opening_line"],
+            }
+        }
+
+        agent_id = os.getenv("ELEVENLABS_AGENT_ID", "").strip()
+        api_key = os.getenv("ELEVENLABS_API_KEY", "").strip()
+        signed_url = None
+        mode = "text"
+
+        if agent_id and api_key:
+            mode = "voice"
+            # Private agents need a short-lived signed URL minted server-side so
+            # the API key never reaches the browser. Public agents can connect
+            # with just the agent_id, so a signing failure is non-fatal.
+            try:
+                import requests as _rq
+                resp = _rq.get(
+                    "https://api.elevenlabs.io/v1/convai/conversation/get-signed-url",
+                    headers={"xi-api-key": api_key},
+                    params={"agent_id": agent_id},
+                    timeout=12,
+                )
+                if resp.status_code == 200:
+                    signed_url = (resp.json() or {}).get("signed_url")
+            except Exception as e:
+                log_error(f"[TALK] signed-url exchange failed: {e}")
+
+        return jsonify({
+            "mode": mode,
+            "subject": context["subject"],
+            "context": {
+                "premise": context["premise"],
+                "situation": context["situation"],
+                "recent": context["recent"],
+                "opening_line": context["opening_line"],
+            },
+            "agent_id": agent_id or None,
+            "signed_url": signed_url,
+            "overrides": overrides,
+            "dynamic_variables": dynamic_variables,
+        })
+    except Exception as e:
+        import traceback as _tb
+        log_error(f"[TALK] session failed: {e}")
+        _tb.print_exc()
+        return jsonify({"error": str(e), "mode": "text"}), 500
+
+
+def api_talk_message():
+    """One turn of a text conversation with a SCAN subject (the always-on path).
+
+    Request JSON:
+        {
+          "subject": {"label", "kind", "speaks"},
+          "messages": [{"role": "user"|"assistant", "content": str}, ...],
+          "session_id"?: str
+        }
+    Response JSON: {"reply": str}
+
+    The server rebuilds the story-aware persona each call from CURRENT state, so
+    the character stays aware of how the world has evolved between lines. The
+    client owns the running transcript and sends it back each turn. Read-only.
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        subject = data.get("subject") or {}
+        messages = data.get("messages") or []
+        session_id = data.get("session_id", "default")
+        if not isinstance(subject, dict) or not (subject.get("label") or "").strip():
+            return jsonify({"error": "missing subject"}), 400
+        if not isinstance(messages, list):
+            messages = []
+
+        context = build_talk_context(subject, session_id)
+        persona = context["persona_prompt"]
+
+        # Render the running transcript into the prompt. Keep only the last ~12
+        # turns so the prompt stays bounded on long conversations.
+        lines = []
+        for m in messages[-12:]:
+            if not isinstance(m, dict):
+                continue
+            role = m.get("role")
+            content = (m.get("content") or "").strip()
+            if not content:
+                continue
+            who = "INVESTIGATOR" if role == "user" else context["subject"]["label"].upper()
+            lines.append(f"{who}: {content[:400]}")
+        transcript = "\n".join(lines)
+
+        if not LLM_ENABLED:
+            return jsonify({"reply": "[static swallows the reply — the channel is dead]"})
+
+        prompt = (
+            persona
+            + "\n\nCONVERSATION SO FAR:\n"
+            + (transcript or "(the investigator has just approached you)")
+            + f"\n\nRespond as {context['subject']['label']}, in character, 2-4 sentences. "
+            "Output ONLY your spoken reply — no name prefix, no stage directions."
+        )
+        reply = _ask(prompt, temp=0.9, tokens=140, use_lore=False)
+        reply = (reply or "").strip().strip('"').strip()
+        if _talk_llm_failed(reply):
+            reply = "[the channel breaks up — say that again]"
+        # Strip an accidental leading "LABEL:" prefix if the model added one.
+        label_up = context["subject"]["label"].upper()
+        if reply.upper().startswith(label_up + ":"):
+            reply = reply[len(label_up) + 1:].strip()
+        return jsonify({"reply": reply[:600]})
+    except Exception as e:
+        import traceback as _tb
+        log_error(f"[TALK] message failed: {e}")
+        _tb.print_exc()
+        return jsonify({"error": str(e), "reply": "…"}), 500
 
 
 def api_investigate():
