@@ -823,6 +823,12 @@
               else RtLog.push(null, "\u2192 " + d.command);
               break;
             case "capabilities": RtLog.push("status", "\u25C6 model commands", RtLog.clip((d.commands || []).join(", "), 140)); break;
+            case "tracks": {
+              RtLog.push("status", "\u25C6 video out: " + ((d.outputs && d.outputs.length ? d.outputs.join(", ") : "?")) + " \u2192 " + (d.chosen || "main_video"));
+              if (d.inputs && d.inputs.length) RtLog.push("error", "\u26A0 model needs input track: " + d.inputs.join(", ") + " (not fed \u2014 may not render)");
+              break;
+            }
+            case "track_received": RtLog.push("dim", "\u25C9 track \u00B7 " + (d.name || "?") + (d.kind ? " (" + d.kind + ")" : "")); break;
             case "command_skipped": RtLog.push("dim", "\u2298 skip \u00B7 " + (d.command || "") + " (unsupported)"); break;
             case "prompt_accepted": RtLog.push("ok", "\u2713 prompt accepted"); break;
             case "image_accepted": RtLog.push("ok", "\u2713 image accepted (seed decoded)"); break;

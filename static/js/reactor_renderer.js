@@ -104,6 +104,8 @@
     caps: null,                    // model Capabilities (tracks/commands) from the SDK
     commandSet: null,              // Set of command names the model advertises (or null = unknown)
     currentChunk: 0,               // last current_chunk seen in a state message (for look-ahead)
+    videoTrackName: null,          // the model's output video track name (from caps; default main_video)
+    videoAttached: false,          // have we attached a video output track this session?
     lastSceneApplied: null,        // last scene handed to applyScene, for model-swap re-apply
     swapping: false,               // a live model swap is in flight
     cfg: { model_name: FALLBACK_MODEL, enabled: false },
@@ -360,10 +362,22 @@
   }
 
   function attachTrack(name, track, stream) {
-    if (name !== "main_video") return;
+    const kind = track && track.kind;
+    emitEvent("track_received", { name: name, kind: kind });
+    // Never route an audio track into the <video> scene layer.
+    if (kind === "audio") { log("skip audio track:", name); return; }
+    // Attach the model's declared output video track. Not every model uses
+    // "main_video", so: accept the expected track name, OR — if we haven't
+    // attached any video yet — accept the FIRST video track we receive. This
+    // stops a differently-named output track from reading as a stall (commands
+    // accepted + state flowing, but nothing ever shown).
+    const expected = rstate.videoTrackName || "main_video";
+    if (name !== expected && rstate.videoAttached) { log("ignoring extra track:", name, kind); return; }
     const video = getVideo();
     if (!video) return;
     video.srcObject = stream || new MediaStream([track]);
+    rstate.videoAttached = true;
+    rstate.videoTrackName = name; // remember what actually carried the video
     // The video is visible immediately; the freeze back-buffer (the seed still)
     // sits ABOVE it and covers warmup, so there's no black gap, while keeping
     // the <video> visible lets iOS Safari actually decode/play the WebRTC track
@@ -372,7 +386,7 @@
     video.classList.remove("hidden");
     video.play().catch(() => {});
     startFrameWatch(video);
-    log("main_video attached (freeze covers until first frame)");
+    log("video track attached:", name, "(freeze covers until first frame)");
   }
 
   // Called on every presented video frame. Marks the stream live, and — when a
@@ -486,17 +500,37 @@
   function captureCaps(caps) {
     if (!caps) return;
     rstate.caps = caps;
+    // Commands the model accepts (so the driver only sends supported ones).
     const cmds = Array.isArray(caps.commands) ? caps.commands : null;
-    if (!cmds) return;
-    const names = cmds
-      .map((c) => (typeof c === "string" ? c : (c && c.name)))
-      .filter(Boolean);
-    if (!names.length) return;
-    rstate.commandSet = new Set(names);
-    log("model commands:", names.join(", "));
-    emitEvent("capabilities", { commands: names });
+    if (cmds) {
+      const names = cmds.map((c) => (typeof c === "string" ? c : (c && c.name))).filter(Boolean);
+      if (names.length) {
+        rstate.commandSet = new Set(names);
+        log("model commands:", names.join(", "));
+        emitEvent("capabilities", { commands: names });
+      }
+    }
+    // Tracks the model exposes. Models don't all stream video on "main_video";
+    // read the declared output video track so we attach the RIGHT one (a
+    // mismatch here = "generation started" but no frames = a false stall).
+    const tracks = Array.isArray(caps.tracks) ? caps.tracks : null;
+    if (tracks) {
+      const isVid = (t) => t && t.kind === "video";
+      const outs = tracks.filter((t) => isVid(t) && (t.direction === "recvonly" || !t.direction)).map((t) => t.name).filter(Boolean);
+      const ins = tracks.filter((t) => isVid(t) && t.direction === "sendonly").map((t) => t.name).filter(Boolean);
+      if (outs.length) {
+        rstate.videoTrackName = outs.indexOf("main_video") >= 0 ? "main_video" : outs[0];
+        log("model video output tracks:", outs.join(", "), "-> using", rstate.videoTrackName);
+      }
+      // Surface tracks (esp. any REQUIRED input track) so a model that needs a
+      // fed-in video to produce output is diagnosable instead of silently stalling.
+      emitEvent("tracks", { outputs: outs, inputs: ins, chosen: rstate.videoTrackName || "main_video" });
+    }
   }
-  function clearCaps() { rstate.caps = null; rstate.commandSet = null; rstate.currentChunk = 0; }
+  function clearCaps() {
+    rstate.caps = null; rstate.commandSet = null; rstate.currentChunk = 0;
+    rstate.videoTrackName = null; rstate.videoAttached = false;
+  }
 
   async function cmd(name, data) {
     // Never send a command the model doesn't advertise — skip it cleanly (and
