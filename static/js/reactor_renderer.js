@@ -253,19 +253,24 @@
     }, SCENE_FADE_SAFETY_MS);
   }
 
-  // Lift the fade veil to reveal the freshly generated scene. Honors a minimum
+  // Lift the fade veil to reveal the freshly generated scene, then run the
+  // optional `onLifted` callback (used to emit video_showing) — but ONLY once
+  // the veil is genuinely gone, never while it's still opaque. Honors a minimum
   // dark hold so a fast re-anchor still shows the pause (never a black blink):
-  // if we haven't been dark long enough, defer the reveal to the remainder.
-  function endSceneFade() {
-    if (!rstate.fadeDownActive) return;
+  // if we haven't been dark long enough, defer BOTH the lift and the callback
+  // to the remainder. If no veil is down, the callback runs immediately.
+  function endSceneFade(onLifted) {
+    if (!rstate.fadeDownActive) { if (onLifted) onLifted(); return; }
     const f = getFadeEl();
-    if (!f) return;
+    if (!f) { rstate.fadeDownActive = false; if (onLifted) onLifted(); return; }
     const elapsed = Date.now() - rstate.fadeDownTs;
     if (elapsed < SCENE_FADE_MIN_HOLD_MS) {
-      if (rstate.fadeUpTimer) return; // already scheduled
+      // A lift is already scheduled — let it carry its own callback (this dedupes
+      // racing reveal triggers so video_showing fires once per transition).
+      if (rstate.fadeUpTimer) return;
       rstate.fadeUpTimer = setTimeout(() => {
         rstate.fadeUpTimer = null;
-        endSceneFade();
+        endSceneFade(onLifted);
       }, SCENE_FADE_MIN_HOLD_MS - elapsed);
       return;
     }
@@ -273,6 +278,7 @@
     if (rstate.fadeSafetyTimer) { clearTimeout(rstate.fadeSafetyTimer); rstate.fadeSafetyTimer = null; }
     if (rstate.fadeUpTimer) { clearTimeout(rstate.fadeUpTimer); rstate.fadeUpTimer = null; }
     f.classList.remove("down");
+    if (onLifted) onLifted();
   }
 
   // Schedule the reveal after `ms` — used by blend-family models (Helios) that
@@ -282,11 +288,13 @@
     if (rstate.fadeUpTimer) clearTimeout(rstate.fadeUpTimer);
     rstate.fadeUpTimer = setTimeout(() => {
       rstate.fadeUpTimer = null;
-      endSceneFade();
+      // A freeze reveal may have already lifted the veil + announced the scene;
+      // don't fire a second video_showing for the same transition.
+      if (!rstate.fadeDownActive) return;
       // Blend models don't fire the freeze reveal, so announce the new scene
       // here (glitch mask + ceremony progression + autoplay), matching how the
       // seed-locked path reveals via video_showing.
-      emitEvent("video_showing", {});
+      endSceneFade(() => emitEvent("video_showing", {}));
     }, ms);
   }
 
@@ -354,7 +362,11 @@
     // short grace period. (Modern Safari/Chrome use the frame callback path.)
     if (getVideo() && typeof getVideo().requestVideoFrameCallback !== "function") {
       rstate.freezeFallbackTimer = setTimeout(() => {
-        if (rstate.freezeArmed) { rstate.freezeArmed = false; hideFreeze(); emitEvent("video_showing", {}); }
+        if (rstate.freezeArmed) {
+          rstate.freezeArmed = false;
+          hideFreeze();
+          endSceneFade(() => emitEvent("video_showing", {})); // lift the veil too
+        }
       }, 1800);
     }
   }
@@ -500,8 +512,10 @@
       rstate.seedToken++; // invalidate any still-decoding seed so it can't re-cover us
       if (rstate.freezeFallbackTimer) { clearTimeout(rstate.freezeFallbackTimer); rstate.freezeFallbackTimer = null; }
       hideFreeze();
-      endSceneFade(); // lift the fade-down veil — the fresh scene is on screen
-      emitEvent("video_showing", {}); // the fresh scene is now on screen
+      // Lift the fade-down veil and announce the fresh scene ONLY once it's
+      // actually visible (endSceneFade honors the minimum dark hold and fires
+      // this immediately when no veil is down).
+      endSceneFade(() => emitEvent("video_showing", {}));
     }
   }
 
@@ -742,6 +756,10 @@
       rstate.lastImageUrl = null;
       const ok = await establishLingbot(s);
       if (ok) log(s.hardTransition ? "hard transition re-staged" : "re-anchored on new guide image");
+      // Couldn't re-establish (no reference image / upload failed): lift the fade
+      // so the frozen last frame stays visible during the retry instead of
+      // holding a black veil until the safety timer.
+      else clearSceneFade();
       return ok;
     }
     await cmd("set_prompt", { prompt: s.prompt });
