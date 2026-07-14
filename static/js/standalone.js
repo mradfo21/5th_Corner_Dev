@@ -52,6 +52,8 @@
     sceneFlash: document.getElementById("scene-flash"),
     sceneGlitch: document.getElementById("scene-glitch"),
     prose: document.getElementById("prose-feed"),
+    storyLog: document.getElementById("story-log"),
+    storyLogHide: document.getElementById("story-log-hide"),
     choices: document.getElementById("choices-container"),
     customForm: document.getElementById("custom-form"),
     customInput: document.getElementById("custom-input"),
@@ -125,6 +127,7 @@
     menuToggle: document.getElementById("menu-toggle"),
     controlRail: document.getElementById("control-rail"),
     btnModel: document.getElementById("btn-model"),
+    btnStory: document.getElementById("btn-story"),
     rtModelAdd: document.getElementById("rt-model-add"),
     rtModelInput: document.getElementById("rt-model-input"),
     vhsOverlay: document.getElementById("vhs-overlay"),
@@ -1589,6 +1592,37 @@
     return { push, clip, toggle, init };
   })();
 
+  // ------------------------------------------------------------------
+  // Story log — the run's narrative chronicle. Formerly floating text over the
+  // scene; now a docked, toggleable panel (STORY button / J), mirroring the
+  // world-model log, so the art is never obstructed. Collapsed by default.
+  // ------------------------------------------------------------------
+  const StoryLog = (function () {
+    function visible() {
+      try { return localStorage.getItem("story_log") === "on"; } catch (_) { return false; }
+    }
+    function applyVisibility() {
+      const on = visible();
+      document.body.classList.toggle("story-log-on", on);
+      if (el.btnStory) el.btnStory.classList.toggle("active", on);
+      // When opened, jump to the latest beat so it reads like a live tail.
+      if (on && el.prose) el.prose.scrollTop = el.prose.scrollHeight + 400;
+    }
+    function toggle() {
+      const on = !visible();
+      try { localStorage.setItem("story_log", on ? "on" : "off"); } catch (_) {}
+      applyVisibility();
+    }
+    function init() {
+      applyVisibility();
+      if (el.storyLogHide) el.storyLogHide.addEventListener("click", () => {
+        try { localStorage.setItem("story_log", "off"); } catch (_) {}
+        applyVisibility();
+      });
+    }
+    return { visible, toggle, init };
+  })();
+
   // Small transient on-screen note so it's obvious which renderer is active
   // (useful while testing / toggling with the G key).
   let _rendererToastTimer = null;
@@ -1845,40 +1879,64 @@
     return "narrative-event";
   }
 
-  // Condense a long field-note paragraph down to a short, punchy beat — the
-  // scene (video) is the star; the feed should read like terse dispatches, not
-  // walls of text.
-  function shortBeat(text) {
-    const t = String(text == null ? "" : text).trim().replace(/\s+/g, " ");
-    if (t.length <= 160) return t;
-    // Accumulate whole sentences up to a coherent ~1–2 line beat (avoids cutting
-    // on tiny leading fragments like "1993.").
-    const parts = t.split(/(?<=[.!?])\s+/);
-    let out = "";
-    for (const s of parts) {
-      if (out && out.length + 1 + s.length > 180) break;
-      out = out ? out + " " + s : s;
-      if (out.length >= 130) break;
-    }
-    if (!out) out = t.slice(0, 160);
-    if (out.length > 200) out = out.slice(0, 197).trim() + "\u2026";
-    return out;
+  // Short, human tag shown per log entry so the chronicle is legible at a glance.
+  const LOG_LABEL = {
+    player_action: "ACT",
+    narrative_event: "SCENE",
+    consequence_event: "RESULT",
+    vision_analysis: "VISION",
+    error_event: "ERROR",
+    player_choice_prompt: "CHOICE",
+    inventory_pickup: "PICKUP",
+    inventory_full: "PACK",
+    suspense_event: "TENSION",
+    threat_escalation: "THREAT",
+    risky_action_outcome: "RISK",
+    combat_action: "COMBAT",
+    combat_resolution: "COMBAT",
+    game_over: "END",
+  };
+
+  function labelForType(type) {
+    if (LOG_LABEL[type]) return LOG_LABEL[type];
+    if (type && type.indexOf("combat") === 0) return "COMBAT";
+    if (type && type.indexOf("threat") === 0) return "THREAT";
+    return "LOG";
   }
 
-  // Feed lines that carry generated prose we want to keep short.
-  const SHORTEN_TYPES = {
-    narrative_event: 1, consequence_event: 1, vision_analysis: 1,
-    suspense_event: 1, threat_escalation: 1, risky_action_outcome: 1,
-  };
+  // Timestamp for a story-log entry (mm:ss into the session-visible clock).
+  function logStamp() {
+    const d = new Date();
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    const ss = String(d.getSeconds()).padStart(2, "0");
+    return `${mm}:${ss}`;
+  }
 
   function appendProse(item) {
     const div = document.createElement("div");
     div.className = `prose-entry glow-pop ${classForType(item.type)}`;
     div.dataset.itemId = item.id;
     const raw = item.content || "";
-    div.innerHTML = renderInline(SHORTEN_TYPES[item.type] ? shortBeat(raw) : raw);
+
+    // It's a detailed log now (not ambient overlay text), so each entry carries
+    // a timestamp + type tag and shows the FULL beat rather than a condensed
+    // one-liner.
+    const t = document.createElement("span");
+    t.className = "prose-time";
+    t.textContent = logStamp();
+    const tag = document.createElement("span");
+    tag.className = "prose-tag";
+    tag.textContent = labelForType(item.type);
+    const body = document.createElement("span");
+    body.className = "prose-body";
+    body.innerHTML = renderInline(raw);
+
+    div.appendChild(t);
+    div.appendChild(tag);
+    div.appendChild(body);
     el.prose.appendChild(div);
-    el.prose.scrollTop = el.prose.scrollHeight + 400;
+    // Tail to the newest entry when the log is open.
+    if (StoryLog.visible()) el.prose.scrollTop = el.prose.scrollHeight + 400;
     return div;
   }
 
@@ -4774,6 +4832,8 @@
       capturePhoto(); // journalist photograph — file a specimen to the case file
     } else if (e.key.toLowerCase() === "l") {
       RtLog.toggle(); // show/hide the world-model inspector log
+    } else if (e.key.toLowerCase() === "j") {
+      StoryLog.toggle(); // show/hide the story log (the run chronicle)
     } else if (e.key.toLowerCase() === "g") {
       Renderer.toggle();
       Sound.toggle();
@@ -4813,7 +4873,9 @@
     }
     if (el.menuToggle) el.menuToggle.addEventListener("click", () => Menu.toggle());
     if (el.btnModel) el.btnModel.addEventListener("click", () => { RtLog.toggle(); });
+    if (el.btnStory) el.btnStory.addEventListener("click", () => { StoryLog.toggle(); });
     if (el.rtModelAdd) el.rtModelAdd.addEventListener("submit", addCustomModel);
+    StoryLog.init();
     Menu.init();
     Tactile.init();
     el.deathRestart.addEventListener("click", resetGame);

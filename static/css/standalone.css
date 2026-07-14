@@ -209,43 +209,97 @@ html, body {
   transform: translateY(1px);
 }
 
-/* ---------- Narrative feed: floating top-left, NO background ---------- */
+/* ---------- Story log: a docked, toggleable run chronicle ----------
+   Formerly floating narrative text over the scene. It now lives in a panel that
+   is hidden by default and opened from the STORY rail button (or J), mirroring
+   the world-model log, so the art is never obstructed by prose. */
+
+.story-log {
+  position: fixed;
+  /* Docked top-LEFT (where the narrative used to float) so it never collides
+     with the world-model log, which docks against the right-hand rail. */
+  left: calc(env(safe-area-inset-left, 0px) + 16px);
+  top: calc(env(safe-area-inset-top, 0px) + 58px);
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 96px);
+  width: min(42vw, 360px);
+  z-index: 12;
+  display: none;
+  flex-direction: column;
+  background: rgba(4, 10, 8, 0.52);
+  border: 1px solid rgba(142, 255, 193, 0.18);
+  border-radius: 6px;
+  backdrop-filter: blur(2px);
+  color: rgba(216, 240, 228, 0.82);
+  overflow: hidden;
+  pointer-events: auto;
+}
+body.story-log-on .story-log { display: flex; }
+
+.story-log-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 8px;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  color: rgba(142, 255, 193, 0.7);
+  border-bottom: 1px solid rgba(142, 255, 193, 0.14);
+  background: rgba(0, 0, 0, 0.25);
+}
+.story-log-hide {
+  background: none;
+  border: none;
+  color: rgba(216, 240, 228, 0.5);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  padding: 0 2px;
+}
+.story-log-hide:hover { color: rgba(255, 120, 120, 0.9); }
 
 #prose-feed {
-  position: fixed;
-  top: calc(env(safe-area-inset-top, 0px) + 40px);
-  left: calc(env(safe-area-inset-left, 0px) + 28px);
-  width: min(38vw, 400px);
-  max-height: 52vh;
-  z-index: 6;
+  list-style: none;
+  margin: 0;
+  padding: 8px 10px;
+  flex: 1 1 auto;      /* fill the panel between the header and its bottom edge */
+  min-height: 0;       /* allow the list to shrink so overflow-y can scroll */
   overflow-y: auto;
+  overflow-x: hidden;
   display: flex;
   flex-direction: column;
-  gap: 5px;
-  scrollbar-width: none;
-  /* Subtle, ambient — the scene is the star. */
-  opacity: 0.52;
-  transition: opacity 0.5s ease;
+  gap: 8px;
+  scrollbar-width: thin;
 }
-#prose-feed::-webkit-scrollbar { display: none; }
-
-/* Boot gate: on a fresh run, keep the narrative text hidden until the world is
-   actually on screen (a still lands or the realtime feed goes live). Otherwise
-   floating text hangs over a black void while the first scene renders. */
-body.awaiting-first-scene #prose-feed {
-  opacity: 0;
-  pointer-events: none;
-}
+#prose-feed::-webkit-scrollbar { width: 6px; }
+#prose-feed::-webkit-scrollbar-thumb { background: rgba(142,255,193,0.2); border-radius: 3px; }
 
 .prose-entry {
   margin: 0;
   animation: pop-in 0.42s cubic-bezier(0.2, 0.9, 0.25, 1.2) both;
-  font-size: 13px;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 12px;
   line-height: 1.5;
   font-weight: 300;
   letter-spacing: 0.01em;
   text-shadow: 0 1px 3px rgba(0,0,0,0.9);
 }
+
+/* Log meta: a per-entry timestamp + type tag so the chronicle reads like a
+   proper, detailed log rather than ambient one-liners. */
+.prose-time {
+  color: rgba(216, 240, 228, 0.32);
+  margin-right: 6px;
+  font-size: 10px;
+}
+.prose-tag {
+  color: rgba(142, 255, 193, 0.55);
+  margin-right: 6px;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.prose-body { color: inherit; }
 
 @keyframes pop-in {
   0%   { opacity: 0; transform: translateY(7px) scale(0.97); }
@@ -263,12 +317,9 @@ body.awaiting-first-scene #prose-feed {
 }
 
 .prose-entry.player-action {
-  align-self: flex-end;
   color: #ffd97a;
   font-style: italic;
-  text-align: right;
 }
-.prose-entry.player-action::before { content: "» "; }
 
 .prose-entry.narrative-event,
 .prose-entry.consequence-event {
@@ -2038,6 +2089,13 @@ body.menu-open #control-rail {
   color: #eafff2;
 }
 .rail-btn:active { transform: scale(0.94); }
+/* Toggled-on state (e.g. the STORY log is open) — a subtle lit highlight. */
+.rail-btn.active {
+  background: rgba(142, 255, 193, 0.16);
+  border-color: rgba(142, 255, 193, 0.55);
+  color: #eafff2;
+  box-shadow: inset 0 0 10px rgba(142, 255, 193, 0.12);
+}
 
 /* Make every interactive control a clean single-tap target on mobile — no
    double-tap zoom, no gesture bleed between the action zone and the rail. */
@@ -2821,18 +2879,16 @@ body.reactor-available.rt-log-on #rt-log { display: flex; }
 
 /* ---------- Mobile portrait: text spans top, wheel fits the width ---------- */
 @media (max-width: 720px) {
-  #prose-feed {
-    /* Stop before the control rail on the right; keep the block compact so it
-       no longer dominates the screen. Scrolls when longer. */
-    width: calc(100vw - 108px);
-    max-width: none;
-    max-height: 30vh;
-    top: calc(env(safe-area-inset-top, 0px) + 40px);
-    /* Fade the top edge so a long dispatch dissolves instead of hard-cropping. */
-    -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 18px);
-    mask-image: linear-gradient(to bottom, transparent 0, #000 18px);
+  /* The story-log panel: keep it clear of the right-hand rail and comfortably
+     tall on phones. */
+  .story-log {
+    left: calc(env(safe-area-inset-left, 0px) + 10px);
+    right: calc(env(safe-area-inset-right, 0px) + 78px);
+    top: calc(env(safe-area-inset-top, 0px) + 52px);
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 90px);
+    width: auto;
   }
-  .prose-entry { font-size: 14px; line-height: 1.4; }
+  .prose-entry { font-size: 14px; line-height: 1.45; }
 
   #action-wheel { width: 96vw; height: 176px; bottom: calc(env(safe-area-inset-bottom, 0px) + 1.6vh); }
   .choice-btn { font-size: 14px; max-width: 42vw; }
@@ -2860,7 +2916,12 @@ body.reactor-available.rt-log-on #rt-log { display: flex; }
 
 /* ---------- Phones in landscape (short height): keep the wheel low + tight ---------- */
 @media (max-height: 500px) and (orientation: landscape) {
-  #prose-feed { max-height: 40vh; width: min(42vw, 420px); }
+  .story-log {
+    top: calc(env(safe-area-inset-top, 0px) + 52px);
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 70px);
+    left: calc(env(safe-area-inset-left, 0px) + 10px);
+    width: min(42vw, 420px);
+  }
   #action-wheel { height: 138px; bottom: calc(env(safe-area-inset-bottom, 0px) + 6px); }
   .choice-btn:nth-child(2) { bottom: 92px; }
   #free-will-btn, #forward-btn { width: 42px; height: 42px; }
@@ -2868,7 +2929,6 @@ body.reactor-available.rt-log-on #rt-log { display: flex; }
   #realtime-btn { width: 42px; height: 42px; transform: translateX(30px); }
   #realtime-btn:hover { transform: translateX(30px) scale(1.08); }
   #scan-hint { bottom: calc(env(safe-area-inset-bottom, 0px) + 150px); }
-  #prose-feed { max-height: 40vh; }
 
   /* Compact the rail + toggle so the collapsed menu fits a short screen. */
   #menu-toggle { top: calc(env(safe-area-inset-top, 0px) + 6px); width: 36px; height: 36px; }
