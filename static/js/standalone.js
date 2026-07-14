@@ -261,6 +261,9 @@
     }
     return {
       resume() { ensure(); },
+      // Shared, gesture-unlocked AudioContext so the ambient scene score
+      // (SceneAudio) rides the same mute + first-gesture gating as the SFX.
+      context() { return ensure(); },
       glitch() { noise(0.24, 0.055); },                        // VCR transition static burst
       text() { tone(430, 0.09, "sine", 0.045); },              // narrative / world text lands
       pickup() { tone([600, 900], 0.16, "triangle", 0.06); },  // item pickup
@@ -310,6 +313,198 @@
       cereActions() { tone(660, 0.06, "triangle", 0.045); tone(880, 0.06, "triangle", 0.045, 0.06); tone(1180, 0.12, "sine", 0.04, 0.12); },  // actions generating — options shimmer in
       cereDone() { tone(720, 0.06, "sine", 0.05); tone(1080, 0.18, "sine", 0.05, 0.06); },                // turn resolved — clean affirmation
       cereNote() { tone(1500, 0.03, "square", 0.028); },       // realtime sub-event tick (prompt sent, chunk rendered…)
+    };
+  })();
+
+  // ------------------------------------------------------------------
+  // SceneAudio — generated ambient score for the current guide image.
+  //
+  // Each new scene carries a text descriptor (metadata.prompt). We POST it to
+  // /api/scene_audio, which renders a short scene-matched instrumental clip with
+  // Google Lyria RealTime and returns a URL. We loop that clip as an ambient bed
+  // and crossfade to a fresh one whenever the world re-scores. Shares the Sound
+  // synth's AudioContext so it inherits the same mute + first-gesture gating and
+  // silently no-ops when audio is unavailable (no key / offline / stream fail).
+  // ------------------------------------------------------------------
+  const SceneAudio = (function () {
+    let currentUrl = null;      // audio_url currently playing (guards re-triggers)
+    let requestedKey = null;    // last descriptor we requested (dedupe re-renders)
+    let src = null;             // active looping AudioBufferSourceNode
+    let gain = null;            // its GainNode
+    const bufferCache = new Map(); // url -> decoded AudioBuffer
+    const TARGET_VOL = 0.26;    // sit UNDER the UI SFX — it's a bed, not a lead
+    const FADE = 1.4;           // crossfade seconds between scene scores
+
+    function ctx() {
+      try { return Sound.context ? Sound.context() : null; } catch (_) { return null; }
+    }
+
+    async function fetchBuffer(url) {
+      if (bufferCache.has(url)) return bufferCache.get(url);
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error("audio HTTP " + resp.status);
+      const arr = await resp.arrayBuffer();
+      const c = ctx();
+      if (!c) throw new Error("no audio context");
+      const buf = await c.decodeAudioData(arr);
+      bufferCache.set(url, buf);
+      return buf;
+    }
+
+    function stop(fadeOut) {
+      const oldSrc = src, oldGain = gain;
+      src = null; gain = null;
+      if (!oldSrc) return;
+      const c = ctx();
+      try {
+        if (c && oldGain) {
+          const t = c.currentTime;
+          const d = fadeOut == null ? FADE : fadeOut;
+          oldGain.gain.cancelScheduledValues(t);
+          oldGain.gain.setValueAtTime(oldGain.gain.value, t);
+          oldGain.gain.linearRampToValueAtTime(0.0001, t + d);
+          oldSrc.stop(t + d + 0.05);
+        } else {
+          oldSrc.stop();
+        }
+      } catch (_) {}
+    }
+
+    function playBuffer(buf) {
+      const c = ctx();
+      if (!c || !buf) return;
+      const s = c.createBufferSource();
+      s.buffer = buf;
+      s.loop = true;
+      const g = c.createGain();
+      const t = c.currentTime;
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.linearRampToValueAtTime(TARGET_VOL, t + FADE);
+      s.connect(g); g.connect(c.destination);
+      try { s.start(); } catch (_) { return; }
+      src = s; gain = g;
+    }
+
+    async function crossfadeTo(url) {
+      try {
+        const buf = await fetchBuffer(url);
+        if (!state.soundEnabled) return;   // muted while we were fetching
+        stop(FADE);
+        playBuffer(buf);
+        currentUrl = url;
+      } catch (_) { /* stay silent on any audio failure */ }
+    }
+
+    // ── Increment 2: realtime streaming backend (opt-in via ?music=stream) ──
+    // Continuously plays PCM pushed from /ws/scene_music, re-steering on each
+    // scene instead of looping a clip. Falls back to nothing (silent) on any
+    // socket/decoder error; the clip path stays the default.
+    const STREAM_MODE = (function () {
+      try { return new URLSearchParams(location.search).get("music") === "stream"; }
+      catch (_) { return false; }
+    })();
+    let ws = null;             // active WebSocket
+    let streamGain = null;     // gain for streamed PCM
+    let streamNextTime = 0;    // scheduling clock (AudioContext time)
+    let wsOpening = false;
+
+    function schedulePCM(arrayBuffer) {
+      const c = ctx();
+      if (!c || !streamGain || !arrayBuffer || arrayBuffer.byteLength < 4) return;
+      const view = new DataView(arrayBuffer);
+      const frames = (arrayBuffer.byteLength / 4) | 0; // 2ch * 16-bit
+      if (frames <= 0) return;
+      const buf = c.createBuffer(2, frames, 48000);
+      const chL = buf.getChannelData(0), chR = buf.getChannelData(1);
+      let o = 0;
+      for (let i = 0; i < frames; i++) {
+        chL[i] = view.getInt16(o, true) / 32768; o += 2;
+        chR[i] = view.getInt16(o, true) / 32768; o += 2;
+      }
+      const s = c.createBufferSource();
+      s.buffer = buf;
+      s.connect(streamGain);
+      const now = c.currentTime;
+      // Keep a small latency cushion; re-prime if we've underrun.
+      if (streamNextTime < now + 0.05) streamNextTime = now + 0.15;
+      try { s.start(streamNextTime); } catch (_) { return; }
+      streamNextTime += buf.duration;
+    }
+
+    function openStream(prompt) {
+      const c = ctx();
+      if (!c || wsOpening || (ws && ws.readyState <= 1)) return;
+      wsOpening = true;
+      streamGain = c.createGain();
+      streamGain.gain.value = TARGET_VOL;
+      streamGain.connect(c.destination);
+      streamNextTime = 0;
+      let sock;
+      try {
+        const proto = location.protocol === "https:" ? "wss:" : "ws:";
+        sock = new WebSocket(proto + "//" + location.host + "/ws/scene_music");
+        sock.binaryType = "arraybuffer";
+      } catch (_) { wsOpening = false; return; }
+      ws = sock;
+      sock.onopen = () => {
+        wsOpening = false;
+        try { sock.send(JSON.stringify({ prompt: prompt || "" })); } catch (_) {}
+      };
+      sock.onmessage = (ev) => {
+        if (!state.soundEnabled) return;
+        if (ev.data instanceof ArrayBuffer) schedulePCM(ev.data);
+      };
+      sock.onerror = () => { wsOpening = false; };
+      sock.onclose = () => { wsOpening = false; if (ws === sock) ws = null; };
+    }
+
+    function steerStream(prompt) {
+      if (ws && ws.readyState === 1) {
+        try { ws.send(JSON.stringify({ prompt: prompt || "" })); } catch (_) {}
+      } else {
+        openStream(prompt);
+      }
+    }
+
+    function closeStream() {
+      try { if (ws) ws.close(); } catch (_) {}
+      ws = null; wsOpening = false;
+      if (streamGain) { try { streamGain.disconnect(); } catch (_) {} streamGain = null; }
+      streamNextTime = 0;
+    }
+
+    return {
+      // Ask for a scene score, then crossfade (clip) or re-steer (stream).
+      // Deduped so repeated renders of the same scene don't re-request.
+      async score(prompt) {
+        if (!state.soundEnabled) return;
+        const key = (prompt == null ? "" : String(prompt)).trim().slice(0, 240);
+        if (!key || key === requestedKey) return;
+        requestedKey = key;
+        if (STREAM_MODE) { steerStream(key); return; }
+        let res;
+        try {
+          res = await postJSON("/api/scene_audio", { prompt: key, session: "default" });
+        } catch (_) { return; }
+        if (!res || !res.audio_url) return;      // unavailable — stay silent
+        if (res.audio_url === currentUrl) return; // same bed already playing
+        crossfadeTo(res.audio_url);
+      },
+      // Follow the global sound toggle: fade out on mute, resume on unmute.
+      setEnabled(on) {
+        if (STREAM_MODE) {
+          if (!on) closeStream();
+          else if (requestedKey) openStream(requestedKey);
+          return;
+        }
+        if (!on) stop(0.4);
+        else if (currentUrl) crossfadeTo(currentUrl);
+      },
+      // Full reset (new game): silence and forget so the next scene re-scores.
+      reset() {
+        stop(0.4); closeStream();
+        currentUrl = null; requestedKey = null;
+      },
     };
   })();
 
@@ -981,6 +1176,9 @@
           showRendererToast("Guide image integrated");
           if (Ceremony.isActive()) Ceremony.note("\u25C8 Guide image integrated");
           try { Sound.scene(); } catch (_) {}
+          // Re-assert the ambient score on re-anchor (deduped, so it only acts
+          // if the scene descriptor actually changed since the last request).
+          try { SceneAudio.score(state.lastScenePrompt); } catch (_) {}
           showGuideThumbnail(imageUrl);
         };
         // The active world model changed (mid-game swap) — reflect it in the
@@ -1710,6 +1908,12 @@
         Ceremony.reach("world_update");
       }
       Renderer.applyScene(item.image_url, item.metadata && item.metadata.prompt, item.metadata);
+      // Re-score the ambient bed from this scene's descriptor. Works for both
+      // the still (image) and realtime (reactor) renderers since both flow the
+      // guide image + prompt through here.
+      const scenePrompt = (item.metadata && item.metadata.prompt) || item.content || "";
+      state.lastScenePrompt = scenePrompt;
+      try { SceneAudio.score(scenePrompt); } catch (_) {}
     }
 
     switch (item.type) {
@@ -1868,6 +2072,8 @@
       Renderer.lastBase = null;
       Renderer.observedPromptId = null;
       clearTimeout(state.observeTimer);
+      state.lastScenePrompt = null;
+      try { SceneAudio.reset(); } catch (_) {} // silence the prior run's bed
       Sound.start(); // new tape / game begins
       try { Haptics.strong(); } catch (_) {}
       Ceremony.abort(); // cancel any mid-turn pipeline from the prior run
@@ -3876,6 +4082,7 @@
     const ico = el.btnSnd.querySelector(".rail-ico");
     if (ico) ico.textContent = state.soundEnabled ? "\u266A" : "\u2715"; // ♪ / ✕
     if (state.soundEnabled) { Sound.resume(); Sound.select(); }
+    try { SceneAudio.setEnabled(state.soundEnabled); } catch (_) {}
   }
 
   function initVhsGrain() {
