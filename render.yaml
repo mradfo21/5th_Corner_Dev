@@ -25,6 +25,13 @@ services:
         sync: false
       - key: OPENAI_API_KEY
         sync: false
+      # Krea 2 image backend (optional). Create an API token at
+      # krea.ai/settings/api-tokens. Only needed when the image provider is
+      # switched to "krea" / "krea_fast" (via /ai_switch or ai_config.json).
+      # Optional tuning: KREA_CREATIVITY (raw|low|medium|high, default low),
+      # KREA_STYLE_STRENGTH (0..1 style-reference carry-over, default 0.6).
+      - key: KREA_API_KEY
+        sync: false
       - key: REPLICATE_API_TOKEN
         sync: false
       - key: CHANNEL_ID
