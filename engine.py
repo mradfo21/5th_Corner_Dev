@@ -3427,7 +3427,65 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
             # Return canonical frame (always single image now)
             _last_image_path = result_path
             return (result_path, prompt_str, None)  # Return canonical frame for story logic
-        
+
+        elif active_image_provider == "krea":
+            # Use Krea 2 (foundation image model). img2img continuity is done via
+            # Krea's style-transfer system (previous frame(s) uploaded as style
+            # references). Mirrors the Gemini branch's t2i/img2img split and the
+            # realtime guide-still quality guard.
+            print(f"[IMG] Using Krea 2 provider")
+            from krea_image_utils import generate_with_krea, generate_krea_img2img
+
+            use_hq_for_this_frame = True if frame_idx == 0 else QUALITY_MODE
+            if frame_idx == 0:
+                print(f"[QUALITY MODE] Frame 0 (intro) - FORCING Krea Large for visual consistency")
+
+            if prev_img_paths_list and frame_idx > 0:
+                # Most-recent frame is the strongest continuity anchor.
+                ref_images_to_use = prev_img_paths_list[:1]
+
+                # REALTIME QUALITY GUARD: the most-recent reference may be a live
+                # world-model screenshot (melty/low-fidelity). When a clean guide
+                # still exists, make it the PRIMARY style reference instead.
+                if primary_guide_image_path:
+                    live_frame = ref_images_to_use[0] if ref_images_to_use else None
+                    if hard_transition or frame_idx == 1:
+                        ref_images_to_use = [primary_guide_image_path]
+                        print(f"[IMG GENERATION] Krea realtime: guide still as sole style reference")
+                    else:
+                        ref_images_to_use = [primary_guide_image_path]
+                        if live_frame and live_frame != primary_guide_image_path:
+                            ref_images_to_use.append(live_frame)
+                        print(f"[IMG GENERATION] Krea realtime dual-ref: guide still PRIMARY + live frame SECONDARY")
+
+                print(f"[IMG GENERATION] Krea img2img (style transfer) with {len(ref_images_to_use)} reference(s)")
+                result_path = generate_krea_img2img(
+                    prompt=prompt_str,
+                    caption=caption,
+                    reference_image_path=ref_images_to_use,
+                    world_prompt=world_prompt,
+                    time_of_day=use_time_of_day,
+                    action_context=choice,
+                    hd_mode=use_hq_for_this_frame,
+                    output_dir=img_dir,
+                )
+            else:
+                print(f"[IMG GENERATION] Krea text-to-image (no reference anchor)")
+                result_path = generate_with_krea(
+                    prompt=prompt_str,
+                    caption=caption,
+                    world_prompt=world_prompt,
+                    aspect_ratio="4:3",
+                    time_of_day=use_time_of_day,
+                    is_first_frame=(frame_idx == 0),
+                    action_context=choice,
+                    hd_mode=use_hq_for_this_frame,
+                    output_dir=img_dir,
+                )
+
+            _last_image_path = result_path
+            return (result_path, prompt_str, None)
+
         elif active_image_provider == "openai":
             # Use OpenAI gpt-image-1
             # Supports img2img via /images/edits endpoint (up to 16 reference images!)
@@ -3577,7 +3635,7 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
             return (_last_image_path, vhs_prompt, None)  # OpenAI doesn't generate videos
         
         else:
-            raise ValueError(f"Unknown IMAGE_PROVIDER: {active_image_provider}. Supported: 'openai', 'gemini', 'veo'")
+            raise ValueError(f"Unknown IMAGE_PROVIDER: {active_image_provider}. Supported: 'openai', 'gemini', 'veo', 'krea'")
         # Skip time extraction - we already set time_of_day in state before generation
         # No need to extract it back from the image we just generated!
         return (f"/images/{filename}", prompt_str, None)

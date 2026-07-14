@@ -58,6 +58,18 @@ def load_ai_config() -> Dict[str, Any]:
                         "text_model": "gpt-4o-mini",
                         "image_provider": "openai",
                         "image_model": "gpt-image-1"
+                    },
+                    "krea": {
+                        "text_provider": "gemini",
+                        "text_model": "gemini-3.1-flash-lite",
+                        "image_provider": "krea",
+                        "image_model": "krea-2/large"
+                    },
+                    "krea_fast": {
+                        "text_provider": "gemini",
+                        "text_model": "gemini-3.1-flash-lite",
+                        "image_provider": "krea",
+                        "image_model": "krea-2/medium"
                     }
                 }
             }
@@ -425,6 +437,13 @@ def generate_image(prompt: str, caption: Optional[str] = None, model: Optional[s
     if backend == "mock":
         return None
     try:
+        if backend == "krea":
+            import krea_image_utils
+            return krea_image_utils.generate_with_krea(
+                prompt=prompt,
+                caption=caption or "image",
+                model=get_image_model(),
+            )
         import gemini_image_utils
         return gemini_image_utils.generate_with_gemini(
             prompt=prompt,

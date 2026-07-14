@@ -30,6 +30,20 @@
       "image_provider": "veo",
       "image_model": "veo-3.1-generate-preview",
       "description": "Video-based image generation - generates 8s videos, extracts last frame. Natural consistency!"
+    },
+    "krea": {
+      "text_provider": "gemini",
+      "text_model": "gemini-3.1-flash-lite",
+      "image_provider": "krea",
+      "image_model": "krea-2/large",
+      "description": "Krea 2 Large images (style transfer for continuity) + Gemini narrative. Requires KREA_API_KEY."
+    },
+    "krea_fast": {
+      "text_provider": "gemini",
+      "text_model": "gemini-3.1-flash-lite",
+      "image_provider": "krea",
+      "image_model": "krea-2/medium",
+      "description": "Krea 2 Medium images (faster/cheaper) + Gemini narrative. Requires KREA_API_KEY."
     }
   },
   "description": "Using Gemini Flash for fast image generation (toggle Quality mode in Discord for Gemini Pro)"
