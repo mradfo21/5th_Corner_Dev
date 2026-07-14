@@ -191,6 +191,10 @@
        captures a photo of the region under it as "evidence". Pointer-driven so
        it works with mouse AND touch (iOS). -->
   <div id="touch-layer" class="hidden" aria-hidden="true">
+    <!-- Live "targets": things the world model detects that you CAN photograph.
+         Markers float over each detected subject; framing one (esp. centered)
+         locks it as worthy evidence. Populated from /api/detect while aiming. -->
+    <div id="touch-targets" aria-hidden="true"></div>
     <!-- Framing brackets show the region being captured. -->
     <div id="touch-capture-frame" aria-hidden="true"></div>
     <div id="touch-reticle">
@@ -202,7 +206,9 @@
     </div>
     <!-- Live zoom readout — reflects the optical zoom (scroll / pinch). -->
     <div id="touch-zoom" class="touch-zoom" aria-hidden="true">1.0&times;</div>
-    <div id="touch-hint" class="touch-hint">tap to capture &middot; scroll or pinch to zoom &middot; PHOTO / Esc / right-click to exit</div>
+    <!-- Lock-on badge: names the subject you've currently framed as worthy. -->
+    <div id="touch-lock" class="touch-lock" aria-hidden="true"></div>
+    <div id="touch-hint" class="touch-hint">frame a subject &amp; tap &middot; scroll to zoom &middot; PHOTO / Esc to exit</div>
   </div>
 
   <!-- Evidence flourish: the captured photo pops up big for a beat (a satisfying

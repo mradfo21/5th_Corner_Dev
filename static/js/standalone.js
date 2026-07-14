@@ -69,6 +69,8 @@
     touchCaptureFrame: document.getElementById("touch-capture-frame"),
     touchHint: document.getElementById("touch-hint"),
     touchZoom: document.getElementById("touch-zoom"),
+    touchTargets: document.getElementById("touch-targets"),
+    touchLock: document.getElementById("touch-lock"),
     evidenceCard: document.getElementById("evidence-card"),
     evidenceHud: document.getElementById("evidence-hud"),
     photoReceipt: document.getElementById("photo-receipt"),
@@ -159,6 +161,12 @@
     receiptTimers: [],          // pending setTimeouts driving the sequential receipt reveal
     receiptToken: 0,            // bumped per capture so a newer shot cancels an older reveal
     caseWon: false,             // the dossier census hit its target this run (win fired)
+    photoTargets: [],           // detected photographable subjects while the camera is armed
+    photoDetected: false,       // at least one detection has returned this arming session
+    photoDetectBusy: false,     // a /api/detect for photo targeting is in flight
+    photoDetectTimer: null,     // idle re-detect loop while armed
+    photoDetectLast: 0,         // last time we hit /api/detect for photo targeting
+    photoLockedLabel: null,     // label of the subject currently framed (locked)
     pendingInvestigation: null, // {screen, region, texture} captured at TOUCH lock, finalized on submit
     selectedInvestigation: null,// a specimen chosen from the tray to inform the next action
     scanOn: false,              // SCAN tool armed (object-recognition tags over the live video)
@@ -286,6 +294,8 @@
       scoreTick() { tone(1500, 0.02, "square", 0.028); },        // rolling score counter blip
       stamp() { tone([170, 80], 0.16, "sawtooth", 0.07); noise(0.06, 0.05); tone(90, 0.12, "sine", 0.05, 0.02); }, // rating stamp thunk
       zoom(t) { const f = 420 + Math.max(0, Math.min(1, t || 0)) * 900; tone(f, 0.03, "sine", 0.025); }, // lens zoom tick
+      lock() { tone([900, 1350], 0.05, "sine", 0.03); }, // a subject snaps into frame (worthy)
+      miss() { tone([300, 150], 0.14, "sine", 0.045); noise(0.05, 0.02); }, // empty frame — no subject
       newSubject() { tone([700, 1150], 0.10, "triangle", 0.05); tone(1500, 0.10, "sine", 0.04, 0.08); tone(1950, 0.12, "sine", 0.03, 0.16); }, // NEW subject filed to the case
       caseSolved() { // dossier complete — a rising, triumphant fanfare
         tone([300, 620], 0.18, "triangle", 0.06); tone([620, 930], 0.2, "triangle", 0.055, 0.14);
@@ -2353,10 +2363,10 @@
       if (!spec || !spec.texture) return;
       // File the specimen exactly as before (case file + server mirror).
       try { Investigations.store(spec); } catch (_) {}
-      reveal(spec.texture, spec.zoom || 1);
+      reveal(spec.texture, spec.zoom || 1, !!spec.centered);
     }
 
-    function reveal(texture, zoom) {
+    function reveal(texture, zoom, centered) {
       const parts = els();
       if (!parts) return;
       const token = ++state.receiptToken; // invalidate any older reveal
@@ -2377,14 +2387,14 @@
       try { Sound.receiptOpen(); } catch (_) {}
 
       postJSON("/api/photo", { frame: texture })
-        .then((res) => { if (token === state.receiptToken) printReceipt(token, res || {}, zoom); })
+        .then((res) => { if (token === state.receiptToken) printReceipt(token, res || {}, zoom, centered); })
         .catch((err) => {
           console.warn("[standalone] photo appraise failed:", err);
-          if (token === state.receiptToken) printReceipt(token, { items: [] }, zoom);
+          if (token === state.receiptToken) printReceipt(token, { items: [] }, zoom, centered);
         });
     }
 
-    function printReceipt(token, appraisal, zoom) {
+    function printReceipt(token, appraisal, zoom, centered) {
       const parts = els();
       if (!parts || token !== state.receiptToken) return;
       parts.root.classList.remove("developing");
@@ -2448,6 +2458,15 @@
             shotTotal += framing;
             appendBonusRow(parts, "tight framing " + zoom.toFixed(1) + "\u00d7", framing);
             Evidence.add(framing);
+          }
+        }
+        // Nailing the detected subject dead-center is the money shot.
+        if (centered) {
+          const bonus = Math.round(shotTotal * 0.2);
+          if (bonus > 0) {
+            shotTotal += bonus;
+            appendBonusRow(parts, "subject centered", bonus);
+            Evidence.add(bonus);
           }
         }
         if (parts.subVal) parts.subVal.textContent = "+" + Math.round(shotTotal);
@@ -2587,6 +2606,7 @@
       { x: window.innerWidth / 2, y: window.innerHeight / 2 };
     moveReticle(start.x, start.y);
     if (el.touchLayer) el.touchLayer.classList.remove("hidden");
+    startPhotoTargeting(); // begin surfacing photographable subjects
     Sound.open();
   }
 
@@ -2671,6 +2691,161 @@
     setPhotoZoom(state.photoZoom * Math.exp(-e.deltaY * 0.0015));
   }
 
+  // ------------------------------------------------------------------
+  // Photographable TARGETS — the "is this a worthy shot?" system. While the
+  // camera is armed we run the same realtime object detection the SCAN tool
+  // uses (/api/detect) and float targeting brackets over each thing the world
+  // model can actually see. Framing one (its center inside the capture box)
+  // LOCKS it as a subject; only then does a shot gather evidence. This shows
+  // players what they can photograph and confirms a capture is real, using
+  // genuine in-game perception data.
+  // ------------------------------------------------------------------
+  const PHOTO_DETECT_INTERVAL_MS = 2600; // idle re-detect cadence while armed
+  const PHOTO_DETECT_MIN_MS = 2100;      // floor between detection calls (LLM latency)
+
+  // Map a normalized source point (0..1) to its on-screen position, accounting
+  // for the object-fit:cover crop AND the current optical-zoom transform — the
+  // inverse of screenToNorm, so markers sit exactly on the displayed subject.
+  function normToPhotoScreen(cx, cy) {
+    const W = window.innerWidth, H = window.innerHeight;
+    const size = currentSourceSize();
+    let x, y;
+    if (!size || !size.w || !size.h) { x = cx * W; y = cy * H; }
+    else {
+      const scale = Math.max(W / size.w, H / size.h);
+      const dw = size.w * scale, dh = size.h * scale;
+      const ox = (W - dw) / 2, oy = (H - dh) / 2;
+      x = ox + cx * dw; y = oy + cy * dh;
+    }
+    const t = getSceneTransform();
+    if (t && t.scale !== 1) {
+      x = t.ox + (x - t.ox) * t.scale;
+      y = t.oy + (y - t.oy) * t.scale;
+    }
+    return { x, y };
+  }
+
+  // Detected subjects whose center falls inside a capture box at (cx,cy).
+  function framedTargets(cx, cy, boxPx) {
+    const half = boxPx / 2;
+    return (state.photoTargets || []).filter((o) => {
+      const p = normToPhotoScreen(o.cx, o.cy);
+      return Math.abs(p.x - cx) <= half && Math.abs(p.y - cy) <= half;
+    });
+  }
+
+  function startPhotoTargeting() {
+    state.photoTargets = [];
+    state.photoDetected = false;
+    state.photoLockedLabel = null;
+    if (el.touchTargets) el.touchTargets.innerHTML = "";
+    runPhotoDetect(true);
+  }
+
+  function stopPhotoTargeting() {
+    clearTimeout(state.photoDetectTimer);
+    state.photoDetectTimer = null;
+    state.photoTargets = [];
+    state.photoDetected = false;
+    state.photoLockedLabel = null;
+    if (el.touchTargets) el.touchTargets.innerHTML = "";
+    if (el.touchLock) { el.touchLock.classList.remove("show"); el.touchLock.textContent = ""; }
+    if (el.touchCaptureFrame) el.touchCaptureFrame.classList.remove("locked");
+  }
+
+  function schedulePhotoDetect() {
+    clearTimeout(state.photoDetectTimer);
+    state.photoDetectTimer = setTimeout(() => {
+      if (state.touchMode === "aim") runPhotoDetect(false);
+    }, PHOTO_DETECT_INTERVAL_MS);
+  }
+
+  function runPhotoDetect(force) {
+    if (state.touchMode !== "aim" || state.photoDetectBusy) return;
+    const now = Date.now();
+    if (!force && now - state.photoDetectLast < PHOTO_DETECT_MIN_MS) { schedulePhotoDetect(); return; }
+    const cap = captureScanFrame();
+    if (!cap || !cap.frame) { schedulePhotoDetect(); return; }
+    state.photoDetectBusy = true;
+    state.photoDetectLast = now;
+    postJSON("/api/detect", { frame: cap.frame })
+      .then((res) => {
+        if (state.touchMode !== "aim") return;
+        state.photoDetected = true;
+        state.photoTargets = (res && Array.isArray(res.objects)) ? res.objects : [];
+        renderPhotoTargets();
+      })
+      .catch((err) => { console.warn("[standalone] photo detect failed:", err); })
+      .finally(() => {
+        state.photoDetectBusy = false;
+        if (state.touchMode === "aim") schedulePhotoDetect();
+      });
+  }
+
+  // Rebuild the marker elements to match the latest detection, then lay them out.
+  function renderPhotoTargets() {
+    if (!el.touchTargets) return;
+    el.touchTargets.innerHTML = "";
+    (state.photoTargets || []).forEach((o) => {
+      const m = document.createElement("div");
+      m.className = "photo-target";
+      m._obj = o;
+      const tr = document.createElement("span"); tr.className = "pt-tr";
+      const bl = document.createElement("span"); bl.className = "pt-bl";
+      const label = document.createElement("span");
+      label.className = "pt-label";
+      label.textContent = o.label || "";
+      m.appendChild(tr); m.appendChild(bl); m.appendChild(label);
+      el.touchTargets.appendChild(m);
+    });
+    layoutPhotoTargets();
+  }
+
+  // Position every marker for the current zoom/pan and light up the ones that
+  // are framed; name the nearest framed subject as the locked target.
+  function layoutPhotoTargets() {
+    if (!el.touchTargets) return;
+    const box = investBoxPx();
+    const half = box / 2;
+    const rx = state.touchPoint ? state.touchPoint.x : window.innerWidth / 2;
+    const ry = state.touchPoint ? state.touchPoint.y : window.innerHeight / 2;
+    const W = window.innerWidth, H = window.innerHeight;
+    let lockedLabel = null, lockedDist = Infinity;
+    Array.from(el.touchTargets.children).forEach((m) => {
+      const o = m._obj;
+      if (!o) return;
+      const p = normToPhotoScreen(o.cx, o.cy);
+      m.style.left = p.x + "px";
+      m.style.top = p.y + "px";
+      m.classList.toggle("off", p.x < -60 || p.x > W + 60 || p.y < -60 || p.y > H + 60);
+      const inFrame = Math.abs(p.x - rx) <= half && Math.abs(p.y - ry) <= half;
+      m.classList.toggle("in-frame", inFrame);
+      if (inFrame) {
+        const d = Math.hypot(p.x - rx, p.y - ry);
+        if (d < lockedDist) { lockedDist = d; lockedLabel = o.label; }
+      }
+    });
+    const hadLock = !!state.photoLockedLabel;
+    state.photoLockedLabel = lockedLabel;
+    if (el.touchCaptureFrame) el.touchCaptureFrame.classList.toggle("locked", !!lockedLabel);
+    if (el.touchLock) {
+      el.touchLock.classList.toggle("show", !!lockedLabel);
+      el.touchLock.textContent = lockedLabel ? ("\u25CE SUBJECT: " + lockedLabel) : "";
+    }
+    if (lockedLabel && !hadLock) { try { Sound.lock(); } catch (_) {} } // a fresh lock chirps
+  }
+
+  // Empty-frame feedback: a quick red shake + soft tone + a plain-language nudge.
+  function photoMiss(msg) {
+    showRendererToast(msg);
+    try { Sound.miss(); } catch (_) {}
+    if (el.touchCaptureFrame) {
+      el.touchCaptureFrame.classList.remove("miss");
+      void el.touchCaptureFrame.offsetWidth;
+      el.touchCaptureFrame.classList.add("miss");
+    }
+  }
+
   function moveReticle(x, y) {
     state.touchPoint = { x, y };
     if (el.touchReticle) {
@@ -2688,6 +2863,9 @@
     // Re-anchor the zoom to the new aim point so the magnified view smoothly
     // follows the reticle (the CSS transform transition does the gliding).
     if (state.photoZoom && state.photoZoom !== 1) applySceneTransform();
+    // Re-evaluate which subject is framed as we aim (and reposition markers,
+    // since the zoom origin moved with the reticle).
+    if (state.touchMode === "aim") layoutPhotoTargets();
   }
 
   // Pointer-driven so it works with mouse (hover) AND touch (drag) alike.
@@ -2760,9 +2938,27 @@
   function captureAt(x, y) {
     moveReticle(x, y);
     const boxPx = investBoxPx();
+    const framed = framedTargets(x, y, boxPx);
+    // WORTHY-SHOT GATE: once detection is live, the frame must contain a real
+    // detected subject to count as evidence. (Before the first detection
+    // returns we give the benefit of the doubt so latency never eats a shot.)
+    if (state.photoDetected && !framed.length) {
+      photoMiss(state.photoTargets.length
+        ? "No subject in frame \u2014 line up a target"
+        : "Nothing to photograph here \u2014 explore to find evidence");
+      return;
+    }
+    // Which subject did we catch, and is it well-centered (a great shot)?
+    let subject = null, centered = false, best = Infinity;
+    framed.forEach((o) => {
+      const p = normToPhotoScreen(o.cx, o.cy);
+      const d = Math.hypot(p.x - x, p.y - y);
+      if (d < best) { best = d; subject = o.label; }
+    });
+    if (framed.length) centered = best <= boxPx * 0.3;
     const region = screenBoxToNorm(x, y, boxPx);
     const texture = captureSceneRegion(region, 320);
-    if (!texture) { showRendererToast("Couldn't capture — hold steady"); return; }
+    if (!texture) { showRendererToast("Couldn't capture \u2014 hold steady"); return; }
     // Frame flash + camera flash + shutter for a tactile "snap".
     if (el.touchCaptureFrame) {
       el.touchCaptureFrame.classList.remove("grab");
@@ -2773,7 +2969,7 @@
     try { Sound.shutter(); } catch (_) {}
     Photo.capture({
       texture, region, kind: "photo", label: describeTouchRegion({ x, y }).label,
-      zoom: state.photoZoom || 1,
+      zoom: state.photoZoom || 1, subject, centered,
     });
   }
 
@@ -2785,6 +2981,7 @@
     state.pinchBase = null;
     state.pinchActive = false;
     clearSceneZoom();
+    stopPhotoTargeting();
     if (el.touchLayer) el.touchLayer.classList.add("hidden");
     if (el.touchReticle) el.touchReticle.classList.remove("holding");
     if (el.touchCaptureFrame) el.touchCaptureFrame.classList.remove("grab");
