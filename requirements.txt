@@ -8,5 +8,6 @@ requests
 replicate
 imageio-ffmpeg
 opencv-python
-google-genai
+google-genai>=1.52.0
 anthropic
+flask-sock
