@@ -383,40 +383,140 @@ VEO_MODE_ENABLED    = False # DISABLED by default - use video generation instead
 SCENE_RENDERER = os.getenv("SCENE_RENDERER", "reactor")
 
 # ── Realtime world-model registry ─────────────────────────────────────────────
-# The two Reactor world models we build around form the base pair the web client
-# can switch between LIVE, mid-game (see WORLD_MODEL_SWITCHING_PLAN.md). Each
-# entry advertises the SDK model name the browser passes to `new Reactor(...)`
-# and whether the model needs a seed image to start:
-#   • lingbot-world-2 — image-conditioned; reference image locked once a run
-#     starts, so a new guide image forces a fresh stage. (requires_seed_image)
-#   • helios          — text/image-to-video; a new guide image blends in-stream
-#     with no reset, so it can start text-only.
-# REACTOR_WORLD_MODEL picks the server default; REACTOR_MODEL stays as the
-# back-compat SDK name for whichever model is the default.
+# Reactor exposes several real-time world models through one SDK, and ships new
+# ones over time. We want to be able to use ALL of them — including ones that
+# don't exist yet — the moment they come out, with zero code changes. So this
+# registry is deliberately data-driven and open:
+#
+#   1. A built-in list of every Reactor model we currently know about (below).
+#   2. An env override REACTOR_MODELS (a JSON array of {id,label,sdk_name,
+#      requires_seed_image,protocol}) that REPLACES/extends the built-ins — so a
+#      brand-new model can be added purely by config.
+#   3. REACTOR_ALLOW_CUSTOM_MODELS (default on): the web client may connect to
+#      ANY model name a tester types in, even one not advertised here — so we're
+#      free to experiment with a new model the instant Reactor ships it.
+#
+# Each entry advertises the SDK model name the browser passes to `new Reactor(...)`
+# and enough metadata for the client to pick the right per-model driver:
+#   • requires_seed_image — must a guide image be present before `start`?
+#   • protocol — how a scene is realized on the model. Two families cover every
+#     Reactor model today, and a new model defaults to the flexible "blend"
+#     family so it works out of the box:
+#       - "seed_locked": reference image is locked once a run starts, so a new
+#         guide image forces a fresh stage (reset + re-establish). (LingBot)
+#       - "blend": text/image-to-video; a new guide image blends in-stream with
+#         no reset, prompts re-steer live. (Helios, and the default for anything
+#         new.)
 REACTOR_WORLD_MODEL = os.getenv("REACTOR_WORLD_MODEL", "lingbot-world-2")
 _DEFAULT_LINGBOT_SDK = os.getenv("REACTOR_MODEL", "reactor/lingbot-world-2")
-AVAILABLE_WORLD_MODELS = [
+
+
+def _default_sdk_name(model_id: str) -> str:
+    """SDK model string for a model id. The repo's Reactor account uses the
+    ``reactor/<id>`` namespace (see the REACTOR_MODEL default), so new/unknown
+    models follow the same convention unless overridden per-entry or by env."""
+    return "reactor/{}".format(model_id)
+
+
+# Every Reactor world model we currently know of. Ones beyond the base pair are
+# advertised so they're selectable immediately; their protocol defaults to
+# "blend" (the flexible, modern family) until proven otherwise.
+_BUILTIN_WORLD_MODELS = [
     {
         "id": "lingbot-world-2",
         "label": "LingBot World 2",
         "sdk_name": _DEFAULT_LINGBOT_SDK,
         "requires_seed_image": True,
+        "protocol": "seed_locked",
     },
     {
         "id": "helios",
         "label": "Helios",
         "sdk_name": os.getenv("REACTOR_HELIOS_MODEL", "reactor/helios"),
         "requires_seed_image": False,
+        "protocol": "blend",
+    },
+    {
+        "id": "lingbot",
+        "label": "LingBot",
+        "sdk_name": _default_sdk_name("lingbot"),
+        "requires_seed_image": True,
+        "protocol": "seed_locked",
+    },
+    {
+        "id": "longlive-v2",
+        "label": "LongLive V2",
+        "sdk_name": _default_sdk_name("longlive-v2"),
+        "requires_seed_image": False,
+        "protocol": "blend",
+    },
+    {
+        "id": "sana-streaming",
+        "label": "Sana Streaming",
+        "sdk_name": _default_sdk_name("sana-streaming"),
+        "requires_seed_image": False,
+        "protocol": "blend",
     },
 ]
 
 
+def _normalize_world_model(entry: dict) -> dict:
+    """Fill in sane defaults for a (possibly partial) model registry entry."""
+    mid = str(entry.get("id") or "").strip()
+    if not mid:
+        return None
+    protocol = entry.get("protocol")
+    requires_seed = entry.get("requires_seed_image")
+    # Infer the missing half of (protocol, requires_seed_image) from the other.
+    if protocol is None:
+        protocol = "seed_locked" if requires_seed else "blend"
+    if requires_seed is None:
+        requires_seed = (protocol == "seed_locked")
+    return {
+        "id": mid,
+        "label": entry.get("label") or mid,
+        "sdk_name": entry.get("sdk_name") or _default_sdk_name(mid),
+        "requires_seed_image": bool(requires_seed),
+        "protocol": protocol,
+    }
+
+
+def _load_world_models() -> list:
+    """Build the world-model registry: env override (REACTOR_MODELS) if valid,
+    otherwise the built-in list. New models can thus be added with pure config."""
+    raw = os.getenv("REACTOR_MODELS")
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                models = [_normalize_world_model(e) for e in parsed if isinstance(e, dict)]
+                models = [m for m in models if m]
+                if models:
+                    return models
+            print("[reactor] REACTOR_MODELS is not a non-empty JSON array; using built-ins")
+        except Exception as e:
+            print("[reactor] failed to parse REACTOR_MODELS ({}); using built-ins".format(e))
+    return [_normalize_world_model(m) for m in _BUILTIN_WORLD_MODELS]
+
+
+AVAILABLE_WORLD_MODELS = _load_world_models()
+
+# Let the web client connect to a model name a tester types in even if it isn't
+# advertised above — so a newly released Reactor model is usable instantly.
+REACTOR_ALLOW_CUSTOM_MODELS = os.getenv("REACTOR_ALLOW_CUSTOM_MODELS", "1").strip().lower() not in (
+    "0", "false", "no", "off",
+)
+
+
 def world_model_sdk_name(model_id: str) -> str:
-    """SDK model string for a world-model id (falls back to the id itself)."""
+    """SDK model string for a world-model id.
+
+    Falls back to the ``reactor/<id>`` convention for unknown ids so a custom /
+    brand-new model still resolves to a usable SDK name."""
     for m in AVAILABLE_WORLD_MODELS:
         if m["id"] == model_id:
             return m["sdk_name"]
-    return model_id
+    return _default_sdk_name(model_id) if model_id and "/" not in model_id else model_id
 
 # Guard so the (slow, LLM-backed) realtime "vision" re-grounding never stacks up.
 _observe_reground_active = False

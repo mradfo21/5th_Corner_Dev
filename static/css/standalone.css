@@ -1458,11 +1458,70 @@ body.scan-busy #scan-cursor::after {
   .scan-tag { opacity: 0.96; }
 }
 
+/* ---------- Menu toggle (top-right corner) ---------- */
+/* A single always-visible button. The control menu is collapsed by default and
+   this opens/closes it, so the scene stays clean until you ask for controls. */
+#menu-toggle {
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 8px);
+  right: calc(env(safe-area-inset-right, 0px) + 10px);
+  z-index: 15;
+  width: 42px;
+  height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border-radius: 10px;
+  background: rgba(8, 12, 10, 0.5);
+  border: 1px solid rgba(142, 255, 193, 0.22);
+  color: rgba(205, 247, 223, 0.9);
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  touch-action: manipulation;
+  transition: background 0.16s, border-color 0.16s, box-shadow 0.16s, transform 0.08s;
+}
+#menu-toggle:hover {
+  background: rgba(142, 255, 193, 0.12);
+  border-color: rgba(142, 255, 193, 0.55);
+  box-shadow: 0 0 12px rgba(142, 255, 193, 0.22);
+}
+#menu-toggle:active { transform: scale(0.93); }
+.menu-toggle-ico {
+  position: relative;
+  width: 18px;
+  height: 14px;
+  display: block;
+}
+.menu-bar {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  border-radius: 2px;
+  background: currentColor;
+  transition: transform 0.22s ease, opacity 0.18s ease, top 0.22s ease;
+}
+.menu-bar:nth-child(1) { top: 0; }
+.menu-bar:nth-child(2) { top: 6px; }
+.menu-bar:nth-child(3) { top: 12px; }
+/* Open state: the hamburger morphs into an ✕ so the button reads as "close". */
+body.menu-open #menu-toggle {
+  background: rgba(142, 255, 193, 0.16);
+  border-color: rgba(142, 255, 193, 0.6);
+  color: #eafff2;
+}
+body.menu-open .menu-bar:nth-child(1) { top: 6px; transform: rotate(45deg); }
+body.menu-open .menu-bar:nth-child(2) { opacity: 0; }
+body.menu-open .menu-bar:nth-child(3) { top: 6px; transform: rotate(-45deg); }
+
 /* ---------- Control rail (vertical bar, top-right) ---------- */
 
 #control-rail {
   position: fixed;
-  top: calc(env(safe-area-inset-top, 0px) + 44px); /* below the REC timecode */
+  /* Sit just below the menu toggle (toggle is ~42px tall at top ~8px). */
+  top: calc(env(safe-area-inset-top, 0px) + 58px);
   right: calc(env(safe-area-inset-right, 0px) + 10px);
   z-index: 13;
   display: flex;
@@ -1474,6 +1533,21 @@ body.scan-busy #scan-cursor::after {
   border: 1px solid rgba(142, 255, 193, 0.14);
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
+  /* Collapsed by default: hidden + non-interactive until the menu is opened.
+     Animate a subtle drop-in from the toggle. */
+  transform-origin: top right;
+  opacity: 0;
+  transform: translateY(-10px) scale(0.96);
+  pointer-events: none;
+  visibility: hidden;
+  transition: opacity 0.18s ease, transform 0.18s ease, visibility 0s linear 0.18s;
+}
+body.menu-open #control-rail {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+  visibility: visible;
+  transition: opacity 0.18s ease, transform 0.18s ease, visibility 0s;
 }
 
 .rail-btn {
@@ -1972,8 +2046,9 @@ body.scan-busy #scan-cursor::after {
 
 #vhs-timecode {
   position: absolute;
-  top: calc(env(safe-area-inset-top, 0px) + 14px);
-  right: calc(env(safe-area-inset-right, 0px) + 16px);
+  top: calc(env(safe-area-inset-top, 0px) + 16px);
+  /* Sit to the LEFT of the menu toggle (top-right corner) so they don't stack. */
+  right: calc(env(safe-area-inset-right, 0px) + 62px);
   font-family: 'VT323', monospace;
   font-size: 15px;
   color: rgba(255, 255, 255, 0.65);
@@ -1995,13 +2070,14 @@ body.scan-busy #scan-cursor::after {
    Only shown in realtime mode (body.realtime-on) and when not user-hidden. */
 #rt-log {
   position: fixed;
-  right: calc(env(safe-area-inset-right, 0px) + 10px);
-  /* Sit BELOW the control rail (top-right, 6 buttons ~= 370px tall) and extend
-     down toward the action zone — its own column on the right edge. */
-  top: calc(env(safe-area-inset-top, 0px) + 430px);
+  /* Sit to the LEFT of the (collapsible) control-rail column so it's visible
+     whether or not the menu is open, and never overlaps the rail buttons
+     (rail is ~60px wide at right:10 → clears at ~70; add a gap). */
+  right: calc(env(safe-area-inset-right, 0px) + 78px);
+  top: calc(env(safe-area-inset-top, 0px) + 58px);
   bottom: calc(env(safe-area-inset-bottom, 0px) + 96px);
   width: 250px;
-  z-index: 9;
+  z-index: 12;
   display: none;
   flex-direction: column;
   background: rgba(4, 10, 8, 0.52);
@@ -2063,6 +2139,48 @@ body.reactor-available.rt-log-on #rt-log { display: flex; }
 }
 .rt-model-btn .rt-model-dot { opacity: 0.6; margin-right: 3px; }
 .rt-model-btn.active .rt-model-dot { opacity: 1; }
+/* A custom (typed-in / experimental) model reads slightly different so it's
+   clear it isn't one of the advertised built-ins. */
+.rt-model-btn.custom { border-style: dashed; }
+
+/* ---------- Custom model entry (free experimentation) ---------- */
+.rt-model-add {
+  display: flex;
+  gap: 4px;
+  padding: 0 8px 6px;
+  border-bottom: 1px solid rgba(142, 255, 193, 0.14);
+  background: rgba(0, 0, 0, 0.18);
+}
+.rt-model-add.hidden { display: none; }
+#rt-model-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 6px;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  color: rgba(216, 240, 228, 0.92);
+  background: rgba(4, 10, 8, 0.6);
+  border: 1px solid rgba(142, 255, 193, 0.22);
+  border-radius: 4px;
+  outline: none;
+}
+#rt-model-input::placeholder { color: rgba(216, 240, 228, 0.4); }
+#rt-model-input:focus { border-color: rgba(142, 255, 193, 0.6); box-shadow: 0 0 8px rgba(142, 255, 193, 0.2); }
+#rt-model-go {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  color: rgba(216, 240, 228, 0.85);
+  background: rgba(142, 255, 193, 0.1);
+  border: 1px solid rgba(142, 255, 193, 0.3);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+#rt-model-go:hover { background: rgba(142, 255, 193, 0.22); color: #eafff2; }
 
 .rt-log-head {
   display: flex;
@@ -2293,16 +2411,19 @@ body.reactor-available.rt-log-on #rt-log { display: flex; }
   #scan-hint { bottom: calc(env(safe-area-inset-bottom, 0px) + 150px); }
   #prose-feed { max-height: 40vh; }
 
-  /* Compact the rail so all six controls fit a short landscape screen. */
-  #control-rail { top: calc(env(safe-area-inset-top, 0px) + 6px); gap: 4px; padding: 4px; }
+  /* Compact the rail + toggle so the collapsed menu fits a short screen. */
+  #menu-toggle { top: calc(env(safe-area-inset-top, 0px) + 6px); width: 36px; height: 36px; }
+  #control-rail { top: calc(env(safe-area-inset-top, 0px) + 48px); gap: 4px; padding: 4px; }
   .rail-btn { min-height: 32px; width: 38px; padding: 3px 2px; }
   .rail-ico { font-size: 14px; }
   .rail-lbl { display: none; }
+  #vhs-timecode { right: calc(env(safe-area-inset-right, 0px) + 50px); }
 
-  /* Rail is shorter here — tuck the world-model log just below it. */
+  /* World-model panel sits to the LEFT of the rail column, below the toggle. */
   #rt-log {
-    top: calc(env(safe-area-inset-top, 0px) + 232px);
+    top: calc(env(safe-area-inset-top, 0px) + 52px);
     bottom: calc(env(safe-area-inset-bottom, 0px) + 70px);
+    right: calc(env(safe-area-inset-right, 0px) + 62px);
     width: 210px;
   }
 }

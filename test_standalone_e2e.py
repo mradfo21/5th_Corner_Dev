@@ -102,7 +102,9 @@ class TestStandaloneE2E(unittest.TestCase):
         self.page = self.browser.new_page()
         # Always start each test from a clean game state.
         self.page.goto(f"{self.base_url}/standalone")
-        self.page.click("#btn-reset")
+        # The control menu starts collapsed; reset via its keyboard shortcut (R),
+        # which works regardless of menu state, instead of the now-hidden button.
+        self.page.keyboard.press("r")
         # The generated choices are intentionally NOT shown (the player advances
         # via the forward hub or ACT); they're kept in the DOM so `moveForward`
         # can pick one. So wait for them to be ATTACHED, not visible.
@@ -125,7 +127,12 @@ class TestStandaloneE2E(unittest.TestCase):
 
     def test_standalone_page_loads(self):
         self.assertIn("SOMEWHERE", self.page.title())
-        # The top status bar was removed; the control rail is the persistent chrome.
+        # The control menu starts COLLAPSED; the menu toggle is the persistent
+        # chrome, and opening it reveals the control rail.
+        self.assertTrue(self.page.is_visible("#menu-toggle"))
+        self.assertFalse(self.page.is_visible("#control-rail"))
+        self.page.click("#menu-toggle")
+        self.page.wait_for_selector("#control-rail", state="visible", timeout=4000)
         self.assertTrue(self.page.is_visible("#control-rail"))
         self.assertTrue(self.page.is_visible("#prose-feed"))
 
@@ -180,12 +187,14 @@ class TestStandaloneE2E(unittest.TestCase):
         overlay = self.page.query_selector("#vhs-overlay")
         initial_class = overlay.get_attribute("class") or ""
         self.assertIn("vhs-on", initial_class)
-        self.page.click("#btn-vhs")
+        # VHS toggles via its keyboard shortcut (V) — the button lives in the
+        # collapsed menu, but the shortcut works regardless of menu state.
+        self.page.keyboard.press("v")
         self.page.wait_for_function(
             "!document.getElementById('vhs-overlay').classList.contains('vhs-on')",
             timeout=5000,
         )
-        self.page.click("#btn-vhs")
+        self.page.keyboard.press("v")
         self.page.wait_for_function(
             "document.getElementById('vhs-overlay').classList.contains('vhs-on')",
             timeout=5000,

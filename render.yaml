@@ -44,6 +44,18 @@ services:
       # SDK model name for Helios (the second model in the base pair).
       - key: REACTOR_HELIOS_MODEL
         value: "reactor/helios"
+      # Add/replace the entire advertised world-model list with pure config (no
+      # code change) — a JSON array of {id,label,sdk_name,requires_seed_image,
+      # protocol}. Leave unset to use the built-in list (lingbot-world-2, helios,
+      # lingbot, longlive-v2, sana-streaming). Lets us ship a NEW Reactor model
+      # the moment it exists just by editing this value.
+      - key: REACTOR_MODELS
+        sync: false
+      # Allow the web client to connect to ANY model name a tester types in, even
+      # one not advertised above — so a brand-new Reactor model is usable instantly
+      # ("1"/"true" to allow, "0"/"false" to lock to the advertised list).
+      - key: REACTOR_ALLOW_CUSTOM_MODELS
+        value: "1"
       # Default scene renderer: "reactor" (realtime video) or "image" (Gemini
       # stills). The web client auto-falls back to stills if Reactor is
       # unavailable, and can override per-session via ?renderer= / the toggle.

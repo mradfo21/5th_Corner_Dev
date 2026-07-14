@@ -13,13 +13,22 @@ facade, plus a session-swap + a UI selector, so we can flip world models the sam
 already flip between the still-image and realtime renderers — without the rest of the
 game caring.
 
-> **Status — base pair implemented (testable):** the driver abstraction (§3), the live
-> session swap (§4), the backend model registry (§5.1), and a simple **switcher UI
-> attached to the world-model log** (§5.2) are now in the code for the LingBot World 2 +
-> Helios base pair. Open the standalone view, press **L** to reveal the WORLD MODEL log,
-> and click **Stills / LingBot World 2 / Helios** to flip live. Live video for each model
-> still needs a real browser + a configured `REACTOR_API_KEY` (WebRTC + GPU) to fully
-> validate; without a key the switcher falls back to stills.
+> **Status — base pair implemented + generalized to ALL models (testable):** the driver
+> abstraction (§3), the live session swap (§4), the backend model registry (§5.1), and a
+> **switcher UI attached to the world-model log** (§5.2) are in the code. Open the
+> standalone view, open the top-right **menu → MODEL** (or press **L**) to reveal the
+> WORLD MODEL log, and click **Stills / LingBot World 2 / Helios / …** to flip live.
+>
+> **Generalized (beyond the base pair):** drivers are now keyed by **protocol family**
+> (`seed_locked` | `blend`) rather than per model id, and the generic `blend` driver is
+> **capability-aware** — it reads the model's advertised command schema
+> (`getCapabilities()` / `capabilitiesReceived`) and adapts (e.g. `set_prompt` vs
+> `schedule_prompt`, skipping unsupported commands). The registry is data-driven
+> (`REACTOR_MODELS` env override) and, when `REACTOR_ALLOW_CUSTOM_MODELS` is on, the
+> switcher exposes a **"try any model" field** to connect to any model id — including one
+> Reactor ships in the future — with no code change. Live video for each model still needs
+> a real browser + a configured `REACTOR_API_KEY` (WebRTC + GPU) to fully validate;
+> without a key the switcher falls back to stills.
 
 ---
 
@@ -201,8 +210,11 @@ avoid `ConflictError`. Persist the chosen model per browser in `localStorage`
 
 ### 5.3 Later (not the base pair)
 
-- Add `longlive-v2`, `sana-streaming`, or `lingbot` as extra registry entries once their
-  drivers are written — the registry makes each a self-contained addition.
+- ~~Add `longlive-v2`, `sana-streaming`, or `lingbot` as extra registry entries~~ —
+  **done.** All are advertised, and because drivers are keyed by protocol family (with a
+  capability-aware `blend` default) no bespoke driver is needed per model. New models can
+  also be added purely via the `REACTOR_MODELS` env override or the client's "try any
+  model" field (`REACTOR_ALLOW_CUSTOM_MODELS`).
 - Per-model tuned prompt hooks if a model benefits from a different style anchor.
 - Remember per-model last-good scene so switching back is instant.
 

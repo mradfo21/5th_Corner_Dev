@@ -48,14 +48,26 @@
   "use strict";
 
   const SDK_URL = "https://esm.sh/@reactor-team/js-sdk@2.12.0";
-  // The base pair of Reactor world models we can switch between live, mid-game
-  // (see WORLD_MODEL_SWITCHING_PLAN.md). Each id maps to a DRIVER (its wire
-  // protocol) below and to SDK metadata advertised by /api/reactor/config.
+  // World models are DATA, not hard-wired code paths. Each model maps to a
+  // DRIVER *family* (its wire protocol) — not a per-id driver — so ANY Reactor
+  // model, including one that ships tomorrow, works with no code change:
+  //   • "seed_locked" (LingBot): reference image locked once a run starts, so a
+  //     new guide image forces a fresh stage (reset + re-establish).
+  //   • "blend" (Helios, and the DEFAULT for anything new/unknown): text/image
+  //     to video; a new guide image blends in-stream with no reset, prompts
+  //     re-steer live.
+  // The model list + protocols come from /api/reactor/config (which itself is
+  // env-driven and open to custom models); these are just pre-config defaults.
   const FALLBACK_MODEL_ID = "lingbot-world-2";
   const FALLBACK_MODEL = "reactor/lingbot-world-2";
+  const FALLBACK_FAMILY = "blend"; // the flexible family unknown models default to
+  const SDK_PREFIX = "reactor/";   // how a bare model id becomes an SDK name
   const DEFAULT_MODELS = [
-    { id: "lingbot-world-2", label: "LingBot World 2", sdk_name: "reactor/lingbot-world-2", requiresSeedImage: true },
-    { id: "helios", label: "Helios", sdk_name: "reactor/helios", requiresSeedImage: false },
+    { id: "lingbot-world-2", label: "LingBot World 2", sdk_name: "reactor/lingbot-world-2", requiresSeedImage: true, protocol: "seed_locked" },
+    { id: "helios", label: "Helios", sdk_name: "reactor/helios", requiresSeedImage: false, protocol: "blend" },
+    { id: "lingbot", label: "LingBot", sdk_name: "reactor/lingbot", requiresSeedImage: true, protocol: "seed_locked" },
+    { id: "longlive-v2", label: "LongLive V2", sdk_name: "reactor/longlive-v2", requiresSeedImage: false, protocol: "blend" },
+    { id: "sana-streaming", label: "Sana Streaming", sdk_name: "reactor/sana-streaming", requiresSeedImage: false, protocol: "blend" },
   ];
   // How long to wait for the seed image to decode before starting anyway.
   const IMAGE_ACCEPT_TIMEOUT_MS = 6000;
@@ -87,6 +99,11 @@
     video: null,
     modelId: null,                 // active world-model id (resolved in enable())
     models: DEFAULT_MODELS.slice(), // available world models (from /api/reactor/config)
+    allowCustom: true,             // may we connect to an unadvertised model id? (from config)
+    sdkPrefix: SDK_PREFIX,         // how a bare id becomes an SDK name (from config)
+    caps: null,                    // model Capabilities (tracks/commands) from the SDK
+    commandSet: null,              // Set of command names the model advertises (or null = unknown)
+    currentChunk: 0,               // last current_chunk seen in a state message (for look-ahead)
     lastSceneApplied: null,        // last scene handed to applyScene, for model-swap re-apply
     swapping: false,               // a live model swap is in flight
     cfg: { model_name: FALLBACK_MODEL, enabled: false },
@@ -252,12 +269,18 @@
       const r = await fetch("/api/reactor/config");
       if (r.ok) {
         rstate.cfg = await r.json();
+        if (typeof rstate.cfg.allow_custom_models === "boolean") rstate.allowCustom = rstate.cfg.allow_custom_models;
+        if (rstate.cfg.sdk_name_prefix) rstate.sdkPrefix = rstate.cfg.sdk_name_prefix;
         if (Array.isArray(rstate.cfg.available_models) && rstate.cfg.available_models.length) {
           rstate.models = rstate.cfg.available_models.map((m) => ({
             id: m.id,
             label: m.label || m.id,
             sdk_name: m.sdk_name || m.model_name || m.id,
             requiresSeedImage: !!m.requires_seed_image,
+            // Protocol picks the driver family; default the flexible "blend"
+            // family so a model advertised without one still works.
+            protocol: m.protocol || (m.requires_seed_image ? "seed_locked" : FALLBACK_FAMILY),
+            custom: !!m.custom,
           }));
         }
       }
@@ -269,17 +292,57 @@
   function modelById(id) { return (rstate.models || []).find((m) => m.id === id) || null; }
   function knownModel(id) { return !!modelById(id); }
   function modelLabel(id) { const m = modelById(id); return m ? m.label : id; }
+  function sdkNameFor(id) {
+    if (!id) return rstate.cfg.model_name || FALLBACK_MODEL;
+    // A caller can pass a fully-qualified SDK name directly (contains "/").
+    return id.indexOf("/") >= 0 ? id : (rstate.sdkPrefix || SDK_PREFIX) + id;
+  }
   function modelNameFor(id) {
     const m = modelById(id);
-    return (m && m.sdk_name) || rstate.cfg.model_name || FALLBACK_MODEL;
+    return (m && m.sdk_name) || (id ? sdkNameFor(id) : (rstate.cfg.model_name || FALLBACK_MODEL));
   }
-  // Resolve the active world model: ?model= > localStorage > server default > fallback.
+  function familyFor(id) {
+    const m = modelById(id);
+    return (m && m.protocol) || FALLBACK_FAMILY;
+  }
+  // May we use this model id? Anything advertised, plus any id at all when the
+  // server allows custom models — so a brand-new model is usable immediately.
+  function canUseModel(id) { return !!id && (knownModel(id) || rstate.allowCustom); }
+  // Register a not-yet-advertised model on the fly (used for ?model= / typed-in
+  // custom ids) so the rest of the pipeline treats it like any other model.
+  function ensureModel(id, label, opts) {
+    if (!id) return null;
+    let m = modelById(id);
+    if (m) return m;
+    opts = opts || {};
+    m = {
+      id: id,
+      label: label || id,
+      sdk_name: opts.sdk_name || sdkNameFor(id),
+      requiresSeedImage: !!opts.requiresSeedImage,
+      protocol: opts.protocol || FALLBACK_FAMILY,
+      custom: true,
+    };
+    rstate.models = (rstate.models || []).concat([m]);
+    if (typeof window.ReactorRenderer === "object" && typeof window.ReactorRenderer.onModelsChanged === "function") {
+      try { window.ReactorRenderer.onModelsChanged(); } catch (_) {}
+    }
+    return m;
+  }
+  // Resolve the active world model: ?model= > localStorage > server default >
+  // fallback. Custom ids (not advertised) are accepted + registered when the
+  // server permits, so ?model=<anything-new> just works.
   function resolveModelId() {
-    if (rstate.modelId && knownModel(rstate.modelId)) return rstate.modelId;
+    if (rstate.modelId && canUseModel(rstate.modelId)) return rstate.modelId;
     let q = null, stored = null;
     try { q = new URLSearchParams(location.search).get("model"); } catch (_) {}
     try { stored = localStorage.getItem("world_model"); } catch (_) {}
-    const pick = (id) => (id && knownModel(id) ? id : null);
+    const pick = (id) => {
+      if (!id) return null;
+      if (knownModel(id)) return id;
+      if (rstate.allowCustom) { ensureModel(id); return id; }
+      return null;
+    };
     rstate.modelId = pick(q) || pick(stored) || pick(rstate.cfg.world_model) || FALLBACK_MODEL_ID;
     return rstate.modelId;
   }
@@ -406,7 +469,43 @@
     }
   }
 
+  // ── Capability awareness ────────────────────────────────────────────────────
+  // Reactor's SDK advertises each model's command schema (Capabilities.commands)
+  // at connect time. We read it so the generic driver adapts to WHATEVER a model
+  // supports — a brand-new model with a slightly different command set still
+  // works, instead of us blindly sending commands it rejects.
+  function knownCaps() { return rstate.commandSet instanceof Set; }
+  function supportsCmd(name) { return !knownCaps() || rstate.commandSet.has(name); }
+  // First supported command name from a preference list (or the first candidate
+  // when caps are unknown, so behavior is unchanged before capabilities arrive).
+  function pickCmd(cands, fallback) {
+    if (!knownCaps()) return cands[0];
+    for (let i = 0; i < cands.length; i++) if (rstate.commandSet.has(cands[i])) return cands[i];
+    return fallback || null;
+  }
+  function captureCaps(caps) {
+    if (!caps) return;
+    rstate.caps = caps;
+    const cmds = Array.isArray(caps.commands) ? caps.commands : null;
+    if (!cmds) return;
+    const names = cmds
+      .map((c) => (typeof c === "string" ? c : (c && c.name)))
+      .filter(Boolean);
+    if (!names.length) return;
+    rstate.commandSet = new Set(names);
+    log("model commands:", names.join(", "));
+    emitEvent("capabilities", { commands: names });
+  }
+  function clearCaps() { rstate.caps = null; rstate.commandSet = null; rstate.currentChunk = 0; }
+
   async function cmd(name, data) {
+    // Never send a command the model doesn't advertise — skip it cleanly (and
+    // announce the skip) instead of triggering a command_error round-trip.
+    if (!supportsCmd(name)) {
+      log("skip unsupported command:", name);
+      emitEvent("command_skipped", { command: name });
+      return;
+    }
     // Surface the payload (prompt text / whether an image seed rides along) so
     // the world-model inspector can show EXACTLY what we send to the model.
     emitEvent("command_sent", {
@@ -415,6 +514,21 @@
       hasImage: !!(data && data.image),
     });
     return rstate.reactor.sendCommand(name, data || {});
+  }
+
+  // Deliver a scene prompt using whatever prompt command the model actually
+  // supports. `establish` prefers scheduling at chunk 0 (the documented start
+  // path); a running re-steer prefers a live set_prompt, falling back to
+  // scheduling a look-ahead chunk for models that only expose schedule_prompt.
+  async function sendScenePrompt(prompt, establish) {
+    if (establish) {
+      const c = pickCmd(["schedule_prompt", "set_prompt"], "schedule_prompt");
+      if (c === "set_prompt") return cmd("set_prompt", { prompt: prompt });
+      return cmd("schedule_prompt", { prompt: prompt, chunk: 0 });
+    }
+    const c = pickCmd(["set_prompt", "schedule_prompt"], "set_prompt");
+    if (c === "schedule_prompt") return cmd("schedule_prompt", { prompt: prompt, chunk: (rstate.currentChunk || 0) + 1 });
+    return cmd("set_prompt", { prompt: prompt });
   }
 
   // ── Per-model drivers ───────────────────────────────────────────────────────
@@ -486,8 +600,8 @@
     // instead of hitting the documented race where `start` sails past the upload
     // and chunk 0 renders from the prompt alone (which reads as "disconnected").
     const ref = await uploadStill(s.imageUrl);
-    await cmd("schedule_prompt", { prompt: s.prompt, chunk: 0 });
-    if (ref) {
+    await sendScenePrompt(s.prompt, true);
+    if (ref && supportsCmd("set_image")) {
       rstate.stagingGuideUrl = s.imageUrl || null;
       try { await cmd("set_image_strength", { image_strength: HELIOS_IMAGE_STRENGTH }); } catch (_) {}
       const imageReady = waitForEvent("image_accepted", IMAGE_ACCEPT_TIMEOUT_MS);
@@ -506,7 +620,7 @@
   }
 
   async function applyRunningHelios(s, ctx) {
-    if (ctx.newGuideImage || s.hardTransition) {
+    if ((ctx.newGuideImage || s.hardTransition) && supportsCmd("set_image")) {
       // Swap the guide image in-stream as a FileRef (same path as establish), at
       // full conditioning strength, so the live video re-anchors on the new still
       // instead of drifting. Blend keeps continuity; a hard transition cuts.
@@ -518,17 +632,21 @@
         rstate.lastImageUrl = s.imageUrl;
       }
     }
-    await cmd("set_prompt", { prompt: s.prompt });
+    await sendScenePrompt(s.prompt, false);
     rstate.lastPrompt = s.prompt;
-    log("helios: re-steered", (ctx.newGuideImage || s.hardTransition) ? "(image re-anchored)" : "");
+    log("helios/blend: re-steered", (ctx.newGuideImage || s.hardTransition) ? "(image re-anchored)" : "");
     return true;
   }
 
+  // Drivers are keyed by PROTOCOL FAMILY, not by model id, so every current and
+  // future Reactor model maps onto one of these without a bespoke driver. The
+  // LingBot pair is the "seed_locked" family; the Helios pair is "blend" and is
+  // also the default any unknown/new model falls back to.
   const DRIVERS = {
-    "lingbot-world-2": { establish: establishLingbot, applyRunning: applyRunningLingbot },
-    "helios": { establish: establishHelios, applyRunning: applyRunningHelios },
+    "seed_locked": { establish: establishLingbot, applyRunning: applyRunningLingbot },
+    "blend": { establish: establishHelios, applyRunning: applyRunningHelios },
   };
-  function activeDriver() { return DRIVERS[rstate.modelId] || DRIVERS[FALLBACK_MODEL_ID]; }
+  function activeDriver() { return DRIVERS[familyFor(rstate.modelId)] || DRIVERS[FALLBACK_FAMILY]; }
 
   // Apply the most recent pending scene through the active model's driver.
   async function flush() {
@@ -602,6 +720,9 @@
     if (!msg || !msg.type) return;
     const t = msg.type;
     const d = msg.data || {};
+    // Track the model's chunk cursor so a look-ahead re-steer (schedule_prompt)
+    // can target a FUTURE chunk on models that lack a live set_prompt.
+    if (t === "state" && typeof d.current_chunk === "number") rstate.currentChunk = d.current_chunk;
     // LingBot reports image_accepted/prompt_accepted; Helios reports
     // image_set/prompt_scheduled/prompt_switched. Map both onto the same
     // internal waiters so the command flows are model-agnostic.
@@ -643,9 +764,17 @@
       reactor.on("trackReceived", attachTrack);
       reactor.on("statusChanged", async (status) => {
         log("status:", status);
-        if (status === "ready") { rstate.ready = true; await flush(); }
+        if (status === "ready") {
+          rstate.ready = true;
+          // Capabilities usually arrive via their own event, but also pull them
+          // directly once ready in case the event fired before we subscribed.
+          if (!knownCaps()) { try { captureCaps(reactor.getCapabilities && reactor.getCapabilities()); } catch (_) {} }
+          await flush();
+        }
         else if (status === "disconnected") { rstate.ready = false; }
       });
+      // Read the model's command schema so the driver adapts to what it supports.
+      try { reactor.on("capabilitiesReceived", captureCaps); } catch (_) {}
       // Lifecycle messages (state, *_accepted, generation_*, command_error…).
       try { reactor.on("message", handleMessage); } catch (_) {}
       reactor.on("error", (e) => {
@@ -681,6 +810,7 @@
     rstate.stagingGuideUrl = null;
     rstate.frameWatch = false;
     rstate.freezeArmed = false;
+    clearCaps(); // the next model advertises its own command schema
     clearRevealWatchdog();
     if (rstate.freezeFallbackTimer) { clearTimeout(rstate.freezeFallbackTimer); rstate.freezeFallbackTimer = null; }
     if (rstate.frameWatchTimer) { clearInterval(rstate.frameWatchTimer); rstate.frameWatchTimer = null; }
@@ -700,7 +830,11 @@
   // last frame on screen throughout, so the swap reads as a VCR-style hand-off
   // with no black gap. Returns true if the switch was accepted.
   async function setModel(id) {
-    if (!knownModel(id)) { log("unknown world model:", id); return false; }
+    if (!id) return false;
+    if (!knownModel(id)) {
+      if (!rstate.allowCustom) { log("unknown world model (custom disabled):", id); return false; }
+      ensureModel(id); // brand-new / typed-in model — register + use it live
+    }
     if (id === rstate.modelId) return true;
     if (rstate.swapping) return false;
     rstate.swapping = true;
@@ -742,6 +876,7 @@
     rstate.stagingGuideUrl = null;
     rstate.frameWatch = false;
     rstate.freezeArmed = false;
+    clearCaps();
     rstate.seedToken++; // drop any in-flight seed decode from the dead run
     clearRevealWatchdog();
     if (rstate.freezeFallbackTimer) { clearTimeout(rstate.freezeFallbackTimer); rstate.freezeFallbackTimer = null; }
@@ -848,6 +983,16 @@
   window.ReactorRenderer = {
     enable, disable, applyScene, setPrompt, reset, pause, resume, captureFrame, captureRegion,
     setModel,
+    // Register a custom / brand-new Reactor model at runtime (from the UI's
+    // "add model" field), then it's selectable like any other. Returns the id.
+    addModel: (id, label, opts) => {
+      id = (id || "").trim();
+      if (!id) return null;
+      const m = ensureModel(id, label, opts);
+      return m ? m.id : null;
+    },
+    // Whether the server permits connecting to unadvertised model names.
+    allowsCustom: () => !!rstate.allowCustom,
     getStatus: () => rstate.status,
     isActive: () => rstate.active,
     isReady: () => rstate.ready,
@@ -855,6 +1000,7 @@
     getModel: () => rstate.modelId,
     getModels: () => (rstate.models || []).map((m) => ({
       id: m.id, label: m.label, active: m.id === rstate.modelId,
+      protocol: m.protocol, custom: !!m.custom,
     })),
     // The last guide image actually integrated into the live world model.
     getGuideImage: () => rstate.guideImageUrl || null,
@@ -878,5 +1024,8 @@
     onGuideImage: null,
     // fn(id, label) — fired when the active world model changes.
     onModel: null,
+    // fn() — fired when the available-model list changes (e.g. a custom model
+    // was added), so the switcher UI can rebuild.
+    onModelsChanged: null,
   };
 })();
