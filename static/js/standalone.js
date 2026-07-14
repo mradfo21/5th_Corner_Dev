@@ -4649,10 +4649,51 @@
   // Commit a chosen action on a detected object: compose the prompt from the
   // verb + the object's name and resolve a FULL turn (consequence + fresh
   // scene) via the existing pipeline. No typing, no separate action LLM.
+  // Instant press-ceremony: a bright ring pulse that blooms from the exact spot
+  // on screen the player poked. It's spawned SYNCHRONOUSLY the instant a scan
+  // action button fires — before any network / world-model work — so the press
+  // is ALWAYS acknowledged at the object, even if the world model is slow, off,
+  // or underwhelms. Purely cosmetic and self-cleaning; lives on the (fixed,
+  // full-viewport) scan overlay so it shares the tag coordinate space and never
+  // interferes with tag bookkeeping (which iterates #scan-tags children).
+  function spawnScanPulse(x, y, variant) {
+    if (!el.scanLayer) return;
+    const p = document.createElement("div");
+    p.className = "scan-pulse" + (variant ? " scan-pulse-" + variant : "");
+    p.style.left = x + "px";
+    p.style.top = y + "px";
+    el.scanLayer.appendChild(p);
+    const kill = () => { if (p.parentNode) p.parentNode.removeChild(p); };
+    p.addEventListener("animationend", kill, { once: true });
+    setTimeout(kill, 1100); // safety net (reduced-motion / missed animationend)
+  }
+
+  // A quick, satisfying pop on the tag itself — restarts cleanly on repeat taps.
+  // Only visible on tags that PERSIST after the press (INTERACT); MOVE clears its
+  // tags immediately, and the ring pulse carries the confirmation there.
+  function pokeTag(tag) {
+    if (!tag) return;
+    tag.classList.remove("poked");
+    void tag.offsetWidth; // reflow so the animation replays on rapid taps
+    tag.classList.add("poked");
+    tag.addEventListener("animationend", (e) => {
+      if (e.animationName === "scan-poked") tag.classList.remove("poked");
+    }, { once: true });
+  }
+
+  // The screen anchor of a tag (its object's mapped position), for the pulse.
+  function tagAnchor(tag) {
+    return {
+      x: parseFloat(tag.dataset.sx || tag.style.left || "0"),
+      y: parseFloat(tag.dataset.sy || tag.style.top || "0"),
+    };
+  }
+
   function commitScanAction(tag, action) {
     const obj = tag._obj || { label: "it" };
     if (state.gameOver) { closeTagPrompt(tag); return; }
     const phrase = action.phrase(obj.label);
+    const a = tagAnchor(tag);
 
     // INTERACT is a LIVE poke: inject a realtime event into the running world
     // model (a set_prompt hot-swap) so the world reacts in place, right where the
@@ -4663,8 +4704,12 @@
     if (action.realtime) {
       const steered = Renderer.steerRealtime(phrase, { phrase: objectAnchorPhrase(obj) });
       if (steered) {
+        // Prove the press INSTANTLY — a double-ring "event" pulse + tag pop —
+        // regardless of when (or whether) the world model actually reacts.
         Sound.submit();
+        spawnScanPulse(a.x, a.y, "interact");
         closeTagPrompt(tag);
+        pokeTag(tag);
         showRendererToast(action.title + " the " + obj.label + "\u2026");
         return;
       }
@@ -4672,6 +4717,7 @@
 
     if (state.processing) { showRendererToast("The world is still resolving…"); return; }
     Sound.submit();
+    spawnScanPulse(a.x, a.y, action.id);
     closeTagPrompt(tag);
     showRendererToast(action.title + " the " + obj.label + "\u2026");
     // makeChoice clears the tags (the scene is about to change); the ambient

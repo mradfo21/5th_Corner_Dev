@@ -788,6 +788,12 @@ class TestRealtimeRenderer(unittest.TestCase):
             # event in place, so /api/choose is never called and no reset fires.
             page.evaluate("window.__MOCK_CMDS__ = []")
             page.evaluate("document.querySelector('.scan-tag.acting .scan-action-interact').click()")
+            # INSTANT press-ceremony: a ring pulse blooms at the object the moment
+            # the button is pressed — proof of the press that does NOT depend on
+            # the world model reacting (it's spawned synchronously in the handler).
+            self.assertGreaterEqual(
+                page.evaluate("document.querySelectorAll('#scan-layer .scan-pulse.scan-pulse-interact').length"), 1,
+                f"INTERACT must show an instant pulse at the object. logs:\n{self._dump_logs()}")
             # The live steer is a synchronous set_prompt on the running stream.
             page.wait_for_function("(window.__MOCK_CMDS__ || []).includes('set_prompt')", timeout=5000)
             cmds = page.evaluate("window.__MOCK_CMDS__ || []")
@@ -913,6 +919,12 @@ class TestRealtimeRenderer(unittest.TestCase):
             page.evaluate("document.querySelector('.scan-tag').click()")
             page.wait_for_function("!!document.querySelector('.scan-tag.acting .scan-action-move')", timeout=5000)
             page.evaluate("document.querySelector('.scan-tag.acting .scan-action-move').click()")
+            # INSTANT press-ceremony: MOVE also blooms a ring pulse at the object
+            # the moment it's pressed (spawned synchronously, survives the tag
+            # clear that the committing turn triggers).
+            self.assertGreaterEqual(
+                page.evaluate("document.querySelectorAll('#scan-layer .scan-pulse.scan-pulse-move').length"), 1,
+                f"MOVE must show an instant pulse at the object. logs:\n{self._dump_logs()}")
             for _ in range(60):
                 if choose_bodies:
                     break
