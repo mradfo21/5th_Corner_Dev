@@ -86,6 +86,11 @@
     btnVhs: document.getElementById("btn-vhs"),
     btnSnd: document.getElementById("btn-snd"),
     rendererBtn: document.getElementById("btn-renderer"),
+    menuToggle: document.getElementById("menu-toggle"),
+    controlRail: document.getElementById("control-rail"),
+    btnModel: document.getElementById("btn-model"),
+    rtModelAdd: document.getElementById("rt-model-add"),
+    rtModelInput: document.getElementById("rt-model-input"),
     vhsOverlay: document.getElementById("vhs-overlay"),
     backendName: document.getElementById("backend-name"),
     timecodeText: document.getElementById("timecode-text"),
@@ -239,6 +244,14 @@
       submit() { tone(700, 0.05, "square", 0.05); tone(1050, 0.11, "square", 0.045, 0.05); }, // custom action sent
       open() { tone([420, 760], 0.14, "triangle", 0.05); },    // free-will input reveal
       toggle() { tone(300, 0.04, "square", 0.04); },           // UI toggle click
+      // ---- Universal tactile feedback: a faint detent as the pointer crosses a
+      // control, a crisp mechanical click on press, and a little servo for the
+      // menu — so every surface of the game feels physical to operate. ----
+      hover() { tone(2050, 0.014, "sine", 0.012); },           // pointer enters a control — soft detent
+      focusTick() { tone(1500, 0.02, "sine", 0.018); },        // keyboard focus lands on a control
+      press() { tone(1650, 0.012, "square", 0.03); noise(0.028, 0.02); }, // button press — mechanical click
+      menuOpen() { tone([440, 980], 0.13, "triangle", 0.05); tone(1320, 0.08, "sine", 0.03, 0.05); }, // menu slides open
+      menuClose() { tone([940, 380], 0.13, "triangle", 0.045); }, // menu tucks away
       scan() { tone([320, 1180], 0.34, "sine", 0.028); tone(1180, 0.12, "sine", 0.02, 0.24); }, // SCAN armed — radar sweep
       ping() { tone([1300, 1850], 0.10, "sine", 0.03); tone(2500, 0.07, "sine", 0.018, 0.05); }, // tags land — starfield shimmer
       grab() { tone(900, 0.03, "square", 0.045); tone([700, 340], 0.10, "triangle", 0.04, 0.02); }, // TOUCH specimen captured
@@ -252,6 +265,28 @@
       cereActions() { tone(660, 0.06, "triangle", 0.045); tone(880, 0.06, "triangle", 0.045, 0.06); tone(1180, 0.12, "sine", 0.04, 0.12); },  // actions generating — options shimmer in
       cereDone() { tone(720, 0.06, "sine", 0.05); tone(1080, 0.18, "sine", 0.05, 0.06); },                // turn resolved — clean affirmation
       cereNote() { tone(1500, 0.03, "square", 0.028); },       // realtime sub-event tick (prompt sent, chunk rendered…)
+    };
+  })();
+
+  // ------------------------------------------------------------------
+  // Haptics — physical vibration feedback on devices that support it (mobile).
+  // Independent of the sound mute so the game still feels tactile when silenced.
+  // Respects prefers-reduced-motion and silently no-ops on desktop.
+  // ------------------------------------------------------------------
+  const Haptics = (function () {
+    let enabled = true;
+    try {
+      enabled = !(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+    } catch (_) {}
+    function buzz(pattern) {
+      if (!enabled) return;
+      try { if (navigator && typeof navigator.vibrate === "function") navigator.vibrate(pattern); } catch (_) {}
+    }
+    return {
+      tap: () => buzz(8),          // light press
+      select: () => buzz(14),      // committing an action / choice
+      strong: () => buzz([16, 24, 16]), // big moment (death / new game)
+      soft: () => buzz(5),         // subtle nudge
     };
   })();
 
@@ -863,6 +898,9 @@
           if (Ceremony.isActive()) Ceremony.note("\u21C4 World model \u2192 " + (label || id));
           updateModelSwitcher();
         };
+        // The available-model list changed (e.g. a custom model was added) —
+        // rebuild the switcher so the new entry appears.
+        window.ReactorRenderer.onModelsChanged = () => { buildModelSwitcher(); };
         // The log + switcher stay reachable whenever realtime is available so you
         // can flip world models even from still mode.
         document.body.classList.add("reactor-available");
@@ -1078,10 +1116,10 @@
   // World-model switcher — a simple segmented control in the log head to flip
   // between the still renderer and each Reactor world model live, mid-game.
   // ------------------------------------------------------------------
-  function makeModelBtn(id, label) {
+  function makeModelBtn(id, label, custom) {
     const b = document.createElement("button");
     b.type = "button";
-    b.className = "rt-model-btn";
+    b.className = "rt-model-btn" + (custom ? " custom" : "");
     b.dataset.model = id;
     const dot = document.createElement("span");
     dot.className = "rt-model-dot";
@@ -1092,7 +1130,9 @@
     b.appendChild(txt);
     b.title = id === "__image__"
       ? "Still images (Gemini)"
-      : "Realtime world model: " + label;
+      : custom
+        ? "Experimental world model: " + label
+        : "Realtime world model: " + label;
     b.addEventListener("click", () => {
       if (id === "__image__") Renderer.setMode("image");
       else Renderer.setWorldModel(id);
@@ -1109,8 +1149,33 @@
     const models = (Renderer.reactorAvailable() && window.ReactorRenderer.getModels)
       ? window.ReactorRenderer.getModels()
       : [];
-    models.forEach((m) => wrap.appendChild(makeModelBtn(m.id, m.label)));
+    models.forEach((m) => wrap.appendChild(makeModelBtn(m.id, m.label, m.custom)));
+    // Reveal the "try any model" field only when the server allows connecting to
+    // unadvertised models — so we can use a brand-new Reactor model instantly.
+    if (el.rtModelAdd) {
+      const allowCustom = Renderer.reactorAvailable() &&
+        window.ReactorRenderer.allowsCustom && window.ReactorRenderer.allowsCustom();
+      el.rtModelAdd.classList.toggle("hidden", !allowCustom);
+    }
     updateModelSwitcher();
+  }
+
+  // Submit handler for the custom-model field: register + switch to any model id
+  // the tester types in (e.g. a model Reactor just shipped), live.
+  function addCustomModel(e) {
+    if (e) e.preventDefault();
+    if (!el.rtModelInput) return;
+    const raw = (el.rtModelInput.value || "").trim();
+    if (!raw) return;
+    if (!Renderer.reactorAvailable() || !window.ReactorRenderer.addModel) {
+      showRendererToast("Realtime unavailable");
+      return;
+    }
+    const id = window.ReactorRenderer.addModel(raw);
+    if (!id) return;
+    el.rtModelInput.value = "";
+    buildModelSwitcher();
+    Renderer.setWorldModel(id);
   }
 
   function updateModelSwitcher() {
@@ -1139,8 +1204,10 @@
   const RtLog = (function () {
     const MAX = 220;
     const throttleAt = {};           // per-kind throttle timestamps
+    // Collapsed by default: the world-model log/selector opens from the MODEL
+    // button (or L), rather than cluttering the screen on load.
     function visible() {
-      try { return localStorage.getItem("rt_log") !== "off"; } catch (_) { return true; }
+      try { return localStorage.getItem("rt_log") === "on"; } catch (_) { return false; }
     }
     function applyVisibility() {
       document.body.classList.toggle("rt-log-on", visible());
@@ -1216,6 +1283,102 @@
     clearTimeout(_rendererToastTimer);
     _rendererToastTimer = setTimeout(() => toast.classList.remove("show"), 2200);
   }
+
+  // ------------------------------------------------------------------
+  // Menu — the collapsible control rail (top-right). Starts COLLAPSED every
+  // load so the scene is unobstructed; the corner toggle opens/closes it. The
+  // keyboard shortcuts (T/V/M/…) still work while collapsed, so power users
+  // aren't slowed down — the menu is just the visual surface.
+  // ------------------------------------------------------------------
+  const Menu = (function () {
+    let open = false;
+    function apply() {
+      document.body.classList.toggle("menu-open", open);
+      if (el.menuToggle) {
+        el.menuToggle.setAttribute("aria-expanded", open ? "true" : "false");
+        el.menuToggle.title = open ? "Close menu" : "Menu";
+      }
+    }
+    function set(next) {
+      if (next === open) return;
+      open = next;
+      apply();
+      try { Sound[open ? "menuOpen" : "menuClose"](); } catch (_) {}
+      try { Haptics.tap(); } catch (_) {}
+    }
+    return {
+      isOpen: () => open,
+      toggle: () => set(!open),
+      open: () => set(true),
+      close: () => set(false),
+      init: apply,
+    };
+  })();
+
+  // ------------------------------------------------------------------
+  // Tactile — makes EVERY interactive surface feel physical: a faint detent as
+  // the pointer crosses a control, a crisp mechanical click + haptic buzz on
+  // press, and a tick as keyboard focus lands. Implemented once via event
+  // delegation so it automatically covers current AND future controls (buttons,
+  // choices, model switcher, tape controls, scan tags, evidence thumbnails…),
+  // layered UNDER the existing semantic cues (select/submit/scene…) for depth.
+  // ------------------------------------------------------------------
+  const Tactile = (function () {
+    // Everything the player can click/tap. Buttons/links cover most; the couple
+    // of non-button clickables (scan tags, evidence thumbnails) are named too.
+    const SELECTOR = "button, a[href], [role='button'], .scan-tag, .inv-thumb";
+    let lastHover = null;
+    let keyboardModality = false;
+
+    function control(node) {
+      if (!node || typeof node.closest !== "function") return null;
+      const c = node.closest(SELECTOR);
+      if (!c || c.disabled || c.getAttribute("aria-disabled") === "true") return null;
+      return c;
+    }
+
+    function onOver(e) {
+      // Hover has no meaning on touch (pointerover fires on tap → would double
+      // with the press cue), so only detent for a real mouse.
+      if (e.pointerType && e.pointerType !== "mouse") return;
+      const c = control(e.target);
+      if (!c || c === lastHover) return;
+      lastHover = c;
+      try { Sound.hover(); } catch (_) {}
+    }
+    function onOut(e) {
+      const c = control(e.target);
+      if (c && c === lastHover) lastHover = null;
+    }
+    function onDown(e) {
+      keyboardModality = false;
+      const c = control(e.target);
+      if (!c) return;
+      try { Sound.press(); } catch (_) {}
+      try { Haptics.tap(); } catch (_) {}
+    }
+    function onKeyModality(e) {
+      if (e.key === "Tab" || e.key === "ArrowUp" || e.key === "ArrowDown" ||
+          e.key === "ArrowLeft" || e.key === "ArrowRight") {
+        keyboardModality = true;
+      }
+    }
+    function onFocusIn(e) {
+      if (!keyboardModality) return; // pointer focus already got hover+press
+      if (!control(e.target)) return;
+      try { Sound.focusTick(); } catch (_) {}
+    }
+
+    function init() {
+      // Capture phase so we still fire even if a handler stops propagation.
+      document.addEventListener("pointerover", onOver, true);
+      document.addEventListener("pointerout", onOut, true);
+      document.addEventListener("pointerdown", onDown, true);
+      document.addEventListener("keydown", onKeyModality, true);
+      document.addEventListener("focusin", onFocusIn, true);
+    }
+    return { init };
+  })();
 
   // ------------------------------------------------------------------
   // Guide-image thumbnail preview — a small, dismissible corner preview of the
@@ -1409,6 +1572,7 @@
       btn.addEventListener("click", () => {
         if (state.processing || state.gameOver) return;
         Sound.select();
+        try { Haptics.select(); } catch (_) {}
         btn.classList.add("picked");
         makeChoice(choice.text, promptItem.id);
       });
@@ -1480,6 +1644,7 @@
       case "game_over":
         appendProse(item);
         Sound.death();
+        try { Haptics.strong(); } catch (_) {}
         Ceremony.abort();
         setAutoPlay(false); // stop the world advancing once you're dead
         enterGameOver(item.content);
@@ -1607,6 +1772,7 @@
       Renderer.observedPromptId = null;
       clearTimeout(state.observeTimer);
       Sound.start(); // new tape / game begins
+      try { Haptics.strong(); } catch (_) {}
       Ceremony.abort(); // cancel any mid-turn pipeline from the prior run
       // Restart runs the SAME gamified generation pipeline as a normal turn: the
       // progress bar takes over the play button's spot at the bottom and parks on
@@ -2919,6 +3085,11 @@
     if (el.rendererBtn) {
       el.rendererBtn.addEventListener("click", () => { Renderer.toggle(); Sound.toggle(); });
     }
+    if (el.menuToggle) el.menuToggle.addEventListener("click", () => Menu.toggle());
+    if (el.btnModel) el.btnModel.addEventListener("click", () => { RtLog.toggle(); });
+    if (el.rtModelAdd) el.rtModelAdd.addEventListener("submit", addCustomModel);
+    Menu.init();
+    Tactile.init();
     el.deathRestart.addEventListener("click", resetGame);
     el.freeWillBtn.addEventListener("click", openFreeWill);
     if (el.realtimeBtn) el.realtimeBtn.addEventListener("click", openTouch);

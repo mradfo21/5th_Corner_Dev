@@ -379,7 +379,11 @@ class TestRealtimeRenderer(unittest.TestCase):
                 TINY_PNG_DATA_URL,
             )
             page.wait_for_function("window.ReactorRenderer.isShowing() === true", timeout=15000)
-            # The log panel exists and is shown in realtime mode.
+            # The world-model log/selector now starts COLLAPSED behind the MODEL
+            # button — open it (via the menu) before asserting it's visible.
+            page.click("#menu-toggle")
+            page.click("#btn-model")
+            # The log panel exists and is shown once opened in realtime mode.
             self.assertNotEqual(page.evaluate("getComputedStyle(document.getElementById('rt-log')).display"), "none")
             # Wait for log entries to accumulate.
             page.wait_for_function("document.querySelectorAll('#rt-log-list .rt-e').length >= 3", timeout=8000)

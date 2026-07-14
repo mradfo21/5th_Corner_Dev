@@ -50,12 +50,25 @@
     <div id="vhs-timecode">REC <span id="rec-dot">●</span> <span id="timecode-text">00:00:00</span></div>
   </div>
 
-  <!-- Control rail: every session control stacked in a vertical bar in the
-       top-right, so nothing overlaps the prose text or gets blocked by the
-       action field at the bottom. Icon + micro-label for clarity on PC/mobile. -->
-  <nav id="control-rail" aria-label="Controls">
+  <!-- Menu toggle: a single always-visible button in the very top-right corner.
+       The control menu starts COLLAPSED so the scene stays unobstructed; this
+       button opens/closes it (toggles body.menu-open). Also reachable with Tab. -->
+  <button id="menu-toggle" class="menu-toggle" type="button" aria-expanded="false"
+          aria-controls="control-rail" title="Menu" aria-label="Menu">
+    <span class="menu-toggle-ico" aria-hidden="true">
+      <span class="menu-bar"></span><span class="menu-bar"></span><span class="menu-bar"></span>
+    </span>
+  </button>
+
+  <!-- Control rail: session controls stacked in a vertical bar in the top-right.
+       Collapsed by default — revealed by #menu-toggle. Icon + micro-label for
+       clarity on PC/mobile. -->
+  <nav id="control-rail" aria-label="Controls" aria-hidden="true">
     <button id="btn-renderer" class="rail-btn" type="button" title="Realtime video on / still images (G)">
       <span class="rail-ico">◉</span><span class="rail-lbl">LIVE</span>
+    </button>
+    <button id="btn-model" class="rail-btn" type="button" title="World model logs &amp; selector (L)">
+      <span class="rail-ico">◍</span><span class="rail-lbl">MODEL</span>
     </button>
     <button id="autoplay-btn" class="rail-btn" type="button" title="Auto-play — advance on its own (P)">
       <span class="rail-ico">⏩</span><span class="rail-lbl" id="autoplay-label">AUTO</span>
@@ -112,6 +125,14 @@
          Reactor world model live (see WORLD_MODEL_SWITCHING_PLAN.md). Buttons are
          populated from /api/reactor/config. -->
     <div id="rt-log-models" class="rt-log-models" role="group" aria-label="Switch world model"></div>
+    <!-- Free experimentation: connect to ANY Reactor model by name — including
+         one that shipped after this build — without a code change. Shown only
+         when the server allows custom models. -->
+    <form id="rt-model-add" class="rt-model-add hidden" autocomplete="off">
+      <input id="rt-model-input" type="text" placeholder="try any model id…" maxlength="64"
+             aria-label="Custom world model id" spellcheck="false">
+      <button id="rt-model-go" type="submit" title="Load this world model">USE</button>
+    </form>
     <ol id="rt-log-list" class="rt-log-list" aria-live="polite"></ol>
   </aside>
 
