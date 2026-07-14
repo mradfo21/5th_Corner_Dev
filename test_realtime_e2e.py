@@ -513,50 +513,44 @@ class TestRealtimeRenderer(unittest.TestCase):
             labels = page.evaluate("Array.from(document.querySelectorAll('.scan-tag-label')).map(e=>e.textContent)")
             self.assertIn("wooden crate", labels)
             self.assertIn("steel door", labels)
-            # Every tag carries its little interact button.
+            # Every tag carries its little act button.
             self.assertTrue(page.evaluate("!!document.querySelector('.scan-tag .scan-tag-act')"))
-            # Poke the first (wooden crate) tag -> its inline prompt opens.
+            # Poke the first (wooden crate) tag -> its action icons appear.
             page.evaluate("""() => {
                 const tag = Array.from(document.querySelectorAll('.scan-tag'))
                     .find(t => t.querySelector('.scan-tag-label').textContent === 'wooden crate');
                 tag.querySelector('.scan-tag-act').click();
             }""")
             self.assertTrue(page.evaluate("!!document.querySelector('.scan-tag.acting')"))
-            # Type an interaction and submit -> a FULL TURN (/api/choose) that
-            # regenerates the scene, anchored on the object — NOT a live steer.
+            # INTERACT and MOVE TO action icons are offered (no typing).
+            self.assertTrue(page.evaluate("!!document.querySelector('.scan-tag.acting .scan-action-interact')"))
+            self.assertTrue(page.evaluate("!!document.querySelector('.scan-tag.acting .scan-action-move')"))
+            # Tap INTERACT -> a FULL TURN (/api/choose) with the composed prompt.
             page.evaluate("window.__MOCK_CMDS__ = []")
-            page.evaluate(
-                """() => {
-                    const tag = document.querySelector('.scan-tag.acting');
-                    const inp = tag.querySelector('.scan-tag-form input');
-                    inp.value = 'kick it open';
-                    tag.querySelector('.scan-tag-form').dispatchEvent(new Event('submit', {cancelable:true, bubbles:true}));
-                }"""
-            )
+            page.evaluate("document.querySelector('.scan-tag.acting .scan-action-interact').click()")
             # Wait (Python-side) for the /api/choose call the full turn makes.
             for _ in range(60):
                 if chooses:
                     break
                 page.wait_for_timeout(100)
-            self.assertGreaterEqual(len(chooses), 1, f"SCAN interact must resolve a FULL turn (/api/choose). logs:\n{self._dump_logs()}")
+            self.assertGreaterEqual(len(chooses), 1, f"SCAN action must resolve a FULL turn (/api/choose). logs:\n{self._dump_logs()}")
             payload = json.loads(choose_bodies[0] or "{}")
             choice = payload.get("choice") or ""
-            # Structured: prefixed with the selected object, then the typed action.
-            self.assertTrue(choice.startswith("INTERACT WITH: wooden crate"),
-                            f"action must be prefixed 'INTERACT WITH: <object>'; got {choice!r}")
-            self.assertIn("kick it open", choice.lower(), f"typed action must be appended; got {choice!r}")
+            # The composed prompt is verb + the detected object's name.
+            self.assertEqual(choice.strip(), "Interact with the wooden crate.",
+                             f"action must be composed from verb + object; got {choice!r}")
             # A full turn is NOT a live re-steer: no set_prompt hot-swap fired.
             cmds = page.evaluate("window.__MOCK_CMDS__ || []")
-            self.assertNotIn("set_prompt", cmds, "SCAN interact must commit a turn, not live-steer the stream")
+            self.assertNotIn("set_prompt", cmds, "SCAN action must commit a turn, not live-steer the stream")
         except Exception:
             print("\n=== REACTOR CONSOLE LOG (scan) ===\n" + self._dump_logs())
             raise
         finally:
             page.close()
 
-    def test_realtime_scan_empty_prompt_defaults_to_interact(self):
-        """Submitting a tag with NO typed text must still commit a full turn whose
-        action is exactly the structured prefix 'INTERACT WITH: <object>'."""
+    def test_realtime_scan_move_action(self):
+        """The MOVE TO action icon must compose 'Move to the <object>.' from the
+        detected object's name and commit a full turn — no typing."""
         page = self._new_realtime_page()
         scene_items = [
             {"id": 1, "type": "narrative", "content": "Intro."},
@@ -582,25 +576,20 @@ class TestRealtimeRenderer(unittest.TestCase):
             page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
             page.evaluate("document.getElementById('scan-btn').click()")
             page.wait_for_function("document.querySelectorAll('#scan-tags .scan-tag').length >= 1", timeout=10000)
-            # Open the tag prompt and submit with an EMPTY input.
+            # Open the tag's action icons and tap MOVE TO (no typing).
             page.evaluate("document.querySelector('.scan-tag .scan-tag-act').click()")
-            page.evaluate(
-                """() => {
-                    const tag = document.querySelector('.scan-tag.acting');
-                    tag.querySelector('.scan-tag-form input').value = '';
-                    tag.querySelector('.scan-tag-form').dispatchEvent(new Event('submit', {cancelable:true, bubbles:true}));
-                }"""
-            )
+            page.wait_for_function("!!document.querySelector('.scan-tag.acting .scan-action-move')", timeout=5000)
+            page.evaluate("document.querySelector('.scan-tag.acting .scan-action-move').click()")
             for _ in range(60):
                 if choose_bodies:
                     break
                 page.wait_for_timeout(100)
-            self.assertGreaterEqual(len(choose_bodies), 1, f"empty tag submit must still commit a turn. logs:\n{self._dump_logs()}")
+            self.assertGreaterEqual(len(choose_bodies), 1, f"MOVE action must commit a turn. logs:\n{self._dump_logs()}")
             choice = (json.loads(choose_bodies[0] or "{}").get("choice") or "").strip()
-            self.assertEqual(choice, "INTERACT WITH: rusty valve",
-                             f"empty prompt must default to the bare prefix; got {choice!r}")
+            self.assertEqual(choice, "Move to the rusty valve.",
+                             f"MOVE action must compose 'Move to the <object>.'; got {choice!r}")
         except Exception:
-            print("\n=== REACTOR CONSOLE LOG (scan-empty) ===\n" + self._dump_logs())
+            print("\n=== REACTOR CONSOLE LOG (scan-move) ===\n" + self._dump_logs())
             raise
         finally:
             page.close()
@@ -690,23 +679,18 @@ class TestRealtimeRenderer(unittest.TestCase):
             self.assertGreaterEqual(len(detects), 1, "SCAN never called /api/detect in stills mode")
             labels = page.evaluate("Array.from(document.querySelectorAll('.scan-tag-label')).map(e=>e.textContent)")
             self.assertIn("steel door", labels)
-            # Poke the tag -> commits a full turn anchored on the object.
+            # Poke the tag, tap INTERACT -> commits a full turn on the object.
             page.evaluate("document.querySelector('.scan-tag .scan-tag-act').click()")
-            page.evaluate(
-                """() => {
-                    const tag = document.querySelector('.scan-tag.acting');
-                    tag.querySelector('.scan-tag-form input').value = 'open it';
-                    tag.querySelector('.scan-tag-form').dispatchEvent(new Event('submit', {cancelable:true, bubbles:true}));
-                }"""
-            )
+            page.wait_for_function("!!document.querySelector('.scan-tag.acting .scan-action-interact')", timeout=5000)
+            page.evaluate("document.querySelector('.scan-tag.acting .scan-action-interact').click()")
             for _ in range(60):
                 if chooses:
                     break
                 page.wait_for_timeout(100)
-            self.assertGreaterEqual(len(chooses), 1, f"stills SCAN interact didn't commit a turn. logs:\n{self._dump_logs()}")
+            self.assertGreaterEqual(len(chooses), 1, f"stills SCAN action didn't commit a turn. logs:\n{self._dump_logs()}")
             choice = json.loads(choose_bodies[0] or "{}").get("choice") or ""
-            self.assertTrue(choice.startswith("INTERACT WITH: steel door"),
-                            f"action must be prefixed + anchored on the object; got {choice!r}")
+            self.assertEqual(choice.strip(), "Interact with the steel door.",
+                             f"action must be composed from verb + object; got {choice!r}")
         except Exception:
             print("\n=== CONSOLE LOG (scan-stills) ===\n" + self._dump_logs())
             raise
@@ -734,15 +718,10 @@ class TestRealtimeRenderer(unittest.TestCase):
             page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
             page.evaluate("document.getElementById('scan-btn').click()")
             page.wait_for_function("document.querySelectorAll('#scan-tags .scan-tag').length >= 1", timeout=10000)
-            # Poke a tag, type "go", submit -> scan must CEASE.
+            # Poke a tag, tap an action icon -> scan must CEASE.
             page.evaluate("document.querySelector('.scan-tag .scan-tag-act').click()")
-            page.evaluate(
-                """() => {
-                    const tag = document.querySelector('.scan-tag.acting');
-                    tag.querySelector('.scan-tag-form input').value = 'go';
-                    tag.querySelector('.scan-tag-form').dispatchEvent(new Event('submit', {cancelable:true, bubbles:true}));
-                }"""
-            )
+            page.wait_for_function("!!document.querySelector('.scan-tag.acting .scan-action-interact')", timeout=5000)
+            page.evaluate("document.querySelector('.scan-tag.acting .scan-action-interact').click()")
             # Scan overlay closes, the SCAN hub is no longer armed, and the labels
             # are gone.
             page.wait_for_function("document.getElementById('scan-layer').classList.contains('hidden')", timeout=6000)
