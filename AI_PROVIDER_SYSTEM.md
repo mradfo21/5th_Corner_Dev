@@ -227,20 +227,29 @@ Krea 2 is a foundation image model that plugs in as a **drop-in alternative to
 Gemini ("Nano Banana")** for image generation — the same way world models are
 swapped, but for stills. Text generation stays on Gemini in the Krea presets.
 
-### Switching to Krea
+**Krea 2 Medium is the shipped production default** (`ai_config.json` →
+`image_provider: "krea"`, `image_model: "krea-2/medium"`) because it renders
+the world faster than Gemini Pro (~12s vs ~15-30s) while keeping strong quality.
 
-Runtime (no redeploy), via Discord: `/ai_switch krea` (Large) or
-`/ai_switch krea_fast` (Medium). Or edit `ai_config.json` `image_provider` to
-`"krea"`. The engine routes on `ai_provider_manager.get_image_provider()`, so
-nothing else changes.
+### Switching between tiers / providers
 
-| Preset | Image model | Notes |
-|--------|-------------|-------|
-| `krea` | `krea-2/large` | Higher quality; used when HD/quality mode is on |
-| `krea_fast` | `krea-2/medium` | Faster/cheaper; used when HD mode is off |
+Runtime (no redeploy), via Discord: `/ai_switch krea` (Medium, fast — default)
+or `/ai_switch krea_large` (Large, higher quality). Fall back to Gemini/OpenAI/
+Veo anytime with `/ai_switch gemini` etc. The engine routes on
+`ai_provider_manager.get_image_provider()`, so nothing else changes.
 
-`hd_mode` (frame 0 and quality-mode frames) selects **Large**, otherwise
-**Medium** — mirroring the Gemini Pro/Flash split.
+| Preset | Image model | Approx. latency | Notes |
+|--------|-------------|-----------------|-------|
+| `krea` | `krea-2/medium` | ~12s | **Default.** Fast, faster than Gemini Pro |
+| `krea_large` | `krea-2/large` | ~24s | Higher quality / more textured |
+
+The tier is driven by the **configured `image_model`** (the preset is
+authoritative), decoupled from the Gemini quality toggle so speed is
+predictable. `hd_mode` is only a fallback when the config names no tier.
+
+If a Krea job fails or times out on a given turn and `GEMINI_API_KEY` is set,
+the engine automatically renders that single frame with Gemini so the world
+never goes blank.
 
 ### Config / secrets
 

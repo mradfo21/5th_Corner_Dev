@@ -83,9 +83,11 @@ KREA_RESOLUTION = (os.getenv("KREA_RESOLUTION") or _config.get("KREA_RESOLUTION"
 # less bandwidth) — same toggle philosophy as gemini_image_utils.
 USE_DOWNSAMPLED_FOR_IMG2IMG = True
 
-# Job polling budget.
-_POLL_INTERVAL_SECONDS = 2.0
-_POLL_TIMEOUT_SECONDS = 90.0
+# Job polling budget. Krea 2 Medium finishes in ~11-13s and Large in ~24s, so a
+# tight poll interval keeps completion-detection latency low (server time is the
+# real bottleneck, not our polling).
+_POLL_INTERVAL_SECONDS = 1.0
+_POLL_TIMEOUT_SECONDS = 120.0
 
 IMAGE_DIR = Path("images")
 
@@ -174,15 +176,35 @@ def _build_img2img_prompt(prompt: str, time_of_day: str = "", is_flipbook: bool 
     return _clamp(_sanitize_for_safety("\n\n".join(parts)))
 
 
+def _tier_from_name(name) -> str | None:
+    if not name:
+        return None
+    n = str(name).lower()
+    if "large" in n:
+        return KREA_LARGE
+    if "medium" in n:
+        return KREA_MEDIUM
+    return None
+
+
 def _resolve_model(model, hd_mode: bool) -> str:
-    """Pick the Krea 2 tier. An explicit model string wins if it names a tier;
-    otherwise hd_mode selects Large (HQ) vs Medium (fast)."""
-    if model:
-        m = str(model).lower()
-        if "large" in m:
-            return KREA_LARGE
-        if "medium" in m:
-            return KREA_MEDIUM
+    """Pick the Krea 2 tier. Priority:
+      1. explicit `model` arg naming a tier,
+      2. the configured `image_model` from ai_config.json (so the preset —
+         `krea` vs `krea_large` — is authoritative, decoupled from the Gemini
+         quality toggle so speed is predictable),
+      3. hd_mode fallback (Large when HQ, else Medium).
+    """
+    tier = _tier_from_name(model)
+    if tier:
+        return tier
+    try:
+        import ai_provider_manager
+        tier = _tier_from_name(ai_provider_manager.get_image_model())
+        if tier:
+            return tier
+    except Exception:
+        pass
     return KREA_LARGE if hd_mode else KREA_MEDIUM
 
 

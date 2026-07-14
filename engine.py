@@ -3483,6 +3483,27 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                     output_dir=img_dir,
                 )
 
+            # SAFETY NET: if Krea failed (job error/timeout or missing key) but
+            # Gemini is available, render the frame with Gemini so the world
+            # never goes blank on a single bad turn.
+            if not result_path and GEMINI_API_KEY:
+                print(f"[IMG] Krea returned no image - falling back to Gemini for this frame", flush=True)
+                from gemini_image_utils import generate_with_gemini, generate_gemini_img2img
+                if prev_img_paths_list and frame_idx > 0:
+                    fb_refs = [primary_guide_image_path] if primary_guide_image_path else prev_img_paths_list[:1]
+                    result_path = generate_gemini_img2img(
+                        prompt=prompt_str, caption=caption, reference_image_path=fb_refs,
+                        world_prompt=world_prompt, time_of_day=use_time_of_day,
+                        action_context=choice, hd_mode=use_hq_for_this_frame, output_dir=img_dir,
+                    )
+                else:
+                    result_path = generate_with_gemini(
+                        prompt=prompt_str, caption=caption, world_prompt=world_prompt,
+                        aspect_ratio="4:3", time_of_day=use_time_of_day,
+                        is_first_frame=(frame_idx == 0), action_context=choice,
+                        hd_mode=use_hq_for_this_frame, output_dir=img_dir,
+                    )
+
             _last_image_path = result_path
             return (result_path, prompt_str, None)
 

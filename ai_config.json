@@ -1,9 +1,9 @@
 {
   "text_provider": "gemini",
   "text_model": "gemini-3.1-flash-lite",
-  "image_provider": "gemini",
-  "image_model": "gemini-3.1-flash-lite-image",
-  "last_updated": "2025-12-16T19:55:00.590254+00:00",
+  "image_provider": "krea",
+  "image_model": "krea-2/medium",
+  "last_updated": "2026-07-14T23:10:00.000000+00:00",
   "available_configs": {
     "gemini": {
       "text_provider": "gemini",
@@ -35,16 +35,16 @@
       "text_provider": "gemini",
       "text_model": "gemini-3.1-flash-lite",
       "image_provider": "krea",
-      "image_model": "krea-2/large",
-      "description": "Krea 2 Large images (style transfer for continuity) + Gemini narrative. Requires KREA_API_KEY."
+      "image_model": "krea-2/medium",
+      "description": "Krea 2 Medium images (~12s, style transfer for continuity) + Gemini narrative. Fast default. Requires KREA_API_KEY."
     },
-    "krea_fast": {
+    "krea_large": {
       "text_provider": "gemini",
       "text_model": "gemini-3.1-flash-lite",
       "image_provider": "krea",
-      "image_model": "krea-2/medium",
-      "description": "Krea 2 Medium images (faster/cheaper) + Gemini narrative. Requires KREA_API_KEY."
+      "image_model": "krea-2/large",
+      "description": "Krea 2 Large images (~24s, higher quality) + Gemini narrative. Requires KREA_API_KEY."
     }
   },
-  "description": "Using Gemini Flash for fast image generation (toggle Quality mode in Discord for Gemini Pro)"
+  "description": "Using Krea 2 Medium for fast image generation (switch to krea_large for quality, or gemini/openai/veo via /ai_switch)"
 }

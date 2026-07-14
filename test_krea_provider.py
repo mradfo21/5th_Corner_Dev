@@ -14,22 +14,54 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import contextlib
+
 import krea_image_utils as krea
 import ai_provider_manager as apm
 
 
+@contextlib.contextmanager
+def _patched_image_model(model_name):
+    """Temporarily force ai_provider_manager.get_image_model() to a value so
+    tier-resolution logic can be tested without mutating ai_config.json."""
+    original = apm.get_image_model
+    apm.get_image_model = lambda: model_name
+    try:
+        yield
+    finally:
+        apm.get_image_model = original
+
+
+class TestTierFromName(unittest.TestCase):
+    def test_large(self):
+        self.assertEqual(krea._tier_from_name("krea-2/large"), krea.KREA_LARGE)
+
+    def test_medium(self):
+        self.assertEqual(krea._tier_from_name("krea-2/medium"), krea.KREA_MEDIUM)
+
+    def test_none_for_non_tier(self):
+        self.assertIsNone(krea._tier_from_name("gemini-3.1-flash-lite-image"))
+        self.assertIsNone(krea._tier_from_name(None))
+
+
 class TestModelResolution(unittest.TestCase):
-    def test_hd_mode_selects_large(self):
-        self.assertEqual(krea._resolve_model(None, True), krea.KREA_LARGE)
-
-    def test_non_hd_selects_medium(self):
-        self.assertEqual(krea._resolve_model(None, False), krea.KREA_MEDIUM)
-
-    def test_explicit_medium_overrides_hd(self):
+    def test_explicit_arg_wins(self):
+        self.assertEqual(krea._resolve_model("krea-2/large", False), krea.KREA_LARGE)
         self.assertEqual(krea._resolve_model("krea-2/medium", True), krea.KREA_MEDIUM)
 
-    def test_explicit_large_overrides_non_hd(self):
-        self.assertEqual(krea._resolve_model("krea-2/large", False), krea.KREA_LARGE)
+    def test_config_model_drives_tier(self):
+        # With no explicit arg, the configured image_model is authoritative
+        # (decoupled from hd_mode) so the preset controls speed vs quality.
+        apm._backend_override = None
+        with _patched_image_model("krea-2/large"):
+            self.assertEqual(krea._resolve_model(None, False), krea.KREA_LARGE)
+        with _patched_image_model("krea-2/medium"):
+            self.assertEqual(krea._resolve_model(None, True), krea.KREA_MEDIUM)
+
+    def test_hd_mode_fallback_when_config_has_no_tier(self):
+        with _patched_image_model("gemini-3.1-flash-lite-image"):
+            self.assertEqual(krea._resolve_model(None, True), krea.KREA_LARGE)
+            self.assertEqual(krea._resolve_model(None, False), krea.KREA_MEDIUM)
 
 
 class TestPromptBuilding(unittest.TestCase):
@@ -109,9 +141,10 @@ class TestProviderManagerWiring(unittest.TestCase):
     def test_krea_presets_available(self):
         presets = apm.get_available_presets()
         self.assertIn("krea", presets)
-        self.assertIn("krea_fast", presets)
+        self.assertIn("krea_large", presets)
         self.assertEqual(presets["krea"]["image_provider"], "krea")
-        self.assertEqual(presets["krea_fast"]["image_model"], "krea-2/medium")
+        self.assertEqual(presets["krea"]["image_model"], "krea-2/medium")
+        self.assertEqual(presets["krea_large"]["image_model"], "krea-2/large")
 
 
 if __name__ == "__main__":

@@ -63,13 +63,13 @@ def load_ai_config() -> Dict[str, Any]:
                         "text_provider": "gemini",
                         "text_model": "gemini-3.1-flash-lite",
                         "image_provider": "krea",
-                        "image_model": "krea-2/large"
+                        "image_model": "krea-2/medium"
                     },
-                    "krea_fast": {
+                    "krea_large": {
                         "text_provider": "gemini",
                         "text_model": "gemini-3.1-flash-lite",
                         "image_provider": "krea",
-                        "image_model": "krea-2/medium"
+                        "image_model": "krea-2/large"
                     }
                 }
             }
