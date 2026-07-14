@@ -213,14 +213,21 @@
     <div class="evidence-cap">● EVIDENCE GATHERED</div>
   </div>
 
-  <!-- Running EVIDENCE score (top-center). Hidden until the first photo is
-       appraised, then persists for the run. Increments item-by-item as a
-       receipt prints. -->
-  <div id="evidence-hud" class="hidden" aria-live="polite" aria-label="Evidence score">
-    <span class="ev-mark" aria-hidden="true">◆</span>
-    <span class="ev-label">EVIDENCE</span>
-    <span class="ev-total">0</span>
-    <span class="ev-shots" aria-hidden="true"></span>
+  <!-- Dossier HUD (top-center): the run's EVIDENCE score + RANK, and the CASE
+       FILE census — distinct subjects documented toward closing the case (the
+       win condition). Revealed when the camera is first raised. -->
+  <div id="evidence-hud" class="hidden" aria-live="polite" aria-label="Evidence dossier">
+    <div class="ev-main">
+      <span class="ev-mark" aria-hidden="true">◆</span>
+      <span class="ev-label">EVIDENCE</span>
+      <span class="ev-total">0</span>
+      <span class="ev-rank" aria-label="Rank">RANK D</span>
+    </div>
+    <div class="ev-case">
+      <span class="ev-case-label">CASE FILE</span>
+      <div class="ev-bar" aria-hidden="true"><div class="ev-bar-fill"></div></div>
+      <span class="ev-case-count">0/8</span>
+    </div>
   </div>
 
   <!-- Photo appraisal: the captured shot is shown LARGE at top-center (so you
@@ -273,6 +280,27 @@
         <div class="veil-spinner"></div>
         <div id="veil-message">Transmitting...</div>
       </div>
+    </div>
+  </div>
+
+  <!-- Case-closed WIN overlay: shown when the dossier census is complete (enough
+       distinct subjects documented). Grades the run with a RANK and lets the
+       player start a fresh case or keep shooting. -->
+  <div id="case-overlay" class="hidden">
+    <div class="case-inner">
+      <div class="case-badge">● CASE CLOSED</div>
+      <div class="case-rank">RANK <span id="case-rank-letter">A</span></div>
+      <div class="case-stats">
+        <span><b id="case-subjects">0</b> subjects documented</span>
+        <span><b id="case-evidence">0</b> evidence</span>
+        <span><b id="case-shots">0</b> shots</span>
+      </div>
+      <p id="case-flavor" class="case-flavor">The dossier is complete. The truth develops in the tray.</p>
+      <div class="case-actions">
+        <button id="case-continue" type="button">✕ KEEP SHOOTING</button>
+        <button id="case-restart" type="button">▶ NEW CASE</button>
+      </div>
+      <div class="case-hint">press R for a new case</div>
     </div>
   </div>
 
