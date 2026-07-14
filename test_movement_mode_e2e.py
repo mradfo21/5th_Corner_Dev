@@ -146,47 +146,79 @@ class TestMovementMode(unittest.TestCase):
             " const w = document.getElementById('action-wheel'); if (w) w.classList.remove('turn-active'); }"
         )
 
-    def _camera_moves(self, page):
-        return page.evaluate("() => (window.__moves || []).filter(p => p.indexOf('Camera:') >= 0)")
+    def _reset_cmd_log(self, page):
+        page.evaluate("() => { window.__MOCK_CMD_LOG__ = []; }")
 
-    def test_wasd_keys_steer_the_camera(self):
-        """Each of W/A/S/D must steer the live video toward the matching heading
-        with a first-person camera re-steer, and releasing must halt it."""
+    def _wait_cmd(self, page, name, param=None, value=None, timeout=6000):
+        page.wait_for_function(
+            """([n,p,v]) => (window.__MOCK_CMD_LOG__||[]).some(
+                   c => c.name===n && (p===null || c.data[p]===v))""",
+            arg=[name, param, value], timeout=timeout,
+        )
+
+    def test_wasd_keys_drive_native_movement_axes(self):
+        """Each drive key must fire the matching NATIVE LingBot World 2 command
+        (not a prompt), and releasing must idle that axis so the camera stops."""
         page = self._new_realtime_page()
         try:
             self._boot_live(page)
-
+            # key -> (command, param, held value, idle param to check on release)
             cases = [
-                ("w", "pushes forward"),
-                ("s", "pulls backward"),
-                ("a", "to the left"),
-                ("d", "to the right"),
+                ("w", "set_move_longitudinal", "move_longitudinal", "forward"),
+                ("s", "set_move_longitudinal", "move_longitudinal", "back"),
+                ("a", "set_look_horizontal", "look_horizontal", "left"),
+                ("d", "set_look_horizontal", "look_horizontal", "right"),
+                ("q", "set_move_lateral", "move_lateral", "strafe_left"),
+                ("e", "set_move_lateral", "move_lateral", "strafe_right"),
+                ("ArrowUp", "set_look_vertical", "look_vertical", "up"),
+                ("ArrowDown", "set_look_vertical", "look_vertical", "down"),
             ]
-            for key, phrase in cases:
-                page.evaluate("() => { window.__moves = []; }")
+            for key, cmd, param, value in cases:
+                self._reset_cmd_log(page)
                 page.keyboard.down(key)
-                page.wait_for_function(
-                    "(p) => (window.__moves||[]).some(m => m.indexOf('Camera:') >= 0 && m.indexOf(p) >= 0)",
-                    arg=phrase, timeout=6000,
-                )
+                self._wait_cmd(page, cmd, param, value)
                 page.keyboard.up(key)
-                # Releasing brings the camera to rest.
-                page.wait_for_function(
-                    "() => (window.__moves||[]).some(m => m.indexOf('eases to a halt') >= 0)",
-                    timeout=6000,
-                )
-            # The steers are real prompt hot-swaps: the world model got set_prompt.
-            cmds = page.evaluate("() => window.__MOCK_CMDS__ || []")
-            self.assertIn("set_prompt", cmds, f"movement never re-steered. logs:\n{self._dump_logs()}")
+                # Persistent axis MUST be idled on release, or the world keeps moving.
+                self._wait_cmd(page, cmd, param, "idle")
+            # It never used set_prompt to fake movement.
+            log = page.evaluate("() => window.__MOCK_CMD_LOG__ || []")
+            self.assertTrue(all(c["name"] != "set_prompt" for c in log),
+                            f"movement should not use set_prompt. log:\n{log}")
         except Exception:
             print("\n=== CONSOLE LOG (wasd) ===\n" + self._dump_logs())
             raise
         finally:
             page.close()
 
-    def test_pointer_drag_steers_360(self):
-        """Dragging the stick with a pointer (mouse/touch path) moves the camera
-        in that direction — here, straight up = forward."""
+    def test_turning_sends_rotation_speed_that_accelerates(self):
+        """Holding a turn key must set rotation speed, and it should ramp up the
+        longer it's held (native acceleration via set_rotation_speed_deg)."""
+        page = self._new_realtime_page()
+        try:
+            self._boot_live(page)
+            self._reset_cmd_log(page)
+            page.keyboard.down("a")
+            self._wait_cmd(page, "set_rotation_speed_deg")
+            page.wait_for_timeout(1500)  # let the hold-time ramp climb
+            page.keyboard.up("a")
+            speeds = page.evaluate(
+                """() => (window.__MOCK_CMD_LOG__||[])
+                       .filter(c => c.name==='set_rotation_speed_deg')
+                       .map(c => c.data.rotation_speed_deg)"""
+            )
+            self.assertTrue(len(speeds) >= 1, f"no rotation speed sent. speeds={speeds}")
+            self.assertGreater(max(speeds), min(speeds) - 0.01,
+                               f"rotation speed should not decrease while held: {speeds}")
+            self.assertGreater(max(speeds), 8.0, f"turn should accelerate past the floor: {speeds}")
+        except Exception:
+            print("\n=== CONSOLE LOG (rotation) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
+    def test_pointer_drag_drives_and_steers_360(self):
+        """Dragging the stick moves the camera: up = forward (native
+        set_move_longitudinal), left = turn (native set_look_horizontal)."""
         page = self._new_realtime_page()
         try:
             self._boot_live(page)
@@ -194,18 +226,19 @@ class TestMovementMode(unittest.TestCase):
                 """() => { const r = document.getElementById('move-pad').getBoundingClientRect();
                            return { cx: r.left + r.width/2, cy: r.top + r.height/2, r: r.width/2 }; }"""
             )
-            page.evaluate("() => { window.__moves = []; }")
+            # Drag straight up -> forward.
+            self._reset_cmd_log(page)
             page.mouse.move(box["cx"], box["cy"])
             page.mouse.down()
-            # Push the nub firmly upward (forward) beyond the deadzone.
             page.mouse.move(box["cx"], box["cy"] - box["r"], steps=6)
-            page.wait_for_function(
-                "() => (window.__moves||[]).some(m => m.indexOf('Camera:') >= 0 && m.indexOf('pushes forward') >= 0)",
-                timeout=6000,
-            )
-            # The pad reads as engaged while dragging.
+            self._wait_cmd(page, "set_move_longitudinal", "move_longitudinal", "forward")
             self.assertTrue(page.evaluate("() => document.getElementById('move-pad').classList.contains('engaged')"))
+            # Drag to the left -> turn left.
+            page.mouse.move(box["cx"] - box["r"], box["cy"], steps=6)
+            self._wait_cmd(page, "set_look_horizontal", "look_horizontal", "left")
             page.mouse.up()
+            # Release idles the axes.
+            self._wait_cmd(page, "set_move_longitudinal", "move_longitudinal", "idle")
             page.wait_for_function("() => !document.getElementById('move-pad').classList.contains('engaged')", timeout=4000)
         except Exception:
             print("\n=== CONSOLE LOG (pointer) ===\n" + self._dump_logs())
@@ -255,12 +288,14 @@ class TestMovementMode(unittest.TestCase):
             )
             self.assertFalse(shown, "joystick should be hidden in still mode")
             self.assertFalse(page.evaluate("() => window.__Movement.enabled()"))
-            page.evaluate("() => { window.__moves = []; }")
+            self._reset_cmd_log(page)
             page.keyboard.down("w")
             page.wait_for_timeout(600)
             page.keyboard.up("w")
-            moves = self._camera_moves(page)
-            self.assertEqual(moves, [], f"keys must not steer in still mode, got: {moves}")
+            move_cmds = page.evaluate(
+                """() => (window.__MOCK_CMD_LOG__||[]).filter(c => c.name.indexOf('set_move') === 0 || c.name.indexOf('set_look') === 0)"""
+            )
+            self.assertEqual(move_cmds, [], f"keys must not drive in still mode, got: {move_cmds}")
         except Exception:
             print("\n=== CONSOLE LOG (still) ===\n" + self._dump_logs())
             raise
