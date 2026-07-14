@@ -5411,7 +5411,7 @@ def _narrator_script(focus: str, multi: bool, session_id: str) -> list:
     focus_block = f"\n\nFOCUS THIS NARRATION ON: {focus.strip()}" if (focus or "").strip() else ""
 
     fallback = [{"character": "narrator",
-                 "text": "The tape hisses. Somewhere past the fence line, the facility keeps its own hours — and it does not keep them for you."}]
+                 "text": "My hands won't stop shaking. I have to find out what happened here."}]
     if not LLM_ENABLED:
         return fallback
 
@@ -5443,14 +5443,17 @@ def _narrator_script(focus: str, multi: bool, session_id: str) -> list:
                                  "text": (it.get("text") or "").strip()[:400]})
         return segs or fallback
 
-    # Single-voice narration.
+    # Single-voice narration — one lone voice thinking out loud.
     prompt = (
-        f"You are the NARRATOR of a 1993 analog-horror world. PREMISE: {premise}"
+        f"You are the NARRATOR of a 1993 analog-horror world — one lone person, "
+        f"speaking quietly to yourself. PREMISE: {premise}"
         f"{(chr(10)+chr(10)+'CURRENT SCENE: '+scene) if scene else ''}{recent_block}{focus_block}\n\n"
-        f"Deliver a short, atmospheric world-building narration — 2 to 4 sentences, ominous and concrete, "
-        f"in the voice of a disembodied archive. No meta, no stage directions. Output ONLY the narration."
+        f"Speak in FIRST PERSON. Use SHORT, plain sentences. Say how you FEEL right now — "
+        f"afraid, uneasy, but determined. Make it clear you have to find out what happened here. "
+        f"Keep it BRIEF: 1 to 2 short sentences, no more. No meta, no stage directions, no purple prose. "
+        f"Output ONLY the narration."
     )
-    line = _ask(prompt, temp=0.9, tokens=180, use_lore=True)
+    line = _ask(prompt, temp=0.85, tokens=80, use_lore=True)
     if _talk_llm_failed(line):
         return fallback
     return [{"character": "narrator", "text": (line or "").strip()[:600]}]

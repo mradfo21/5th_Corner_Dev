@@ -5571,12 +5571,12 @@
     // (a prior gesture) so it actually speaks rather than silently failing.
     function coldOpen() {
       if (!state.audioUnlocked || state.gameOver || Talk.isOpen() || isBusy()) return;
-      narrate({ multi: true, focus: "A cold open as the investigation begins: set the scene and the dread of this place." });
+      narrate({ multi: false, focus: "You have just woken up here. Say how uneasy you feel and that you need to find out what happened." });
     }
 
     // A final, funereal line over the death screen.
     function epitaph() {
-      narrate({ multi: false, focus: "The investigator has just died here. Deliver a single, final, funereal line about their end." });
+      narrate({ multi: false, focus: "You have just died here. One short, final line about your end and what you never found out." });
     }
 
     return { narrate, stop, isBusy, preflight, coldOpen, epitaph };
@@ -5585,7 +5585,7 @@
   function toggleNarrator() {
     if (state.gameOver) return;
     if (Narrator.isBusy()) { Narrator.stop(); return; }
-    Narrator.narrate({ multi: true });
+    Narrator.narrate({ multi: false });
   }
 
   // Drop the current tags (e.g. when a turn changes the scene) so stale labels
