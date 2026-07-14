@@ -1135,6 +1135,11 @@ body.realtime-on #forward-btn { bottom: 126px; }
 /* While a turn resolves, recede the joystick with the rest of the cluster. */
 #action-wheel.turn-active #move-pad { opacity: 0; pointer-events: none; }
 
+/* While the camera is being driven, the OCR hotspots/choices are hidden (they're
+   detected against a drifting frame, so they're inaccurate). They regenerate and
+   fade back in once movement stops. Belt-and-suspenders on top of closeScan(). */
+body.moving #scan-layer { opacity: 0 !important; pointer-events: none !important; }
+
 @media (prefers-reduced-motion: reduce) {
   body.realtime-on #move-pad:not(.engaged) .move-ring { animation: none; }
   .move-nub { transition: border-color 0.18s, box-shadow 0.25s; }
@@ -1767,6 +1772,75 @@ html.is-touch .touch-hint {
   0%   { box-shadow: 0 0 0 rgba(140, 217, 255, 0); }
   25%  { box-shadow: 0 0 34px rgba(200, 240, 255, 0.95); border-color: #fff; transform: translate(-50%, -50%) scale(1.14); }
   100% { box-shadow: 0 0 0 rgba(140, 217, 255, 0); transform: translate(-50%, -50%) scale(1); }
+}
+
+/* Press-ceremony: an instant ring that blooms from the exact spot the player
+   poked, so the button press is ALWAYS acknowledged — independent of the world
+   model. Spawned by JS on the (fixed, full-viewport) scan overlay and self-
+   removed when the animation ends. A bright core flashes at the center while the
+   ring expands and fades. */
+.scan-pulse {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 2px solid rgba(190, 236, 255, 0.95);
+  box-shadow: 0 0 20px rgba(140, 217, 255, 0.75), inset 0 0 12px rgba(140, 217, 255, 0.35);
+  pointer-events: none;
+  z-index: 7;
+  opacity: 0;
+  animation: scan-pulse-ring 0.72s cubic-bezier(0.16, 0.8, 0.3, 1) forwards;
+}
+.scan-pulse::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: rgba(224, 246, 255, 0.98);
+  box-shadow: 0 0 16px rgba(190, 236, 255, 0.95);
+  animation: scan-pulse-core 0.5s ease-out forwards;
+}
+@keyframes scan-pulse-ring {
+  0%   { opacity: 0; transform: translate(-50%, -50%) scale(0.3); }
+  14%  { opacity: 1; }
+  100% { opacity: 0; transform: translate(-50%, -50%) scale(3.7); border-width: 0.5px; }
+}
+@keyframes scan-pulse-core {
+  0%   { opacity: 0.95; transform: scale(0.6); }
+  100% { opacity: 0; transform: scale(1.9); }
+}
+/* INTERACT injects a LIVE world-model event, so its press reads as an energetic
+   double pulse: a second ring echoes outward a beat later, hinting the world is
+   being nudged NOW (even before the stream visibly reacts). A hint of warmth
+   distinguishes it from MOVE's clean, cool relocation ring. */
+.scan-pulse-interact {
+  border-color: rgba(210, 240, 255, 0.98);
+}
+.scan-pulse-interact::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1.5px solid rgba(150, 220, 255, 0.85);
+  animation: scan-pulse-echo 0.78s cubic-bezier(0.16, 0.8, 0.3, 1) 0.13s forwards;
+}
+@keyframes scan-pulse-echo {
+  0%   { opacity: 0; transform: scale(0.5); }
+  16%  { opacity: 0.85; }
+  100% { opacity: 0; transform: scale(3.1); border-width: 0.5px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* Keep a brief, static acknowledgement instead of the expanding rings. */
+  .scan-pulse { animation: scan-pulse-fade 0.5s ease-out forwards; }
+  .scan-pulse::before, .scan-pulse-interact::after { animation: none; }
+}
+@keyframes scan-pulse-fade {
+  0% { opacity: 1; }
+  100% { opacity: 0; }
 }
 
 /* Inline interact prompt, revealed when the + button is pressed. */

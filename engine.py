@@ -4165,20 +4165,54 @@ def _generate_and_append_scene_image(caption: str, dispatch: str, choice: str, f
             session_id=session_id,
         )
         img_path = result[0] if result else None
-        if not img_path:
-            return None
-        web = _to_web_image_url(img_path)
         # Two different prompts for two different renderers:
         #   • image_prompt (result[1]) — the diffusion prompt used for the
         #     Gemini still; kept in state for debugging only.
         #   • render_prompt — a clean, video-model-appropriate scene bible
         #     used to STEER Reactor/Helios (see build_realtime_prompt). This
         #     is what we hand the standalone client via metadata.prompt.
-        image_prompt = result[1] if len(result) > 1 else ""
+        # Built up front (independent of the still) so realtime can keep
+        # steering the world off the prompt even when the still was blocked.
+        image_prompt = result[1] if (result and len(result) > 1) else ""
         render_base = build_realtime_base(visual_scene=caption, narrative=dispatch)
         render_prompt = build_realtime_prompt(
             visual_scene=caption, narrative=dispatch, choice=choice
         )
+
+        if not img_path:
+            # Image was blocked (content filter) or generation failed. Do NOT go
+            # silent: emitting nothing leaves the turn's ceremony parked on the
+            # guide-image step (a spinner that never resolves) and the scene
+            # visually frozen — which reads as "the game broke" (exactly the
+            # report: switching back to stills, "selecting an action didn't
+            # change scenes"). Emit a scene beat WITHOUT an image so the client
+            # still resolves the turn, realtime keeps steering off the prompt,
+            # and stills mode can surface a "signal lost" glitch instead of a
+            # dead UI. We deliberately keep the LAST good still as
+            # current_image_url so a fallback to stills still shows a real frame.
+            blocked_item = create_feed_item(
+                type="scene_image",
+                content="",
+                image_url=None,
+                metadata={
+                    "prompt": render_prompt,
+                    "base": render_base,
+                    "hard_transition": bool(hard_transition),
+                    "blocked": True,
+                },
+            )
+            with WORLD_STATE_LOCK:
+                st = _load_state(session_id)
+                st['current_render_prompt'] = render_prompt
+                st['current_render_base'] = render_base
+                _feed_append(st, blocked_item)
+                _save_state(st, session_id)
+                state = st
+            print(f"[SCENE IMG] image blocked/failed for {session_id}; emitted signal-lost beat "
+                  f"(turn resolves, realtime keeps steering)", flush=True)
+            return None
+
+        web = _to_web_image_url(img_path)
         item = create_feed_item(
             type="scene_image",
             content="",
