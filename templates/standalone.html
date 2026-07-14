@@ -186,6 +186,36 @@
     <div id="scan-hint" class="scan-hint">move across the scene to scan…</div>
   </div>
 
+  <!-- TALK overlay: opened from a SCAN tag's TALK action on a thing that can
+       speak. A sleek "transmission" panel where you converse with the subject,
+       aware of the story. Runs a live ElevenLabs voice agent when configured,
+       otherwise a text conversation — both grounded in the current scene. -->
+  <div id="talk-overlay" class="hidden" aria-hidden="true">
+    <div id="talk-scrim"></div>
+    <div id="talk-panel" role="dialog" aria-modal="true" aria-labelledby="talk-name">
+      <div id="talk-head">
+        <span id="talk-orb" aria-hidden="true"></span>
+        <div id="talk-id">
+          <div id="talk-name">—</div>
+          <div id="talk-sub">establishing channel…</div>
+        </div>
+        <button id="talk-mode-toggle" type="button" class="hidden" title="Switch between voice and text">TEXT</button>
+        <button id="talk-close" type="button" title="End the conversation (Esc)" aria-label="End conversation">✕</button>
+      </div>
+      <div id="talk-voice" class="hidden">
+        <div id="talk-voice-mount"></div>
+        <div id="talk-voice-note">Tap to speak — the channel is live.</div>
+      </div>
+      <div id="talk-log" aria-live="polite"></div>
+      <form id="talk-form" autocomplete="off">
+        <input id="talk-input" type="text" maxlength="400" placeholder="say something…" aria-label="Your message" />
+        <button id="talk-send" type="submit" title="Send" aria-label="Send message">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+        </button>
+      </form>
+    </div>
+  </div>
+
   <!-- CAMERA tool overlay: a full-screen capture surface. Armed by the SNAP hub,
        a CAMERA reticle follows the pointer/finger; tapping (or clicking) a spot
        captures a photo of the region under it as "evidence". Pointer-driven so
