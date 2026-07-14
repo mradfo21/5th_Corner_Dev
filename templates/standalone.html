@@ -161,7 +161,7 @@
          steer with the mouse; a second click drops a location prompt that
          changes the live world right at that spot — instant, no full turn,
          opposed to ACT/choices which resolve a turn and change the scene. -->
-    <button id="realtime-btn" type="button" title="Camera — tap the scene to capture evidence (H)">
+    <button id="realtime-btn" type="button" title="Camera — tap the scene to photograph. Click again, Esc, or right-click to exit (H)">
       <span class="rt-icon">📷</span><span class="rt-label">PHOTO</span>
     </button>
     <!-- "SCAN" tool: arms the object scanner. Drag across the scene (live video
@@ -202,7 +202,7 @@
     </div>
     <!-- Live zoom readout — reflects the optical zoom (scroll / pinch). -->
     <div id="touch-zoom" class="touch-zoom" aria-hidden="true">1.0&times;</div>
-    <div id="touch-hint" class="touch-hint">tap to capture &middot; scroll or pinch to zoom</div>
+    <div id="touch-hint" class="touch-hint">tap to capture &middot; scroll or pinch to zoom &middot; PHOTO / Esc / right-click to exit</div>
   </div>
 
   <!-- Evidence flourish: the captured photo pops up big for a beat (a satisfying
@@ -223,29 +223,28 @@
     <span class="ev-shots" aria-hidden="true"></span>
   </div>
 
-  <!-- Photo appraisal "receipt": prints in from the top-right (left of the
-       control rail) when a photo is captured, revealing each thing in frame
-       item-by-item with a sound + points, then a rating stamp. Purely
-       informational, so pointer-events are off and it never blocks controls. -->
+  <!-- Photo appraisal: the captured shot is shown LARGE at top-center (so you
+       can see what you framed) with the evidence readout overlaid directly on
+       the image — no opaque card — revealing each thing in frame item-by-item
+       with a sound + points, then a rating stamp. Purely informational, so
+       pointer-events are off and the live view stays visible around it. -->
   <div id="photo-receipt" class="hidden" aria-hidden="true">
-    <div class="receipt-body">
-      <div class="receipt-head">
-        <div class="receipt-photo"></div>
-        <div class="receipt-headtext">
-          <div class="receipt-title">◉ FIELD PHOTO</div>
-          <div class="receipt-status">DEVELOPING…</div>
-        </div>
+    <div class="receipt-photo">
+      <div class="receipt-badge">
+        <span class="receipt-title">◉ FIELD PHOTO</span>
+        <span class="receipt-status">DEVELOPING…</span>
       </div>
-      <div class="receipt-caption"></div>
-      <ol class="receipt-items"></ol>
-      <div class="receipt-subtotal">
-        <span class="rs-label">SUBTOTAL</span>
-        <span class="rs-dots">·····················</span>
-        <span class="rs-val">+0</span>
+      <div class="receipt-scrim">
+        <div class="receipt-caption"></div>
+        <ol class="receipt-items"></ol>
+        <div class="receipt-subtotal">
+          <span class="rs-label">SUBTOTAL</span>
+          <span class="rs-dots">····················</span>
+          <span class="rs-val">+0</span>
+        </div>
       </div>
       <div class="receipt-stamp"></div>
     </div>
-    <div class="receipt-perf" aria-hidden="true"></div>
   </div>
 
   <!-- Investigations tray: a subtle "case file" of specimen thumbnails captured

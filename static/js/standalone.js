@@ -2583,8 +2583,10 @@
   // Press to aim; a clean single-pointer release shoots. A second finger turns
   // the gesture into a pinch (and suppresses the shot) so zoom never fires a
   // stray capture. On desktop, hover aims and a click (down+up) shoots.
+  // Right/middle click is a quick "exit the camera" gesture.
   function onTouchDown(e) {
     if (state.touchMode !== "aim") return;
+    if (e.button && e.button !== 0) { e.preventDefault(); closeTouch(); return; }
     e.preventDefault();
     state.photoPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (state.photoPointers.size === 1) {
@@ -2599,9 +2601,28 @@
     if (!state.photoPointers.has(e.pointerId)) return;
     const wasSingle = state.photoPointers.size === 1;
     state.photoPointers.delete(e.pointerId);
-    if (state.touchMode === "aim" && wasSingle && !state.pinchActive && e.type === "pointerup") {
+    if (state.touchMode === "aim" && wasSingle && !state.pinchActive && e.type === "pointerup" &&
+        (!e.button || e.button === 0)) {
       captureAt(e.clientX, e.clientY); // shoot on a clean single-finger release
     }
+    if (state.photoPointers.size < 2) state.pinchBase = null;
+    if (state.photoPointers.size === 0) state.pinchActive = false;
+  }
+
+  // Right-click anywhere on the aiming surface exits the camera (and never shows
+  // the browser context menu).
+  function onTouchContextMenu(e) {
+    if (state.touchMode !== "aim") return;
+    e.preventDefault();
+    closeTouch();
+  }
+
+  // A pointer can lift OFF the aiming surface (e.g. over the raised PHOTO/rail
+  // controls). Clean it up globally so a tap/pinch can never get "stuck" — this
+  // never captures (the layer's own pointerup handles that).
+  function onTouchPointerCleanup(e) {
+    if (!state.photoPointers.has(e.pointerId)) return;
+    state.photoPointers.delete(e.pointerId);
     if (state.photoPointers.size < 2) state.pinchBase = null;
     if (state.photoPointers.size === 0) state.pinchActive = false;
   }
@@ -3000,10 +3021,29 @@
   // consequence LLM (server-side) already turns that intent into an in-world,
   // exciting outcome + a fresh scene, so there's no need for a separate
   // "action-writing" LLM. Add more verbs here to grow the vocabulary.
+  // Objects you can go INSIDE / through — a passage, opening, vehicle, or
+  // structure. When "MOVE TO" targets one of these, we phrase it as an ENTRY so
+  // the engine cuts to a fresh interior scene (is_hard_transition fires on
+  // "enter …"); otherwise it's an APPROACH that advances the camera closer
+  // (the movement classifier keys on "approach", so the scene actually changes
+  // instead of drifting in place — which is why plain "move to the X" sometimes
+  // looked static).
+  const ENTERABLE_RE = /\b(door|doorway|gate|gateway|entrance|entry|hatch|portal|threshold|arch|archway|opening|mouth|maw|tunnel|pipe|duct|corridor|hallway|hall|passage|passageway|stair|stairs|stairway|stairwell|room|building|house|cabin|shack|shed|garage|barn|cave|cavern|vault|chamber|window|breach|gap|hole|vent|shaft|elevator|lift|airlock|tent|bunker|silo|structure|ruin|ruins|store|shop|church|warehouse|facility|lab|laboratory|booth|trailer|van|truck|car|bus|train|carriage|wagon|boat|ship|cockpit|rig|derrick)\b/i;
+
+  function moveActionPhrase(o) {
+    if (ENTERABLE_RE.test(o)) {
+      // "Enter …" -> hard transition -> a genuinely new interior scene.
+      return "Enter the " + o + ", moving inside into the space beyond.";
+    }
+    // "approach" -> forward_movement -> the camera advances, so the scene visibly
+    // changes as you close in.
+    return "Move toward the " + o + ", approaching until it fills the view.";
+  }
+
   const SCAN_ACTIONS = [
     {
       id: "move", label: "MOVE TO", title: "Move to",
-      phrase: (o) => "Move to the " + o + ".",
+      phrase: moveActionPhrase,
       icon: '<svg class="scan-action-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2v20M2 12h20"/><path d="M9 5l3-3 3 3M9 19l3 3 3-3M5 9l-3 3 3 3M19 9l3 3-3 3"/></svg>',
     },
     {
@@ -3619,9 +3659,15 @@
       el.touchLayer.addEventListener("pointerdown", onTouchDown);
       el.touchLayer.addEventListener("pointerup", onTouchUp);
       el.touchLayer.addEventListener("pointercancel", onTouchUp);
+      // Right-click on the scene = exit the camera (suppress the browser menu).
+      el.touchLayer.addEventListener("contextmenu", onTouchContextMenu);
       // Scroll to zoom (needs passive:false so we can preventDefault the page).
       el.touchLayer.addEventListener("wheel", onTouchWheel, { passive: false });
     }
+    // Global cleanup so a pointer lifting over a raised control (e.g. the PHOTO
+    // button) can't leave the tap/pinch state stuck.
+    window.addEventListener("pointerup", onTouchPointerCleanup);
+    window.addEventListener("pointercancel", onTouchPointerCleanup);
     if (el.scanBtn) el.scanBtn.addEventListener("click", toggleScan);
     // SCAN is non-modal: its overlay doesn't capture the pointer (so choices and
     // controls stay live), so we watch pointer moves/taps globally while armed.
