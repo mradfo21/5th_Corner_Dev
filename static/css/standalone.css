@@ -2178,11 +2178,9 @@ html.is-touch .touch-hint {
   gap: 12px;
   padding: 14px 16px;
   border-radius: 14px;
-  background: linear-gradient(180deg, rgba(8, 10, 15, 0.92), rgba(6, 8, 12, 0.96));
-  border: 1px solid rgba(190, 210, 255, 0.22);
-  box-shadow: 0 12px 44px rgba(0,0,0,0.6);
-  backdrop-filter: blur(5px);
-  -webkit-backdrop-filter: blur(5px);
+  background: none;
+  border: none;
+  box-shadow: none;
 }
 #narrator-mark {
   flex: 0 0 auto;
@@ -2202,13 +2200,14 @@ html.is-touch .touch-hint {
   color: rgba(190, 210, 255, 0.7);
   margin-bottom: 3px;
   min-height: 12px;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.95), 0 0 10px rgba(0,0,0,0.85);
 }
 #narrator-line {
   font-family: 'VT323', 'Share Tech Mono', monospace;
   font-size: 19px;
   line-height: 1.4;
   color: #eaf1ff;
-  text-shadow: 0 1px 6px rgba(0,0,0,0.9);
+  text-shadow: 0 1px 4px rgba(0,0,0,1), 0 0 12px rgba(0,0,0,0.9), 0 0 3px rgba(0,0,0,1);
 }
 #narrator-stop {
   flex: 0 0 auto;
