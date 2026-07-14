@@ -153,6 +153,11 @@ ELEVENLABS_NARRATOR_VOICE_ID = (os.getenv("ELEVENLABS_NARRATOR_VOICE_ID")
                                 or VOICES_CONFIG.get("narrator_voice") or "").strip()
 # The default TTS model: turbo is low-latency and great for realtime narration.
 ELEVENLABS_TTS_MODEL = (os.getenv("ELEVENLABS_TTS_MODEL") or "eleven_turbo_v2_5").strip()
+# The narrator speaks through a GENERATIVE conversational agent in the browser
+# (like TALK) so it works live with NO server key. Defaults to the same public
+# agent as TALK; override to give the narrator its own agent.
+ELEVENLABS_NARRATOR_AGENT_ID = (os.getenv("ELEVENLABS_NARRATOR_AGENT_ID")
+                                or ELEVENLABS_AGENT_ID or "").strip()
 
 
 def _default_voice_id() -> str:
@@ -5147,19 +5152,67 @@ def _narrate_segments(segments: list) -> list:
     return out
 
 
+def _mint_signed_url(agent_id: str):
+    """Mint a short-lived signed conversation URL for a PRIVATE agent (needs the
+    API key). Returns the wss URL or None. A public agent doesn't need this."""
+    if not agent_id or not ELEVENLABS_API_KEY:
+        return None
+    try:
+        import requests as _rq
+        resp = _rq.get(
+            "https://api.elevenlabs.io/v1/convai/conversation/get-signed-url",
+            headers={"xi-api-key": ELEVENLABS_API_KEY},
+            params={"agent_id": agent_id},
+            timeout=12,
+        )
+        if resp.status_code == 200:
+            return (resp.json() or {}).get("signed_url")
+        log_error(f"[TALK] signed-url {resp.status_code}: {resp.text[:180]}")
+    except Exception as e:
+        log_error(f"[TALK] signed-url exchange failed: {e}")
+    return None
+
+
+def _narrator_agent_config() -> dict:
+    """Browser voice-agent config for the narrator: the (public) agent id and,
+    for a private agent, a fresh signed URL. This is what lets narration play
+    LIVE as a generative agent with no server-side TTS key."""
+    agent_id = ELEVENLABS_NARRATOR_AGENT_ID
+    return {
+        "agent_id": agent_id or None,
+        "signed_url": _mint_signed_url(agent_id),
+        "allow_overrides": bool(ELEVENLABS_ALLOW_OVERRIDES),
+    }
+
+
+def _segment_voice(character: str, voice_id=None) -> str:
+    """Resolve the voice a narrator segment should speak in."""
+    cast = resolve_cast(character)
+    return _valid_voice_id(voice_id) or cast.get("voice_id") \
+        or ELEVENLABS_NARRATOR_VOICE_ID or _default_voice_id()
+
+
 def api_narrator_cast():
-    """The voices + named cast the narrator can speak as (client picker)."""
+    """The voices + named cast the narrator can speak as (client picker), plus
+    the browser voice-agent config so narration can play as a generative agent."""
     try:
         reg = get_voice_registry()
+        agent = _narrator_agent_config()
         return jsonify({
             "voices": reg["voices"],
             "narrator": reg["narrator"],
             "cast": reg["cast"],
+            # TTS (server-side) availability — legacy path; the primary path is
+            # now the generative agent below.
             "voice_available": bool(ELEVENLABS_API_KEY),
+            # Generative-agent availability: narration speaks live if an agent id
+            # is configured (public agent needs no key).
+            "agent_available": bool(agent.get("agent_id")),
+            "agent": agent,
         })
     except Exception as e:
         log_error(f"[NARRATOR] cast failed: {e}")
-        return jsonify({"voices": [], "cast": {}, "voice_available": False}), 500
+        return jsonify({"voices": [], "cast": {}, "voice_available": False, "agent_available": False}), 500
 
 
 def api_narrator_say():
@@ -5291,13 +5344,23 @@ def api_narrator_worldbuild():
         data = request.get_json(silent=True) or {}
         focus = re.sub(r"\s+", " ", str(data.get("focus") or "")).strip()[:240]
         multi = bool(data.get("multi"))
-        speak = data.get("speak", True)
+        speak = data.get("speak", True)  # legacy: server-side TTS audio inline
         session_id = data.get("session_id", "default")
         script = _narrator_script(focus, multi, session_id)
+        # Attach the resolved voice per line so the client's generative agent
+        # knows which voice to speak each segment in.
+        for seg in script:
+            seg["voice_id"] = _segment_voice(seg.get("character"), seg.get("voice_id"))
+        agent = _narrator_agent_config()
+        # Primary path: return TEXT + voice + agent config; the browser speaks it
+        # through the generative agent (works live with no server key). The
+        # legacy speak=true path also embeds server-TTS audio when a key exists.
         if speak and ELEVENLABS_API_KEY:
             voiced = _narrate_segments(script)
-            return jsonify({"segments": voiced, "voice": True})
-        return jsonify({"segments": script, "voice": False})
+            return jsonify({"segments": voiced, "voice": True, "agent": agent,
+                            "agent_available": bool(agent.get("agent_id"))})
+        return jsonify({"segments": script, "voice": False, "agent": agent,
+                        "agent_available": bool(agent.get("agent_id"))})
     except Exception as e:
         import traceback as _tb
         log_error(f"[NARRATOR] worldbuild failed: {e}")
