@@ -4209,13 +4209,19 @@
 
   // Ambient scan is allowed whenever there's a scene to read and no full-screen
   // instrument (camera, tape, free-will input) or end state is claiming the view.
-  function ambientScanAllowed() {
+  // CONTEXT gate: is a full-screen instrument / end state / conversation
+  // claiming the view? (Independent of whether a scene is currently readable.)
+  function ambientContextAllowed() {
     if (state.gameOver || state.touchMode || state.freeWillOpen) return false;
     if (typeof tapeIsOpen === "function" && tapeIsOpen()) return false;
     // Don't surface hotspots behind an open conversation — they'd sit under the
     // TALK panel. They're re-armed when the conversation closes.
     if (typeof Talk !== "undefined" && Talk.isOpen && Talk.isOpen()) return false;
-    return scanAvailable();
+    return true;
+  }
+
+  function ambientScanAllowed() {
+    return ambientContextAllowed() && scanAvailable();
   }
 
   // Ambient object hotspots: there's no SCAN button anymore. Whenever a scene is
@@ -4224,8 +4230,36 @@
   // overlay is live and shows whatever we've already detected for this scene
   // (instantly, from cache) — detection itself runs via prewarmScan (per scene +
   // on hover-settle in realtime), always deferring around turns.
-  function updateAmbientScan() {
-    if (!ambientScanAllowed()) { closeScan(); return; }
+  // Retry timer for re-arming once a scene becomes readable again (e.g. after a
+  // conversation closes, the realtime video can take a beat to report "showing"
+  // again — without this the overlay would stay dead until the next scene/hover,
+  // which read as "OCR never reactivates after exiting speaking mode").
+  let ambientRearmTimer = null;
+  let ambientRearmTries = 0;
+  const AMBIENT_REARM_MAX = 16; // ~11s of 700ms polls — covers the resume window
+
+  function updateAmbientScan(isPoll) {
+    if (!isPoll) ambientRearmTries = 0; // a fresh external re-arm gets a full budget
+    // A blocking context (camera/tape/free-will/conversation/dead) — tear down
+    // and stop any pending re-arm poll.
+    if (!ambientContextAllowed()) {
+      clearTimeout(ambientRearmTimer); ambientRearmTimer = null; ambientRearmTries = 0;
+      closeScan();
+      return;
+    }
+    // Context is fine but the scene isn't readable yet (still decoding / realtime
+    // video not showing at this instant) — poll until it is, so the overlay
+    // reliably comes back on its own.
+    if (!scanAvailable()) {
+      closeScan();
+      clearTimeout(ambientRearmTimer);
+      if (ambientRearmTries < AMBIENT_REARM_MAX) {
+        ambientRearmTries += 1;
+        ambientRearmTimer = setTimeout(() => updateAmbientScan(true), 700);
+      }
+      return;
+    }
+    clearTimeout(ambientRearmTimer); ambientRearmTimer = null; ambientRearmTries = 0;
     state.scanOn = true;
     if (el.scanLayer) el.scanLayer.classList.remove("hidden");
     const pw = state.scanPrewarm;
@@ -5088,25 +5122,23 @@
       // Scan/OCR observability for QA (dev-gated): inspect the ambient overlay
       // state and force a still so hotspot behavior is testable without a live
       // image backend.
+      const _primeStill = (url) => new Promise((res) => {
+        const img = new Image();
+        img.setAttribute("data-src", url);
+        img.onload = () => { state.currentStillUrl = url; state.scanStillImg = img; try { Renderer.mode = "image"; } catch (_) {} res(true); };
+        img.onerror = () => res(false);
+        img.src = url;
+      });
       window.__SCAN__ = {
         on: () => state.scanOn,
         hidden: () => !!(el.scanLayer && el.scanLayer.classList.contains("hidden")),
         available: () => scanAvailable(),
-        // Prime a decoded still + force image mode so the ambient overlay can
-        // arm without a live image/reactor backend (QA only).
-        forceStill: (url) => new Promise((res) => {
-          const img = new Image();
-          img.setAttribute("data-src", url);
-          img.onload = () => {
-            state.currentStillUrl = url;
-            state.scanStillImg = img;
-            try { Renderer.mode = "image"; } catch (_) {}
-            updateAmbientScan();
-            res(true);
-          };
-          img.onerror = () => res(false);
-          img.src = url;
-        }),
+        // Prime a decoded still + force image mode, then arm the overlay (QA).
+        forceStill: (url) => _primeStill(url).then((ok) => { updateAmbientScan(); return ok; }),
+        // Prime a still WITHOUT arming — lets a running re-arm poll pick it up.
+        primeStill: _primeStill,
+        // Make the scene un-scannable (simulates the realtime video not showing).
+        dropStill: () => { state.currentStillUrl = null; state.scanStillImg = null; },
       };
     }
   } catch (_) {}
