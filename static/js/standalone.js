@@ -2576,8 +2576,10 @@
   // Press to aim; a clean single-pointer release shoots. A second finger turns
   // the gesture into a pinch (and suppresses the shot) so zoom never fires a
   // stray capture. On desktop, hover aims and a click (down+up) shoots.
+  // Right/middle click is a quick "exit the camera" gesture.
   function onTouchDown(e) {
     if (state.touchMode !== "aim") return;
+    if (e.button && e.button !== 0) { e.preventDefault(); closeTouch(); return; }
     e.preventDefault();
     state.photoPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (state.photoPointers.size === 1) {
@@ -2592,9 +2594,28 @@
     if (!state.photoPointers.has(e.pointerId)) return;
     const wasSingle = state.photoPointers.size === 1;
     state.photoPointers.delete(e.pointerId);
-    if (state.touchMode === "aim" && wasSingle && !state.pinchActive && e.type === "pointerup") {
+    if (state.touchMode === "aim" && wasSingle && !state.pinchActive && e.type === "pointerup" &&
+        (!e.button || e.button === 0)) {
       captureAt(e.clientX, e.clientY); // shoot on a clean single-finger release
     }
+    if (state.photoPointers.size < 2) state.pinchBase = null;
+    if (state.photoPointers.size === 0) state.pinchActive = false;
+  }
+
+  // Right-click anywhere on the aiming surface exits the camera (and never shows
+  // the browser context menu).
+  function onTouchContextMenu(e) {
+    if (state.touchMode !== "aim") return;
+    e.preventDefault();
+    closeTouch();
+  }
+
+  // A pointer can lift OFF the aiming surface (e.g. over the raised PHOTO/rail
+  // controls). Clean it up globally so a tap/pinch can never get "stuck" — this
+  // never captures (the layer's own pointerup handles that).
+  function onTouchPointerCleanup(e) {
+    if (!state.photoPointers.has(e.pointerId)) return;
+    state.photoPointers.delete(e.pointerId);
     if (state.photoPointers.size < 2) state.pinchBase = null;
     if (state.photoPointers.size === 0) state.pinchActive = false;
   }
@@ -3612,9 +3633,15 @@
       el.touchLayer.addEventListener("pointerdown", onTouchDown);
       el.touchLayer.addEventListener("pointerup", onTouchUp);
       el.touchLayer.addEventListener("pointercancel", onTouchUp);
+      // Right-click on the scene = exit the camera (suppress the browser menu).
+      el.touchLayer.addEventListener("contextmenu", onTouchContextMenu);
       // Scroll to zoom (needs passive:false so we can preventDefault the page).
       el.touchLayer.addEventListener("wheel", onTouchWheel, { passive: false });
     }
+    // Global cleanup so a pointer lifting over a raised control (e.g. the PHOTO
+    // button) can't leave the tap/pinch state stuck.
+    window.addEventListener("pointerup", onTouchPointerCleanup);
+    window.addEventListener("pointercancel", onTouchPointerCleanup);
     if (el.scanBtn) el.scanBtn.addEventListener("click", toggleScan);
     // SCAN is non-modal: its overlay doesn't capture the pointer (so choices and
     // controls stay live), so we watch pointer moves/taps globally while armed.

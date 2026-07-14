@@ -863,6 +863,18 @@ body.awaiting-first-scene #realtime-btn {
 body.touch-aiming #forward-btn,
 body.touch-aiming #free-will-btn { opacity: 0.2; pointer-events: none; }
 
+/* Keep the PHOTO/SCAN hubs and the control rail ABOVE the capture overlay while
+   aiming, so clicking PHOTO reliably TOGGLES the camera off (previously the
+   full-screen overlay swallowed the click and fired a capture instead). The
+   PHOTO button also pulses so it reads as the way out. */
+body.touch-aiming #action-wheel,
+body.touch-aiming #control-rail { z-index: 41; }
+body.touch-aiming #realtime-btn.aiming { animation: photo-exit-pulse 1.6s ease-in-out infinite; }
+@keyframes photo-exit-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 186, 89, 0.0); }
+  50%      { box-shadow: 0 0 0 5px rgba(255, 186, 89, 0.28); }
+}
+
 /* The reticle: a small circle + magnifying glass in aim mode; it grows into a
    pill-shaped prompt field once a spot is chosen. Positioned via left/top (set
    in JS) and centered on that point. */
