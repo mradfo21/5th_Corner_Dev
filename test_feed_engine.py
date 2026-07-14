@@ -209,5 +209,60 @@ class TestFeedEngineContinuity(unittest.TestCase):
         self.assertEqual(len(ids), len(set(ids)))
 
 
+class TestBlockedImageGracefulRecovery(unittest.TestCase):
+    """A safety-blocked / failed image must NOT silently drop the scene beat.
+
+    Regression for the reported "reactor/lingbot freaks out, refusing to draw
+    anything but black … went back to stills but selecting an action didn't
+    change scenes." When the still is content-filtered, image generation returns
+    None. Previously _generate_and_append_scene_image returned early and appended
+    NOTHING — so the turn's ceremony parked on the guide-image step forever and
+    stills mode showed no feedback. Now it emits a scene_image beat WITHOUT an
+    image (metadata.blocked=True) so the client resolves the turn and realtime
+    keeps steering off the prompt.
+    """
+
+    def setUp(self):
+        ai_provider_manager.set_backend_override(None)
+        os.environ.pop("STORYGEN_BACKEND", None)
+        self._orig_world_image = engine.WORLD_IMAGE_ENABLED
+        self._orig_gen_image = engine._gen_image
+        engine.WORLD_IMAGE_ENABLED = True  # take the real append path...
+        engine._gen_image = lambda *a, **k: None  # ...but force a "blocked" image
+
+    def tearDown(self):
+        engine.WORLD_IMAGE_ENABLED = self._orig_world_image
+        engine._gen_image = self._orig_gen_image
+
+    def test_blocked_image_emits_signal_lost_scene_beat(self):
+        api.app.test_client().post("/api/reset")
+        st = engine._load_state("default")
+        before = len(st.get("feed_log", []))
+
+        ret = engine._generate_and_append_scene_image(
+            caption="a quiet ridge at dusk",
+            dispatch="You crest the ridge.",
+            choice="Move forward",
+            frame_idx=1,
+            world_prompt=st.get("world_prompt", ""),
+            session_id="default",
+            write_history=False,
+        )
+        # Returns None (no image), but must NOT have gone silent.
+        self.assertIsNone(ret, "a blocked image still returns None to callers")
+
+        st = engine._load_state("default")
+        feed = st.get("feed_log", [])
+        self.assertGreater(len(feed), before, "a blocked image must still append a scene beat")
+
+        beat = feed[-1]
+        self.assertEqual(beat.get("type"), "scene_image")
+        self.assertIsNone(beat.get("image_url"), "blocked scene beat carries no image")
+        meta = beat.get("metadata") or {}
+        self.assertTrue(meta.get("blocked"), "blocked scene beat is flagged so the client can surface it")
+        self.assertTrue((meta.get("prompt") or "").strip(),
+                        "the render prompt rides along so realtime keeps steering")
+
+
 if __name__ == "__main__":
     unittest.main()

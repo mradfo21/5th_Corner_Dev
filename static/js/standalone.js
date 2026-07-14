@@ -1291,6 +1291,8 @@
             case "stage_started": RtLog.push("ok", "\u25C8 generation started"); break;
             case "video_showing": RtLog.push("ok", "\u25C9 video live \u2014 frames on screen"); break;
             case "video_stalled": RtLog.push("error", "\u26A0 stalled \u2014 no video after " + (d.afterMs || "?") + "ms"); break;
+            case "video_black": RtLog.push("error", "\u26A0 stream went black (scene refused) \u2014 showing still"); break;
+            case "video_recovered": RtLog.push("ok", "\u25C9 stream recovered \u2014 video restored"); break;
             case "chunk_complete": RtLog.push("dim", "chunk " + ((d.chunk_index != null ? d.chunk_index : 0) + 1), "", { throttleMs: 1200 }); break;
             case "state": {
               const act = d.current_action && d.current_action !== "still" ? d.current_action : null;
@@ -1313,6 +1315,32 @@
               markSceneVisible(); // the realtime feed is now live on screen
               schedulePrewarm(); // live scene on screen — detect its hotspots
               updateAmbientScan(); // surface ambient hotspots over the live video
+            }
+            // The world model started streaming solid black (its safety refused
+            // the scene). The renderer has already hidden the black video to
+            // reveal the still floor; make sure a real still is actually painted
+            // there (the floor can be stale/empty), glitch over the swap, and
+            // surface hotspots on the still so the game stays fully playable.
+            if (name === "video_black") {
+              if (Renderer.lastScene && Renderer.lastScene.imageUrl) {
+                setScene(Renderer.lastScene.imageUrl);
+              } else {
+                glitchTransition();
+                markSceneVisible();
+              }
+              clearScanTags();
+              schedulePrewarm();
+              updateAmbientScan();
+              showRendererToast("Scene refused \u2014 showing still");
+            }
+            // Real frames returned — the live video is back on screen.
+            if (name === "video_recovered") {
+              glitchTransition();
+              markSceneVisible();
+              clearScanTags();
+              schedulePrewarm();
+              updateAmbientScan();
+              showRendererToast("Realtime video \u2014 recovered");
             }
             // Realtime auto-play advances off the LIVE video, not the scene_image
             // feed item: once the new scene is actually on screen, let it play for
@@ -1369,6 +1397,12 @@
             case "generation_reset": Ceremony.note("\u25CC World cleared"); return;
             case "video_stalled":
               Ceremony.note("\u26A0 Stream stalled \u00B7 no video \u2014 showing stills", { tick: false });
+              return;
+            case "video_black":
+              Ceremony.note("\u26A0 Scene refused \u00B7 stream went black \u2014 showing still", { tick: false });
+              return;
+            case "video_recovered":
+              Ceremony.note("\u25C9 Stream recovered", { tick: false });
               return;
             case "command_error":
               Ceremony.note("\u26A0 " + (d.reason || d.command || "error"), { tick: false });
@@ -2557,6 +2591,18 @@
 
     switch (item.type) {
       case "scene_image":
+        // A scene beat with NO image_url means the still was content-filtered or
+        // generation failed (the server still emits the beat so the turn
+        // resolves and realtime keeps steering — see _generate_and_append_scene_image).
+        // In stills mode there's no new frame to show, so give a visible "signal
+        // lost" glitch instead of leaving the scene silently unchanged (which
+        // read as "selecting an action didn't change scenes"). Realtime mode is
+        // unaffected — the live video keeps steering off the prompt.
+        if ((!item.image_url || (item.metadata && item.metadata.blocked)) && Renderer.mode !== "reactor") {
+          glitchTransition();
+          markSceneVisible(); // never leave the UI gated on a blocked first frame
+          showRendererToast("Signal lost \u2014 image filtered");
+        }
         // The image itself is the payload (handled above by setScene). Its
         // placeholder content ("The scene shifts...") is intentionally NOT
         // added to the prose feed — it would just be noise over the art.
