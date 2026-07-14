@@ -1199,6 +1199,36 @@ body.touch-aiming #touch-capture-frame { opacity: 0.85; }
   #touch-capture-frame.miss { animation: none; }
 }
 
+/* ---------- Camera feel: solid, non-shaky aiming ----------
+   While a finger is actively dragging to frame a shot, the scene must track the
+   finger 1:1 — the eased transform "chase" + the marker glide read as jitter on
+   a phone. Snap those transitions off for the duration of the drag, and pause
+   the reticle's glow pulse so the crosshair sits rock-steady under the finger. */
+body.photo-dragging #sceneA,
+body.photo-dragging #sceneB,
+body.photo-dragging #reactor-video,
+body.photo-dragging #reactor-freeze {
+  transition: none !important;
+}
+body.photo-dragging .photo-target {
+  transition: opacity 0.2s ease !important;
+}
+body.photo-dragging #touch-reticle {
+  animation: none;
+}
+/* backdrop-filter on a moving element is a known jank source on mobile Safari;
+   touch devices get a cheap solid reticle/hint instead so the drag stays smooth. */
+html.is-touch #touch-reticle {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background: rgba(10, 7, 2, 0.72);
+}
+html.is-touch .touch-hint {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background: rgba(20, 12, 4, 0.72);
+}
+
 /* Reticle glows while it "holds" a freshly captured specimen. */
 #touch-reticle.holding {
   border-color: rgba(255, 225, 170, 1);
@@ -1283,9 +1313,28 @@ body.touch-aiming #touch-capture-frame { opacity: 0.85; }
 }
 
 @media (max-width: 720px) {
-  #investigations-tray { bottom: calc(env(safe-area-inset-bottom, 0px) + 190px); padding: 5px; }
-  #investigations-strip { max-width: 150px; }
-  .inv-thumb { width: 40px; height: 40px; }
+  /* Case file: a compact, quiet strip tucked into the bottom-left corner (in
+     the blurred zone below the scene) — one scrollable row instead of a big
+     wrapping block that crowds the picture. */
+  #investigations-tray {
+    left: calc(env(safe-area-inset-left, 0px) + 8px);
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 92px);
+    padding: 4px 5px;
+    gap: 3px;
+    background: rgba(8, 10, 14, 0.38);
+    border-color: rgba(255, 186, 89, 0.14);
+    max-width: 56vw;
+  }
+  .inv-tray-label { font-size: 6px; opacity: 0.85; }
+  #investigations-strip {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    max-width: 52vw;
+    gap: 4px;
+    scrollbar-width: none;
+  }
+  #investigations-strip::-webkit-scrollbar { display: none; }
+  .inv-thumb { width: 34px; height: 34px; flex: 0 0 auto; }
 }
 @media (prefers-reduced-motion: reduce) {
   .inv-thumb, #touch-capture-frame.grab { animation: none !important; }
@@ -2982,8 +3031,12 @@ html.is-mobile.is-portrait .scene::after {
 }
 html.is-mobile.is-portrait .scene::before {
   background-size: cover;
-  transform: scale(1.14);
-  filter: blur(26px) saturate(0.8) brightness(0.5);
+  transform: scale(1.18);
+  /* Brighter + less blur than a "dead bar" so the fill reads as the scene
+     bleeding softly off the edges of the sharp frame. A gentle vignette seats
+     the sharp band in the middle and hides the sharp/blur seam. */
+  filter: blur(20px) saturate(0.9) brightness(0.7);
+  box-shadow: inset 0 0 130px 46px rgba(0, 0, 0, 0.55);
 }
 html.is-mobile.is-portrait .scene::after {
   background-size: contain;
@@ -3004,8 +3057,9 @@ html.is-mobile.is-portrait .tape-frame::after {
 }
 html.is-mobile.is-portrait .tape-frame::before {
   background-size: cover;
-  transform: scale(1.14);
-  filter: blur(26px) saturate(0.8) brightness(0.5);
+  transform: scale(1.18);
+  filter: blur(20px) saturate(0.9) brightness(0.7);
+  box-shadow: inset 0 0 130px 46px rgba(0, 0, 0, 0.55);
 }
 html.is-mobile.is-portrait .tape-frame::after {
   background-size: contain;
@@ -3049,6 +3103,22 @@ html.is-touch .rail-lbl,
 html.is-touch .fw-label,
 html.is-touch .rt-label {
   opacity: 0.95;
+}
+
+/* ---------- Mobile clarity: let the imagery breathe ----------
+   On a phone the scene is already small (a wide frame letterboxed into a tall
+   screen), so the film-grain + scanline VHS layers eat the little detail there
+   is. Thin them right down on mobile so the picture stays crisp; the effect is
+   still present, just not fighting the art. */
+html.is-mobile #vhs-grain { opacity: 0.03; }
+html.is-mobile #scanlines {
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(0,0,0,0.06) 0px,
+    rgba(0,0,0,0.06) 1px,
+    transparent 2px,
+    transparent 4px
+  );
 }
 
 /* ============================================================
@@ -3462,7 +3532,19 @@ body.touch-aiming .touch-zoom { opacity: 0.9; }
    narrow it so it never crowds the prose or the rail. */
 @media (max-width: 720px) {
   #photo-receipt { width: min(320px, 74vw); top: calc(env(safe-area-inset-top, 0px) + 40px); }
-  #evidence-hud { top: calc(env(safe-area-inset-top, 0px) + 8px); padding: 4px 9px; }
-  #evidence-hud .ev-total { font-size: 18px; }
+  /* Dossier HUD: tighten it into a single slim badge in the top blur zone so it
+     never bleeds onto the picture. */
+  #evidence-hud {
+    top: calc(env(safe-area-inset-top, 0px) + 6px);
+    padding: 3px 10px 4px;
+    gap: 2px;
+    background: rgba(6, 10, 8, 0.42);
+  }
+  #evidence-hud .ev-main { gap: 5px; }
+  #evidence-hud .ev-total { font-size: 17px; }
+  #evidence-hud .ev-label { font-size: 8px; letter-spacing: 0.1em; }
+  #evidence-hud .ev-rank { font-size: 8px; padding: 1px 4px; }
+  #evidence-hud .ev-case { gap: 4px; }
+  #evidence-hud .ev-bar { width: 54px; }
   .touch-zoom { bottom: calc(env(safe-area-inset-bottom, 0px) + 250px); }
 }
