@@ -179,7 +179,9 @@
         <circle cx="12" cy="13" r="3.2"></circle>
       </svg>
     </div>
-    <div id="touch-hint" class="touch-hint">tap to capture evidence</div>
+    <!-- Live zoom readout — reflects the optical zoom (scroll / pinch). -->
+    <div id="touch-zoom" class="touch-zoom" aria-hidden="true">1.0&times;</div>
+    <div id="touch-hint" class="touch-hint">tap to capture &middot; scroll or pinch to zoom</div>
   </div>
 
   <!-- Evidence flourish: the captured photo pops up big for a beat (a satisfying
@@ -188,6 +190,41 @@
   <div id="evidence-card" class="hidden" aria-hidden="true">
     <div class="evidence-photo"></div>
     <div class="evidence-cap">● EVIDENCE GATHERED</div>
+  </div>
+
+  <!-- Running EVIDENCE score (top-center). Hidden until the first photo is
+       appraised, then persists for the run. Increments item-by-item as a
+       receipt prints. -->
+  <div id="evidence-hud" class="hidden" aria-live="polite" aria-label="Evidence score">
+    <span class="ev-mark" aria-hidden="true">◆</span>
+    <span class="ev-label">EVIDENCE</span>
+    <span class="ev-total">0</span>
+    <span class="ev-shots" aria-hidden="true"></span>
+  </div>
+
+  <!-- Photo appraisal "receipt": prints in from the top-right (left of the
+       control rail) when a photo is captured, revealing each thing in frame
+       item-by-item with a sound + points, then a rating stamp. Purely
+       informational, so pointer-events are off and it never blocks controls. -->
+  <div id="photo-receipt" class="hidden" aria-hidden="true">
+    <div class="receipt-body">
+      <div class="receipt-head">
+        <div class="receipt-photo"></div>
+        <div class="receipt-headtext">
+          <div class="receipt-title">◉ FIELD PHOTO</div>
+          <div class="receipt-status">DEVELOPING…</div>
+        </div>
+      </div>
+      <div class="receipt-caption"></div>
+      <ol class="receipt-items"></ol>
+      <div class="receipt-subtotal">
+        <span class="rs-label">SUBTOTAL</span>
+        <span class="rs-dots">·····················</span>
+        <span class="rs-val">+0</span>
+      </div>
+      <div class="receipt-stamp"></div>
+    </div>
+    <div class="receipt-perf" aria-hidden="true"></div>
   </div>
 
   <!-- Investigations tray: a subtle "case file" of specimen thumbnails captured

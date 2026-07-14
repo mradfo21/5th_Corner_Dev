@@ -1552,6 +1552,160 @@ def _detect_objects(image_path: str, max_items: int = 8) -> list:
         print(f"[DETECT ERROR] Failed to detect objects: {safe_e}")
         return []
 
+
+def _appraise_photo(image_path: str, max_items: int = 6) -> dict:
+    """Appraise a photograph the player captured — the reward loop's "feedback".
+
+    Where ``_detect_objects`` locates things for live SCAN tags, this reads a
+    single captured crop like an evidence analyst: it names the notable things
+    in frame, rates how *interesting/telling* each one is, and gives a terse
+    reason it matters — plus a one-line caption and an overall mood word. The
+    standalone UI turns this into a "receipt" that prints item-by-item, each
+    line scoring points toward the run's EVIDENCE total.
+
+    Returns a dict (never raises):
+        {
+          "items": [{"label": str, "interest": 1..5, "note": "<=6 words"}],
+          "caption": str,   # one evocative line about the shot
+          "mood": str,      # single lowercase word, may be ""
+        }
+    On any failure / disabled vision it returns {"items": [], "caption": "",
+    "mood": ""} so the client can still render a graceful "undeveloped" receipt.
+    """
+    import base64
+    import json as _json
+    import re as _re
+    import requests
+
+    empty = {"items": [], "caption": "", "mood": ""}
+    if not LLM_ENABLED or not VISION_ENABLED or not GEMINI_API_KEY:
+        return empty
+
+    try:
+        full_path = _resolve_image_path(image_path)
+        if not full_path or not os.path.exists(full_path):
+            return empty
+
+        from pathlib import Path
+        full_path_obj = Path(full_path)
+        small_path = full_path_obj.parent / full_path_obj.name.replace(".png", "_small.png")
+        use_path = small_path if small_path.exists() else full_path_obj
+
+        with open(use_path, "rb") as f:
+            image_bytes = f.read()
+        image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+
+        mime_type = "image/png"
+        if str(use_path).lower().endswith((".jpg", ".jpeg")):
+            mime_type = "image/jpeg"
+
+        appraise_prompt = (
+            "You are an evidence analyst reviewing a single photograph a field "
+            "investigator just captured. Identify the notable, concrete things "
+            "in the frame (objects, tools, figures, creatures, hazards, exits, "
+            "clues). For each, rate how interesting/telling it is and say WHY in "
+            "a few words. "
+            f"Return AT MOST {max_items} items, most interesting first. "
+            "Respond with ONLY a JSON object, no prose, no code fences:\n"
+            '{"items": [{"label": "<1-3 word noun, lowercase>", '
+            '"interest": <integer 1-5>, "note": "<<=6 words on why it matters>"}], '
+            '"caption": "<one evocative sentence about the shot>", '
+            '"mood": "<single lowercase word for the vibe>"}. '
+            "interest: 1 = mundane, 5 = striking/rare/story-critical. "
+            "Prefer specific labels over vague ones. Skip generic background "
+            "(sky, ground, wall) unless genuinely notable."
+        )
+
+        api_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent"
+        headers = {
+            "x-goog-api-key": GEMINI_API_KEY,
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "contents": [{
+                "parts": [
+                    {"inlineData": {"mimeType": mime_type, "data": image_b64}},
+                    {"text": appraise_prompt},
+                ]
+            }],
+            "generationConfig": {
+                "thinkingConfig": {"thinkingBudget": 0},
+                "temperature": 0.5,
+                "maxOutputTokens": 700,
+                "responseMimeType": "application/json",
+            },
+            "safetySettings": [
+                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+            ],
+        }
+
+        response = requests.post(api_url, headers=headers, json=payload, timeout=20)
+        response.raise_for_status()
+        result = response.json()
+
+        candidates = result.get("candidates") or []
+        if not candidates:
+            return empty
+        parts = (candidates[0].get("content") or {}).get("parts") or []
+        full_text = "".join(p.get("text", "") for p in parts).strip()
+        if not full_text:
+            return empty
+
+        cleaned = _re.sub(r"^```(?:json)?|```$", "", full_text.strip(), flags=_re.MULTILINE).strip()
+        try:
+            parsed = _json.loads(cleaned)
+        except Exception:
+            m = _re.search(r"\{.*\}", cleaned, _re.DOTALL)
+            if not m:
+                return empty
+            try:
+                parsed = _json.loads(m.group(0))
+            except Exception:
+                return empty
+
+        if not isinstance(parsed, dict):
+            return empty
+
+        raw_items = parsed.get("items")
+        if not isinstance(raw_items, list):
+            raw_items = []
+        items = []
+        seen = set()
+        for entry in raw_items:
+            if not isinstance(entry, dict):
+                continue
+            label = str(entry.get("label") or "").strip().lower()
+            if not label:
+                continue
+            key = label[:24]
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                interest = int(round(float(entry.get("interest", 2))))
+            except Exception:
+                interest = 2
+            interest = max(1, min(5, interest))
+            note = str(entry.get("note") or "").strip()[:80]
+            items.append({"label": label[:40], "interest": interest, "note": note})
+            if len(items) >= max_items:
+                break
+
+        caption = str(parsed.get("caption") or "").strip()[:160]
+        mood = str(parsed.get("mood") or "").strip().lower()[:24]
+        return {"items": items, "caption": caption, "mood": mood}
+    except requests.exceptions.HTTPError as e:
+        safe_e = str(e).encode("ascii", "replace").decode("ascii")
+        print(f"[APPRAISE ERROR] Gemini API HTTP error: {safe_e}")
+        return empty
+    except Exception as e:
+        safe_e = str(e).encode("ascii", "replace").decode("ascii")
+        print(f"[APPRAISE ERROR] Failed to appraise photo: {safe_e}")
+        return empty
+
 # ───────── world report (with vision‑desc) ─────────────────────────────────
 def _world_report() -> str:
     base = narrative_tmpl.format(
@@ -4188,6 +4342,58 @@ def api_detect():
         log_error(f"[DETECT] failed: {e}")
         _tb.print_exc()
         return jsonify({"error": str(e), "objects": []}), 500
+
+
+def api_photo():
+    """Appraise a photograph the player just captured (the reward loop).
+
+    Accepts the captured crop (a JPEG data URL made client-side from the live
+    frame or the current still) and returns an evidence-style appraisal: the
+    notable things in frame, each with an interest rating and a terse reason,
+    plus a caption and mood. The standalone UI prints this as a "receipt" that
+    reveals item-by-item and scores each line toward the run's EVIDENCE total.
+
+    Request JSON:  {"frame": "data:image/jpeg;base64,..."}
+    Response JSON: {"items": [{"label", "interest", "note"}], "caption", "mood"}
+
+    Stateless and read-only, like /api/detect: it never mutates world state,
+    history, or choices — it only reads what the photo shows. Degrades to an
+    empty appraisal (never an error) when vision is unavailable, so the client
+    can always render a graceful receipt.
+    """
+    import base64 as _b64, re as _re
+    from pathlib import Path as _Path
+    try:
+        data = request.get_json(silent=True) or {}
+        frame_b64 = data.get('frame')
+        session_id = data.get('session_id', 'default')
+        if not frame_b64:
+            return jsonify({"error": "missing frame"}), 400
+        m = _re.match(r'^data:image/[^;]+;base64,(.*)$', frame_b64, _re.DOTALL)
+        raw = m.group(1) if m else frame_b64
+        try:
+            img_bytes = _b64.b64decode(raw)
+        except Exception:
+            return jsonify({"error": "bad frame encoding"}), 400
+        if len(img_bytes) < 512:
+            return jsonify({"error": "frame too small"}), 400
+
+        img_dir = _Path(_get_image_dir(session_id))
+        img_dir.mkdir(parents=True, exist_ok=True)
+        # Reuse a single scratch file per session, like the SCAN grab: these are
+        # disposable perception frames, not canonical stills.
+        fpath = img_dir / "photo_frame.jpg"
+        fpath.write_bytes(img_bytes)
+
+        appraisal = _appraise_photo(str(fpath))
+        if not isinstance(appraisal, dict):
+            appraisal = {"items": [], "caption": "", "mood": ""}
+        return jsonify(appraisal)
+    except Exception as e:
+        import traceback as _tb
+        log_error(f"[PHOTO] failed: {e}")
+        _tb.print_exc()
+        return jsonify({"error": str(e), "items": [], "caption": "", "mood": ""}), 500
 
 
 def api_investigate():
