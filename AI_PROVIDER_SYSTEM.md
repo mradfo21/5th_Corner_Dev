@@ -221,6 +221,58 @@ Config is cached for 5 seconds, then reloaded:
 
 ---
 
+## 🖼️ **Krea 2 Image Backend**
+
+Krea 2 is a foundation image model that plugs in as a **drop-in alternative to
+Gemini ("Nano Banana")** for image generation — the same way world models are
+swapped, but for stills. Text generation stays on Gemini in the Krea presets.
+
+### Switching to Krea
+
+Runtime (no redeploy), via Discord: `/ai_switch krea` (Large) or
+`/ai_switch krea_fast` (Medium). Or edit `ai_config.json` `image_provider` to
+`"krea"`. The engine routes on `ai_provider_manager.get_image_provider()`, so
+nothing else changes.
+
+| Preset | Image model | Notes |
+|--------|-------------|-------|
+| `krea` | `krea-2/large` | Higher quality; used when HD/quality mode is on |
+| `krea_fast` | `krea-2/medium` | Faster/cheaper; used when HD mode is off |
+
+`hd_mode` (frame 0 and quality-mode frames) selects **Large**, otherwise
+**Medium** — mirroring the Gemini Pro/Flash split.
+
+### Config / secrets
+
+| Env var | Default | Purpose |
+|---------|---------|---------|
+| `KREA_API_KEY` (or `KREA_API_TOKEN`) | — | API token from krea.ai/settings/api-tokens (**required** for Krea) |
+| `KREA_CREATIVITY` | `low` | `raw`/`low`/`medium`/`high` — how far Krea expands the prompt |
+| `KREA_STYLE_STRENGTH` | `0.6` | 0–1 carry-over strength of the previous frame as a style reference |
+| `KREA_API_BASE` | `https://api.krea.ai` | Override for testing |
+| `KREA_ASPECT_RATIO` | `4:3` | Output aspect ratio |
+| `KREA_RESOLUTION` | `1K` | Output resolution |
+
+### How it works (`krea_image_utils.py`)
+
+Krea uses an **async job API** (unlike Gemini's inline base64):
+
+1. `POST /generate/image/krea/krea-2/{medium|large}` → `{ job_id }`
+2. Poll `GET /jobs/{job_id}` until `status == "completed"`
+3. Download `result.urls[0]`, normalize to PNG, and write the same
+   `<name>.png` + `<name>_small.png` sidecar the rest of the engine expects.
+
+**img2img = style transfer.** For continuity frames the previous frame(s) are
+uploaded to `POST /assets` (cached by path+mtime) and passed as
+`image_style_references: [{url, strength}]`. This carries palette/grain/mood
+forward. Krea style transfer is a **style** lock, not a pixel-perfect spatial
+lock, so the shared spatial-anchor prompt text still does the compositional
+work. If no reference is usable it degrades gracefully to text-to-image.
+
+The public functions mirror `gemini_image_utils` exactly
+(`generate_with_krea`, `generate_krea_img2img`), so `engine._gen_image()` calls
+either provider through identical call sites.
+
 ## 🔮 **Future Extensions**
 
 ### **Easy to add:**

@@ -22,7 +22,7 @@ failed_tests = []
 print("\n[TEST 1] Python Syntax Check...")
 files_to_check = ["bot.py", "engine.py", "choices.py", "evolve_prompt_file.py", 
                   "ai_provider_manager.py", "lore_cache_manager.py", 
-                  "gemini_image_utils.py"]
+                  "gemini_image_utils.py", "krea_image_utils.py"]
 
 for file in files_to_check:
     try:
