@@ -1076,6 +1076,87 @@ class TestRealtimeRenderer(unittest.TestCase):
         finally:
             page.close()
 
+    def test_camera_works_in_stills_mode(self):
+        """The CAMERA (SNAP) tool must be a first-class part of the still-image
+        renderer too: the PHOTO hub is shown, arming it opens the aiming layer,
+        photographable targets surface from detection ON THE STILL, and a tap
+        captures a photo specimen (POST /api/investigate kind=photo) — WITHOUT
+        resolving a turn. Guarantees 'Stills' stays a fully playable option."""
+        page = self._new_realtime_page()
+        scene_items = [
+            {"id": 1, "type": "narrative", "content": "Intro."},
+            {"id": 2, "type": "scene_image", "content": "", "image_url": TINY_PNG_DATA_URL,
+             "metadata": {"prompt": "scene one", "base": "A loading dock.", "hard_transition": False}},
+            {"id": 3, "type": "player_choice_prompt", "content": "?", "choices": [{"text": "Go"}]},
+        ]
+        chooses = []
+        investigates = []
+        page.route("**/api/reset", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(scene_items)))
+        page.route("**/api/feed*", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
+        page.route("**/api/choose", lambda r: (chooses.append(r.request.url), r.fulfill(status=200, content_type="application/json", body="[]")))
+
+        def inv_handler(route):
+            investigates.append(route.request.post_data)
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps({"ok": True, "id": 7, "image_url": "/images/e.jpg", "kind": "photo"}))
+        page.route("**/api/investigate", inv_handler)
+        page.route("**/api/photo", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps({
+            "items": [{"label": "rusted valve", "interest": 4, "note": "recently turned"}],
+            "caption": "A tight frame on the dripping valve.", "mood": "ominous"})))
+        # A detected subject dead-center: framing it makes the shot WORTHY.
+        page.route("**/api/detect", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps({
+            "objects": [{"label": "figure", "cx": 0.5, "cy": 0.5, "w": 0.25, "h": 0.4}]})))
+        try:
+            # Force the STILL-image renderer (no realtime video).
+            page.goto(f"{self.base_url}/standalone?renderer=image", wait_until="domcontentloaded")
+            # The still must be on screen (a scene background is set).
+            page.wait_for_function(
+                "(document.getElementById('sceneA').style.backgroundImage||"
+                "document.getElementById('sceneB').style.backgroundImage||'').length > 0",
+                timeout=10000,
+            )
+            # We are NOT in realtime, yet the PHOTO camera hub is still shown.
+            self.assertFalse(page.evaluate("document.body.classList.contains('realtime-on')"),
+                             "stills mode must not be in realtime")
+            page.wait_for_function(
+                "getComputedStyle(document.getElementById('realtime-btn')).display !== 'none'",
+                timeout=8000)
+            # Arm the camera — the aiming layer opens and targets surface from the
+            # STILL's detection (proving detection runs off the still, not a video).
+            page.evaluate("document.getElementById('realtime-btn').click()")
+            self.assertTrue(page.evaluate("document.getElementById('realtime-btn').classList.contains('aiming')"),
+                            "camera must arm in stills mode")
+            self.assertFalse(page.evaluate("document.getElementById('touch-layer').classList.contains('hidden')"),
+                             "the aiming layer must open in stills mode")
+            page.wait_for_function("document.querySelectorAll('#touch-targets .photo-target').length >= 1", timeout=8000)
+            # TAP the centered subject (press+release) — a worthy shot.
+            page.evaluate(
+                """() => {
+                    const L = document.getElementById('touch-layer');
+                    const o = {clientX: window.innerWidth/2, clientY: window.innerHeight/2, pointerId: 1, cancelable: true, bubbles: true};
+                    L.dispatchEvent(new PointerEvent('pointerdown', o));
+                    L.dispatchEvent(new PointerEvent('pointerup', o));
+                }"""
+            )
+            # It files a photo specimen captured FROM THE STILL...
+            for _ in range(60):
+                if investigates:
+                    break
+                page.wait_for_timeout(100)
+            self.assertGreaterEqual(len(investigates), 1, f"a tap must capture a photo in stills mode. logs:\n{self._dump_logs()}")
+            payload = json.loads(investigates[0] or "{}")
+            self.assertEqual(payload.get("kind"), "photo")
+            self.assertTrue((payload.get("texture") or "").startswith("data:image"))
+            # ...adds it to the case file...
+            page.wait_for_function("document.querySelectorAll('#investigations-strip .inv-thumb').length >= 1", timeout=8000)
+            # ...and does NOT resolve a turn.
+            self.assertEqual(len(chooses), 0, "camera capture must not resolve a turn")
+        except Exception:
+            print("\n=== CONSOLE LOG (camera-stills) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
     def test_stills_hotspots_refresh_after_a_turn(self):
         """The key 'works well in stills mode' guarantee: after a turn changes the
         still, ambient detection must RE-RUN on the new still and surface the new

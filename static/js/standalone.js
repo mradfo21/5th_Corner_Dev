@@ -730,12 +730,14 @@
   function markSceneAwaiting() {
     state.sceneVisible = false;
     document.body.classList.add("awaiting-first-scene");
+    updateRendererButton(); // keep the camera tool hidden until a scene lands
   }
 
   function markSceneVisible() {
     if (state.sceneVisible) return;
     state.sceneVisible = true;
     document.body.classList.remove("awaiting-first-scene");
+    updateRendererButton(); // a scene is on screen — reveal the camera tool
   }
 
   // ------------------------------------------------------------------
@@ -1525,6 +1527,13 @@
       "realtime-on",
       Renderer.mode === "reactor" && Renderer.reactorAvailable()
     );
+    // Reveal the CAMERA (SNAP) tool whenever there's a scene on screen — it works
+    // in BOTH renderers (live video or the current still), so still-image mode
+    // keeps the camera + evidence gameplay instead of losing it.
+    document.body.classList.toggle(
+      "camera-on",
+      state.sceneVisible && !state.gameOver
+    );
     if (!el.rendererBtn) return;
     const reactorMode = Renderer.mode === "reactor";
     const status = (reactorMode && Renderer.reactorAvailable())
@@ -2080,6 +2089,8 @@
     Narrator.stop(); // silence any narration
     clearTurnWatchdog();
     closeScan(); // no scanning over the death screen
+    closeTouch(); // put the camera away — the run is over
+    updateRendererButton(); // hide the camera tool while dead
     hideVeil();
     el.choices.innerHTML = "";
     if (message) el.deathMessage.innerHTML = renderInline(message);
@@ -3046,13 +3057,18 @@
   // a CAMERA reticle follows the pointer/finger, and a tap/click shoots a photo
   // of the region under it — collected as "evidence" in the case file with a
   // satisfying flourish. Pointer-driven so it works on iOS (tap = capture).
-  // Realtime mode only (captures the live world-model frame).
+  // Works in BOTH renderers: it captures the live world-model frame in realtime
+  // mode, or the current scene still in image ("Stills") mode — so still images
+  // remain a fully playable option, camera and all.
   // ------------------------------------------------------------------
   function openTouch() {
     if (state.gameOver || state.freeWillOpen) return;
     if (state.touchMode) { closeTouch(); return; } // toggle off if already armed
-    if (Renderer.mode !== "reactor" || !Renderer.reactorAvailable()) return;
-    closeScan(); // the two realtime instruments are mutually exclusive
+    // The camera needs a scene to photograph — the live video (realtime) or a
+    // decoded still (image mode). Bail (with a gentle nudge) if neither is ready
+    // yet, rather than gating on a specific renderer.
+    if (!currentSourceSize()) { showRendererToast("Nothing to photograph yet"); return; }
+    closeScan(); // the camera and the ambient scan overlay are mutually exclusive
     state.touchMode = "aim";
     if (el.realtimeBtn) el.realtimeBtn.classList.add("aiming");
     document.body.classList.add("touch-aiming");
