@@ -52,6 +52,8 @@
     sceneFlash: document.getElementById("scene-flash"),
     sceneGlitch: document.getElementById("scene-glitch"),
     prose: document.getElementById("prose-feed"),
+    storyLog: document.getElementById("story-log"),
+    storyLogHide: document.getElementById("story-log-hide"),
     choices: document.getElementById("choices-container"),
     customForm: document.getElementById("custom-form"),
     customInput: document.getElementById("custom-input"),
@@ -122,6 +124,7 @@
     menuToggle: document.getElementById("menu-toggle"),
     controlRail: document.getElementById("control-rail"),
     btnModel: document.getElementById("btn-model"),
+    btnStory: document.getElementById("btn-story"),
     rtModelAdd: document.getElementById("rt-model-add"),
     rtModelInput: document.getElementById("rt-model-input"),
     vhsOverlay: document.getElementById("vhs-overlay"),
@@ -133,6 +136,8 @@
     rtLogList: document.getElementById("rt-log-list"),
     rtLogHide: document.getElementById("rt-log-hide"),
     rtLogModels: document.getElementById("rt-log-models"),
+    rtMusic: document.getElementById("rt-music"),
+    rtMusicOpts: document.getElementById("rt-music-opts"),
     deathOverlay: document.getElementById("death-overlay"),
     deathMessage: document.getElementById("death-message"),
     deathRestart: document.getElementById("death-restart"),
@@ -214,6 +219,119 @@
     finishTimer: null,          // fallback: fade the progress bar back to play
     sceneVisible: false,        // has the first realtime feed / still appeared this run? (gates the prose + SNAP tool on boot)
   };
+
+  // ------------------------------------------------------------------
+  // Device — one source of truth for "is this a phone or a desktop?".
+  //
+  // The game is full-bleed and the generated media (4:3 stills, 16:9 realtime
+  // video) is authored for a wide desktop canvas. On a desktop we WANT that
+  // cinematic full-bleed crop; on a portrait phone the same `cover` fit throws
+  // away most of the frame. Rather than sprinkle `window.innerWidth` checks
+  // everywhere, we resolve the device once and stamp the <html> element with
+  // classes the CSS keys off of:
+  //   .is-mobile / .is-desktop   — coarse pointer + phone-sized viewport (or UA)
+  //   .is-touch  / .is-pointer   — whether touch is the primary input
+  //   .is-portrait / .is-landscape
+  // JS can also read Device.isMobile() etc. Everything stays reactive to
+  // resize / orientation changes and to a phone being rotated mid-run.
+  // ------------------------------------------------------------------
+  const Device = (function () {
+    const root = document.documentElement;
+    let listeners = [];
+    const mm = (q) => (window.matchMedia ? window.matchMedia(q) : { matches: false, addEventListener: () => {}, addListener: () => {} });
+    const state = { mobile: false, touch: false, portrait: false };
+
+    function detectTouch() {
+      try {
+        if (mm("(pointer: coarse)").matches) return true;
+        if (navigator.maxTouchPoints > 0) return true;
+        if ("ontouchstart" in window) return true;
+      } catch (_) {}
+      return false;
+    }
+
+    function detectMobile(touch) {
+      // A phone/tablet is: a touch-primary device whose *shortest* side is
+      // small enough that a desktop-cinematic crop would hurt, OR a device
+      // that reports a mobile user-agent. Desktops with touchscreens (large
+      // viewport, fine pointer available) stay in "desktop" mode.
+      let uaMobile = false;
+      try {
+        const ua = navigator.userAgent || "";
+        uaMobile = /Android|iPhone|iPad|iPod|Windows Phone|webOS|BlackBerry|Mobile/i.test(ua);
+        // Modern iPadOS reports as desktop Safari; catch it via touch + Mac.
+        if (!uaMobile && /Macintosh/.test(ua) && navigator.maxTouchPoints > 1) uaMobile = true;
+      } catch (_) {}
+      const shortSide = Math.min(window.innerWidth || 0, window.innerHeight || 0);
+      const finePointer = (function () { try { return mm("(pointer: fine)").matches; } catch (_) { return false; } })();
+      // Small viewport + touch-primary (no fine pointer) => phone-class.
+      const smallTouch = touch && !finePointer && shortSide > 0 && shortSide <= 820;
+      return uaMobile || smallTouch;
+    }
+
+    function apply() {
+      const touch = detectTouch();
+      const mobile = detectMobile(touch);
+      const portrait = (window.innerHeight || 0) >= (window.innerWidth || 0);
+      const changed = mobile !== state.mobile || touch !== state.touch || portrait !== state.portrait;
+      state.mobile = mobile; state.touch = touch; state.portrait = portrait;
+      root.classList.toggle("is-mobile", mobile);
+      root.classList.toggle("is-desktop", !mobile);
+      root.classList.toggle("is-touch", touch);
+      root.classList.toggle("is-pointer", !touch);
+      root.classList.toggle("is-portrait", portrait);
+      root.classList.toggle("is-landscape", !portrait);
+      if (changed) listeners.forEach((fn) => { try { fn(state); } catch (_) {} });
+      return state;
+    }
+
+    let _raf = 0;
+    function onChange() {
+      // Coalesce bursts of resize events (mobile URL-bar show/hide fires many).
+      if (_raf) cancelAnimationFrame(_raf);
+      _raf = requestAnimationFrame(apply);
+    }
+
+    function init() {
+      apply();
+      window.addEventListener("resize", onChange, { passive: true });
+      window.addEventListener("orientationchange", onChange, { passive: true });
+      try {
+        // React the instant the primary pointer type changes (e.g. a tablet
+        // docking a mouse) without waiting for a resize.
+        mm("(pointer: coarse)").addEventListener("change", onChange);
+      } catch (_) {
+        try { mm("(pointer: coarse)").addListener(onChange); } catch (_) {}
+      }
+      return state;
+    }
+
+    return {
+      init,
+      refresh: apply,
+      onChange(fn) { if (typeof fn === "function") listeners.push(fn); },
+      isMobile() { return state.mobile; },
+      isDesktop() { return !state.mobile; },
+      isTouch() { return state.touch; },
+      isPortrait() { return state.portrait; },
+    };
+  })();
+  // Expose for debugging / other scripts (e.g. the reactor renderer).
+  try { window.__DEVICE__ = Device; } catch (_) {}
+
+  // The scene media (still background / realtime video) is displayed `cover` on
+  // desktops and landscape phones, but `contain` on PORTRAIT phones (see the
+  // "MOBILE MEDIA FIT" CSS). The SCAN hotspots and PHOTO markers map model-space
+  // (0..1) coordinates onto the *displayed* media rect, so they must use the
+  // exact same fit the CSS uses — otherwise every tag/marker drifts on a phone.
+  function isContainFit() {
+    return Device.isMobile() && Device.isPortrait();
+  }
+  // Scale that maps a source (sw x sh) into the viewport (W x H) under the
+  // current fit: max() = cover (fill + crop), min() = contain (fit + letterbox).
+  function mediaFitScale(W, H, sw, sh) {
+    return isContainFit() ? Math.min(W / sw, H / sh) : Math.max(W / sw, H / sh);
+  }
 
   // ------------------------------------------------------------------
   // Sound — tiny WebAudio synth (no assets; gated on first user gesture)
@@ -355,8 +473,50 @@
     let src = null;             // active looping AudioBufferSourceNode
     let gain = null;            // its GainNode
     const bufferCache = new Map(); // url -> decoded AudioBuffer
-    const TARGET_VOL = 0.26;    // sit UNDER the UI SFX — it's a bed, not a lead
     const FADE = 1.4;           // crossfade seconds between scene scores
+
+    // Music bed volume — an ambient bed that should sit UNDER the UI SFX, not
+    // compete with it. It's now adjustable live from the debug panel (WORLD
+    // MODEL / L) and persisted per browser. We expose a short list of preset
+    // "options" (Off…Max) rather than a fiddly slider, and default lower than
+    // before (the old 0.26 read as too loud for a background bed).
+    const VOL_KEY = "music_vol";
+    const VOL_PRESETS = [
+      { id: "off",  label: "Off",  value: 0.0  },
+      { id: "low",  label: "Low",  value: 0.06 },
+      { id: "med",  label: "Med",  value: 0.12 },
+      { id: "high", label: "High", value: 0.20 },
+      { id: "max",  label: "Max",  value: 0.30 },
+    ];
+    const DEFAULT_VOL = 0.12;
+    function loadVol() {
+      try {
+        const raw = localStorage.getItem(VOL_KEY);
+        if (raw == null) return DEFAULT_VOL;
+        const v = parseFloat(raw);
+        return (isFinite(v) && v >= 0 && v <= 1) ? v : DEFAULT_VOL;
+      } catch (_) { return DEFAULT_VOL; }
+    }
+    let musicVol = loadVol();   // current bed volume (0..1), the live target
+
+    // Push the current volume onto whatever is playing right now (clip gain
+    // and/or streamed PCM gain) so debug-panel changes take effect instantly,
+    // without waiting for the next scene to re-score. Honors the global mute.
+    function applyLiveVolume() {
+      const c = ctx();
+      const target = state.soundEnabled ? musicVol : 0;
+      if (gain && c) {
+        try {
+          const t = c.currentTime;
+          gain.gain.cancelScheduledValues(t);
+          gain.gain.setValueAtTime(gain.gain.value, t);
+          gain.gain.linearRampToValueAtTime(target, t + 0.25);
+        } catch (_) {}
+      }
+      if (streamGain) {
+        try { streamGain.gain.value = target; } catch (_) {}
+      }
+    }
 
     function ctx() {
       try { return Sound.context ? Sound.context() : null; } catch (_) { return null; }
@@ -402,7 +562,7 @@
       const g = c.createGain();
       const t = c.currentTime;
       g.gain.setValueAtTime(0.0001, t);
-      g.gain.linearRampToValueAtTime(TARGET_VOL, t + FADE);
+      g.gain.linearRampToValueAtTime(musicVol, t + FADE);
       s.connect(g); g.connect(c.destination);
       try { s.start(); } catch (_) { return; }
       src = s; gain = g;
@@ -459,7 +619,7 @@
       if (!c || wsOpening || (ws && ws.readyState <= 1)) return;
       wsOpening = true;
       streamGain = c.createGain();
-      streamGain.gain.value = TARGET_VOL;
+      streamGain.gain.value = state.soundEnabled ? musicVol : 0;
       streamGain.connect(c.destination);
       streamNextTime = 0;
       let sock;
@@ -527,6 +687,19 @@
       reset() {
         stop(0.4); closeStream();
         currentUrl = null; requestedKey = null;
+      },
+      // ── Music volume (debug-panel controlled) ──
+      // The preset "options" shown in the debug panel (Off…Max).
+      volumePresets() { return VOL_PRESETS.map((p) => ({ id: p.id, label: p.label, value: p.value })); },
+      // Current bed volume (0..1).
+      getVolume() { return musicVol; },
+      // Set + persist the bed volume, applying it live to whatever's playing.
+      setVolume(v) {
+        v = Number(v);
+        if (!isFinite(v)) return;
+        musicVol = Math.max(0, Math.min(1, v));
+        try { localStorage.setItem(VOL_KEY, String(musicVol)); } catch (_) {}
+        applyLiveVolume();
       },
     };
   })();
@@ -1225,6 +1398,7 @@
       }
       RtLog.init();
       buildModelSwitcher();
+      buildMusicVolume();
       // In realtime mode, connect eagerly so the GPU session is warming while
       // the intro scene generates — the video then starts as soon as the first
       // scene prompt arrives. (Falls back to stills if it can't connect.)
@@ -1517,6 +1691,51 @@
   }
 
   // ------------------------------------------------------------------
+  // Music volume control — preset options in the debug panel (WORLD MODEL / L)
+  // so the ambient bed can be tuned or muted live. Persists via SceneAudio.
+  // ------------------------------------------------------------------
+  function makeMusicBtn(preset) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "rt-music-btn";
+    b.dataset.vol = String(preset.value);
+    b.textContent = preset.label;
+    b.title = "Music volume: " + preset.label;
+    b.addEventListener("click", () => {
+      try { SceneAudio.setVolume(preset.value); } catch (_) {}
+      try { Haptics.tap(); } catch (_) {}
+      updateMusicVolume();
+    });
+    return b;
+  }
+
+  function buildMusicVolume() {
+    const wrap = el.rtMusicOpts;
+    if (!wrap) return;
+    let presets = [];
+    try { presets = SceneAudio.volumePresets ? SceneAudio.volumePresets() : []; } catch (_) {}
+    wrap.innerHTML = "";
+    presets.forEach((p) => wrap.appendChild(makeMusicBtn(p)));
+    updateMusicVolume();
+  }
+
+  function updateMusicVolume() {
+    const wrap = el.rtMusicOpts;
+    if (!wrap || !wrap.children.length) return;
+    let cur = 0;
+    try { cur = SceneAudio.getVolume ? SceneAudio.getVolume() : 0; } catch (_) {}
+    // Highlight the preset closest to the current volume (values are distinct).
+    let best = null, bestD = Infinity;
+    Array.prototype.forEach.call(wrap.children, (b) => {
+      const d = Math.abs(parseFloat(b.dataset.vol) - cur);
+      if (d < bestD) { bestD = d; best = b; }
+    });
+    Array.prototype.forEach.call(wrap.children, (b) => {
+      b.classList.toggle("active", b === best);
+    });
+  }
+
+  // ------------------------------------------------------------------
   // World-model inspector log — a subtle, sequential console of what we send to
   // the realtime world model (prompts) and what it reports back (accepted /
   // started / chunks / stalls / errors), so the black box is legible.
@@ -1585,6 +1804,37 @@
       if (el.rtLogHide) el.rtLogHide.addEventListener("click", () => { try { localStorage.setItem("rt_log", "off"); } catch (_) {} applyVisibility(); });
     }
     return { push, clip, toggle, init };
+  })();
+
+  // ------------------------------------------------------------------
+  // Story log — the run's narrative chronicle. Formerly floating text over the
+  // scene; now a docked, toggleable panel (STORY button / J), mirroring the
+  // world-model log, so the art is never obstructed. Collapsed by default.
+  // ------------------------------------------------------------------
+  const StoryLog = (function () {
+    function visible() {
+      try { return localStorage.getItem("story_log") === "on"; } catch (_) { return false; }
+    }
+    function applyVisibility() {
+      const on = visible();
+      document.body.classList.toggle("story-log-on", on);
+      if (el.btnStory) el.btnStory.classList.toggle("active", on);
+      // When opened, jump to the latest beat so it reads like a live tail.
+      if (on && el.prose) el.prose.scrollTop = el.prose.scrollHeight + 400;
+    }
+    function toggle() {
+      const on = !visible();
+      try { localStorage.setItem("story_log", on ? "on" : "off"); } catch (_) {}
+      applyVisibility();
+    }
+    function init() {
+      applyVisibility();
+      if (el.storyLogHide) el.storyLogHide.addEventListener("click", () => {
+        try { localStorage.setItem("story_log", "off"); } catch (_) {}
+        applyVisibility();
+      });
+    }
+    return { visible, toggle, init };
   })();
 
   // Small transient on-screen note so it's obvious which renderer is active
@@ -1843,40 +2093,64 @@
     return "narrative-event";
   }
 
-  // Condense a long field-note paragraph down to a short, punchy beat — the
-  // scene (video) is the star; the feed should read like terse dispatches, not
-  // walls of text.
-  function shortBeat(text) {
-    const t = String(text == null ? "" : text).trim().replace(/\s+/g, " ");
-    if (t.length <= 160) return t;
-    // Accumulate whole sentences up to a coherent ~1–2 line beat (avoids cutting
-    // on tiny leading fragments like "1993.").
-    const parts = t.split(/(?<=[.!?])\s+/);
-    let out = "";
-    for (const s of parts) {
-      if (out && out.length + 1 + s.length > 180) break;
-      out = out ? out + " " + s : s;
-      if (out.length >= 130) break;
-    }
-    if (!out) out = t.slice(0, 160);
-    if (out.length > 200) out = out.slice(0, 197).trim() + "\u2026";
-    return out;
+  // Short, human tag shown per log entry so the chronicle is legible at a glance.
+  const LOG_LABEL = {
+    player_action: "ACT",
+    narrative_event: "SCENE",
+    consequence_event: "RESULT",
+    vision_analysis: "VISION",
+    error_event: "ERROR",
+    player_choice_prompt: "CHOICE",
+    inventory_pickup: "PICKUP",
+    inventory_full: "PACK",
+    suspense_event: "TENSION",
+    threat_escalation: "THREAT",
+    risky_action_outcome: "RISK",
+    combat_action: "COMBAT",
+    combat_resolution: "COMBAT",
+    game_over: "END",
+  };
+
+  function labelForType(type) {
+    if (LOG_LABEL[type]) return LOG_LABEL[type];
+    if (type && type.indexOf("combat") === 0) return "COMBAT";
+    if (type && type.indexOf("threat") === 0) return "THREAT";
+    return "LOG";
   }
 
-  // Feed lines that carry generated prose we want to keep short.
-  const SHORTEN_TYPES = {
-    narrative_event: 1, consequence_event: 1, vision_analysis: 1,
-    suspense_event: 1, threat_escalation: 1, risky_action_outcome: 1,
-  };
+  // Timestamp for a story-log entry (mm:ss into the session-visible clock).
+  function logStamp() {
+    const d = new Date();
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    const ss = String(d.getSeconds()).padStart(2, "0");
+    return `${mm}:${ss}`;
+  }
 
   function appendProse(item) {
     const div = document.createElement("div");
     div.className = `prose-entry glow-pop ${classForType(item.type)}`;
     div.dataset.itemId = item.id;
     const raw = item.content || "";
-    div.innerHTML = renderInline(SHORTEN_TYPES[item.type] ? shortBeat(raw) : raw);
+
+    // It's a detailed log now (not ambient overlay text), so each entry carries
+    // a timestamp + type tag and shows the FULL beat rather than a condensed
+    // one-liner.
+    const t = document.createElement("span");
+    t.className = "prose-time";
+    t.textContent = logStamp();
+    const tag = document.createElement("span");
+    tag.className = "prose-tag";
+    tag.textContent = labelForType(item.type);
+    const body = document.createElement("span");
+    body.className = "prose-body";
+    body.innerHTML = renderInline(raw);
+
+    div.appendChild(t);
+    div.appendChild(tag);
+    div.appendChild(body);
     el.prose.appendChild(div);
-    el.prose.scrollTop = el.prose.scrollHeight + 400;
+    // Tail to the newest entry when the log is open.
+    if (StoryLog.visible()) el.prose.scrollTop = el.prose.scrollHeight + 400;
     return div;
   }
 
@@ -2318,7 +2592,7 @@
     }
     const size = currentSourceSize();
     if (!size || !size.w || !size.h) return { x: x / W, y: y / H };
-    const scale = Math.max(W / size.w, H / size.h);
+    const scale = mediaFitScale(W, H, size.w, size.h);
     const dw = size.w * scale, dh = size.h * scale;
     const ox = (W - dw) / 2, oy = (H - dh) / 2;
     return { x: (x - ox) / dw, y: (y - oy) / dh };
@@ -3008,7 +3282,7 @@
     let x, y;
     if (!size || !size.w || !size.h) { x = cx * W; y = cy * H; }
     else {
-      const scale = Math.max(W / size.w, H / size.h);
+      const scale = mediaFitScale(W, H, size.w, size.h);
       const dw = size.w * scale, dh = size.h * scale;
       const ox = (W - dw) / 2, oy = (H - dh) / 2;
       x = ox + cx * dw; y = oy + cy * dh;
@@ -3535,7 +3809,7 @@
     const size = state.scanSrcSize ||
       (window.ReactorRenderer.getVideoSize && window.ReactorRenderer.getVideoSize()) || null;
     if (!size || !size.w || !size.h) return { x: nx * W, y: ny * H };
-    const scale = Math.max(W / size.w, H / size.h);
+    const scale = mediaFitScale(W, H, size.w, size.h);
     const dw = size.w * scale, dh = size.h * scale;
     const ox = (W - dw) / 2, oy = (H - dh) / 2;
     return { x: ox + nx * dw, y: oy + ny * dh };
@@ -4841,6 +5115,8 @@
       capturePhoto(); // journalist photograph — file a specimen to the case file
     } else if (e.key.toLowerCase() === "l") {
       RtLog.toggle(); // show/hide the world-model inspector log
+    } else if (e.key.toLowerCase() === "j") {
+      StoryLog.toggle(); // show/hide the story log (the run chronicle)
     } else if (e.key.toLowerCase() === "g") {
       Renderer.toggle();
       Sound.toggle();
@@ -4872,6 +5148,10 @@
   // ------------------------------------------------------------------
 
   function init() {
+    // Resolve mobile vs desktop first so every later init (and the CSS) can
+    // adapt: phones get a "truly mobile" layout + media fit, desktops keep the
+    // cinematic full-bleed experience.
+    Device.init();
     el.btnReset.addEventListener("click", resetGame);
     el.btnVhs.addEventListener("click", toggleVhs);
     el.btnSnd.addEventListener("click", toggleSound);
@@ -4880,7 +5160,9 @@
     }
     if (el.menuToggle) el.menuToggle.addEventListener("click", () => Menu.toggle());
     if (el.btnModel) el.btnModel.addEventListener("click", () => { RtLog.toggle(); });
+    if (el.btnStory) el.btnStory.addEventListener("click", () => { StoryLog.toggle(); });
     if (el.rtModelAdd) el.rtModelAdd.addEventListener("submit", addCustomModel);
+    StoryLog.init();
     Menu.init();
     Tactile.init();
     el.deathRestart.addEventListener("click", resetGame);

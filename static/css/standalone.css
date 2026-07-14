@@ -209,43 +209,97 @@ html, body {
   transform: translateY(1px);
 }
 
-/* ---------- Narrative feed: floating top-left, NO background ---------- */
+/* ---------- Story log: a docked, toggleable run chronicle ----------
+   Formerly floating narrative text over the scene. It now lives in a panel that
+   is hidden by default and opened from the STORY rail button (or J), mirroring
+   the world-model log, so the art is never obstructed by prose. */
+
+.story-log {
+  position: fixed;
+  /* Docked top-LEFT (where the narrative used to float) so it never collides
+     with the world-model log, which docks against the right-hand rail. */
+  left: calc(env(safe-area-inset-left, 0px) + 16px);
+  top: calc(env(safe-area-inset-top, 0px) + 58px);
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 96px);
+  width: min(42vw, 360px);
+  z-index: 12;
+  display: none;
+  flex-direction: column;
+  background: rgba(4, 10, 8, 0.52);
+  border: 1px solid rgba(142, 255, 193, 0.18);
+  border-radius: 6px;
+  backdrop-filter: blur(2px);
+  color: rgba(216, 240, 228, 0.82);
+  overflow: hidden;
+  pointer-events: auto;
+}
+body.story-log-on .story-log { display: flex; }
+
+.story-log-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 8px;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  color: rgba(142, 255, 193, 0.7);
+  border-bottom: 1px solid rgba(142, 255, 193, 0.14);
+  background: rgba(0, 0, 0, 0.25);
+}
+.story-log-hide {
+  background: none;
+  border: none;
+  color: rgba(216, 240, 228, 0.5);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  padding: 0 2px;
+}
+.story-log-hide:hover { color: rgba(255, 120, 120, 0.9); }
 
 #prose-feed {
-  position: fixed;
-  top: calc(env(safe-area-inset-top, 0px) + 40px);
-  left: calc(env(safe-area-inset-left, 0px) + 28px);
-  width: min(38vw, 400px);
-  max-height: 52vh;
-  z-index: 6;
+  list-style: none;
+  margin: 0;
+  padding: 8px 10px;
+  flex: 1 1 auto;      /* fill the panel between the header and its bottom edge */
+  min-height: 0;       /* allow the list to shrink so overflow-y can scroll */
   overflow-y: auto;
+  overflow-x: hidden;
   display: flex;
   flex-direction: column;
-  gap: 5px;
-  scrollbar-width: none;
-  /* Subtle, ambient — the scene is the star. */
-  opacity: 0.52;
-  transition: opacity 0.5s ease;
+  gap: 8px;
+  scrollbar-width: thin;
 }
-#prose-feed::-webkit-scrollbar { display: none; }
-
-/* Boot gate: on a fresh run, keep the narrative text hidden until the world is
-   actually on screen (a still lands or the realtime feed goes live). Otherwise
-   floating text hangs over a black void while the first scene renders. */
-body.awaiting-first-scene #prose-feed {
-  opacity: 0;
-  pointer-events: none;
-}
+#prose-feed::-webkit-scrollbar { width: 6px; }
+#prose-feed::-webkit-scrollbar-thumb { background: rgba(142,255,193,0.2); border-radius: 3px; }
 
 .prose-entry {
   margin: 0;
   animation: pop-in 0.42s cubic-bezier(0.2, 0.9, 0.25, 1.2) both;
-  font-size: 13px;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 12px;
   line-height: 1.5;
   font-weight: 300;
   letter-spacing: 0.01em;
   text-shadow: 0 1px 3px rgba(0,0,0,0.9);
 }
+
+/* Log meta: a per-entry timestamp + type tag so the chronicle reads like a
+   proper, detailed log rather than ambient one-liners. */
+.prose-time {
+  color: rgba(216, 240, 228, 0.32);
+  margin-right: 6px;
+  font-size: 10px;
+}
+.prose-tag {
+  color: rgba(142, 255, 193, 0.55);
+  margin-right: 6px;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.prose-body { color: inherit; }
 
 @keyframes pop-in {
   0%   { opacity: 0; transform: translateY(7px) scale(0.97); }
@@ -263,12 +317,9 @@ body.awaiting-first-scene #prose-feed {
 }
 
 .prose-entry.player-action {
-  align-self: flex-end;
   color: #ffd97a;
   font-style: italic;
-  text-align: right;
 }
-.prose-entry.player-action::before { content: "» "; }
 
 .prose-entry.narrative-event,
 .prose-entry.consequence-event {
@@ -2035,6 +2086,13 @@ body.menu-open #control-rail {
   color: #eafff2;
 }
 .rail-btn:active { transform: scale(0.94); }
+/* Toggled-on state (e.g. the STORY log is open) — a subtle lit highlight. */
+.rail-btn.active {
+  background: rgba(142, 255, 193, 0.16);
+  border-color: rgba(142, 255, 193, 0.55);
+  color: #eafff2;
+  box-shadow: inset 0 0 10px rgba(142, 255, 193, 0.12);
+}
 
 /* Make every interactive control a clean single-tap target on mobile — no
    double-tap zoom, no gesture bleed between the action zone and the rail. */
@@ -2643,6 +2701,53 @@ body.reactor-available.rt-log-on #rt-log { display: flex; }
 }
 #rt-model-go:hover { background: rgba(142, 255, 193, 0.22); color: #eafff2; }
 
+/* ---------- Music volume (preset options in the log head) ---------- */
+.rt-music {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid rgba(142, 255, 193, 0.14);
+  background: rgba(0, 0, 0, 0.18);
+}
+.rt-music-label {
+  flex: 0 0 auto;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  color: rgba(142, 255, 193, 0.7);
+}
+.rt-music-opts {
+  display: flex;
+  flex: 1 1 auto;
+  gap: 4px;
+}
+.rt-music-btn {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 6px;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgba(216, 240, 228, 0.7);
+  background: rgba(142, 255, 193, 0.06);
+  border: 1px solid rgba(142, 255, 193, 0.2);
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.rt-music-btn:hover { background: rgba(142, 255, 193, 0.14); color: rgba(216, 240, 228, 0.95); }
+.rt-music-btn.active {
+  color: #061a11;
+  background: rgba(142, 255, 193, 0.85);
+  border-color: rgba(142, 255, 193, 0.95);
+  font-weight: 700;
+}
+
 .rt-log-head {
   display: flex;
   align-items: center;
@@ -2818,18 +2923,16 @@ body.reactor-available.rt-log-on #rt-log { display: flex; }
 
 /* ---------- Mobile portrait: text spans top, wheel fits the width ---------- */
 @media (max-width: 720px) {
-  #prose-feed {
-    /* Stop before the control rail on the right; keep the block compact so it
-       no longer dominates the screen. Scrolls when longer. */
-    width: calc(100vw - 108px);
-    max-width: none;
-    max-height: 30vh;
-    top: calc(env(safe-area-inset-top, 0px) + 40px);
-    /* Fade the top edge so a long dispatch dissolves instead of hard-cropping. */
-    -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 18px);
-    mask-image: linear-gradient(to bottom, transparent 0, #000 18px);
+  /* The story-log panel: keep it clear of the right-hand rail and comfortably
+     tall on phones. */
+  .story-log {
+    left: calc(env(safe-area-inset-left, 0px) + 10px);
+    right: calc(env(safe-area-inset-right, 0px) + 78px);
+    top: calc(env(safe-area-inset-top, 0px) + 52px);
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 90px);
+    width: auto;
   }
-  .prose-entry { font-size: 14px; line-height: 1.4; }
+  .prose-entry { font-size: 14px; line-height: 1.45; }
 
   #action-wheel { width: 96vw; height: 176px; bottom: calc(env(safe-area-inset-bottom, 0px) + 1.6vh); }
   .choice-btn { font-size: 14px; max-width: 42vw; }
@@ -2857,7 +2960,12 @@ body.reactor-available.rt-log-on #rt-log { display: flex; }
 
 /* ---------- Phones in landscape (short height): keep the wheel low + tight ---------- */
 @media (max-height: 500px) and (orientation: landscape) {
-  #prose-feed { max-height: 40vh; width: min(42vw, 420px); }
+  .story-log {
+    top: calc(env(safe-area-inset-top, 0px) + 52px);
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 70px);
+    left: calc(env(safe-area-inset-left, 0px) + 10px);
+    width: min(42vw, 420px);
+  }
   #action-wheel { height: 138px; bottom: calc(env(safe-area-inset-bottom, 0px) + 6px); }
   .choice-btn:nth-child(2) { bottom: 92px; }
   #free-will-btn, #forward-btn { width: 42px; height: 42px; }
@@ -2865,7 +2973,6 @@ body.reactor-available.rt-log-on #rt-log { display: flex; }
   #realtime-btn { width: 42px; height: 42px; transform: translateX(30px); }
   #realtime-btn:hover { transform: translateX(30px) scale(1.08); }
   #scan-hint { bottom: calc(env(safe-area-inset-bottom, 0px) + 150px); }
-  #prose-feed { max-height: 40vh; }
 
   /* Compact the rail + toggle so the collapsed menu fits a short screen. */
   #menu-toggle { top: calc(env(safe-area-inset-top, 0px) + 6px); width: 36px; height: 36px; }
@@ -2882,6 +2989,110 @@ body.reactor-available.rt-log-on #rt-log { display: flex; }
     right: calc(env(safe-area-inset-right, 0px) + 62px);
     width: 210px;
   }
+}
+
+/* ============================================================
+   MOBILE MEDIA FIT — ease desktop-authored aspect ratios on phones
+   ------------------------------------------------------------
+   All generated media is authored for a wide desktop canvas (4:3 stills,
+   16:9 realtime video). On a desktop the default full-bleed `cover` crop is
+   exactly what we want — cinematic and edge-to-edge. But on a PORTRAIT phone
+   that same crop throws away most of the frame (only a narrow vertical slice
+   of a wide image survives). These rules — gated on the JS-resolved
+   `html.is-mobile` + `.is-portrait` classes — switch the media to a
+   "contain + blurred fill" fit: the WHOLE authored frame is shown sharp and
+   centered, and a blurred, zoomed copy of the same media fills the letterbox
+   gaps so the screen still reads full-bleed instead of dead black bars.
+
+   Landscape phones keep the desktop `cover` fit (a wide screen matches the
+   wide media), so this only kicks in where the mismatch actually hurts.
+   ============================================================ */
+
+/* Stills (the star of the show). The sharp, whole frame rides on ::after; the
+   blurred fill rides on ::before (painted underneath it in DOM/paint order).
+   Both pseudo layers pull the SAME inline background-image via `inherit`, so
+   setScene() keeps working untouched. */
+html.is-mobile.is-portrait .scene {
+  background-repeat: no-repeat;
+}
+html.is-mobile.is-portrait .scene::before,
+html.is-mobile.is-portrait .scene::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: inherit;
+  background-repeat: no-repeat;
+  background-position: center;
+}
+html.is-mobile.is-portrait .scene::before {
+  background-size: cover;
+  transform: scale(1.14);
+  filter: blur(26px) saturate(0.8) brightness(0.5);
+}
+html.is-mobile.is-portrait .scene::after {
+  background-size: contain;
+}
+
+/* Tape playback frames get the same treatment (also background-image divs). */
+html.is-mobile.is-portrait .tape-frame {
+  background-repeat: no-repeat;
+}
+html.is-mobile.is-portrait .tape-frame::before,
+html.is-mobile.is-portrait .tape-frame::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: inherit;
+  background-repeat: no-repeat;
+  background-position: center;
+}
+html.is-mobile.is-portrait .tape-frame::before {
+  background-size: cover;
+  transform: scale(1.14);
+  filter: blur(26px) saturate(0.8) brightness(0.5);
+}
+html.is-mobile.is-portrait .tape-frame::after {
+  background-size: contain;
+}
+
+/* Realtime video + its freeze back-buffer are replaced elements (no usable
+   pseudo-elements), so we fit them with `contain`. The still "floor" staged
+   behind the video is that stream's own guide image — already given the
+   blurred-fill treatment above — so it fills the letterbox gaps coherently. */
+html.is-mobile.is-portrait .reactor-video,
+html.is-mobile.is-portrait .reactor-freeze {
+  object-fit: contain;
+}
+
+/* On very roomy portrait tablets the crop is far less severe, so ease off the
+   blur strength for a cleaner look. */
+@media (min-width: 700px) {
+  html.is-mobile.is-portrait .scene::before,
+  html.is-mobile.is-portrait .tape-frame::before {
+    filter: blur(34px) saturate(0.85) brightness(0.55);
+  }
+}
+
+/* Respect reduced-motion / reduced-data leanings: the blurred fill is purely
+   decorative, so drop it to a flat dark backdrop when motion is reduced. */
+@media (prefers-reduced-motion: reduce) {
+  html.is-mobile.is-portrait .scene::before,
+  html.is-mobile.is-portrait .tape-frame::before {
+    filter: none;
+    background-image: none;
+    background: #050505;
+    transform: none;
+  }
+}
+
+/* ---------- Touch-primary vs pointer-primary affordances ----------
+   On touch devices there is no hover, so hover-only hints never fire; make
+   the always-visible controls a touch more prominent instead. On desktop we
+   keep the quieter, hover-to-reveal styling that suits a mouse. */
+html.is-touch .rail-lbl,
+html.is-touch .fw-label,
+html.is-touch .rt-label {
+  opacity: 0.95;
 }
 
 /* ============================================================

@@ -79,6 +79,9 @@
     <button id="btn-model" class="rail-btn" type="button" title="World model logs &amp; selector (L)">
       <span class="rail-ico">◍</span><span class="rail-lbl">MODEL</span>
     </button>
+    <button id="btn-story" class="rail-btn" type="button" title="Story log — the detailed run chronicle (J)">
+      <span class="rail-ico">&#8803;</span><span class="rail-lbl">STORY</span>
+    </button>
     <button id="autoplay-btn" class="rail-btn" type="button" title="Auto-play — advance on its own (P)">
       <span class="rail-ico">⏩</span><span class="rail-lbl" id="autoplay-label">AUTO</span>
     </button>
@@ -145,11 +148,27 @@
              aria-label="Custom world model id" spellcheck="false">
       <button id="rt-model-go" type="submit" title="Load this world model">USE</button>
     </form>
+    <!-- Music bed volume — the ambient score sits under the SFX. Tune or mute it
+         here with preset options (persisted per browser); changes apply live. -->
+    <div id="rt-music" class="rt-music" role="group" aria-label="Music volume">
+      <span class="rt-music-label">MUSIC</span>
+      <div id="rt-music-opts" class="rt-music-opts"></div>
+    </div>
     <ol id="rt-log-list" class="rt-log-list" aria-live="polite"></ol>
   </aside>
 
-  <!-- Narrative: floating top-left, no background -->
-  <main id="prose-feed" aria-live="polite"></main>
+  <!-- Story log: a detailed, timestamped chronicle of the run — every narrative
+       beat, player action, consequence, world-vision note, pickup and threat,
+       shown in full (no longer condensed to ambient one-liners over the art).
+       Hidden by default and opened from the STORY rail button (or J), exactly
+       like the world-model log, so the scene stays unobstructed. -->
+  <aside id="story-log" class="story-log" aria-label="Story log">
+    <div class="story-log-head">
+      <span class="story-log-title">STORY LOG</span>
+      <button id="story-log-hide" class="story-log-hide" type="button" title="Hide (J)">&#10005;</button>
+    </div>
+    <main id="prose-feed" class="story-log-list" aria-live="polite"></main>
+  </aside>
 
   <!-- Minimal action zone: small options + free-will trigger at the bottom -->
   <div id="action-wheel">
