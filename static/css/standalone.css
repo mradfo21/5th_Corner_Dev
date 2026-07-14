@@ -92,6 +92,27 @@ html, body {
   transition: none;
 }
 
+/* Realtime scene fade — a near-black veil that covers the live video + freeze
+   during a re-anchor (new guide image / hard transition), mirroring the still
+   renderer's crossfade-to-dark. It sits ABOVE the video/freeze/still floor but
+   BELOW the scene flash, VCR glitch, and HUD, so the scene "fades down" for a
+   beat while the next world generates, then lifts to reveal the fresh stream
+   (masked by the same glitch burst the still swap uses). The dark matches the
+   .scene background-color so image + video modes fade to the same tone. */
+.reactor-fade {
+  position: fixed;
+  inset: 0;
+  z-index: 2;
+  background-color: #050505;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.8s ease-in-out;
+}
+
+.reactor-fade.down {
+  opacity: 1;
+}
+
 .scene-scrim {
   position: fixed;
   inset: 0;
