@@ -698,6 +698,50 @@ class TestRealtimeRenderer(unittest.TestCase):
         finally:
             page.close()
 
+    def test_scan_prewarms_detection_in_background(self):
+        """Detection must pre-warm in the background once a scene is on screen —
+        even before SCAN is opened — so arming SCAN shows tags INSTANTLY (from the
+        cache) instead of waiting for the first round-trip."""
+        page = self._new_realtime_page()
+        scene_items = [
+            {"id": 1, "type": "narrative", "content": "Intro."},
+            {"id": 2, "type": "scene_image", "content": "", "image_url": TINY_PNG_DATA_URL,
+             "metadata": {"prompt": "scene one", "base": "A dock.", "hard_transition": False}},
+            {"id": 3, "type": "player_choice_prompt", "content": "?", "choices": [{"text": "Go"}]},
+        ]
+        detects = []
+        page.route("**/api/reset", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(scene_items)))
+        page.route("**/api/feed*", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
+        page.route("**/api/choose", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
+
+        def detect_handler(route):
+            detects.append(route.request.url)
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({
+                "objects": [{"label": "wooden crate", "cx": 0.3, "cy": 0.4, "w": 0.2, "h": 0.2}]}))
+        page.route("**/api/detect", detect_handler)
+        try:
+            page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
+            page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
+            # The background pre-warm fires WITHOUT the player opening SCAN.
+            for _ in range(90):
+                if detects:
+                    break
+                page.wait_for_timeout(100)
+            self.assertGreaterEqual(len(detects), 1, f"detection must pre-warm in the background. logs:\n{self._dump_logs()}")
+            self.assertFalse(page.evaluate("document.getElementById('scan-btn').classList.contains('scanning')"),
+                             "pre-warm must not arm SCAN by itself")
+            self.assertEqual(page.evaluate("document.querySelectorAll('#scan-tags .scan-tag').length"), 0,
+                             "pre-warm must not render tags before SCAN is opened")
+            # Opening SCAN renders the cached tag IMMEDIATELY (synchronously).
+            page.evaluate("document.getElementById('scan-btn').click()")
+            self.assertGreaterEqual(page.evaluate("document.querySelectorAll('#scan-tags .scan-tag').length"), 1,
+                                    "SCAN must show pre-warmed tags instantly on open")
+        except Exception:
+            print("\n=== REACTOR CONSOLE LOG (scan-prewarm) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
     def test_realtime_scan_move_action(self):
         """MOVE TO on a non-enterable object composes an APPROACH prompt (naming
         the object + a forward-movement cue so the scene actually changes) and
