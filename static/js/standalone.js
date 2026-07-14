@@ -186,6 +186,7 @@
     photoPointers: new Map(),   // active pointers on the camera layer, for pinch-to-zoom
     pinchBase: null,            // {dist, zoom} anchor captured when a two-finger pinch begins
     pinchActive: false,         // true once 2 fingers are down (suppresses the shot until release)
+    touchGesture: null,         // {id, x0, y0, t0, moved} — tracks a single-finger press so a TAP shoots but a DRAG only re-frames (never auto-fires on release)
     receiptTimers: [],          // pending setTimeouts driving the sequential receipt reveal
     receiptToken: 0,            // bumped per capture so a newer shot cancels an older reveal
     caseWon: false,             // the dossier census hit its target this run (win fired)
@@ -2760,18 +2761,24 @@
   const Evidence = (function () {
     const KEY = "evidence_v1";
     let total = 0, shots = 0;
-    let seen = new Set();
+    let seen = new Set();       // appraised item labels — drives scoring dedup + the census
+    let spent = new Set();      // detected POIs already photographed — drives the "document once" gate
     try {
       const raw = JSON.parse(localStorage.getItem(KEY) || "null");
       if (raw && typeof raw === "object") {
         total = Number(raw.total) || 0;
         shots = Number(raw.shots) || 0;
         seen = new Set(Array.isArray(raw.seen) ? raw.seen : []);
+        // Migrate saves from before "document once": if there's no spent set yet,
+        // treat everything already in the dossier as spent so old subjects don't
+        // resurface as fresh, lockable targets worth zero points.
+        spent = new Set(Array.isArray(raw.spent) ? raw.spent
+          : (Array.isArray(raw.seen) ? raw.seen : []));
       }
     } catch (_) {}
 
     function persist() {
-      try { localStorage.setItem(KEY, JSON.stringify({ total, shots, seen: [...seen] })); } catch (_) {}
+      try { localStorage.setItem(KEY, JSON.stringify({ total, shots, seen: [...seen], spent: [...spent] })); } catch (_) {}
     }
 
     function fmt(n) { return Math.round(n).toLocaleString("en-US"); }
@@ -2844,6 +2851,9 @@
       rank: () => rankFor(total),
       isNew: (label) => !!label && !seen.has(String(label).toLowerCase()),
       markSeen: (label) => { if (label) seen.add(String(label).toLowerCase()); },
+      // "Document once": a photographed POI is spent and can't be re-farmed.
+      isSpent: (label) => !!label && spent.has(String(label).toLowerCase()),
+      spend: (label) => { if (label) { spent.add(String(label).toLowerCase()); persist(); } },
       addShot: () => { shots += 1; },
       add(points) { total = Math.max(0, total + (Number(points) || 0)); persist(); renderHud(true); },
       // Flash the HUD when a brand-new subject joins the case file.
@@ -2857,7 +2867,7 @@
       reveal() { if (el.evidenceHud) { el.evidenceHud.classList.remove("hidden"); renderCase(); } },
       renderHud,
       reset() {
-        total = 0; shots = 0; seen = new Set(); persist();
+        total = 0; shots = 0; seen = new Set(); spent = new Set(); persist();
         if (el.evidenceHud) {
           el.evidenceHud.classList.add("hidden");
           el.evidenceHud.classList.remove("case-complete");
@@ -2884,6 +2894,9 @@
     const NOVELTY_BONUS = 60;     // first time a subject is photographed this run
     const RARE_BONUS = 80;        // a striking 5-star "rare find" premium
     const CONSOLATION = 10;       // an "undeveloped" shot still pays a little
+    // FOCUS grade → payout multiplier. A crisp, centered frame is worth far more
+    // than a soft one — this is where the shooting skill turns into score.
+    const FOCUS_MULT = { PERFECT: 1.6, SHARP: 1.15, SOFT: 0.6 };
 
     const TIERS = [
       { min: 0,   tier: 0, label: "UNDEVELOPED" },
@@ -2932,15 +2945,16 @@
     }
 
     // Entry point from the two capture paths.
-    // `spec` = {texture, region, kind, label, zoom}.
+    // `spec` = {texture, region, kind, label, zoom, focus, focusGrade}.
     function capture(spec) {
       if (!spec || !spec.texture) return;
       // File the specimen exactly as before (case file + server mirror).
       try { Investigations.store(spec); } catch (_) {}
-      reveal(spec.texture, spec.zoom || 1, !!spec.centered);
+      reveal(spec.texture, { zoom: spec.zoom || 1, focus: spec.focus, grade: spec.focusGrade, subject: spec.subject });
     }
 
-    function reveal(texture, zoom, centered) {
+    function reveal(texture, shot) {
+      shot = shot || {};
       const parts = els();
       if (!parts) return;
       const token = ++state.receiptToken; // invalidate any older reveal
@@ -2961,14 +2975,17 @@
       try { Sound.receiptOpen(); } catch (_) {}
 
       postJSON("/api/photo", { frame: texture })
-        .then((res) => { if (token === state.receiptToken) printReceipt(token, res || {}, zoom, centered); })
+        .then((res) => { if (token === state.receiptToken) printReceipt(token, res || {}, shot); })
         .catch((err) => {
           console.warn("[standalone] photo appraise failed:", err);
-          if (token === state.receiptToken) printReceipt(token, { items: [] }, zoom, centered);
-        });
+          if (token === state.receiptToken) printReceipt(token, { items: [] }, shot); });
     }
 
-    function printReceipt(token, appraisal, zoom, centered) {
+    function printReceipt(token, appraisal, shot) {
+      shot = shot || {};
+      const zoom = shot.zoom || 1;
+      const grade = shot.grade || null;
+      const subject = shot.subject || null;
       const parts = els();
       if (!parts || token !== state.receiptToken) return;
       parts.root.classList.remove("developing");
@@ -2977,12 +2994,23 @@
 
       if (!items.length) {
         // Nothing legible — a gentle consolation so it never feels punishing.
+        // The POI is NOT spent here: an empty exposure never burns a subject, so
+        // you can line the shot up again.
         parts.status.textContent = "NO CLEAR EVIDENCE";
         if (appraisal.caption) parts.caption.textContent = appraisal.caption;
         Evidence.add(CONSOLATION);   // a small pity payout so it never feels punishing
         finishStamp(token, 0);       // ...but the shot itself rates UNDEVELOPED
         scheduleDismiss(token);
         return;
+      }
+
+      // The shot developed real evidence — NOW the POI is documented (spent), so
+      // the credit (below) and the document-once lockout stay in lockstep. A
+      // cancelled receipt returns above before this runs, so a superseded shot
+      // never spends its subject.
+      if (subject) {
+        Evidence.spend(subject);
+        if (state.touchMode === "aim") layoutPhotoTargets(); // dim its target to a ✓
       }
 
       parts.status.textContent = "EVIDENCE LOGGED";
@@ -2999,30 +3027,41 @@
           const interest = Math.max(1, Math.min(5, Number(it.interest) || 2));
           const isNew = Evidence.isNew(label);
           const isRare = interest >= 5;
-          // New subjects fill the case file (novelty bonus); rare (5-star) finds
-          // pay a premium. Both are called out so the points read as earned.
-          let pts = interest * BASE_PER_INTEREST + (isNew ? NOVELTY_BONUS : 0) + (isRare ? RARE_BONUS : 0);
+          // DOCUMENT ONCE: a subject already in the dossier is worth nothing —
+          // no farming the same evidence. Only NEW finds pay out (novelty; rare
+          // 5-star finds pay a premium). Duplicates still show, flagged ON FILE.
+          let pts = isNew
+            ? interest * BASE_PER_INTEREST + NOVELTY_BONUS + (isRare ? RARE_BONUS : 0)
+            : 0;
           Evidence.markSeen(label);
           if (isNew) newCount += 1;
           shotTotal += pts;
-          appendItemRow(parts, { label, interest, note: it.note, pts, isNew, isRare });
+          appendItemRow(parts, { label, interest, note: it.note, pts, isNew, isRare, onFile: !isNew });
           if (parts.subVal) parts.subVal.textContent = "+" + Math.round(shotTotal);
           if (isNew) { try { Sound.newSubject(); } catch (_) {} Evidence.pulseSubject(); }
           else { try { Sound.itemReveal(i); } catch (_) {} }
-          Evidence.add(pts); // each find visibly bumps the TOP score + case bar
+          if (pts) Evidence.add(pts); // each new find visibly bumps the TOP score + case bar
         }, delay);
       });
 
-      // After the last item: composition + tight-framing bonuses, then stamp.
+      // After the last item: composition + framing + FOCUS bonuses, then stamp.
       const afterItems = reduced ? 10 : items.length * STAGGER_MS + 220;
       later(() => {
         if (token !== state.receiptToken) return;
         parts.root.classList.add("tallied");
+        if (!newCount) {
+          // Every subject here was already on file — no points, no farming.
+          parts.status.textContent = "ALREADY ON FILE";
+          if (parts.subVal) parts.subVal.textContent = "+0";
+          finishStamp(token, 0);
+          scheduleDismiss(token);
+          return;
+        }
         // Busier, well-composed shots earn an escalating combo on top.
-        if (items.length >= 2) {
-          const combo = Math.round(shotTotal * 0.15 * (items.length - 1));
+        if (newCount >= 2) {
+          const combo = Math.round(shotTotal * 0.15 * (newCount - 1));
           shotTotal += combo;
-          appendBonusRow(parts, "composition \u00d7" + items.length, combo);
+          appendBonusRow(parts, "composition \u00d7" + newCount, combo);
           Evidence.add(combo);
         }
         // A tight, zoomed-in frame is a "detail shot" — rewards using the zoom.
@@ -3034,13 +3073,14 @@
             Evidence.add(framing);
           }
         }
-        // Nailing the detected subject dead-center is the money shot.
-        if (centered) {
-          const bonus = Math.round(shotTotal * 0.2);
-          if (bonus > 0) {
-            shotTotal += bonus;
-            appendBonusRow(parts, "subject centered", bonus);
-            Evidence.add(bonus);
+        // FOCUS is the skill payoff: a crisp, centered frame pays a premium; a
+        // soft one is docked. (Ungated snapshots have no grade — left neutral.)
+        if (grade && FOCUS_MULT[grade] != null) {
+          const delta = Math.round(shotTotal * (FOCUS_MULT[grade] - 1));
+          if (delta !== 0) {
+            shotTotal += delta;
+            appendBonusRow(parts, grade.toLowerCase() + " focus", delta);
+            Evidence.add(delta);
           }
         }
         if (parts.subVal) parts.subVal.textContent = "+" + Math.round(shotTotal);
@@ -3053,7 +3093,7 @@
 
     function appendItemRow(parts, o) {
       const li = document.createElement("li");
-      li.className = "receipt-item";
+      li.className = "receipt-item" + (o.onFile ? " on-file" : "");
       const stars = "\u2605".repeat(o.interest) + "\u2606".repeat(5 - o.interest);
       const label = document.createElement("span");
       label.className = "ri-label";
@@ -3070,9 +3110,15 @@
         rr.textContent = "RARE";
         label.appendChild(rr);
       }
+      if (o.onFile) {
+        const of = document.createElement("span");
+        of.className = "ri-onfile";
+        of.textContent = "ON FILE";
+        label.appendChild(of);
+      }
       const pts = document.createElement("span");
       pts.className = "ri-pts";
-      pts.textContent = "+" + Math.round(o.pts);
+      pts.textContent = o.pts > 0 ? "+" + Math.round(o.pts) : "\u2014";
       const note = document.createElement("span");
       note.className = "ri-note";
       note.innerHTML = `<span class="ri-stars">${stars}</span>` + (o.note ? "  " + escapeHtml(o.note) : "");
@@ -3084,13 +3130,14 @@
 
     function appendBonusRow(parts, labelText, pts) {
       const li = document.createElement("li");
-      li.className = "receipt-item";
+      const neg = pts < 0;
+      li.className = "receipt-item receipt-bonus" + (neg ? " penalty" : "");
       const label = document.createElement("span");
       label.className = "ri-label";
       label.textContent = labelText;
       const p = document.createElement("span");
       p.className = "ri-pts";
-      p.textContent = "+" + Math.round(pts);
+      p.textContent = (neg ? "\u2212" : "+") + Math.round(Math.abs(pts));
       li.appendChild(label);
       li.appendChild(p);
       parts.items.appendChild(li);
@@ -3277,6 +3324,28 @@
   const PHOTO_DETECT_INTERVAL_MS = 2600; // idle re-detect cadence while armed
   const PHOTO_DETECT_MIN_MS = 2100;      // floor between detection calls (LLM latency)
 
+  // ------------------------------------------------------------------
+  // FOCUS — the skill layer. A detected subject in the frame is not enough; you
+  // must actually FOCUS on it (center it under the reticle) for the shot to
+  // count, and how well you center it grades the exposure. `focus` is 0..1: 1.0
+  // is dead-center, 0 is at the very edge of the capture box. Two rules give the
+  // photography teeth without being punishing:
+  //   1) DOCUMENT-ONCE — a subject already in the case file can't be milked for
+  //      points again; its target dims to a ✓ and no longer locks.
+  //   2) A shot below FOCUS_MIN is "out of focus" and misses, so you can't just
+  //      spray the shutter — you have to line the subject up.
+  // Focus quality then multiplies the payout, so nailing a crisp, centered frame
+  // of a NEW subject is the money shot.
+  // ------------------------------------------------------------------
+  const FOCUS_MIN = 0.16;      // below this the subject is too far off-center: a miss
+  const FOCUS_SHARP = 0.42;    // SHARP focus threshold (a clean, well-aimed shot)
+  const FOCUS_PERFECT = 0.70;  // PERFECT focus threshold (dead-center, crisp)
+  function focusGrade(f) {
+    if (f >= FOCUS_PERFECT) return "PERFECT";
+    if (f >= FOCUS_SHARP) return "SHARP";
+    return "SOFT";
+  }
+
   // Map a normalized source point (0..1) to its on-screen position, accounting
   // for the object-fit:cover crop AND the current optical-zoom transform — the
   // inverse of screenToNorm, so markers sit exactly on the displayed subject.
@@ -3299,13 +3368,52 @@
     return { x, y };
   }
 
-  // Detected subjects whose center falls inside a capture box at (cx,cy).
-  function framedTargets(cx, cy, boxPx) {
+  // Whether a subject has already been documented this run (case file). A
+  // documented subject is "spent": it no longer locks, no longer scores.
+  function isDocumented(label) {
+    return Evidence.isSpent(label);
+  }
+
+  // Evaluate a would-be shot centered at (cx,cy) with a boxPx capture window.
+  // Returns the "verdict" the capture path acts on:
+  //   { ok, subject, focus, grade, centered, framedCount, reason, kind }
+  // A shot is only worthy when a NEW (undocumented) subject is FRAMED and in
+  // FOCUS. `focus` (0..1) is 1 at dead-center, 0 at the box edge.
+  function evaluateShot(cx, cy, boxPx) {
     const half = boxPx / 2;
-    return (state.photoTargets || []).filter((o) => {
+    const targets = state.photoTargets || [];
+    // Every detected subject whose center sits inside the capture box.
+    const framed = [];
+    targets.forEach((o) => {
       const p = normToPhotoScreen(o.cx, o.cy);
-      return Math.abs(p.x - cx) <= half && Math.abs(p.y - cy) <= half;
+      if (Math.abs(p.x - cx) <= half && Math.abs(p.y - cy) <= half) {
+        framed.push({ o, d: Math.hypot(p.x - cx, p.y - cy) });
+      }
     });
+    if (!framed.length) {
+      return { ok: false, framedCount: 0, kind: "empty",
+        reason: targets.length
+          ? "No subject in frame \u2014 line up a target"
+          : "Nothing to photograph here \u2014 explore to find evidence" };
+    }
+    // Only undocumented subjects are worth points; drop anything already spent.
+    const fresh = framed.filter((t) => !isDocumented(t.o.label));
+    if (!fresh.length) {
+      return { ok: false, framedCount: framed.length, kind: "documented",
+        reason: "Already documented \u2014 find a new subject" };
+    }
+    // The nearest fresh subject is the one you're focusing on.
+    fresh.sort((a, b) => a.d - b.d);
+    const best = fresh[0];
+    const focus = Math.max(0, Math.min(1, 1 - best.d / half));
+    if (focus < FOCUS_MIN) {
+      return { ok: false, framedCount: framed.length, kind: "blurry", focus,
+        reason: "Out of focus \u2014 center your subject" };
+    }
+    return {
+      ok: true, subject: best.o.label, focus, grade: focusGrade(focus),
+      centered: focus >= FOCUS_SHARP, framedCount: framed.length, kind: "worthy",
+    };
   }
 
   function startPhotoTargeting() {
@@ -3336,6 +3444,9 @@
 
   function runPhotoDetect(force) {
     if (state.touchMode !== "aim" || state.photoDetectBusy) return;
+    // Never rebuild the target markers while a finger is down — a mid-drag
+    // re-detect makes the brackets flicker/jump under the moving reticle.
+    if (state.photoPointers.size > 0) { schedulePhotoDetect(); return; }
     const now = Date.now();
     if (!force && now - state.photoDetectLast < PHOTO_DETECT_MIN_MS) { schedulePhotoDetect(); return; }
     const cap = captureScanFrame();
@@ -3366,17 +3477,19 @@
       m._obj = o;
       const tr = document.createElement("span"); tr.className = "pt-tr";
       const bl = document.createElement("span"); bl.className = "pt-bl";
+      const check = document.createElement("span"); check.className = "pt-check"; check.textContent = "\u2713";
       const label = document.createElement("span");
       label.className = "pt-label";
       label.textContent = o.label || "";
-      m.appendChild(tr); m.appendChild(bl); m.appendChild(label);
+      m.appendChild(tr); m.appendChild(bl); m.appendChild(check); m.appendChild(label);
       el.touchTargets.appendChild(m);
     });
     layoutPhotoTargets();
   }
 
-  // Position every marker for the current zoom/pan and light up the ones that
-  // are framed; name the nearest framed subject as the locked target.
+  // Position every marker for the current zoom/pan. Documented subjects dim to a
+  // ✓ and never lock; a NEW subject you center enough locks on — and the lock
+  // reads its live FOCUS grade so you can feel the shot sharpen as you aim.
   function layoutPhotoTargets() {
     if (!el.touchTargets) return;
     const box = investBoxPx();
@@ -3384,7 +3497,7 @@
     const rx = state.touchPoint ? state.touchPoint.x : window.innerWidth / 2;
     const ry = state.touchPoint ? state.touchPoint.y : window.innerHeight / 2;
     const W = window.innerWidth, H = window.innerHeight;
-    let lockedLabel = null, lockedDist = Infinity;
+    let lockedLabel = null, lockedFocus = 0, lockedDist = Infinity;
     Array.from(el.touchTargets.children).forEach((m) => {
       const o = m._obj;
       if (!o) return;
@@ -3392,21 +3505,36 @@
       m.style.left = p.x + "px";
       m.style.top = p.y + "px";
       m.classList.toggle("off", p.x < -60 || p.x > W + 60 || p.y < -60 || p.y > H + 60);
-      const inFrame = Math.abs(p.x - rx) <= half && Math.abs(p.y - ry) <= half;
+      const spent = isDocumented(o.label);
+      m.classList.toggle("documented", spent);
+      const d = Math.hypot(p.x - rx, p.y - ry);
+      // A spent subject can be in the box but it never counts as "framed".
+      const inFrame = !spent && Math.abs(p.x - rx) <= half && Math.abs(p.y - ry) <= half;
       m.classList.toggle("in-frame", inFrame);
-      if (inFrame) {
-        const d = Math.hypot(p.x - rx, p.y - ry);
-        if (d < lockedDist) { lockedDist = d; lockedLabel = o.label; }
-      }
+      if (inFrame && d < lockedDist) { lockedDist = d; lockedLabel = o.label; lockedFocus = Math.max(0, Math.min(1, 1 - d / half)); }
     });
     const hadLock = !!state.photoLockedLabel;
-    state.photoLockedLabel = lockedLabel;
-    if (el.touchCaptureFrame) el.touchCaptureFrame.classList.toggle("locked", !!lockedLabel);
-    if (el.touchLock) {
-      el.touchLock.classList.toggle("show", !!lockedLabel);
-      el.touchLock.textContent = lockedLabel ? ("\u25CE SUBJECT: " + lockedLabel) : "";
+    // A lock only counts once the subject is at least minimally in focus.
+    const locked = lockedLabel && lockedFocus >= FOCUS_MIN;
+    const grade = locked ? focusGrade(lockedFocus) : null;
+    state.photoLockedLabel = locked ? lockedLabel : null;
+    if (el.touchCaptureFrame) {
+      el.touchCaptureFrame.classList.toggle("locked", !!locked);
+      el.touchCaptureFrame.classList.remove("focus-soft", "focus-sharp", "focus-perfect");
+      if (locked) el.touchCaptureFrame.classList.add("focus-" + grade.toLowerCase());
     }
-    if (lockedLabel && !hadLock) { try { Sound.lock(); } catch (_) {} } // a fresh lock chirps
+    if (el.touchLock) {
+      el.touchLock.classList.toggle("show", !!locked);
+      el.touchLock.classList.remove("focus-soft", "focus-sharp", "focus-perfect");
+      if (locked) {
+        el.touchLock.classList.add("focus-" + grade.toLowerCase());
+        const dot = grade === "PERFECT" ? "\u25C9" : grade === "SHARP" ? "\u25CE" : "\u25CB";
+        el.touchLock.textContent = dot + " " + lockedLabel + " \u00b7 " + grade + " FOCUS";
+      } else {
+        el.touchLock.textContent = "";
+      }
+    }
+    if (locked && !hadLock) { try { Sound.lock(); } catch (_) {} } // a fresh lock chirps
   }
 
   // Empty-frame feedback: a quick red shake + soft tone + a plain-language nudge.
@@ -3442,6 +3570,19 @@
     if (state.touchMode === "aim") layoutPhotoTargets();
   }
 
+  // A press counts as a TAP (→ shoot) only if the finger barely moved and lifted
+  // quickly. Anything more is a DRAG — the player is re-framing / panning and
+  // must NOT trigger a capture on release (the old behavior that "felt bad").
+  const TAP_MOVE_PX = 16;   // total travel under this reads as a tap, not a drag
+  const TAP_MAX_MS = 700;   // and only if released within this window (touch only)
+  // Movement past this begins an active drag: we switch the scene pan to 1:1
+  // (no eased chase) so framing feels locked to the finger instead of shaky.
+  const DRAG_START_PX = 6;
+
+  function isTouchPointer(e) {
+    return e && e.pointerType && e.pointerType !== "mouse";
+  }
+
   // Pointer-driven so it works with mouse (hover) AND touch (drag) alike.
   // Two fingers down pinch-to-zoom instead of aiming; a lone pointer aims.
   function onTouchMove(e) {
@@ -3456,21 +3597,37 @@
       }
       return; // don't move the reticle mid-pinch
     }
+    // Track travel for the active single-finger gesture so release can tell a
+    // tap from a drag, and flip on 1:1 tracking the moment it becomes a drag.
+    const g = state.touchGesture;
+    if (g && g.id === e.pointerId) {
+      g.moved = Math.max(g.moved, Math.hypot(e.clientX - g.x0, e.clientY - g.y0));
+      if (g.moved > DRAG_START_PX && !g.dragging) {
+        g.dragging = true;
+        document.body.classList.add("photo-dragging");
+      }
+    }
     moveReticle(e.clientX, e.clientY);
   }
 
-  // Press to aim; a clean single-pointer release shoots. A second finger turns
-  // the gesture into a pinch (and suppresses the shot) so zoom never fires a
-  // stray capture. On desktop, hover aims and a click (down+up) shoots.
+  // Press to aim; a clean single-finger TAP shoots, a DRAG only re-frames. A
+  // second finger turns the gesture into a pinch (and suppresses the shot) so
+  // zoom never fires a stray capture. On desktop, hover aims and a click shoots.
   // Right/middle click is a quick "exit the camera" gesture.
   function onTouchDown(e) {
     if (state.touchMode !== "aim") return;
     if (e.button && e.button !== 0) { e.preventDefault(); closeTouch(); return; }
     e.preventDefault();
+    try { if (el.touchLayer && el.touchLayer.setPointerCapture) el.touchLayer.setPointerCapture(e.pointerId); } catch (_) {}
     state.photoPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (state.photoPointers.size === 1) {
+      state.touchGesture = { id: e.pointerId, x0: e.clientX, y0: e.clientY, t0: Date.now(), moved: 0, dragging: false, touch: isTouchPointer(e) };
       moveReticle(e.clientX, e.clientY);
     } else if (state.photoPointers.size === 2) {
+      // Second finger → pinch. Abandon the single-finger gesture so lifting
+      // after a pinch never fires a capture.
+      state.touchGesture = null;
+      document.body.classList.remove("photo-dragging");
       state.pinchActive = true;
       state.pinchBase = { dist: photoPointerDist(), zoom: state.photoZoom };
     }
@@ -3480,10 +3637,21 @@
     if (!state.photoPointers.has(e.pointerId)) return;
     const wasSingle = state.photoPointers.size === 1;
     state.photoPointers.delete(e.pointerId);
-    if (state.touchMode === "aim" && wasSingle && !state.pinchActive && e.type === "pointerup" &&
-        (!e.button || e.button === 0)) {
-      captureAt(e.clientX, e.clientY); // shoot on a clean single-finger release
+    const g = state.touchGesture;
+    const cleanRelease = state.touchMode === "aim" && wasSingle && !state.pinchActive &&
+      e.type === "pointerup" && (!e.button || e.button === 0);
+    // Only a genuine TAP shoots. For a touch pointer a drag re-frames silently;
+    // a mouse click (essentially zero travel) still shoots as before.
+    if (cleanRelease && g && g.id === e.pointerId) {
+      const elapsed = Date.now() - g.t0;
+      // Small travel = a tap → shoot. (1:1 pan may have engaged at 6px, but a
+      // little finger wobble should still count as a deliberate tap.) A real
+      // drag past TAP_MOVE_PX only re-frames; a long touch-press never fires.
+      const isTap = g.moved <= TAP_MOVE_PX && (!g.touch || elapsed <= TAP_MAX_MS);
+      if (isTap) captureAt(e.clientX, e.clientY);
     }
+    if (g && g.id === e.pointerId) state.touchGesture = null;
+    document.body.classList.remove("photo-dragging");
     if (state.photoPointers.size < 2) state.pinchBase = null;
     if (state.photoPointers.size === 0) state.pinchActive = false;
   }
@@ -3502,6 +3670,8 @@
   function onTouchPointerCleanup(e) {
     if (!state.photoPointers.has(e.pointerId)) return;
     state.photoPointers.delete(e.pointerId);
+    if (state.touchGesture && state.touchGesture.id === e.pointerId) state.touchGesture = null;
+    if (state.photoPointers.size === 0) document.body.classList.remove("photo-dragging");
     if (state.photoPointers.size < 2) state.pinchBase = null;
     if (state.photoPointers.size === 0) state.pinchActive = false;
   }
@@ -3512,24 +3682,16 @@
   function captureAt(x, y) {
     moveReticle(x, y);
     const boxPx = investBoxPx();
-    const framed = framedTargets(x, y, boxPx);
-    // WORTHY-SHOT GATE: once detection is live, the frame must contain a real
-    // detected subject to count as evidence. (Before the first detection
-    // returns we give the benefit of the doubt so latency never eats a shot.)
-    if (state.photoDetected && !framed.length) {
-      photoMiss(state.photoTargets.length
-        ? "No subject in frame \u2014 line up a target"
-        : "Nothing to photograph here \u2014 explore to find evidence");
+    const shot = evaluateShot(x, y, boxPx);
+    // WORTHY-SHOT GATE: once detection is live, a shot must FRAME a new subject
+    // and hold it in FOCUS. Documented subjects and out-of-focus/empty frames
+    // miss (no score). Before the first detection returns we give the benefit of
+    // the doubt so latency never eats a shot.
+    if (state.photoDetected && !shot.ok) {
+      photoMiss(shot.reason);
       return;
     }
-    // Which subject did we catch, and is it well-centered (a great shot)?
-    let subject = null, centered = false, best = Infinity;
-    framed.forEach((o) => {
-      const p = normToPhotoScreen(o.cx, o.cy);
-      const d = Math.hypot(p.x - x, p.y - y);
-      if (d < best) { best = d; subject = o.label; }
-    });
-    if (framed.length) centered = best <= boxPx * 0.3;
+    const subject = shot.ok ? shot.subject : null;
     const region = screenBoxToNorm(x, y, boxPx);
     const texture = captureSceneRegion(region, 512); // larger region → keep detail
     if (!texture) { showRendererToast("Couldn't capture \u2014 hold steady"); return; }
@@ -3541,9 +3703,14 @@
     }
     flashScene();
     try { Sound.shutter(); } catch (_) {}
+    // NOTE: the subject is "spent" (document-once) only once the appraisal is
+    // actually credited in printReceipt — never eagerly here, so a cancelled or
+    // empty shot never burns a POI without banking its evidence.
     Photo.capture({
       texture, region, kind: "photo", label: describeTouchRegion({ x, y }).label,
-      zoom: state.photoZoom || 1, subject, centered,
+      zoom: state.photoZoom || 1, subject,
+      focus: shot.ok ? shot.focus : null,
+      focusGrade: shot.ok ? shot.grade : null,
     });
   }
 
@@ -3552,8 +3719,10 @@
     state.touchMode = null;
     // Release the viewfinder magnification back to full wide.
     state.photoPointers.clear();
+    state.touchGesture = null;
     state.pinchBase = null;
     state.pinchActive = false;
+    document.body.classList.remove("photo-dragging");
     clearSceneZoom();
     stopPhotoTargeting();
     if (el.touchLayer) el.touchLayer.classList.add("hidden");
@@ -3607,12 +3776,23 @@
     if (!currentSourceSize()) { showRendererToast("Nothing to photograph yet"); return; }
     const center = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
     const boxPx = Math.round(Math.min(window.innerWidth, window.innerHeight) * 0.5);
+    // Same worthy-shot + document-once + focus rules as tap-to-shoot, judged at
+    // the center of the frame (this is a centered snapshot).
+    const shot = evaluateShot(center.x, center.y, boxPx);
+    if (state.photoDetected && !shot.ok) { photoMiss(shot.reason); return; }
+    const subject = shot.ok ? shot.subject : null;
     const region = screenBoxToNorm(center.x, center.y, boxPx);
     const texture = captureSceneRegion(region, 512);
     if (!texture) { showRendererToast("Couldn't capture the frame"); return; }
     flashScene();
     try { Sound.shutter(); } catch (_) {}
-    Photo.capture({ texture, region, kind: "photo", label: "the center of the view", zoom: state.photoZoom || 1 });
+    // Spent only when the appraisal is credited (see printReceipt), not here.
+    Photo.capture({
+      texture, region, kind: "photo", label: "the center of the view",
+      zoom: state.photoZoom || 1, subject,
+      focus: shot.ok ? shot.focus : null,
+      focusGrade: shot.ok ? shot.grade : null,
+    });
   }
 
   // ------------------------------------------------------------------
