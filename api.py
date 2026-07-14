@@ -74,6 +74,14 @@ app.add_url_rule('/api/photo', 'standalone_api_photo', engine.api_photo, methods
 # future scene-driven prompt mechanics. See engine.api_investigate.
 app.add_url_rule('/api/investigate', 'standalone_api_investigate', engine.api_investigate, methods=['POST'])
 app.add_url_rule('/api/investigations', 'standalone_api_investigations', engine.api_investigations, methods=['GET'])
+# TALK tool: open a story-aware conversation with a SCAN subject the model
+# classified as able to speak (a person/character/creature/voice-machine). The
+# session endpoint assembles the awareness briefing and, when ElevenLabs is
+# configured, returns voice-agent config; otherwise the UI falls back to a text
+# conversation driven by the message endpoint. Both are stateless / read-only.
+# See engine.api_talk_session / engine.api_talk_message.
+app.add_url_rule('/api/talk/session', 'standalone_api_talk_session', engine.api_talk_session, methods=['POST'])
+app.add_url_rule('/api/talk/message', 'standalone_api_talk_message', engine.api_talk_message, methods=['POST'])
 
 
 @app.route('/images/<filename>', methods=['GET'])

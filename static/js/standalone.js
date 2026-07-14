@@ -64,6 +64,21 @@
     scanLayer: document.getElementById("scan-layer"),
     scanTags: document.getElementById("scan-tags"),
     scanHint: document.getElementById("scan-hint"),
+    talkOverlay: document.getElementById("talk-overlay"),
+    talkScrim: document.getElementById("talk-scrim"),
+    talkPanel: document.getElementById("talk-panel"),
+    talkName: document.getElementById("talk-name"),
+    talkSub: document.getElementById("talk-sub"),
+    talkOrb: document.getElementById("talk-orb"),
+    talkLog: document.getElementById("talk-log"),
+    talkForm: document.getElementById("talk-form"),
+    talkInput: document.getElementById("talk-input"),
+    talkSend: document.getElementById("talk-send"),
+    talkClose: document.getElementById("talk-close"),
+    talkModeToggle: document.getElementById("talk-mode-toggle"),
+    talkVoice: document.getElementById("talk-voice"),
+    talkVoiceMount: document.getElementById("talk-voice-mount"),
+    talkVoiceNote: document.getElementById("talk-voice-note"),
     touchCaptureFrame: document.getElementById("touch-capture-frame"),
     touchHint: document.getElementById("touch-hint"),
     touchZoom: document.getElementById("touch-zoom"),
@@ -286,6 +301,10 @@
       menuClose() { tone([940, 380], 0.13, "triangle", 0.045); }, // menu tucks away
       scan() { tone([320, 1180], 0.34, "sine", 0.028); tone(1180, 0.12, "sine", 0.02, 0.24); }, // SCAN armed — radar sweep
       ping() { tone([1300, 1850], 0.10, "sine", 0.03); tone(2500, 0.07, "sine", 0.018, 0.05); }, // tags land — starfield shimmer
+      // ---- TALK: opening a channel to a subject, and a reply landing ----
+      talkOpen() { tone([260, 620], 0.22, "sine", 0.045); tone(880, 0.14, "triangle", 0.035, 0.14); noise(0.05, 0.02); }, // channel opens — a warm carrier tone
+      talkLine() { tone(560, 0.05, "triangle", 0.04); tone(760, 0.10, "sine", 0.03, 0.05); }, // a spoken reply arrives
+      talkClose() { tone([620, 200], 0.2, "sine", 0.04); }, // channel closes
       grab() { tone(900, 0.03, "square", 0.045); tone([700, 340], 0.10, "triangle", 0.04, 0.02); }, // TOUCH specimen captured
       shutter() { tone(1500, 0.015, "square", 0.055); noise(0.05, 0.035); tone(760, 0.03, "square", 0.05, 0.03); }, // camera shutter
       // ---- Photo receipt: printing, per-item reveals, score rolls, stamp ----
@@ -1878,6 +1897,7 @@
   function enterGameOver(message) {
     state.gameOver = true;
     state.awaitingResolution = false;
+    Talk.close(); // end any conversation — the run is over
     clearTurnWatchdog();
     closeScan(); // no scanning over the death screen
     hideVeil();
@@ -2058,6 +2078,7 @@
       stopPolling(); // avoid a mid-reset poll racing the rebuilt feed
       clearTurnWatchdog(); // don't let a stale turn timer fire into the new run
       exitGameOver();
+      Talk.close(); // end any conversation from the prior run
       closeScan(); // drop any scan tags/overlay from the dead run
       closeTouch(); // drop any camera overlay
       try { Photo.hide(); Photo.clearTimers(); } catch (_) {} // kill any in-flight receipt
@@ -3625,6 +3646,20 @@
     return "Move toward the " + o + ", approaching until it fills the view.";
   }
 
+  // Does this detected thing hold a conversation? The perception layer
+  // (/api/detect) flags `speaks` for people, characters, sentient creatures,
+  // and voice-carrying machines; keep a light client-side backstop so TALK
+  // still appears if an older/edge detection omitted the flag.
+  const TALKABLE_LABEL_RE = /\b(person|people|man|men|woman|women|boy|girl|child|kid|guy|lady|figure|stranger|survivor|soldier|guard|worker|scientist|doctor|nurse|officer|cop|ranger|pilot|driver|operator|technician|villager|prisoner|captive|hostage|patient|civilian|face|ghost|spirit|creature|beast|monster|alien|humanoid|android|robot|droid|cyborg|hologram|radio|intercom|speaker|phone|telephone|walkie|transceiver|terminal|console|loudspeaker|megaphone)\b/i;
+  function objectSpeaks(obj) {
+    if (!obj) return false;
+    if (obj.speaks === true) return true;
+    if (obj.speaks === false) return false; // trust an explicit negative
+    const kind = (obj.kind || "").toLowerCase();
+    if (kind === "person" || kind === "character" || kind === "creature") return true;
+    return TALKABLE_LABEL_RE.test(obj.label || "");
+  }
+
   const SCAN_ACTIONS = [
     {
       id: "move", label: "MOVE TO", title: "Move to",
@@ -3635,6 +3670,16 @@
       id: "interact", label: "INTERACT", title: "Interact with",
       phrase: (o) => "Interact with the " + o + ".",
       icon: '<svg class="scan-action-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 13V5a2 2 0 0 1 4 0v6"/><path d="M12 11V4a2 2 0 0 1 4 0v7"/><path d="M16 11V7a2 2 0 0 1 4 0v8a6 6 0 0 1-6 6h-2a6 6 0 0 1-5-2.7l-2.8-4a2 2 0 0 1 3.1-2.5L9 14"/></svg>',
+    },
+    {
+      // TALK — only surfaces for things that can speak. It doesn't resolve a
+      // turn; it opens a live, story-aware conversation overlay (voice via
+      // ElevenLabs when configured, else text). A warm-accented speech bubble
+      // sets it apart from the two cool "world action" verbs above.
+      id: "talk", label: "TALK", title: "Talk to",
+      when: objectSpeaks,
+      conversational: true,
+      icon: '<svg class="scan-action-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.38 8.38 0 0 1-8.5 8.5 9 9 0 0 1-3.9-.9L3 21l1.9-5.6A8.38 8.38 0 0 1 4 11.5 8.5 8.5 0 0 1 12.5 3 8.38 8.38 0 0 1 21 11.5z"/><path d="M8.5 11.5h.01M12 11.5h.01M15.5 11.5h.01"/></svg>',
     },
   ];
 
@@ -3676,10 +3721,15 @@
     });
 
     // Inline action bar (hidden until the + is pressed): one sleek icon per
-    // action. No typing — tapping an icon composes the prompt and commits a turn.
+    // action. No typing — tapping an icon composes the prompt and commits a turn
+    // (or, for TALK, opens the conversation overlay). Actions with a `when`
+    // predicate only render when this specific object qualifies, so TALK shows
+    // up solely on things that can actually speak.
     const actions = document.createElement("div");
     actions.className = "scan-tag-actions";
-    SCAN_ACTIONS.forEach((a) => {
+    const applicable = SCAN_ACTIONS.filter((a) => !a.when || a.when(obj));
+    if (applicable.some((a) => a.conversational)) tag.classList.add("can-talk");
+    applicable.forEach((a) => {
       const b = document.createElement("button");
       b.type = "button";
       b.className = "scan-action scan-action-" + a.id;
@@ -3689,6 +3739,7 @@
       b.addEventListener("click", (e) => {
         e.preventDefault();
         e.stopPropagation();
+        if (a.conversational) { startTalk(tag, obj); return; }
         commitScanAction(tag, a);
       });
       actions.appendChild(b);
@@ -3754,6 +3805,302 @@
     // risk and forces a consequential, plot-moving outcome (not an inert poke).
     const source = action.id === "move" ? "scan_move" : "scan_interact";
     makeChoice(phrase, null, { source });
+  }
+
+  // ------------------------------------------------------------------
+  // TALK — a live, story-aware conversation with a SCAN subject that speaks.
+  //
+  // Kicked off from a tag's TALK action (only shown on things that can speak).
+  // It asks the server for a session: when ElevenLabs is configured the server
+  // returns voice-agent config (agent id / signed url + the story briefing as
+  // dynamic variables + prompt overrides) and we run a LIVE VOICE conversation
+  // via the ElevenLabs client SDK — real mic in, the character's voice out —
+  // rendered inside this same sleek panel (its transcript is our transcript).
+  // With no agent configured we fall back to a text conversation via
+  // /api/talk/message. Either way the subject is aware of the current scene and
+  // recent beats. TALK never resolves a turn — it's a parallel layer over the
+  // world. You can also TYPE at any time during a voice call.
+  // ------------------------------------------------------------------
+  const Talk = (function () {
+    let open = false;
+    let subject = null;         // {label, kind, speaks}
+    let messages = [];          // text-mode transcript sent to /api/talk/message
+    let busy = false;           // text-mode request in flight
+    let mode = "text";          // "text" | "voice"
+    let convo = null;           // ElevenLabs SDK Conversation instance (voice)
+    let micMuted = false;
+    // Pinned to the 1.x line so a future breaking release can't silently change
+    // the API out from under us. Loaded lazily the first time voice is used.
+    const SDK_URL = "https://esm.sh/@elevenlabs/client@1";
+    let sdkPromise = null;
+
+    function isOpen() { return open; }
+
+    function setSub(text) { if (el.talkSub) el.talkSub.textContent = text || ""; }
+
+    function setOrbState(s) { if (el.talkOrb) el.talkOrb.dataset.state = s || "idle"; }
+
+    function ensureSdk() {
+      if (!sdkPromise) {
+        sdkPromise = import(/* webpackIgnore: true */ SDK_URL)
+          .then((m) => m.Conversation || (m.default && m.default.Conversation))
+          .catch((e) => { sdkPromise = null; throw e; });
+      }
+      return sdkPromise;
+    }
+
+    function addLine(role, content) {
+      const line = document.createElement("div");
+      line.className = "talk-line talk-" + (role === "user" ? "you" : "them");
+      const who = document.createElement("span");
+      who.className = "talk-who";
+      who.textContent = role === "user" ? "YOU" : (subject ? subject.label.toUpperCase() : "—");
+      const body = document.createElement("span");
+      body.className = "talk-body";
+      body.textContent = content;
+      line.appendChild(who);
+      line.appendChild(body);
+      el.talkLog.appendChild(line);
+      el.talkLog.scrollTop = el.talkLog.scrollHeight;
+      return line;
+    }
+
+    function typingLine() {
+      const line = document.createElement("div");
+      line.className = "talk-line talk-them talk-typing";
+      line.innerHTML = '<span class="talk-who">' +
+        (subject ? subject.label.toUpperCase() : "—") +
+        '</span><span class="talk-body"><i></i><i></i><i></i></span>';
+      el.talkLog.appendChild(line);
+      el.talkLog.scrollTop = el.talkLog.scrollHeight;
+      return line;
+    }
+
+    async function start(subj) {
+      if (open) return;
+      subject = { label: (subj.label || "figure"), kind: subj.kind || "", speaks: true };
+      messages = [];
+      busy = false;
+      mode = "text";
+      convo = null;
+      micMuted = false;
+      open = true;
+      // Auto-play shouldn't advance the world mid-conversation.
+      if (state.autoPlay) setAutoPlay(false);
+      el.talkLog.innerHTML = "";
+      if (el.talkVoice) el.talkVoice.classList.add("hidden"); // legacy widget mount — unused
+      if (el.talkVoiceMount) el.talkVoiceMount.innerHTML = "";
+      el.talkModeToggle.classList.add("hidden");
+      el.talkModeToggle.classList.remove("muted");
+      el.talkForm.classList.remove("hidden");
+      el.talkInput.value = "";
+      el.talkInput.setAttribute("placeholder", "say something…");
+      el.talkName.textContent = subject.label;
+      setSub("establishing channel…");
+      setOrbState("connecting");
+      el.talkOverlay.classList.remove("hidden");
+      el.talkOverlay.setAttribute("aria-hidden", "false");
+      document.body.classList.add("talking");
+      requestAnimationFrame(() => el.talkOverlay.classList.add("talk-in"));
+      Sound.talkOpen();
+      Haptics.select();
+
+      let session = null;
+      try {
+        session = await postJSON("/api/talk/session", { subject });
+      } catch (err) {
+        console.warn("[talk] session failed:", err);
+      }
+      if (!open) return; // closed while awaiting
+
+      const opening = (session && session.context && session.context.opening_line) || "";
+      if (session && session.mode === "voice" && (session.agent_id || session.signed_url)) {
+        beginVoice(session, opening);
+      } else {
+        beginText(opening);
+      }
+    }
+
+    function beginText(opening, note) {
+      mode = "text";
+      setSub(note || "text transmission");
+      setOrbState("idle");
+      el.talkModeToggle.classList.add("hidden");
+      el.talkInput.setAttribute("placeholder", "say something…");
+      if (opening) {
+        messages.push({ role: "assistant", content: opening });
+        addLine("assistant", opening);
+        Sound.talkLine();
+        pulseOrb();
+      }
+      setTimeout(() => { if (open) el.talkInput.focus(); }, 220);
+    }
+
+    // Live voice via the ElevenLabs client SDK, rendered into THIS panel: the
+    // agent's spoken lines + our voice transcriptions stream in as bubbles, the
+    // orb reflects listening/speaking, and typing still works (sendUserMessage).
+    // Any failure (SDK blocked, mic denied, connect error) degrades to the
+    // server text conversation so TALK always works.
+    async function beginVoice(session, opening) {
+      mode = "voice";
+      setSub("opening channel…");
+      setOrbState("connecting");
+      el.talkInput.setAttribute("placeholder", "speak, or type…");
+
+      let Conversation;
+      try {
+        Conversation = await ensureSdk();
+      } catch (e) {
+        console.warn("[talk] SDK load failed, falling back to text:", e);
+        return beginText(opening, "text transmission (voice unavailable)");
+      }
+      if (!open || mode !== "voice") return;
+
+      const opts = {
+        connectionType: "websocket",
+        dynamicVariables: session.dynamic_variables || {},
+        onConnect: () => {
+          if (!open) return;
+          setSub("channel live \u00b7 listening"); setOrbState("listening");
+          el.talkModeToggle.classList.remove("hidden");
+          el.talkModeToggle.textContent = "MUTE";
+        },
+        onDisconnect: () => { if (open && mode === "voice") { setSub("channel closed"); setOrbState("idle"); } },
+        onError: (e) => { console.warn("[talk] voice error:", e); },
+        onModeChange: (m) => {
+          if (!open) return;
+          const md = (m && (m.mode || m)) || "";
+          if (md === "speaking") { setSub("channel live \u00b7 speaking"); setOrbState("speaking"); }
+          else if (md === "listening") { setSub("channel live \u00b7 listening"); setOrbState("listening"); }
+        },
+        onMessage: (m) => {
+          if (!open || !m) return;
+          const src = m.source || m.role;
+          const text = (m.message || m.text || "").trim();
+          if (!text) return;
+          if (src === "ai" || src === "agent") { addLine("assistant", text); Sound.talkLine(); pulseOrb(); }
+          else if (src === "user") { addLine("user", text); }
+        },
+      };
+      // Persona overrides (server sends them only when the agent allows it).
+      const a = session.overrides && session.overrides.agent;
+      if (a) {
+        opts.overrides = { agent: {} };
+        if (a.prompt && a.prompt.prompt) opts.overrides.agent.prompt = { prompt: a.prompt.prompt };
+        if (a.first_message) opts.overrides.agent.firstMessage = a.first_message;
+        opts.overrides.agent.language = "en";
+      }
+      // A signed URL authorizes private agents (and works for public ones);
+      // otherwise connect to a public agent by id.
+      if (session.signed_url) opts.signedUrl = session.signed_url;
+      else opts.agentId = session.agent_id;
+
+      try {
+        convo = await Conversation.startSession(opts);
+      } catch (e) {
+        console.warn("[talk] voice start failed, falling back to text:", e);
+        convo = null;
+        return beginText(opening, "text transmission (mic unavailable)");
+      }
+      if (!open) { try { convo.endSession(); } catch (_) {} convo = null; return; }
+      setTimeout(() => { if (open) el.talkInput.focus(); }, 200);
+    }
+
+    // Mic mute toggle (voice mode only) — repurposes the header pill.
+    function micToggle() {
+      if (mode !== "voice" || !convo) return;
+      micMuted = !micMuted;
+      try { convo.setMicMuted(micMuted); } catch (e) { console.warn("[talk] mute failed:", e); }
+      el.talkModeToggle.textContent = micMuted ? "UNMUTE" : "MUTE";
+      el.talkModeToggle.classList.toggle("muted", micMuted);
+      Sound.toggle();
+    }
+
+    async function send(text) {
+      text = (text || "").trim();
+      if (!text || !open) return;
+
+      // VOICE: hand the typed line to the live agent (it takes its turn).
+      if (mode === "voice") {
+        if (!convo) return;
+        addLine("user", text);
+        el.talkInput.value = "";
+        Sound.submit();
+        try { convo.sendUserMessage(text); } catch (e) { console.warn("[talk] sendUserMessage failed:", e); }
+        return;
+      }
+
+      // TEXT: resolve a reply from the server (story-aware LLM roleplay).
+      if (busy) return;
+      busy = true;
+      messages.push({ role: "user", content: text });
+      addLine("user", text);
+      el.talkInput.value = "";
+      Sound.submit();
+      const typing = typingLine();
+      try {
+        const res = await postJSON("/api/talk/message", { subject, messages });
+        const reply = (res && res.reply) || "…";
+        if (!open) return;
+        typing.remove();
+        messages.push({ role: "assistant", content: reply });
+        addLine("assistant", reply);
+        Sound.talkLine();
+        pulseOrb();
+      } catch (err) {
+        console.warn("[talk] message failed:", err);
+        if (open) { typing.remove(); addLine("assistant", "[the signal drops — try again]"); }
+      } finally {
+        busy = false;
+        if (open) el.talkInput.focus();
+      }
+    }
+
+    function pulseOrb() {
+      if (!el.talkOrb) return;
+      el.talkOrb.classList.remove("talk-orb-pulse");
+      void el.talkOrb.offsetWidth;
+      el.talkOrb.classList.add("talk-orb-pulse");
+    }
+
+    function close() {
+      if (!open) return;
+      open = false;
+      Sound.talkClose();
+      if (convo) { try { convo.endSession(); } catch (_) {} convo = null; }
+      el.talkOverlay.classList.remove("talk-in");
+      el.talkOverlay.setAttribute("aria-hidden", "true");
+      document.body.classList.remove("talking");
+      setTimeout(() => {
+        el.talkOverlay.classList.add("hidden");
+        if (el.talkVoiceMount) el.talkVoiceMount.innerHTML = "";
+        el.talkLog.innerHTML = "";
+      }, 260);
+      subject = null;
+      messages = [];
+      mode = "text";
+    }
+
+    return { start, close, isOpen, micToggle, send };
+  })();
+
+  // QA hook: expose the real Talk controller ONLY when explicitly requested via
+  // ?talkdev in the URL, so automated/manual tests can open a conversation
+  // without a live SCAN detection. No-op in normal play.
+  try {
+    if (typeof location !== "undefined" && /(?:\?|&)talkdev\b/.test(location.search)) {
+      window.__TALK__ = Talk;
+    }
+  } catch (_) {}
+
+  // Entry point from a SCAN tag's TALK action: close the scan overlay (the
+  // conversation takes over) and open the talk layer for this subject.
+  function startTalk(tag, obj) {
+    if (state.gameOver) { closeTagPrompt(tag); return; }
+    const subj = obj || (tag && tag._obj) || { label: "figure" };
+    closeTagPrompt(tag);
+    closeScan();
+    Talk.start(subj);
   }
 
   // Drop the current tags (e.g. when a turn changes the scene) so stale labels
@@ -4152,6 +4499,13 @@
   // ------------------------------------------------------------------
 
   function onKeydown(e) {
+    // TALK owns the keyboard while a conversation is open: Esc ends it; the
+    // input handles typing/Enter itself. Swallow everything else so global
+    // shortcuts (number choices, R, V…) don't fire behind the panel.
+    if (Talk.isOpen()) {
+      if (e.key === "Escape") { e.preventDefault(); Talk.close(); }
+      return;
+    }
     // Tape playback owns the keyboard while open.
     if (tapeIsOpen()) {
       if (e.key === "Escape" || e.key.toLowerCase() === "t") closeTape();
@@ -4284,6 +4638,13 @@
     el.tapeEject.addEventListener("click", closeTape);
     el.autoplayBtn.addEventListener("click", toggleAutoPlay);
     el.customForm.addEventListener("submit", submitCustomAction);
+    // TALK overlay wiring.
+    if (el.talkForm) {
+      el.talkForm.addEventListener("submit", (e) => { e.preventDefault(); Talk.send(el.talkInput.value); });
+    }
+    if (el.talkClose) el.talkClose.addEventListener("click", () => Talk.close());
+    if (el.talkScrim) el.talkScrim.addEventListener("click", () => Talk.close());
+    if (el.talkModeToggle) el.talkModeToggle.addEventListener("click", () => Talk.micToggle());
     document.addEventListener("keydown", onKeydown);
 
     // Browsers block audio until a user gesture; unlock the context on the
