@@ -841,7 +841,9 @@
           // black box is legible (incl. stalls / errors / "just drawing black").
           switch (name) {
             case "command_sent":
-              if (d.command === "set_prompt") RtLog.push("prompt", "\u2192 set_prompt", RtLog.clip(d.prompt, 160));
+              if (d.command === "set_prompt" || d.command === "schedule_prompt" ||
+                  d.command === "set_shot" || d.command === "scene_cut")
+                RtLog.push("prompt", "\u2192 " + d.command, RtLog.clip(d.prompt, 160));
               else if (d.command === "set_image") RtLog.push("prompt", "\u2192 set_image", d.hasImage ? "[seed image]" : "");
               else RtLog.push(null, "\u2192 " + d.command);
               break;
@@ -893,6 +895,9 @@
             case "command_sent": {
               const cmdNote = {
                 set_prompt: "\u25B8 Prompt submitted",
+                schedule_prompt: "\u25B8 Prompt submitted",
+                set_shot: "\u25B8 Shot submitted",
+                scene_cut: "\u25B8 Cutting to new scene",
                 set_image: "\u25B8 Seed image sent",
                 start: "\u25B8 Starting stream",
                 reset: "\u25B8 Re-staging world",
@@ -901,7 +906,9 @@
               }[d.command];
               if (cmdNote) {
                 Ceremony.note(cmdNote);
-                if (d.command === "set_prompt" || d.command === "set_image") Ceremony.reach("world_update");
+                if (d.command === "set_prompt" || d.command === "schedule_prompt" ||
+                    d.command === "set_shot" || d.command === "scene_cut" || d.command === "set_image")
+                  Ceremony.reach("world_update");
               }
               return;
             }

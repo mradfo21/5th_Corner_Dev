@@ -531,6 +531,26 @@
     rstate.caps = null; rstate.commandSet = null; rstate.currentChunk = 0;
     rstate.videoTrackName = null; rstate.videoAttached = false;
   }
+  // Wait (briefly) for the model's command schema before the OPENING command, so
+  // the driver sends the right prompt command (set_shot vs schedule_prompt vs
+  // set_prompt) and skips commands the model lacks (e.g. set_image on LongLive).
+  // Capabilities normally arrive around session creation; poll getCapabilities()
+  // in case the event landed before/after we subscribed. Resolves on a timeout so
+  // a model that never advertises a schema still starts (best-effort defaults).
+  function ensureCaps(timeoutMs) {
+    if (knownCaps()) return Promise.resolve();
+    return new Promise((resolve) => {
+      const t0 = Date.now();
+      const tick = () => {
+        if (knownCaps() || !rstate.reactor) return resolve();
+        try { captureCaps(rstate.reactor.getCapabilities && rstate.reactor.getCapabilities()); } catch (_) {}
+        if (knownCaps()) return resolve();
+        if (Date.now() - t0 >= (timeoutMs || 3500)) return resolve();
+        setTimeout(tick, 150);
+      };
+      tick();
+    });
+  }
 
   async function cmd(name, data) {
     // Never send a command the model doesn't advertise — skip it cleanly (and
@@ -551,11 +571,24 @@
   }
 
   // Deliver a scene prompt using whatever prompt command the model actually
-  // supports. `establish` prefers scheduling at chunk 0 (the documented start
-  // path); a running re-steer prefers a live set_prompt, falling back to
-  // scheduling a look-ahead chunk for models that only expose schedule_prompt.
-  async function sendScenePrompt(prompt, establish) {
-    if (establish) {
+  // supports — this is what lets one driver steer materially different models:
+  //   • Helios:   schedule_prompt {prompt,chunk:0} to open, set_prompt to re-steer.
+  //   • LingBot:  set_prompt.
+  //   • LongLive: set_shot {prompt} to open / soft-change; scene_cut {prompt} for
+  //               a hard transition. (LongLive has NO set_prompt/schedule_prompt.)
+  // We only use the shot/cut commands when the model ACTUALLY advertises them
+  // (never guessed), so Helios/LingBot are unaffected.
+  async function sendScenePrompt(prompt, opts) {
+    opts = opts || {};
+    const has = (c) => knownCaps() && rstate.commandSet.has(c);
+    // LongLive-family shot/cut protocol.
+    if (has("set_shot") || has("scene_cut")) {
+      if (opts.hardTransition && has("scene_cut")) return cmd("scene_cut", { prompt: prompt });
+      if (has("set_shot")) return cmd("set_shot", { prompt: prompt });
+      return cmd("scene_cut", { prompt: prompt });
+    }
+    // Helios / LingBot prompt commands.
+    if (opts.establish) {
       const c = pickCmd(["schedule_prompt", "set_prompt"], "schedule_prompt");
       if (c === "set_prompt") return cmd("set_prompt", { prompt: prompt });
       return cmd("schedule_prompt", { prompt: prompt, chunk: 0 });
@@ -633,8 +666,10 @@
     // image_accepted before start — so the FIRST chunk is image-conditioned
     // instead of hitting the documented race where `start` sails past the upload
     // and chunk 0 renders from the prompt alone (which reads as "disconnected").
-    const ref = await uploadStill(s.imageUrl);
-    await sendScenePrompt(s.prompt, true);
+    // Only upload the guide still if the model can actually condition on an image
+    // (Helios can; LongLive is text/shot-only, so skip the wasted upload).
+    const ref = supportsCmd("set_image") ? await uploadStill(s.imageUrl) : null;
+    await sendScenePrompt(s.prompt, { establish: true, hardTransition: s.hardTransition });
     if (ref && supportsCmd("set_image")) {
       rstate.stagingGuideUrl = s.imageUrl || null;
       try { await cmd("set_image_strength", { image_strength: HELIOS_IMAGE_STRENGTH }); } catch (_) {}
@@ -666,7 +701,7 @@
         rstate.lastImageUrl = s.imageUrl;
       }
     }
-    await sendScenePrompt(s.prompt, false);
+    await sendScenePrompt(s.prompt, { hardTransition: s.hardTransition });
     rstate.lastPrompt = s.prompt;
     log("helios/blend: re-steered", (ctx.newGuideImage || s.hardTransition) ? "(image re-anchored)" : "");
     return true;
@@ -770,7 +805,10 @@
         emitGuideImage(url, d);
       }
     }
-    else if (t === "prompt_accepted" || t === "prompt_scheduled" || t === "prompt_switched") {
+    else if (t === "prompt_accepted" || t === "prompt_scheduled" || t === "prompt_switched" ||
+             t === "shot_set" || t === "shot_scheduled" || t === "scene_cut") {
+      // LongLive acknowledges a prompt with shot_set / scene_cut / shot_scheduled;
+      // map them onto the same internal waiter so the flow is model-agnostic.
       resolveWaiters("prompt_accepted", d);
     }
     else if (t === "generation_started") resolveWaiters("generation_started", d);
@@ -800,9 +838,9 @@
         log("status:", status);
         if (status === "ready") {
           rstate.ready = true;
-          // Capabilities usually arrive via their own event, but also pull them
-          // directly once ready in case the event fired before we subscribed.
-          if (!knownCaps()) { try { captureCaps(reactor.getCapabilities && reactor.getCapabilities()); } catch (_) {} }
+          // Load the model's command schema BEFORE the first (opening) command so
+          // we send the right prompt command and skip unsupported ones.
+          await ensureCaps(3500);
           await flush();
         }
         else if (status === "disconnected") { rstate.ready = false; }
