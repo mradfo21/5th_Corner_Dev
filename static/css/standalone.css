@@ -914,6 +914,232 @@ body.awaiting-first-scene #realtime-btn {
   color: #eafff2;
 }
 
+/* ============================================================
+   Movement joystick — the centerpiece of realtime "explore" mode.
+
+   A 360° analog stick that steers the LIVE world-model video like a
+   first-person camera. It only appears in realtime video mode (body.realtime-on
+   — there is nothing to steer on a still image), sits DEAD CENTER of the action
+   zone, and pushes the ACT hub out to the left + the PHOTO hub to the right so
+   the three read as one instrument cluster:  ACT · EXPLORE · PHOTO.
+   ============================================================ */
+
+/* Hidden unless the realtime renderer is on. */
+#move-pad { display: none; }
+
+body.realtime-on #move-pad {
+  display: block;
+  position: absolute;
+  left: 50%;
+  bottom: 2px;
+  width: 112px;
+  height: 112px;
+  transform: translateX(-50%);
+  z-index: 12;
+  touch-action: none;               /* we own drag gestures (no page scroll) */
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: grab;
+}
+body.realtime-on #move-pad.engaged { cursor: grabbing; }
+
+/* Recede when the free-will input is open or the camera is aiming, and while
+   the boot gate is still up — attention belongs elsewhere then. */
+#action-wheel.fw-open #move-pad,
+body.touch-aiming #move-pad,
+body.awaiting-first-scene #move-pad {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* The dished base: a soft glass well the nub travels within. */
+.move-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(142, 255, 193, 0.45);
+  background:
+    radial-gradient(circle at 50% 42%, rgba(142, 255, 193, 0.12), rgba(4, 10, 8, 0.42) 62%, rgba(2, 6, 4, 0.6) 100%);
+  box-shadow:
+    inset 0 0 18px rgba(0, 0, 0, 0.62),
+    inset 0 0 26px rgba(142, 255, 193, 0.08),
+    0 0 0 rgba(142, 255, 193, 0);
+  transition: border-color 0.18s, box-shadow 0.25s;
+}
+body.realtime-on #move-pad.engaged .move-ring {
+  border-color: rgba(255, 186, 89, 0.85);
+  box-shadow:
+    inset 0 0 18px rgba(0, 0, 0, 0.62),
+    inset 0 0 30px rgba(255, 186, 89, 0.16),
+    0 0 22px rgba(255, 186, 89, 0.4);
+}
+
+/* Faint crosshair grid so the well reads as a navigable field. */
+.move-grid {
+  position: absolute;
+  inset: 12px;
+  border-radius: 50%;
+  pointer-events: none;
+  opacity: 0.5;
+  background:
+    linear-gradient(to right, transparent calc(50% - 0.5px), rgba(142, 255, 193, 0.22) 50%, transparent calc(50% + 0.5px)),
+    linear-gradient(to bottom, transparent calc(50% - 0.5px), rgba(142, 255, 193, 0.22) 50%, transparent calc(50% + 0.5px));
+}
+
+/* Direction letters (W A S D) around the rim. */
+.move-tick {
+  position: absolute;
+  font-family: inherit;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  color: rgba(190, 255, 218, 0.72);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+  pointer-events: none;
+  transition: color 0.14s, text-shadow 0.14s, transform 0.14s;
+}
+.move-tick-n { top: 4px;  left: 50%; transform: translateX(-50%); }
+.move-tick-s { bottom: 4px; left: 50%; transform: translateX(-50%); }
+.move-tick-w { left: 5px;  top: 50%; transform: translateY(-50%); }
+.move-tick-e { right: 5px; top: 50%; transform: translateY(-50%); }
+/* Light the tick the stick is pushing toward. */
+.move-tick.lit {
+  color: #ffd9a2;
+  text-shadow: 0 0 10px rgba(255, 186, 89, 0.9), 0 1px 3px rgba(0, 0, 0, 0.9);
+}
+
+/* Thrust halo: scales up with the current speed (drag distance / key ramp), so
+   acceleration is visible. Driven by --thrust (0..1) from JS. */
+.move-thrust {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  pointer-events: none;
+  transform: translate(-50%, -50%) scale(calc(0.5 + var(--thrust, 0) * 1.15));
+  background: radial-gradient(circle, rgba(255, 186, 89, calc(var(--thrust, 0) * 0.5)), rgba(255, 186, 89, 0) 68%);
+  opacity: var(--thrust, 0);
+  transition: opacity 0.12s linear;
+}
+
+/* The nub: the grabbable knob that reports the heading. Positioned by JS via
+   --mx / --my (px offsets from center). */
+.move-nub {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 46px;
+  height: 46px;
+  margin: -23px 0 0 -23px;                 /* center on the pad */
+  border-radius: 50%;
+  border: 1px solid rgba(142, 255, 193, 0.7);
+  background:
+    radial-gradient(circle at 50% 38%, rgba(142, 255, 193, 0.26), rgba(6, 14, 10, 0.72) 70%);
+  box-shadow:
+    inset 0 0 10px rgba(0, 0, 0, 0.6),
+    0 2px 8px rgba(0, 0, 0, 0.5),
+    0 0 14px rgba(142, 255, 193, 0.28);
+  transform: translate(var(--mx, 0px), var(--my, 0px));
+  transition: transform 0.16s cubic-bezier(0.2, 0.9, 0.25, 1.2),
+              border-color 0.18s, box-shadow 0.25s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: inherit;
+  outline: none;
+}
+/* While actively steered, drop the springy transition so the knob tracks the
+   pointer 1:1 (JS toggles .dragging). */
+.move-nub.dragging { transition: border-color 0.18s, box-shadow 0.25s; }
+.move-nub:focus-visible { box-shadow: inset 0 0 10px rgba(0,0,0,0.6), 0 0 0 2px rgba(142,255,193,0.7), 0 0 16px rgba(142,255,193,0.5); }
+body.realtime-on #move-pad.engaged .move-nub {
+  border-color: rgba(255, 186, 89, 0.95);
+  box-shadow:
+    inset 0 0 10px rgba(0, 0, 0, 0.6),
+    0 2px 8px rgba(0, 0, 0, 0.5),
+    0 0 20px rgba(255, 186, 89, 0.55);
+}
+
+/* A tiny core dot + a directional arrow that appears when moving. */
+.move-core {
+  position: absolute;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: rgba(190, 255, 218, 0.9);
+  box-shadow: 0 0 6px rgba(142, 255, 193, 0.8);
+  opacity: 0.85;
+  transition: opacity 0.16s;
+}
+body.realtime-on #move-pad.engaged .move-core { opacity: 0; }
+.move-arrow {
+  position: absolute;
+  width: 0; height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-bottom: 9px solid #ffd9a2;
+  opacity: 0;
+  /* rotated + offset by JS via --dir (deg): points where you're heading. */
+  transform: rotate(var(--dir, 0deg)) translateY(-11px);
+  filter: drop-shadow(0 0 5px rgba(255, 186, 89, 0.85));
+  transition: opacity 0.14s;
+}
+body.realtime-on #move-pad.engaged .move-arrow { opacity: 0.95; }
+
+/* Idle breathing glow so the instrument invites a grab. */
+body.realtime-on #move-pad:not(.engaged) .move-ring {
+  animation: move-idle-glow 3.4s ease-in-out infinite;
+}
+@keyframes move-idle-glow {
+  0%, 100% { box-shadow: inset 0 0 18px rgba(0,0,0,0.62), inset 0 0 26px rgba(142,255,193,0.06), 0 0 0 rgba(142,255,193,0); }
+  50%      { box-shadow: inset 0 0 18px rgba(0,0,0,0.62), inset 0 0 26px rgba(142,255,193,0.12), 0 0 14px rgba(142,255,193,0.28); }
+}
+
+/* Heading read-out floats just above the stick (the choices area is empty). */
+.move-readout {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 6px);
+  transform: translateX(-50%);
+  white-space: nowrap;
+  pointer-events: none;
+  font-size: 8px;
+  letter-spacing: 0.22em;
+  color: rgba(190, 255, 218, 0.6);
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.9);
+  transition: color 0.16s, opacity 0.16s;
+}
+body.realtime-on #move-pad.engaged .move-readout {
+  color: #ffd9a2;
+  text-shadow: 0 0 10px rgba(255, 186, 89, 0.7), 0 1px 4px rgba(0, 0, 0, 0.9);
+}
+
+/* --- Cluster layout: ACT slides LEFT, PHOTO sits RIGHT, joystick is center. --- */
+body.realtime-on #free-will-btn {
+  bottom: 32px;
+  transform: translateX(calc(-50% - 100px));
+}
+body.realtime-on #free-will-btn:hover { transform: translateX(calc(-50% - 100px)) scale(1.08); }
+body.realtime-on #free-will-btn:active { transform: translateX(calc(-50% - 100px)) scale(0.94); }
+
+body.realtime-on #realtime-btn {
+  bottom: 32px;
+  transform: translateX(calc(-50% + 100px));
+}
+body.realtime-on #realtime-btn:hover { transform: translateX(calc(-50% + 100px)) scale(1.08); }
+body.realtime-on #realtime-btn:active { transform: translateX(calc(-50% + 100px)) scale(0.94); }
+
+/* Lift the FORWARD (play) hub clear of the taller joystick in the center. */
+body.realtime-on #forward-btn { bottom: 126px; }
+
+/* While a turn resolves, recede the joystick with the rest of the cluster. */
+#action-wheel.turn-active #move-pad { opacity: 0; pointer-events: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  body.realtime-on #move-pad:not(.engaged) .move-ring { animation: none; }
+  .move-nub { transition: border-color 0.18s, box-shadow 0.25s; }
+}
+
 /* ---------- TOUCH tool: aiming reticle → location prompt ---------- */
 
 /* Full-screen aiming surface. Captures the cursor so only the reticle shows,
@@ -3116,6 +3342,17 @@ body.agent-log-on #agent-log { display: flex; }
   #realtime-btn:hover { transform: translateX(32px) scale(1.08); }
   #realtime-btn:active { transform: translateX(32px) scale(0.94); }
 
+  /* Movement joystick: a touch-friendly stick, with the ACT/PHOTO hubs flanking
+     it a little tighter to fit narrow screens. */
+  body.realtime-on #move-pad { width: 100px; height: 100px; bottom: 2px; }
+  body.realtime-on #forward-btn { bottom: 112px; }
+  body.realtime-on #free-will-btn { bottom: 28px; transform: translateX(calc(-50% - 86px)); }
+  body.realtime-on #free-will-btn:hover { transform: translateX(calc(-50% - 86px)) scale(1.08); }
+  body.realtime-on #free-will-btn:active { transform: translateX(calc(-50% - 86px)) scale(0.94); }
+  body.realtime-on #realtime-btn { bottom: 28px; transform: translateX(calc(-50% + 86px)); }
+  body.realtime-on #realtime-btn:hover { transform: translateX(calc(-50% + 86px)) scale(1.08); }
+  body.realtime-on #realtime-btn:active { transform: translateX(calc(-50% + 86px)) scale(0.94); }
+
   /* Keep the scan hint clear of the (taller) mobile action wheel. */
   #scan-hint { bottom: calc(env(safe-area-inset-bottom, 0px) + 196px); font-size: 10px; }
   /* Comfortable touch targets for the action icons on phones. */
@@ -3144,6 +3381,15 @@ body.agent-log-on #agent-log { display: flex; }
   #realtime-btn { width: 42px; height: 42px; transform: translateX(30px); }
   #realtime-btn:hover { transform: translateX(30px) scale(1.08); }
   #scan-hint { bottom: calc(env(safe-area-inset-bottom, 0px) + 150px); }
+
+  /* Compact joystick cluster for short landscape screens. */
+  body.realtime-on #move-pad { width: 82px; height: 82px; bottom: 2px; }
+  body.realtime-on #forward-btn { bottom: 92px; }
+  body.realtime-on #free-will-btn { bottom: 22px; transform: translateX(calc(-50% - 74px)); }
+  body.realtime-on #free-will-btn:hover { transform: translateX(calc(-50% - 74px)) scale(1.08); }
+  body.realtime-on #realtime-btn { bottom: 22px; transform: translateX(calc(-50% + 74px)); }
+  body.realtime-on #realtime-btn:hover { transform: translateX(calc(-50% + 74px)) scale(1.08); }
+  .move-nub { width: 38px; height: 38px; margin: -19px 0 0 -19px; }
 
   /* Compact the rail + toggle so the collapsed menu fits a short screen. */
   #menu-toggle { top: calc(env(safe-area-inset-top, 0px) + 6px); width: 36px; height: 36px; }
