@@ -35,12 +35,19 @@ services:
       # secret used only server-side to mint short-lived browser tokens.
       - key: REACTOR_API_KEY
         sync: false
-      # ElevenLabs Conversational AI — powers the SCAN "TALK" mechanic (speak to
-      # people/characters/things the scanner flags as able to talk). The default
-      # AGENT_ID below is a PUBLIC agent, so live voice works out of the box with
-      # NO secret. ELEVENLABS_API_KEY is OPTIONAL: set it only if you repoint
-      # AGENT_ID at a PRIVATE agent (the server then mints short-lived signed
-      # URLs; the key never reaches the browser).
+      # ElevenLabs — powers the SCAN "TALK" mechanic (speak to people/characters
+      # the scanner flags as able to talk) AND the NARRATOR stream (a voice that
+      # frames the world, optionally as a multi-voice cast).
+      #   • TALK voice works OUT OF THE BOX with no secret: the default AGENT_ID
+      #     below is a PUBLIC conversational agent the browser connects to by id.
+      #   • ELEVENLABS_API_KEY is needed for (a) NARRATOR audio — text-to-speech
+      #     has no public path — and (b) pointing AGENT_ID at a PRIVATE agent
+      #     (the server mints short-lived signed URLs; the key never reaches the
+      #     browser). Without the key, TALK still speaks and the narrator degrades
+      #     to on-screen subtitles.
+      #   • Voice registry + narrator cast live in voices.json (committed).
+      #     ELEVENLABS_VOICE_ID / ELEVENLABS_NARRATOR_VOICE_ID / ELEVENLABS_TTS_MODEL
+      #     optionally override the defaults.
       - key: ELEVENLABS_API_KEY
         sync: false
       - key: ELEVENLABS_AGENT_ID

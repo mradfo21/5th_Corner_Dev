@@ -82,6 +82,20 @@ app.add_url_rule('/api/investigations', 'standalone_api_investigations', engine.
 # See engine.api_talk_session / engine.api_talk_message.
 app.add_url_rule('/api/talk/session', 'standalone_api_talk_session', engine.api_talk_session, methods=['POST'])
 app.add_url_rule('/api/talk/message', 'standalone_api_talk_message', engine.api_talk_message, methods=['POST'])
+# Voice registry: the selectable voices + per-kind/cast mappings, so the client
+# can offer a LIVE voice switcher for interactions (and the narrator). The
+# session endpoint accepts a `voice_id` to change a subject's voice on the fly.
+app.add_url_rule('/api/talk/voices', 'standalone_api_talk_voices', engine.api_talk_voices, methods=['GET'])
+# NARRATOR stream: a one-way voice OVER the scene for world-building, able to
+# speak as a single archive voice or a small cast (radio-play handoffs). `say`
+# voices one line, `narrate` voices a multi-character script, `worldbuild`
+# GENERATES a story-aware narration (LLM) and optionally speaks it, and `cast`
+# advertises the available voices. Audio needs ELEVENLABS_API_KEY; without it
+# they degrade to text. All read-only. See engine.api_narrator_*.
+app.add_url_rule('/api/narrator/cast', 'standalone_api_narrator_cast', engine.api_narrator_cast, methods=['GET'])
+app.add_url_rule('/api/narrator/say', 'standalone_api_narrator_say', engine.api_narrator_say, methods=['POST'])
+app.add_url_rule('/api/narrator/narrate', 'standalone_api_narrator_narrate', engine.api_narrator_narrate, methods=['POST'])
+app.add_url_rule('/api/narrator/worldbuild', 'standalone_api_narrator_worldbuild', engine.api_narrator_worldbuild, methods=['POST'])
 
 
 @app.route('/images/<filename>', methods=['GET'])
