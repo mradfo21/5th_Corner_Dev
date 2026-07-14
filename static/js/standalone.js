@@ -1881,8 +1881,12 @@
     }
   }
 
-  async function makeChoice(choiceText, contextItemId) {
+  async function makeChoice(choiceText, contextItemId, opts) {
     if (state.processing || state.gameOver) return;
+    // `opts.source` marks HOW the action was issued (e.g. a SCAN object
+    // interaction) so the backend can drive the story-escalation systems harder
+    // for deliberate meddling — see _process_turn_background (engine.py).
+    const actionSource = (opts && opts.source) || null;
     closeFreeWill(true); // picking any action closes the free-will gate
     clearScanTags();      // the scene is about to change — drop stale scan tags
     el.choices.innerHTML = "";
@@ -1939,6 +1943,7 @@
         context_item_id: contextItemId,
         act_frame: actFrame,
         investigation_id: investigationId,
+        source: actionSource,
       });
       renderItems(items); // immediately shows the player_action echo
       beginFastPolling();
@@ -3203,7 +3208,10 @@
     // Committing an action ENDS the scan session — the labels shouldn't keep
     // hovering over the scene while the turn plays out. Re-arm SCAN to look again.
     closeScan();
-    makeChoice(phrase, null);
+    // Tag the turn as a SCAN object interaction so the story backend escalates
+    // risk and forces a consequential, plot-moving outcome (not an inert poke).
+    const source = action.id === "move" ? "scan_move" : "scan_interact";
+    makeChoice(phrase, null, { source });
   }
 
   // Drop the current tags (e.g. when a turn changes the scene) so stale labels

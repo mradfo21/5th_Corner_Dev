@@ -3635,7 +3635,7 @@ def extract_scene_elements(*args):
     return nouns
 
 # RENAMED from advance_turn
-def _process_turn_background(choice: str, initial_player_action_item_id: int, signal_file_path: Optional[str] = None):
+def _process_turn_background(choice: str, initial_player_action_item_id: int, signal_file_path: Optional[str] = None, source: Optional[str] = None):
     """Standalone feed turn — a thin adapter over the canonical two-phase
     session pipeline.
 
@@ -3651,7 +3651,11 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
         not a second check_player_death call.
       • Image + flipbook: produced inside _gen_image (Phase 1); no separate
         standalone flipbook copy.
-      • Fate: standalone runs at NORMAL fate (no per-turn fate roll here).
+      • Risk: every turn now drives the story-escalation backend (threat_level →
+        phase → fate roll) via advance_story_dynamics, so the web/SCAN path stops
+        running flat at NORMAL. `source` marks how the action was issued; SCAN
+        object interactions ("scan_interact"/"scan_move") push risk harder so
+        poking the world moves the story forward and raises the stakes.
     """
     if signal_file_path:
         try:
@@ -3664,10 +3668,24 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
 
     SID = 'default'
     try:
+        # ── STORY ESCALATION + FATE ──
+        # Drive the risk backend BEFORE the consequence generates, so the rising
+        # phase feeds the prompt (advance_turn_image_fast reads current_phase for
+        # its grounding block) and the rolled fate colors THIS turn's outcome.
+        # SCAN interactions ("scan_interact"/"scan_move") are deliberate meddling
+        # with the world, so they push threat harder and bias fate toward risk —
+        # exactly the "interacting moves the story forward + raises stakes" goal.
+        is_interaction = source in ("scan_interact", "scan_move")
+        risk_boost = 2 if is_interaction else 0
+        dyn = advance_story_dynamics(session_id=SID, risk_boost=risk_boost)
+        turn_fate = dyn.get("fate", "NORMAL")
+        print(f"[TURN DYNAMICS] source={source} phase={dyn.get('phase')} "
+              f"threat={dyn.get('threat_level')} fate={turn_fate} escalated={dyn.get('escalated')}", flush=True)
+
         # ── PHASE 1: consequence dispatch only (fast text; NO image, async evolve) ──
         # Image and world-evolution run in the background so narrative + choices
         # return fast.
-        p1 = advance_turn_image_fast(choice, fate="NORMAL", is_timeout_penalty=False, session_id=SID, skip_image=True, skip_evolve=True)
+        p1 = advance_turn_image_fast(choice, fate=turn_fate, is_timeout_penalty=False, session_id=SID, skip_image=True, skip_evolve=True, interaction=is_interaction)
         state = _load_state(SID)
 
         dispatch_text = (p1.get("dispatch") or "").strip() or "The situation evolves..."
@@ -3678,6 +3696,18 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
         turn_items: List[Dict[str, Any]] = [
             create_feed_item(type="narrative_event", content=dispatch_text, metadata={"source": "dispatch"})
         ]
+
+        # Phase escalation sting: when this turn tipped the story into a higher
+        # phase, surface an in-world beat (the client renders `threat_escalation`
+        # with its own style + escalation sound) so the player FEELS the stakes
+        # climb. Skip on the death turn — the game-over beat carries that weight.
+        if player_alive and dyn.get("escalated"):
+            beat = _phase_escalation_beat(dyn.get("phase", ""))
+            if beat:
+                turn_items.append(create_feed_item(
+                    type="threat_escalation", content=beat,
+                    metadata={"phase": dyn.get("phase"), "threat_level": dyn.get("threat_level")},
+                ))
 
         # Item pickup detection (feed notification; inventory itself is in state).
         _inventory_update = None
@@ -4204,6 +4234,10 @@ def api_choose():
         player_choice_text = data['choice']
         context_item_id = data.get('context_item_id') # Optional, for context
         session_id = data.get('session_id', 'default')
+        # How the action was issued. SCAN object interactions ("scan_interact"/
+        # "scan_move") drive the story-escalation backend harder (see
+        # _process_turn_background) so poking the world moves the plot + raises risk.
+        action_source = data.get('source')
 
         if DEBUG_MODE: print(f"[DEBUG] api_choose received choice: '{player_choice_text}', context_id: {context_item_id}. Current state ID: {id(state)}", flush=True)
 
@@ -4246,7 +4280,7 @@ def api_choose():
         temp_signal_file = ROOT / f"thread_signal_{player_action_item['id']}.tmp" # Use the correct ID here
         
         try:
-            thread = threading.Thread(target=_process_turn_background, args=(player_choice_text, player_action_item['id'], str(temp_signal_file)))
+            thread = threading.Thread(target=_process_turn_background, args=(player_choice_text, player_action_item['id'], str(temp_signal_file)), kwargs={"source": action_source})
             # thread.daemon = True # Allow main program to exit even if threads are running. Temporarily commenting out for testing.
             thread.start()            
             # Check for signal from thread via temp file
@@ -4774,7 +4808,7 @@ def api_regenerate_choices():
 
 
 # ───────── COMBINED dispatch generator (saves 1 API call) ─────────────────────
-def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = None, prev_vision: str = "", current_image: str = None, fate: str = "NORMAL") -> tuple[str, str, bool]:
+def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = None, prev_vision: str = "", current_image: str = None, fate: str = "NORMAL", is_interaction: bool = False) -> tuple[str, str, bool]:
     """
     Generate BOTH narrative dispatch AND vision dispatch in ONE API call.
     Now supports multimodal input - can see the current frame!
@@ -4883,6 +4917,30 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
         else:
             injury_str = str(injury_list)
         phase_str = state.get('current_phase', 'normal')
+        # Phase directives make the STORY PHASE actually STEER the beat — pressure
+        # rises turn over turn instead of the world staying flat at "normal".
+        phase_directive = {
+            "normal": "Establish dread. Threats stay latent and atmospheric, but "
+                      "the world is already watching — end on a cue that tightens the noose.",
+            "escalating": "STAKES ARE RISING. Press the player: a threat moves closer, a "
+                          "complication compounds, or the facility reacts to what they've "
+                          "stirred up. Do NOT let this beat idle — something must develop.",
+            "critical": "THIS IS THE CLIMAX. Danger is immediate and lethal-capable. Force a "
+                        "hard, consequential beat — a threat commits, an event triggers, the "
+                        "situation lurches. No stalling, no safe nothing-happens beats.",
+        }.get(phase_str, "")
+
+        # SCAN object interactions must MOVE THE STORY, not dead-end on a shrug.
+        interaction_directive = ""
+        if is_interaction:
+            interaction_directive = (
+                "\n\nOBJECT INTERACTION: The player is deliberately handling/entering a "
+                "specific thing in the scene. This action MUST produce a consequential "
+                "development — reveal something new, trigger a mechanism or reaction, "
+                "disturb the environment, draw attention, or expose a threat/clue. Never "
+                "answer with 'nothing happens' or a purely cosmetic result. Meddling with "
+                "the unknown here should carry real risk and push the mystery forward.\n"
+            )
 
         grounding_block = (
             f"\n\nDISCOVERED ENTITIES (these are the only things on the board — "
@@ -4890,7 +4948,8 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
             f"{seen_str or 'none yet'}\n"
             f"INJURY STATE (persistent wounds — reference at least once if non-empty): "
             f"{injury_str}\n"
-            f"STORY PHASE: {phase_str}\n"
+            f"STORY PHASE: {phase_str} — {phase_directive}\n"
+            f"{interaction_directive}"
         )
 
         # Use JUST the dispatch_sys instructions (which has JSON format)
@@ -5048,8 +5107,103 @@ def summarize_world_state_diff(prev_state: dict, state: dict) -> str:
         return "No major world state changes."
     return "; ".join(diffs)
 
+# ───────── story escalation + fate (the "risk" backend) ────────────────────────
+# The web/standalone turn loop (which SCAN interactions flow through) used to run
+# EVERY turn at a flat NORMAL fate with current_phase pinned to "normal". chaos
+# climbed but nothing consumed it, so tension never actually rose and poking an
+# object felt inert. The front-end HUD, the escalation sting, the `threat_escalation`
+# feed type, the phase-linked prompt directives, and the fate-intervention system
+# were all already built — they were simply never driven on the web path. These
+# helpers wake that machinery up so every action moves the story forward and
+# ratchets risk, and so interacting with a scanned object pushes hardest.
+STORY_ESCALATE_AT = 4   # threat pressure at which the story tips into "escalating"
+STORY_CRITICAL_AT = 9   # ... and into "critical"
+
+def _phase_for_threat(threat: int) -> str:
+    """Map accumulated threat pressure onto the three story phases the rest of
+    the engine (prompt directives, world-tick, time-of-day, HUD) already keys off."""
+    if threat >= STORY_CRITICAL_AT:
+        return "critical"
+    if threat >= STORY_ESCALATE_AT:
+        return "escalating"
+    return "normal"
+
+def compute_fate(risk_bias: float = 0.0) -> str:
+    """Roll narrative luck for a turn.
+
+    Base odds mirror the Discord bot: 25% LUCKY / 50% NORMAL / 25% UNLUCKY.
+    `risk_bias` (0..0.5) shifts probability out of LUCKY and into UNLUCKY without
+    touching the NORMAL band much — so riskier moments (deep escalation, poking
+    an unknown object) are genuinely more likely to bite. At bias 0 the split is
+    unchanged; higher bias makes fate lean mean.
+    """
+    bias = max(0.0, min(0.5, risk_bias))
+    lucky_cut = max(0.0, 0.25 - bias)          # LUCKY shrinks as risk rises
+    unlucky_cut = max(lucky_cut, 0.75 - bias)  # UNLUCKY (roll >= cut) grows with risk
+    roll = random.random()
+    if roll < lucky_cut:
+        return "LUCKY"
+    if roll < unlucky_cut:
+        return "NORMAL"
+    return "UNLUCKY"
+
+def advance_story_dynamics(session_id: str = 'default', risk_boost: int = 0) -> dict:
+    """Escalate the persistent story dials for THIS turn and roll its fate.
+
+    • threat_level climbs every turn (base +1, plus `risk_boost` for high-stakes
+      moves like SCAN object interactions) so pressure accumulates across a run
+      instead of resetting to nothing each turn.
+    • current_phase is derived from threat_level (normal → escalating → critical).
+      The consequence LLM, world-tick, time-of-day, and HUD systems already react
+      to this phase — they were just never handed a rising one on the web path.
+    • fate is rolled with a bias that grows as the phase escalates AND when the
+      action itself is risky, so late-game turns and object-poking swing harder.
+
+    Mutates + persists session state under the world lock. Returns
+    {"fate", "phase", "prev_phase", "threat_level", "escalated"}.
+    """
+    global state
+    with WORLD_STATE_LOCK:
+        st = _load_state(session_id)
+        prev_phase = st.get("current_phase", "normal")
+        threat = int(st.get("threat_level", 0) or 0) + 1 + max(0, int(risk_boost))
+        phase = _phase_for_threat(threat)
+        st["threat_level"] = threat
+        st["current_phase"] = phase
+        _save_state(st, session_id)
+        state = st
+    phase_bias = {"normal": 0.0, "escalating": 0.12, "critical": 0.22}.get(phase, 0.0)
+    # A risk_boost (SCAN interaction / entering the unknown) both accelerated the
+    # phase above and tilts THIS turn's luck toward complication.
+    risk_bias = phase_bias + (0.15 if risk_boost else 0.0)
+    fate = compute_fate(risk_bias)
+    escalated = _PHASE_RANK.get(phase, 0) > _PHASE_RANK.get(prev_phase, 0)
+    return {"fate": fate, "phase": phase, "prev_phase": prev_phase,
+            "threat_level": threat, "escalated": escalated}
+
+_PHASE_RANK = {"normal": 0, "escalating": 1, "critical": 2}
+
+# Short, in-world stings shown when the story tips into a new phase — so the
+# player FEELS the stakes climb (paired with the client's escalation sound + HUD).
+_PHASE_ESCALATION_BEATS = {
+    "escalating": [
+        "The facility notices you now. Whatever you stirred is moving.",
+        "Something shifts in the dark ahead — the quiet just got heavier.",
+        "The air tightens. You are no longer the only thing hunting out here.",
+    ],
+    "critical": [
+        "No more creeping. It's coming for you — fast.",
+        "The whole place turns hostile at once. This is where people vanish.",
+        "Alarms of instinct scream. Whatever comes next could be the last thing you film.",
+    ],
+}
+
+def _phase_escalation_beat(phase: str) -> str:
+    beats = _PHASE_ESCALATION_BEATS.get(phase)
+    return random.choice(beats) if beats else ""
+
 # ───────── game loop ──────────────────────────────────────────────────────────
-def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalty: bool = False, session_id: str = 'default', skip_image: bool = False, skip_evolve: bool = False) -> dict:
+def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalty: bool = False, session_id: str = 'default', skip_image: bool = False, skip_evolve: bool = False, interaction: bool = False) -> dict:
     """
     PHASE 1 (FAST): Generate dispatch and image, return immediately.
 
@@ -5103,7 +5257,7 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             print(f"[TIMEOUT PENALTY] Using penalty text as dispatch: {dispatch[:100]}")
         else:
             # Generate dispatch using FULL StoryGen version (with fate modifier)
-            dispatch, vision_dispatch, player_alive = _generate_combined_dispatches(choice, state, prev_state, prev_vision, prev_image, fate)
+            dispatch, vision_dispatch, player_alive = _generate_combined_dispatches(choice, state, prev_state, prev_vision, prev_image, fate, is_interaction=interaction)
         
         # SIMPLE DEATH SYSTEM: Just trust the LLM
         state['player_state']['alive'] = player_alive
