@@ -2064,8 +2064,9 @@ body.menu-open #control-rail {
 #rt-log {
   position: fixed;
   /* Sit to the LEFT of the (collapsible) control-rail column so it's visible
-     whether or not the menu is open, and never overlaps the rail buttons. */
-  right: calc(env(safe-area-inset-right, 0px) + 64px);
+     whether or not the menu is open, and never overlaps the rail buttons
+     (rail is ~60px wide at right:10 → clears at ~70; add a gap). */
+  right: calc(env(safe-area-inset-right, 0px) + 78px);
   top: calc(env(safe-area-inset-top, 0px) + 58px);
   bottom: calc(env(safe-area-inset-bottom, 0px) + 96px);
   width: 250px;
@@ -2414,7 +2415,7 @@ body.reactor-available.rt-log-on #rt-log { display: flex; }
   #rt-log {
     top: calc(env(safe-area-inset-top, 0px) + 52px);
     bottom: calc(env(safe-area-inset-bottom, 0px) + 70px);
-    right: calc(env(safe-area-inset-right, 0px) + 56px);
+    right: calc(env(safe-area-inset-right, 0px) + 62px);
     width: 210px;
   }
 }
