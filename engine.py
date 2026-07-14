@@ -4747,18 +4747,57 @@ def _story_premise() -> str:
         return "An analog-horror investigation. You are a photojournalist documenting something that should not exist."
 
 
-def build_talk_context(subject: dict, session_id: str = "default") -> dict:
+# Best-effort in-memory rate limiting for the (LLM/TTS-backed, cost-bearing)
+# conversation + narrator endpoints. Per-client + per-bucket minimum interval;
+# generous enough not to bother real players, tight enough to blunt abuse. This
+# is a single-process guard (fine for the current gunicorn setup); a shared
+# store would be needed if scaled horizontally.
+_RATE_BUCKETS = {}
+
+
+def _rate_limited(bucket: str, min_interval: float) -> bool:
+    """Return True if this client is calling ``bucket`` faster than
+    ``min_interval`` seconds apart (and should be turned away)."""
+    try:
+        ip = (request.headers.get("X-Forwarded-For", "") or request.remote_addr or "?").split(",")[0].strip()
+    except Exception:
+        ip = "?"
+    key = f"{bucket}:{ip}"
+    now = time.time()
+    last = _RATE_BUCKETS.get(key, 0)
+    # Opportunistic prune so the dict can't grow without bound.
+    if len(_RATE_BUCKETS) > 5000:
+        cutoff = now - 300
+        for k in [k for k, t in _RATE_BUCKETS.items() if t < cutoff]:
+            _RATE_BUCKETS.pop(k, None)
+    if now - last < min_interval:
+        return True
+    _RATE_BUCKETS[key] = now
+    return False
+
+
+def _clean_subject_text(value: str, fallback: str, limit: int) -> str:
+    """Sanitize client-supplied subject fields before they enter an LLM prompt:
+    collapse whitespace/newlines and hard-cap the length (prompt-injection and
+    token-burn guard)."""
+    s = re.sub(r"\s+", " ", str(value or "")).strip().lower()
+    return (s[:limit] or fallback)
+
+
+def build_talk_context(subject: dict, session_id: str = "default", opening_override: str = "") -> dict:
     """Assemble a story-aware briefing for a conversation with ``subject``.
 
     ``subject`` is the SCAN object the player chose to talk to
     (``{"label", "kind", "speaks"}``). Returns a JSON-safe dict describing the
     subject, the current situation, and a ready-to-use persona prompt + opening
     line. This is the single source of "awareness" shared by the text fallback
-    and the ElevenLabs voice agent.
+    and the ElevenLabs voice agent. ``opening_override`` reuses an existing
+    opening line instead of spending an LLM call to regenerate one (used when
+    only the VOICE is changing mid-conversation).
     """
     subject = subject or {}
-    label = str(subject.get("label") or "figure").strip().lower()[:40] or "figure"
-    kind = str(subject.get("kind") or "").strip().lower() or "person"
+    label = _clean_subject_text(subject.get("label"), "figure", 40)
+    kind = _clean_subject_text(subject.get("kind"), "person", 20)
 
     try:
         st = _load_state(session_id) or {}
@@ -4840,8 +4879,10 @@ def build_talk_context(subject: dict, session_id: str = "default") -> dict:
         "Never narrate stage directions in asterisks; just speak."
     )
 
-    # A cold-open first line so the conversation starts with presence.
-    opening_line = _talk_opening_line(label, kind, situation, persona_prompt)
+    # A cold-open first line so the conversation starts with presence. Reuse a
+    # provided line (e.g. when only the voice is changing) to skip an LLM call.
+    opening_line = (opening_override or "").strip()[:320] \
+        or _talk_opening_line(label, kind, situation, persona_prompt)
 
     return {
         "subject": {"label": label, "kind": kind, "speaks": bool(subject.get("speaks", True))},
@@ -4921,13 +4962,17 @@ def api_talk_session():
     fully functional via /api/talk/message. Read-only: never mutates the sim.
     """
     try:
+        if _rate_limited("talk_session", 0.8):
+            return jsonify({"error": "slow down", "mode": "text"}), 429
         data = request.get_json(silent=True) or {}
         subject = data.get("subject") or {}
         session_id = data.get("session_id", "default")
         if not isinstance(subject, dict) or not (subject.get("label") or "").strip():
             return jsonify({"error": "missing subject"}), 400
 
-        context = build_talk_context(subject, session_id)
+        # When only the VOICE is changing, the client passes the existing opening
+        # line so we don't burn an LLM call regenerating an identical greeting.
+        context = build_talk_context(subject, session_id, opening_override=data.get("opening_line", ""))
 
         # Resolve the voice: an explicit (validated) client choice wins — this is
         # what lets the player switch voices LIVE — otherwise fall back to the
@@ -5081,7 +5126,9 @@ def _narrate_segments(segments: list) -> list:
     {character, text, voice_id, audio?(data-url)}."""
     import base64 as _b64
     out = []
-    for seg in (segments or [])[:24]:
+    # Hard cap the number of voiced lines: bounds TTS cost, latency, and the
+    # base64 payload size per request.
+    for seg in (segments or [])[:6]:
         if not isinstance(seg, dict):
             continue
         text = (seg.get("text") or "").strip()
@@ -5119,6 +5166,8 @@ def api_narrator_say():
     """Speak one line of narration. Request: {text, voice_id?|character?,
     settings?}. Returns audio/mpeg (or 503 text JSON if voice isn't configured)."""
     try:
+        if _rate_limited("narrator_say", 0.5):
+            return jsonify({"error": "slow down"}), 429
         data = request.get_json(silent=True) or {}
         text = (data.get("text") or "").strip()
         if not text:
@@ -5147,6 +5196,8 @@ def api_narrator_narrate():
     """Speak a multi-character script. Request: {segments:[{character,text}]}.
     Response: {segments:[{character,text,voice_id,audio?}], voice: bool}."""
     try:
+        if _rate_limited("narrator_narrate", 2.0):
+            return jsonify({"error": "slow down", "segments": []}), 429
         data = request.get_json(silent=True) or {}
         segments = data.get("segments") or []
         if not isinstance(segments, list) or not segments:
@@ -5208,7 +5259,7 @@ def _narrator_script(focus: str, multi: bool, session_id: str) -> list:
             arr = _json.loads(m.group(0)) if m else None
         segs = []
         if isinstance(arr, list):
-            for it in arr[:6]:
+            for it in arr[:4]:  # cap lines — bounds TTS cost + payload size
                 if isinstance(it, dict) and (it.get("text") or "").strip():
                     segs.append({"character": (it.get("character") or "narrator").strip().lower(),
                                  "text": (it.get("text") or "").strip()[:400]})
@@ -5235,8 +5286,10 @@ def api_narrator_worldbuild():
     With speak=false (or no key) it returns text-only segments the client can
     display and/or send to /api/narrator/narrate later. Read-only."""
     try:
+        if _rate_limited("narrator_worldbuild", 3.0):
+            return jsonify({"error": "slow down", "segments": []}), 429
         data = request.get_json(silent=True) or {}
-        focus = data.get("focus") or ""
+        focus = re.sub(r"\s+", " ", str(data.get("focus") or "")).strip()[:240]
         multi = bool(data.get("multi"))
         speak = data.get("speak", True)
         session_id = data.get("session_id", "default")
@@ -5268,6 +5321,8 @@ def api_talk_message():
     client owns the running transcript and sends it back each turn. Read-only.
     """
     try:
+        if _rate_limited("talk_message", 0.8):
+            return jsonify({"error": "slow down", "reply": "\u2026"}), 429
         data = request.get_json(silent=True) or {}
         subject = data.get("subject") or {}
         messages = data.get("messages") or []
@@ -5276,8 +5331,14 @@ def api_talk_message():
             return jsonify({"error": "missing subject"}), 400
         if not isinstance(messages, list):
             messages = []
-
-        context = build_talk_context(subject, session_id)
+        # Text mode reuses the same opening line the client already showed (skip
+        # a redundant LLM call); the transcript itself carries the conversation.
+        opening = ""
+        for _m in messages:
+            if isinstance(_m, dict) and _m.get("role") == "assistant":
+                opening = _m.get("content") or ""
+                break
+        context = build_talk_context(subject, session_id, opening_override=opening)
         persona = context["persona_prompt"]
 
         # Render the running transcript into the prompt. Keep only the last ~12
