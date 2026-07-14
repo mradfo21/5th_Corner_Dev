@@ -4833,11 +4833,15 @@ def build_talk_context(subject: dict, session_id: str = "default") -> dict:
         f"{recent_block}\n\n"
         f"The person you are speaking to is the investigator/photojournalist exploring this place"
         + (f" (currently carrying: {', '.join(inventory)})" if inventory else "")
-        + ". Stay consistent with the premise and the recent events. Be atmospheric, terse, and human — "
-        "2-4 sentences per reply, never a monologue. You may be afraid, hostile, cryptic, desperate, or "
-        "helpful depending on who you are and what is happening. Reveal information sparingly and in "
-        "character. If asked something you couldn't know, deflect in a way that fits the scene. "
-        "Never narrate stage directions in asterisks; just speak."
+        + ". Stay consistent with the premise and the recent events.\n\n"
+        "HOW TO TALK: Sound like a real person actually speaking out loud, not writing. Use plain, "
+        "everyday words and contractions (I'm, don't, can't, you're). Keep it SHORT — 1 to 2 quick "
+        "sentences, a breath or two, never a speech or a monologue. It's fine to be fragmentary, to "
+        "trail off, to interrupt yourself, or to answer with just a few words. Skip flowery description "
+        "and big vocabulary; talk the way a scared, tired, or wary human really would in the moment. "
+        "You may be afraid, hostile, cryptic, desperate, or helpful depending on who you are and what is "
+        "happening. Reveal information sparingly and in character. If asked something you couldn't know, "
+        "deflect in a way that fits the scene. Never narrate stage directions or use asterisks — just say the words."
     )
 
     # A cold-open first line so the conversation starts with presence.
@@ -4887,9 +4891,10 @@ def _talk_opening_line(label: str, kind: str, situation: dict, persona_prompt: s
         prompt = (
             persona_prompt
             + "\n\nThe investigator has just turned to face you. Say your FIRST line to them — "
-            "one or two sentences, in character, reacting to this exact moment. Output ONLY the spoken words."
+            "one short sentence, spoken out loud, in character, reacting to this exact moment. "
+            "Keep it terse and human. Output ONLY the spoken words."
         )
-        line = _ask(prompt, temp=0.9, tokens=70, use_lore=False)
+        line = _ask(prompt, temp=0.9, tokens=50, use_lore=False)
         line = (line or "").strip().strip('"').strip()
         # Guard against the model narrating, refusing, or erroring out.
         if _talk_llm_failed(line) or len(line) > 320:
@@ -5301,10 +5306,11 @@ def api_talk_message():
             persona
             + "\n\nCONVERSATION SO FAR:\n"
             + (transcript or "(the investigator has just approached you)")
-            + f"\n\nRespond as {context['subject']['label']}, in character, 2-4 sentences. "
+            + f"\n\nRespond as {context['subject']['label']}, in character, the way a real person would "
+            "actually say it out loud — 1 to 2 short sentences, plain and human, never a monologue. "
             "Output ONLY your spoken reply — no name prefix, no stage directions."
         )
-        reply = _ask(prompt, temp=0.9, tokens=140, use_lore=False)
+        reply = _ask(prompt, temp=0.9, tokens=80, use_lore=False)
         reply = (reply or "").strip().strip('"').strip()
         if _talk_llm_failed(reply):
             reply = "[the channel breaks up — say that again]"
