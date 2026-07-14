@@ -3340,6 +3340,13 @@
     if (!url) return null;
     if (!state.scanStillImg || state.scanStillImg.getAttribute("data-src") !== url) {
       const img = new Image();
+      // This Image exists ONLY to draw the still onto a canvas for detection
+      // (the visible scene is a separate background-image). Request it CORS-clean
+      // so a cross-origin still (e.g. an S3-hosted turn image) doesn't taint the
+      // canvas and silently break capture. Same-origin stills ignore this. If a
+      // cross-origin host lacks CORS headers the capture Image simply won't load
+      // (naturalWidth 0 -> no detection), which never affects the visible scene.
+      img.crossOrigin = "anonymous";
       img.setAttribute("data-src", url);
       img.src = url;
       state.scanStillImg = img;
@@ -3413,7 +3420,10 @@
   // realtime (the live video drifts). Throttled, single-flight, and it always
   // defers around a turn so it can't compete with the turn's own LLM calls.
   const SCAN_PREWARM_MIN_MS = 4000;
-  const SCAN_PREWARM_TURN_COOLDOWN_MS = 9000; // stay off the wire around a turn
+  // Stay off the wire around a turn (don't compete with the turn's own LLM calls).
+  // Test-overridable so e2e can verify post-turn hotspot refresh quickly.
+  const SCAN_PREWARM_TURN_COOLDOWN_MS =
+    (typeof window !== "undefined" && window.__SCAN_TURN_COOLDOWN_MS__) || 9000;
   function prewarmScan() {
     if (state.gameOver || state.scanBusy) return;
     if (state.scanTagActing) return; // don't reshuffle tags while a bar is open

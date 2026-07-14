@@ -1076,6 +1076,78 @@ class TestRealtimeRenderer(unittest.TestCase):
         finally:
             page.close()
 
+    def test_stills_hotspots_refresh_after_a_turn(self):
+        """The key 'works well in stills mode' guarantee: after a turn changes the
+        still, ambient detection must RE-RUN on the new still and surface the new
+        scene's hotspots on its own (the old labels must not persist or vanish
+        forever). Uses a NEW image + different detected objects for the new scene."""
+        page = self._new_realtime_page()
+        # Make the post-turn cooldown short so the refresh detection fires quickly.
+        page.add_init_script("window.__SCAN_TURN_COOLDOWN_MS__ = 400;")
+        SCENE_B_PNG = (
+            "data:image/png;base64,"
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lK3Q6wAAAABJRU5ErkJggg=="
+        )
+        scene_items = [
+            {"id": 1, "type": "narrative", "content": "Intro."},
+            {"id": 2, "type": "scene_image", "content": "", "image_url": TINY_PNG_DATA_URL,
+             "metadata": {"prompt": "scene one", "base": "A dim corridor.", "hard_transition": False}},
+            {"id": 3, "type": "player_choice_prompt", "content": "?", "choices": [{"text": "Go"}]},
+        ]
+        # After the turn, the feed delivers a NEW still + a fresh prompt.
+        next_items = [
+            {"id": 10, "type": "scene_image", "content": "", "image_url": SCENE_B_PNG,
+             "metadata": {"prompt": "scene two", "base": "A flooded vault.", "hard_transition": True}},
+            {"id": 11, "type": "player_choice_prompt", "content": "?", "choices": [{"text": "Onward"}]},
+        ]
+        state = {"chose": False, "detect_calls": 0}
+        page.route("**/api/reset", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(scene_items)))
+
+        def feed_handler(route):
+            body = json.dumps(next_items) if state["chose"] else "[]"
+            route.fulfill(status=200, content_type="application/json", body=body)
+        page.route("**/api/feed*", feed_handler)
+
+        def choose_handler(route):
+            state["chose"] = True
+            route.fulfill(status=200, content_type="application/json", body="[]")
+        page.route("**/api/choose", choose_handler)
+
+        def detect_handler(route):
+            state["detect_calls"] += 1
+            # Different objects before vs after the turn, proving re-detection.
+            label = "old crate" if not state["chose"] else "new lantern"
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({
+                "objects": [{"label": label, "cx": 0.4, "cy": 0.45, "w": 0.2, "h": 0.2}]}))
+        page.route("**/api/detect", detect_handler)
+        try:
+            page.goto(f"{self.base_url}/standalone?renderer=image", wait_until="domcontentloaded")
+            page.wait_for_selector("#scan-layer", state="attached", timeout=10000)
+            page.wait_for_function(
+                "(document.getElementById('sceneA').style.backgroundImage||"
+                "document.getElementById('sceneB').style.backgroundImage||'').length > 0", timeout=10000)
+            # Scene one's hotspot appears on its own.
+            page.wait_for_function(
+                "Array.from(document.querySelectorAll('.scan-tag-label')).some(e=>e.textContent==='old crate')",
+                timeout=12000)
+            # Commit an action on it -> turn resolves via the feed's new scene.
+            page.evaluate("document.querySelector('.scan-tag').click()")
+            page.wait_for_function("!!document.querySelector('.scan-tag.acting .scan-action-interact')", timeout=5000)
+            page.evaluate("document.querySelector('.scan-tag.acting .scan-action-interact').click()")
+            # The NEW scene's hotspot must appear on its own (re-detected).
+            page.wait_for_function(
+                "Array.from(document.querySelectorAll('.scan-tag-label')).some(e=>e.textContent==='new lantern')",
+                timeout=15000)
+            # And the stale label must be gone.
+            self.assertNotIn("old crate", page.evaluate(
+                "Array.from(document.querySelectorAll('.scan-tag-label')).map(e=>e.textContent)"),
+                f"stale hotspot must not persist onto the new scene. logs:\n{self._dump_logs()}")
+        except Exception:
+            print("\n=== CONSOLE LOG (stills-refresh) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
     def test_scan_action_clears_tags_for_the_turn(self):
         """Committing a hotspot action must clear the stale labels while the turn
         plays out (they shouldn't hover over a scene that's about to change). The

@@ -32,6 +32,14 @@
        instant genuinely new video frames arrive — a single-session double
        buffer. Only used by the realtime (reactor) renderer. -->
   <canvas id="reactor-freeze" class="reactor-freeze" aria-hidden="true"></canvas>
+  <!-- Realtime scene fade: a near-black veil that eases OVER the live video +
+       freeze buffer at the start of a re-anchor (a new guide image / hard
+       transition) and lifts once the fresh stream is on screen. It gives the
+       realtime renderer the same "fade down → moment of pause → new scene"
+       beat the still renderer gets for free from its crossfade-to-dark, so
+       advancing time in video mode feels as deliberate as it does with stills.
+       Only driven by the realtime (reactor) renderer. -->
+  <div id="reactor-fade" class="reactor-fade" aria-hidden="true"></div>
   <div id="scene-flash"></div>
   <!-- VCR distortion burst: a heavy static/tracking glitch fired over the actual
        visible hand-off (still image swap, realtime freeze→video reveal, and the
