@@ -796,6 +796,8 @@
               else if (d.command === "set_image") RtLog.push("prompt", "\u2192 set_image", d.hasImage ? "[seed image]" : "");
               else RtLog.push(null, "\u2192 " + d.command);
               break;
+            case "capabilities": RtLog.push("status", "\u25C6 model commands", RtLog.clip((d.commands || []).join(", "), 140)); break;
+            case "command_skipped": RtLog.push("dim", "\u2298 skip \u00B7 " + (d.command || "") + " (unsupported)"); break;
             case "prompt_accepted": RtLog.push("ok", "\u2713 prompt accepted"); break;
             case "image_accepted": RtLog.push("ok", "\u2713 image accepted (seed decoded)"); break;
             case "generation_started":
