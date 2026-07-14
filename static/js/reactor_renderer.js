@@ -764,10 +764,25 @@
     });
   }
 
+  // Commands we KNOW the LingBot (seed_locked) family accepts per the model
+  // docs, even when a given capabilities payload doesn't enumerate them. LingBot
+  // and LingBot World 2 are navigable-video models built for exactly these, so
+  // we must never let a short/omitted caps list suppress movement — that's what
+  // silently broke "I can't move" in production (the SDK advertised caps without
+  // the movement axes, so cmd() skipped every one).
+  const MOVE_COMMANDS = new Set([
+    "set_move_longitudinal", "set_move_lateral",
+    "set_look_horizontal", "set_look_vertical",
+    "set_rotation_speed_deg", "set_camera_pose",
+  ]);
+  function familyDrivesCamera() { return familyFor(rstate.modelId) === "seed_locked"; }
+
   async function cmd(name, data) {
     // Never send a command the model doesn't advertise — skip it cleanly (and
-    // announce the skip) instead of triggering a command_error round-trip.
-    if (!supportsCmd(name)) {
+    // announce the skip) instead of triggering a command_error round-trip. But
+    // the LingBot movement axes are always allowed for the LingBot family even
+    // if capabilities didn't list them (the docs guarantee them).
+    if (!supportsCmd(name) && !(MOVE_COMMANDS.has(name) && familyDrivesCamera())) {
       log("skip unsupported command:", name);
       emitEvent("command_skipped", { command: name });
       return;
@@ -1320,7 +1335,9 @@
   // haven't arrived yet we optimistically say yes (they load before the first
   // command, and cmd() skips anything genuinely unsupported).
   function motionSupported() {
-    return !knownCaps() || rstate.commandSet.has("set_move_longitudinal");
+    // LingBot (seed_locked) family always drives the camera natively; other
+    // families only if they actually advertise the axes.
+    return familyDrivesCamera() || !knownCaps() || rstate.commandSet.has("set_move_longitudinal");
   }
 
   // Re-assert the currently-held axes after a (re)start. A per-turn re-anchor
