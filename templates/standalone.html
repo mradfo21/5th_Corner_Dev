@@ -202,14 +202,13 @@
       </span>
     </button>
 
-    <!-- Look joystick — the centerpiece of realtime "look" mode. A 360° analog
-         stick that turns the LIVE world-model camera like a first-person view:
-         drag it (mouse or touch) to look that way, and the further you push the
-         faster it pans (acceleration). W/S (or ↑/↓) look up/down, A/D (or ←/→)
-         look left/right on a keyboard. It drives LingBot World 2's native look
-         axes (set_look_horizontal / set_look_vertical) — rotation only, no
-         walking, because forward translation breaks the illusion on the current
-         world models. Shown only in realtime video mode (there's nothing to
+    <!-- Drive joystick — the centerpiece of realtime "explore" mode. A 360°
+         analog stick that drives + steers the LIVE world-model camera in first
+         person: drag it (mouse or touch) — up/down move forward/back, left/right
+         look left/right. W/S (or ↑/↓) move forward/back, A/D (or ←/→) look
+         left/right on a keyboard. It drives LingBot World 2's native axes
+         (set_move_longitudinal + set_look_horizontal) with a slow, constant,
+         easy-to-aim turn. Shown only in realtime video mode (there's nothing to
          steer on a still image); ACT slides to the LEFT to make room for it in
          the center, and PHOTO sits to the right. -->
     <div id="move-pad" class="move-pad" aria-hidden="true">
@@ -222,14 +221,14 @@
       </div>
       <div class="move-thrust" aria-hidden="true"></div>
       <div id="move-nub" class="move-nub" role="slider" tabindex="0"
-           aria-label="Look joystick — drag to look around the live world, or use W A S D"
+           aria-label="Drive joystick — drag to move and look around the live world, or use W A S D"
            aria-valuetext="centered"
-           title="Look — drag to look around · W/S up-down · A/D left-right · further = faster">
+           title="Explore — W/S move forward-back · A/D look left-right · drag or use the keys">
         <span class="move-arrow" aria-hidden="true"></span>
         <span class="move-core" aria-hidden="true"></span>
       </div>
       <div class="move-readout" aria-hidden="true">
-        <span class="move-head">LOOK</span>
+        <span class="move-head">EXPLORE</span>
       </div>
     </div>
 

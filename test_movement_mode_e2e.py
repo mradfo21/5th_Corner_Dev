@@ -156,21 +156,22 @@ class TestMovementMode(unittest.TestCase):
             arg=[name, param, value], timeout=timeout,
         )
 
-    def test_wasd_keys_drive_native_look_axes(self):
-        """Each look key must fire the matching NATIVE LingBot World 2 LOOK
-        command (not a prompt, and NEVER a translation), and releasing must idle
-        that axis so the camera stops panning."""
+    def test_wasd_keys_drive_forward_back_and_look(self):
+        """The drive scheme: W/S (and ↑/↓) move forward/back
+        (set_move_longitudinal), A/D (and ←/→) look left/right
+        (set_look_horizontal). Each fires the native command and idles on
+        release; nothing is faked with set_prompt."""
         page = self._new_realtime_page()
         try:
             self._boot_live(page)
             # key -> (command, param, held value)
             cases = [
-                ("w", "set_look_vertical", "look_vertical", "up"),
-                ("s", "set_look_vertical", "look_vertical", "down"),
+                ("w", "set_move_longitudinal", "move_longitudinal", "forward"),
+                ("s", "set_move_longitudinal", "move_longitudinal", "back"),
                 ("a", "set_look_horizontal", "look_horizontal", "left"),
                 ("d", "set_look_horizontal", "look_horizontal", "right"),
-                ("ArrowUp", "set_look_vertical", "look_vertical", "up"),
-                ("ArrowDown", "set_look_vertical", "look_vertical", "down"),
+                ("ArrowUp", "set_move_longitudinal", "move_longitudinal", "forward"),
+                ("ArrowDown", "set_move_longitudinal", "move_longitudinal", "back"),
                 ("ArrowLeft", "set_look_horizontal", "look_horizontal", "left"),
                 ("ArrowRight", "set_look_horizontal", "look_horizontal", "right"),
             ]
@@ -179,16 +180,14 @@ class TestMovementMode(unittest.TestCase):
                 page.keyboard.down(key)
                 self._wait_cmd(page, cmd, param, value)
                 page.keyboard.up(key)
-                # Persistent axis MUST be idled on release, or it keeps panning.
+                # Persistent axis MUST be idled on release, or it keeps going.
                 self._wait_cmd(page, cmd, param, "idle")
-            # It NEVER walks (no translation) and never fakes it with set_prompt.
+            # Movement uses native axes, never a set_prompt fake.
             log = page.evaluate("() => window.__MOCK_CMD_LOG__ || []")
             self.assertTrue(all(c["name"] != "set_prompt" for c in log),
-                            f"look should not use set_prompt. log:\n{log}")
-            self.assertTrue(all(c["name"] not in ("set_move_longitudinal", "set_move_lateral") for c in log),
-                            f"look mode must never send translation commands. log:\n{log}")
+                            f"drive should not use set_prompt. log:\n{log}")
         except Exception:
-            print("\n=== CONSOLE LOG (look-keys) ===\n" + self._dump_logs())
+            print("\n=== CONSOLE LOG (drive-keys) ===\n" + self._dump_logs())
             raise
         finally:
             page.close()
@@ -221,10 +220,10 @@ class TestMovementMode(unittest.TestCase):
         finally:
             page.close()
 
-    def test_pointer_drag_looks_360(self):
-        """Dragging the stick looks around: up = look up (native
-        set_look_vertical), left = look left (native set_look_horizontal), and it
-        never sends a translation command."""
+    def test_pointer_drag_drives_and_looks(self):
+        """Dragging the stick drives + steers: up = forward (native
+        set_move_longitudinal), left = look left (native set_look_horizontal),
+        idling both on release."""
         page = self._new_realtime_page()
         try:
             self._boot_live(page)
@@ -232,23 +231,20 @@ class TestMovementMode(unittest.TestCase):
                 """() => { const r = document.getElementById('move-pad').getBoundingClientRect();
                            return { cx: r.left + r.width/2, cy: r.top + r.height/2, r: r.width/2 }; }"""
             )
-            # Drag straight up -> look up.
+            # Drag straight up -> forward.
             self._reset_cmd_log(page)
             page.mouse.move(box["cx"], box["cy"])
             page.mouse.down()
             page.mouse.move(box["cx"], box["cy"] - box["r"], steps=6)
-            self._wait_cmd(page, "set_look_vertical", "look_vertical", "up")
+            self._wait_cmd(page, "set_move_longitudinal", "move_longitudinal", "forward")
             self.assertTrue(page.evaluate("() => document.getElementById('move-pad').classList.contains('engaged')"))
             # Drag to the left -> look left.
             page.mouse.move(box["cx"] - box["r"], box["cy"], steps=6)
             self._wait_cmd(page, "set_look_horizontal", "look_horizontal", "left")
             page.mouse.up()
-            # Release idles the look axes.
-            self._wait_cmd(page, "set_look_vertical", "look_vertical", "idle")
+            # Release idles the axes.
+            self._wait_cmd(page, "set_move_longitudinal", "move_longitudinal", "idle")
             page.wait_for_function("() => !document.getElementById('move-pad').classList.contains('engaged')", timeout=4000)
-            log = page.evaluate("() => window.__MOCK_CMD_LOG__ || []")
-            self.assertTrue(all(c["name"] not in ("set_move_longitudinal", "set_move_lateral") for c in log),
-                            f"look mode must never translate. log:\n{log}")
         except Exception:
             print("\n=== CONSOLE LOG (pointer) ===\n" + self._dump_logs())
             raise
@@ -272,9 +268,9 @@ class TestMovementMode(unittest.TestCase):
             self.assertTrue(page.evaluate("() => window.ReactorRenderer.motionSupported()"))
             self._reset_cmd_log(page)
             page.keyboard.down("w")
-            self._wait_cmd(page, "set_look_vertical", "look_vertical", "up")
+            self._wait_cmd(page, "set_move_longitudinal", "move_longitudinal", "forward")
             page.keyboard.up("w")
-            self._wait_cmd(page, "set_look_vertical", "look_vertical", "idle")
+            self._wait_cmd(page, "set_move_longitudinal", "move_longitudinal", "idle")
         except Exception:
             print("\n=== CONSOLE LOG (caps-omit) ===\n" + self._dump_logs())
             raise
