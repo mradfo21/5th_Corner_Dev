@@ -2999,17 +2999,38 @@
   function beginMoveTransition(destinationLabel) {
     // Fire the narrator BEFORE the fade so a voice lands as fast as possible
     // over the black. Silent when audio isn't unlocked (transition() no-ops).
-    try { Narrator.transition(destinationLabel); } catch (_) {}
-    // Nothing to fade if the live video isn't actually on screen (still mode
-    // is already static during a load; a fade there would just blink).
-    if (Renderer.mode !== "reactor") return;
+    let narrated = false;
+    try {
+      narrated = Narrator.transition(destinationLabel) === true;
+    } catch (err) {
+      console.warn("[standalone] Narrator.transition failed", err);
+    }
+    try {
+      RtLog.push("narrator", "\u25B8 MOVE TO \u00B7 bridging" + (destinationLabel ? " \u2192 " + destinationLabel : "") +
+                 (narrated ? "" : " (silent \u2014 audio not unlocked / no agent)"));
+    } catch (_) {}
+    // The fade lives on the ReactorRenderer's fade element (a full-viewport
+    // black veil at z-index 2). It works in both reactor + still modes since
+    // the veil sits over the still layer too — dimming the still is still a
+    // deliberate departure cue, not a strobe. Only skip when the fade element
+    // isn't available at all (e.g. an old build). Deliberately no isShowing()
+    // gate — freeze/blackout can transiently flip it to false during the very
+    // moment we want to fade, and silently dropping the fade there is exactly
+    // the "world keeps going and looks ridiculous" symptom this fixes.
     const RR = window.ReactorRenderer;
-    if (!RR || typeof RR.beginSceneFade !== "function") return;
-    if (typeof RR.isShowing === "function" && !RR.isShowing()) return;
+    if (!RR || typeof RR.beginSceneFade !== "function") {
+      try { RtLog.push("error", "\u26A0 MOVE TO fade unavailable (renderer facade too old)"); } catch (_) {}
+      return;
+    }
     clearTimeout(state.moveFadeTimer);
     state.moveFadeTimer = setTimeout(() => {
       state.moveFadeTimer = null;
-      try { RR.beginSceneFade({ safetyMs: MOVE_TRANSITION_FADE_SAFETY_MS }); } catch (_) {}
+      try {
+        RR.beginSceneFade({ safetyMs: MOVE_TRANSITION_FADE_SAFETY_MS });
+        RtLog.push("status", "\u25CF MOVE TO \u00B7 scene faded to black");
+      } catch (err) {
+        console.warn("[standalone] beginSceneFade failed", err);
+      }
     }, MOVE_TRANSITION_FADE_DELAY_MS);
   }
   function cancelMoveTransition() {
@@ -5614,10 +5635,14 @@
     // so the narrator carries the black loading beat while the next scene
     // generates. Any prior narration is stopped so this one runs "faster" — it
     // starts immediately, doesn't queue behind an ongoing multi-line worldbuild,
-    // and stays a single line to fit the transition window. Silent when audio
-    // hasn't been unlocked or a live conversation owns the channel.
+    // and stays a single line to fit the transition window. Returns true when
+    // it actually kicked a narration off (used by callers to log/diagnose).
+    // Runs the AJAX + agent handshake even if state.audioUnlocked was still
+    // false at call time: MOVE TO's own click IS a user gesture (pointerdown
+    // unlocks audio first, then the button's click fires and lands here), so a
+    // stale audioUnlocked flag mustn't silently swallow the bridging line.
     function transition(destination) {
-      if (!state.audioUnlocked || state.gameOver || Talk.isOpen()) return;
+      if (state.gameOver || Talk.isOpen()) return false;
       // Drop any in-flight narration so this bridging line runs NOW, not after
       // the previous one finishes reading itself out.
       stop();
@@ -5626,6 +5651,7 @@
         ? "The player has just committed to travel to the " + dest + ". Speak ONE short, tense bridging line — the trip in motion, the world closing behind them, the next place looming — as the scene fades to black."
         : "The player has just committed to travel to a new location. Speak ONE short, tense bridging line — the trip in motion, the world closing behind them, the next place looming — as the scene fades to black.";
       narrate({ multi: false, focus: focus });
+      return true;
     }
 
     return { narrate, stop, isBusy, preflight, coldOpen, epitaph, transition };
