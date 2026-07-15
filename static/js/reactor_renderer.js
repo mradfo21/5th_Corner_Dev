@@ -266,9 +266,19 @@
   // instead of a hot cut over the live stream. Mirrors the still renderer,
   // where the outgoing scene crossfades to its dark background before the next
   // one loads. endSceneFade() lifts it once the fresh scene is on screen.
-  function beginSceneFade() {
+  //
+  // `opts.safetyMs` overrides the failsafe window — used by callers who kick
+  // the fade off BEFORE the re-anchor arrives (e.g. a MOVE TO pre-fade so the
+  // live world stops drifting the instant the player commits to a trip). The
+  // fresh scene's own applyRunning* call later invokes beginSceneFade() again
+  // with the default window, so this only extends the pre-fade grace period
+  // for as long as we're waiting for the guide image to land.
+  function beginSceneFade(opts) {
     const f = getFadeEl();
     if (!f) return;
+    const safetyMs = (opts && typeof opts.safetyMs === "number" && opts.safetyMs > 0)
+      ? opts.safetyMs
+      : SCENE_FADE_SAFETY_MS;
     rstate.fadeDownActive = true;
     rstate.fadeDownTs = Date.now();
     if (rstate.fadeUpTimer) { clearTimeout(rstate.fadeUpTimer); rstate.fadeUpTimer = null; }
@@ -278,7 +288,7 @@
     rstate.fadeSafetyTimer = setTimeout(() => {
       rstate.fadeSafetyTimer = null;
       endSceneFade();
-    }, SCENE_FADE_SAFETY_MS);
+    }, safetyMs);
   }
 
   // Lift the fade veil to reveal the freshly generated scene, then run the
@@ -1398,6 +1408,16 @@
   window.ReactorRenderer = {
     enable, disable, applyScene, setPrompt, reset, pause, resume, captureFrame, captureRegion,
     setModel,
+    // Scene-fade controls, exposed so the standalone layer can preemptively
+    // fade the live world to black the instant a hard transition is COMMITTED
+    // (e.g. MOVE TO) — instead of waiting for the new guide image to arrive.
+    // Otherwise the current stream keeps drifting for seconds while the next
+    // scene generates, which reads as ridiculous. The reactor's own re-anchor
+    // path calls beginSceneFade() again with its default safety window when the
+    // fresh scene lands, and armFreezeReveal / scheduleSceneReveal lift the
+    // veil once the new frame is on screen — so all we need to expose is the
+    // early "start the fade now" hook.
+    beginSceneFade, endSceneFade,
     // Live camera drive (see above): the navigable-video control surface.
     motionSupported, setAxis, setRotationSpeed, stopMotion,
     // Register a custom / brand-new Reactor model at runtime (from the UI's

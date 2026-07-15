@@ -212,6 +212,7 @@
     scanPrewarmTimer: null,     // debounce for detection passes
     moving: false,              // camera is being driven (joystick / WASD) — OCR hotspots are hidden + detection paused while moving; they regenerate once you stop
     moveSettleTimer: null,      // after movement stops, wait for the view to settle before re-detecting hotspots
+    moveFadeTimer: null,        // MOVE TO: delayed fade-to-black kickoff so the live world stops drifting during the trip
     lastTurnTs: 0,              // when the last turn was committed/active (pre-warm defers around it)
     turnWatchdog: null,         // safety timer: recover the UI if a turn never resolves
     currentStillUrl: null,      // last still shown via setScene (stills-mode SCAN source)
@@ -2816,6 +2817,7 @@
       Sound.start(); // new tape / game begins
       try { Haptics.strong(); } catch (_) {}
       Ceremony.abort(); // cancel any mid-turn pipeline from the prior run
+      cancelMoveTransition(); // drop any pending MOVE TO fade so a restart during a trip doesn't dim the fresh run
       // Restart runs the SAME gamified generation pipeline as a normal turn: the
       // progress bar takes over the play button's spot at the bottom and parks on
       // "Guide Image Rendering" until the fresh run's first scene is on screen —
@@ -2896,9 +2898,19 @@
     // interaction) so the backend can drive the story-escalation systems harder
     // for deliberate meddling — see _process_turn_background (engine.py).
     const actionSource = (opts && opts.source) || null;
+    const moveTarget = (opts && opts.moveTarget) || null;
     closeFreeWill(true); // picking any action closes the free-will gate
     clearScanTags();      // the scene is about to change — drop stale scan tags
     Narrator.stop();      // stop narration about the scene we're leaving
+    // MOVE TO always resolves as a hard transition (moveActionPhrase emits
+    // "enter"/"cross over", the engine's is_hard_transition triggers). Without
+    // help, the LIVE video keeps drifting for however long the next guide image
+    // takes to generate — the player commits to a trip and then watches the
+    // world they're leaving flail (ridiculous). Kick off a bridging narrator
+    // line NOW so a voice lands over the pause, and schedule a fade-to-black a
+    // beat later so the departure reads as deliberate. The fresh scene's own
+    // re-anchor path lifts the fade once the new frame is on screen.
+    if (actionSource === "scan_move") beginMoveTransition(moveTarget);
     el.choices.innerHTML = "";
     Ceremony.begin(); // light up the turn pipeline — starting with "action selected"
     state.awaitingResolution = true;
@@ -2962,10 +2974,46 @@
     } catch (err) {
       console.error("[standalone] makeChoice failed:", err);
       clearTurnWatchdog();
+      cancelMoveTransition(); // never leave the pre-fade hanging on a failed send
       hideVeil();
       state.awaitingResolution = false;
       appendProse({ id: -1, type: "error_event", content: `Action failed to send: ${err.message}` });
     }
+  }
+
+  // ---- MOVE TO transition -------------------------------------------
+  // Bridge the gap between "player commits to a trip" and "the new scene lands"
+  // so the leaving world doesn't drift ridiculously under a live camera. Fires
+  // a short narrator line immediately, then fades the scene to black a beat
+  // later — long enough for the click's press ceremony (pulse + toast + tag
+  // pop) to register, short enough that the video isn't allowed to wander far.
+  //   • DELAY  — hold the world visible this long after the press so the beat
+  //              of departure reads before the fade kicks in.
+  //   • SAFETY — the reactor's failsafe would otherwise lift the veil after
+  //              only 9 s; a slow turn (LLM + guide image) legitimately runs
+  //              longer, so stretch it well past a typical turn. The fresh
+  //              scene's own beginSceneFade() call resets the safety back to
+  //              the normal window when it arrives.
+  const MOVE_TRANSITION_FADE_DELAY_MS = 900;
+  const MOVE_TRANSITION_FADE_SAFETY_MS = 60000;
+  function beginMoveTransition(destinationLabel) {
+    // Fire the narrator BEFORE the fade so a voice lands as fast as possible
+    // over the black. Silent when audio isn't unlocked (transition() no-ops).
+    try { Narrator.transition(destinationLabel); } catch (_) {}
+    // Nothing to fade if the live video isn't actually on screen (still mode
+    // is already static during a load; a fade there would just blink).
+    if (Renderer.mode !== "reactor") return;
+    const RR = window.ReactorRenderer;
+    if (!RR || typeof RR.beginSceneFade !== "function") return;
+    if (typeof RR.isShowing === "function" && !RR.isShowing()) return;
+    clearTimeout(state.moveFadeTimer);
+    state.moveFadeTimer = setTimeout(() => {
+      state.moveFadeTimer = null;
+      try { RR.beginSceneFade({ safetyMs: MOVE_TRANSITION_FADE_SAFETY_MS }); } catch (_) {}
+    }, MOVE_TRANSITION_FADE_DELAY_MS);
+  }
+  function cancelMoveTransition() {
+    if (state.moveFadeTimer) { clearTimeout(state.moveFadeTimer); state.moveFadeTimer = null; }
   }
 
   // ------------------------------------------------------------------
@@ -4855,9 +4903,12 @@
     // makeChoice clears the tags (the scene is about to change); the ambient
     // overlay stays live and repopulates hotspots once the new scene settles.
     // Tag the turn as a SCAN object interaction so the story backend escalates
-    // risk and forces a consequential, plot-moving outcome (not an inert poke).
+    // risk and forces a consequential, plot-moving outcome (not an inert poke);
+    // `moveTarget` is the object's own name, carried through to the MOVE TO
+    // transition (fade-to-black + narrator bridging line) inside makeChoice.
     const source = action.id === "move" ? "scan_move" : "scan_interact";
-    makeChoice(phrase, null, { source });
+    const moveTarget = action.id === "move" ? obj.label : null;
+    makeChoice(phrase, null, { source, moveTarget });
   }
 
   // ------------------------------------------------------------------
@@ -5559,7 +5610,25 @@
       narrate({ multi: false, focus: "You have just died here. One short, final line about your end and what you never found out." });
     }
 
-    return { narrate, stop, isBusy, preflight, coldOpen, epitaph };
+    // A short bridging line fired the INSTANT the player commits to a MOVE TO,
+    // so the narrator carries the black loading beat while the next scene
+    // generates. Any prior narration is stopped so this one runs "faster" — it
+    // starts immediately, doesn't queue behind an ongoing multi-line worldbuild,
+    // and stays a single line to fit the transition window. Silent when audio
+    // hasn't been unlocked or a live conversation owns the channel.
+    function transition(destination) {
+      if (!state.audioUnlocked || state.gameOver || Talk.isOpen()) return;
+      // Drop any in-flight narration so this bridging line runs NOW, not after
+      // the previous one finishes reading itself out.
+      stop();
+      const dest = (destination || "").toString().trim().slice(0, 80);
+      const focus = dest
+        ? "The player has just committed to travel to the " + dest + ". Speak ONE short, tense bridging line — the trip in motion, the world closing behind them, the next place looming — as the scene fades to black."
+        : "The player has just committed to travel to a new location. Speak ONE short, tense bridging line — the trip in motion, the world closing behind them, the next place looming — as the scene fades to black.";
+      narrate({ multi: false, focus: focus });
+    }
+
+    return { narrate, stop, isBusy, preflight, coldOpen, epitaph, transition };
   })();
 
   function toggleNarrator() {
