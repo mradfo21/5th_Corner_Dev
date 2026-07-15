@@ -1964,39 +1964,61 @@ html.is-mobile .photo-target { transition: opacity 0.2s ease; }
   .scan-tag.shown { opacity: 0.7; }
 }
 
-/* ---------- Mobile: collapse SCAN tags into compact star "dots" ----------
-   On a phone the wide scene is letterboxed into a narrow band, so full-width
+/* ---------- Mobile: collapse SCAN tags into pulsing green "beacons" --------
+   On a phone the wide scene is letterboxed into a narrow band, so the full-width
    label pills all land in the same strip and pile up on top of each other
-   (unreadable). Collapse every tag to a small twinkling dot that shows only its
-   star; tapping it expands that one tag back into its labelled action bar. The
-   field stays legible and you reveal one thing at a time. Desktop keeps the
-   rich hover-to-reveal pills (pointer-primary, roomy landscape canvas). */
+   (unreadable + far too big). Collapse every tag to just its star icon sitting
+   behind a PULSING GREEN GLOW — the glow reads instantly as "interactable, tap
+   me" and draws the eye, while the object's NAME stays hidden until you tap it.
+   Tapping expands that one beacon into its labelled MOVE / INTERACT / TALK bar.
+   Desktop keeps the rich hover-to-reveal pills (pointer-primary, roomy canvas). */
 html.is-mobile #scan-tags .scan-tag {
-  width: 32px;
-  height: 32px;
+  width: 34px;
+  height: 34px;
   padding: 0;
   gap: 0;
   justify-content: center;
   border-radius: 50%;
+  border-color: rgba(110, 240, 165, 0.55);
+  background: rgba(6, 20, 13, 0.5);
+  box-shadow: 0 0 12px rgba(90, 240, 160, 0.4), inset 0 0 10px rgba(0, 0, 0, 0.4);
   transition: width 0.2s ease, height 0.2s ease, padding 0.2s ease,
     border-radius 0.2s ease, border-color 0.18s, box-shadow 0.18s,
     transform 0.18s, opacity 0.2s, left 0.5s ease, top 0.5s ease;
 }
-html.is-mobile #scan-tags .scan-tag.shown { opacity: 0.86; }
-/* The label and the "+" affordance are hidden while collapsed — the dot IS the
-   affordance (a tap opens it). */
+/* Once the twinkle-in settles (JS adds .shown) the beacon starts its steady
+   green attention pulse and holds full opacity so it reads clearly. */
+html.is-mobile #scan-tags .scan-tag.shown {
+  opacity: 1;
+  animation: scan-beacon-pulse 1.9s ease-in-out infinite;
+}
+@keyframes scan-beacon-pulse {
+  0%, 100% { box-shadow: 0 0 8px rgba(90, 240, 160, 0.35), inset 0 0 10px rgba(0, 0, 0, 0.4); }
+  50%      { box-shadow: 0 0 22px rgba(90, 240, 160, 0.9), 0 0 34px rgba(90, 240, 160, 0.35), inset 0 0 10px rgba(0, 0, 0, 0.4); }
+}
+/* The name and the "+" affordance stay hidden while collapsed — the glowing dot
+   IS the affordance (a tap opens it). */
 html.is-mobile #scan-tags .scan-tag .scan-tag-label,
 html.is-mobile #scan-tags .scan-tag .scan-tag-act { display: none; }
-html.is-mobile #scan-tags .scan-tag::before { left: 50%; }
-html.is-mobile #scan-tags .scan-star { font-size: 14px; }
+/* Recolor the soft halo behind the icon to the same green and center it under
+   the star; it breathes (scan-halo-breathe) so the glow visibly pulses. */
+html.is-mobile #scan-tags .scan-tag::before {
+  left: 50%;
+  width: 28px;
+  height: 28px;
+  background: radial-gradient(circle, rgba(90, 240, 160, 0.6) 0%, rgba(90, 240, 160, 0) 70%);
+}
+html.is-mobile #scan-tags .scan-star { font-size: 15px; }
 /* Tapped (acting): grow back into a labelled pill with the action icons so the
-   player can read what it is and choose MOVE / INTERACT / TALK. */
+   player can read what it is and choose MOVE / INTERACT / TALK. The attention
+   pulse stops and the frame settles to the neutral "opened" look. */
 html.is-mobile #scan-tags .scan-tag.acting {
   width: auto;
   height: auto;
   padding: 5px 12px 5px 9px;
   gap: 7px;
   border-radius: 20px;
+  animation: none;
 }
 html.is-mobile #scan-tags .scan-tag.acting .scan-tag-label { display: inline; }
 
