@@ -1974,14 +1974,15 @@
   // in the WORLD MODEL log (L) — the same reactor surface LingBot World 2 reads.
   // ------------------------------------------------------------------
   const Movement = (function () {
-    const RAMP_MS = 2600;            // look acceleration: time held to reach top speed
+    const RAMP_MS = 2600;            // (visual thrust ramp only; look speed is constant)
     const DEADZONE = 0.22;           // ignore tiny stick wiggle near the center
     const TICK_MS = 90;              // visual + drive loop cadence
     // Look speed is deg/latent-frame and it COMPOUNDS every chunk, so small
-    // numbers pan fast. Keep it slow + gentle so it never disorients: a soft
-    // start that eases up to a modest top speed (well under the model default 5).
-    const ROT_MIN = 1;               // deg/latent-frame at the start of a look
-    const ROT_MAX = 3;               // deg/latent-frame at full look (0..30 allowed)
+    // numbers pan fast. Keep it slow + CONSTANT (no hold-time acceleration) so
+    // it's easy to aim and never disorients — well under the model default of 5.
+    const ROT_MIN = 0.75;            // deg/latent-frame at a gentle push
+    const ROT_MAX = 2;               // deg/latent-frame at a full push (0..30 allowed)
+    const KEY_INTENSITY = 0.5;       // fixed push level for keyboard look (no analog)
     const FALLBACK_SEND_MS = 950;    // prompt-fallback (non-LingBot) re-steer cadence
 
     // Keyboard → semantic look tokens. W/S (and ↑/↓) look up/down; A/D (and ←/→)
@@ -2030,7 +2031,6 @@
               : keys.has("lookR") && !keys.has("lookL") ? "right" : "idle";
       let lv  = keys.has("lookU") && !keys.has("lookD") ? "up"
               : keys.has("lookD") && !keys.has("lookU") ? "down" : "idle";
-      const keyLooking = lh !== "idle" || lv !== "idle";
       // Pointer contribution: stick x = yaw, stick y = pitch.
       let ptrMag = 0;
       if (pointerActive) {
@@ -2038,17 +2038,16 @@
         if (lv === "idle") lv = vec.y < -DEADZONE ? "up" : vec.y > DEADZONE ? "down" : "idle";
         ptrMag = Math.min(1, Math.max(0, (mag - DEADZONE) / (1 - DEADZONE)));
       }
-      // Look speed (deg/frame): acceleration from key hold-time ramp, or from how
-      // far the stick is pushed.
+      // Look speed (deg/frame): a CONSTANT, predictable speed — no hold-time
+      // acceleration (speed creeping up the longer you hold was the disorienting,
+      // hard-to-aim part). The joystick gives fine proportional control by how far
+      // you push; keys use a fixed gentle speed. Small holds = small, controllable
+      // turns.
       let rot = null;
       const looking = lh !== "idle" || lv !== "idle";
       if (looking) {
-        if (keyLooking) {
-          const ramp = Math.min(1, (Date.now() - rampStart) / RAMP_MS);
-          rot = ROT_MIN + (ROT_MAX - ROT_MIN) * ramp;
-        } else {
-          rot = ROT_MIN + (ROT_MAX - ROT_MIN) * ptrMag;
-        }
+        const intensity = pointerActive ? ptrMag : KEY_INTENSITY;
+        rot = ROT_MIN + (ROT_MAX - ROT_MIN) * intensity;
       }
       return { lookH: lh, lookV: lv, rot: rot };
     }

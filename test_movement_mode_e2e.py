@@ -193,16 +193,17 @@ class TestMovementMode(unittest.TestCase):
         finally:
             page.close()
 
-    def test_looking_sends_rotation_speed_that_accelerates(self):
-        """Holding a look key must set rotation speed, and it should ramp up the
-        longer it's held (native acceleration via set_rotation_speed_deg)."""
+    def test_looking_sends_a_gentle_constant_rotation_speed(self):
+        """Holding a look key must set a GENTLE, CONSTANT rotation speed (no
+        hold-time acceleration — that was disorienting/hard to aim), well under
+        the model default of 5."""
         page = self._new_realtime_page()
         try:
             self._boot_live(page)
             self._reset_cmd_log(page)
             page.keyboard.down("a")
             self._wait_cmd(page, "set_rotation_speed_deg")
-            page.wait_for_timeout(2400)  # let the hold-time ramp climb to the top
+            page.wait_for_timeout(1500)  # hold a while — speed must NOT creep up
             page.keyboard.up("a")
             speeds = page.evaluate(
                 """() => (window.__MOCK_CMD_LOG__||[])
@@ -210,11 +211,10 @@ class TestMovementMode(unittest.TestCase):
                        .map(c => c.data.rotation_speed_deg)"""
             )
             self.assertTrue(len(speeds) >= 1, f"no rotation speed sent. speeds={speeds}")
-            self.assertGreaterEqual(max(speeds), min(speeds),
-                                    f"rotation speed should not decrease while held: {speeds}")
-            self.assertGreater(max(speeds), min(speeds) - 0.01, f"should accelerate: {speeds}")
-            # It must stay GENTLE — never near the disorienting range.
-            self.assertLessEqual(max(speeds), 4.0, f"look speed must stay slow/gentle: {speeds}")
+            # Gentle: well under the model default of 5.
+            self.assertLessEqual(max(speeds), 2.5, f"look speed must stay slow/gentle: {speeds}")
+            # Constant: holding must not accelerate the look.
+            self.assertLessEqual(max(speeds) - min(speeds), 0.5, f"look speed should be constant: {speeds}")
         except Exception:
             print("\n=== CONSOLE LOG (rotation) ===\n" + self._dump_logs())
             raise
