@@ -4533,8 +4533,30 @@
   // Reconcile the on-screen tags against a fresh detection: keep + reposition
   // ones that persist, twinkle in new ones, fade out the gone — so a refresh
   // reads as the field breathing, not a hard redraw.
+  // Phones show these as small green "beacon" dots collapsed into a narrow
+  // letterboxed band, so a long detection list piles up into an unreadable,
+  // never-clearing clump. Keep only the few most CENTRAL subjects on mobile so
+  // the field stays clean; desktop (roomy canvas, hover labels) shows them all.
+  const MOBILE_SCAN_TAG_CAP = 6;
+  function capScanObjectsForDevice(objects) {
+    if (!Array.isArray(objects) || objects.length <= MOBILE_SCAN_TAG_CAP) return objects;
+    let mobile = false;
+    try { mobile = !!(window.__DEVICE__ && window.__DEVICE__.isMobile()); } catch (_) {}
+    if (!mobile) return objects;
+    return objects
+      .map((o) => {
+        const cx = typeof o.cx === "number" ? o.cx : 0.5;
+        const cy = typeof o.cy === "number" ? o.cy : 0.5;
+        return { o, d: (cx - 0.5) * (cx - 0.5) + (cy - 0.5) * (cy - 0.5) };
+      })
+      .sort((a, b) => a.d - b.d)
+      .slice(0, MOBILE_SCAN_TAG_CAP)
+      .map((x) => x.o);
+  }
+
   function reconcileScanTags(objects) {
     if (!el.scanTags) return;
+    objects = capScanObjectsForDevice(objects);
     const existing = new Map();
     Array.from(el.scanTags.children).forEach((t) => {
       if (t._label) existing.set(t._label, t);

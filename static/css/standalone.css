@@ -1973,42 +1973,48 @@ html.is-mobile .photo-target { transition: opacity 0.2s ease; }
    Tapping expands that one beacon into its labelled MOVE / INTERACT / TALK bar.
    Desktop keeps the rich hover-to-reveal pills (pointer-primary, roomy canvas). */
 html.is-mobile #scan-tags .scan-tag {
-  width: 34px;
-  height: 34px;
+  width: 30px;
+  height: 30px;
   padding: 0;
   gap: 0;
   justify-content: center;
   border-radius: 50%;
-  border-color: rgba(110, 240, 165, 0.55);
-  background: rgba(6, 20, 13, 0.5);
-  box-shadow: 0 0 12px rgba(90, 240, 160, 0.4), inset 0 0 10px rgba(0, 0, 0, 0.4);
+  border-color: rgba(110, 240, 165, 0.5);
+  background: rgba(6, 20, 13, 0.42);
+  box-shadow: 0 0 10px rgba(90, 240, 160, 0.35), inset 0 0 8px rgba(0, 0, 0, 0.4);
   transition: width 0.2s ease, height 0.2s ease, padding 0.2s ease,
     border-radius 0.2s ease, border-color 0.18s, box-shadow 0.18s,
-    transform 0.18s, opacity 0.2s, left 0.5s ease, top 0.5s ease;
+    transform 0.18s, opacity 0.25s ease, left 0.5s ease, top 0.5s ease;
 }
-/* Once the twinkle-in settles (JS adds .shown) the beacon starts its steady
-   green attention pulse and holds full opacity so it reads clearly. */
-html.is-mobile #scan-tags .scan-tag.shown {
-  opacity: 1;
-  animation: scan-beacon-pulse 1.9s ease-in-out infinite;
+/* Once the twinkle-in settles (JS adds .shown) the beacon reads clearly. */
+html.is-mobile #scan-tags .scan-tag.shown { opacity: 0.95; }
+/* Only a COLLAPSED beacon pulses (not one that's opened or on its way out).
+   The :not() guards keep this from out-ranking the .leaving fade below, which
+   was the bug that left retired dots stuck on screen and pulsing. */
+html.is-mobile #scan-tags .scan-tag.shown:not(.acting):not(.leaving) {
+  animation: scan-beacon-pulse 2s ease-in-out infinite;
 }
 @keyframes scan-beacon-pulse {
-  0%, 100% { box-shadow: 0 0 8px rgba(90, 240, 160, 0.35), inset 0 0 10px rgba(0, 0, 0, 0.4); }
-  50%      { box-shadow: 0 0 22px rgba(90, 240, 160, 0.9), 0 0 34px rgba(90, 240, 160, 0.35), inset 0 0 10px rgba(0, 0, 0, 0.4); }
+  0%, 100% { box-shadow: 0 0 7px rgba(90, 240, 160, 0.3), inset 0 0 8px rgba(0, 0, 0, 0.4); }
+  50%      { box-shadow: 0 0 18px rgba(90, 240, 160, 0.85), inset 0 0 8px rgba(0, 0, 0, 0.4); }
 }
+/* A retiring beacon (no longer detected) fades out and stops pulsing. This is
+   defined AFTER the .shown rules so, at equal specificity, it wins and the dot
+   actually clears instead of lingering. */
+html.is-mobile #scan-tags .scan-tag.leaving { opacity: 0; animation: none; }
 /* The name and the "+" affordance stay hidden while collapsed — the glowing dot
    IS the affordance (a tap opens it). */
 html.is-mobile #scan-tags .scan-tag .scan-tag-label,
 html.is-mobile #scan-tags .scan-tag .scan-tag-act { display: none; }
 /* Recolor the soft halo behind the icon to the same green and center it under
-   the star; it breathes (scan-halo-breathe) so the glow visibly pulses. */
+   the star; it breathes (scan-halo-breathe) so the glow gently pulses. */
 html.is-mobile #scan-tags .scan-tag::before {
   left: 50%;
-  width: 28px;
-  height: 28px;
-  background: radial-gradient(circle, rgba(90, 240, 160, 0.6) 0%, rgba(90, 240, 160, 0) 70%);
+  width: 24px;
+  height: 24px;
+  background: radial-gradient(circle, rgba(90, 240, 160, 0.55) 0%, rgba(90, 240, 160, 0) 70%);
 }
-html.is-mobile #scan-tags .scan-star { font-size: 15px; }
+html.is-mobile #scan-tags .scan-star { font-size: 14px; }
 /* Tapped (acting): grow back into a labelled pill with the action icons so the
    player can read what it is and choose MOVE / INTERACT / TALK. The attention
    pulse stops and the frame settles to the neutral "opened" look. */
@@ -2018,6 +2024,7 @@ html.is-mobile #scan-tags .scan-tag.acting {
   padding: 5px 12px 5px 9px;
   gap: 7px;
   border-radius: 20px;
+  opacity: 1;
   animation: none;
 }
 html.is-mobile #scan-tags .scan-tag.acting .scan-tag-label { display: inline; }
