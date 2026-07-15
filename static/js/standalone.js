@@ -1979,8 +1979,8 @@
     // Turn speed is deg/latent-frame and it COMPOUNDS every chunk, so small
     // numbers pan fast. Keep it slow + CONSTANT (no hold-time acceleration) so
     // it's easy to aim and never disorients — well under the model default of 5.
-    const ROT_MIN = 0.75;            // deg/latent-frame at a gentle push
-    const ROT_MAX = 2;               // deg/latent-frame at a full push (0..30 allowed)
+    const ROT_MIN = 1.875;           // deg/latent-frame at a gentle push (2.5x the prior 0.75)
+    const ROT_MAX = 5;               // deg/latent-frame at a full push (2.5x the prior 2; 0..30 allowed)
     const KEY_INTENSITY = 0.5;       // fixed push level for keyboard turning (no analog)
     const FALLBACK_SEND_MS = 950;    // prompt-fallback (non-LingBot) re-steer cadence
 
