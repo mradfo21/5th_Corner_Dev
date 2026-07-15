@@ -5389,9 +5389,28 @@ def api_narrator_narrate():
         return jsonify({"error": str(e), "segments": []}), 500
 
 
+def _clip_narration_to_one_sentence(text: str) -> str:
+    """Trim a narration line down to a SINGLE sentence — the narrator always
+    speaks exactly one. LLMs occasionally ignore the "one sentence" instruction
+    and stack a second (or trail off), so this is the hard guarantee. Ellipses
+    ("...") are preserved as intra-sentence pauses; only a standalone terminator
+    (. ! ?) that isn't part of an ellipsis counts as the end of the sentence."""
+    t = (text or "").strip()
+    if not t:
+        return t
+    m = re.search(r"[.!?](?!\.)", t)
+    if not m:
+        return t.rstrip(",;:") + "."
+    return t[: m.end()].strip()
+
+
 def _narrator_script(focus: str, multi: bool, session_id: str) -> list:
     """Generate a short, story-aware world-building narration as a list of
-    {character, text} segments. `multi` lets it hand off between cast voices."""
+    {character, text} segments. `multi` lets it hand off between cast voices.
+
+    Every returned segment is CLIPPED to a single sentence — the narrator always
+    speaks exactly one line, so a bridging beat (e.g. MOVE TO's black loading
+    screen) is over before the loading is."""
     try:
         st = _load_state(session_id) or {}
     except Exception:
@@ -5422,12 +5441,12 @@ def _narrator_script(focus: str, multi: bool, session_id: str) -> list:
             f"{(chr(10)+chr(10)+'CURRENT SCENE: '+scene) if scene else ''}{recent_block}{focus_block}\n\n"
             f"Write a SHORT radio-play style world-building narration: 2 to 5 lines that hand off between "
             f"these voices where it fits: {cast_names}. Keep it atmospheric, ominous, concrete — no meta, "
-            f"no stage directions. Respond with ONLY a JSON array, each item "
-            f'{{"character": "<one of the voice names>", "text": "<1-2 sentences>"}}.'
+            f"no stage directions. EACH LINE IS EXACTLY ONE SHORT SENTENCE. Respond with ONLY a JSON array, "
+            f'each item {{"character": "<one of the voice names>", "text": "<exactly one short sentence>"}}.'
         )
         raw = _ask(prompt, temp=0.9, tokens=320, use_lore=True)
         if _talk_llm_failed(raw):
-            return fallback
+            return [{"character": s["character"], "text": _clip_narration_to_one_sentence(s["text"])} for s in fallback]
         import json as _json, re as _re
         cleaned = _re.sub(r"^```(?:json)?|```$", "", (raw or "").strip(), flags=_re.MULTILINE).strip()
         try:
@@ -5439,24 +5458,27 @@ def _narrator_script(focus: str, multi: bool, session_id: str) -> list:
         if isinstance(arr, list):
             for it in arr[:4]:  # cap lines — bounds TTS cost + payload size
                 if isinstance(it, dict) and (it.get("text") or "").strip():
-                    segs.append({"character": (it.get("character") or "narrator").strip().lower(),
-                                 "text": (it.get("text") or "").strip()[:400]})
-        return segs or fallback
+                    one = _clip_narration_to_one_sentence((it.get("text") or "").strip()[:400])
+                    if one:
+                        segs.append({"character": (it.get("character") or "narrator").strip().lower(),
+                                     "text": one})
+        return segs or [{"character": s["character"], "text": _clip_narration_to_one_sentence(s["text"])} for s in fallback]
 
-    # Single-voice narration — one lone voice thinking out loud.
+    # Single-voice narration — one lone voice thinking out loud, in exactly ONE
+    # short sentence (a bridging beat, not a monologue).
     prompt = (
         f"You are the NARRATOR of a 1993 analog-horror world — one lone person, "
         f"speaking quietly to yourself. PREMISE: {premise}"
         f"{(chr(10)+chr(10)+'CURRENT SCENE: '+scene) if scene else ''}{recent_block}{focus_block}\n\n"
-        f"Speak in FIRST PERSON. Use SHORT, plain sentences. Say how you FEEL right now — "
+        f"Speak in FIRST PERSON. Use ONE short, plain sentence — nothing more. Say how you FEEL right now — "
         f"afraid, uneasy, but determined. Make it clear you have to find out what happened here. "
-        f"Keep it BRIEF: 1 to 2 short sentences, no more. No meta, no stage directions, no purple prose. "
-        f"Output ONLY the narration."
+        f"Output EXACTLY ONE SENTENCE. No meta, no stage directions, no purple prose."
     )
     line = _ask(prompt, temp=0.85, tokens=80, use_lore=True)
     if _talk_llm_failed(line):
-        return fallback
-    return [{"character": "narrator", "text": (line or "").strip()[:600]}]
+        return [{"character": s["character"], "text": _clip_narration_to_one_sentence(s["text"])} for s in fallback]
+    return [{"character": "narrator",
+             "text": _clip_narration_to_one_sentence((line or "").strip()[:600])}]
 
 
 def api_narrator_worldbuild():
