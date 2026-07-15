@@ -1974,11 +1974,14 @@
   // in the WORLD MODEL log (L) — the same reactor surface LingBot World 2 reads.
   // ------------------------------------------------------------------
   const Movement = (function () {
-    const RAMP_MS = 2000;            // look acceleration: time held to reach top speed
-    const DEADZONE = 0.2;            // ignore tiny stick wiggle near the center
+    const RAMP_MS = 2600;            // look acceleration: time held to reach top speed
+    const DEADZONE = 0.22;           // ignore tiny stick wiggle near the center
     const TICK_MS = 90;              // visual + drive loop cadence
-    const ROT_MIN = 4;               // deg/latent-frame at the start of a look (gentle)
-    const ROT_MAX = 13;              // deg/latent-frame at full look (0..30 allowed)
+    // Look speed is deg/latent-frame and it COMPOUNDS every chunk, so small
+    // numbers pan fast. Keep it slow + gentle so it never disorients: a soft
+    // start that eases up to a modest top speed (well under the model default 5).
+    const ROT_MIN = 1;               // deg/latent-frame at the start of a look
+    const ROT_MAX = 3;               // deg/latent-frame at full look (0..30 allowed)
     const FALLBACK_SEND_MS = 950;    // prompt-fallback (non-LingBot) re-steer cadence
 
     // Keyboard → semantic look tokens. W/S (and ↑/↓) look up/down; A/D (and ←/→)
