@@ -94,6 +94,13 @@
   const SCENE_FADE_MIN_HOLD_MS = 650;
   const SCENE_FADE_SAFETY_MS = 9000;
   const SCENE_FADE_BLEND_REVEAL_MS = 1200;
+  // Absolute maximum a fade veil may stay down before we give up and lift it,
+  // regardless of what the stream is doing. This is the "video generation
+  // legitimately died" ceiling — reasonable turns finish well under this. The
+  // per-fade `safetyMs` controls the FIRST sample; while a fresh stream is
+  // ARMED and still trying to present frames, we resample instead of lifting.
+  const SCENE_FADE_HARD_CAP_MS = 90000;
+  const SCENE_FADE_RESAMPLE_MS = 1500;
 
   // Blackout detection + recovery. Some world models, when steered toward
   // content their OWN safety refuses (a graphic scene), don't error — they
@@ -164,6 +171,8 @@
     fadeDownTs: 0,
     fadeUpTimer: null,     // pending reveal (honoring the minimum dark hold)
     fadeSafetyTimer: null, // failsafe: lift the veil even if no reveal fires
+    fadeHardDeadline: 0,   // absolute ceiling for holding the veil (ms since epoch) — a re-arm CANNOT shorten it, so a pre-fade's long window survives the re-anchor's default one
+    awaitingReanchor: false, // caller promised a re-anchor is coming; hold the veil (up to fadeHardDeadline) until the apply actually happens even if nothing is currently in-flight
     seedToken: 0,          // bumps every reveal/reset so a slow seed decode that
                            // lands AFTER the stream revealed can't re-cover it
     // Blackout state: the live stream is rendering solid black (model refused
@@ -267,28 +276,78 @@
   // where the outgoing scene crossfades to its dark background before the next
   // one loads. endSceneFade() lifts it once the fresh scene is on screen.
   //
-  // `opts.safetyMs` overrides the failsafe window — used by callers who kick
-  // the fade off BEFORE the re-anchor arrives (e.g. a MOVE TO pre-fade so the
-  // live world stops drifting the instant the player commits to a trip). The
-  // fresh scene's own applyRunning* call later invokes beginSceneFade() again
-  // with the default window, so this only extends the pre-fade grace period
-  // for as long as we're waiting for the guide image to land.
+  // `opts.safetyMs` overrides the FIRST failsafe check — used by callers who
+  // kick the fade off BEFORE the re-anchor arrives (e.g. a MOVE TO pre-fade so
+  // the live world stops drifting the instant the player commits to a trip).
+  // The fresh scene's own applyRunning* call later invokes beginSceneFade()
+  // again with the default window, so this only extends the pre-fade grace
+  // period for as long as we're waiting for the guide image to land.
+  //
+  // The safety check is video-aware: while a fresh stream is ARMED (established
+  // but no new frames presented yet), we RESAMPLE instead of lifting — "wait
+  // till everything is ready" for a video-to-video transition, so we never
+  // reveal the freeze back-buffer's static still while the new video is still
+  // warming up. Only give up (and lift) if the resample keeps failing past the
+  // SCENE_FADE_HARD_CAP_MS ceiling, or the stream was never started at all.
   function beginSceneFade(opts) {
     const f = getFadeEl();
     if (!f) return;
     const safetyMs = (opts && typeof opts.safetyMs === "number" && opts.safetyMs > 0)
       ? opts.safetyMs
       : SCENE_FADE_SAFETY_MS;
+    // `awaitReanchor` — the caller (typically the standalone layer on MOVE TO)
+    // guarantees a re-anchor is coming from the server; hold the veil until
+    // that apply actually kicks off, so the pre-fade doesn't lift into the OLD
+    // drifting video during the "gap" before /api/choose comes back with a
+    // new scene_image. Sticky through re-arms (only cleared on genuine reveal
+    // / teardown / cap).
+    if (opts && opts.awaitReanchor) rstate.awaitingReanchor = true;
     rstate.fadeDownActive = true;
     rstate.fadeDownTs = Date.now();
+    // The absolute deadline never moves once set for a fade — a subsequent
+    // beginSceneFade() call (e.g. the re-anchor re-arming) MUST NOT reset the
+    // ceiling back down, or a pre-fade with a long safety would collapse to
+    // the default 9 s the instant the guide image arrives.
+    rstate.fadeHardDeadline = Math.max(
+      rstate.fadeHardDeadline || 0,
+      rstate.fadeDownTs + Math.max(safetyMs, SCENE_FADE_HARD_CAP_MS)
+    );
     if (rstate.fadeUpTimer) { clearTimeout(rstate.fadeUpTimer); rstate.fadeUpTimer = null; }
     f.classList.add("down");
-    // Failsafe: never leave the scene stuck dark if the reveal never fires.
+    scheduleFadeSafetyTick(safetyMs);
+  }
+
+  // The video-aware failsafe: sample the stream state after `ms`, and either
+  // give up (lift the veil) or resample. Only lifts when the fade has genuinely
+  // hit its ceiling OR there's no live stream we could be waiting on. We hold
+  // the veil while ANY of these is true:
+  //   • a driver is mid-apply (reset → establish → start is running; covers the
+  //     brief window between the re-anchor's beginSceneFade() and armFreezeReveal
+  //     where freezeArmed would otherwise be a false negative)
+  //   • the freeze reveal is armed (stream is started but its FIRST new frame
+  //     hasn't been presented yet — the "video to video" wait)
+  //   • a scene is queued for apply (rstate.pending)
+  //   • a blend-model reveal is scheduled (fadeUpTimer will lift on its own)
+  function scheduleFadeSafetyTick(ms) {
     if (rstate.fadeSafetyTimer) clearTimeout(rstate.fadeSafetyTimer);
     rstate.fadeSafetyTimer = setTimeout(() => {
       rstate.fadeSafetyTimer = null;
+      if (!rstate.fadeDownActive) return;
+      const now = Date.now();
+      const overCap = rstate.fadeHardDeadline && now >= rstate.fadeHardDeadline;
+      const waitingForVideo = !!(
+        rstate.applying ||
+        rstate.pending ||
+        rstate.fadeUpTimer ||
+        rstate.awaitingReanchor ||
+        (rstate.started && rstate.freezeArmed)
+      );
+      if (waitingForVideo && !overCap) {
+        scheduleFadeSafetyTick(SCENE_FADE_RESAMPLE_MS);
+        return;
+      }
       endSceneFade();
-    }, safetyMs);
+    }, Math.max(0, ms));
   }
 
   // Lift the fade veil to reveal the freshly generated scene, then run the
@@ -313,6 +372,8 @@
       return;
     }
     rstate.fadeDownActive = false;
+    rstate.fadeHardDeadline = 0;
+    rstate.awaitingReanchor = false;
     if (rstate.fadeSafetyTimer) { clearTimeout(rstate.fadeSafetyTimer); rstate.fadeSafetyTimer = null; }
     if (rstate.fadeUpTimer) { clearTimeout(rstate.fadeUpTimer); rstate.fadeUpTimer = null; }
     f.classList.remove("down");
@@ -323,6 +384,9 @@
   // stream continuously and have no discrete "new frame" boundary to reveal on.
   function scheduleSceneReveal(ms) {
     if (!rstate.fadeDownActive) return;
+    // Handoff: the scheduled reveal is the blend-family equivalent of an armed
+    // freeze reveal — the pre-fade's awaitReanchor promise is fulfilled here.
+    rstate.awaitingReanchor = false;
     if (rstate.fadeUpTimer) clearTimeout(rstate.fadeUpTimer);
     rstate.fadeUpTimer = setTimeout(() => {
       rstate.fadeUpTimer = null;
@@ -340,6 +404,8 @@
   // teardown / reset / disable so a mid-transition fade never sticks on screen.
   function clearSceneFade() {
     rstate.fadeDownActive = false;
+    rstate.fadeHardDeadline = 0;
+    rstate.awaitingReanchor = false;
     if (rstate.fadeUpTimer) { clearTimeout(rstate.fadeUpTimer); rstate.fadeUpTimer = null; }
     if (rstate.fadeSafetyTimer) { clearTimeout(rstate.fadeSafetyTimer); rstate.fadeSafetyTimer = null; }
     const f = getFadeEl();
@@ -396,6 +462,9 @@
     // A fresh stage is establishing — drop any prior black run so the new
     // stream's frames are judged on their own (and un-hide happens on reveal).
     clearBlackout();
+    // Handoff: from here on, the "hold the fade" duty belongs to the freeze
+    // reveal (freezeArmed). The pre-fade's awaitReanchor promise is fulfilled.
+    rstate.awaitingReanchor = false;
     rstate.freezeArmed = true;
     rstate.freezeArmTs = Date.now();
     if (rstate.freezeFallbackTimer) clearTimeout(rstate.freezeFallbackTimer);

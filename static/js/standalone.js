@@ -3009,14 +3009,18 @@
       RtLog.push("narrator", "\u25B8 MOVE TO \u00B7 bridging" + (destinationLabel ? " \u2192 " + destinationLabel : "") +
                  (narrated ? "" : " (silent \u2014 audio not unlocked / no agent)"));
     } catch (_) {}
-    // The fade lives on the ReactorRenderer's fade element (a full-viewport
-    // black veil at z-index 2). It works in both reactor + still modes since
-    // the veil sits over the still layer too — dimming the still is still a
-    // deliberate departure cue, not a strobe. Only skip when the fade element
-    // isn't available at all (e.g. an old build). Deliberately no isShowing()
-    // gate — freeze/blackout can transiently flip it to false during the very
-    // moment we want to fade, and silently dropping the fade there is exactly
-    // the "world keeps going and looks ridiculous" symptom this fixes.
+    // The fade only makes sense when the LIVE video would otherwise drift
+    // ridiculously during the trip. In still mode the scene is already static
+    // during a load, and the reactor's fade-lift machinery (freeze reveal /
+    // scheduleSceneReveal) never fires there — a fade would just sit stuck
+    // dark until the safety cap. Deliberately no isShowing() gate: freeze /
+    // blackout can transiently flip it to false during the very moment we want
+    // to fade (a recent re-anchor / stream sample), and silently dropping the
+    // fade there is exactly the "world keeps going" symptom this fixes.
+    if (Renderer.mode !== "reactor") {
+      try { RtLog.push("dim", "\u2298 MOVE TO fade skipped (still mode \u2014 no live drift)"); } catch (_) {}
+      return;
+    }
     const RR = window.ReactorRenderer;
     if (!RR || typeof RR.beginSceneFade !== "function") {
       try { RtLog.push("error", "\u26A0 MOVE TO fade unavailable (renderer facade too old)"); } catch (_) {}
@@ -3026,7 +3030,15 @@
     state.moveFadeTimer = setTimeout(() => {
       state.moveFadeTimer = null;
       try {
-        RR.beginSceneFade({ safetyMs: MOVE_TRANSITION_FADE_SAFETY_MS });
+        // awaitReanchor: hold the veil past the initial safety window until
+        // the fresh scene's re-anchor actually starts (armFreezeReveal or
+        // scheduleSceneReveal). Prevents the "fade up onto the freeze-buffer
+        // still, then video snaps in 10 s later" bug — video-to-video means
+        // we wait for the real video before revealing anything.
+        RR.beginSceneFade({
+          safetyMs: MOVE_TRANSITION_FADE_SAFETY_MS,
+          awaitReanchor: true,
+        });
         RtLog.push("status", "\u25CF MOVE TO \u00B7 scene faded to black");
       } catch (err) {
         console.warn("[standalone] beginSceneFade failed", err);
@@ -3035,6 +3047,13 @@
   }
   function cancelMoveTransition() {
     if (state.moveFadeTimer) { clearTimeout(state.moveFadeTimer); state.moveFadeTimer = null; }
+    // If the pre-fade already committed and no scene is coming (send error /
+    // reset), lift the veil ourselves so the player isn't stuck staring at
+    // black waiting on the hard cap.
+    try {
+      const RR = window.ReactorRenderer;
+      if (RR && typeof RR.endSceneFade === "function") RR.endSceneFade();
+    } catch (_) {}
   }
 
   // ------------------------------------------------------------------
