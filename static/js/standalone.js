@@ -6132,7 +6132,13 @@
     // the nearest interaction possibility and taps to dismiss an open bar.
     window.addEventListener("pointermove", onScanMove);
     window.addEventListener("pointerdown", onScanTap);
-    window.addEventListener("resize", repositionScanTags);
+    // Reflow overlays on resize AND orientation change (portrait ⇄ landscape):
+    // the scan dots and, if the camera is up, its target markers must re-map to
+    // the newly-shaped scene rect so nothing drifts when the phone is rotated.
+    window.addEventListener("resize", () => {
+      repositionScanTags();
+      if (state.touchMode === "aim") layoutPhotoTargets();
+    });
     el.forwardBtn.addEventListener("click", moveForward);
     el.tapeBtn.addEventListener("click", openTape);
     el.tapePlayPause.addEventListener("click", toggleTapePlay);

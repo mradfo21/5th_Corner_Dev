@@ -1503,6 +1503,18 @@ html.is-touch .touch-hint {
   background: rgba(20, 12, 4, 0.72);
 }
 
+/* ---------- Mobile camera: declutter + steady the reticle ----------
+   On a phone every detected subject printed its name under its bracket, so the
+   viewfinder filled with a jumble of overlapping labels ("SIGHTS / FENCE /
+   WEAPON …") that fought the scene. Show the name only for the subject you're
+   actually framing (the lock badge names it too) so the rest stay quiet
+   brackets. And snap the markers to their detected spot rather than easing
+   left/top on every finger move — the eased chase read as jitter under the
+   reticle on touch. */
+html.is-mobile .photo-target .pt-label { display: none; }
+html.is-mobile .photo-target.in-frame .pt-label { display: block; }
+html.is-mobile .photo-target { transition: opacity 0.2s ease; }
+
 /* Reticle glows while it "holds" a freshly captured specimen. */
 #touch-reticle.holding {
   border-color: rgba(255, 225, 170, 1);
@@ -1951,6 +1963,64 @@ html.is-touch .touch-hint {
   }
   .scan-tag.shown { opacity: 0.7; }
 }
+
+/* ---------- Mobile: collapse SCAN tags into pulsing green "beacons" --------
+   On a phone the wide scene is letterboxed into a narrow band, so the full-width
+   label pills all land in the same strip and pile up on top of each other
+   (unreadable + far too big). Collapse every tag to just its star icon sitting
+   behind a PULSING GREEN GLOW — the glow reads instantly as "interactable, tap
+   me" and draws the eye, while the object's NAME stays hidden until you tap it.
+   Tapping expands that one beacon into its labelled MOVE / INTERACT / TALK bar.
+   Desktop keeps the rich hover-to-reveal pills (pointer-primary, roomy canvas). */
+html.is-mobile #scan-tags .scan-tag {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  gap: 0;
+  justify-content: center;
+  border-radius: 50%;
+  border-color: rgba(110, 240, 165, 0.55);
+  background: rgba(6, 20, 13, 0.5);
+  box-shadow: 0 0 12px rgba(90, 240, 160, 0.4), inset 0 0 10px rgba(0, 0, 0, 0.4);
+  transition: width 0.2s ease, height 0.2s ease, padding 0.2s ease,
+    border-radius 0.2s ease, border-color 0.18s, box-shadow 0.18s,
+    transform 0.18s, opacity 0.2s, left 0.5s ease, top 0.5s ease;
+}
+/* Once the twinkle-in settles (JS adds .shown) the beacon starts its steady
+   green attention pulse and holds full opacity so it reads clearly. */
+html.is-mobile #scan-tags .scan-tag.shown {
+  opacity: 1;
+  animation: scan-beacon-pulse 1.9s ease-in-out infinite;
+}
+@keyframes scan-beacon-pulse {
+  0%, 100% { box-shadow: 0 0 8px rgba(90, 240, 160, 0.35), inset 0 0 10px rgba(0, 0, 0, 0.4); }
+  50%      { box-shadow: 0 0 22px rgba(90, 240, 160, 0.9), 0 0 34px rgba(90, 240, 160, 0.35), inset 0 0 10px rgba(0, 0, 0, 0.4); }
+}
+/* The name and the "+" affordance stay hidden while collapsed — the glowing dot
+   IS the affordance (a tap opens it). */
+html.is-mobile #scan-tags .scan-tag .scan-tag-label,
+html.is-mobile #scan-tags .scan-tag .scan-tag-act { display: none; }
+/* Recolor the soft halo behind the icon to the same green and center it under
+   the star; it breathes (scan-halo-breathe) so the glow visibly pulses. */
+html.is-mobile #scan-tags .scan-tag::before {
+  left: 50%;
+  width: 28px;
+  height: 28px;
+  background: radial-gradient(circle, rgba(90, 240, 160, 0.6) 0%, rgba(90, 240, 160, 0) 70%);
+}
+html.is-mobile #scan-tags .scan-star { font-size: 15px; }
+/* Tapped (acting): grow back into a labelled pill with the action icons so the
+   player can read what it is and choose MOVE / INTERACT / TALK. The attention
+   pulse stops and the frame settles to the neutral "opened" look. */
+html.is-mobile #scan-tags .scan-tag.acting {
+  width: auto;
+  height: auto;
+  padding: 5px 12px 5px 9px;
+  gap: 7px;
+  border-radius: 20px;
+  animation: none;
+}
+html.is-mobile #scan-tags .scan-tag.acting .scan-tag-label { display: inline; }
 
 /* ============================================================
    TALK overlay — a live, story-aware conversation panel.
@@ -3482,6 +3552,26 @@ body.agent-log-on #agent-log { display: flex; }
     right: calc(env(safe-area-inset-right, 0px) + 62px);
     width: 210px;
   }
+
+  /* Camera chrome: on a short screen the zoom/lock/hint readouts must sit just
+     above the (low) control cluster rather than up near the top HUD. Pull the
+     capture window in a touch, and slim the case-file strip so the sideways
+     screen keeps the scene clear. */
+  .touch-hint { bottom: calc(env(safe-area-inset-bottom, 0px) + 150px); font-size: 10px; }
+  .touch-zoom { bottom: calc(env(safe-area-inset-bottom, 0px) + 150px); }
+  .touch-lock { bottom: calc(env(safe-area-inset-bottom, 0px) + 172px); }
+  #touch-capture-frame { width: 150px; height: 150px; }
+  #investigations-tray {
+    left: calc(env(safe-area-inset-left, 0px) + 8px);
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 150px);
+    padding: 4px 5px;
+    gap: 3px;
+    background: rgba(8, 10, 14, 0.38);
+    max-width: 40vw;
+  }
+  #investigations-strip { flex-wrap: nowrap; overflow-x: auto; max-width: 36vw; gap: 4px; scrollbar-width: none; }
+  #investigations-strip::-webkit-scrollbar { display: none; }
+  .inv-thumb { width: 32px; height: 32px; flex: 0 0 auto; }
 }
 
 /* ============================================================
@@ -4032,23 +4122,50 @@ body.touch-aiming .touch-zoom { opacity: 0.9; }
   .scene, .reactor-video, .reactor-freeze { transition: opacity 1.5s ease-in-out !important; }
 }
 
-/* Phones: pull the receipt to the top-right corner (rail labels hide there) and
-   narrow it so it never crowds the prose or the rail. */
+/* Phones (EITHER orientation): the appraisal "receipt" used to open as a ~74vw
+   square pinned top-center — it swallowed the upper half of the screen (the
+   live scene included) on every shot, and did the same sprawled across a phone
+   held sideways. Dock it as a small developed photo in the TOP-LEFT blur zone,
+   capped in px so it stays compact in portrait AND landscape, well clear of the
+   scene and the top-right menu. Keyed on the JS-resolved `html.is-mobile` class
+   (not a width breakpoint) so it holds when the phone is rotated to horizontal —
+   a landscape phone is wider than the 720px query and would otherwise fall back
+   to the giant top-center card. */
+html.is-mobile #photo-receipt {
+  width: min(178px, 46vw);
+  top: calc(env(safe-area-inset-top, 0px) + 6px);
+  left: calc(env(safe-area-inset-left, 0px) + 8px);
+  transform: translateY(-10px);
+}
+html.is-mobile #photo-receipt.show { transform: translateY(0); }
+html.is-mobile #photo-receipt.leaving { transform: translateY(-10px) scale(0.985); }
+/* Tighten the overlaid readout so it stays legible in the smaller frame. */
+html.is-mobile .receipt-badge { padding: 4px 6px; font-size: 8.5px; }
+html.is-mobile .receipt-scrim { padding: 20px 7px 7px; }
+html.is-mobile .receipt-caption { font-size: 9px; margin-bottom: 3px; }
+html.is-mobile .receipt-item .ri-label,
+html.is-mobile .receipt-item .ri-pts { font-size: 10px; }
+html.is-mobile .receipt-item { padding: 1px 0; }
+html.is-mobile .receipt-subtotal { font-size: 10.5px; margin-top: 4px; padding-top: 4px; }
+html.is-mobile .receipt-stamp { font-size: clamp(16px, 5vw, 24px); border-width: 2px; padding: 1px 8px; }
+/* The "gathered evidence" pop is only a brief flourish — keep it modest on a
+   phone (any orientation) so it doesn't black out the scene as it files away. */
+html.is-mobile #evidence-card { width: min(44vw, 168px); top: 38%; }
+/* Dossier HUD: a single slim badge in the top blur zone so it never bleeds onto
+   the picture, whether the phone is upright or sideways. */
+html.is-mobile #evidence-hud {
+  top: calc(env(safe-area-inset-top, 0px) + 6px);
+  padding: 3px 10px 4px;
+  gap: 2px;
+  background: rgba(6, 10, 8, 0.42);
+}
+html.is-mobile #evidence-hud .ev-main { gap: 5px; }
+html.is-mobile #evidence-hud .ev-total { font-size: 17px; }
+html.is-mobile #evidence-hud .ev-label { font-size: 8px; letter-spacing: 0.1em; }
+html.is-mobile #evidence-hud .ev-rank { font-size: 8px; padding: 1px 4px; }
+html.is-mobile #evidence-hud .ev-case { gap: 4px; }
+html.is-mobile #evidence-hud .ev-bar { width: 54px; }
+
 @media (max-width: 720px) {
-  #photo-receipt { width: min(320px, 74vw); top: calc(env(safe-area-inset-top, 0px) + 40px); }
-  /* Dossier HUD: tighten it into a single slim badge in the top blur zone so it
-     never bleeds onto the picture. */
-  #evidence-hud {
-    top: calc(env(safe-area-inset-top, 0px) + 6px);
-    padding: 3px 10px 4px;
-    gap: 2px;
-    background: rgba(6, 10, 8, 0.42);
-  }
-  #evidence-hud .ev-main { gap: 5px; }
-  #evidence-hud .ev-total { font-size: 17px; }
-  #evidence-hud .ev-label { font-size: 8px; letter-spacing: 0.1em; }
-  #evidence-hud .ev-rank { font-size: 8px; padding: 1px 4px; }
-  #evidence-hud .ev-case { gap: 4px; }
-  #evidence-hud .ev-bar { width: 54px; }
   .touch-zoom { bottom: calc(env(safe-area-inset-bottom, 0px) + 250px); }
 }
