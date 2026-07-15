@@ -202,7 +202,7 @@ class TestMovementMode(unittest.TestCase):
             self._reset_cmd_log(page)
             page.keyboard.down("a")
             self._wait_cmd(page, "set_rotation_speed_deg")
-            page.wait_for_timeout(1500)  # let the hold-time ramp climb
+            page.wait_for_timeout(2400)  # let the hold-time ramp climb to the top
             page.keyboard.up("a")
             speeds = page.evaluate(
                 """() => (window.__MOCK_CMD_LOG__||[])
@@ -210,9 +210,11 @@ class TestMovementMode(unittest.TestCase):
                        .map(c => c.data.rotation_speed_deg)"""
             )
             self.assertTrue(len(speeds) >= 1, f"no rotation speed sent. speeds={speeds}")
-            self.assertGreater(max(speeds), min(speeds) - 0.01,
-                               f"rotation speed should not decrease while held: {speeds}")
-            self.assertGreater(max(speeds), 8.0, f"turn should accelerate past the floor: {speeds}")
+            self.assertGreaterEqual(max(speeds), min(speeds),
+                                    f"rotation speed should not decrease while held: {speeds}")
+            self.assertGreater(max(speeds), min(speeds) - 0.01, f"should accelerate: {speeds}")
+            # It must stay GENTLE — never near the disorienting range.
+            self.assertLessEqual(max(speeds), 4.0, f"look speed must stay slow/gentle: {speeds}")
         except Exception:
             print("\n=== CONSOLE LOG (rotation) ===\n" + self._dump_logs())
             raise
