@@ -1954,48 +1954,41 @@
   }
 
   // ------------------------------------------------------------------
-  // Movement joystick — the realtime "EXPLORE" instrument.
+  // Look joystick — the realtime "LOOK" instrument (FPS camera look).
   //
-  // Turns the LIVE world-model video into a place you can actually walk around
-  // in. It drives LingBot World 2's NATIVE navigable-video control axes (the
-  // real thing — a `set_prompt` "camera moves" beat does not move the camera):
+  // Given the current world models, forward/lateral TRANSLATION breaks the
+  // illusion (the scene stretches/melts instead of dollying through space), so
+  // this drives LingBot World 2's rotation-only axes — pure first-person LOOK:
   //
-  //   • set_move_longitudinal  forward / back  (W / S · stick up-down)
-  //   • set_look_horizontal     turn left/right (A / D · ← → · stick left-right)
-  //   • set_move_lateral        strafe          (Q / E)
-  //   • set_look_vertical       look up/down     (↑ / ↓)
-  //   • set_rotation_speed_deg  turn speed — ramps with hold time / stick push
-  //                             (this is where "acceleration" is native)
+  //   • set_look_horizontal   yaw:  look left / right (A / D · ← → · stick x)
+  //   • set_look_vertical     pitch: look up / down   (W / S · ↑ / ↓ · stick y)
+  //   • set_rotation_speed_deg how fast the look turns — ramps with hold time /
+  //                            stick push (this is where "acceleration" is native)
   //
-  // These axes are PERSISTENT: the model holds each value across chunks until we
-  // change it, so we set on press / stick-push and idle on release (a matching
-  // keyup, or the world keeps moving). The joystick is a drive+steer stick:
-  // up/down moves, left/right turns, so a single stick (incl. touch) can explore
-  // freely; the keyboard adds strafing (Q/E) and pitch (↑/↓). Models that don't
-  // expose these axes (Helios and other blend-family) fall back to a prompt
-  // camera nudge. Only active in realtime video mode. Every command shows up in
-  // the WORLD MODEL log (L) — the same reactor surface LingBot World 2 reads.
+  // No set_move_longitudinal / set_move_lateral is ever sent — we do NOT walk.
+  // The look axes are PERSISTENT: the model holds each value across chunks until
+  // changed, so we set on press / stick-push and idle on release (a matching
+  // keyup, or the camera keeps panning). One stick (incl. touch) looks in any
+  // direction. Models without these axes (Helios / blend-family) fall back to a
+  // prompt look-nudge. Only active in realtime video mode. Every command shows
+  // in the WORLD MODEL log (L) — the same reactor surface LingBot World 2 reads.
   // ------------------------------------------------------------------
   const Movement = (function () {
-    const RAMP_MS = 2000;            // turn acceleration: time held to reach top speed
+    const RAMP_MS = 2000;            // look acceleration: time held to reach top speed
     const DEADZONE = 0.2;            // ignore tiny stick wiggle near the center
     const TICK_MS = 90;              // visual + drive loop cadence
-    const ROT_MIN = 4;               // deg/latent-frame at the start of a turn
-    const ROT_MAX = 13;              // deg/latent-frame at full turn (0..30 allowed)
+    const ROT_MIN = 4;               // deg/latent-frame at the start of a look (gentle)
+    const ROT_MAX = 13;              // deg/latent-frame at full look (0..30 allowed)
     const FALLBACK_SEND_MS = 950;    // prompt-fallback (non-LingBot) re-steer cadence
 
-    // Keyboard → semantic drive tokens. WASD drives (A/D turn), Q/E strafe,
-    // arrows look (←/→ turn, ↑/↓ pitch). null = not a movement key.
+    // Keyboard → semantic look tokens. W/S (and ↑/↓) look up/down; A/D (and ←/→)
+    // look left/right. null = not a look key. (Q/E no longer strafe.)
     function keyFor(key) {
       switch ((key || "").toLowerCase()) {
-        case "w": return "fwd";
-        case "s": return "back";
-        case "a": case "arrowleft": return "turnL";
-        case "d": case "arrowright": return "turnR";
-        case "q": return "strafeL";
-        case "e": return "strafeR";
-        case "arrowup": return "pitchU";
-        case "arrowdown": return "pitchD";
+        case "w": case "arrowup": return "lookU";
+        case "s": case "arrowdown": return "lookD";
+        case "a": case "arrowleft": return "lookL";
+        case "d": case "arrowright": return "lookR";
         default: return null;
       }
     }
@@ -2010,8 +2003,8 @@
     let rampStart = 0;
     let loopTimer = null;
     let warnedNotReady = false;
-    // Last axis values pushed to the model, so we only send on change.
-    const sent = { longitudinal: "idle", lateral: "idle", lookH: "idle", lookV: "idle", rot: null };
+    // Last look-axis values pushed to the model, so we only send on change.
+    const sent = { lookH: "idle", lookV: "idle", rot: null };
     let lastFallbackTs = 0;
     let lastFallbackKey = null;
 
@@ -2025,43 +2018,39 @@
 
     function setVar(node, name, val) { if (node) node.style.setProperty(name, val); }
 
-    // Compose the desired axis state from the keyboard + pointer inputs. Keys win
-    // per-axis where non-idle; the pointer supplies drive + turn otherwise.
+    // Compose the desired LOOK state from the keyboard + pointer inputs. Keys win
+    // per-axis where non-idle; the pointer supplies look otherwise. No
+    // translation axes — this is rotation-only.
     function compose() {
       // Keyboard contribution.
-      let lon = keys.has("fwd") && !keys.has("back") ? "forward"
-              : keys.has("back") && !keys.has("fwd") ? "back" : "idle";
-      let lat = keys.has("strafeL") && !keys.has("strafeR") ? "strafe_left"
-              : keys.has("strafeR") && !keys.has("strafeL") ? "strafe_right" : "idle";
-      let lh  = keys.has("turnL") && !keys.has("turnR") ? "left"
-              : keys.has("turnR") && !keys.has("turnL") ? "right" : "idle";
-      let lv  = keys.has("pitchU") && !keys.has("pitchD") ? "up"
-              : keys.has("pitchD") && !keys.has("pitchU") ? "down" : "idle";
-      const keyTurning = lh !== "idle";
-      // Pointer contribution (drive + steer): up/down move, left/right turn.
-      let ptrTurnMag = 0;
+      let lh  = keys.has("lookL") && !keys.has("lookR") ? "left"
+              : keys.has("lookR") && !keys.has("lookL") ? "right" : "idle";
+      let lv  = keys.has("lookU") && !keys.has("lookD") ? "up"
+              : keys.has("lookD") && !keys.has("lookU") ? "down" : "idle";
+      const keyLooking = lh !== "idle" || lv !== "idle";
+      // Pointer contribution: stick x = yaw, stick y = pitch.
+      let ptrMag = 0;
       if (pointerActive) {
-        if (lon === "idle") lon = vec.y < -DEADZONE ? "forward" : vec.y > DEADZONE ? "back" : "idle";
-        if (lh === "idle") {
-          lh = vec.x < -DEADZONE ? "left" : vec.x > DEADZONE ? "right" : "idle";
-          if (lh !== "idle") ptrTurnMag = Math.min(1, (Math.abs(vec.x) - DEADZONE) / (1 - DEADZONE));
-        }
+        if (lh === "idle") lh = vec.x < -DEADZONE ? "left" : vec.x > DEADZONE ? "right" : "idle";
+        if (lv === "idle") lv = vec.y < -DEADZONE ? "up" : vec.y > DEADZONE ? "down" : "idle";
+        ptrMag = Math.min(1, Math.max(0, (mag - DEADZONE) / (1 - DEADZONE)));
       }
-      // Turn speed (deg/frame): acceleration comes from key hold-time ramp, or
-      // from how far the stick is pushed sideways.
+      // Look speed (deg/frame): acceleration from key hold-time ramp, or from how
+      // far the stick is pushed.
       let rot = null;
-      if (lh !== "idle") {
-        if (keyTurning) {
+      const looking = lh !== "idle" || lv !== "idle";
+      if (looking) {
+        if (keyLooking) {
           const ramp = Math.min(1, (Date.now() - rampStart) / RAMP_MS);
           rot = ROT_MIN + (ROT_MAX - ROT_MIN) * ramp;
         } else {
-          rot = ROT_MIN + (ROT_MAX - ROT_MIN) * ptrTurnMag;
+          rot = ROT_MIN + (ROT_MAX - ROT_MIN) * ptrMag;
         }
       }
-      return { longitudinal: lon, lateral: lat, lookH: lh, lookV: lv, rot: rot, turnMag: ptrTurnMag };
+      return { lookH: lh, lookV: lv, rot: rot };
     }
 
-    // Push changed axes to the world model (native LingBot control).
+    // Push changed look axes to the world model (native LingBot control).
     function driveNative(st) {
       const R = window.ReactorRenderer;
       let moved = false;
@@ -2071,8 +2060,6 @@
         R.setAxis(axis, val); // logged authoritatively via the command_sent event
         if (val !== "idle") moved = true;
       };
-      push("longitudinal", st.longitudinal);
-      push("lateral", st.lateral);
       push("lookH", st.lookH);
       push("lookV", st.lookV);
       if (st.rot != null && Math.round(st.rot) !== Math.round(sent.rot == null ? -1 : sent.rot)) {
@@ -2081,11 +2068,11 @@
       }
       if (moved && !window.ReactorRenderer.isShowing() && !warnedNotReady) {
         warnedNotReady = true;
-        showRendererToast("Exploring \u2014 the live world catches up in a moment");
+        showRendererToast("Looking \u2014 the live world catches up in a moment");
       }
     }
 
-    // Fallback for models without native movement axes: nudge with a prompt.
+    // Fallback for models without native look axes: nudge with a prompt.
     function driveFallback(st, label) {
       const now = Date.now();
       if (label === "still") return;
@@ -2094,35 +2081,25 @@
       const phrase = fallbackPhrase(st);
       if (!phrase) return;
       const ok = Renderer.steerMovement("Camera: " + phrase +
-        ". Smooth continuous first-person motion, the environment flowing past.");
-      if (ok) RtLog.push("prompt", "\u25B8 camera \u00B7 " + label.toLowerCase());
-      else if (!warnedNotReady) { warnedNotReady = true; showRendererToast("Live video is warming up \u2014 explore in a moment"); }
+        ". The viewpoint stays in place and only turns to look, a smooth first-person pan.");
+      if (ok) RtLog.push("prompt", "\u25B8 look \u00B7 " + label.toLowerCase());
+      else if (!warnedNotReady) { warnedNotReady = true; showRendererToast("Live video is warming up \u2014 look in a moment"); }
     }
     function fallbackPhrase(st) {
       const p = [];
-      if (st.longitudinal === "forward") p.push("the camera pushes forward, deeper into the scene");
-      else if (st.longitudinal === "back") p.push("the camera pulls backward, retreating");
-      if (st.lookH === "left") p.push("turning to look left");
-      else if (st.lookH === "right") p.push("turning to look right");
-      if (st.lateral === "strafe_left") p.push("sliding to the left");
-      else if (st.lateral === "strafe_right") p.push("sliding to the right");
-      if (st.lookV === "up") p.push("tilting up");
-      else if (st.lookV === "down") p.push("tilting down");
+      if (st.lookV === "up") p.push("tilting the view upward to look up");
+      else if (st.lookV === "down") p.push("tilting the view downward to look down");
+      if (st.lookH === "left") p.push("turning to look to the left");
+      else if (st.lookH === "right") p.push("turning to look to the right");
       return p.join(", ");
     }
 
-    // A short human label for the readout + log from the composed state.
+    // A short human label for the readout + log from the composed look state.
     function actionLabel(st) {
-      const p = [];
-      if (st.longitudinal === "forward") p.push("FWD");
-      else if (st.longitudinal === "back") p.push("BACK");
-      if (st.lookH === "left") p.push("TURN L");
-      else if (st.lookH === "right") p.push("TURN R");
-      if (st.lateral === "strafe_left") p.push("STRAFE L");
-      else if (st.lateral === "strafe_right") p.push("STRAFE R");
-      if (st.lookV === "up") p.push("LOOK UP");
-      else if (st.lookV === "down") p.push("LOOK DN");
-      return p.length ? p.join(" + ") : "still";
+      const v = st.lookV === "up" ? "UP" : st.lookV === "down" ? "DOWN" : "";
+      const h = st.lookH === "left" ? "LEFT" : st.lookH === "right" ? "RIGHT" : "";
+      const dir = [v, h].filter(Boolean).join("-");
+      return dir ? "LOOK " + dir : "still";
     }
 
     function updateVisual(st) {
@@ -2131,14 +2108,12 @@
       // active axes so the knob shows the drive direction.
       let nx = vec.x, ny = vec.y;
       if (!pointerActive) {
-        nx = st.lookH === "left" ? -0.85 : st.lookH === "right" ? 0.85
-           : st.lateral === "strafe_left" ? -0.85 : st.lateral === "strafe_right" ? 0.85 : 0;
-        ny = st.longitudinal === "forward" ? -0.85 : st.longitudinal === "back" ? 0.85
-           : st.lookV === "up" ? -0.6 : st.lookV === "down" ? 0.6 : 0;
+        nx = st.lookH === "left" ? -0.85 : st.lookH === "right" ? 0.85 : 0;
+        ny = st.lookV === "up" ? -0.85 : st.lookV === "down" ? 0.85 : 0;
       }
       setVar(el.moveNub, "--mx", (nx * radius).toFixed(1) + "px");
       setVar(el.moveNub, "--my", (ny * radius).toFixed(1) + "px");
-      const moving = st.longitudinal !== "idle" || st.lateral !== "idle" || st.lookH !== "idle" || st.lookV !== "idle";
+      const moving = st.lookH !== "idle" || st.lookV !== "idle";
       const thrust = pointerActive ? mag : (moving ? Math.min(1, (Date.now() - rampStart) / RAMP_MS * 0.6 + 0.4) : 0);
       setVar(el.movePad, "--thrust", (engaged && moving ? thrust : 0).toFixed(3));
       let deg = 0;
@@ -2147,12 +2122,12 @@
       const ticks = el.movePad.querySelectorAll(".move-tick");
       ticks.forEach((t) => t.classList.remove("lit"));
       const lit = (cls) => { const n = el.movePad.querySelector(".move-tick-" + cls); if (n) n.classList.add("lit"); };
-      if (st.longitudinal === "forward") lit("n");
-      if (st.longitudinal === "back") lit("s");
-      if (st.lookH === "left" || st.lateral === "strafe_left") lit("w");
-      if (st.lookH === "right" || st.lateral === "strafe_right") lit("e");
+      if (st.lookV === "up") lit("n");
+      if (st.lookV === "down") lit("s");
+      if (st.lookH === "left") lit("w");
+      if (st.lookH === "right") lit("e");
       const label = actionLabel(st);
-      if (el.moveReadout) el.moveReadout.textContent = moving ? label : "EXPLORE";
+      if (el.moveReadout) el.moveReadout.textContent = moving ? label : "LOOK";
       if (el.moveNub) el.moveNub.setAttribute("aria-valuetext", moving ? label.toLowerCase() : "centered");
     }
 
@@ -2182,12 +2157,13 @@
     }
 
     function stopAll() {
-      // Idle every axis so the camera comes to rest (persistent state!).
+      // Idle every axis so the camera comes to rest (persistent state!). We call
+      // stopMotion (idles ALL axes incl. any translation) so nothing lingers.
       if (nativeMotion() && window.ReactorRenderer.stopMotion) window.ReactorRenderer.stopMotion();
-      else if (enabled() && (sent.longitudinal !== "idle" || sent.lookH !== "idle" || sent.lateral !== "idle" || sent.lookV !== "idle")) {
-        Renderer.steerMovement("Camera: the viewpoint eases to a halt and holds steady, the scene settling into a calm, stable shot.");
+      else if (enabled() && (sent.lookH !== "idle" || sent.lookV !== "idle")) {
+        Renderer.steerMovement("Camera: the view holds steady and stops turning, settling into a calm, stable shot.");
       }
-      sent.longitudinal = "idle"; sent.lateral = "idle"; sent.lookH = "idle"; sent.lookV = "idle";
+      sent.lookH = "idle"; sent.lookV = "idle";
       lastFallbackKey = null;
     }
 
@@ -2201,7 +2177,7 @@
       stopLoop();
       if (el.movePad) el.movePad.classList.remove("engaged");
       if (el.moveNub) el.moveNub.classList.remove("dragging");
-      updateVisual({ longitudinal: "idle", lateral: "idle", lookH: "idle", lookV: "idle" });
+      updateVisual({ lookH: "idle", lookV: "idle" });
       stopAll();
       RtLog.push("dim", "\u25A0 camera \u00B7 rest");
       // Regenerate + reveal the OCR hotspots once the view settles.
@@ -2224,7 +2200,7 @@
       mag = Math.min(1, dist / radius);
     }
     function onPointerDown(e) {
-      if (!enabled()) { showRendererToast("Switch to LIVE video to explore (G)"); return; }
+      if (!enabled()) { showRendererToast("Switch to LIVE video to look around (G)"); return; }
       measure();
       pointerActive = true;
       pointerId = e.pointerId;
@@ -6037,11 +6013,12 @@
       if (e.key.toLowerCase() === "r") resetGame();
       return;
     }
-    // Movement joystick owns the drive keys while realtime video is on — hold to
-    // travel, release to stop: W/S move fwd/back, A/D (and ←/→) turn, Q/E strafe,
-    // ↑/↓ look up/down. This intentionally reassigns those keys in LIVE mode only
-    // (D no longer toggles the debug log — use the DEBUG button; advance is still
-    // on Space / the play button). In still mode Movement is disabled and the
+    // Look joystick owns the look keys while realtime video is on — hold to look,
+    // release to stop: W/S (and ↑/↓) look up/down, A/D (and ←/→) look left/right.
+    // (Given the current world models we LOOK only — no walking — since forward
+    // translation breaks the illusion.) This reassigns those keys in LIVE mode
+    // only (D no longer toggles the debug log — use the DEBUG button; advance is
+    // still on Space / the play button). In still mode this is disabled and the
     // keys keep their old meaning.
     if (Movement.enabled() && !e.ctrlKey && !e.metaKey && !e.altKey) {
       const mk = Movement.keyFor(e.key);
