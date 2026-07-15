@@ -202,16 +202,16 @@
       </span>
     </button>
 
-    <!-- Movement joystick — the centerpiece of realtime "explore" mode. A 360°
-         analog stick that steers the LIVE world-model video like a first-person
-         camera: drag it (mouse or touch) in any direction to move that way, and
-         the further you push the faster you go (acceleration). W / A / S / D
-         (or the arrow keys) drive it on a keyboard. It sends camera-movement
-         re-steers to the running world model (a prompt hot-swap on the next
-         chunk — no full turn, no new guide image), so the video becomes a place
-         you can walk around in. Shown only in realtime video mode (there's
-         nothing to steer on a still image); ACT slides to the LEFT to make room
-         for it in the center, and PHOTO sits to the right. -->
+    <!-- Look joystick — the centerpiece of realtime "look" mode. A 360° analog
+         stick that turns the LIVE world-model camera like a first-person view:
+         drag it (mouse or touch) to look that way, and the further you push the
+         faster it pans (acceleration). W/S (or ↑/↓) look up/down, A/D (or ←/→)
+         look left/right on a keyboard. It drives LingBot World 2's native look
+         axes (set_look_horizontal / set_look_vertical) — rotation only, no
+         walking, because forward translation breaks the illusion on the current
+         world models. Shown only in realtime video mode (there's nothing to
+         steer on a still image); ACT slides to the LEFT to make room for it in
+         the center, and PHOTO sits to the right. -->
     <div id="move-pad" class="move-pad" aria-hidden="true">
       <div class="move-grid" aria-hidden="true"></div>
       <div class="move-ring" aria-hidden="true">
@@ -222,14 +222,14 @@
       </div>
       <div class="move-thrust" aria-hidden="true"></div>
       <div id="move-nub" class="move-nub" role="slider" tabindex="0"
-           aria-label="Movement joystick — drag to explore the live world, or use W A S D"
+           aria-label="Look joystick — drag to look around the live world, or use W A S D"
            aria-valuetext="centered"
-           title="Explore — drag to move through the world · W A S D · further = faster">
+           title="Look — drag to look around · W/S up-down · A/D left-right · further = faster">
         <span class="move-arrow" aria-hidden="true"></span>
         <span class="move-core" aria-hidden="true"></span>
       </div>
       <div class="move-readout" aria-hidden="true">
-        <span class="move-head">EXPLORE</span>
+        <span class="move-head">LOOK</span>
       </div>
     </div>
 
