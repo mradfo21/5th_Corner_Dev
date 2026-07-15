@@ -1503,6 +1503,18 @@ html.is-touch .touch-hint {
   background: rgba(20, 12, 4, 0.72);
 }
 
+/* ---------- Mobile camera: declutter + steady the reticle ----------
+   On a phone every detected subject printed its name under its bracket, so the
+   viewfinder filled with a jumble of overlapping labels ("SIGHTS / FENCE /
+   WEAPON …") that fought the scene. Show the name only for the subject you're
+   actually framing (the lock badge names it too) so the rest stay quiet
+   brackets. And snap the markers to their detected spot rather than easing
+   left/top on every finger move — the eased chase read as jitter under the
+   reticle on touch. */
+html.is-mobile .photo-target .pt-label { display: none; }
+html.is-mobile .photo-target.in-frame .pt-label { display: block; }
+html.is-mobile .photo-target { transition: opacity 0.2s ease; }
+
 /* Reticle glows while it "holds" a freshly captured specimen. */
 #touch-reticle.holding {
   border-color: rgba(255, 225, 170, 1);
@@ -1951,6 +1963,42 @@ html.is-touch .touch-hint {
   }
   .scan-tag.shown { opacity: 0.7; }
 }
+
+/* ---------- Mobile: collapse SCAN tags into compact star "dots" ----------
+   On a phone the wide scene is letterboxed into a narrow band, so full-width
+   label pills all land in the same strip and pile up on top of each other
+   (unreadable). Collapse every tag to a small twinkling dot that shows only its
+   star; tapping it expands that one tag back into its labelled action bar. The
+   field stays legible and you reveal one thing at a time. Desktop keeps the
+   rich hover-to-reveal pills (pointer-primary, roomy landscape canvas). */
+html.is-mobile #scan-tags .scan-tag {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  gap: 0;
+  justify-content: center;
+  border-radius: 50%;
+  transition: width 0.2s ease, height 0.2s ease, padding 0.2s ease,
+    border-radius 0.2s ease, border-color 0.18s, box-shadow 0.18s,
+    transform 0.18s, opacity 0.2s, left 0.5s ease, top 0.5s ease;
+}
+html.is-mobile #scan-tags .scan-tag.shown { opacity: 0.86; }
+/* The label and the "+" affordance are hidden while collapsed — the dot IS the
+   affordance (a tap opens it). */
+html.is-mobile #scan-tags .scan-tag .scan-tag-label,
+html.is-mobile #scan-tags .scan-tag .scan-tag-act { display: none; }
+html.is-mobile #scan-tags .scan-tag::before { left: 50%; }
+html.is-mobile #scan-tags .scan-star { font-size: 14px; }
+/* Tapped (acting): grow back into a labelled pill with the action icons so the
+   player can read what it is and choose MOVE / INTERACT / TALK. */
+html.is-mobile #scan-tags .scan-tag.acting {
+  width: auto;
+  height: auto;
+  padding: 5px 12px 5px 9px;
+  gap: 7px;
+  border-radius: 20px;
+}
+html.is-mobile #scan-tags .scan-tag.acting .scan-tag-label { display: inline; }
 
 /* ============================================================
    TALK overlay — a live, story-aware conversation panel.
@@ -4032,10 +4080,32 @@ body.touch-aiming .touch-zoom { opacity: 0.9; }
   .scene, .reactor-video, .reactor-freeze { transition: opacity 1.5s ease-in-out !important; }
 }
 
-/* Phones: pull the receipt to the top-right corner (rail labels hide there) and
-   narrow it so it never crowds the prose or the rail. */
+/* Phones: the appraisal "receipt" used to open as a ~74vw square pinned to the
+   top-center — it swallowed the whole upper half of the screen (including the
+   live scene band) every time you took a shot. Dock it as a small developed
+   photo in the TOP-LEFT blur zone instead, well clear of the central scene and
+   the top-right menu, so you can still watch the world while a shot tallies. */
 @media (max-width: 720px) {
-  #photo-receipt { width: min(320px, 74vw); top: calc(env(safe-area-inset-top, 0px) + 40px); }
+  #photo-receipt {
+    width: min(178px, 46vw);
+    top: calc(env(safe-area-inset-top, 0px) + 6px);
+    left: calc(env(safe-area-inset-left, 0px) + 8px);
+    transform: translateY(-10px);
+  }
+  #photo-receipt.show { transform: translateY(0); }
+  #photo-receipt.leaving { transform: translateY(-10px) scale(0.985); }
+  /* Tighten the overlaid readout so it stays legible in the smaller frame. */
+  .receipt-badge { padding: 4px 6px; font-size: 8.5px; }
+  .receipt-scrim { padding: 20px 7px 7px; }
+  .receipt-caption { font-size: 9px; margin-bottom: 3px; }
+  .receipt-item .ri-label,
+  .receipt-item .ri-pts { font-size: 10px; }
+  .receipt-item { padding: 1px 0; }
+  .receipt-subtotal { font-size: 10.5px; margin-top: 4px; padding-top: 4px; }
+  .receipt-stamp { font-size: clamp(16px, 5vw, 24px); border-width: 2px; padding: 1px 8px; }
+  /* The "gathered evidence" pop is only a brief flourish — keep it modest on a
+     phone so it doesn't black out the scene as it flies to the case file. */
+  #evidence-card { width: min(44vw, 168px); top: 38%; }
   /* Dossier HUD: tighten it into a single slim badge in the top blur zone so it
      never bleeds onto the picture. */
   #evidence-hud {
