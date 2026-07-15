@@ -3006,7 +3006,7 @@
       console.warn("[standalone] Narrator.transition failed", err);
     }
     try {
-      RtLog.push("narrator", "\u25B8 MOVE TO \u00B7 bridging" + (destinationLabel ? " \u2192 " + destinationLabel : "") +
+      RtLog.push("narrator", "\u25B8 MOVE TO \u00B7 bridge + dark truth" + (destinationLabel ? " \u2192 " + destinationLabel : "") +
                  (narrated ? "" : " (silent \u2014 audio not unlocked / no agent)"));
     } catch (_) {}
     // The fade only makes sense when the LIVE video would otherwise drift
@@ -5592,6 +5592,13 @@
       if (el.narratorBtn) el.narratorBtn.classList.add("on");
       for (const seg of segments) {
         if (myGen !== gen || !seg || !(seg.text || "").trim()) continue;
+        // Optional inter-line pause — used by transition() to hold a beat of
+        // silence between the bridging line and the "dark truth" that follows.
+        const pause = seg && typeof seg._preDelayMs === "number" ? seg._preDelayMs : 0;
+        if (pause > 0) {
+          await new Promise((r) => setTimeout(r, pause));
+          if (myGen !== gen) break;
+        }
         await speakSegment(seg, myGen);
         if (myGen !== gen) break;
       }
@@ -5672,27 +5679,82 @@
       narrate({ multi: false, focus: "You have just died here. One short, final line about your end and what you never found out." });
     }
 
-    // A short bridging line fired the INSTANT the player commits to a MOVE TO,
-    // so the narrator carries the black loading beat while the next scene
-    // generates. Any prior narration is stopped so this one runs "faster" — it
-    // starts immediately, doesn't queue behind an ongoing multi-line worldbuild,
-    // and stays a single line to fit the transition window. Returns true when
-    // it actually kicked a narration off (used by callers to log/diagnose).
+    // TWO narrator lines fired when the player commits to a MOVE TO, back-to-
+    // back with a 1 s beat of silence between them, so the narrator carries
+    // the black loading beat while the next scene generates instead of one
+    // short line and a lot of silence.
+    //   1. BRIDGING LINE — the trip in motion, world closing behind them,
+    //      next place looming (matches the fade-to-black feel).
+    //   2. DARK TRUTH — one buried confession about why the REPORTER is
+    //      really out here: the private motive they haven't admitted, the
+    //      thing pulling them into this on purpose. Different every trip —
+    //      the LLM keeps it story-aware from focus + state.
+    // Both scripts are fetched in PARALLEL so the second line is ready by the
+    // time we need it, then played sequentially with a 1 s inter-line pause.
     // Runs the AJAX + agent handshake even if state.audioUnlocked was still
     // false at call time: MOVE TO's own click IS a user gesture (pointerdown
-    // unlocks audio first, then the button's click fires and lands here), so a
-    // stale audioUnlocked flag mustn't silently swallow the bridging line.
+    // unlocks audio first, then the button's click fires and lands here), so
+    // a stale audioUnlocked flag mustn't silently swallow the narration.
+    const TRANSITION_INTERLINE_PAUSE_MS = 1000;
     function transition(destination) {
       if (state.gameOver || Talk.isOpen()) return false;
-      // Drop any in-flight narration so this bridging line runs NOW, not after
-      // the previous one finishes reading itself out.
+      // Drop any in-flight narration so this run starts NOW, not after the
+      // previous one finishes reading itself out.
       stop();
-      const dest = (destination || "").toString().trim().slice(0, 80);
-      const focus = dest
-        ? "The player has just committed to travel to the " + dest + ". Speak ONE short, tense bridging line — the trip in motion, the world closing behind them, the next place looming — as the scene fades to black."
-        : "The player has just committed to travel to a new location. Speak ONE short, tense bridging line — the trip in motion, the world closing behind them, the next place looming — as the scene fades to black.";
-      narrate({ multi: false, focus: focus });
+      // Fire the async two-line sequence; don't block the caller.
+      _runTransition(destination);
       return true;
+    }
+    async function _runTransition(destination) {
+      const myGen = ++gen;
+      busy = true;
+      if (el.narratorBtn) el.narratorBtn.classList.add("on");
+      show("narrator", "\u2026");
+      Sound.talkOpen();
+      const dest = (destination || "").toString().trim().slice(0, 80);
+      const bridgeFocus = dest
+        ? "The player has just committed to travel to the " + dest + ". Speak ONE short, tense bridging line \u2014 the trip in motion, the world closing behind them, the next place looming \u2014 as the scene fades to black."
+        : "The player has just committed to travel to a new location. Speak ONE short, tense bridging line \u2014 the trip in motion, the world closing behind them, the next place looming \u2014 as the scene fades to black.";
+      const truthFocus =
+        "REVEAL A DARK TRUTH. Speak ONE short first-person confession from the reporter \u2014 the BURIED reason they're really out here. Not the assignment, not the cover story: the private motive they haven't admitted to themselves. A guilt, a debt, a person they lost, a thing they did, a thing they're chasing that will destroy them. Concrete and specific to this world's premise + recent events. Ominous, quiet, honest. First person, one short sentence, no meta.";
+      AgentLog.push("narrator", "transition\u2026", "bridge + dark truth");
+      try {
+        // One request carries BOTH focuses (follow_focus is appended server-
+        // side to the primary script's segments) so we never hit the per-IP
+        // rate limit on the second line.
+        const res = await postJSON("/api/narrator/worldbuild", {
+          multi: false, speak: false,
+          focus: bridgeFocus,
+          follow_focus: truthFocus,
+        });
+        if (myGen !== gen) return;
+        agentCfg = (res && res.agent) || agentCfg;
+        agentAvailable = !!(res && res.agent_available);
+        const raw = (res && res.segments) || [];
+        // First segment is the BRIDGE, second is the DARK TRUTH; only the
+        // dark-truth line carries the inter-line pause so there's a beat of
+        // silence between the two.
+        const segs = raw.slice(0, 2).map((s, i) => (
+          i === 0 ? s : Object.assign({}, s, { _preDelayMs: TRANSITION_INTERLINE_PAUSE_MS })
+        ));
+        AgentLog.push("dim", "transition \u2192 " + segs.length + " line(s)", agentAvailable ? "agent voice" : "subtitles");
+        if (!segs.length) {
+          show("narrator", "The channel is silent.");
+          setTimeout(() => { if (myGen === gen) hide(); }, 1800);
+          return;
+        }
+        busy = false;
+        await play(segs, myGen);
+      } catch (e) {
+        AgentLog.push("error", "transition failed", AgentLog.clip(e && (e.message || e), 100));
+        if (myGen === gen) {
+          show("narrator", "The signal breaks up\u2026");
+          setTimeout(() => { if (myGen === gen) hide(); }, 1800);
+        }
+      } finally {
+        busy = false;
+        if (!playing && el.narratorBtn) el.narratorBtn.classList.remove("on");
+      }
     }
 
     return { narrate, stop, isBusy, preflight, coldOpen, epitaph, transition };

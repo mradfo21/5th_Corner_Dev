@@ -5466,14 +5466,31 @@ def _narrator_script(focus: str, multi: bool, session_id: str) -> list:
 
     # Single-voice narration — one lone voice thinking out loud, in exactly ONE
     # short sentence (a bridging beat, not a monologue).
-    prompt = (
-        f"You are the NARRATOR of a 1993 analog-horror world — one lone person, "
-        f"speaking quietly to yourself. PREMISE: {premise}"
-        f"{(chr(10)+chr(10)+'CURRENT SCENE: '+scene) if scene else ''}{recent_block}{focus_block}\n\n"
-        f"Speak in FIRST PERSON. Use ONE short, plain sentence — nothing more. Say how you FEEL right now — "
-        f"afraid, uneasy, but determined. Make it clear you have to find out what happened here. "
-        f"Output EXACTLY ONE SENTENCE. No meta, no stage directions, no purple prose."
-    )
+    #
+    # When a SPECIFIC focus is provided (e.g. MOVE TO's "reveal a dark truth"
+    # follow-up), the focus text takes primacy over the generic "afraid /
+    # uneasy / must find out what happened here" template — otherwise the
+    # baseline mood-instructions overwhelm the focus and every follow-up line
+    # collapses back into the same generic "I have to find out what happened
+    # here" beat. With no focus, keep the original evocative baseline.
+    if (focus or "").strip():
+        prompt = (
+            f"You are the NARRATOR of a 1993 analog-horror world — one lone person, "
+            f"speaking quietly to yourself. PREMISE: {premise}"
+            f"{(chr(10)+chr(10)+'CURRENT SCENE: '+scene) if scene else ''}{recent_block}\n\n"
+            f"INSTRUCTIONS FOR THIS LINE: {focus.strip()}\n\n"
+            f"Speak in FIRST PERSON. Output EXACTLY ONE short, plain sentence — nothing more. "
+            f"No meta, no stage directions, no purple prose. Follow the INSTRUCTIONS above exactly."
+        )
+    else:
+        prompt = (
+            f"You are the NARRATOR of a 1993 analog-horror world — one lone person, "
+            f"speaking quietly to yourself. PREMISE: {premise}"
+            f"{(chr(10)+chr(10)+'CURRENT SCENE: '+scene) if scene else ''}{recent_block}\n\n"
+            f"Speak in FIRST PERSON. Use ONE short, plain sentence — nothing more. Say how you FEEL right now — "
+            f"afraid, uneasy, but determined. Make it clear you have to find out what happened here. "
+            f"Output EXACTLY ONE SENTENCE. No meta, no stage directions, no purple prose."
+        )
     line = _ask(prompt, temp=0.85, tokens=80, use_lore=True)
     if _talk_llm_failed(line):
         return [{"character": s["character"], "text": _clip_narration_to_one_sentence(s["text"])} for s in fallback]
@@ -5493,10 +5510,20 @@ def api_narrator_worldbuild():
             return jsonify({"error": "slow down", "segments": []}), 429
         data = request.get_json(silent=True) or {}
         focus = re.sub(r"\s+", " ", str(data.get("focus") or "")).strip()[:240]
+        # Optional SECOND focus — appended to the primary script's segments in
+        # one round trip so a caller who needs a bridging + follow-up beat (e.g.
+        # MOVE TO's black loading transition) never has to fire two requests
+        # (which would hit the per-IP rate limit). Always single-voice; the
+        # multi-voice path is inherently multi-line and doesn't need this.
+        follow_raw = str(data.get("follow_focus") or "")
+        follow_focus = re.sub(r"\s+", " ", follow_raw).strip()[:240]
         multi = bool(data.get("multi"))
         speak = data.get("speak", True)  # legacy: server-side TTS audio inline
         session_id = data.get("session_id", "default")
         script = _narrator_script(focus, multi, session_id)
+        if follow_focus:
+            follow_script = _narrator_script(follow_focus, False, session_id)
+            script = list(script or []) + list(follow_script or [])
         # Attach the resolved voice per line so the client's generative agent
         # knows which voice to speak each segment in.
         for seg in script:
