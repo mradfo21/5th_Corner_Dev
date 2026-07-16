@@ -1641,18 +1641,26 @@
       // the change lands where they aimed instead of across the whole frame.
       const anchor = (where && where.phrase) ? where.phrase : null;
       // Two framings for the injected beat:
-      //   • "event" (INTERACT): a CONCRETE thing that HAPPENS in the world on the
-      //     next chunk. The old framing was the bug behind "INTERACT never does
-      //     anything" — "Motion: … interact with the door" reads to a video model
-      //     as a CAMERA move (nothing moves) built around the abstract verb
-      //     "interact", which gives it nothing to draw. Describe a visible world
-      //     event at the anchor instead, so the model actually renders a reaction.
+      //   • "event" (INTERACT): a world EVENT overlay, per the LingBot World 2
+      //     prompt guide (https://docs.reactor.inc/model-api-reference/lingbot/
+      //     prompt-guide). Firing an event on this model IS just a set_prompt with
+      //     the event described — but it only renders if it follows the guide's
+      //     rules, which the old beat broke and is why INTERACT looked dead:
+      //       - Room-budget rule: "a two-word mention tucked into an otherwise
+      //         dense prompt usually gets ignored." The event must be a FULL
+      //         sentence-anchor with concrete physical detail (the caller's
+      //         `text` already is), not a short tag drowned by the scene base.
+      //       - No camera-motion verbs ("Motion:"), which fight the live look
+      //         axes and get ignored; no meta ("clearly visible on screen") and
+      //         no frame coordinates — the model renders physical description of
+      //         the world, not instructions about itself.
+      //     So we append the concrete event sentence as-is, anchored in physical
+      //     space (see objectAnchorPhrase), and let it carry its own weight.
       //   • default (freeform SHAPE tool): a first-person camera / POV nudge.
       let beat;
       if (where && where.kind === "event") {
-        beat = anchor
-          ? "Something happens now: " + anchor + ", " + act + " \u2014 the change is clearly visible on screen."
-          : "Something happens now: " + act + " \u2014 the change is clearly visible on screen.";
+        const sentence = anchor ? anchor + ", " + act : act;
+        beat = sentence.charAt(0).toUpperCase() + sentence.slice(1) + ".";
       } else {
         beat = anchor
           ? "Motion: " + anchor + ", " + act + "."
@@ -4749,12 +4757,16 @@
   // A short spatial anchor for a detected object, derived from its normalized
   // center — used to aim a realtime INTERACT event at the spot on screen where
   // the thing actually is (so the world reacts THERE, not across the whole frame).
+  // Where the object sits, in PHYSICAL first-person space (not "upper-left of
+  // the frame" screen coordinates — LingBot renders a described world, not
+  // instructions about the picture). Feeds the realtime event overlay so the
+  // reaction reads as happening at a real place in the scene.
   function objectAnchorPhrase(obj) {
     const cx = typeof obj.cx === "number" ? obj.cx : 0.5;
     const cy = typeof obj.cy === "number" ? obj.cy : 0.5;
-    const h = cx < 0.34 ? "left" : cx > 0.66 ? "right" : "center";
-    const v = cy < 0.34 ? "upper " : cy > 0.66 ? "lower " : "";
-    return "at the " + (obj.label || "it") + " (" + v + h + " of the frame)";
+    const h = cx < 0.34 ? "to your left" : cx > 0.66 ? "to your right" : "directly ahead";
+    const v = cy < 0.34 ? ", up high" : cy > 0.66 ? ", down low" : "";
+    return h + v;
   }
 
   // Does this detected thing hold a conversation? The perception layer
@@ -4785,13 +4797,15 @@
       id: "interact", label: "INTERACT", title: "Interact with",
       realtime: true,
       phrase: (o) => "Interact with the " + o + ".",
-      // The LIVE world model needs something it can actually RENDER: "interact
-      // with the X" is too abstract for a video model to draw, so the realtime
-      // poke describes the object visibly RESPONDING (its physical reaction is
-      // what makes the poke register on screen). Used only for the set_prompt
-      // steer; the plain `phrase` above is what the full-turn fallback hands the
-      // consequence LLM.
-      realtimePhrase: (o) => "the " + o + " reacts and comes alive, visibly moving, shifting, opening, or activating in response",
+      // The LIVE world model needs a full, concrete PHYSICAL event, not "interact
+      // with the X" (too abstract to draw) and not a short tag (the LingBot prompt
+      // guide's room-budget rule: a brief mention gets drowned out by the dense
+      // scene base and never renders). This is a proper sentence-anchor: hands
+      // enter frame and physically work the object, and the object responds with
+      // detailed, additive motion — enough weight to actually show up. Used only
+      // for the realtime set_prompt steer; the plain `phrase` above is the clean
+      // intent handed to the consequence LLM on the full-turn fallback.
+      realtimePhrase: (o) => "your hands reach into view and take hold of the " + o + ", and it responds with an unmistakable physical change \u2014 the " + o + " shifts and moves, swinging, opening, sliding, or activating, its surfaces catching the light as loose dust and small debris stir into the air around it",
       icon: '<svg class="scan-action-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 13V5a2 2 0 0 1 4 0v6"/><path d="M12 11V4a2 2 0 0 1 4 0v7"/><path d="M16 11V7a2 2 0 0 1 4 0v8a6 6 0 0 1-6 6h-2a6 6 0 0 1-5-2.7l-2.8-4a2 2 0 0 1 3.1-2.5L9 14"/></svg>',
     },
     {
