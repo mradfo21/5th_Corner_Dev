@@ -2522,6 +2522,8 @@
     combat_action: "combat-event",
     combat_resolution: "combat-event",
     game_over: "game-over",
+    objective_new: "objective-event objective-new",
+    objective_done: "objective-event objective-done",
   };
 
   function classForType(type) {
@@ -2547,6 +2549,8 @@
     combat_action: "COMBAT",
     combat_resolution: "COMBAT",
     game_over: "END",
+    objective_new: "OBJECTIVE",
+    objective_done: "COMPLETE",
   };
 
   function labelForType(type) {
@@ -3623,6 +3627,14 @@
       if (el.btnObjectives) el.btnObjectives.classList.toggle("active", revealed && !collapsed);
     }
 
+    // Mirror an objective moment into the STORY LOG (the run chronicle), so the
+    // objectives live in the same tech stack as every other beat and the log
+    // reads like a real case record: "OBJECTIVE ▸ …" / "COMPLETE ✓ …".
+    let beatId = -100000;
+    function logBeat(type, mark, title) {
+      try { appendProse({ id: beatId--, type, content: mark + " **" + title + "**" }); } catch (_) {}
+    }
+
     // ---- Mutations ----
     // spec: { id, kind, title, detail, count, goal, quiet }
     function add(spec) {
@@ -3643,7 +3655,9 @@
       if (revealed) render();
       if (!spec.quiet) {
         try { Sound.select(); } catch (_) {}
+        try { Haptics.soft(); } catch (_) {}
         banner("New Objective", o.title, o.kind === "bonus" ? "bonus" : "");
+        logBeat("objective_new", "\u25B8", o.title);
       }
       return o;
     }
@@ -3680,8 +3694,11 @@
       if (revealed) { render(); pulseHud(); }
       if (!opts.quiet) {
         try { Sound.newSubject(); } catch (_) {}
+        try { Haptics.select(); } catch (_) {}
         const cls = o.kind === "bonus" ? "bonus" : "complete";
-        banner("Objective Complete", o.title, cls);
+        const KICKER = { field: "Bounty Secured", bonus: "Challenge Complete", lead: "Lead Closed" };
+        banner(KICKER[o.kind] || "Objective Complete", o.title, cls);
+        logBeat("objective_done", "\u2713", o.title);
       }
       // Side-goals file themselves away after a beat; the PRIMARY stays put
       // (its completion is the win, handled by the case overlay).
@@ -3779,7 +3796,19 @@
       if (window.Evidence && Evidence.isSpent && Evidence.isSpent(l)) return; // already documented
       if (window.Evidence && Evidence.isNew && !Evidence.isNew(l)) return;    // already on file
       if (activeFieldCount() >= MAX_FIELD) return;           // keep the board tidy
-      add({ id, kind: "field", title: "Document the " + label, detail: "Photograph it for the case file" });
+      // A little procedural variety in the phrasing so the board doesn't read
+      // as a wall of identical "Document the …" lines.
+      const verbs = ["Document", "Photograph", "Capture", "Get a shot of"];
+      const verb = verbs[Math.abs(hashStr(l)) % verbs.length];
+      add({ id, kind: "field", title: verb + " the " + label, detail: "Photograph it for the case file" });
+    }
+
+    // Stable per-label hash so a subject always draws the same verb (no flicker
+    // if it's re-offered) while different subjects vary.
+    function hashStr(s) {
+      let h = 0;
+      for (let i = 0; i < s.length; i++) { h = (h * 31 + s.charCodeAt(i)) | 0; }
+      return h;
     }
 
     function onDetect(objects) {
