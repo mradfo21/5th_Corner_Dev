@@ -253,6 +253,44 @@ def api_tape():
         return error_response("Failed to build tape", str(e))
 
 
+_OBJECTIVES_CACHE = {"key": None, "value": None}
+
+
+@app.route('/api/objectives', methods=['GET'])
+def api_objectives():
+    """The GENERATIVE objectives directive for the standalone tracker.
+
+    Returns the player's evolving "current lead" — a short in-world objective
+    grounded in the live world state (premise, recent beats, phase, discovered
+    elements). The client blends this into its top-right objectives HUD.
+
+    Cached per (turn, phase) so the same turn's directive is only generated once
+    even if the client (or auto-play) asks repeatedly. Never errors: engine.
+    generate_directive() always degrades to a deterministic, in-fiction lead.
+
+    Response JSON: {"lead": str, "detail": str, "generated": bool}
+    """
+    try:
+        s = engine.state or {}
+        key = (s.get("turn_count", 0), s.get("current_phase", "normal"), len(s.get("seen_elements") or []))
+        if _OBJECTIVES_CACHE.get("key") == key and _OBJECTIVES_CACHE.get("value"):
+            return jsonify(_OBJECTIVES_CACHE["value"])
+        directive = engine.generate_directive("default")
+        if not isinstance(directive, dict) or not directive.get("lead"):
+            directive = {"lead": "Survey the area",
+                         "detail": "Read the scene and document your first real subject.",
+                         "generated": False}
+        _OBJECTIVES_CACHE["key"] = key
+        _OBJECTIVES_CACHE["value"] = directive
+        return jsonify(directive)
+    except Exception as e:
+        traceback.print_exc()
+        # A safe, in-fiction default so the tracker's LEAD is never blank.
+        return jsonify({"lead": "Survey the area",
+                        "detail": "Read the scene and document your first real subject.",
+                        "generated": False})
+
+
 @app.route('/api/status', methods=['GET'])
 def api_status():
     """Lightweight state snapshot for the standalone UI's HUD. Does not
