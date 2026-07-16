@@ -79,6 +79,9 @@
     <button id="btn-model" class="rail-btn" type="button" title="World model logs &amp; selector (L)">
       <span class="rail-ico">◍</span><span class="rail-lbl">MODEL</span>
     </button>
+    <button id="btn-imgmodel" class="rail-btn" type="button" title="Image generator — switch the model that draws the world (I)">
+      <span class="rail-ico">▦</span><span class="rail-lbl">IMAGE</span>
+    </button>
     <button id="btn-story" class="rail-btn" type="button" title="Story log — the detailed run chronicle (J)">
       <span class="rail-ico">&#8803;</span><span class="rail-lbl">STORY</span>
     </button>
@@ -161,6 +164,20 @@
       <div id="rt-music-opts" class="rt-music-opts"></div>
     </div>
     <ol id="rt-log-list" class="rt-log-list" aria-live="polite"></ol>
+  </aside>
+
+  <!-- Image-generator switcher: pick the model that DRAWS the world (still
+       frames). Player-facing, mirroring the live world-model switcher above —
+       opens from the IMAGE rail button or the I key. Populated from
+       /api/ai/config; switching POSTs /api/ai/switch and takes effect on the
+       next generated frame (no redeploy). -->
+  <aside id="img-model" class="img-model" aria-label="Image generation model">
+    <div class="img-model-head">
+      <span class="img-model-title">IMAGE MODEL</span>
+      <button id="img-model-hide" class="img-model-hide" type="button" title="Hide (I)">&#10005;</button>
+    </div>
+    <p class="img-model-hint">The model that draws each frame. Faster = quicker turns, lower detail.</p>
+    <div id="img-model-list" class="img-model-list" role="group" aria-label="Switch image model"></div>
   </aside>
 
   <!-- Voice-agent debug log: a focused inspector for the TALK + narrator agents

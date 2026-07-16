@@ -3332,6 +3332,147 @@ body.reactor-available.rt-log-on #rt-log { display: flex; }
 .rt-e.rt-status .rt-m { color: rgba(142,255,193,0.75); }
 .rt-e.rt-dim .rt-m    { color: rgba(216,240,228,0.55); }  /* chunks / state — dim */
 
+/* ---------- Image-generator switcher (player-facing) ---------- */
+/* A compact right-side menu to switch the model that DRAWS the world. Opens
+   from the IMAGE rail button or the I key via body.img-model-on. Mirrors the
+   world-model log's visual language. */
+#img-model {
+  position: fixed;
+  right: calc(env(safe-area-inset-right, 0px) + 78px);
+  top: calc(env(safe-area-inset-top, 0px) + 58px);
+  width: 264px;
+  max-width: calc(100vw - 96px);
+  max-height: calc(100vh - 170px);
+  z-index: 13;
+  display: none;
+  flex-direction: column;
+  background: rgba(4, 10, 8, 0.62);
+  border: 1px solid rgba(142, 255, 193, 0.2);
+  border-radius: 6px;
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+  font-family: 'Share Tech Mono', monospace;
+  color: rgba(216, 240, 228, 0.85);
+  overflow: hidden;
+}
+body.img-model-on #img-model { display: flex; }
+
+.img-model-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 9px;
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  color: rgba(142, 255, 193, 0.75);
+  border-bottom: 1px solid rgba(142, 255, 193, 0.14);
+  background: rgba(0, 0, 0, 0.25);
+}
+.img-model-hide {
+  background: none;
+  border: none;
+  color: rgba(216, 240, 228, 0.5);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  padding: 0 2px;
+}
+.img-model-hide:hover { color: rgba(255, 120, 120, 0.9); }
+.img-model-hint {
+  margin: 0;
+  padding: 7px 9px;
+  font-size: 9.5px;
+  line-height: 1.4;
+  color: rgba(216, 240, 228, 0.55);
+  border-bottom: 1px solid rgba(142, 255, 193, 0.1);
+}
+
+.img-model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  min-height: 0;
+  scrollbar-width: thin;
+}
+.img-model-list::-webkit-scrollbar { width: 6px; }
+.img-model-list::-webkit-scrollbar-thumb { background: rgba(142,255,193,0.2); border-radius: 3px; }
+
+.img-model-opt {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  font-family: 'Share Tech Mono', monospace;
+  color: rgba(216, 240, 228, 0.82);
+  background: rgba(142, 255, 193, 0.05);
+  border: 1px solid rgba(142, 255, 193, 0.18);
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.12s ease;
+}
+.img-model-opt:hover { background: rgba(142, 255, 193, 0.13); border-color: rgba(142, 255, 193, 0.4); transform: translateY(-1px); }
+.img-model-opt:disabled { cursor: default; }
+.img-model-opt.active {
+  border-color: rgba(142, 255, 193, 0.9);
+  border-left-width: 3px;
+  background: rgba(142, 255, 193, 0.1);
+}
+.img-model-opt.switching { opacity: 0.55; pointer-events: none; }
+
+.img-model-opt-top { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
+.img-model-opt-name {
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  color: rgba(234, 255, 244, 0.95);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.img-model-opt-latency {
+  flex: 0 0 auto;
+  margin-left: auto;
+  font-size: 8.5px;
+  letter-spacing: 0.06em;
+  color: #ffcf94;
+  border: 1px solid rgba(255, 207, 148, 0.4);
+  border-radius: 3px;
+  padding: 1px 5px;
+  text-transform: uppercase;
+}
+.img-model-opt-active-flag {
+  flex: 0 0 auto;
+  font-size: 8px;
+  letter-spacing: 0.08em;
+  color: #061a11;
+  background: rgba(142, 255, 193, 0.9);
+  border-radius: 3px;
+  padding: 1px 5px;
+  text-transform: uppercase;
+}
+.img-model-opt-sub {
+  display: block;
+  font-size: 9px;
+  color: rgba(216, 240, 228, 0.45);
+  margin-bottom: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.img-model-opt-blurb {
+  display: block;
+  font-size: 9.5px;
+  line-height: 1.4;
+  color: rgba(216, 240, 228, 0.62);
+  margin-bottom: 6px;
+}
+.img-model-speed { display: flex; gap: 2px; align-items: center; }
+.img-model-pip { width: 6px; height: 9px; background: rgba(216,240,228,0.16); border-radius: 1px; }
+.img-model-pip.on { background: rgba(142, 255, 193, 0.85); }
+
 /* ---------- Voice-agent debug log (TALK + narrator) ---------- */
 /* Docked LEFT (so it can sit alongside the world-model log on the right).
    Toggled by the DEBUG rail button / D key via body.agent-log-on. */

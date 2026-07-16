@@ -1099,6 +1099,69 @@ def _preset_matches_current(preset_cfg, current):
     return all(preset_cfg.get(k) == current.get(k) for k in keys)
 
 
+def _ai_config_payload():
+    """Build the live AI configuration + all presets (with friendly labels /
+    latency / speed metadata) shared by the admin dashboard switcher AND the
+    in-game (standalone / realtime) model menu."""
+    config = ai_provider_manager.load_ai_config()
+    current = {
+        "text_provider": config.get("text_provider"),
+        "text_model": config.get("text_model"),
+        "image_provider": config.get("image_provider"),
+        "image_model": config.get("image_model"),
+        "last_updated": config.get("last_updated"),
+    }
+    presets = []
+    active_name = None
+    for name, cfg in ai_provider_manager.get_available_presets().items():
+        meta = _PRESET_UI_META.get(name, {})
+        is_active = _preset_matches_current(cfg, current)
+        if is_active:
+            active_name = name
+        presets.append({
+            "name": name,
+            "label": meta.get("label", name.replace("_", " ").title()),
+            "latency": meta.get("latency", ""),
+            "speed": meta.get("speed", 0),
+            "blurb": meta.get("blurb", cfg.get("description", "")),
+            "text_provider": cfg.get("text_provider"),
+            "text_model": cfg.get("text_model"),
+            "image_provider": cfg.get("image_provider"),
+            "image_model": cfg.get("image_model"),
+            "active": is_active,
+        })
+    return {
+        "status": "ok",
+        "current": current,
+        "active_preset": active_name,
+        "presets": presets,
+    }
+
+
+def _ai_switch_result(preset):
+    """Apply a preset switch. Returns (response_dict, http_status)."""
+    if not preset:
+        return {"status": "error", "error": "Missing 'preset'."}, 400
+    presets = ai_provider_manager.get_available_presets()
+    if preset not in presets:
+        return {
+            "status": "error",
+            "error": f"Unknown preset '{preset}'.",
+            "available": list(presets.keys()),
+        }, 400
+    ok = ai_provider_manager.set_preset(preset)
+    if not ok:
+        return {"status": "error", "error": f"Failed to switch to '{preset}'."}, 500
+    return {
+        "status": "ok",
+        "preset": preset,
+        "image_provider": ai_provider_manager.get_image_provider(),
+        "image_model": ai_provider_manager.get_image_model(),
+        "text_provider": ai_provider_manager.get_text_provider(),
+        "text_model": ai_provider_manager.get_text_model(),
+    }, 200
+
+
 @app.route('/api/admin/ai_config', methods=['GET'])
 def admin_ai_config():
     """Return the live AI configuration plus all available presets (with
@@ -1109,39 +1172,7 @@ def admin_ai_config():
             "message": "Provide ADMIN_TOKEN via ?token=, X-Admin-Token header, or admin_token cookie."
         }), 401
     try:
-        config = ai_provider_manager.load_ai_config()
-        current = {
-            "text_provider": config.get("text_provider"),
-            "text_model": config.get("text_model"),
-            "image_provider": config.get("image_provider"),
-            "image_model": config.get("image_model"),
-            "last_updated": config.get("last_updated"),
-        }
-        presets = []
-        active_name = None
-        for name, cfg in ai_provider_manager.get_available_presets().items():
-            meta = _PRESET_UI_META.get(name, {})
-            is_active = _preset_matches_current(cfg, current)
-            if is_active:
-                active_name = name
-            presets.append({
-                "name": name,
-                "label": meta.get("label", name.replace("_", " ").title()),
-                "latency": meta.get("latency", ""),
-                "speed": meta.get("speed", 0),
-                "blurb": meta.get("blurb", cfg.get("description", "")),
-                "text_provider": cfg.get("text_provider"),
-                "text_model": cfg.get("text_model"),
-                "image_provider": cfg.get("image_provider"),
-                "image_model": cfg.get("image_model"),
-                "active": is_active,
-            })
-        return jsonify({
-            "status": "ok",
-            "current": current,
-            "active_preset": active_name,
-            "presets": presets,
-        })
+        return jsonify(_ai_config_payload())
     except Exception as e:
         traceback.print_exc()
         return error_response("Failed to load AI config", str(e))
@@ -1159,29 +1190,39 @@ def admin_ai_switch():
 
     body = request.get_json(silent=True) or {}
     preset = body.get('preset') or request.args.get('preset')
-    if not preset:
-        return jsonify({"status": "error", "error": "Missing 'preset'."}), 400
-
-    presets = ai_provider_manager.get_available_presets()
-    if preset not in presets:
-        return jsonify({
-            "status": "error",
-            "error": f"Unknown preset '{preset}'.",
-            "available": list(presets.keys()),
-        }), 400
-
     try:
-        ok = ai_provider_manager.set_preset(preset)
-        if not ok:
-            return jsonify({"status": "error", "error": f"Failed to switch to '{preset}'."}), 500
-        return jsonify({
-            "status": "ok",
-            "preset": preset,
-            "image_provider": ai_provider_manager.get_image_provider(),
-            "image_model": ai_provider_manager.get_image_model(),
-            "text_provider": ai_provider_manager.get_text_provider(),
-            "text_model": ai_provider_manager.get_text_model(),
-        })
+        result, status = _ai_switch_result(preset)
+        return jsonify(result), status
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to switch AI preset", str(e))
+
+
+# ── Public (player-facing) variants ──────────────────────────────────
+# The in-game model menu on /standalone and /realtime is player-facing, just
+# like the existing live world-model switcher. These endpoints are NOT token
+# gated so the menu works for players, mirroring that design. A failed/expensive
+# provider always auto-falls back to Gemini in engine._gen_image, so the world
+# never goes blank on a bad switch.
+
+@app.route('/api/ai/config', methods=['GET'])
+def public_ai_config():
+    """Live AI config + presets for the in-game model menu (no auth)."""
+    try:
+        return jsonify(_ai_config_payload())
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to load AI config", str(e))
+
+
+@app.route('/api/ai/switch', methods=['POST'])
+def public_ai_switch():
+    """Switch the image/text model preset from the in-game menu (no auth)."""
+    body = request.get_json(silent=True) or {}
+    preset = body.get('preset') or request.args.get('preset')
+    try:
+        result, status = _ai_switch_result(preset)
+        return jsonify(result), status
     except Exception as e:
         traceback.print_exc()
         return error_response("Failed to switch AI preset", str(e))

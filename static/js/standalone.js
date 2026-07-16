@@ -140,6 +140,10 @@
     menuToggle: document.getElementById("menu-toggle"),
     controlRail: document.getElementById("control-rail"),
     btnModel: document.getElementById("btn-model"),
+    btnImgModel: document.getElementById("btn-imgmodel"),
+    imgModel: document.getElementById("img-model"),
+    imgModelList: document.getElementById("img-model-list"),
+    imgModelHide: document.getElementById("img-model-hide"),
     btnStory: document.getElementById("btn-story"),
     rtModelAdd: document.getElementById("rt-model-add"),
     rtModelInput: document.getElementById("rt-model-input"),
@@ -2009,6 +2013,133 @@
       });
     }
     return { visible, toggle, init };
+  })();
+
+  // ------------------------------------------------------------------
+  // Image-generator switcher — a player-facing menu (IMAGE button / I key)
+  // to pick the model that DRAWS the world. Mirrors the live world-model
+  // switcher, but for still frames. Reads/writes the same preset system the
+  // admin dashboard + Discord /ai_switch use, so a change is live on the next
+  // generated frame. A failed/expensive provider auto-falls back to Gemini in
+  // engine._gen_image, so switching can never blank the world.
+  // ------------------------------------------------------------------
+  const ImageModel = (function () {
+    let presets = [];
+    let activePreset = null;
+    let loaded = false;
+    let switching = false;
+
+    function visible() {
+      return document.body.classList.contains("img-model-on");
+    }
+    function applyVisibility(on) {
+      document.body.classList.toggle("img-model-on", on);
+      if (el.btnImgModel) el.btnImgModel.classList.toggle("active", on);
+    }
+    async function toggle() {
+      const on = !visible();
+      applyVisibility(on);
+      if (on) {
+        // Refresh on open so it always reflects the live server config
+        // (another player, the admin dashboard, or Discord may have changed it).
+        await load();
+      }
+    }
+    function hide() { applyVisibility(false); }
+
+    function speedPips(speed) {
+      let out = "";
+      for (let i = 1; i <= 5; i++) out += `<span class="img-model-pip ${i <= (speed || 0) ? "on" : ""}"></span>`;
+      return out;
+    }
+
+    async function load() {
+      try {
+        const r = await fetch("/api/ai/config");
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        const data = await r.json();
+        presets = data.presets || [];
+        activePreset = data.active_preset || null;
+        loaded = true;
+        render();
+      } catch (err) {
+        console.warn("[IMG MODEL] load failed:", err);
+        if (el.imgModelList) {
+          el.imgModelList.innerHTML =
+            '<div class="img-model-opt-blurb" style="padding:4px 2px;">Couldn\u2019t load models. Try again.</div>';
+        }
+      }
+    }
+
+    function render() {
+      const wrap = el.imgModelList;
+      if (!wrap) return;
+      if (!presets.length) {
+        wrap.innerHTML = '<div class="img-model-opt-blurb" style="padding:4px 2px;">No models available.</div>';
+        return;
+      }
+      wrap.innerHTML = "";
+      presets.forEach((p) => {
+        const isActive = p.name === activePreset;
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "img-model-opt" + (isActive ? " active" : "");
+        btn.dataset.preset = p.name;
+        btn.disabled = isActive;
+        btn.innerHTML =
+          `<span class="img-model-opt-top">` +
+            `<span class="img-model-opt-name">${esc(p.label)}</span>` +
+            (isActive ? `<span class="img-model-opt-active-flag">On</span>` :
+              (p.latency ? `<span class="img-model-opt-latency">${esc(p.latency)}</span>` : "")) +
+          `</span>` +
+          `<span class="img-model-opt-sub">${esc(p.image_provider)} / ${esc(p.image_model)}</span>` +
+          (p.blurb ? `<span class="img-model-opt-blurb">${esc(p.blurb)}</span>` : "") +
+          `<span class="img-model-speed" title="Relative speed">${speedPips(p.speed)}</span>`;
+        if (!isActive) btn.addEventListener("click", () => switchTo(p.name));
+        wrap.appendChild(btn);
+      });
+    }
+
+    function esc(s) {
+      return String(s == null ? "" : s)
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    }
+
+    async function switchTo(name) {
+      if (switching || !name || name === activePreset) return;
+      switching = true;
+      const btn = el.imgModelList && el.imgModelList.querySelector(`[data-preset="${name}"]`);
+      if (btn) btn.classList.add("switching");
+      try { Haptics.tap(); } catch (_) {}
+      try {
+        const r = await fetch("/api/ai/switch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ preset: name }),
+        });
+        const data = await r.json();
+        if (!r.ok || data.status !== "ok") throw new Error(data.error || "HTTP " + r.status);
+        activePreset = name;
+        const label = (presets.find((p) => p.name === name) || {}).label || name;
+        render();
+        showRendererToast("IMAGE MODEL → " + label);
+        try { RtLog.push("ok", "image model", label + " (" + data.image_provider + "/" + data.image_model + ")"); } catch (_) {}
+      } catch (err) {
+        console.warn("[IMG MODEL] switch failed:", err);
+        showRendererToast("Switch failed");
+        if (btn) btn.classList.remove("switching");
+      } finally {
+        switching = false;
+      }
+    }
+
+    function init() {
+      if (el.imgModelHide) el.imgModelHide.addEventListener("click", hide);
+      // Lazy: presets load the first time the menu is opened.
+    }
+
+    return { toggle, hide, load, init, visible };
   })();
 
   // Small transient on-screen note so it's obvious which renderer is active
@@ -6963,6 +7094,8 @@
       capturePhoto(); // journalist photograph — file a specimen to the case file
     } else if (e.key.toLowerCase() === "l") {
       RtLog.toggle(); // show/hide the world-model inspector log
+    } else if (e.key.toLowerCase() === "i") {
+      ImageModel.toggle(); // show/hide the image-generator (still-frame) model menu
     } else if (e.key.toLowerCase() === "j") {
       StoryLog.toggle(); // show/hide the story log (the run chronicle)
     } else if (e.key.toLowerCase() === "o") {
@@ -7010,6 +7143,7 @@
     }
     if (el.menuToggle) el.menuToggle.addEventListener("click", () => Menu.toggle());
     if (el.btnModel) el.btnModel.addEventListener("click", () => { RtLog.toggle(); });
+    if (el.btnImgModel) el.btnImgModel.addEventListener("click", () => { ImageModel.toggle(); });
     if (el.btnStory) el.btnStory.addEventListener("click", () => { StoryLog.toggle(); });
     if (el.btnObjectives) el.btnObjectives.addEventListener("click", () => { Objectives.toggle(); });
     if (el.objHead) el.objHead.addEventListener("click", (ev) => {
@@ -7020,6 +7154,7 @@
     if (el.objCollapse) el.objCollapse.addEventListener("click", (ev) => { ev.stopPropagation(); Objectives.toggle(); });
     if (el.rtModelAdd) el.rtModelAdd.addEventListener("submit", addCustomModel);
     StoryLog.init();
+    ImageModel.init();
     Menu.init();
     Tactile.init();
     el.deathRestart.addEventListener("click", resetGame);
