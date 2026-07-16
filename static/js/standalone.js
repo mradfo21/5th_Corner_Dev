@@ -112,6 +112,7 @@
     caseOverlay: document.getElementById("case-overlay"),
     caseRankLetter: document.getElementById("case-rank-letter"),
     caseSubjects: document.getElementById("case-subjects"),
+    caseObjectives: document.getElementById("case-objectives"),
     caseEvidence: document.getElementById("case-evidence"),
     caseShots: document.getElementById("case-shots"),
     caseFlavor: document.getElementById("case-flavor"),
@@ -3354,7 +3355,7 @@
   // appraised; new/rare/well-framed subjects pay more and fill the dossier.
   // Persistent per-run + exposed as window.Evidence for future engine hooks.
   // ------------------------------------------------------------------
-  const CASE_TARGET = 8;   // distinct subjects to document to CLOSE THE CASE (win)
+  const CASE_TARGET = 12;  // distinct subjects to document to CLOSE THE CASE (win)
   const Evidence = (function () {
     const KEY = "evidence_v1";
     let total = 0, shots = 0;
@@ -3381,12 +3382,13 @@
     function fmt(n) { return Math.round(n).toLocaleString("en-US"); }
 
     // Photographer's grade from the evidence banked (shown live + on the win
-    // screen). Thresholds are tuned so a completed case lands around A/S.
+    // screen). Thresholds scale with the (larger) census so an S still means a
+    // genuinely thorough, well-shot case rather than an automatic clear.
     function rankFor(t) {
-      if (t >= 3200) return "S";
-      if (t >= 2200) return "A";
-      if (t >= 1300) return "B";
-      if (t >= 650) return "C";
+      if (t >= 4800) return "S";
+      if (t >= 3400) return "A";
+      if (t >= 2100) return "B";
+      if (t >= 1000) return "C";
       return "D";
     }
 
@@ -3746,7 +3748,7 @@
         try { Sound.newSubject(); } catch (_) {}
         try { Haptics.select(); } catch (_) {}
         const cls = o.kind === "bonus" ? "bonus" : "complete";
-        const KICKER = { field: "Bounty Secured", bonus: "Challenge Complete", lead: "Lead Closed" };
+        const KICKER = { field: "Bounty Secured", bonus: "Challenge Complete", lead: "Lead Closed", primary: "Case File Complete" };
         banner(KICKER[o.kind] || "Objective Complete", o.title, cls);
         logBeat("objective_done", "\u2713", o.title);
       }
@@ -3833,7 +3835,11 @@
         setProgress("case", count, goal);
       }
       const o = get("case");
-      if (o && o.status === "active" && count >= goal) complete("case", { quiet: true });
+      // Completing the PRIMARY objective IS the win — let it land as a real,
+      // visible objective completion (banner + chime + the tracker check) so
+      // the case-closed screen reads as the payoff of the objective, not a
+      // disconnected pop-up. maybeCloseCase() then shows the reward on a beat.
+      if (o && o.status === "active" && count >= goal) complete("case");
     }
 
     // ---- Photo loop hooks ----
@@ -3915,6 +3921,7 @@
       setLead, syncCase, onDetect, onSubjectDocumented, onFocusGrade,
       toggle: toggleCollapsed,
       has, get, list: () => items.slice(),
+      completedCount: () => items.filter((o) => o.status === "complete").length,
       isRevealed: () => revealed,
     };
   })();
@@ -4285,12 +4292,24 @@
     D: "Barely a case, but the shutter never lies. It's on the record now.",
   };
 
+  // The reward screen is the payoff of COMPLETING THE PRIMARY OBJECTIVE (Close
+  // the Case), not a standalone subject-count check — so it stays in lockstep
+  // with the objectives tracker. We wait for the "Case File Complete" objective
+  // beat (banner + chime + the tracker check) to land first, THEN reveal the
+  // case-closed screen, so the win reads as earned rather than abrupt.
+  const CASE_WIN_DELAY_MS = 1800;
+  function primaryComplete() {
+    const o = (window.Objectives && Objectives.get) ? Objectives.get("case") : null;
+    if (o) return o.status === "complete";
+    return Evidence.uniqueCount() >= Evidence.target(); // fallback if the tracker is unavailable
+  }
+
   function maybeCloseCase() {
     if (state.caseWon) return;
-    if (Evidence.uniqueCount() < Evidence.target()) return;
+    if (!primaryComplete()) return;
     state.caseWon = true;
-    // Let the receipt's stamp land first, then celebrate.
-    setTimeout(showCaseWin, 700);
+    // Let the objective completion + its beat register before the reward.
+    setTimeout(showCaseWin, CASE_WIN_DELAY_MS);
   }
 
   function showCaseWin() {
@@ -4301,6 +4320,12 @@
     if (el.caseSubjects) el.caseSubjects.textContent = String(Evidence.uniqueCount());
     if (el.caseEvidence) el.caseEvidence.textContent = Evidence.total().toLocaleString("en-US");
     if (el.caseShots) el.caseShots.textContent = String(Evidence.shots());
+    // Tie the win explicitly to the objectives cleared this run.
+    if (el.caseObjectives) {
+      let done = 0;
+      try { done = Objectives.completedCount(); } catch (_) {}
+      el.caseObjectives.textContent = String(done);
+    }
     if (el.caseFlavor) el.caseFlavor.textContent = CASE_FLAVORS[rank] || CASE_FLAVORS.C;
     el.caseOverlay.classList.remove("hidden");
     try { Sound.caseSolved(); } catch (_) {}
