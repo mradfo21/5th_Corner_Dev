@@ -1377,6 +1377,12 @@
             if (name === "video_showing") {
               glitchTransition();
               markSceneVisible(); // the realtime feed is now live on screen
+              // Drop the previous scene's hotspots/cache BEFORE re-arming — when
+              // we travel to a new location the fresh video reveals here, and
+              // without this the old location's detected objects linger over the
+              // new scene (updateAmbientScan repaints them from the stale cache)
+              // until the next detection lands. Clearing first re-detects clean.
+              clearScanTags();
               schedulePrewarm(); // live scene on screen — detect its hotspots
               updateAmbientScan(); // surface ambient hotspots over the live video
             }
