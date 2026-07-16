@@ -3543,8 +3543,9 @@
       li.className = "obj-item kind-" + o.kind + " " + o.status;
       p.tag.textContent = (KIND_META[o.kind] || {}).tag || o.kind.toUpperCase();
       p.title.textContent = o.title || "";
-      if (o.detail) { p.detail.textContent = o.detail; p.detail.style.display = ""; }
-      else { p.detail.textContent = ""; p.detail.style.display = "none"; }
+      // Keep the tracker clean: the flavor/detail lives as a hover tooltip
+      // rather than a second line of text under every objective.
+      li.title = o.detail ? (o.title + " \u2014 " + o.detail) : (o.title || "");
       if (typeof o.goal === "number" && o.goal > 0) {
         p.prog.style.display = "";
         const count = Math.max(0, Math.min(o.goal, o.count || 0));
