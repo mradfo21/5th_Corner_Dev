@@ -3850,6 +3850,10 @@
     if (!opts.force && Math.abs(clamped - state.photoZoom) < 0.004) return;
     state.photoZoom = clamped;
     applySceneTransform();
+    // Zooming OUT grows the frame (and re-grades what's framed) even when the
+    // reticle hasn't moved, so the frame expands live under the scroll/pinch.
+    layoutCaptureFrame();
+    if (state.touchMode === "aim") layoutPhotoTargets();
     if (el.touchZoom) { // pop the readout only on an actual zoom change
       el.touchZoom.classList.remove("bump");
       void el.touchZoom.offsetWidth;
@@ -4118,6 +4122,19 @@
     }
   }
 
+  // Size + position the 16:9 capture frame for the current zoom/aim. Split out
+  // of moveReticle so a pure ZOOM change (scroll / pinch, no reticle move) also
+  // resizes the frame live — the frame grows toward full-screen as you zoom out.
+  function layoutCaptureFrame() {
+    if (!el.touchCaptureFrame) return;
+    const b = frameBoxPx();
+    const p = state.touchPoint || { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+    el.touchCaptureFrame.style.width = b.w + "px";
+    el.touchCaptureFrame.style.height = b.h + "px";
+    el.touchCaptureFrame.style.left = p.x + "px";
+    el.touchCaptureFrame.style.top = p.y + "px";
+  }
+
   function moveReticle(x, y) {
     state.touchPoint = { x, y };
     if (el.touchReticle) {
@@ -4125,13 +4142,7 @@
       el.touchReticle.style.top = y + "px";
     }
     // The capture frame tracks the camera so you see exactly what will be shot.
-    if (el.touchCaptureFrame) {
-      const b = frameBoxPx();
-      el.touchCaptureFrame.style.width = b.w + "px";
-      el.touchCaptureFrame.style.height = b.h + "px";
-      el.touchCaptureFrame.style.left = x + "px";
-      el.touchCaptureFrame.style.top = y + "px";
-    }
+    layoutCaptureFrame();
     // Re-anchor the zoom to the new aim point so the magnified view smoothly
     // follows the reticle (the CSS transform transition does the gliding).
     if (state.photoZoom && state.photoZoom !== 1) applySceneTransform();

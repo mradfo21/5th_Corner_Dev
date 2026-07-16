@@ -1312,7 +1312,7 @@ body.touch-aiming #realtime-btn.aiming { animation: photo-exit-pulse 1.6s ease-i
   border: 1px dashed rgba(255, 186, 89, 0.45);
   border-radius: 10px;
   box-shadow: inset 0 0 26px rgba(255, 186, 89, 0.08);
-  transition: opacity 0.18s ease;
+  transition: opacity 0.18s ease, width 0.12s ease-out, height 0.12s ease-out;
 }
 body.touch-aiming #touch-capture-frame { opacity: 0.85; }
 #touch-capture-frame::before,
