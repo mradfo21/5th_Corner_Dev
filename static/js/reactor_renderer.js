@@ -1387,10 +1387,16 @@
     if (sx + sw > vw) sw = vw - sx;
     if (sy + sh > vh) sh = vh - sy;
     const out = outSize || 256;
+    // Preserve the captured region's aspect ratio (the capture frame is 16:9,
+    // not a square) — `out` is the longest side.
+    const aspect = sw / sh;
+    let ow = out, oh = out;
+    if (aspect >= 1) oh = Math.max(1, Math.round(out / aspect));
+    else ow = Math.max(1, Math.round(out * aspect));
     try {
       const c = document.createElement("canvas");
-      c.width = out; c.height = out;
-      c.getContext("2d").drawImage(v, sx, sy, sw, sh, 0, 0, out, out);
+      c.width = ow; c.height = oh;
+      c.getContext("2d").drawImage(v, sx, sy, sw, sh, 0, 0, ow, oh);
       return c.toDataURL("image/jpeg", 0.82);
     } catch (e) { log("captureRegion failed", e); return null; }
   }

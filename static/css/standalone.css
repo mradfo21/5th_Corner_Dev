@@ -1291,7 +1291,7 @@ body.touch-aiming #realtime-btn.aiming { animation: photo-exit-pulse 1.6s ease-i
 #evidence-card.filing { animation: evidence-file 0.68s cubic-bezier(0.4, 0.0, 0.7, 1) forwards; }
 .evidence-photo {
   width: 100%;
-  aspect-ratio: 1 / 1;
+  aspect-ratio: 16 / 9;
   background-size: cover;
   background-position: center;
   background-color: #0c0c0c;
@@ -4323,7 +4323,7 @@ body.rt-log-on #objectives-hud { opacity: 0; transform: translateX(18px) scale(0
 .receipt-photo {
   position: relative;
   width: 100%;
-  aspect-ratio: 1 / 1;
+  aspect-ratio: 16 / 9;
   background-size: cover;
   background-position: center;
   background-color: #0c0c0c;
