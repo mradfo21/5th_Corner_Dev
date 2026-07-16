@@ -1304,8 +1304,8 @@ body.touch-aiming #realtime-btn.aiming { animation: photo-exit-pulse 1.6s ease-i
   position: absolute;
   left: 50%;
   top: 50%;
-  width: 180px;
-  height: 180px;
+  width: 320px;
+  height: 180px; /* 16:9 base; live size is set inline as you zoom */
   transform: translate(-50%, -50%);
   pointer-events: none;
   opacity: 0;
@@ -3567,7 +3567,7 @@ body.agent-log-on #agent-log { display: flex; }
   .touch-hint { bottom: calc(env(safe-area-inset-bottom, 0px) + 150px); font-size: 10px; }
   .touch-zoom { bottom: calc(env(safe-area-inset-bottom, 0px) + 150px); }
   .touch-lock { bottom: calc(env(safe-area-inset-bottom, 0px) + 172px); }
-  #touch-capture-frame { width: 150px; height: 150px; }
+  #touch-capture-frame { width: 267px; height: 150px; }
   #investigations-tray {
     left: calc(env(safe-area-inset-left, 0px) + 8px);
     bottom: calc(env(safe-area-inset-bottom, 0px) + 150px);
