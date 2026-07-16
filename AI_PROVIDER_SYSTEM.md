@@ -282,6 +282,59 @@ The public functions mirror `gemini_image_utils` exactly
 (`generate_with_krea`, `generate_krea_img2img`), so `engine._gen_image()` calls
 either provider through identical call sites.
 
+## ⚡ **fal.ai Image Backend (speed preset)**
+
+`fal.ai` serves SDXL Lightning (a 4-step distilled SDXL checkpoint) on
+custom-optimized infrastructure. Unlike Krea's async job API, calls to
+`fal.run` are **synchronous** — the HTTP response only comes back once the
+image is ready, typically in **~1-2 seconds**. That's ~6-15x faster than Krea
+Medium and ~10-20x faster than Gemini Pro.
+
+**Trade-off:** SDXL Lightning is a much smaller/older checkpoint than Gemini
+3.1 or Krea 2, so per-image fidelity, prompt adherence, and continuity are
+noticeably lower. This is a "need it NOW" speed preset for demos/testing, not
+a quality replacement for the production defaults.
+
+### Switching to it
+
+Runtime (no redeploy), via Discord: `/ai_switch fal`. Fall back anytime with
+`/ai_switch krea` (or `gemini`, `openai`, `veo`). The engine routes on
+`ai_provider_manager.get_image_provider()`, so nothing else changes.
+
+| Preset | Image model | Approx. latency | Notes |
+|--------|-------------|-----------------|-------|
+| `fal` | `fal-ai/fast-lightning-sdxl` | **~1-2s** | Fastest available. Lower fidelity/continuity. |
+
+### Config / secrets
+
+| Env var | Default | Purpose |
+|---------|---------|---------|
+| `FAL_API_KEY` (or `FAL_KEY`) | — | API key from fal.ai/dashboard/keys (**required** for fal) |
+| `FAL_NUM_INFERENCE_STEPS` | `4` | Lightning steps (`1`/`2`/`4`/`8`) — lower is faster/blurrier |
+| `FAL_IMAGE_SIZE` | `landscape_4_3` | fal's built-in aspect-ratio preset |
+| `FAL_IMG2IMG_STRENGTH` | `0.55` | 0-1, how much the img2img output may diverge from the reference frame |
+| `FAL_API_BASE` | `https://fal.run` | Override for testing |
+
+### How it works (`fal_image_utils.py`)
+
+Because `fal.run` is synchronous, there's no job/poll loop to write — this is
+the simplest provider integration in the codebase:
+
+1. `POST /fal-ai/fast-lightning-sdxl` (or `/image-to-image`) with the prompt
+   (+ a base64 data URI of the downsampled previous frame for continuity)
+2. The response already contains the hosted image URL — download it,
+   normalize to PNG, and write the same `<name>.png` + `<name>_small.png`
+   sidecar the rest of the engine expects.
+
+Only a single reference image is supported (no multi-frame continuity like
+Gemini/Krea). If a fal call fails and `GEMINI_API_KEY` is set, the engine
+automatically renders that single frame with Gemini so the world never goes
+blank.
+
+The public functions mirror `gemini_image_utils` / `krea_image_utils`
+(`generate_with_fal`, `generate_fal_img2img`), so `engine._gen_image()` calls
+any of the three providers through identical call sites.
+
 ## 🔮 **Future Extensions**
 
 ### **Easy to add:**

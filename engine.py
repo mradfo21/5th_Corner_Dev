@@ -3644,6 +3644,62 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
             _last_image_path = result_path
             return (result_path, prompt_str, None)
 
+        elif active_image_provider == "fal":
+            # Use fal.ai SDXL Lightning - the SPEED preset. Synchronous REST
+            # call typically completes in ~1-2s (vs ~12s Krea Medium / ~15-30s
+            # Gemini Pro), at the cost of lower fidelity than either. Only a
+            # single reference image is supported for continuity.
+            print(f"[IMG] Using fal.ai (SDXL Lightning) provider")
+            from fal_image_utils import generate_with_fal, generate_fal_img2img
+
+            if prev_img_paths_list and frame_idx > 0:
+                ref_image_to_use = primary_guide_image_path or prev_img_paths_list[0]
+                print(f"[IMG GENERATION] fal img2img with reference: {Path(ref_image_to_use).name}")
+                result_path = generate_fal_img2img(
+                    prompt=prompt_str,
+                    caption=caption,
+                    reference_image_path=ref_image_to_use,
+                    world_prompt=world_prompt,
+                    time_of_day=use_time_of_day,
+                    action_context=choice,
+                    output_dir=img_dir,
+                )
+            else:
+                print(f"[IMG GENERATION] fal text-to-image (no reference anchor)")
+                result_path = generate_with_fal(
+                    prompt=prompt_str,
+                    caption=caption,
+                    world_prompt=world_prompt,
+                    time_of_day=use_time_of_day,
+                    is_first_frame=(frame_idx == 0),
+                    action_context=choice,
+                    output_dir=img_dir,
+                )
+
+            # SAFETY NET: if fal failed (bad key, rate limit, etc.) but Gemini
+            # is available, render the frame with Gemini so the world never
+            # goes blank on a single bad turn.
+            if not result_path and GEMINI_API_KEY:
+                print(f"[IMG] fal returned no image - falling back to Gemini for this frame", flush=True)
+                from gemini_image_utils import generate_with_gemini, generate_gemini_img2img
+                if prev_img_paths_list and frame_idx > 0:
+                    fb_refs = [primary_guide_image_path] if primary_guide_image_path else prev_img_paths_list[:1]
+                    result_path = generate_gemini_img2img(
+                        prompt=prompt_str, caption=caption, reference_image_path=fb_refs,
+                        world_prompt=world_prompt, time_of_day=use_time_of_day,
+                        action_context=choice, hd_mode=False, output_dir=img_dir,
+                    )
+                else:
+                    result_path = generate_with_gemini(
+                        prompt=prompt_str, caption=caption, world_prompt=world_prompt,
+                        aspect_ratio="4:3", time_of_day=use_time_of_day,
+                        is_first_frame=(frame_idx == 0), action_context=choice,
+                        hd_mode=False, output_dir=img_dir,
+                    )
+
+            _last_image_path = result_path
+            return (result_path, prompt_str, None)
+
         elif active_image_provider == "openai":
             # Use OpenAI gpt-image-1
             # Supports img2img via /images/edits endpoint (up to 16 reference images!)
@@ -3793,7 +3849,7 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
             return (_last_image_path, vhs_prompt, None)  # OpenAI doesn't generate videos
         
         else:
-            raise ValueError(f"Unknown IMAGE_PROVIDER: {active_image_provider}. Supported: 'openai', 'gemini', 'veo', 'krea'")
+            raise ValueError(f"Unknown IMAGE_PROVIDER: {active_image_provider}. Supported: 'openai', 'gemini', 'veo', 'krea', 'fal'")
         # Skip time extraction - we already set time_of_day in state before generation
         # No need to extract it back from the image we just generated!
         return (f"/images/{filename}", prompt_str, None)

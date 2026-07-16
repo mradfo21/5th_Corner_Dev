@@ -181,6 +181,190 @@
             color: var(--color-blood-red);
         }
 
+        /* ───────── AI MODEL SWITCHER (drag & drop) ───────── */
+        .models-hint {
+            font-family: var(--font-din);
+            color: var(--color-text-dim);
+            font-size: 0.85rem;
+            line-height: 1.5;
+            margin-bottom: 22px;
+            max-width: 720px;
+        }
+        .models-hint strong { color: var(--color-blood-red); letter-spacing: 0.1em; }
+        .models-hint-alt { color: var(--color-text-faint); font-size: 0.78rem; }
+
+        .active-dropzone {
+            border: 2px dashed var(--color-border-red);
+            background: rgba(220, 20, 60, 0.03);
+            padding: 22px;
+            margin-bottom: 34px;
+            transition: all 0.18s ease;
+            position: relative;
+        }
+        .active-dropzone.drag-over {
+            border-color: var(--color-blood-red);
+            border-style: solid;
+            background: rgba(220, 20, 60, 0.12);
+            box-shadow: 0 0 24px rgba(220, 20, 60, 0.25) inset;
+            transform: scale(1.005);
+        }
+        .active-dropzone-label {
+            font-family: var(--font-ocr);
+            color: var(--color-blood-red);
+            font-size: 0.7rem;
+            letter-spacing: 0.25em;
+            text-transform: uppercase;
+            margin-bottom: 14px;
+        }
+        .active-dropzone-hint {
+            font-family: var(--font-ocr);
+            color: var(--color-text-ghost);
+            font-size: 0.62rem;
+            letter-spacing: 0.15em;
+            text-transform: uppercase;
+            margin-top: 14px;
+            text-align: center;
+        }
+        .active-dropzone.drag-over .active-dropzone-hint { color: var(--color-blood-red); }
+
+        .active-model-card {
+            background: var(--color-near-black);
+            border: 1px solid var(--color-border-bright);
+            border-left: 3px solid var(--color-blood-red);
+            padding: 20px 22px;
+        }
+        .active-model-card .model-name {
+            font-family: var(--font-ocr);
+            font-size: 1.15rem;
+            color: var(--color-off-white);
+            letter-spacing: 0.08em;
+            margin-bottom: 6px;
+        }
+        .active-model-card .model-sub {
+            font-family: var(--font-ocr);
+            font-size: 0.7rem;
+            color: var(--color-text-faint);
+            letter-spacing: 0.08em;
+        }
+        .active-model-card .model-blurb {
+            font-family: var(--font-din);
+            font-size: 0.82rem;
+            color: var(--color-text-dim);
+            margin-top: 10px;
+            line-height: 1.45;
+        }
+
+        .models-shelf-label {
+            font-family: var(--font-ocr);
+            color: var(--color-text-faint);
+            font-size: 0.7rem;
+            letter-spacing: 0.25em;
+            text-transform: uppercase;
+            margin-bottom: 16px;
+        }
+        .models-shelf {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 16px;
+        }
+
+        .model-card {
+            background: var(--color-dark-gray);
+            border: 1px solid var(--color-border-red);
+            padding: 18px 18px 16px;
+            cursor: grab;
+            transition: all 0.18s ease;
+            position: relative;
+            user-select: none;
+        }
+        .model-card:hover {
+            border-color: var(--color-blood-red);
+            transform: translateY(-2px);
+            box-shadow: 0 0 15px rgba(220, 20, 60, 0.15);
+        }
+        .model-card:active { cursor: grabbing; }
+        .model-card.dragging { opacity: 0.45; border-style: dashed; }
+        .model-card.is-active {
+            border-left: 3px solid var(--color-success);
+            box-shadow: 0 0 12px rgba(76, 175, 80, 0.12);
+        }
+        .model-card .model-drag-dots {
+            position: absolute;
+            top: 14px; right: 14px;
+            color: var(--color-text-ghost);
+            font-size: 0.9rem;
+            letter-spacing: 2px;
+            line-height: 0.6;
+        }
+        .model-card .model-name {
+            font-family: var(--font-ocr);
+            font-size: 0.98rem;
+            color: var(--color-off-white);
+            letter-spacing: 0.06em;
+            margin-bottom: 6px;
+            padding-right: 28px;
+        }
+        .model-card .model-sub {
+            font-family: var(--font-ocr);
+            font-size: 0.64rem;
+            color: var(--color-text-faint);
+            letter-spacing: 0.06em;
+            margin-bottom: 10px;
+        }
+        .model-card .model-blurb {
+            font-family: var(--font-din);
+            font-size: 0.8rem;
+            color: var(--color-text-dim);
+            line-height: 1.45;
+            margin-bottom: 14px;
+        }
+
+        .model-badges { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+        .latency-badge {
+            font-family: var(--font-ocr);
+            font-size: 0.62rem;
+            letter-spacing: 0.08em;
+            padding: 3px 9px;
+            border: 1px solid var(--color-border-red);
+            color: var(--color-warning);
+            text-transform: uppercase;
+        }
+        .active-flag {
+            font-family: var(--font-ocr);
+            font-size: 0.62rem;
+            letter-spacing: 0.12em;
+            padding: 3px 9px;
+            background: var(--color-success);
+            color: var(--color-near-black);
+            text-transform: uppercase;
+        }
+        .speed-meter { display: inline-flex; gap: 3px; align-items: center; margin-left: auto; }
+        .speed-pip { width: 7px; height: 12px; background: rgba(224,224,224,0.15); }
+        .speed-pip.on { background: var(--color-blood-red); }
+
+        .model-switch-btn {
+            display: block;
+            width: 100%;
+            margin-top: 14px;
+            background: transparent;
+            border: 1px solid var(--color-border-red);
+            color: var(--color-text-dim);
+            font-family: var(--font-ocr);
+            font-size: 0.66rem;
+            letter-spacing: 0.15em;
+            text-transform: uppercase;
+            padding: 9px;
+            cursor: pointer;
+            transition: all 0.18s ease;
+        }
+        .model-switch-btn:hover:not(:disabled) {
+            border-color: var(--color-blood-red);
+            color: var(--color-blood-red);
+            background: rgba(220, 20, 60, 0.06);
+        }
+        .model-switch-btn:disabled { opacity: 0.4; cursor: default; }
+        .model-card.switching { pointer-events: none; opacity: 0.6; }
+
         .sessions-section {
             background: var(--color-dark-gray);
             backdrop-filter: none;
@@ -949,6 +1133,9 @@
             <button id="tab-archives" class="tab-button" onclick="switchTab('archives')">
                 ARCHIVES
             </button>
+            <button id="tab-models" class="tab-button" onclick="switchTab('models')">
+                AI MODELS
+            </button>
         </div>
 
         <!-- ACTIVE SESSIONS TAB -->
@@ -989,6 +1176,42 @@
 
                 <div id="archives-loading" class="loading">Loading archives...</div>
                 <div id="archives-container"></div>
+            </div>
+        </div>
+
+        <!-- AI MODELS TAB -->
+        <div id="tab-content-models" class="tab-content" style="display: none;">
+            <div class="sessions-section">
+                <div class="section-header">
+                    <div>
+                        <h2 class="section-title">Image Generation Model</h2>
+                        <div class="last-updated" id="models-last-updated">Last updated: Never</div>
+                    </div>
+                    <div style="display: flex; gap: 15px; align-items: center;">
+                        <button class="btn btn-primary" onclick="refreshAiModels()">↻ Refresh</button>
+                    </div>
+                </div>
+
+                <p class="models-hint">
+                    Drag a model onto the <strong>ACTIVE</strong> slot to switch it live — no redeploy.
+                    Takes effect on the next generated frame. <span class="models-hint-alt">(Tap a card to switch on touch devices.)</span>
+                </p>
+
+                <!-- ACTIVE DROP TARGET -->
+                <div id="active-model-dropzone" class="active-dropzone"
+                     ondragover="onModelDragOver(event)"
+                     ondragleave="onModelDragLeave(event)"
+                     ondrop="onModelDrop(event)">
+                    <div class="active-dropzone-label">◆ ACTIVE MODEL</div>
+                    <div id="active-model-card" class="active-model-card">
+                        <div class="loading">Loading current model…</div>
+                    </div>
+                    <div class="active-dropzone-hint" id="active-dropzone-hint">Drop a model here to switch</div>
+                </div>
+
+                <div class="models-shelf-label">AVAILABLE MODELS</div>
+                <div id="models-loading" class="loading">Loading models…</div>
+                <div id="models-shelf" class="models-shelf"></div>
             </div>
         </div>
     </div>
@@ -1899,8 +2122,177 @@
             // Load data for the active tab
             if (tabName === 'archives') {
                 refreshArchives();
+            } else if (tabName === 'models') {
+                refreshAiModels();
             } else {
                 refreshData();
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════════
+        // AI MODEL SWITCHER (drag & drop)
+        // ═══════════════════════════════════════════════════════════════════
+
+        let aiPresets = [];
+        let aiActivePreset = null;
+
+        // The dashboard is loaded via /admin?token=XYZ when ADMIN_TOKEN is set.
+        // The admin API endpoints are token-guarded, so capture that token once
+        // and forward it (header + query) on admin fetches.
+        const ADMIN_TOKEN = new URLSearchParams(window.location.search).get('token') || '';
+
+        function adminFetch(path, opts = {}) {
+            const sep = path.includes('?') ? '&' : '?';
+            const url = ADMIN_TOKEN ? `${path}${sep}token=${encodeURIComponent(ADMIN_TOKEN)}` : path;
+            const headers = Object.assign({}, opts.headers || {});
+            if (ADMIN_TOKEN) headers['X-Admin-Token'] = ADMIN_TOKEN;
+            return fetch(url, Object.assign({ credentials: 'include' }, opts, { headers }));
+        }
+
+        function escapeAttr(text) {
+            return String(text == null ? '' : text)
+                .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+                .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+
+        async function refreshAiModels() {
+            const loading = document.getElementById('models-loading');
+            const shelf = document.getElementById('models-shelf');
+            if (loading) loading.style.display = 'block';
+            try {
+                const response = await adminFetch(`${API_BASE}/admin/ai_config`);
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const data = await response.json();
+                aiPresets = data.presets || [];
+                aiActivePreset = data.active_preset || null;
+                renderAiModels();
+                const lu = document.getElementById('models-last-updated');
+                if (lu) lu.textContent = `Last updated: ${new Date().toLocaleTimeString()}`;
+                if (loading) loading.style.display = 'none';
+            } catch (err) {
+                console.error('[MODELS] Failed to load AI config:', err);
+                if (loading) {
+                    loading.style.display = 'block';
+                    loading.textContent = 'Failed to load models. Check ADMIN_TOKEN and try Refresh.';
+                }
+            }
+        }
+
+        function speedMeterHtml(speed) {
+            let pips = '';
+            for (let i = 1; i <= 5; i++) {
+                pips += `<span class="speed-pip ${i <= (speed || 0) ? 'on' : ''}"></span>`;
+            }
+            return `<span class="speed-meter" title="Relative speed">${pips}</span>`;
+        }
+
+        function renderAiModels() {
+            // Active slot
+            const activeCard = document.getElementById('active-model-card');
+            const active = aiPresets.find(p => p.name === aiActivePreset);
+            if (active) {
+                activeCard.innerHTML = `
+                    <div class="model-name">${escapeHtml(active.label)}</div>
+                    <div class="model-sub">${escapeHtml(active.image_provider)} / ${escapeHtml(active.image_model)}</div>
+                    <div class="model-blurb">${escapeHtml(active.blurb || '')}</div>
+                    <div class="model-badges" style="margin-top:12px;">
+                        ${active.latency ? `<span class="latency-badge">${escapeHtml(active.latency)}</span>` : ''}
+                        ${speedMeterHtml(active.speed)}
+                    </div>`;
+            } else {
+                const cur = aiPresets.length ? '' : '';
+                activeCard.innerHTML = `<div class="model-name">Custom / unknown</div>
+                    <div class="model-sub">Active config doesn't match a named preset.</div>`;
+            }
+
+            // Shelf
+            const shelf = document.getElementById('models-shelf');
+            shelf.innerHTML = aiPresets.map(p => {
+                const isActive = p.name === aiActivePreset;
+                return `
+                <div class="model-card ${isActive ? 'is-active' : ''}"
+                     id="model-card-${escapeAttr(p.name)}"
+                     draggable="true"
+                     ondragstart="onModelDragStart(event, '${escapeAttr(p.name)}')"
+                     ondragend="onModelDragEnd(event)"
+                     ondblclick="switchPreset('${escapeAttr(p.name)}')">
+                    <div class="model-drag-dots">⠿</div>
+                    <div class="model-name">${escapeHtml(p.label)}</div>
+                    <div class="model-sub">${escapeHtml(p.image_provider)} / ${escapeHtml(p.image_model)}</div>
+                    <div class="model-blurb">${escapeHtml(p.blurb || '')}</div>
+                    <div class="model-badges">
+                        ${p.latency ? `<span class="latency-badge">${escapeHtml(p.latency)}</span>` : ''}
+                        ${isActive ? '<span class="active-flag">● Active</span>' : ''}
+                        ${speedMeterHtml(p.speed)}
+                    </div>
+                    <button class="model-switch-btn" ${isActive ? 'disabled' : ''}
+                            onclick="switchPreset('${escapeAttr(p.name)}')">
+                        ${isActive ? 'Currently Active' : 'Set Active ▸'}
+                    </button>
+                </div>`;
+            }).join('');
+        }
+
+        // Drag & drop handlers
+        let draggedPreset = null;
+
+        function onModelDragStart(event, name) {
+            draggedPreset = name;
+            event.dataTransfer.effectAllowed = 'move';
+            try { event.dataTransfer.setData('text/plain', name); } catch (e) {}
+            const card = document.getElementById(`model-card-${name}`);
+            if (card) card.classList.add('dragging');
+        }
+
+        function onModelDragEnd(event) {
+            document.querySelectorAll('.model-card.dragging').forEach(c => c.classList.remove('dragging'));
+            const dz = document.getElementById('active-model-dropzone');
+            if (dz) dz.classList.remove('drag-over');
+        }
+
+        function onModelDragOver(event) {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = 'move';
+            document.getElementById('active-model-dropzone').classList.add('drag-over');
+        }
+
+        function onModelDragLeave(event) {
+            // Only clear when the pointer actually leaves the dropzone (not its children)
+            const dz = document.getElementById('active-model-dropzone');
+            if (!dz.contains(event.relatedTarget)) dz.classList.remove('drag-over');
+        }
+
+        function onModelDrop(event) {
+            event.preventDefault();
+            const dz = document.getElementById('active-model-dropzone');
+            dz.classList.remove('drag-over');
+            const name = draggedPreset || (event.dataTransfer && event.dataTransfer.getData('text/plain'));
+            if (name) switchPreset(name);
+        }
+
+        async function switchPreset(name) {
+            if (!name || name === aiActivePreset) return;
+            const card = document.getElementById(`model-card-${name}`);
+            if (card) card.classList.add('switching');
+            clearError();
+            try {
+                const response = await adminFetch(`${API_BASE}/admin/ai_switch`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ preset: name })
+                });
+                const data = await response.json();
+                if (!response.ok || data.status !== 'ok') {
+                    throw new Error(data.error || `HTTP ${response.status}`);
+                }
+                aiActivePreset = name;
+                const label = (aiPresets.find(p => p.name === name) || {}).label || name;
+                showSuccess(`Switched image model to ${label} (${data.image_provider}/${data.image_model}). Live on next frame.`);
+                renderAiModels();
+            } catch (err) {
+                console.error('[MODELS] Switch failed:', err);
+                showError(`Failed to switch model: ${err.message}`);
+                if (card) card.classList.remove('switching');
             }
         }
 
