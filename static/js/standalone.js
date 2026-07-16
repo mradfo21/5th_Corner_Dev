@@ -821,6 +821,12 @@
     if (state.sceneVisible) return;
     state.sceneVisible = true;
     document.body.classList.remove("awaiting-first-scene");
+    // The world is genuinely on screen now — surface the objectives tracker
+    // (and derive this run's opening lead). Held back until here so it never
+    // floats over the black boot / "rendering" void.
+    try { Objectives.reveal(); } catch (_) {}
+    try { Objectives.syncCase(); } catch (_) {}
+    try { refreshDirective(true); } catch (_) {}
   }
 
   // ------------------------------------------------------------------
@@ -2771,13 +2777,15 @@
         // before advancing anyway (so a stalled stream can't freeze the loop).
         state.autoDeadline = Date.now() + AUTOPLAY_REALTIME_MAX_WAIT_MS;
         refreshStatus(); // reflect turn/chaos/inventory promptly, not on the 4s tick
-        // Surface the objectives tracker (once the run has a scene) and evolve
-        // the generative LEAD to match where the story now stands.
-        try { Objectives.reveal(); } catch (_) {}
-        try { Objectives.syncCase(); } catch (_) {}
-        // refreshStatus() is async; give it a beat to land the new turn/phase
-        // before deriving this turn's directive from it.
-        setTimeout(() => { try { refreshDirective(); } catch (_) {} }, 400);
+        // Evolve the generative LEAD to match where the story now stands. The
+        // tracker itself is only REVEALED once the scene is on screen (see
+        // markSceneVisible) — so it never floats over the boot void — but we
+        // keep its data current here regardless. refreshStatus() is async, so
+        // give it a beat to land the new turn/phase before deriving the lead.
+        if (state.sceneVisible) {
+          try { Objectives.syncCase(); } catch (_) {}
+          setTimeout(() => { try { refreshDirective(); } catch (_) {} }, 400);
+        }
         // Feed the settled video frame back into the sim so choices match what's
         // actually on screen (realtime "vision"). No-op outside realtime mode.
         Renderer.observeScene(item.id);

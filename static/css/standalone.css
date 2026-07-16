@@ -3951,6 +3951,9 @@ body.touch-aiming .touch-zoom { opacity: 0.9; }
   transition: right 0.22s ease, opacity 0.22s ease, transform 0.22s ease;
 }
 #objectives-hud.hidden { display: none; }
+/* Never float the tracker over the black boot / "rendering" void — it only
+   belongs once the first scene is actually on screen. */
+body.awaiting-first-scene #objectives-hud { display: none !important; }
 /* Boot / fresh-run reveal. */
 #objectives-hud.obj-in { animation: obj-hud-in 0.5s cubic-bezier(0.2, 0.8, 0.2, 1); }
 @keyframes obj-hud-in {
