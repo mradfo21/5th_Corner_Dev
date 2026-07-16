@@ -2008,6 +2008,136 @@ def _appraise_photo(image_path: str, max_items: int = 6) -> dict:
         print(f"[APPRAISE ERROR] Failed to appraise photo: {safe_e}")
         return empty
 
+def _fallback_directive(st: dict) -> dict:
+    """A deterministic "current lead" derived purely from world state — no LLM.
+
+    Used both when the model is unavailable and as the always-safe default the
+    generative path upgrades. Keeps the objectives tracker's LEAD reading well
+    even with no network / no key.
+    """
+    phase = str((st or {}).get("current_phase", "normal") or "normal").lower()
+    recent = (st or {}).get("recent_events") or []
+    seen = (st or {}).get("seen_elements") or []
+    subject = ""
+    if seen:
+        subject = str(seen[-1]).strip()
+    templates = {
+        "normal": ("Survey the area",
+                   "Read the scene and document your first real subject."),
+        "escalating": ("Keep the camera close",
+                       "Something is shifting — capture it before it turns."),
+        "critical": ("Get what you can and move",
+                     "It's turning against you — shoot the evidence and stay alive."),
+    }
+    lead, detail = templates.get(phase, templates["normal"])
+    # If the world has surfaced a named element, make the lead concrete.
+    if subject and phase != "critical":
+        lead = f"Document the {subject}"[:48]
+        detail = "It matters to the case — get it on the record."
+    return {"lead": lead, "detail": detail, "generated": False}
+
+
+def generate_directive(session_id: str = "default") -> dict:
+    """Generate the objectives tracker's evolving "current lead" — a short,
+    in-world investigative directive grounded in the live world state.
+
+    This is the GENERATIVE spine of the objectives system: it reads the
+    evolving world (premise, recent beats, phase, discovered elements) and asks
+    the model for the player's most pressing current goal, phrased like a AAA
+    objective line. It NEVER raises and always returns a usable directive —
+    degrading to :func:`_fallback_directive` when the model is unavailable.
+
+    Returns: {"lead": str, "detail": str, "generated": bool}
+    """
+    import json as _json
+    import re as _re
+    import requests
+
+    try:
+        st = state if session_id == "default" else _load_state(session_id)
+    except Exception:
+        st = state or {}
+
+    fb = _fallback_directive(st or {})
+    if not LLM_ENABLED or not GEMINI_API_KEY:
+        return fb
+
+    try:
+        world_prompt = str((st or {}).get("world_prompt", "") or "")[:900]
+        recent = (st or {}).get("recent_events") or []
+        recent_txt = " | ".join(str(r) for r in recent[-3:])[:500]
+        seen = (st or {}).get("seen_elements") or []
+        seen_txt = ", ".join(str(s) for s in seen[-8:])[:300]
+        phase = str((st or {}).get("current_phase", "normal") or "normal")
+        threat = (st or {}).get("threat_level", 0)
+        tod = str((st or {}).get("time_of_day", "") or "")[:80]
+
+        prompt = (
+            "You are the objective director for a first-person investigative "
+            "documentary game. The player explores a strange, evolving world and "
+            "photographs subjects to build a case file. Given the CURRENT world "
+            "state, write the player's single most pressing CURRENT OBJECTIVE — "
+            "the 'lead' they should pursue right now. It must fit the fiction and "
+            "point toward action (explore, reach, document, escape, confront).\n\n"
+            f"PREMISE / WORLD: {world_prompt}\n"
+            f"RECENT BEATS: {recent_txt}\n"
+            f"KNOWN ELEMENTS: {seen_txt}\n"
+            f"PHASE: {phase} (threat {threat}); TIME: {tod}\n\n"
+            "Respond with ONLY a JSON object, no prose, no code fences:\n"
+            '{"lead": "<imperative objective, 2-7 words, Title Case, no period>", '
+            '"detail": "<one grounded sentence of context, <= 16 words>"}'
+        )
+
+        api_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent"
+        headers = {"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"}
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "thinkingConfig": {"thinkingBudget": 0},
+                "temperature": 0.8,
+                "maxOutputTokens": 200,
+                "responseMimeType": "application/json",
+            },
+            "safetySettings": [
+                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+            ],
+        }
+        response = requests.post(api_url, headers=headers, json=payload, timeout=15)
+        response.raise_for_status()
+        result = response.json()
+        candidates = result.get("candidates") or []
+        if not candidates:
+            return fb
+        parts = (candidates[0].get("content") or {}).get("parts") or []
+        full_text = "".join(p.get("text", "") for p in parts).strip()
+        if not full_text:
+            return fb
+        cleaned = _re.sub(r"^```(?:json)?|```$", "", full_text.strip(), flags=_re.MULTILINE).strip()
+        try:
+            parsed = _json.loads(cleaned)
+        except Exception:
+            m = _re.search(r"\{.*\}", cleaned, _re.DOTALL)
+            parsed = _json.loads(m.group(0)) if m else None
+        if not isinstance(parsed, dict):
+            return fb
+        lead = str(parsed.get("lead") or "").strip().strip('".').strip()[:48]
+        detail = str(parsed.get("detail") or "").strip()[:160]
+        if not lead:
+            return fb
+        return {"lead": lead, "detail": detail, "generated": True}
+    except requests.exceptions.HTTPError as e:
+        safe_e = str(e).encode("ascii", "replace").decode("ascii")
+        print(f"[DIRECTIVE ERROR] Gemini API HTTP error: {safe_e}")
+        return fb
+    except Exception as e:
+        safe_e = str(e).encode("ascii", "replace").decode("ascii")
+        print(f"[DIRECTIVE ERROR] Failed to generate directive: {safe_e}")
+        return fb
+
+
 # ───────── world report (with vision‑desc) ─────────────────────────────────
 def _world_report() -> str:
     base = narrative_tmpl.format(
@@ -3514,6 +3644,62 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
             _last_image_path = result_path
             return (result_path, prompt_str, None)
 
+        elif active_image_provider == "fal":
+            # Use fal.ai SDXL Lightning - the SPEED preset. Synchronous REST
+            # call typically completes in ~1-2s (vs ~12s Krea Medium / ~15-30s
+            # Gemini Pro), at the cost of lower fidelity than either. Only a
+            # single reference image is supported for continuity.
+            print(f"[IMG] Using fal.ai (SDXL Lightning) provider")
+            from fal_image_utils import generate_with_fal, generate_fal_img2img
+
+            if prev_img_paths_list and frame_idx > 0:
+                ref_image_to_use = primary_guide_image_path or prev_img_paths_list[0]
+                print(f"[IMG GENERATION] fal img2img with reference: {Path(ref_image_to_use).name}")
+                result_path = generate_fal_img2img(
+                    prompt=prompt_str,
+                    caption=caption,
+                    reference_image_path=ref_image_to_use,
+                    world_prompt=world_prompt,
+                    time_of_day=use_time_of_day,
+                    action_context=choice,
+                    output_dir=img_dir,
+                )
+            else:
+                print(f"[IMG GENERATION] fal text-to-image (no reference anchor)")
+                result_path = generate_with_fal(
+                    prompt=prompt_str,
+                    caption=caption,
+                    world_prompt=world_prompt,
+                    time_of_day=use_time_of_day,
+                    is_first_frame=(frame_idx == 0),
+                    action_context=choice,
+                    output_dir=img_dir,
+                )
+
+            # SAFETY NET: if fal failed (bad key, rate limit, etc.) but Gemini
+            # is available, render the frame with Gemini so the world never
+            # goes blank on a single bad turn.
+            if not result_path and GEMINI_API_KEY:
+                print(f"[IMG] fal returned no image - falling back to Gemini for this frame", flush=True)
+                from gemini_image_utils import generate_with_gemini, generate_gemini_img2img
+                if prev_img_paths_list and frame_idx > 0:
+                    fb_refs = [primary_guide_image_path] if primary_guide_image_path else prev_img_paths_list[:1]
+                    result_path = generate_gemini_img2img(
+                        prompt=prompt_str, caption=caption, reference_image_path=fb_refs,
+                        world_prompt=world_prompt, time_of_day=use_time_of_day,
+                        action_context=choice, hd_mode=False, output_dir=img_dir,
+                    )
+                else:
+                    result_path = generate_with_gemini(
+                        prompt=prompt_str, caption=caption, world_prompt=world_prompt,
+                        aspect_ratio="4:3", time_of_day=use_time_of_day,
+                        is_first_frame=(frame_idx == 0), action_context=choice,
+                        hd_mode=False, output_dir=img_dir,
+                    )
+
+            _last_image_path = result_path
+            return (result_path, prompt_str, None)
+
         elif active_image_provider == "openai":
             # Use OpenAI gpt-image-1
             # Supports img2img via /images/edits endpoint (up to 16 reference images!)
@@ -3663,7 +3849,7 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
             return (_last_image_path, vhs_prompt, None)  # OpenAI doesn't generate videos
         
         else:
-            raise ValueError(f"Unknown IMAGE_PROVIDER: {active_image_provider}. Supported: 'openai', 'gemini', 'veo', 'krea'")
+            raise ValueError(f"Unknown IMAGE_PROVIDER: {active_image_provider}. Supported: 'openai', 'gemini', 'veo', 'krea', 'fal'")
         # Skip time extraction - we already set time_of_day in state before generation
         # No need to extract it back from the image we just generated!
         return (f"/images/{filename}", prompt_str, None)

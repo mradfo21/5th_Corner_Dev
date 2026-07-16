@@ -79,8 +79,14 @@
     <button id="btn-model" class="rail-btn" type="button" title="World model logs &amp; selector (L)">
       <span class="rail-ico">◍</span><span class="rail-lbl">MODEL</span>
     </button>
+    <button id="btn-imgmodel" class="rail-btn" type="button" title="Image generator — switch the model that draws the world (I)">
+      <span class="rail-ico">▦</span><span class="rail-lbl">IMAGE</span>
+    </button>
     <button id="btn-story" class="rail-btn" type="button" title="Story log — the detailed run chronicle (J)">
       <span class="rail-ico">&#8803;</span><span class="rail-lbl">STORY</span>
+    </button>
+    <button id="btn-objectives" class="rail-btn" type="button" title="Objectives — the case board of active leads &amp; field goals (O)">
+      <span class="rail-ico">◈</span><span class="rail-lbl">GOALS</span>
     </button>
     <button id="autoplay-btn" class="rail-btn" type="button" title="Auto-play — advance on its own (P)">
       <span class="rail-ico">⏩</span><span class="rail-lbl" id="autoplay-label">AUTO</span>
@@ -158,6 +164,20 @@
       <div id="rt-music-opts" class="rt-music-opts"></div>
     </div>
     <ol id="rt-log-list" class="rt-log-list" aria-live="polite"></ol>
+  </aside>
+
+  <!-- Image-generator switcher: pick the model that DRAWS the world (still
+       frames). Player-facing, mirroring the live world-model switcher above —
+       opens from the IMAGE rail button or the I key. Populated from
+       /api/ai/config; switching POSTs /api/ai/switch and takes effect on the
+       next generated frame (no redeploy). -->
+  <aside id="img-model" class="img-model" aria-label="Image generation model">
+    <div class="img-model-head">
+      <span class="img-model-title">IMAGE MODEL</span>
+      <button id="img-model-hide" class="img-model-hide" type="button" title="Hide (I)">&#10005;</button>
+    </div>
+    <p class="img-model-hint">The model that draws each frame. Faster = quicker turns, lower detail.</p>
+    <div id="img-model-list" class="img-model-list" role="group" aria-label="Switch image model"></div>
   </aside>
 
   <!-- Voice-agent debug log: a focused inspector for the TALK + narrator agents
@@ -337,6 +357,29 @@
     <div class="evidence-cap">● EVIDENCE GATHERED</div>
   </div>
 
+  <!-- OBJECTIVES HUD (top-right): a AAA-style objective tracker / case board.
+       It is driven by the GENERATIVE world (a model-authored "current lead"
+       that evolves with the story) and by the PHOTO loop (field bounties to
+       document the subjects the world model surfaces, plus standing challenge
+       goals). The spine is the CASE primary objective, mirrored from the
+       dossier census. Collapsible; toggled with O or the GOALS rail button. -->
+  <aside id="objectives-hud" class="hidden" aria-label="Objectives" aria-live="polite">
+    <div class="obj-head" id="obj-head">
+      <span class="obj-head-mark" aria-hidden="true">◈</span>
+      <span class="obj-head-title">OBJECTIVES</span>
+      <span class="obj-head-count" id="obj-count">0/0</span>
+      <button id="obj-collapse" class="obj-collapse" type="button"
+              title="Collapse / expand objectives (O)" aria-label="Collapse objectives" aria-expanded="true">▾</button>
+    </div>
+    <ol id="obj-list" class="obj-list" aria-live="polite"></ol>
+  </aside>
+  <!-- Objective flourish banner: a brief cinematic "NEW OBJECTIVE" /
+       "OBJECTIVE COMPLETE" title that sweeps in under the tracker. -->
+  <div id="obj-banner" class="obj-banner hidden" aria-hidden="true">
+    <span class="obj-banner-kicker"></span>
+    <span class="obj-banner-title"></span>
+  </div>
+
   <!-- Dossier HUD (top-center): the run's EVIDENCE score + RANK, and the CASE
        FILE census — distinct subjects documented toward closing the case (the
        win condition). Revealed when the camera is first raised. -->
@@ -416,6 +459,7 @@
       <div class="case-rank">RANK <span id="case-rank-letter">A</span></div>
       <div class="case-stats">
         <span><b id="case-subjects">0</b> subjects documented</span>
+        <span><b id="case-objectives">0</b> objectives cleared</span>
         <span><b id="case-evidence">0</b> evidence</span>
         <span><b id="case-shots">0</b> shots</span>
       </div>

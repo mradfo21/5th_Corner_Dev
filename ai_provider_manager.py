@@ -70,6 +70,12 @@ def load_ai_config() -> Dict[str, Any]:
                         "text_model": "gemini-3.1-flash-lite",
                         "image_provider": "krea",
                         "image_model": "krea-2/large"
+                    },
+                    "fal": {
+                        "text_provider": "gemini",
+                        "text_model": "gemini-3.1-flash-lite",
+                        "image_provider": "fal",
+                        "image_model": "fal-ai/fast-lightning-sdxl"
                     }
                 }
             }
@@ -443,6 +449,12 @@ def generate_image(prompt: str, caption: Optional[str] = None, model: Optional[s
                 prompt=prompt,
                 caption=caption or "image",
                 model=get_image_model(),
+            )
+        if backend == "fal":
+            import fal_image_utils
+            return fal_image_utils.generate_with_fal(
+                prompt=prompt,
+                caption=caption or "image",
             )
         import gemini_image_utils
         return gemini_image_utils.generate_with_gemini(
