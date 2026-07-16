@@ -1177,12 +1177,13 @@
     el.sceneFlash.classList.add("shutter");
   }
 
-  // Handheld "camera" jolts — a brief, one-shot shake of the whole view (a class
-  // on <body>, so it composes on top of the scene's optical-zoom transform and a
-  // telephoto framing never snaps to center mid-jolt). `photoShake` is the bigger
-  // bump when the camera is raised; `photoKick` is a smaller recoil the instant a
-  // shot fires. Both respect reduced motion and only ever fire as momentary
-  // one-shots — never during a sustained aim/drag — so aiming stays steady.
+  // Handheld "camera" jolt — a brief, one-shot recoil of the whole view the
+  // instant a shot fires (a class on <body>, so it composes on top of the
+  // scene's optical-zoom transform and a telephoto framing never snaps to center
+  // mid-jolt). Respects reduced motion and only ever fires as a momentary
+  // one-shot — never during a sustained aim/drag — so aiming stays steady. This
+  // is the ONLY camera shake: raising the camera does NOT shake (that read as a
+  // glitch); the kick is the satisfying "chunk" of taking the photo.
   const _scenePunchTimers = {};
   function scenePunch(cls, ms) {
     if (prefersReducedMotion()) return;
@@ -1192,8 +1193,7 @@
     clearTimeout(_scenePunchTimers[cls]);
     _scenePunchTimers[cls] = setTimeout(() => document.body.classList.remove(cls), ms);
   }
-  function photoShake() { scenePunch("photo-shake", 470); }
-  function photoKick() { scenePunch("photo-kick", 240); }
+  function photoKick() { scenePunch("photo-kick", 300); }
 
   // Fire the VCR distortion burst over the current frame to mask a transition
   // (image swap, realtime re-anchor/reveal, or reset). Re-triggering restarts
@@ -4512,9 +4512,9 @@
     moveReticle(start.x, start.y);
     if (el.touchLayer) el.touchLayer.classList.remove("hidden");
     startPhotoTargeting(); // begin surfacing photographable subjects
-    // Raising the camera: a subtle handheld jolt + servo whir + haptic clunk so
-    // activating photo mode lands with weight.
-    photoShake();
+    // Raising the camera: a servo whir + haptic clunk so activating photo mode
+    // lands with weight. NO screen shake here — the shake is reserved for the
+    // moment a shot fires (see photoKick in the capture path).
     try { Sound.cameraOn(); } catch (_) {}
     try { Haptics.camera(); } catch (_) {}
   }
@@ -5076,7 +5076,7 @@
     if (el.touchReticle) el.touchReticle.classList.remove("holding");
     if (el.touchCaptureFrame) el.touchCaptureFrame.classList.remove("grab");
     if (el.realtimeBtn) el.realtimeBtn.classList.remove("aiming");
-    document.body.classList.remove("touch-aiming", "photo-shake", "photo-kick");
+    document.body.classList.remove("touch-aiming", "photo-kick");
     try { Sound.cameraOff(); } catch (_) {}
     try { Haptics.soft(); } catch (_) {}
     updateAmbientScan(); // hotspots return once the camera is put away

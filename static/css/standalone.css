@@ -1527,37 +1527,26 @@ html.is-touch .touch-hint {
   background: rgba(20, 12, 4, 0.72);
 }
 
-/* ---------- Camera "handheld" jolts ----------
-   A one-shot jolt of the WHOLE view when the camera is raised, and a smaller
-   recoil the instant a shot fires — so photo mode feels physical. We animate
-   <body> (its fixed children shake with it), which composes ON TOP of the
-   scene's own optical-zoom transform, so a telephoto framing never snaps back
-   to center mid-jolt. A hair of scale keeps the edges covered (body is black +
-   overflow:hidden), and these fire only as momentary one-shots — never during a
-   sustained aim/drag — so aiming stays rock-steady. */
-body.photo-shake {
-  animation: photo-arm-shake 0.46s cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
-}
+/* ---------- Camera capture kick ----------
+   A brief, one-shot recoil of the WHOLE view the instant a shot fires — the
+   satisfying "chunk" of taking a photo. We animate <body> (its fixed children
+   move with it), which composes ON TOP of the scene's own optical-zoom
+   transform, so a telephoto framing never snaps back to center mid-jolt. A hair
+   of scale keeps the edges covered (body is black + overflow:hidden). It fires
+   only as a momentary one-shot on capture — NOT when the camera is raised (that
+   read as a glitch) and never during a sustained aim/drag — so aiming stays
+   rock-steady. */
 body.photo-kick {
-  animation: photo-cam-kick 0.22s cubic-bezier(0.34, 0.02, 0.2, 1) both;
-}
-@keyframes photo-arm-shake {
-  0%   { transform: scale(1.03) translate3d(0, 0, 0) rotate(0deg); }
-  16%  { transform: scale(1.03) translate3d(-7px, 5px, 0) rotate(-0.55deg); }
-  33%  { transform: scale(1.028) translate3d(8px, -5px, 0) rotate(0.6deg); }
-  50%  { transform: scale(1.022) translate3d(-5px, -3px, 0) rotate(-0.34deg); }
-  68%  { transform: scale(1.016) translate3d(4px, 3px, 0) rotate(0.22deg); }
-  84%  { transform: scale(1.008) translate3d(-2px, -1px, 0) rotate(-0.1deg); }
-  100% { transform: scale(1) translate3d(0, 0, 0) rotate(0deg); }
+  animation: photo-cam-kick 0.26s cubic-bezier(0.34, 0.02, 0.2, 1) both;
 }
 @keyframes photo-cam-kick {
-  0%   { transform: scale(1.022) translate3d(0, 0, 0); }
-  40%  { transform: scale(1.022) translate3d(0, 6px, 0) rotate(-0.28deg); }
-  70%  { transform: scale(1.012) translate3d(0, -2px, 0) rotate(0.12deg); }
-  100% { transform: scale(1) translate3d(0, 0, 0); }
+  0%   { transform: scale(1.025) translate3d(0, 0, 0) rotate(0deg); }
+  35%  { transform: scale(1.025) translate3d(-3px, 8px, 0) rotate(-0.5deg); }
+  65%  { transform: scale(1.014) translate3d(2px, -3px, 0) rotate(0.26deg); }
+  100% { transform: scale(1) translate3d(0, 0, 0) rotate(0deg); }
 }
 @media (prefers-reduced-motion: reduce) {
-  body.photo-shake, body.photo-kick { animation: none; }
+  body.photo-kick { animation: none; }
   #scene-flash.shutter { animation: scene-flash-anim 0.2s ease-out; }
 }
 
