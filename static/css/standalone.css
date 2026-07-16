@@ -375,6 +375,18 @@ body.story-log-on .story-log { display: flex; }
   letter-spacing: 0.04em;
 }
 
+/* Objective beats in the run chronicle — a new lead / bounty, and completions. */
+.prose-entry.objective-event {
+  border-left: 2px solid rgba(142, 255, 193, 0.4);
+  padding-left: 10px;
+}
+.prose-entry.objective-new { color: #cdeede; }
+.prose-entry.objective-done {
+  color: #8effc1;
+  border-left-color: rgba(142, 255, 193, 0.85);
+  text-shadow: 0 0 9px rgba(142, 255, 193, 0.35), 0 2px 8px rgba(0,0,0,0.9);
+}
+
 .prose-entry strong {
   color: inherit;
   filter: brightness(1.25);
