@@ -3799,6 +3799,10 @@
       // Seed the run's spine + standing challenges. The LEAD is filled in by the
       // first directive refresh; the CASE mirrors the dossier.
       syncCase();
+      // Seed the LEAD so the board reads complete the instant it's revealed;
+      // refreshDirective() upgrades it with a world-grounded directive shortly.
+      add({ id: LEAD_ID, kind: "lead", title: "Survey the area",
+            detail: "Read the scene and find your first subject.", quiet: true });
       add({ id: "bonus:rare", kind: "bonus", title: "Secure a rare specimen",
             detail: "Photograph a \u2605\u2605\u2605\u2605\u2605 subject", quiet: true });
       add({ id: "bonus:perfect", kind: "bonus", title: "Land a perfect shot",
