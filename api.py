@@ -1024,6 +1024,132 @@ def admin_reset_session():
 
 
 # ═══════════════════════════════════════════════════════════════════
+# AI PROVIDER SWITCHING (admin)
+#
+# Powers the drag-and-drop model switcher in the admin dashboard. Reads and
+# writes the same ai_config.json / preset system that the Discord /ai_switch
+# command uses, so a change here takes effect on the very next turn without a
+# redeploy. Guarded by the same ADMIN_TOKEN as the rest of the dashboard.
+# ═══════════════════════════════════════════════════════════════════
+
+# Friendly display metadata for the presets, so the UI can show a human label
+# and an at-a-glance latency badge without hardcoding it in the HTML. Keyed by
+# preset name; unknown presets fall back to sensible defaults derived from the
+# preset config itself.
+_PRESET_UI_META = {
+    "fal": {"label": "fal.ai Lightning", "latency": "~1-2s", "speed": 5,
+            "blurb": "SDXL Lightning. Fastest possible — lower fidelity. Needs FAL_API_KEY."},
+    "krea": {"label": "Krea 2 Medium", "latency": "~12s", "speed": 3,
+             "blurb": "Fast, strong quality, style-transfer continuity. Needs KREA_API_KEY."},
+    "krea_large": {"label": "Krea 2 Large", "latency": "~24s", "speed": 2,
+                   "blurb": "Higher quality / more textured. Needs KREA_API_KEY."},
+    "gemini": {"label": "Gemini (Nano Banana)", "latency": "~15-30s", "speed": 2,
+               "blurb": "High quality, multi-frame continuity. Needs GEMINI_API_KEY."},
+    "openai": {"label": "OpenAI gpt-image-1", "latency": "~20-40s", "speed": 1,
+               "blurb": "Highest fidelity, up to 16 reference images. Needs OPENAI_API_KEY."},
+    "veo": {"label": "Veo video frames", "latency": "~30-60s", "speed": 1,
+            "blurb": "Generates 8s video, extracts last frame. Natural consistency."},
+    "anthropic": {"label": "Claude + Gemini", "latency": "~15-30s", "speed": 2,
+                  "blurb": "Claude Opus narrative + Gemini images. Premium storytelling."},
+}
+
+
+def _preset_matches_current(preset_cfg, current):
+    """A preset is 'active' when its image+text provider/model all match the
+    live config (that's what set_preset writes)."""
+    keys = ("image_provider", "image_model", "text_provider", "text_model")
+    return all(preset_cfg.get(k) == current.get(k) for k in keys)
+
+
+@app.route('/api/admin/ai_config', methods=['GET'])
+def admin_ai_config():
+    """Return the live AI configuration plus all available presets (with
+    friendly labels/latency metadata) for the dashboard's model switcher."""
+    if not _admin_token_ok():
+        return jsonify({
+            "error": "unauthorized",
+            "message": "Provide ADMIN_TOKEN via ?token=, X-Admin-Token header, or admin_token cookie."
+        }), 401
+    try:
+        config = ai_provider_manager.load_ai_config()
+        current = {
+            "text_provider": config.get("text_provider"),
+            "text_model": config.get("text_model"),
+            "image_provider": config.get("image_provider"),
+            "image_model": config.get("image_model"),
+            "last_updated": config.get("last_updated"),
+        }
+        presets = []
+        active_name = None
+        for name, cfg in ai_provider_manager.get_available_presets().items():
+            meta = _PRESET_UI_META.get(name, {})
+            is_active = _preset_matches_current(cfg, current)
+            if is_active:
+                active_name = name
+            presets.append({
+                "name": name,
+                "label": meta.get("label", name.replace("_", " ").title()),
+                "latency": meta.get("latency", ""),
+                "speed": meta.get("speed", 0),
+                "blurb": meta.get("blurb", cfg.get("description", "")),
+                "text_provider": cfg.get("text_provider"),
+                "text_model": cfg.get("text_model"),
+                "image_provider": cfg.get("image_provider"),
+                "image_model": cfg.get("image_model"),
+                "active": is_active,
+            })
+        return jsonify({
+            "status": "ok",
+            "current": current,
+            "active_preset": active_name,
+            "presets": presets,
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to load AI config", str(e))
+
+
+@app.route('/api/admin/ai_switch', methods=['POST'])
+def admin_ai_switch():
+    """Switch the live AI configuration to a named preset. Takes effect on the
+    next turn (config is hot-reloaded), no redeploy needed."""
+    if not _admin_token_ok():
+        return jsonify({
+            "error": "unauthorized",
+            "message": "Provide ADMIN_TOKEN via ?token=, X-Admin-Token header, or admin_token cookie."
+        }), 401
+
+    body = request.get_json(silent=True) or {}
+    preset = body.get('preset') or request.args.get('preset')
+    if not preset:
+        return jsonify({"status": "error", "error": "Missing 'preset'."}), 400
+
+    presets = ai_provider_manager.get_available_presets()
+    if preset not in presets:
+        return jsonify({
+            "status": "error",
+            "error": f"Unknown preset '{preset}'.",
+            "available": list(presets.keys()),
+        }), 400
+
+    try:
+        ok = ai_provider_manager.set_preset(preset)
+        if not ok:
+            return jsonify({"status": "error", "error": f"Failed to switch to '{preset}'."}), 500
+        return jsonify({
+            "status": "ok",
+            "preset": preset,
+            "image_provider": ai_provider_manager.get_image_provider(),
+            "image_model": ai_provider_manager.get_image_model(),
+            "text_provider": ai_provider_manager.get_text_provider(),
+            "text_model": ai_provider_manager.get_text_model(),
+        })
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to switch AI preset", str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════
 # INFO & HEALTH ENDPOINTS
 # ═══════════════════════════════════════════════════════════════════
 
