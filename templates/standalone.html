@@ -59,6 +59,26 @@
     <div id="vhs-timecode">REC <span id="rec-dot">●</span> <span id="timecode-text">00:00:00</span></div>
   </div>
 
+  <!-- Lobby presence: a live headcount of everyone currently on THIS shared
+       run (it's a single session everyone watches together, not a private
+       game) — tap it to see who's watching, and who's actively steering it
+       right now. -->
+  <button id="lobby-widget" class="lobby-widget" type="button"
+          aria-haspopup="true" aria-expanded="false" title="Who's watching this run">
+    <span class="lobby-dot-live" aria-hidden="true"></span>
+    <span id="lobby-count">0</span>
+    <span class="lobby-lbl">watching</span>
+    <span id="lobby-active" class="lobby-active-lbl"></span>
+  </button>
+  <aside id="lobby-panel" class="lobby-panel" aria-label="Who's watching this run">
+    <div class="lobby-panel-head">
+      <span class="lobby-panel-title">LOBBY</span>
+      <button id="lobby-panel-close" class="lobby-panel-close" type="button" title="Close">&#10005;</button>
+    </div>
+    <ul id="lobby-list" class="lobby-list"></ul>
+    <p class="lobby-hint">everyone here shares this run — one choice moves the story for all.</p>
+  </aside>
+
   <!-- Menu toggle: a single always-visible button in the very top-right corner.
        The control menu starts COLLAPSED so the scene stays unobstructed; this
        button opens/closes it (toggles body.menu-open). Also reachable with Tab. -->

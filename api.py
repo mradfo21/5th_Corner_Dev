@@ -12,6 +12,7 @@ from flask_cors import CORS
 import engine
 import ai_provider_manager
 import scene_audio
+import presence
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
@@ -298,6 +299,63 @@ def api_status():
     except Exception as e:
         traceback.print_exc()
         return error_response("Failed to get status", str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════
+# LOBBY / PRESENCE ENDPOINTS
+#
+# The standalone/live UI is a single shared run, not a private session per
+# visitor — so "who else is here" is actually meaningful. These endpoints
+# back a lightweight in-memory headcount (see presence.py) of everyone
+# currently viewing (or actively steering) the current run. No auth, no
+# persistence: it's a live "who's here right now" readout, not a log.
+# ═══════════════════════════════════════════════════════════════════
+
+@app.route('/api/lobby/heartbeat', methods=['POST'])
+def api_lobby_heartbeat():
+    """Registers/refreshes this browser tab as a lobby viewer and returns the
+    current snapshot. Called every ~8s by the client, and immediately (with
+    `active: true`) whenever the player commits a game action, so the reply
+    always reflects the caller's own presence too — no extra round trip."""
+    try:
+        data = request.get_json(silent=True) or {}
+        viewer_id = str(data.get('viewer_id') or '').strip()
+        if not viewer_id:
+            return error_response("viewer_id is required", code=400)
+        label = data.get('label')
+        active = bool(data.get('active'))
+        return jsonify(presence.touch(viewer_id, label=label, active=active))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to update lobby presence", str(e))
+
+
+@app.route('/api/lobby/leave', methods=['POST'])
+def api_lobby_leave():
+    """Best-effort departure beacon (navigator.sendBeacon on tab close/hide)
+    so a closed tab drops out of the lobby right away instead of waiting on
+    the heartbeat TTL. `force=True` because sendBeacon posts a Blob without
+    a guaranteed application/json content-type in every browser."""
+    try:
+        data = request.get_json(silent=True, force=True) or {}
+        viewer_id = str(data.get('viewer_id') or '').strip()
+        presence.leave(viewer_id)
+        return jsonify({"success": True})
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to remove lobby presence", str(e))
+
+
+@app.route('/api/lobby', methods=['GET'])
+def api_lobby_snapshot():
+    """Read-only lobby snapshot (no heartbeat side effect) — for polling from
+    tools other than the standalone client (e.g. the admin dashboard)."""
+    try:
+        viewer_id = request.args.get('viewer_id')
+        return jsonify(presence.snapshot(viewer_id))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to read lobby", str(e))
 
 
 # ═══════════════════════════════════════════════════════════════════

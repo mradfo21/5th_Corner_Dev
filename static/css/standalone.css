@@ -214,6 +214,163 @@ html, body {
    is hidden by default and opened from the STORY rail button (or J), mirroring
    the world-model log, so the art is never obstructed by prose. */
 
+/* ---------- Lobby: "who's watching" presence pill (top-left) ----------
+   Sits ABOVE where the story log docks (it opens further down, top: 58px)
+   so the two never collide even when both are visible. */
+
+.lobby-widget {
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 10px);
+  left: calc(env(safe-area-inset-left, 0px) + 10px);
+  z-index: 14;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 20px;
+  border: 1px solid rgba(142, 255, 193, 0.28);
+  background: rgba(4, 10, 8, 0.55);
+  color: rgba(216, 240, 228, 0.85);
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  backdrop-filter: blur(2px);
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.lobby-widget:hover { background: rgba(4, 10, 8, 0.74); border-color: rgba(142, 255, 193, 0.5); }
+
+.lobby-dot-live {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: rgba(142, 255, 193, 0.55);
+  box-shadow: 0 0 4px rgba(142, 255, 193, 0.4);
+}
+/* Amber + pulsing whenever someone (maybe you) is actively steering the run
+   right now, rather than the still green "just watching" glow. */
+.lobby-widget.has-active .lobby-dot-live {
+  background: #ffcf6b;
+  box-shadow: 0 0 6px rgba(255, 207, 107, 0.7);
+  animation: lobby-pulse 1.4s ease-in-out infinite;
+}
+@keyframes lobby-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(1.5); }
+}
+#lobby-count {
+  font-family: 'VT323', monospace;
+  font-size: 15px;
+  line-height: 1;
+  color: #eafff2;
+}
+.lobby-lbl {
+  text-transform: uppercase;
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  color: rgba(216, 240, 228, 0.55);
+}
+.lobby-active-lbl {
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  color: #ffcf6b;
+}
+.lobby-active-lbl:empty { display: none; }
+
+.lobby-panel {
+  position: fixed;
+  top: calc(env(safe-area-inset-top, 0px) + 44px);
+  left: calc(env(safe-area-inset-left, 0px) + 10px);
+  z-index: 14;
+  width: min(64vw, 240px);
+  max-height: 42vh;
+  display: flex;
+  flex-direction: column;
+  background: rgba(4, 10, 8, 0.85);
+  border: 1px solid rgba(142, 255, 193, 0.24);
+  border-radius: 8px;
+  backdrop-filter: blur(3px);
+  color: rgba(216, 240, 228, 0.88);
+  overflow: hidden;
+  opacity: 0;
+  transform: translateY(-6px);
+  pointer-events: none;
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+.lobby-panel.open {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+.lobby-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 9px;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  color: rgba(142, 255, 193, 0.7);
+  border-bottom: 1px solid rgba(142, 255, 193, 0.14);
+  background: rgba(0, 0, 0, 0.25);
+}
+.lobby-panel-close {
+  background: none;
+  border: none;
+  color: rgba(216, 240, 228, 0.5);
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1;
+  padding: 0 2px;
+}
+.lobby-list {
+  list-style: none;
+  margin: 0;
+  padding: 6px 9px;
+  overflow-y: auto;
+  flex: 1 1 auto;
+  font-size: 11px;
+}
+.lobby-viewer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+  color: rgba(216, 240, 228, 0.75);
+}
+.lobby-dot {
+  width: 5px;
+  height: 5px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: rgba(142, 255, 193, 0.35);
+}
+.lobby-viewer-active .lobby-dot {
+  background: #ffcf6b;
+  box-shadow: 0 0 5px rgba(255, 207, 107, 0.6);
+}
+.lobby-viewer-active .lobby-name { color: #ffe1a6; }
+.lobby-viewer-you .lobby-name { color: #eafff2; font-weight: 600; }
+.lobby-empty {
+  color: rgba(216, 240, 228, 0.4);
+  font-style: italic;
+  padding: 3px 0;
+}
+.lobby-hint {
+  margin: 0;
+  padding: 6px 9px 8px;
+  font-size: 9px;
+  line-height: 1.4;
+  color: rgba(216, 240, 228, 0.4);
+  border-top: 1px solid rgba(142, 255, 193, 0.1);
+}
+
+@media (max-width: 480px) {
+  .lobby-widget { font-size: 10px; padding: 4px 8px; }
+  .lobby-panel { width: min(70vw, 220px); }
+}
+
 .story-log {
   position: fixed;
   /* Docked top-LEFT (where the narrative used to float) so it never collides

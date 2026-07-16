@@ -137,6 +137,12 @@
     rtModelInput: document.getElementById("rt-model-input"),
     vhsOverlay: document.getElementById("vhs-overlay"),
     backendName: document.getElementById("backend-name"),
+    lobbyWidget: document.getElementById("lobby-widget"),
+    lobbyPanel: document.getElementById("lobby-panel"),
+    lobbyPanelClose: document.getElementById("lobby-panel-close"),
+    lobbyCount: document.getElementById("lobby-count"),
+    lobbyActive: document.getElementById("lobby-active"),
+    lobbyList: document.getElementById("lobby-list"),
     timecodeText: document.getElementById("timecode-text"),
     inventoryHud: document.getElementById("inventory-hud"),
     inventoryList: document.getElementById("inventory-list"),
@@ -1953,6 +1959,135 @@
     return { visible, toggle, init };
   })();
 
+  // ------------------------------------------------------------------
+  // Lobby — "who's watching" presence. The standalone run is a single SHARED
+  // session (everyone hits the same /api/* state, not a private game), so
+  // rather than fly blind we show a live headcount: a heartbeat announces
+  // this tab to the server every LOBBY_HEARTBEAT_MS, and any committed game
+  // action bumps this viewer from "watching" to "interacting" for a short
+  // window. Entirely best-effort — a failed heartbeat just leaves the last
+  // known count on screen rather than erroring at the player.
+  // ------------------------------------------------------------------
+  const LOBBY_HEARTBEAT_MS = 8000;
+  const LOBBY_ACTIVE_THROTTLE_MS = 4000; // one "active" ping is enough per burst of actions
+
+  const Lobby = (function () {
+    let viewerId = null;
+    let timer = null;
+    let lastActiveSentAt = 0;
+
+    function getViewerId() {
+      if (viewerId) return viewerId;
+      try { viewerId = sessionStorage.getItem("lobby_viewer_id"); } catch (_) {}
+      if (!viewerId) {
+        viewerId = (window.crypto && window.crypto.randomUUID)
+          ? window.crypto.randomUUID()
+          : ("v-" + Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
+        try { sessionStorage.setItem("lobby_viewer_id", viewerId); } catch (_) {}
+      }
+      return viewerId;
+    }
+
+    function getLabel() {
+      try { return localStorage.getItem("lobby_label") || null; } catch (_) { return null; }
+    }
+
+    function render(snap) {
+      if (!snap || !el.lobbyCount) return;
+      el.lobbyCount.textContent = String(snap.count || 0);
+      if (el.lobbyWidget) el.lobbyWidget.classList.toggle("has-active", (snap.active_count || 0) > 0);
+      if (el.lobbyActive) {
+        el.lobbyActive.textContent = snap.active_count ? `\u00b7 ${snap.active_count} interacting` : "";
+      }
+      if (!el.lobbyList) return;
+      el.lobbyList.innerHTML = "";
+      const viewers = snap.viewers || [];
+      if (!viewers.length) {
+        const li = document.createElement("li");
+        li.className = "lobby-empty";
+        li.textContent = "nobody here yet";
+        el.lobbyList.appendChild(li);
+        return;
+      }
+      viewers.forEach((v) => {
+        const li = document.createElement("li");
+        li.className = "lobby-viewer" + (v.active ? " lobby-viewer-active" : "") + (v.you ? " lobby-viewer-you" : "");
+        const dot = document.createElement("span");
+        dot.className = "lobby-dot";
+        dot.setAttribute("aria-hidden", "true");
+        const name = document.createElement("span");
+        name.className = "lobby-name";
+        name.textContent = v.label + (v.you ? " (you)" : "");
+        li.appendChild(dot);
+        li.appendChild(name);
+        el.lobbyList.appendChild(li);
+      });
+    }
+
+    async function beat(active) {
+      try {
+        const snap = await postJSON("/api/lobby/heartbeat", {
+          viewer_id: getViewerId(),
+          label: getLabel(),
+          active: !!active,
+        });
+        render(snap);
+      } catch (_) {
+        // Offline / server hiccup — leave the last known count on screen.
+      }
+    }
+
+    function markActive() {
+      const now = Date.now();
+      if (now - lastActiveSentAt < LOBBY_ACTIVE_THROTTLE_MS) return;
+      lastActiveSentAt = now;
+      beat(true);
+    }
+
+    function leaveBeacon() {
+      try {
+        const body = JSON.stringify({ viewer_id: getViewerId() });
+        if (navigator.sendBeacon) {
+          navigator.sendBeacon("/api/lobby/leave", new Blob([body], { type: "application/json" }));
+        } else {
+          fetch("/api/lobby/leave", { method: "POST", headers: { "Content-Type": "application/json" }, body, keepalive: true });
+        }
+      } catch (_) {}
+    }
+
+    function isOpen() { return !!(el.lobbyPanel && el.lobbyPanel.classList.contains("open")); }
+
+    function setOpen(open) {
+      if (!el.lobbyPanel) return;
+      el.lobbyPanel.classList.toggle("open", open);
+      if (el.lobbyWidget) el.lobbyWidget.setAttribute("aria-expanded", open ? "true" : "false");
+    }
+
+    function toggle() { setOpen(!isOpen()); }
+
+    function init() {
+      if (!el.lobbyWidget) return;
+      beat(false); // announce this tab immediately
+      timer = setInterval(() => beat(false), LOBBY_HEARTBEAT_MS);
+      el.lobbyWidget.addEventListener("click", toggle);
+      if (el.lobbyPanelClose) el.lobbyPanelClose.addEventListener("click", () => setOpen(false));
+      document.addEventListener("click", (e) => {
+        if (!isOpen()) return;
+        if (el.lobbyPanel.contains(e.target) || el.lobbyWidget.contains(e.target)) return;
+        setOpen(false);
+      });
+      // A backgrounded tab stops heartbeating on its own schedule (browsers
+      // throttle timers); catch up the instant it's foregrounded again.
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") beat(false);
+      });
+      window.addEventListener("pagehide", leaveBeacon);
+      window.addEventListener("beforeunload", leaveBeacon);
+    }
+
+    return { init, markActive };
+  })();
+
   // Small transient on-screen note so it's obvious which renderer is active
   // (useful while testing / toggling with the G key).
   let _rendererToastTimer = null;
@@ -2910,6 +3045,8 @@
 
   async function makeChoice(choiceText, contextItemId, opts) {
     if (state.processing || state.gameOver) return;
+    Lobby.markActive(); // this viewer just steered the shared run
+
     // `opts.source` marks HOW the action was issued (e.g. a SCAN object
     // interaction) so the backend can drive the story-escalation systems harder
     // for deliberate meddling — see _process_turn_background (engine.py).
@@ -6331,6 +6468,7 @@
     if (el.btnStory) el.btnStory.addEventListener("click", () => { StoryLog.toggle(); });
     if (el.rtModelAdd) el.rtModelAdd.addEventListener("submit", addCustomModel);
     StoryLog.init();
+    Lobby.init();
     Menu.init();
     Tactile.init();
     el.deathRestart.addEventListener("click", resetGame);
