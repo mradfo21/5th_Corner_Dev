@@ -1648,9 +1648,25 @@
       const act = a.charAt(0).toLowerCase() + a.slice(1);
       // Anchor the nudge to the spot the player touched, when one was given, so
       // the change lands where they aimed instead of across the whole frame.
-      const beat = (where && where.phrase)
-        ? "Motion: " + where.phrase + ", " + act + "."
-        : "Motion: the view shifts as you " + act + ".";
+      const anchor = (where && where.phrase) ? where.phrase : null;
+      // Two framings for the injected beat:
+      //   • "event" (INTERACT): a CONCRETE thing that HAPPENS in the world on the
+      //     next chunk. The old framing was the bug behind "INTERACT never does
+      //     anything" — "Motion: … interact with the door" reads to a video model
+      //     as a CAMERA move (nothing moves) built around the abstract verb
+      //     "interact", which gives it nothing to draw. Describe a visible world
+      //     event at the anchor instead, so the model actually renders a reaction.
+      //   • default (freeform SHAPE tool): a first-person camera / POV nudge.
+      let beat;
+      if (where && where.kind === "event") {
+        beat = anchor
+          ? "Something happens now: " + anchor + ", " + act + " \u2014 the change is clearly visible on screen."
+          : "Something happens now: " + act + " \u2014 the change is clearly visible on screen.";
+      } else {
+        beat = anchor
+          ? "Motion: " + anchor + ", " + act + "."
+          : "Motion: the view shifts as you " + act + ".";
+      }
       window.ReactorRenderer.applyScene({
         prompt: base + " " + beat,
         imageUrl: null,           // same scene — just re-steer, no image swap
@@ -5275,6 +5291,13 @@
       id: "interact", label: "INTERACT", title: "Interact with",
       realtime: true,
       phrase: (o) => "Interact with the " + o + ".",
+      // The LIVE world model needs something it can actually RENDER: "interact
+      // with the X" is too abstract for a video model to draw, so the realtime
+      // poke describes the object visibly RESPONDING (its physical reaction is
+      // what makes the poke register on screen). Used only for the set_prompt
+      // steer; the plain `phrase` above is what the full-turn fallback hands the
+      // consequence LLM.
+      realtimePhrase: (o) => "the " + o + " reacts and comes alive, visibly moving, shifting, opening, or activating in response",
       icon: '<svg class="scan-action-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 13V5a2 2 0 0 1 4 0v6"/><path d="M12 11V4a2 2 0 0 1 4 0v7"/><path d="M16 11V7a2 2 0 0 1 4 0v8a6 6 0 0 1-6 6h-2a6 6 0 0 1-5-2.7l-2.8-4a2 2 0 0 1 3.1-2.5L9 14"/></svg>',
     },
     {
@@ -5450,7 +5473,12 @@
     // realtime isn't live (still mode), fall through to a full turn so INTERACT
     // still does something.
     if (action.realtime) {
-      const steered = Renderer.steerRealtime(phrase, { phrase: objectAnchorPhrase(obj) });
+      // Steer with the CONCRETE, renderable reaction phrase (not the abstract
+      // "interact with the X"), framed as a world EVENT so the live model draws
+      // the object responding right where it sits — the fix for INTERACT looking
+      // dead even though it was pinging the model all along.
+      const rtText = action.realtimePhrase ? action.realtimePhrase(obj.label) : phrase;
+      const steered = Renderer.steerRealtime(rtText, { phrase: objectAnchorPhrase(obj), kind: "event" });
       if (steered) {
         // Prove the press INSTANTLY — a double-ring "event" pulse + tag pop —
         // regardless of when (or whether) the world model actually reacts.
