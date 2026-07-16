@@ -3350,8 +3350,9 @@
     return Math.round(Math.min(640, Math.max(280, Math.min(window.innerWidth, window.innerHeight) * 0.52)));
   }
 
-  // Crop a normalized region of the current scene to a square JPEG data URL.
-  // Uses the live video in realtime mode, or the current still in image mode.
+  // Crop a normalized region of the current scene to a JPEG data URL, preserving
+  // the region's aspect ratio (the capture frame is 16:9). `outSize` is the
+  // longest side. Uses the live video in realtime mode, or the still otherwise.
   function captureSceneRegion(normBox, outSize) {
     const out = outSize || 256;
     if (scanInRealtime()) {
@@ -3368,9 +3369,15 @@
       let sh = Math.max(1, Math.min(1, normBox.h) * vh);
       if (sx + sw > vw) sw = vw - sx;
       if (sy + sh > vh) sh = vh - sy;
+      // Preserve the region's aspect ratio (the capture frame is 16:9, not a
+      // square) — `out` is the longest side.
+      const aspect = sw / sh;
+      let ow = out, oh = out;
+      if (aspect >= 1) oh = Math.max(1, Math.round(out / aspect));
+      else ow = Math.max(1, Math.round(out * aspect));
       const c = document.createElement("canvas");
-      c.width = out; c.height = out;
-      c.getContext("2d").drawImage(img, sx, sy, sw, sh, 0, 0, out, out);
+      c.width = ow; c.height = oh;
+      c.getContext("2d").drawImage(img, sx, sy, sw, sh, 0, 0, ow, oh);
       return c.toDataURL("image/jpeg", 0.82);
     } catch (e) {
       console.warn("[standalone] region capture failed:", e);
@@ -3559,14 +3566,15 @@
       void el.evidenceHud.offsetWidth;
       el.evidenceHud.classList.add("bump");
       const t0 = performance.now();
-      const dur = Math.min(900, 220 + Math.abs(to - from) * 1.4);
+      // Snappy roll — a quick, satisfying spin-up rather than a long casino tick.
+      const dur = Math.min(360, 120 + Math.abs(to - from) * 0.5);
       let lastTick = 0;
       function step(now) {
         const p = Math.min(1, (now - t0) / dur);
         const eased = 1 - Math.pow(1 - p, 3);
         const v = from + (to - from) * eased;
         totalEl.textContent = fmt(v);
-        if (now - lastTick > 55) { try { Sound.scoreTick(); } catch (_) {} lastTick = now; }
+        if (now - lastTick > 70) { try { Sound.scoreTick(); } catch (_) {} lastTick = now; }
         if (p < 1) requestAnimationFrame(step);
         else totalEl.textContent = fmt(to);
       }
@@ -4123,8 +4131,8 @@
   // A newer capture cancels an in-flight reveal so receipts never stack.
   // ------------------------------------------------------------------
   const Photo = (function () {
-    const STAGGER_MS = 380;       // gap between item reveals
-    const HOLD_MS = 3200;         // how long the finished receipt lingers
+    const STAGGER_MS = 130;       // gap between item reveals — snappy rising combo
+    const HOLD_MS = 1900;         // how long the finished receipt lingers
     const BASE_PER_INTEREST = 40; // points per interest point (1..5)
     const NOVELTY_BONUS = 60;     // first time a subject is photographed this run
     const RARE_BONUS = 80;        // a striking 5-star "rare find" premium
@@ -4288,7 +4296,7 @@
       });
 
       // After the last item: composition + framing + FOCUS bonuses, then stamp.
-      const afterItems = reduced ? 10 : items.length * STAGGER_MS + 220;
+      const afterItems = reduced ? 10 : items.length * STAGGER_MS + 120;
       later(() => {
         if (token !== state.receiptToken) return;
         parts.root.classList.add("tallied");
