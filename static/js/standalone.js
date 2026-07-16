@@ -3643,6 +3643,7 @@
     const KEY = "objectives_v1";
     const COLLAPSE_KEY = "objectives_collapsed";
     const MAX_FIELD = 3;             // simultaneous field bounties (avoid clutter)
+    const STALE_MISSES = 4;          // detection passes a subject can be absent before its bounty retires
     const ARCHIVE_MS = 4600;         // how long a completed side-goal lingers before filing away
     const CHECK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12.5l5 5L20 6"/></svg>';
 
@@ -4008,6 +4009,15 @@
 
     function onDetect(objects) {
       if (!revealed || !Array.isArray(objects)) return;
+      const present = new Set(objects.map((o) => norm(o.label)).filter(Boolean));
+      // Retire field bounties whose subject has left the frame for several
+      // passes, so the board tracks what's actually in view and never clogs its
+      // slots with stale goals you've already moved past.
+      items.filter((o) => o.kind === "field" && o.status === "active").forEach((o) => {
+        const l = o.id.slice(6); // strip "field:"
+        if (present.has(l)) { o.missPasses = 0; }
+        else if ((o.missPasses = (o.missPasses || 0) + 1) >= STALE_MISSES) remove(o.id);
+      });
       // Offer the most prominent NEW subjects first (larger boxes read as closer).
       objects.slice()
         .sort((a, b) => ((b.w || 0) * (b.h || 0)) - ((a.w || 0) * (a.h || 0)))
