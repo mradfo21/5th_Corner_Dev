@@ -3144,10 +3144,12 @@
     return { x: (x - ox) / dw, y: (y - oy) / dh };
   }
 
-  // A screen-space square (center + size in px) as a normalized source box.
-  function screenBoxToNorm(cx, cy, sizePx) {
-    const a = screenToNorm(cx - sizePx / 2, cy - sizePx / 2);
-    const b = screenToNorm(cx + sizePx / 2, cy + sizePx / 2);
+  // A screen-space rectangle (center + width/height in px) as a normalized
+  // source box. If height is omitted the box is square (back-compat).
+  function screenBoxToNorm(cx, cy, boxW, boxH) {
+    if (boxH == null) boxH = boxW;
+    const a = screenToNorm(cx - boxW / 2, cy - boxH / 2);
+    const b = screenToNorm(cx + boxW / 2, cy + boxH / 2);
     const x = Math.max(0, Math.min(a.x, b.x));
     const y = Math.max(0, Math.min(a.y, b.y));
     const w = Math.min(1 - x, Math.abs(b.x - a.x));
@@ -4244,7 +4246,8 @@
     state.touchMode = "aim";
     if (el.realtimeBtn) el.realtimeBtn.classList.add("aiming");
     document.body.classList.add("touch-aiming");
-    // Raising the "camera" pushes gently into the scene (a viewfinder feel).
+    // Raising the "camera" opens on the large 16:9 base frame — zoom OUT to grow
+    // it toward a full-screen shot, or IN for a tighter telephoto crop.
     state.photoPointers.clear();
     state.pinchBase = null;
     state.pinchActive = false;
@@ -4261,25 +4264,67 @@
 
   // ------------------------------------------------------------------
   // Optical zoom — while the camera is armed, scroll (mouse) or pinch (touch)
-  // magnifies the scene AROUND THE RETICLE (where you're aiming), not the
-  // viewport center. The magnification is anchored to the aim point and the
-  // scene layers carry a CSS transform transition, so as you move the mouse the
-  // zoomed view smoothly glides to follow it — an FPS-scope feel. The capture
-  // crop is derived from the framed (magnified) view, so zooming in genuinely
-  // captures a tighter, telephoto slice of exactly what you're looking at.
+  // sets the framing. Zooming IN magnifies the scene AROUND THE RETICLE (where
+  // you're aiming), not the viewport center: the magnification is anchored to
+  // the aim point and the scene layers carry a CSS transform transition, so as
+  // you move the mouse the zoomed view smoothly glides to follow it — an
+  // FPS-scope feel — and the capture crop is a tighter, telephoto slice of
+  // exactly what you're looking at. Zooming OUT past the base leaves the scene
+  // alone and instead GROWS the 16:9 capture frame toward a full-screen shot,
+  // so you can film the entire view.
   // ------------------------------------------------------------------
-  const PHOTO_ZOOM_MIN = 1.0;    // full wide
+  const PHOTO_ZOOM_MIN = 0.5;    // full WIDE — the 16:9 frame grows to cover the whole screen
   const PHOTO_ZOOM_MAX = 3.0;    // max telephoto (reasonable bound)
-  const PHOTO_ZOOM_ARMED = 1.12; // gentle push-in the instant the camera is raised
+  const PHOTO_ZOOM_ARMED = 1.0;  // start at the large 16:9 base frame
 
   function clampZoom(z) { return Math.max(PHOTO_ZOOM_MIN, Math.min(PHOTO_ZOOM_MAX, z)); }
+
+  // ------------------------------------------------------------------
+  // Capture FRAME geometry. The frame is 16:9 and starts LARGE. Its on-screen
+  // size is driven by zooming OUT: at zoom >= 1 it sits at a big base size;
+  // zooming out (below 1) grows it smoothly until, at PHOTO_ZOOM_MIN, it blankets
+  // the entire screen — so you can frame and "film" the whole view, not just a
+  // small square. Zooming IN keeps the frame at its base size and magnifies the
+  // SCENE instead (telephoto), so a tighter crop reads as a genuine zoom-in.
+  // ------------------------------------------------------------------
+  const FRAME_ASPECT = 16 / 9;   // capture frame aspect ratio
+  const FRAME_BASE_FRAC = 0.6;   // large base frame as a fraction of full-screen cover
+
+  // A 16:9 box big enough to blanket the whole viewport (full-screen cover):
+  // its LONG side spans whichever viewport dimension needs the most coverage.
+  function frameCoverPx() {
+    const W = window.innerWidth, H = window.innerHeight;
+    const w = Math.max(W, H * FRAME_ASPECT);
+    return { w, h: w / FRAME_ASPECT };
+  }
+
+  // Current on-screen capture-frame size (16:9), grown by zooming out toward
+  // full-screen cover. Returns { w, h } in px.
+  function frameBoxPx() {
+    const cover = frameCoverPx();
+    const z = state.touchMode ? (state.photoZoom || 1) : 1;
+    let frac = FRAME_BASE_FRAC;
+    if (z < 1) {
+      const t = Math.max(0, Math.min(1, (1 - z) / (1 - PHOTO_ZOOM_MIN)));
+      frac = FRAME_BASE_FRAC + t * (1 - FRAME_BASE_FRAC);
+    }
+    return { w: Math.round(cover.w * frac), h: Math.round(cover.h * frac) };
+  }
+
+  // Scene magnification only kicks in when zooming IN (telephoto). Zooming out
+  // grows the frame instead of shrinking the scene, so the view keeps filling
+  // the screen while the capture rectangle expands.
+  function sceneScale() {
+    const z = state.touchMode ? (state.photoZoom || 1) : 1;
+    return Math.max(1, z);
+  }
 
   // The scene transform currently applied (identity unless the camera is armed).
   // Centralized so the capture crop math can invert it. The origin is the
   // RETICLE point: scaling about it keeps whatever is under the reticle locked
   // under the reticle while everything else magnifies around it.
   function getSceneTransform() {
-    const scale = state.touchMode ? (state.photoZoom || 1) : 1;
+    const scale = sceneScale();
     const p = state.touchPoint || { x: window.innerWidth / 2, y: window.innerHeight / 2 };
     return { scale, ox: p.x, oy: p.y };
   }
@@ -4290,7 +4335,7 @@
   // the CSS transform transition can smoothly interpolate the pan — the view
   // glides to follow the cursor instead of snapping.
   function applySceneTransform() {
-    const z = state.touchMode ? (state.photoZoom || 1) : 1;
+    const z = sceneScale();
     let val = "";
     if (z !== 1) {
       const t = getSceneTransform();
@@ -4310,6 +4355,10 @@
     if (!opts.force && Math.abs(clamped - state.photoZoom) < 0.004) return;
     state.photoZoom = clamped;
     applySceneTransform();
+    // Zooming OUT grows the frame (and re-grades what's framed) even when the
+    // reticle hasn't moved, so the frame expands live under the scroll/pinch.
+    layoutCaptureFrame();
+    if (state.touchMode === "aim") layoutPhotoTargets();
     if (el.touchZoom) { // pop the readout only on an actual zoom change
       el.touchZoom.classList.remove("bump");
       void el.touchZoom.offsetWidth;
@@ -4407,15 +4456,16 @@
   //   { ok, subject, focus, grade, centered, framedCount, reason, kind }
   // A shot is only worthy when a NEW (undocumented) subject is FRAMED and in
   // FOCUS. `focus` (0..1) is 1 at dead-center, 0 at the box edge.
-  function evaluateShot(cx, cy, boxPx) {
-    const half = boxPx / 2;
+  function evaluateShot(cx, cy, box) {
+    const halfW = box.w / 2, halfH = box.h / 2;
     const targets = state.photoTargets || [];
     // Every detected subject whose center sits inside the capture box.
     const framed = [];
     targets.forEach((o) => {
       const p = normToPhotoScreen(o.cx, o.cy);
-      if (Math.abs(p.x - cx) <= half && Math.abs(p.y - cy) <= half) {
-        framed.push({ o, d: Math.hypot(p.x - cx, p.y - cy) });
+      const nx = Math.abs(p.x - cx) / halfW, ny = Math.abs(p.y - cy) / halfH;
+      if (nx <= 1 && ny <= 1) {
+        framed.push({ o, d: Math.hypot(p.x - cx, p.y - cy), off: Math.max(nx, ny) });
       }
     });
     if (!framed.length) {
@@ -4433,7 +4483,7 @@
     // The nearest fresh subject is the one you're focusing on.
     fresh.sort((a, b) => a.d - b.d);
     const best = fresh[0];
-    const focus = Math.max(0, Math.min(1, 1 - best.d / half));
+    const focus = Math.max(0, Math.min(1, 1 - best.off));
     if (focus < FOCUS_MIN) {
       return { ok: false, framedCount: framed.length, kind: "blurry", focus,
         reason: "Out of focus \u2014 center your subject" };
@@ -4521,8 +4571,8 @@
   // reads its live FOCUS grade so you can feel the shot sharpen as you aim.
   function layoutPhotoTargets() {
     if (!el.touchTargets) return;
-    const box = investBoxPx();
-    const half = box / 2;
+    const box = frameBoxPx();
+    const halfW = box.w / 2, halfH = box.h / 2;
     const rx = state.touchPoint ? state.touchPoint.x : window.innerWidth / 2;
     const ry = state.touchPoint ? state.touchPoint.y : window.innerHeight / 2;
     const W = window.innerWidth, H = window.innerHeight;
@@ -4537,10 +4587,11 @@
       const spent = isDocumented(o.label);
       m.classList.toggle("documented", spent);
       const d = Math.hypot(p.x - rx, p.y - ry);
+      const nx = Math.abs(p.x - rx) / halfW, ny = Math.abs(p.y - ry) / halfH;
       // A spent subject can be in the box but it never counts as "framed".
-      const inFrame = !spent && Math.abs(p.x - rx) <= half && Math.abs(p.y - ry) <= half;
+      const inFrame = !spent && nx <= 1 && ny <= 1;
       m.classList.toggle("in-frame", inFrame);
-      if (inFrame && d < lockedDist) { lockedDist = d; lockedLabel = o.label; lockedFocus = Math.max(0, Math.min(1, 1 - d / half)); }
+      if (inFrame && d < lockedDist) { lockedDist = d; lockedLabel = o.label; lockedFocus = Math.max(0, Math.min(1, 1 - Math.max(nx, ny))); }
     });
     const hadLock = !!state.photoLockedLabel;
     // A lock only counts once the subject is at least minimally in focus.
@@ -4577,6 +4628,19 @@
     }
   }
 
+  // Size + position the 16:9 capture frame for the current zoom/aim. Split out
+  // of moveReticle so a pure ZOOM change (scroll / pinch, no reticle move) also
+  // resizes the frame live — the frame grows toward full-screen as you zoom out.
+  function layoutCaptureFrame() {
+    if (!el.touchCaptureFrame) return;
+    const b = frameBoxPx();
+    const p = state.touchPoint || { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+    el.touchCaptureFrame.style.width = b.w + "px";
+    el.touchCaptureFrame.style.height = b.h + "px";
+    el.touchCaptureFrame.style.left = p.x + "px";
+    el.touchCaptureFrame.style.top = p.y + "px";
+  }
+
   function moveReticle(x, y) {
     state.touchPoint = { x, y };
     if (el.touchReticle) {
@@ -4584,13 +4648,7 @@
       el.touchReticle.style.top = y + "px";
     }
     // The capture frame tracks the camera so you see exactly what will be shot.
-    if (el.touchCaptureFrame) {
-      const b = investBoxPx();
-      el.touchCaptureFrame.style.width = b + "px";
-      el.touchCaptureFrame.style.height = b + "px";
-      el.touchCaptureFrame.style.left = x + "px";
-      el.touchCaptureFrame.style.top = y + "px";
-    }
+    layoutCaptureFrame();
     // Re-anchor the zoom to the new aim point so the magnified view smoothly
     // follows the reticle (the CSS transform transition does the gliding).
     if (state.photoZoom && state.photoZoom !== 1) applySceneTransform();
@@ -4710,7 +4768,7 @@
   // can keep gathering evidence tap after tap.
   function captureAt(x, y) {
     moveReticle(x, y);
-    const boxPx = investBoxPx();
+    const boxPx = frameBoxPx();
     const shot = evaluateShot(x, y, boxPx);
     // WORTHY-SHOT GATE: once detection is live, a shot must FRAME a new subject
     // and hold it in FOCUS. Documented subjects and out-of-focus/empty frames
@@ -4721,7 +4779,7 @@
       return;
     }
     const subject = shot.ok ? shot.subject : null;
-    const region = screenBoxToNorm(x, y, boxPx);
+    const region = screenBoxToNorm(x, y, boxPx.w, boxPx.h);
     const texture = captureSceneRegion(region, 512); // larger region → keep detail
     if (!texture) { showRendererToast("Couldn't capture \u2014 hold steady"); return; }
     // Frame flash + camera flash + shutter for a tactile "snap".
@@ -4804,13 +4862,13 @@
     if (state.gameOver) return;
     if (!currentSourceSize()) { showRendererToast("Nothing to photograph yet"); return; }
     const center = { x: window.innerWidth / 2, y: window.innerHeight / 2 };
-    const boxPx = Math.round(Math.min(window.innerWidth, window.innerHeight) * 0.5);
+    const box = frameBoxPx();
     // Same worthy-shot + document-once + focus rules as tap-to-shoot, judged at
     // the center of the frame (this is a centered snapshot).
-    const shot = evaluateShot(center.x, center.y, boxPx);
+    const shot = evaluateShot(center.x, center.y, box);
     if (state.photoDetected && !shot.ok) { photoMiss(shot.reason); return; }
     const subject = shot.ok ? shot.subject : null;
-    const region = screenBoxToNorm(center.x, center.y, boxPx);
+    const region = screenBoxToNorm(center.x, center.y, box.w, box.h);
     const texture = captureSceneRegion(region, 512);
     if (!texture) { showRendererToast("Couldn't capture the frame"); return; }
     flashScene();
