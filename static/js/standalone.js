@@ -452,6 +452,10 @@
       talkClose() { tone([620, 200], 0.2, "sine", 0.04); }, // channel closes
       grab() { tone(900, 0.03, "square", 0.045); tone([700, 340], 0.10, "triangle", 0.04, 0.02); }, // TOUCH specimen captured
       shutter() { tone(1500, 0.015, "square", 0.055); noise(0.05, 0.035); tone(760, 0.03, "square", 0.05, 0.03); }, // camera shutter
+      // Raising / lowering the camera: a little servo whir that racks up and
+      // locks ready, then powers back down — so the tool feels mechanical.
+      cameraOn() { tone([170, 540], 0.16, "sawtooth", 0.035); tone([720, 1280], 0.08, "square", 0.03, 0.02); noise(0.05, 0.022); tone(1560, 0.012, "square", 0.05, 0.15); },
+      cameraOff() { tone([620, 170], 0.18, "sawtooth", 0.035); tone(300, 0.04, "square", 0.03, 0.02); },
       // ---- Photo receipt: printing, per-item reveals, score rolls, stamp ----
       receiptOpen() { noise(0.09, 0.03); tone(240, 0.05, "square", 0.03); tone(360, 0.06, "triangle", 0.03, 0.04); }, // paper feeds out
       // Each revealed item chimes a little HIGHER than the last — a rising combo.
@@ -746,6 +750,11 @@
       select: () => buzz(14),      // committing an action / choice
       strong: () => buzz([16, 24, 16]), // big moment (death / new game)
       soft: () => buzz(5),         // subtle nudge
+      // ---- Camera feel ----
+      camera: () => buzz([10, 24, 18]), // raising the camera — a two-stage clunk
+      shutter: () => buzz(24),          // the shot fires — one firm snap
+      lock: () => buzz(7),              // a subject snaps into frame
+      miss: () => buzz([14, 34, 14]),   // empty / out-of-focus frame
     };
   })();
 
@@ -1147,6 +1156,33 @@
     void el.sceneFlash.offsetWidth;
     el.sceneFlash.classList.add("flash");
   }
+
+  // Punchier, photographic capture flash: a fast white pop with a shutter-blink
+  // dip, distinct from the slow scene-change flash used on turns.
+  function flashShutter() {
+    if (!el.sceneFlash) return;
+    el.sceneFlash.classList.remove("flash", "shutter");
+    void el.sceneFlash.offsetWidth;
+    el.sceneFlash.classList.add("shutter");
+  }
+
+  // Handheld "camera" jolts — a brief, one-shot shake of the whole view (a class
+  // on <body>, so it composes on top of the scene's optical-zoom transform and a
+  // telephoto framing never snaps to center mid-jolt). `photoShake` is the bigger
+  // bump when the camera is raised; `photoKick` is a smaller recoil the instant a
+  // shot fires. Both respect reduced motion and only ever fire as momentary
+  // one-shots — never during a sustained aim/drag — so aiming stays steady.
+  const _scenePunchTimers = {};
+  function scenePunch(cls, ms) {
+    if (prefersReducedMotion()) return;
+    document.body.classList.remove(cls);
+    void document.body.offsetWidth; // reflow so it re-triggers back-to-back
+    document.body.classList.add(cls);
+    clearTimeout(_scenePunchTimers[cls]);
+    _scenePunchTimers[cls] = setTimeout(() => document.body.classList.remove(cls), ms);
+  }
+  function photoShake() { scenePunch("photo-shake", 470); }
+  function photoKick() { scenePunch("photo-kick", 240); }
 
   // Fire the VCR distortion burst over the current frame to mask a transition
   // (image swap, realtime re-anchor/reveal, or reset). Re-triggering restarts
@@ -4258,7 +4294,11 @@
     moveReticle(start.x, start.y);
     if (el.touchLayer) el.touchLayer.classList.remove("hidden");
     startPhotoTargeting(); // begin surfacing photographable subjects
-    Sound.open();
+    // Raising the camera: a subtle handheld jolt + servo whir + haptic clunk so
+    // activating photo mode lands with weight.
+    photoShake();
+    try { Sound.cameraOn(); } catch (_) {}
+    try { Haptics.camera(); } catch (_) {}
   }
 
   // ------------------------------------------------------------------
@@ -4613,13 +4653,14 @@
         el.touchLock.textContent = "";
       }
     }
-    if (locked && !hadLock) { try { Sound.lock(); } catch (_) {} } // a fresh lock chirps
+    if (locked && !hadLock) { try { Sound.lock(); } catch (_) {} try { Haptics.lock(); } catch (_) {} } // a fresh lock chirps
   }
 
   // Empty-frame feedback: a quick red shake + soft tone + a plain-language nudge.
   function photoMiss(msg) {
     showRendererToast(msg);
     try { Sound.miss(); } catch (_) {}
+    try { Haptics.miss(); } catch (_) {}
     if (el.touchCaptureFrame) {
       el.touchCaptureFrame.classList.remove("miss");
       void el.touchCaptureFrame.offsetWidth;
@@ -4781,14 +4822,16 @@
     const region = screenBoxToNorm(x, y, boxPx.w, boxPx.h);
     const texture = captureSceneRegion(region, 512); // larger region → keep detail
     if (!texture) { showRendererToast("Couldn't capture \u2014 hold steady"); return; }
-    // Frame flash + camera flash + shutter for a tactile "snap".
+    // Frame flash + shutter flash + recoil kick + snap for a tactile capture.
     if (el.touchCaptureFrame) {
       el.touchCaptureFrame.classList.remove("grab");
       void el.touchCaptureFrame.offsetWidth;
       el.touchCaptureFrame.classList.add("grab");
     }
-    flashScene();
+    flashShutter();
+    photoKick();
     try { Sound.shutter(); } catch (_) {}
+    try { Haptics.shutter(); } catch (_) {}
     // NOTE: the subject is "spent" (document-once) only once the appraisal is
     // actually credited in printReceipt — never eagerly here, so a cancelled or
     // empty shot never burns a POI without banking its evidence.
@@ -4815,7 +4858,9 @@
     if (el.touchReticle) el.touchReticle.classList.remove("holding");
     if (el.touchCaptureFrame) el.touchCaptureFrame.classList.remove("grab");
     if (el.realtimeBtn) el.realtimeBtn.classList.remove("aiming");
-    document.body.classList.remove("touch-aiming");
+    document.body.classList.remove("touch-aiming", "photo-shake", "photo-kick");
+    try { Sound.cameraOff(); } catch (_) {}
+    try { Haptics.soft(); } catch (_) {}
     updateAmbientScan(); // hotspots return once the camera is put away
   }
 
@@ -4870,8 +4915,10 @@
     const region = screenBoxToNorm(center.x, center.y, box.w, box.h);
     const texture = captureSceneRegion(region, 512);
     if (!texture) { showRendererToast("Couldn't capture the frame"); return; }
-    flashScene();
+    flashShutter();
+    photoKick();
     try { Sound.shutter(); } catch (_) {}
+    try { Haptics.shutter(); } catch (_) {}
     // Spent only when the appraisal is credited (see printReceipt), not here.
     Photo.capture({
       texture, region, kind: "photo", label: "the center of the view",

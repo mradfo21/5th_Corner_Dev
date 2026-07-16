@@ -401,6 +401,18 @@ body.story-log-on .story-log { display: flex; }
   100% { opacity: 0; background: rgba(255,255,255,0); }
 }
 
+/* Photographic SHUTTER flash — snappier than the scene-change flash, with a
+   quick dark "blink" so a capture reads as blades closing then a bright pop. */
+#scene-flash.shutter {
+  animation: scene-shutter-anim 0.3s cubic-bezier(0.3, 0, 0.2, 1);
+}
+@keyframes scene-shutter-anim {
+  0%   { opacity: 0;    background: rgba(0,0,0,0); }
+  12%  { opacity: 0.72; background: rgba(0,0,0,0.9); }   /* blades snap shut */
+  30%  { opacity: 0.9;  background: rgba(255,255,255,0.92); } /* bright exposure pop */
+  100% { opacity: 0;    background: rgba(255,255,255,0); }
+}
+
 /* ---------- Transition glitch (VCR static / tracking distortion) ----------
    Fired over every scene/video hand-off to mask the switch like a tape jumping
    between segments: a burst of grayscale static (feTurbulence), an RGB-split
@@ -1501,6 +1513,40 @@ html.is-touch .touch-hint {
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
   background: rgba(20, 12, 4, 0.72);
+}
+
+/* ---------- Camera "handheld" jolts ----------
+   A one-shot jolt of the WHOLE view when the camera is raised, and a smaller
+   recoil the instant a shot fires — so photo mode feels physical. We animate
+   <body> (its fixed children shake with it), which composes ON TOP of the
+   scene's own optical-zoom transform, so a telephoto framing never snaps back
+   to center mid-jolt. A hair of scale keeps the edges covered (body is black +
+   overflow:hidden), and these fire only as momentary one-shots — never during a
+   sustained aim/drag — so aiming stays rock-steady. */
+body.photo-shake {
+  animation: photo-arm-shake 0.46s cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+}
+body.photo-kick {
+  animation: photo-cam-kick 0.22s cubic-bezier(0.34, 0.02, 0.2, 1) both;
+}
+@keyframes photo-arm-shake {
+  0%   { transform: scale(1.03) translate3d(0, 0, 0) rotate(0deg); }
+  16%  { transform: scale(1.03) translate3d(-7px, 5px, 0) rotate(-0.55deg); }
+  33%  { transform: scale(1.028) translate3d(8px, -5px, 0) rotate(0.6deg); }
+  50%  { transform: scale(1.022) translate3d(-5px, -3px, 0) rotate(-0.34deg); }
+  68%  { transform: scale(1.016) translate3d(4px, 3px, 0) rotate(0.22deg); }
+  84%  { transform: scale(1.008) translate3d(-2px, -1px, 0) rotate(-0.1deg); }
+  100% { transform: scale(1) translate3d(0, 0, 0) rotate(0deg); }
+}
+@keyframes photo-cam-kick {
+  0%   { transform: scale(1.022) translate3d(0, 0, 0); }
+  40%  { transform: scale(1.022) translate3d(0, 6px, 0) rotate(-0.28deg); }
+  70%  { transform: scale(1.012) translate3d(0, -2px, 0) rotate(0.12deg); }
+  100% { transform: scale(1) translate3d(0, 0, 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  body.photo-shake, body.photo-kick { animation: none; }
+  #scene-flash.shutter { animation: scene-flash-anim 0.2s ease-out; }
 }
 
 /* ---------- Mobile camera: declutter + steady the reticle ----------
@@ -3722,7 +3768,20 @@ html.is-mobile #scanlines {
   opacity: 0;
   transition: opacity 0.35s ease;
 }
-body.touch-aiming #touch-layer::after { opacity: 1; }
+body.touch-aiming #touch-layer::after {
+  opacity: 1;
+  /* Iris "punch-in" as the camera comes up: the eyepiece darkens hard, then
+     settles to the resting vignette — reads as raising a viewfinder to the eye. */
+  animation: photo-vignette-in 0.44s ease-out;
+}
+@keyframes photo-vignette-in {
+  0%   { opacity: 0; box-shadow: inset 0 0 0 0 rgba(0, 0, 0, 0); }
+  40%  { opacity: 1; box-shadow: inset 0 0 clamp(50px, 14vmin, 170px) clamp(40px, 11vmin, 130px) rgba(0, 0, 0, 0.82); }
+  100% { opacity: 1; box-shadow: inset 0 0 clamp(80px, 22vmin, 260px) clamp(20px, 6vmin, 70px) rgba(0, 0, 0, 0.55); }
+}
+@media (prefers-reduced-motion: reduce) {
+  body.touch-aiming #touch-layer::after { animation: none; }
+}
 
 /* Live zoom readout, pinned near the reticle stack (bottom-center of frame). */
 .touch-zoom {
