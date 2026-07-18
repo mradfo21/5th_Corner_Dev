@@ -1505,14 +1505,26 @@ body.touch-aiming #touch-capture-frame { opacity: 0.85; }
 body.photo-dragging #sceneA,
 body.photo-dragging #sceneB,
 body.photo-dragging #reactor-video,
-body.photo-dragging #reactor-freeze {
+body.photo-dragging #reactor-freeze,
+body.photo-pinching #sceneA,
+body.photo-pinching #sceneB,
+body.photo-pinching #reactor-video,
+body.photo-pinching #reactor-freeze {
   transition: none !important;
 }
-body.photo-dragging .photo-target {
+body.photo-dragging .photo-target,
+body.photo-pinching .photo-target {
   transition: opacity 0.2s ease !important;
 }
-body.photo-dragging #touch-reticle {
+body.photo-dragging #touch-reticle,
+body.photo-pinching #touch-reticle {
   animation: none;
+}
+/* While pinching, the DOF mask + capture frame should track the fingers 1:1
+   too — otherwise the halo lags the pinch and reads as smeary. */
+body.photo-pinching #touch-dof,
+body.photo-pinching #touch-capture-frame {
+  transition: none !important;
 }
 /* backdrop-filter on a moving element is a known jank source on mobile Safari;
    touch devices get a cheap solid reticle/hint instead so the drag stays smooth. */
@@ -1559,6 +1571,29 @@ body.photo-kick {
 @media (prefers-reduced-motion: reduce) {
   body.photo-shake, body.photo-kick { animation: none; }
   #scene-flash.shutter { animation: scene-flash-anim 0.2s ease-out; }
+}
+
+/* On touch/mobile the full-body scale + rotate shake forced a re-rasterize of
+   the fullscreen <video> layer every frame — the camera raise glitched and
+   framerate dipped hard on activation. Swap in a shorter, translate-only jolt
+   that stays on the GPU compositor path (pure translate3d, no scale/rotate),
+   so activation feels weighty without stalling the stream. */
+html.is-touch body.photo-shake {
+  animation: photo-arm-shake-touch 0.24s cubic-bezier(0.34, 0.02, 0.2, 1) both;
+}
+html.is-touch body.photo-kick {
+  animation: photo-cam-kick-touch 0.16s cubic-bezier(0.34, 0.02, 0.2, 1) both;
+}
+@keyframes photo-arm-shake-touch {
+  0%   { transform: translate3d(0, 0, 0); }
+  30%  { transform: translate3d(-3px, 2px, 0); }
+  65%  { transform: translate3d(2px, -1px, 0); }
+  100% { transform: translate3d(0, 0, 0); }
+}
+@keyframes photo-cam-kick-touch {
+  0%   { transform: translate3d(0, 0, 0); }
+  55%  { transform: translate3d(0, 3px, 0); }
+  100% { transform: translate3d(0, 0, 0); }
 }
 
 /* ---------- Mobile camera: declutter + steady the reticle ----------
@@ -3934,6 +3969,63 @@ body.touch-aiming #touch-layer::after {
 }
 @media (prefers-reduced-motion: reduce) {
   body.touch-aiming #touch-layer::after { animation: none; }
+}
+
+/* ---------- Depth-of-field ring around the reticle ----------
+   Real cameras have a shallow focal plane: the subject you're aiming at is
+   crisp, and the world falls softly out of focus around it. We approximate
+   that with a full-screen overlay that's blurred (backdrop-filter) and then
+   MASKED with a radial-gradient centered on the reticle so it's fully
+   transparent at the focal spot and fully opaque toward the edges. The mask
+   moves with the aim point via CSS custom properties (set from JS as the
+   reticle / capture frame is moved), so the crisp "focus window" always
+   rides the reticle.
+
+   backdrop-filter is expensive on mobile (kills FPS), so touch devices get a
+   cheaper darkened halo instead of a real blur — same shape, same read, but
+   pure alpha compositing on the GPU. */
+#touch-dof {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0;
+  transition: opacity 0.34s ease;
+  /* Focal-window geometry — the JS updates these as the aim + zoom change so
+     the clear "in focus" oval always rides the capture frame. */
+  --dof-x: 50%;
+  --dof-y: 50%;
+  --dof-rx: 30vmin;
+  --dof-ry: 20vmin;
+  backdrop-filter: blur(7px) saturate(1.05);
+  -webkit-backdrop-filter: blur(7px) saturate(1.05);
+  background: rgba(0, 0, 0, 0.14);
+  -webkit-mask-image: radial-gradient(
+    ellipse var(--dof-rx) var(--dof-ry) at var(--dof-x) var(--dof-y),
+    transparent 46%,
+    rgba(0, 0, 0, 0.55) 78%,
+    black 100%
+  );
+  mask-image: radial-gradient(
+    ellipse var(--dof-rx) var(--dof-ry) at var(--dof-x) var(--dof-y),
+    transparent 46%,
+    rgba(0, 0, 0, 0.55) 78%,
+    black 100%
+  );
+  will-change: opacity;
+}
+body.touch-aiming #touch-dof { opacity: 1; }
+/* On touch (mobile / tablet), running a real blur on a fullscreen overlay over
+   the fullscreen <video> tanks framerate. Drop the backdrop-filter and lean on
+   a slightly stronger darkened halo — the mask still shapes it like real DOF,
+   but it composites in one pass on the GPU. */
+html.is-touch #touch-dof {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background: rgba(0, 0, 0, 0.36);
+}
+@media (prefers-reduced-motion: reduce) {
+  #touch-dof { transition: none; }
 }
 
 /* Live zoom readout, pinned near the reticle stack (bottom-center of frame). */

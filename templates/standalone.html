@@ -329,6 +329,12 @@
        captures a photo of the region under it as "evidence". Pointer-driven so
        it works with mouse AND touch (iOS). -->
   <div id="touch-layer" class="hidden" aria-hidden="true">
+    <!-- Depth-of-field ring: a soft blur / darkened halo AROUND the reticle so
+         the framed subject reads as the crisp focal plane while the periphery
+         goes gently out of focus. Size + position are driven by CSS vars we
+         update from JS as the frame is aimed / zoomed. Sits UNDER the targets
+         + reticle so aim markers stay crisp on top. -->
+    <div id="touch-dof" aria-hidden="true"></div>
     <!-- Live "targets": things the world model detects that you CAN photograph.
          Markers float over each detected subject; framing one (esp. centered)
          locks it as worthy evidence. Populated from /api/detect while aiming. -->
