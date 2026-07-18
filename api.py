@@ -63,6 +63,58 @@ app.add_url_rule('/api/observe', 'standalone_api_observe', engine.api_observe, m
 # it plus their positions so the UI can float "starfield" tags. Stateless /
 # read-only (does not mutate the sim). See engine.api_detect.
 app.add_url_rule('/api/detect', 'standalone_api_detect', engine.api_detect, methods=['POST'])
+# Opt-in experimental: same wire contract as /api/detect but the frame is
+# pushed into a persistent Gemini Live-API WebSocket session, and the endpoint
+# returns whatever detections that session has produced most recently. See
+# gemini_live_vision.py for the design, tradeoffs, and known caveats (1 FPS
+# input cap, ~100 s session rotation, WSS is billed for wall-clock).
+# Registered only when DETECT_LIVE_API=1 + GEMINI_API_KEY + google-genai are
+# all present, so this is a no-op in the default deploy.
+try:
+    import gemini_live_vision as _live_vision  # noqa: WPS433
+    if _live_vision.is_available():
+        def _api_detect_live():
+            import base64 as _b64
+            import re as _re
+            from flask import request as _req, jsonify as _jsonify
+            data = _req.get_json(silent=True) or {}
+            frame_b64 = data.get('frame')
+            session_id = data.get('session_id', 'default')
+            if not frame_b64:
+                return _jsonify({"error": "missing frame"}), 400
+            mime_match = _re.match(r'^data:(image/[^;]+);base64,(.*)$',
+                                   frame_b64, _re.DOTALL)
+            if mime_match:
+                mime_type = mime_match.group(1)
+                raw = mime_match.group(2)
+            else:
+                mime_type = "image/jpeg"
+                raw = frame_b64
+            try:
+                img_bytes = _b64.b64decode(raw)
+            except Exception:
+                return _jsonify({"error": "bad frame encoding"}), 400
+            if len(img_bytes) < 512:
+                return _jsonify({"error": "frame too small"}), 400
+            scene_prompt = ""
+            try:
+                _st = engine.get_state(session_id) or {}
+                scene_prompt = str(_st.get('current_image_prompt') or "")
+            except Exception:
+                scene_prompt = ""
+            _live_vision.push_frame(
+                session_id, img_bytes,
+                mime_type=mime_type, scene_prompt=scene_prompt,
+            )
+            objects = _live_vision.get_latest_detections(session_id) or []
+            return _jsonify({"objects": objects, "source": "live-api"})
+        app.add_url_rule(
+            '/api/detect/live', 'standalone_api_detect_live',
+            _api_detect_live, methods=['POST'],
+        )
+        print("[LIVE VISION] /api/detect/live registered (DETECT_LIVE_API=1)")
+except Exception as _e:  # noqa: BLE001
+    print(f"[LIVE VISION] not available: {_e}")
 # Photo appraisal for the reward loop: the client posts a captured crop and the
 # engine returns an evidence-style breakdown (notable items + interest rating +
 # a terse "why it matters" note, plus a caption/mood) that the UI prints as a
