@@ -284,21 +284,25 @@ class LiveVisionSession:
         A single ``async with client.aio.live.connect(...)`` block owns one
         WSS; when it approaches ``MAX_SESSION_SECONDS`` (or Gemini closes it
         with GoAway) we exit the block and start a fresh one.
+
+        Circuit breaker: if we fail to open a session ``MAX_CONSECUTIVE_ERRORS``
+        times in a row (bad model name, revoked key, sustained upstream outage)
+        we stop trying and let the caller fall back to ``/api/detect``. A
+        successful connect resets the counter.
         """
         from google import genai
         from google.genai import types
 
         client = genai.Client(api_key=_api_key())
-        # Note: response_schema in a Live-API config isn't universally honored
-        # yet on every preview model — we set response_mime_type + a strict
-        # system instruction, and defensively parse either way. This mirrors
-        # how the HTTP path works and keeps us schema-compatible.
         config = {
             "response_modalities": ["TEXT"],
             "system_instruction": {
                 "parts": [{"text": _system_instruction(MAX_DETECTIONS)}],
             },
         }
+
+        MAX_CONSECUTIVE_ERRORS = 5
+        consecutive_errors = 0
 
         while not self._stop_event.is_set():
             # Idle-close: if no frames have arrived recently, don't hold a
@@ -310,6 +314,7 @@ class LiveVisionSession:
 
             try:
                 async with client.aio.live.connect(model=LIVE_MODEL, config=config) as session:
+                    consecutive_errors = 0
                     self._session_started_ts = time.time()
                     # Fan out: producer streams frames from the queue into the
                     # Live session; consumer collects text and updates latest.
@@ -328,10 +333,15 @@ class LiveVisionSession:
                         except (asyncio.CancelledError, Exception):
                             pass
             except Exception as exc:  # noqa: BLE001
-                # Transient — log to state and try to reconnect after a small
-                # backoff unless we've been asked to stop.
+                # Transient — record the error and try to reconnect with an
+                # exponential-with-cap backoff, unless we've clearly hit a
+                # permanent failure (see circuit breaker above).
+                consecutive_errors += 1
                 self._error = f"{type(exc).__name__}: {exc}"
-                await asyncio.sleep(1.0)
+                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                    self._stop_event.set()
+                    break
+                await asyncio.sleep(min(1.0 * (2 ** (consecutive_errors - 1)), 10.0))
                 continue
 
     async def _send_frames(self, session, types) -> None:
