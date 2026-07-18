@@ -4707,6 +4707,9 @@
     if (_wheelTailTimer) clearTimeout(_wheelTailTimer);
     _wheelTailTimer = setTimeout(() => {
       _wheelTailTimer = 0;
+      // If the camera was closed between the last wheel tick and this tail,
+      // don't fire a phantom zoom sound / marker relayout — just drop it.
+      if (state.touchMode !== "aim") return;
       // Tail: fire the discrete-tick flourish (audio + marker layout + bump)
       // once the user has stopped spinning the wheel.
       setPhotoZoom(state.photoZoom, { force: true });
@@ -5093,11 +5096,12 @@
       const wasPinching = !!state.pinchBase;
       state.pinchBase = null;
       document.body.classList.remove("photo-pinching");
-      // Catch markers up now that we're no longer pinching (they were skipped
-      // every frame during the pinch to keep the gesture buttery), and fire the
+      // Once the pinch releases, catch markers up (they were skipped every
+      // frame during the pinch to keep the gesture buttery) and fire the
       // discrete-zoom flourish (audio tick + bump) once as a settle beat.
+      // Forcing setPhotoZoom with the current value runs both the marker
+      // relayout and the flourish in one pass.
       if (wasPinching && state.touchMode === "aim") {
-        layoutPhotoTargets();
         setPhotoZoom(state.photoZoom, { force: true });
       }
     }
@@ -5170,6 +5174,9 @@
   function closeTouch() {
     if (!state.touchMode) return;
     state.touchMode = null;
+    // Kill any in-flight wheel-tail so a phantom zoom sound can't land after
+    // the camera has already been put away.
+    if (_wheelTailTimer) { clearTimeout(_wheelTailTimer); _wheelTailTimer = 0; }
     // Release the viewfinder magnification back to full wide.
     state.photoPointers.clear();
     state.touchGesture = null;
