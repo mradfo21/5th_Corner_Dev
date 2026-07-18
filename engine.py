@@ -1682,13 +1682,73 @@ def _classify_speaker(label: str, kind_raw, speaks_raw) -> tuple:
     return kind, bool(speaks)
 
 
-def _detect_objects(image_path: str, max_items: int = 8) -> list:
+# Shared keep-alive HTTP session for Gemini vision calls. Reopening a TLS
+# connection on every /api/detect (which fires at a ~2.1-2.6 s cadence while
+# the SCAN overlay is live) burns 100-300 ms per call; a pooled session cuts
+# that to near zero and keeps our request/response amortized across the run.
+_GEMINI_HTTP_SESSION = requests.Session()
+
+# JSON schema Gemini must adhere to for /api/detect responses. Using a
+# responseSchema (not just responseMimeType) guarantees a well-formed array
+# with the exact fields we consume — no code-fence stripping, no regex
+# fallback, no "wrapped the JSON in prose" edge cases.
+_DETECT_RESPONSE_SCHEMA = {
+    "type": "ARRAY",
+    "items": {
+        "type": "OBJECT",
+        "properties": {
+            "label":   {"type": "STRING"},
+            "box_2d":  {"type": "ARRAY", "items": {"type": "NUMBER"}},
+            "kind":    {"type": "STRING",
+                        "enum": ["person", "character", "creature",
+                                 "animal", "machine", "object"]},
+            "speaks":  {"type": "BOOLEAN"},
+        },
+        "required": ["label", "box_2d"],
+    },
+}
+
+
+def _read_detect_image_bytes(image_path: str) -> tuple:
+    """Load a path-based detection input into (bytes, mime_type).
+
+    Prefers the pre-downsampled ``*_small.png`` companion when present, matching
+    the behavior we've used since ``_vision_analyze_all``. Returns
+    ``(None, None)`` if the path can't be resolved.
+    """
+    full_path = _resolve_image_path(image_path)
+    if not full_path or not os.path.exists(full_path):
+        return None, None
+    full_path_obj = Path(full_path)
+    small_path = full_path_obj.parent / full_path_obj.name.replace(".png", "_small.png")
+    use_path = small_path if small_path.exists() else full_path_obj
+    with open(use_path, "rb") as f:
+        image_bytes = f.read()
+    mime_type = "image/jpeg" if str(use_path).lower().endswith((".jpg", ".jpeg")) else "image/png"
+    return image_bytes, mime_type
+
+
+def _detect_objects(image_path: str = None,
+                    max_items: int = 8,
+                    image_bytes: bytes = None,
+                    mime_type: str = None,
+                    scene_prompt: str = "") -> list:
     """Realtime object recognition for the live scene.
 
     Ask Gemini for the prominent, interactable things visible in a frame and
     their 2D bounding boxes, so the standalone UI can float "starfield" tags
     over the live video where each object actually sits. This powers the SCAN
     tool: the player drags across the scene and the world names what it sees.
+
+    Callers can pass either ``image_path`` (legacy) or the raw frame directly
+    via ``image_bytes`` + ``mime_type`` (preferred from ``api_detect``, which
+    already has the frame in memory — this avoids a disk round-trip plus a
+    second base64 encode per call). When both are given, bytes win.
+
+    ``scene_prompt`` is the exact text the world model was steered with for
+    this frame (``state['current_image_prompt']``). Passing it as extra context
+    gives Gemini strong priors ("weathered valve wheel" vs "handle") without
+    changing the response schema.
 
     Returns a list of dicts (at most ``max_items``), each:
         {"label": str, "cx": float, "cy": float, "w": float, "h": float,
@@ -1701,42 +1761,31 @@ def _detect_objects(image_path: str, max_items: int = 8) -> list:
     """
     import base64
     import json as _json
-    import re as _re
-    import requests
+    import random as _random
+    import time as _time
 
     if not LLM_ENABLED or not VISION_ENABLED or not GEMINI_API_KEY:
         return []
 
     try:
-        full_path = _resolve_image_path(image_path)
-        if not full_path or not os.path.exists(full_path):
-            return []
-
-        from pathlib import Path
-        full_path_obj = Path(full_path)
-        small_path = full_path_obj.parent / full_path_obj.name.replace(".png", "_small.png")
-        use_path = small_path if small_path.exists() else full_path_obj
-
-        with open(use_path, "rb") as f:
-            image_bytes = f.read()
+        if image_bytes is None:
+            image_bytes, mime_type = _read_detect_image_bytes(image_path)
+            if image_bytes is None:
+                return []
+        if not mime_type:
+            mime_type = "image/jpeg"
         image_b64 = base64.b64encode(image_bytes).decode("utf-8")
 
-        mime_type = "image/png"
-        if str(use_path).lower().endswith((".jpg", ".jpeg")):
-            mime_type = "image/jpeg"
-
-        detect_prompt = (
+        detect_instructions = (
             "Detect the prominent, distinct things a person could look at or "
             "interact with in this image (objects, tools, doors, exits, "
             "figures, creatures, vehicles, hazards). "
             f"Return AT MOST {max_items} of the most salient. "
-            "Respond with ONLY a JSON array, no prose, no code fences. Each item: "
-            '{\"label\": \"<1-3 word noun, lowercase>\", '
-            '\"box_2d\": [ymin, xmin, ymax, xmax], '
-            '\"kind\": \"<one of: person, character, creature, animal, machine, object>\", '
-            '\"speaks\": <true|false>}. '
-            "Box coordinates are integers normalized to 0-1000 "
-            "(y is top-to-bottom, x is left-to-right). "
+            "Each item: label (1-3 word noun, lowercase), "
+            "box_2d [ymin, xmin, ymax, xmax] as integers 0-1000 "
+            "(y top-to-bottom, x left-to-right), "
+            "kind (person/character/creature/animal/machine/object), "
+            "speaks (true|false). "
             "Set \"speaks\" true ONLY for something that could plausibly hold a "
             "conversation right now: a visible person, humanoid figure, named "
             "character, sentient creature, or a talking machine (radio, phone, "
@@ -1745,6 +1794,23 @@ def _detect_objects(image_path: str, max_items: int = 8) -> list:
             "Prefer specific, concrete labels over vague ones. "
             "Skip generic background like 'sky', 'ground', 'wall' unless notable."
         )
+
+        # Story-grounded prior: the world model was steered by this exact
+        # prompt, so folding it in sharpens labels on the ambiguous stuff
+        # (a "handle" the prompt calls "weathered valve wheel"). Kept short so
+        # it can't dominate the visual signal.
+        prompt_prior = ""
+        if scene_prompt:
+            prior = scene_prompt.strip().replace("\n", " ")
+            if len(prior) > 500:
+                prior = prior[:500].rstrip() + "..."
+            prompt_prior = (
+                "This frame was rendered from the following scene prompt. "
+                "Use it as a hint for specific, story-grounded labels, but "
+                "only tag things you can actually see in the pixels — do NOT "
+                "invent objects that are named in the prompt but not visible.\n"
+                f"SCENE PROMPT: {prior}\n\n"
+            )
 
         api_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent"
         headers = {
@@ -1755,14 +1821,19 @@ def _detect_objects(image_path: str, max_items: int = 8) -> list:
             "contents": [{
                 "parts": [
                     {"inlineData": {"mimeType": mime_type, "data": image_b64}},
-                    {"text": detect_prompt},
+                    {"text": prompt_prior + detect_instructions},
                 ]
             }],
             "generationConfig": {
                 "thinkingConfig": {"thinkingBudget": 0},
-                "temperature": 0.4,
+                # Detection is a classification task: deterministic runs mean
+                # tag labels stay stable frame-to-frame, so the client-side
+                # reconciler doesn't get whiplashed by "figure" vs "person"
+                # renaming on identical pixels.
+                "temperature": 0.0,
                 "maxOutputTokens": 700,
                 "responseMimeType": "application/json",
+                "responseSchema": _DETECT_RESPONSE_SCHEMA,
             },
             "safetySettings": [
                 {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
@@ -1772,8 +1843,38 @@ def _detect_objects(image_path: str, max_items: int = 8) -> list:
             ],
         }
 
-        response = requests.post(api_url, headers=headers, json=payload, timeout=20)
-        response.raise_for_status()
+        # Realtime cadence: /api/detect fires every ~2.5 s, so a 20 s timeout
+        # was long enough to stack multiple in-flight calls and completely
+        # blackhole the SCAN overlay on a single slow response. Cap it tight
+        # and retry once on the errors that are actually worth retrying
+        # (429 rate-limit, 5xx transient) with jittered backoff.
+        response = None
+        last_err = None
+        for attempt in range(2):
+            try:
+                response = _GEMINI_HTTP_SESSION.post(
+                    api_url, headers=headers, json=payload, timeout=8
+                )
+                if response.status_code == 429 or 500 <= response.status_code < 600:
+                    last_err = requests.exceptions.HTTPError(
+                        f"{response.status_code} {response.reason}", response=response
+                    )
+                    if attempt == 0:
+                        _time.sleep(0.35 + _random.random() * 0.35)
+                        continue
+                    raise last_err
+                response.raise_for_status()
+                last_err = None
+                break
+            except (requests.exceptions.Timeout,
+                    requests.exceptions.ConnectionError) as e:
+                last_err = e
+                if attempt == 0:
+                    _time.sleep(0.35 + _random.random() * 0.35)
+                    continue
+                raise
+        if last_err is not None and response is None:
+            raise last_err
         result = response.json()
 
         candidates = result.get("candidates") or []
@@ -1784,19 +1885,14 @@ def _detect_objects(image_path: str, max_items: int = 8) -> list:
         if not full_text:
             return []
 
-        # Be forgiving: strip code fences and pull out the JSON array if the
-        # model wrapped it in any prose despite instructions.
-        cleaned = _re.sub(r"^```(?:json)?|```$", "", full_text.strip(), flags=_re.MULTILINE).strip()
+        # With responseSchema Gemini returns strict JSON — a single json.loads
+        # is enough. Still guard: if the model somehow returns nothing valid,
+        # log it and return [] rather than raising into the request handler.
         try:
-            parsed = _json.loads(cleaned)
-        except Exception:
-            m = _re.search(r"\[.*\]", cleaned, _re.DOTALL)
-            if not m:
-                return []
-            try:
-                parsed = _json.loads(m.group(0))
-            except Exception:
-                return []
+            parsed = _json.loads(full_text)
+        except Exception as parse_err:
+            log_error(f"[DETECT] malformed structured response: {parse_err} :: {full_text[:200]}")
+            return []
 
         if not isinstance(parsed, list):
             return []
@@ -1847,11 +1943,11 @@ def _detect_objects(image_path: str, max_items: int = 8) -> list:
         return objects
     except requests.exceptions.HTTPError as e:
         safe_e = str(e).encode("ascii", "replace").decode("ascii")
-        print(f"[DETECT ERROR] Gemini API HTTP error: {safe_e}")
+        log_error(f"[DETECT] Gemini API HTTP error: {safe_e}")
         return []
     except Exception as e:
         safe_e = str(e).encode("ascii", "replace").decode("ascii")
-        print(f"[DETECT ERROR] Failed to detect objects: {safe_e}")
+        log_error(f"[DETECT] Failed to detect objects: {safe_e}")
         return []
 
 
@@ -4945,16 +5041,22 @@ def api_detect():
     This is a stateless, read-only perception call: unlike /api/observe it does
     NOT mutate world state, history, or choices — it just names what's on screen.
     """
-    import base64 as _b64, re as _re, time as _time
-    from pathlib import Path as _Path
+    import base64 as _b64, re as _re
     try:
         data = request.get_json(silent=True) or {}
         frame_b64 = data.get('frame')
         session_id = data.get('session_id', 'default')
         if not frame_b64:
             return jsonify({"error": "missing frame"}), 400
-        m = _re.match(r'^data:image/[^;]+;base64,(.*)$', frame_b64, _re.DOTALL)
-        raw = m.group(1) if m else frame_b64
+        # Pull the MIME type off the data URL so we can pass it straight to
+        # Gemini without any guesswork or filename-based inference.
+        mime_match = _re.match(r'^data:(image/[^;]+);base64,(.*)$', frame_b64, _re.DOTALL)
+        if mime_match:
+            mime_type = mime_match.group(1)
+            raw = mime_match.group(2)
+        else:
+            mime_type = "image/jpeg"
+            raw = frame_b64
         try:
             img_bytes = _b64.b64decode(raw)
         except Exception:
@@ -4962,15 +5064,26 @@ def api_detect():
         if len(img_bytes) < 512:
             return jsonify({"error": "frame too small"}), 400
 
-        img_dir = _Path(_get_image_dir(session_id))
-        img_dir.mkdir(parents=True, exist_ok=True)
-        # Reuse a single scratch file per session: these detection grabs are
-        # throughput-heavy and disposable (not canonical stills), so there's no
-        # reason to accumulate them on disk.
-        fpath = img_dir / "scan_frame.jpg"
-        fpath.write_bytes(img_bytes)
+        # Ground the detector with the exact prompt the world model was steered
+        # with for this frame. Pulled from live state so it tracks the current
+        # turn without any client changes; falls back gracefully to no prior
+        # if the session has no state yet (opening frame, intro, tests).
+        scene_prompt = ""
+        try:
+            _st = get_state(session_id) or {}
+            scene_prompt = str(_st.get('current_image_prompt') or "")
+        except Exception:
+            scene_prompt = ""
 
-        objects = _detect_objects(str(fpath))
+        # Detection runs on the bytes we already have in RAM — no disk write,
+        # no re-read, no second base64 encode. The old scratch-file path was
+        # both slower and a source of contention when SCAN + PHOTO detects
+        # fired against the same session at once.
+        objects = _detect_objects(
+            image_bytes=img_bytes,
+            mime_type=mime_type,
+            scene_prompt=scene_prompt,
+        )
         return jsonify({"objects": objects or []})
     except Exception as e:
         import traceback as _tb
