@@ -5208,6 +5208,122 @@ def _clean_subject_text(value: str, fallback: str, limit: int) -> str:
     return (s[:limit] or fallback)
 
 
+def _talk_vision_snapshot(session_id: str = "default") -> dict:
+    """Snapshot of what the character being talked to can actually SEE.
+
+    Reads the frame the player is looking at right now
+    (``state['current_image_url']``) and returns a compact summary the persona
+    prompt can quote — what visible objects share the scene with the subject,
+    plus the cached scene description / time of day / palette. This is what
+    lets the character reference the lantern in the player's hand, the door
+    behind them, the fresh boot prints on the floor — instead of talking
+    blind against just a text scene description.
+
+    Always returns a JSON-safe dict; degrades to empty fields when vision is
+    disabled, when the current scene isn't on disk yet, or on any failure
+    (never raises — TALK stays available even if perception is down).
+
+    Returns:
+        {
+          "visible":   [{"label","kind","cx","cy","w","h","speaks"}, ...],
+          "description": str,        # single sentence, from _vision_analyze_all
+          "time_of_day": str,        # e.g. "night", "dusk"
+          "image_url":  str | None,  # web path of the frame we analyzed
+        }
+    """
+    empty = {"visible": [], "description": "", "time_of_day": "", "image_url": None}
+    if not LLM_ENABLED or not VISION_ENABLED:
+        return empty
+    try:
+        st = _load_state(session_id) or {}
+    except Exception:
+        st = {}
+    image_url = st.get("current_image_url") or None
+    if not image_url:
+        return empty
+    resolved = _resolve_image_path(image_url)
+    if not resolved or not resolved.exists():
+        return empty
+
+    # Two vision calls but both are cache-friendly: _vision_analyze_all is
+    # already cached per image path, so on the common case (TALK opened during
+    # a scene we've already analyzed for the turn dispatch) this is free. The
+    # detection call is fresh but reuses the PR #89 keep-alive session and
+    # deterministic prompt path, so tag output stays stable frame-to-frame.
+    description = ""
+    time_of_day = ""
+    try:
+        analysis = _vision_analyze_all(str(resolved)) or {}
+        description = (analysis.get("description") or "").strip()
+        time_of_day = (analysis.get("time_of_day") or "").strip()
+    except Exception:
+        pass
+
+    scene_prompt = (st.get("current_image_prompt") or "").strip()
+    visible = []
+    try:
+        visible = _detect_objects(str(resolved), max_items=8,
+                                  scene_prompt=scene_prompt) or []
+    except Exception:
+        visible = []
+
+    return {
+        "visible": visible,
+        "description": description[:600],
+        "time_of_day": time_of_day[:32],
+        "image_url": image_url,
+    }
+
+
+def _format_vision_for_persona(subject_label: str, snapshot: dict) -> str:
+    """Turn a ``_talk_vision_snapshot`` into a short block for persona_prompt.
+
+    We deliberately avoid dumping raw coordinates; the character narrates the
+    world, they don't read a bounding-box table. Instead we tell them what's
+    around them, roughly WHERE (left/center/right), and quote the scene
+    description verbatim so the model can pick vocabulary from it. Objects
+    whose label matches the subject (they'd be talking about themselves) are
+    dropped so the persona doesn't say "I can see a figure over there" when
+    THEY are the figure.
+    """
+    if not snapshot:
+        return ""
+    parts = []
+    desc = (snapshot.get("description") or "").strip()
+    if desc:
+        parts.append(f"WHAT YOU CAN SEE RIGHT NOW: {desc}")
+    tod = (snapshot.get("time_of_day") or "").strip()
+    if tod:
+        parts.append(f"LIGHT: {tod}.")
+
+    subj = (subject_label or "").strip().lower()
+    around = []
+    for obj in snapshot.get("visible") or []:
+        label = str(obj.get("label") or "").strip().lower()
+        if not label or label == subj:
+            continue
+        cx = float(obj.get("cx", 0.5))
+        if cx < 0.35:
+            where = "off to your left"
+        elif cx > 0.65:
+            where = "off to your right"
+        else:
+            where = "in front of you"
+        around.append(f"{label} {where}")
+        if len(around) >= 6:
+            break
+    if around:
+        parts.append("Also visible in the scene: " + "; ".join(around) + ".")
+
+    if not parts:
+        return ""
+    return (
+        "\n\nDIRECT PERCEPTION (use these to react to what is actually in "
+        "the scene right now; never invent objects that aren't listed):\n"
+        + "\n".join(parts)
+    )
+
+
 def build_talk_context(subject: dict, session_id: str = "default", opening_override: str = "") -> dict:
     """Assemble a story-aware briefing for a conversation with ``subject``.
 
@@ -5218,6 +5334,10 @@ def build_talk_context(subject: dict, session_id: str = "default", opening_overr
     and the ElevenLabs voice agent. ``opening_override`` reuses an existing
     opening line instead of spending an LLM call to regenerate one (used when
     only the VOICE is changing mid-conversation).
+
+    The persona is grounded in the CURRENT visible frame (see
+    ``_talk_vision_snapshot``) so the character isn't talking blind — they
+    can reference what's actually on screen alongside the story situation.
     """
     subject = subject or {}
     label = _clean_subject_text(subject.get("label"), "figure", 40)
@@ -5286,12 +5406,19 @@ def build_talk_context(subject: dict, session_id: str = "default", opening_overr
     loc_bits = ", ".join([b for b in [location.replace("_", " ") if location else "", time_of_day] if b])
     loc_block = f"\n\nSETTING: {loc_bits}." if loc_bits else ""
 
+    # Direct-perception block: what the subject can actually SEE in the frame
+    # the player is looking at, so the character can react to real objects on
+    # screen instead of a text-only briefing. Empty string when vision is
+    # unavailable — the persona still works, just without the eyes.
+    vision_snapshot = _talk_vision_snapshot(session_id)
+    vision_block = _format_vision_for_persona(label, vision_snapshot)
+
     persona_prompt = (
         f"You ARE the '{label}' — {kind_hint} — inside a 1993 analog-horror world. "
         f"You are NOT an AI assistant and you must never break character or mention being an AI. "
         f"Speak in-world, in first person, reacting to what is happening around you.\n\n"
         f"WORLD PREMISE: {premise}"
-        f"{scene_block}{loc_block}"
+        f"{scene_block}{loc_block}{vision_block}"
         f"\n\nSTATE: story phase '{phase}', chaos level {chaos}/10, turn {turn}."
         f"{recent_block}\n\n"
         f"The person you are speaking to is the investigator/photojournalist exploring this place"
@@ -5319,6 +5446,10 @@ def build_talk_context(subject: dict, session_id: str = "default", opening_overr
         "recent": recent,
         "persona_prompt": persona_prompt,
         "opening_line": opening_line,
+        # Vision snapshot rides along so the ElevenLabs agent (via
+        # dynamic_variables) and any Live-audio path (via system_instruction)
+        # can quote the same "what you can see" list the persona was built on.
+        "vision": vision_snapshot,
     }
 
 
@@ -5412,6 +5543,17 @@ def api_talk_session():
         # Dynamic variables + prompt overrides an ElevenLabs agent can consume to
         # stay aware of the story (see ElevenLabs Conversational AI docs).
         sit = context["situation"]
+        vision = context.get("vision") or {}
+        # Flatten the vision snapshot into a single string an ElevenLabs
+        # agent template can reference as {{visible_now}} without having to
+        # walk a JSON array. Kept short so it fits the agent's variable budget.
+        visible_names = []
+        for _obj in (vision.get("visible") or []):
+            _lbl = str(_obj.get("label") or "").strip()
+            if _lbl and _lbl.lower() != context["subject"]["label"].lower():
+                visible_names.append(_lbl)
+            if len(visible_names) >= 6:
+                break
         dynamic_variables = {
             "subject_label": context["subject"]["label"],
             "subject_kind": context["subject"]["kind"],
@@ -5423,6 +5565,12 @@ def api_talk_session():
             "time_of_day": str(sit.get("time_of_day", "")),
             "current_scene": str(sit.get("scene", "")),
             "recent_events": " | ".join(context.get("recent", [])),
+            # Direct-perception fields the voice agent can reference in its
+            # prompt template so its spoken lines stay grounded in what's
+            # actually on the player's screen. Empty strings when vision is
+            # unavailable — the agent template can fall back gracefully.
+            "visible_now": ", ".join(visible_names),
+            "visible_description": str(vision.get("description", "")),
         }
         # The opening line is ALSO a dynamic variable so an agent whose dashboard
         # first-message is "{{opening_line}}" stays story-aware even without

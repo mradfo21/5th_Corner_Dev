@@ -134,6 +134,52 @@ app.add_url_rule('/api/investigations', 'standalone_api_investigations', engine.
 # See engine.api_talk_session / engine.api_talk_message.
 app.add_url_rule('/api/talk/session', 'standalone_api_talk_session', engine.api_talk_session, methods=['POST'])
 app.add_url_rule('/api/talk/message', 'standalone_api_talk_message', engine.api_talk_message, methods=['POST'])
+# Opt-in experimental: bidirectional Gemini Live-API session for TALK,
+# replacing the ElevenLabs voice hop with native-audio streaming from Gemini
+# itself (and optionally sharing live video frames so the character sees the
+# scene the player is looking at). See gemini_live_talk.py + LIVE_TALK_PROTOTYPE.md
+# for design, tradeoffs, and known caveats (1 FPS video cap, ~100 s session
+# rotation, WSS is billed for wall-clock, transport is not manually validated
+# in the cloud env).
+# Registered only when TALK_LIVE_API=1 + GEMINI_API_KEY + google-genai + a
+# flask-sock instance are ALL present, so this is a no-op in the default
+# deploy — the existing /api/talk/session (ElevenLabs) path is untouched.
+try:
+    import gemini_live_talk as _live_talk  # noqa: WPS433
+    if _sock is not None and _live_talk.is_available():
+        @_sock.route('/ws/talk/live')
+        def _ws_talk_live(ws):
+            """First frame is a JSON handshake:
+                {"type":"start","subject":{"label":..,"kind":..},"session_id":"default"}
+            Then bidirectional streaming (see gemini_live_talk.py docstring)."""
+            try:
+                first = ws.receive(timeout=10)
+            except Exception:
+                return
+            if not first:
+                return
+            try:
+                handshake = json.loads(first)
+            except Exception:
+                try:
+                    ws.send(json.dumps({"type": "error",
+                                        "message": "bad handshake (expected JSON)"}))
+                except Exception:
+                    pass
+                return
+            if not isinstance(handshake, dict) or handshake.get("type") != "start":
+                try:
+                    ws.send(json.dumps({"type": "error",
+                                        "message": "first message must be {type:'start', subject, session_id}"}))
+                except Exception:
+                    pass
+                return
+            subject = handshake.get("subject") or {}
+            session_id = handshake.get("session_id", "default")
+            _live_talk.handle_websocket(ws, subject, session_id)
+        print("[LIVE TALK] /ws/talk/live registered (TALK_LIVE_API=1)")
+except Exception as _e:  # noqa: BLE001
+    print(f"[LIVE TALK] not available: {_e}")
 # Voice registry: the selectable voices + per-kind/cast mappings, so the client
 # can offer a LIVE voice switcher for interactions (and the narrator). The
 # session endpoint accepts a `voice_id` to change a subject's voice on the fly.
