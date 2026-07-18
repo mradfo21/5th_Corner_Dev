@@ -99,6 +99,7 @@
     touchZoom: document.getElementById("touch-zoom"),
     touchTargets: document.getElementById("touch-targets"),
     touchLock: document.getElementById("touch-lock"),
+    touchDof: document.getElementById("touch-dof"),
     evidenceCard: document.getElementById("evidence-card"),
     evidenceHud: document.getElementById("evidence-hud"),
     objectivesHud: document.getElementById("objectives-hud"),
@@ -4539,8 +4540,13 @@
   // so you can film the entire view.
   // ------------------------------------------------------------------
   const PHOTO_ZOOM_MIN = 0.5;    // full WIDE — the 16:9 frame grows to cover the whole screen
-  const PHOTO_ZOOM_MAX = 3.0;    // max telephoto (reasonable bound)
-  const PHOTO_ZOOM_ARMED = 1.0;  // start at the large 16:9 base frame
+  const PHOTO_ZOOM_MAX = 3.5;    // max telephoto (headroom above the 1.8× default)
+  // Raising the camera should FEEL like raising a camera — the scene punches
+  // in to a telephoto framing, the periphery softens (DOF halo), and the world
+  // reads as "focused." 1.8× lands a meaningful zoom without cropping the frame
+  // so tight that the player can't find their subject. The full range (0.5–3.5)
+  // still lets you pull WIDE for a full-screen shot or push tighter for detail.
+  const PHOTO_ZOOM_ARMED = 1.8;
 
   function clampZoom(z) { return Math.max(PHOTO_ZOOM_MIN, Math.min(PHOTO_ZOOM_MAX, z)); }
 
@@ -4614,6 +4620,25 @@
     if (el.touchZoom) el.touchZoom.innerHTML = (state.photoZoom || 1).toFixed(1) + "&times;";
   }
 
+  // Drive the depth-of-field mask so the crisp "in focus" window always rides
+  // the current aim / zoom. The mask geometry is a couple of CSS custom props
+  // on #touch-dof — updating those triggers only a compositor-side mask update,
+  // no layout / paint, so it's cheap enough for every pointer/pinch frame.
+  function updateDofMask() {
+    if (!el.touchDof || !state.touchMode) return;
+    const p = state.touchPoint || { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+    const b = frameBoxPx();
+    // Halo dimensions scale with the current capture frame: a bit larger than
+    // the frame so the crisp region hugs (but doesn't crop) what's being framed.
+    const rx = Math.round(b.w * 0.62);
+    const ry = Math.round(b.h * 0.62);
+    const s = el.touchDof.style;
+    s.setProperty("--dof-x", p.x + "px");
+    s.setProperty("--dof-y", p.y + "px");
+    s.setProperty("--dof-rx", rx + "px");
+    s.setProperty("--dof-ry", ry + "px");
+  }
+
   function setPhotoZoom(z, opts) {
     opts = opts || {};
     const clamped = clampZoom(z);
@@ -4623,13 +4648,18 @@
     // Zooming OUT grows the frame (and re-grades what's framed) even when the
     // reticle hasn't moved, so the frame expands live under the scroll/pinch.
     layoutCaptureFrame();
-    if (state.touchMode === "aim") layoutPhotoTargets();
-    if (el.touchZoom) { // pop the readout only on an actual zoom change
+    updateDofMask();
+    // While CONTINUOUS gestures (pinch, wheel spin) fire, skip the per-frame
+    // marker re-layout, the ".bump" reflow, and the audio tick — they were the
+    // source of the pinch stutter on phones. The pinch handler calls back with
+    // `continuous: true`; discrete zoom steps get the full flourish.
+    if (!opts.continuous && state.touchMode === "aim") layoutPhotoTargets();
+    if (!opts.continuous && el.touchZoom) { // pop the readout only on discrete zoom steps
       el.touchZoom.classList.remove("bump");
       void el.touchZoom.offsetWidth;
       el.touchZoom.classList.add("bump");
     }
-    if (!opts.silent) {
+    if (!opts.silent && !opts.continuous) {
       try { Sound.zoom((clamped - PHOTO_ZOOM_MIN) / (PHOTO_ZOOM_MAX - PHOTO_ZOOM_MIN)); } catch (_) {}
     }
   }
@@ -4639,6 +4669,15 @@
     [el.sceneA, el.sceneB, el.reactorVideo, el.reactorFreeze].forEach((n) => {
       if (n) n.style.transform = "";
     });
+    // Reset the DOF mask so nothing bleeds through the next time the camera
+    // opens (opacity is CSS-driven off `.touch-aiming`, but the mask geometry
+    // sticks otherwise and would flash from the OLD focal window on re-open).
+    if (el.touchDof) {
+      el.touchDof.style.removeProperty("--dof-x");
+      el.touchDof.style.removeProperty("--dof-y");
+      el.touchDof.style.removeProperty("--dof-rx");
+      el.touchDof.style.removeProperty("--dof-ry");
+    }
   }
 
   function photoPointerDist() {
@@ -4647,11 +4686,31 @@
     return Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
   }
 
-  // Mouse wheel = smooth multiplicative zoom (down = out, up = in).
+  // Midpoint of the two active pinch fingers (in viewport coords). Returns
+  // null unless there are 2 pointers down — pinch handling always guards on
+  // pinchBase, so this only gets called when the check passed.
+  function photoPointerCentroid() {
+    const pts = [...state.photoPointers.values()];
+    if (pts.length < 2) return null;
+    return { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
+  }
+
+  // Mouse wheel = smooth multiplicative zoom (down = out, up = in). Wheel is
+  // a continuous stream of small deltas, so mark it that way — the zoom sound
+  // and marker re-layout only fire on the FINAL tick (below), keeping the
+  // scroll buttery.
+  let _wheelTailTimer = 0;
   function onTouchWheel(e) {
     if (state.touchMode !== "aim") return;
     e.preventDefault();
-    setPhotoZoom(state.photoZoom * Math.exp(-e.deltaY * 0.0015));
+    setPhotoZoom(state.photoZoom * Math.exp(-e.deltaY * 0.0015), { continuous: true });
+    if (_wheelTailTimer) clearTimeout(_wheelTailTimer);
+    _wheelTailTimer = setTimeout(() => {
+      _wheelTailTimer = 0;
+      // Tail: fire the discrete-tick flourish (audio + marker layout + bump)
+      // once the user has stopped spinning the wheel.
+      setPhotoZoom(state.photoZoom, { force: true });
+    }, 140);
   }
 
   // ------------------------------------------------------------------
@@ -4905,6 +4964,10 @@
     el.touchCaptureFrame.style.height = b.h + "px";
     el.touchCaptureFrame.style.left = p.x + "px";
     el.touchCaptureFrame.style.top = p.y + "px";
+    // The DOF mask tracks the same rectangle so the crisp focal window always
+    // hugs the current framing — reticle move, zoom-out grow, and pinch centroid
+    // shifts all keep it aligned.
+    updateDofMask();
   }
 
   function moveReticle(x, y) {
@@ -4919,8 +4982,12 @@
     // follows the reticle (the CSS transform transition does the gliding).
     if (state.photoZoom && state.photoZoom !== 1) applySceneTransform();
     // Re-evaluate which subject is framed as we aim (and reposition markers,
-    // since the zoom origin moved with the reticle).
-    if (state.touchMode === "aim") layoutPhotoTargets();
+    // since the zoom origin moved with the reticle) — BUT skip mid-pinch: the
+    // per-frame walk of every marker was a big source of pinch stutter on
+    // phones. Once the pinch ends (one finger lifts, or the last one goes up)
+    // onTouchUp catches markers back up.
+    const pinching = state.photoPointers.size >= 2 && state.pinchBase;
+    if (state.touchMode === "aim" && !pinching) layoutPhotoTargets();
   }
 
   // A press counts as a TAP (→ shoot) only if the finger barely moved and lifted
@@ -4944,11 +5011,19 @@
       state.photoPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     }
     if (state.photoPointers.size >= 2 && state.pinchBase) {
+      // Real pinch feel: the zoom rides the CENTROID of the two fingers, not
+      // whichever finger touched down first. We move the aim point to the
+      // centroid (so the transform origin, capture frame, and DOF halo all
+      // track the pinch) and treat the update as a continuous gesture so we
+      // don't rerun marker layout / play a zoom tick every frame — those were
+      // the two biggest sources of pinch jank on phones.
+      const c = photoPointerCentroid();
+      if (c) moveReticle(c.x, c.y);
       const d = photoPointerDist();
       if (d > 0 && state.pinchBase.dist > 0) {
-        setPhotoZoom(state.pinchBase.zoom * (d / state.pinchBase.dist));
+        setPhotoZoom(state.pinchBase.zoom * (d / state.pinchBase.dist), { continuous: true });
       }
-      return; // don't move the reticle mid-pinch
+      return; // don't fall through into the single-finger drag path
     }
     // Track travel for the active single-finger gesture so release can tell a
     // tap from a drag, and flip on 1:1 tracking the moment it becomes a drag.
@@ -4983,6 +5058,15 @@
       document.body.classList.remove("photo-dragging");
       state.pinchActive = true;
       state.pinchBase = { dist: photoPointerDist(), zoom: state.photoZoom };
+      // Snap the scene/frame/DOF transitions off for the duration of the pinch
+      // so everything tracks the fingers 1:1 — the eased CSS chase read as a
+      // smeary, laggy pinch on touch.
+      document.body.classList.add("photo-pinching");
+      // Anchor the aim point (transform origin, capture frame, DOF halo) at
+      // the pinch centroid from the START, so the first pinch-move doesn't
+      // snap the world to a new spot.
+      const c = photoPointerCentroid();
+      if (c) moveReticle(c.x, c.y);
     }
   }
 
@@ -5005,7 +5089,18 @@
     }
     if (g && g.id === e.pointerId) state.touchGesture = null;
     document.body.classList.remove("photo-dragging");
-    if (state.photoPointers.size < 2) state.pinchBase = null;
+    if (state.photoPointers.size < 2) {
+      const wasPinching = !!state.pinchBase;
+      state.pinchBase = null;
+      document.body.classList.remove("photo-pinching");
+      // Catch markers up now that we're no longer pinching (they were skipped
+      // every frame during the pinch to keep the gesture buttery), and fire the
+      // discrete-zoom flourish (audio tick + bump) once as a settle beat.
+      if (wasPinching && state.touchMode === "aim") {
+        layoutPhotoTargets();
+        setPhotoZoom(state.photoZoom, { force: true });
+      }
+    }
     if (state.photoPointers.size === 0) state.pinchActive = false;
   }
 
@@ -5025,7 +5120,10 @@
     state.photoPointers.delete(e.pointerId);
     if (state.touchGesture && state.touchGesture.id === e.pointerId) state.touchGesture = null;
     if (state.photoPointers.size === 0) document.body.classList.remove("photo-dragging");
-    if (state.photoPointers.size < 2) state.pinchBase = null;
+    if (state.photoPointers.size < 2) {
+      state.pinchBase = null;
+      document.body.classList.remove("photo-pinching");
+    }
     if (state.photoPointers.size === 0) state.pinchActive = false;
   }
 
@@ -5084,7 +5182,7 @@
     if (el.touchReticle) el.touchReticle.classList.remove("holding");
     if (el.touchCaptureFrame) el.touchCaptureFrame.classList.remove("grab");
     if (el.realtimeBtn) el.realtimeBtn.classList.remove("aiming");
-    document.body.classList.remove("touch-aiming", "photo-shake", "photo-kick");
+    document.body.classList.remove("touch-aiming", "photo-shake", "photo-kick", "photo-pinching");
     try { Sound.cameraOff(); } catch (_) {}
     try { Haptics.soft(); } catch (_) {}
     updateAmbientScan(); // hotspots return once the camera is put away
