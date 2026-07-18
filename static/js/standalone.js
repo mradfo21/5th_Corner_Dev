@@ -101,13 +101,9 @@
     touchLock: document.getElementById("touch-lock"),
     evidenceCard: document.getElementById("evidence-card"),
     evidenceHud: document.getElementById("evidence-hud"),
-    objectivesHud: document.getElementById("objectives-hud"),
-    objHead: document.getElementById("obj-head"),
-    objCount: document.getElementById("obj-count"),
-    objList: document.getElementById("obj-list"),
-    objCollapse: document.getElementById("obj-collapse"),
+    photoObjective: document.getElementById("photo-objective"),
+    poTitle: document.getElementById("po-title"),
     objBanner: document.getElementById("obj-banner"),
-    btnObjectives: document.getElementById("btn-objectives"),
     photoReceipt: document.getElementById("photo-receipt"),
     caseOverlay: document.getElementById("case-overlay"),
     caseRankLetter: document.getElementById("case-rank-letter"),
@@ -242,8 +238,6 @@
     imagesEnabled: true,        // server has image gen on (from /api/status) — else skip the guide-image wait
     finishTimer: null,          // fallback: fade the progress bar back to play
     sceneVisible: false,        // has the first realtime feed / still appeared this run? (gates the prose + SNAP tool on boot)
-    objDirectiveTurn: null,     // turn number the objectives LEAD was last refreshed for (one refresh/turn)
-    objDirectiveBusy: false,    // a /api/objectives directive fetch is in flight
   };
 
   // ------------------------------------------------------------------
@@ -826,12 +820,10 @@
     if (state.sceneVisible) return;
     state.sceneVisible = true;
     document.body.classList.remove("awaiting-first-scene");
-    // The world is genuinely on screen now — surface the objectives tracker
-    // (and derive this run's opening lead). Held back until here so it never
-    // floats over the black boot / "rendering" void.
+    // The world is genuinely on screen now — arm the photo-objective system so
+    // the first detection can install a "PHOTOGRAPH X" lead. Held back until
+    // here so nothing surfaces over the black boot / "rendering" void.
     try { Objectives.reveal(); } catch (_) {}
-    try { Objectives.syncCase(); } catch (_) {}
-    try { refreshDirective(true); } catch (_) {}
   }
 
   // ------------------------------------------------------------------
@@ -2923,15 +2915,6 @@
         // before advancing anyway (so a stalled stream can't freeze the loop).
         state.autoDeadline = Date.now() + AUTOPLAY_REALTIME_MAX_WAIT_MS;
         refreshStatus(); // reflect turn/chaos/inventory promptly, not on the 4s tick
-        // Evolve the generative LEAD to match where the story now stands. The
-        // tracker itself is only REVEALED once the scene is on screen (see
-        // markSceneVisible) — so it never floats over the boot void — but we
-        // keep its data current here regardless. refreshStatus() is async, so
-        // give it a beat to land the new turn/phase before deriving the lead.
-        if (state.sceneVisible) {
-          try { Objectives.syncCase(); } catch (_) {}
-          setTimeout(() => { try { refreshDirective(); } catch (_) {} }, 400);
-        }
         // Feed the settled video frame back into the sim so choices match what's
         // actually on screen (realtime "vision"). No-op outside realtime mode.
         Renderer.observeScene(item.id);
@@ -3021,8 +3004,7 @@
       try { hideCaseWin(); } catch (_) {}    // drop the win screen from the prior run
       state.caseWon = false;
       try { Evidence.reset(); } catch (_) {} // the EVIDENCE score + case file are per-run
-      try { Objectives.reset(); } catch (_) {} // objectives are per-run; reseed the spine + challenges
-      state.objDirectiveTurn = null;
+      try { Objectives.reset(); } catch (_) {} // photo objective is per-run
       state.selectedInvestigation = null;
       try { Investigations.clear(); } catch (_) {} // the case file is per-run
       // Wipe the current visuals IMMEDIATELY and permanently: blank both still
@@ -3627,71 +3609,73 @@
   window.Evidence = Evidence;
 
   // ------------------------------------------------------------------
-  // Objectives — a AAA-style objective tracker / "case board" in the top-right,
-  // driven by BOTH the generative world and the photo loop so the run always
-  // has a legible sense of purpose. It braids together:
+  // Objectives — a single, focused "PHOTOGRAPH X" objective in the top-right,
+  // driven by the world-model's live detections. Only ONE active target at a
+  // time so the goal is always legible and completable, and so it always tracks
+  // something you can genuinely photograph right now:
   //
-  //   • PRIMARY  — Close the Case: mirror the dossier census (document N
-  //                distinct subjects). The spine of the run.
-  //   • LEAD     — a model-authored "current directive" that EVOLVES with the
-  //                story (fetched from /api/objectives, grounded in the world
-  //                state; falls back to a scene/phase-derived line so it always
-  //                reads well). This is the generative heart of the system.
-  //   • FIELD    — bounties to DOCUMENT specific subjects the world model
-  //                surfaces in the live scene (from /api/detect + /api/photo).
-  //                Photographing that subject completes the bounty.
-  //   • BONUS    — standing challenge goals (a rare ★★★★★ find; a PERFECT-focus
-  //                shot) that reward mastery of the camera.
+  //   • When the detection loop returns a fresh subject, we install it as the
+  //     current photo objective (with a "PHOTOGRAPH" cinematic banner + a
+  //     compact top-right card).
+  //   • If the current subject stays in view, we hold it — no thrash between
+  //     frames.
+  //   • If the current subject leaves the frame for a couple of detection
+  //     passes, we swap in the next most-prominent undocumented candidate,
+  //     announced as a "NEW LEAD".
+  //   • Photographing the current subject lands an "OBJECTIVE COMPLETE" beat
+  //     (banner + check + chime), and the card clears so the next detection
+  //     can install a fresh objective.
   //
-  // Every objective animates in, ticks its progress, and lands a cinematic
-  // "OBJECTIVE COMPLETE" beat — a deliberately game-y, satisfying loop.
   // Persistent per-run + exposed as window.Objectives for engine hooks / tests.
   // ------------------------------------------------------------------
   const Objectives = (function () {
-    const KEY = "objectives_v1";
-    const COLLAPSE_KEY = "objectives_collapsed";
-    const MAX_FIELD = 3;             // simultaneous field bounties (avoid clutter)
-    const STALE_MISSES = 4;          // detection passes a subject can be absent before its bounty retires
-    const ARCHIVE_MS = 4600;         // how long a completed side-goal lingers before filing away
-    const CHECK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12.5l5 5L20 6"/></svg>';
+    const KEY = "photo_objective_v2";
+    // How long a subject can be missing from live detections before we swap in
+    // a fresh candidate. Small enough that a stale target doesn't linger; large
+    // enough that a subject briefly clipped out of one frame isn't dropped.
+    const STALE_MISSES = 2;
+    // How long the "OBJECTIVE COMPLETE" state lingers on the card before it
+    // clears back to nothing (making room for the next detection to seed a new
+    // photograph-X lead).
+    const COMPLETE_HOLD_MS = 2200;
 
-    // kind → sort weight (lower = higher in the list) + tag label.
-    const KIND_META = {
-      primary: { order: 0, tag: "PRIMARY" },
-      lead:    { order: 1, tag: "LEAD" },
-      field:   { order: 2, tag: "FIELD" },
-      bonus:   { order: 3, tag: "BONUS" },
-    };
-
-    let items = [];                  // active + recently-completed objectives
-    let nodes = new Map();           // id -> <li>
-    let seq = 0;                     // creation order tiebreak
+    // The single active photo objective, or null when there's nothing to shoot.
+    // { label, status: "active" | "complete", missPasses }
+    let current = null;
+    let completedCount = 0;
     let revealed = false;
-    let collapsed = false;
     let bannerTimer = null;
-    const archiveTimers = new Map(); // id -> timeout
+    let clearTimer = null;
 
-    try { collapsed = localStorage.getItem(COLLAPSE_KEY) === "1"; } catch (_) {}
+    try {
+      const raw = localStorage.getItem(KEY);
+      if (raw) {
+        const p = JSON.parse(raw);
+        if (p && typeof p === "object") {
+          completedCount = Math.max(0, Number(p.completedCount) || 0);
+          if (p.current && p.current.label && p.current.status === "active") {
+            current = { label: String(p.current.label), status: "active", missPasses: 0 };
+          }
+        }
+      }
+    } catch (_) {}
 
     function persist() {
       try {
-        localStorage.setItem(KEY, JSON.stringify({ items }));
-        localStorage.setItem(COLLAPSE_KEY, collapsed ? "1" : "0");
+        localStorage.setItem(KEY, JSON.stringify({
+          current: current ? { label: current.label, status: current.status } : null,
+          completedCount,
+        }));
       } catch (_) {}
     }
 
     function norm(s) { return String(s == null ? "" : s).trim().toLowerCase(); }
-    function get(id) { return items.find((o) => o.id === id) || null; }
-    function has(id) { return !!get(id); }
-    function activeFieldCount() {
-      return items.filter((o) => o.kind === "field" && o.status === "active").length;
-    }
 
-    // ---- Cinematic banner ("NEW OBJECTIVE" / "OBJECTIVE COMPLETE") ----
+    // ---- Cinematic banner ("PHOTOGRAPH X" / "OBJECTIVE COMPLETE") ----
     function banner(kicker, title, cls) {
       const b = el.objBanner;
       if (!b) return;
-      if (prefersReducedMotion()) return; // the tracker itself is enough motion
+      if (prefersReducedMotion()) return; // the card itself is enough motion
       clearTimeout(bannerTimer);
       const k = b.querySelector(".obj-banner-kicker");
       const t = b.querySelector(".obj-banner-title");
@@ -3704,442 +3688,166 @@
       bannerTimer = setTimeout(() => { b.classList.add("hidden"); b.classList.remove("show"); }, 2700);
     }
 
-    // ---- DOM ----
-    function makeNode(o) {
-      const li = document.createElement("li");
-      li.className = "obj-item kind-" + o.kind;
-      li.dataset.id = o.id;
-      const check = document.createElement("span");
-      check.className = "obj-check";
-      check.innerHTML = CHECK_SVG;
-      const main = document.createElement("div");
-      main.className = "obj-main";
-      const row = document.createElement("div");
-      row.className = "obj-row";
-      const tag = document.createElement("span");
-      tag.className = "obj-tag";
-      const title = document.createElement("span");
-      title.className = "obj-title";
-      row.appendChild(tag);
-      row.appendChild(title);
-      const detail = document.createElement("div");
-      detail.className = "obj-detail";
-      const prog = document.createElement("div");
-      prog.className = "obj-progress";
-      const track = document.createElement("div");
-      track.className = "obj-progress-track";
-      const fill = document.createElement("div");
-      fill.className = "obj-progress-fill";
-      const num = document.createElement("span");
-      num.className = "obj-progress-num";
-      track.appendChild(fill);
-      prog.appendChild(track);
-      prog.appendChild(num);
-      main.appendChild(row);
-      main.appendChild(detail);
-      main.appendChild(prog);
-      li.appendChild(check);
-      li.appendChild(main);
-      li._parts = { tag, title, detail, prog, fill, num };
-      return li;
-    }
-
-    function paintNode(li, o) {
-      const p = li._parts;
-      li.className = "obj-item kind-" + o.kind + " " + o.status;
-      p.tag.textContent = (KIND_META[o.kind] || {}).tag || o.kind.toUpperCase();
-      p.title.textContent = o.title || "";
-      // Keep the tracker clean: the flavor/detail lives as a hover tooltip
-      // rather than a second line of text under every objective.
-      li.title = o.detail ? (o.title + " \u2014 " + o.detail) : (o.title || "");
-      if (typeof o.goal === "number" && o.goal > 0) {
-        p.prog.style.display = "";
-        const count = Math.max(0, Math.min(o.goal, o.count || 0));
-        const pct = Math.round((count / o.goal) * 100);
-        const prev = p.fill.dataset.pct;
-        p.fill.style.width = pct + "%";
-        p.fill.dataset.pct = String(pct);
-        p.num.textContent = count + "/" + o.goal;
-        if (prev !== undefined && prev !== String(pct)) {
-          li.classList.remove("ticked"); void li.offsetWidth; li.classList.add("ticked");
-        }
-      } else {
-        p.prog.style.display = "none";
+    // ---- Card render ----
+    function paint(opts) {
+      const card = el.photoObjective;
+      const title = el.poTitle;
+      if (!card || !title) return;
+      if (!current || !revealed) {
+        card.classList.add("hidden");
+        card.classList.remove("show", "active", "complete", "entering");
+        return;
       }
-    }
-
-    function displayList() {
-      return items.slice().sort((a, b) => {
-        const oa = (KIND_META[a.kind] || {}).order ?? 9;
-        const ob = (KIND_META[b.kind] || {}).order ?? 9;
-        // Completed side-goals sink below active ones within a kind.
-        const sa = a.status === "active" ? 0 : 1;
-        const sb = b.status === "active" ? 0 : 1;
-        if (oa !== ob) return oa - ob;
-        if (sa !== sb) return sa - sb;
-        return a.seq - b.seq;
-      });
-    }
-
-    function render() {
-      if (!el.objList) return;
-      const list = displayList();
-      const wanted = new Set(list.map((o) => o.id));
-      for (const [id, node] of nodes) {
-        if (!wanted.has(id)) { node.remove(); nodes.delete(id); }
+      title.textContent = current.label;
+      card.classList.remove("hidden");
+      card.classList.toggle("complete", current.status === "complete");
+      card.classList.toggle("active", current.status === "active");
+      // Cinematic slide-in on a fresh target (or on a swap to a new subject).
+      if (opts && opts.enter && !prefersReducedMotion()) {
+        card.classList.remove("entering"); void card.offsetWidth;
+        card.classList.add("entering");
       }
-      list.forEach((o) => {
-        let node = nodes.get(o.id);
-        const fresh = !node;
-        if (fresh) { node = makeNode(o); nodes.set(o.id, node); }
-        paintNode(node, o);
-        el.objList.appendChild(node); // reorder
-        if (fresh && revealed && !prefersReducedMotion()) {
-          node.classList.remove("entering"); void node.offsetWidth; node.classList.add("entering");
-        }
-      });
-      if (el.objCount) {
-        const done = items.filter((o) => o.status === "complete").length;
-        el.objCount.textContent = done + "/" + items.length;
-      }
+      card.classList.add("show");
     }
 
-    function reveal() {
-      if (!el.objectivesHud) return;
-      el.objectivesHud.classList.remove("hidden");
-      el.objectivesHud.classList.toggle("collapsed", collapsed);
-      if (!revealed && !prefersReducedMotion()) {
-        el.objectivesHud.classList.remove("obj-in"); void el.objectivesHud.offsetWidth;
-        el.objectivesHud.classList.add("obj-in");
-      }
-      revealed = true;
-      render();
-      syncRailButton();
-    }
-
-    function pulseHud() {
-      if (!el.objectivesHud || prefersReducedMotion()) return;
-      el.objectivesHud.classList.remove("pulse"); void el.objectivesHud.offsetWidth;
-      el.objectivesHud.classList.add("pulse");
-    }
-
-    function syncRailButton() {
-      if (el.btnObjectives) el.btnObjectives.classList.toggle("active", revealed && !collapsed);
-    }
-
-    // Mirror an objective moment into the STORY LOG (the run chronicle), so the
-    // objectives live in the same tech stack as every other beat and the log
-    // reads like a real case record: "OBJECTIVE ▸ …" / "COMPLETE ✓ …".
+    // Mirror the objective moment into the STORY LOG so it lives in the same
+    // tech stack as every other beat and the log reads like a case record:
+    // "OBJECTIVE ▸ Photograph the X" / "COMPLETE ✓ Photographed the X".
     let beatId = -100000;
     function logBeat(type, mark, title) {
       try { appendProse({ id: beatId--, type, content: mark + " **" + title + "**" }); } catch (_) {}
     }
 
-    // ---- Mutations ----
-    // spec: { id, kind, title, detail, count, goal, quiet }
-    function add(spec) {
-      if (!spec || !spec.id) return null;
-      if (has(spec.id)) { update(spec.id, spec); return get(spec.id); }
-      const o = {
-        id: spec.id,
-        kind: spec.kind || "field",
-        title: spec.title || "",
-        detail: spec.detail || "",
-        status: "active",
-        count: spec.count || 0,
-        goal: typeof spec.goal === "number" ? spec.goal : null,
-        seq: seq++,
-      };
-      items.push(o);
+    // Install a fresh photo objective (or swap to a new subject). Announces
+    // itself with a cinematic banner + a top-right card so the moment lands.
+    function offer(label) {
+      const l = norm(label);
+      if (!l) return;
+      // Already tracking this exact subject — keep the current beat alive.
+      if (current && current.status === "active" && norm(current.label) === l) {
+        current.missPasses = 0;
+        return;
+      }
+      // Don't nag with a subject that's already in the case file this run —
+      // the field detection loop can churn on documented things.
+      if (window.Evidence && Evidence.isSpent && Evidence.isSpent(l)) return;
+      if (window.Evidence && Evidence.isNew && !Evidence.isNew(l)) return;
+
+      const replacing = !!(current && current.status === "active");
+      if (clearTimer) { clearTimeout(clearTimer); clearTimer = null; }
+      current = { label: String(label).trim(), status: "active", missPasses: 0 };
       persist();
-      if (revealed) render();
-      if (!spec.quiet) {
+      paint({ enter: true });
+      if (revealed) {
         try { Sound.select(); } catch (_) {}
         try { Haptics.soft(); } catch (_) {}
-        banner("New Objective", o.title, o.kind === "bonus" ? "bonus" : "");
-        logBeat("objective_new", "\u25B8", o.title);
-      }
-      return o;
-    }
-
-    function update(id, patch) {
-      const o = get(id);
-      if (!o) return;
-      if (patch.title != null) o.title = patch.title;
-      if (patch.detail != null) o.detail = patch.detail;
-      if (patch.count != null) o.count = patch.count;
-      if (patch.goal != null) o.goal = patch.goal;
-      persist();
-      if (revealed) render();
-    }
-
-    function setProgress(id, count, goal) {
-      const o = get(id);
-      if (!o) return;
-      const before = o.count;
-      o.count = count;
-      if (typeof goal === "number") o.goal = goal;
-      persist();
-      if (revealed) render();
-      if (count > before) { try { Sound.scoreTick(); } catch (_) {} }
-    }
-
-    function complete(id, opts) {
-      const o = get(id);
-      if (!o || o.status === "complete") return;
-      opts = opts || {};
-      o.status = "complete";
-      if (typeof o.goal === "number") o.count = o.goal;
-      persist();
-      if (revealed) { render(); pulseHud(); }
-      if (!opts.quiet) {
-        try { Sound.newSubject(); } catch (_) {}
-        try { Haptics.select(); } catch (_) {}
-        const cls = o.kind === "bonus" ? "bonus" : "complete";
-        const KICKER = { field: "Bounty Secured", bonus: "Challenge Complete", lead: "Lead Closed", primary: "Case File Complete" };
-        banner(KICKER[o.kind] || "Objective Complete", o.title, cls);
-        logBeat("objective_done", "\u2713", o.title);
-      }
-      // Side-goals file themselves away after a beat; the PRIMARY stays put
-      // (its completion is the win, handled by the case overlay).
-      if (o.kind !== "primary" && opts.archive !== false) scheduleArchive(id);
-    }
-
-    function fail(id) {
-      const o = get(id);
-      if (!o || o.status !== "active") return;
-      o.status = "failed";
-      persist();
-      if (revealed) render();
-      try { Sound.miss(); } catch (_) {}
-      scheduleArchive(id);
-    }
-
-    function scheduleArchive(id) {
-      if (archiveTimers.has(id)) clearTimeout(archiveTimers.get(id));
-      archiveTimers.set(id, setTimeout(() => {
-        archiveTimers.delete(id);
-        const node = nodes.get(id);
-        const finish = () => { items = items.filter((o) => o.id !== id); persist(); render(); };
-        if (node && !prefersReducedMotion()) {
-          node.classList.add("leaving");
-          setTimeout(finish, 520);
-        } else { finish(); }
-      }, ARCHIVE_MS));
-    }
-
-    function remove(id) {
-      items = items.filter((o) => o.id !== id);
-      const node = nodes.get(id);
-      if (node) { node.remove(); nodes.delete(id); }
-      persist();
-      if (revealed) render();
-    }
-
-    // ---- Collapse / toggle (O key + GOALS rail button) ----
-    function toggleCollapsed() {
-      if (!revealed) { collapsed = false; reveal(); return; }
-      collapsed = !collapsed;
-      el.objectivesHud.classList.toggle("collapsed", collapsed);
-      if (el.objCollapse) el.objCollapse.setAttribute("aria-expanded", String(!collapsed));
-      persist();
-      syncRailButton();
-      try { Sound.toggle(); } catch (_) {}
-    }
-
-    // ---- Generative LEAD (the evolving directive) ----
-    const LEAD_ID = "lead";
-    function setLead(title, detail) {
-      title = (title || "").trim();
-      if (!title) return;
-      if (has(LEAD_ID)) {
-        const o = get(LEAD_ID);
-        const changed = norm(o.title) !== norm(title);
-        update(LEAD_ID, { title, detail: detail || o.detail });
-        if (changed && revealed) {
-          const node = nodes.get(LEAD_ID);
-          if (node && !prefersReducedMotion()) {
-            node.classList.remove("entering"); void node.offsetWidth; node.classList.add("entering");
-          }
-          try { Sound.status(); } catch (_) {}
-        }
-      } else {
-        add({ id: LEAD_ID, kind: "lead", title, detail: detail || "", quiet: true });
+        // First lead of the run reads as a straight "PHOTOGRAPH"; a mid-run
+        // swap reads as "NEW LEAD" so the change is legible instead of feeling
+        // like the objective was silently replaced.
+        banner(replacing ? "New Lead" : "Photograph", current.label);
+        logBeat("objective_new", "\u25B8", "Photograph the " + current.label);
       }
     }
 
-    // ---- Case primary — mirror the dossier census ----
-    function syncCase() {
-      const goal = (window.Evidence && Evidence.target && Evidence.target()) || 8;
-      const count = (window.Evidence && Evidence.uniqueCount && Evidence.uniqueCount()) || 0;
-      if (!has("case")) {
-        add({
-          id: "case", kind: "primary",
-          title: "Close the case",
-          detail: "Document " + goal + " distinct subjects",
-          count, goal, quiet: true,
-        });
-      } else {
-        setProgress("case", count, goal);
-      }
-      const o = get("case");
-      // Completing the PRIMARY objective IS the win — let it land as a real,
-      // visible objective completion (banner + chime + the tracker check) so
-      // the case-closed screen reads as the payoff of the objective, not a
-      // disconnected pop-up. maybeCloseCase() then shows the reward on a beat.
-      if (o && o.status === "active" && count >= goal) complete("case");
+    function completeCurrent() {
+      if (!current || current.status !== "active") return false;
+      const label = current.label;
+      current.status = "complete";
+      completedCount += 1;
+      persist();
+      paint();
+      try { Sound.newSubject(); } catch (_) {}
+      try { Haptics.select(); } catch (_) {}
+      banner("Objective Complete", label, "complete");
+      logBeat("objective_done", "\u2713", "Photographed the " + label);
+      // Hold the completed state on the card for a satisfying beat, then clear
+      // so the next detection can install a fresh lead.
+      if (clearTimer) clearTimeout(clearTimer);
+      clearTimer = setTimeout(() => {
+        clearTimer = null;
+        current = null;
+        persist();
+        paint();
+      }, COMPLETE_HOLD_MS);
+      return true;
+    }
+
+    function reveal() {
+      if (revealed) return;
+      revealed = true;
+      paint({ enter: !!current });
     }
 
     // ---- Photo loop hooks ----
-    // A subject the world model surfaced in the live scene → a field bounty.
-    function offerField(label) {
-      const l = norm(label);
-      if (!l) return;
-      const id = "field:" + l;
-      if (has(id)) return;                                   // already tracked
-      if (window.Evidence && Evidence.isSpent && Evidence.isSpent(l)) return; // already documented
-      if (window.Evidence && Evidence.isNew && !Evidence.isNew(l)) return;    // already on file
-      if (activeFieldCount() >= MAX_FIELD) return;           // keep the board tidy
-      // A little procedural variety in the phrasing so the board doesn't read
-      // as a wall of identical "Document the …" lines.
-      const verbs = ["Document", "Photograph", "Capture", "Get a shot of"];
-      const verb = verbs[Math.abs(hashStr(l)) % verbs.length];
-      add({ id, kind: "field", title: verb + " the " + label, detail: "Photograph it for the case file" });
-    }
 
-    // Stable per-label hash so a subject always draws the same verb (no flicker
-    // if it's re-offered) while different subjects vary.
-    function hashStr(s) {
-      let h = 0;
-      for (let i = 0; i < s.length; i++) { h = (h * 31 + s.charCodeAt(i)) | 0; }
-      return h;
-    }
-
+    // Fed by the world-model detection loop. Keeps the current subject if it's
+    // still on screen; otherwise, after a couple of missing passes, swaps in
+    // the most prominent undocumented candidate so the objective is always
+    // something the player can actually photograph right now.
     function onDetect(objects) {
       if (!revealed || !Array.isArray(objects)) return;
       const present = new Set(objects.map((o) => norm(o.label)).filter(Boolean));
-      // Retire field bounties whose subject has left the frame for several
-      // passes, so the board tracks what's actually in view and never clogs its
-      // slots with stale goals you've already moved past.
-      items.filter((o) => o.kind === "field" && o.status === "active").forEach((o) => {
-        const l = o.id.slice(6); // strip "field:"
-        if (present.has(l)) { o.missPasses = 0; }
-        else if ((o.missPasses = (o.missPasses || 0) + 1) >= STALE_MISSES) remove(o.id);
-      });
-      // Offer the most prominent NEW subjects first (larger boxes read as closer).
-      objects.slice()
-        .sort((a, b) => ((b.w || 0) * (b.h || 0)) - ((a.w || 0) * (a.h || 0)))
-        .forEach((o) => offerField(o.label));
+
+      // If there's already an active target, only replace it once it's been
+      // absent from a few detection passes in a row — a subject that briefly
+      // clips out of one frame shouldn't drop the objective.
+      if (current && current.status === "active") {
+        if (present.has(norm(current.label))) {
+          current.missPasses = 0;
+          return;
+        }
+        current.missPasses = (current.missPasses || 0) + 1;
+        if (current.missPasses < STALE_MISSES) return;
+      }
+      // During the brief "COMPLETE" hold, don't yet install the next objective.
+      if (current && current.status === "complete") return;
+
+      // Pick the largest (most prominent) undocumented candidate — bigger boxes
+      // read as closer / more of the shot, so they make the best target.
+      const sorted = objects.slice()
+        .sort((a, b) => ((b.w || 0) * (b.h || 0)) - ((a.w || 0) * (a.h || 0)));
+      for (const o of sorted) {
+        const label = String(o.label || "").trim();
+        if (!label) continue;
+        const l = norm(label);
+        if (window.Evidence && Evidence.isSpent && Evidence.isSpent(l)) continue;
+        if (window.Evidence && Evidence.isNew && !Evidence.isNew(l)) continue;
+        offer(label);
+        return;
+      }
     }
 
-    // Called from the photo receipt as each subject is appraised.
-    function onSubjectDocumented(label, opts) {
-      opts = opts || {};
-      const id = "field:" + norm(label);
-      if (has(id)) complete(id);
-      if (opts.rare && has("bonus:rare")) complete("bonus:rare");
-      syncCase();
-    }
-
-    function onFocusGrade(grade) {
-      if (grade === "PERFECT" && has("bonus:perfect")) complete("bonus:perfect");
+    // Called from the photo receipt as each subject is appraised. Completes
+    // the current objective the instant its subject is documented.
+    function onSubjectDocumented(label) {
+      if (!current || current.status !== "active") return;
+      if (norm(current.label) === norm(label)) completeCurrent();
     }
 
     // ---- Lifecycle ----
     function reset() {
-      items = [];
-      nodes.forEach((n) => n.remove());
-      nodes = new Map();
-      archiveTimers.forEach((t) => clearTimeout(t));
-      archiveTimers.clear();
+      current = null;
+      completedCount = 0;
+      if (clearTimer) { clearTimeout(clearTimer); clearTimer = null; }
       clearTimeout(bannerTimer);
       if (el.objBanner) { el.objBanner.classList.add("hidden"); el.objBanner.classList.remove("show"); }
-      seq = 0;
+      if (el.photoObjective) {
+        el.photoObjective.classList.add("hidden");
+        el.photoObjective.classList.remove("show", "active", "complete", "entering");
+      }
       revealed = false;
-      if (el.objectivesHud) { el.objectivesHud.classList.add("hidden"); el.objectivesHud.classList.remove("obj-in", "pulse"); }
-      // Seed the run's spine + standing challenges. The LEAD is filled in by the
-      // first directive refresh; the CASE mirrors the dossier.
-      syncCase();
-      // Seed the LEAD so the board reads complete the instant it's revealed;
-      // refreshDirective() upgrades it with a world-grounded directive shortly.
-      add({ id: LEAD_ID, kind: "lead", title: "Survey the area",
-            detail: "Read the scene and find your first subject.", quiet: true });
-      add({ id: "bonus:rare", kind: "bonus", title: "Secure a rare specimen",
-            detail: "Photograph a \u2605\u2605\u2605\u2605\u2605 subject", quiet: true });
-      add({ id: "bonus:perfect", kind: "bonus", title: "Land a perfect shot",
-            detail: "Nail PERFECT focus on any subject", quiet: true });
       persist();
-      syncRailButton();
     }
 
     return {
-      reveal, reset, render,
-      add, update, remove, complete, fail, setProgress,
-      setLead, syncCase, onDetect, onSubjectDocumented, onFocusGrade,
-      toggle: toggleCollapsed,
-      has, get, list: () => items.slice(),
-      completedCount: () => items.filter((o) => o.status === "complete").length,
+      reveal, reset,
+      onDetect, onSubjectDocumented,
+      current: () => (current ? { label: current.label, status: current.status } : null),
+      completedCount: () => completedCount,
       isRevealed: () => revealed,
     };
   })();
   window.Objectives = Objectives;
-
-  // ------------------------------------------------------------------
-  // Directive — fetch the GENERATIVE "current lead" for the objectives tracker.
-  // Best-effort: the client always synthesizes a solid fallback from the live
-  // scene + phase so the LEAD reads well even offline, then upgrades it with a
-  // model-authored directive from /api/objectives when the server can provide
-  // one. Throttled to at most once per turn.
-  // ------------------------------------------------------------------
-  const LEAD_FALLBACKS = {
-    normal: [
-      { t: "Survey the area", d: "Read the scene and find your first subject." },
-      { t: "Document what you find", d: "Photograph anything that tells the story." },
-      { t: "Press deeper", d: "Follow the scene to whatever it's hiding." },
-    ],
-    escalating: [
-      { t: "Keep the camera close", d: "Something is shifting — capture it before it turns." },
-      { t: "Track the disturbance", d: "Get evidence of what's changing around you." },
-    ],
-    critical: [
-      { t: "Get what you can and move", d: "It's turning against you — shoot and stay alive." },
-      { t: "Find a way out", d: "Document the threat, then break contact." },
-    ],
-    deceased: [
-      { t: "The transmission ends", d: "Start a new case to keep documenting." },
-    ],
-  };
-
-  function synthLead() {
-    const phase = String((state.lastStatus && state.lastStatus.phase) || "normal").trim().toLowerCase();
-    const pool = LEAD_FALLBACKS[phase] || LEAD_FALLBACKS.normal;
-    // Bias by turn so it drifts through the pool as the story advances.
-    const turn = (state.lastStatus && state.lastStatus.turn) || 0;
-    const pick = pool[turn % pool.length];
-    return { title: pick.t, detail: pick.d };
-  }
-
-  async function refreshDirective(force) {
-    if (state.gameOver) return;
-    const turn = (state.lastStatus && state.lastStatus.turn) || 0;
-    if (!force && state.objDirectiveTurn === turn) return; // one refresh per turn
-    state.objDirectiveTurn = turn;
-    // Always give the tracker a good line immediately.
-    const fb = synthLead();
-    Objectives.setLead(fb.title, fb.detail);
-    if (state.objDirectiveBusy) return;
-    state.objDirectiveBusy = true;
-    try {
-      const res = await getJSON("/api/objectives");
-      if (res && res.lead && String(res.lead).trim()) {
-        Objectives.setLead(String(res.lead), res.detail ? String(res.detail) : "");
-      }
-    } catch (_) {
-      /* keep the fallback — the tracker never depends on the server */
-    } finally {
-      state.objDirectiveBusy = false;
-    }
-  }
 
   // ------------------------------------------------------------------
   // Photo — the reward loop that ties a capture to feedback + score. On capture
@@ -4271,9 +3979,9 @@
       // never spends its subject.
       if (subject) {
         Evidence.spend(subject);
-        // The framed subject IS what the FIELD bounties are keyed on — complete
-        // its objective the instant it's documented (reliable match).
-        try { Objectives.onSubjectDocumented(subject, { rare: false }); } catch (_) {}
+        // The framed subject IS what the current photo objective is keyed on —
+        // complete it the instant it's documented (reliable match).
+        try { Objectives.onSubjectDocumented(subject); } catch (_) {}
         if (state.touchMode === "aim") layoutPhotoTargets(); // dim its target to a ✓
       }
 
@@ -4300,9 +4008,9 @@
           Evidence.markSeen(label);
           if (isNew) {
             newCount += 1;
-            // Any NEW appraised subject can also satisfy a field bounty (by its
-            // own label) and — if striking — the rare-specimen challenge.
-            try { Objectives.onSubjectDocumented(label, { rare: isRare }); } catch (_) {}
+            // Any NEW appraised subject can also satisfy the current photo
+            // objective (by its own label), even if it wasn't the framed subject.
+            try { Objectives.onSubjectDocumented(label); } catch (_) {}
           }
           shotTotal += pts;
           appendItemRow(parts, { label, interest, note: it.note, pts, isNew, isRare, onFile: !isNew });
@@ -4355,10 +4063,6 @@
         if (parts.subVal) parts.subVal.textContent = "+" + Math.round(shotTotal);
         finishStamp(token, shotTotal);
         scheduleDismiss(token);
-        // Feed the objective tracker: a PERFECT frame satisfies the skill
-        // challenge, and the case primary follows the dossier census.
-        try { Objectives.onFocusGrade(grade); } catch (_) {}
-        try { Objectives.syncCase(); } catch (_) {}
         // The win condition: enough distinct subjects closes the case.
         maybeCloseCase();
       }, afterItems);
@@ -4449,23 +4153,20 @@
     D: "Barely a case, but the shutter never lies. It's on the record now.",
   };
 
-  // The reward screen is the payoff of COMPLETING THE PRIMARY OBJECTIVE (Close
-  // the Case), not a standalone subject-count check — so it stays in lockstep
-  // with the objectives tracker. We wait for the "Case File Complete" objective
-  // beat (banner + chime + the tracker check) to land first, THEN reveal the
-  // case-closed screen, so the win reads as earned rather than abrupt.
+  // The reward screen is the payoff of the run's core loop: documenting the
+  // target number of DISTINCT subjects for the case file. When the census
+  // threshold is met, we hold a beat for any final photo-objective completion
+  // beat (banner + chime + card check) to land, then reveal the case-closed
+  // screen so the win reads as earned rather than abrupt.
   const CASE_WIN_DELAY_MS = 1800;
   function primaryComplete() {
-    const o = (window.Objectives && Objectives.get) ? Objectives.get("case") : null;
-    if (o) return o.status === "complete";
-    return Evidence.uniqueCount() >= Evidence.target(); // fallback if the tracker is unavailable
+    return Evidence.uniqueCount() >= Evidence.target();
   }
 
   function maybeCloseCase() {
     if (state.caseWon) return;
     if (!primaryComplete()) return;
     state.caseWon = true;
-    // Let the objective completion + its beat register before the reward.
     setTimeout(showCaseWin, CASE_WIN_DELAY_MS);
   }
 
@@ -4477,7 +4178,8 @@
     if (el.caseSubjects) el.caseSubjects.textContent = String(Evidence.uniqueCount());
     if (el.caseEvidence) el.caseEvidence.textContent = Evidence.total().toLocaleString("en-US");
     if (el.caseShots) el.caseShots.textContent = String(Evidence.shots());
-    // Tie the win explicitly to the objectives cleared this run.
+    // Photo objectives cleared on cue during the run — a satisfying "you
+    // shot what the world told you to" stat next to the raw census.
     if (el.caseObjectives) {
       let done = 0;
       try { done = Objectives.completedCount(); } catch (_) {}
@@ -4801,7 +4503,7 @@
         if (state.touchMode !== "aim") return;
         state.photoDetected = true;
         state.photoTargets = (res && Array.isArray(res.objects)) ? res.objects : [];
-        try { Objectives.onDetect(state.photoTargets); } catch (_) {} // generative subjects → field bounties
+        try { Objectives.onDetect(state.photoTargets); } catch (_) {} // live detections drive the current PHOTOGRAPH X lead
         renderPhotoTargets();
       })
       .catch((err) => { console.warn("[standalone] photo detect failed:", err); })
@@ -5532,7 +5234,7 @@
       }, 420);
     });
     state.scanObjects = objects.slice();
-    try { Objectives.onDetect(objects); } catch (_) {} // scanned subjects → field bounties
+    try { Objectives.onDetect(objects); } catch (_) {} // scanned subjects also seed the current PHOTOGRAPH X lead
   }
 
   function positionScanTag(tag) {
@@ -7130,8 +6832,6 @@
       ImageModel.toggle(); // show/hide the image-generator (still-frame) model menu
     } else if (e.key.toLowerCase() === "j") {
       StoryLog.toggle(); // show/hide the story log (the run chronicle)
-    } else if (e.key.toLowerCase() === "o") {
-      Objectives.toggle(); // collapse/expand the objectives tracker
     } else if (e.key.toLowerCase() === "g") {
       Renderer.toggle();
       Sound.toggle();
@@ -7177,13 +6877,6 @@
     if (el.btnModel) el.btnModel.addEventListener("click", () => { RtLog.toggle(); });
     if (el.btnImgModel) el.btnImgModel.addEventListener("click", () => { ImageModel.toggle(); });
     if (el.btnStory) el.btnStory.addEventListener("click", () => { StoryLog.toggle(); });
-    if (el.btnObjectives) el.btnObjectives.addEventListener("click", () => { Objectives.toggle(); });
-    if (el.objHead) el.objHead.addEventListener("click", (ev) => {
-      // The header is the collapse handle, but let the ✕/▾ button own its click.
-      if (el.objCollapse && el.objCollapse.contains(ev.target)) return;
-      Objectives.toggle();
-    });
-    if (el.objCollapse) el.objCollapse.addEventListener("click", (ev) => { ev.stopPropagation(); Objectives.toggle(); });
     if (el.rtModelAdd) el.rtModelAdd.addEventListener("submit", addCustomModel);
     StoryLog.init();
     ImageModel.init();
