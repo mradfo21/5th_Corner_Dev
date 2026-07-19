@@ -1641,6 +1641,13 @@ body.touch-aiming #realtime-btn.aiming { animation: photo-exit-pulse 1.6s ease-i
   50%      { box-shadow: 0 0 0 5px rgba(255, 186, 89, 0.28); }
 }
 
+/* Immersive viewfinder: the live scene + the letterbox mask ARE the camera.
+   Drop the roaming reticle (glowing circle + camera icon), the bracket frame,
+   and the tutorial text so nothing clutters the shot you're composing. */
+#touch-reticle,
+#touch-capture-frame,
+.touch-hint { display: none !important; }
+
 /* The reticle: a small circle + magnifying glass in aim mode; it grows into a
    pill-shaped prompt field once a spot is chosen. Positioned via left/top (set
    in JS) and centered on that point. */
@@ -4686,10 +4693,10 @@ html.is-mobile #scanlines {
   transition: opacity 0.35s ease;
 }
 body.touch-aiming #touch-layer::after {
-  opacity: 1;
-  /* Iris "punch-in" as the camera comes up: the eyepiece darkens hard, then
-     settles to the resting vignette — reads as raising a viewfinder to the eye. */
-  animation: photo-vignette-in 0.44s ease-out;
+  /* No eyepiece vignette while aiming — the letterbox mask frames the shot, and
+     the capture region itself must read TRUE-to-photo (undimmed) so what you see
+     is what you get. */
+  opacity: 0;
 }
 @keyframes photo-vignette-in {
   0%   { opacity: 0; box-shadow: inset 0 0 0 0 rgba(0, 0, 0, 0); }
@@ -4700,61 +4707,31 @@ body.touch-aiming #touch-layer::after {
   body.touch-aiming #touch-layer::after { animation: none; }
 }
 
-/* ---------- Depth-of-field ring around the reticle ----------
-   Real cameras have a shallow focal plane: the subject you're aiming at is
-   crisp, and the world falls softly out of focus around it. We approximate
-   that with a full-screen overlay that's blurred (backdrop-filter) and then
-   MASKED with a radial-gradient centered on the reticle so it's fully
-   transparent at the focal spot and fully opaque toward the edges. The mask
-   moves with the aim point via CSS custom properties (set from JS as the
-   reticle / capture frame is moved), so the crisp "focus window" always
-   rides the reticle.
-
-   backdrop-filter is expensive on mobile (kills FPS), so touch devices get a
-   cheaper darkened halo instead of a real blur — same shape, same read, but
-   pure alpha compositing on the GPU. */
+/* ---------- Letterbox mask (immersive viewfinder) ----------
+   A transparent, centered 16:9 window sized in JS to the current capture
+   region; a big soft box-shadow dims everything OUTSIDE it. The bright,
+   undimmed area IS exactly the photo that will be captured — so "what you see
+   is what you get." No reticle, no bracket frame, no magnified scope: zooming
+   just shrinks this window (a tighter crop of the true-scale scene). Pure alpha
+   compositing on the GPU (no blur), so it stays smooth on phones. */
 #touch-dof {
   position: absolute;
-  inset: 0;
+  left: 50%;
+  top: 50%;
+  width: 80vw;
+  height: 45vw; /* placeholder — JS sets the exact px for the current crop */
+  transform: translate(-50%, -50%);
   pointer-events: none;
   z-index: 0;
+  border-radius: 3px;
+  box-shadow: 0 0 40px 100vmax rgba(0, 0, 0, 0.6);
   opacity: 0;
-  transition: opacity 0.34s ease;
-  /* Focal-window geometry — the JS updates these as the aim + zoom change so
-     the clear "in focus" oval always rides the capture frame. */
-  --dof-x: 50%;
-  --dof-y: 50%;
-  --dof-rx: 30vmin;
-  --dof-ry: 20vmin;
-  backdrop-filter: blur(7px) saturate(1.05);
-  -webkit-backdrop-filter: blur(7px) saturate(1.05);
-  background: rgba(0, 0, 0, 0.14);
-  -webkit-mask-image: radial-gradient(
-    ellipse var(--dof-rx) var(--dof-ry) at var(--dof-x) var(--dof-y),
-    transparent 46%,
-    rgba(0, 0, 0, 0.55) 78%,
-    black 100%
-  );
-  mask-image: radial-gradient(
-    ellipse var(--dof-rx) var(--dof-ry) at var(--dof-x) var(--dof-y),
-    transparent 46%,
-    rgba(0, 0, 0, 0.55) 78%,
-    black 100%
-  );
-  will-change: opacity;
+  transition: opacity 0.3s ease, width 0.16s ease-out, height 0.16s ease-out;
+  will-change: opacity, width, height;
 }
 body.touch-aiming #touch-dof { opacity: 1; }
-/* On touch (mobile / tablet), running a real blur on a fullscreen overlay over
-   the fullscreen <video> tanks framerate. Drop the backdrop-filter and lean on
-   a slightly stronger darkened halo — the mask still shapes it like real DOF,
-   but it composites in one pass on the GPU. */
-html.is-touch #touch-dof {
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-  background: rgba(0, 0, 0, 0.36);
-}
 @media (prefers-reduced-motion: reduce) {
-  #touch-dof { transition: none; }
+  #touch-dof { transition: opacity 0.3s ease; }
 }
 
 /* Live zoom readout, pinned near the reticle stack (bottom-center of frame). */

@@ -5463,86 +5463,68 @@
     state.touchMode = "aim";
     if (el.realtimeBtn) el.realtimeBtn.classList.add("aiming");
     document.body.classList.add("touch-aiming");
-    // Raising the "camera" opens on the large 16:9 base frame — zoom OUT to grow
-    // it toward a full-screen shot, or IN for a tighter telephoto crop.
+    // Open on the full 16:9 frame — the whole scene IS the shot. Pinch / scroll
+    // crops the capture region tighter; the scene is never magnified.
     state.photoPointers.clear();
     state.pinchBase = null;
     state.pinchActive = false;
     setPhotoZoom(PHOTO_ZOOM_ARMED, { silent: true, force: true });
     try { Evidence.reveal(); } catch (_) {} // surface the CASE FILE goal on pickup
-    // Start the reticle where it was last, else at the center of the view.
-    const start = state.touchPoint ||
-      { x: window.innerWidth / 2, y: window.innerHeight / 2 };
-    moveReticle(start.x, start.y);
+    // The viewfinder is centered; seed the aim point at center for tap/drag math.
+    moveReticle(window.innerWidth / 2, window.innerHeight / 2);
     if (el.touchLayer) el.touchLayer.classList.remove("hidden");
     startPhotoTargeting(); // begin surfacing photographable subjects
-    // Raising the camera: a subtle handheld jolt + servo whir + haptic clunk so
-    // activating photo mode lands with weight.
-    photoShake();
+    // Raising the camera: a servo whir + haptic clunk so activating photo mode
+    // lands with weight. NO screen shake on entry — the shake is reserved for the
+    // moment a shot fires (see photoKick in the capture path).
     try { Sound.cameraOn(); } catch (_) {}
     try { Haptics.camera(); } catch (_) {}
   }
 
   // ------------------------------------------------------------------
-  // Optical zoom — while the camera is armed, scroll (mouse) or pinch (touch)
-  // sets the framing. Zooming IN magnifies the scene AROUND THE RETICLE (where
-  // you're aiming), not the viewport center: the magnification is anchored to
-  // the aim point and the scene layers carry a CSS transform transition, so as
-  // you move the mouse the zoomed view smoothly glides to follow it — an
-  // FPS-scope feel — and the capture crop is a tighter, telephoto slice of
-  // exactly what you're looking at. Zooming OUT past the base leaves the scene
-  // alone and instead GROWS the 16:9 capture frame toward a full-screen shot,
-  // so you can film the entire view.
+  // Immersive viewfinder framing — scroll (mouse) or pinch (touch) ZOOM does NOT
+  // magnify the scene. The scene always shows true-to-capture (1:1); zooming
+  // simply ADJUSTS THE CAPTURE REGION: a centered 16:9 window that crops tighter
+  // into the live view. A letterbox mask dims everything outside that window, so
+  // what you see IS the photo you'll get.
   // ------------------------------------------------------------------
-  const PHOTO_ZOOM_MIN = 0.5;    // full WIDE — the 16:9 frame grows to cover the whole screen
-  const PHOTO_ZOOM_MAX = 3.5;    // max telephoto (headroom above the 1.8× default)
-  // Raising the camera should FEEL like raising a camera — the scene punches
-  // in to a telephoto framing, the periphery softens (DOF halo), and the world
-  // reads as "focused." 1.8× lands a meaningful zoom without cropping the frame
-  // so tight that the player can't find their subject. The full range (0.5–3.5)
-  // still lets you pull WIDE for a full-screen shot or push tighter for detail.
-  const PHOTO_ZOOM_ARMED = 1.8;
+  const PHOTO_ZOOM_MIN = 1.0;    // widest: the capture region = the whole 16:9 frame
+  const PHOTO_ZOOM_MAX = 3.0;    // tightest crop
+  const PHOTO_ZOOM_ARMED = 1.0;  // open on the full frame (the whole scene = the shot)
 
   function clampZoom(z) { return Math.max(PHOTO_ZOOM_MIN, Math.min(PHOTO_ZOOM_MAX, z)); }
 
-  // ------------------------------------------------------------------
-  // Capture FRAME geometry. The frame is 16:9 and starts LARGE. Its on-screen
-  // size is driven by zooming OUT: at zoom >= 1 it sits at a big base size;
-  // zooming out (below 1) grows it smoothly until, at PHOTO_ZOOM_MIN, it blankets
-  // the entire screen — so you can frame and "film" the whole view, not just a
-  // small square. Zooming IN keeps the frame at its base size and magnifies the
-  // SCENE instead (telephoto), so a tighter crop reads as a genuine zoom-in.
-  // ------------------------------------------------------------------
   const FRAME_ASPECT = 16 / 9;   // capture frame aspect ratio
-  const FRAME_BASE_FRAC = 0.6;   // large base frame as a fraction of full-screen cover
 
-  // A 16:9 box big enough to blanket the whole viewport (full-screen cover):
-  // its LONG side spans whichever viewport dimension needs the most coverage.
-  function frameCoverPx() {
+  // Viewport center — the capture region is a FIXED, centered viewfinder now, so
+  // framing is always about the middle of the screen (no roaming reticle).
+  function captureCenter() {
+    return { x: window.innerWidth / 2, y: window.innerHeight / 2 };
+  }
+
+  // The largest 16:9 rectangle that fits INSIDE the viewport (contain), centered.
+  // This is the full-frame capture region at 1×: it lines up with the letterboxed
+  // scene on portrait phones and fills the screen on 16:9 displays.
+  function frameFitPx() {
     const W = window.innerWidth, H = window.innerHeight;
-    const w = Math.max(W, H * FRAME_ASPECT);
-    return { w, h: w / FRAME_ASPECT };
+    let w = W, h = w / FRAME_ASPECT;
+    if (h > H) { h = H; w = h * FRAME_ASPECT; }
+    return { w, h };
   }
 
-  // Current on-screen capture-frame size (16:9), grown by zooming out toward
-  // full-screen cover. Returns { w, h } in px.
+  // Current capture region (16:9), centered. Zooming IN shrinks it — a tighter
+  // CROP of the scene — instead of magnifying the pixels. Returns { w, h } px.
   function frameBoxPx() {
-    const cover = frameCoverPx();
-    const z = state.touchMode ? (state.photoZoom || 1) : 1;
-    let frac = FRAME_BASE_FRAC;
-    if (z < 1) {
-      const t = Math.max(0, Math.min(1, (1 - z) / (1 - PHOTO_ZOOM_MIN)));
-      frac = FRAME_BASE_FRAC + t * (1 - FRAME_BASE_FRAC);
-    }
-    return { w: Math.round(cover.w * frac), h: Math.round(cover.h * frac) };
+    const fit = frameFitPx();
+    const z = Math.max(1, state.touchMode ? (state.photoZoom || 1) : 1);
+    return { w: Math.round(fit.w / z), h: Math.round(fit.h / z) };
   }
 
-  // Scene magnification only kicks in when zooming IN (telephoto). Zooming out
-  // grows the frame instead of shrinking the scene, so the view keeps filling
-  // the screen while the capture rectangle expands.
+  // The scene is never optically magnified in the immersive viewfinder — zoom
+  // only resizes the capture region. Keeping this as a function (returning 1)
+  // means the capture-crop math and transform plumbing stay identity-safe.
   function sceneScale() {
-    const z = state.touchMode ? (state.photoZoom || 1) : 1;
-    return Math.max(1, z);
+    return 1;
   }
 
   // The scene transform currently applied (identity unless the camera is armed).
@@ -5575,23 +5557,17 @@
     if (el.touchZoom) el.touchZoom.innerHTML = (state.photoZoom || 1).toFixed(1) + "&times;";
   }
 
-  // Drive the depth-of-field mask so the crisp "in focus" window always rides
-  // the current aim / zoom. The mask geometry is a couple of CSS custom props
-  // on #touch-dof — updating those triggers only a compositor-side mask update,
-  // no layout / paint, so it's cheap enough for every pointer/pinch frame.
+  // Drive the LETTERBOX MASK: a centered 16:9 window sized to the current capture
+  // region. #touch-dof is styled as a transparent rectangle with a huge dimming
+  // box-shadow, so everything OUTSIDE the window darkens — the bright area you
+  // see is exactly the photo you'll take. Only width/height change (it's centered
+  // in CSS), so this is a cheap compositor update on every zoom frame.
   function updateDofMask() {
     if (!el.touchDof || !state.touchMode) return;
-    const p = state.touchPoint || { x: window.innerWidth / 2, y: window.innerHeight / 2 };
     const b = frameBoxPx();
-    // Halo dimensions scale with the current capture frame: a bit larger than
-    // the frame so the crisp region hugs (but doesn't crop) what's being framed.
-    const rx = Math.round(b.w * 0.62);
-    const ry = Math.round(b.h * 0.62);
     const s = el.touchDof.style;
-    s.setProperty("--dof-x", p.x + "px");
-    s.setProperty("--dof-y", p.y + "px");
-    s.setProperty("--dof-rx", rx + "px");
-    s.setProperty("--dof-ry", ry + "px");
+    s.width = b.w + "px";
+    s.height = b.h + "px";
   }
 
   function setPhotoZoom(z, opts) {
@@ -5624,14 +5600,11 @@
     [el.sceneA, el.sceneB, el.reactorVideo, el.reactorFreeze].forEach((n) => {
       if (n) n.style.transform = "";
     });
-    // Reset the DOF mask so nothing bleeds through the next time the camera
-    // opens (opacity is CSS-driven off `.touch-aiming`, but the mask geometry
-    // sticks otherwise and would flash from the OLD focal window on re-open).
+    // Reset the letterbox mask so it doesn't flash the OLD crop on re-open
+    // (opacity is CSS-driven off `.touch-aiming`, but the geometry sticks).
     if (el.touchDof) {
-      el.touchDof.style.removeProperty("--dof-x");
-      el.touchDof.style.removeProperty("--dof-y");
-      el.touchDof.style.removeProperty("--dof-rx");
-      el.touchDof.style.removeProperty("--dof-ry");
+      el.touchDof.style.removeProperty("width");
+      el.touchDof.style.removeProperty("height");
     }
   }
 
@@ -5855,8 +5828,8 @@
     if (!el.touchTargets) return;
     const box = frameBoxPx();
     const halfW = box.w / 2, halfH = box.h / 2;
-    const rx = state.touchPoint ? state.touchPoint.x : window.innerWidth / 2;
-    const ry = state.touchPoint ? state.touchPoint.y : window.innerHeight / 2;
+    const c = captureCenter();
+    const rx = c.x, ry = c.y;
     const W = window.innerWidth, H = window.innerHeight;
     let lockedLabel = null, lockedFocus = 0, lockedDist = Infinity;
     Array.from(el.touchTargets.children).forEach((m) => {
@@ -5911,39 +5884,21 @@
     }
   }
 
-  // Size + position the 16:9 capture frame for the current zoom/aim. Split out
-  // of moveReticle so a pure ZOOM change (scroll / pinch, no reticle move) also
-  // resizes the frame live — the frame grows toward full-screen as you zoom out.
+  // The capture frame is a FIXED, centered viewfinder — sizing it just means
+  // resizing the letterbox mask for the current zoom (crop). No reticle to move.
   function layoutCaptureFrame() {
-    if (!el.touchCaptureFrame) return;
-    const b = frameBoxPx();
-    const p = state.touchPoint || { x: window.innerWidth / 2, y: window.innerHeight / 2 };
-    el.touchCaptureFrame.style.width = b.w + "px";
-    el.touchCaptureFrame.style.height = b.h + "px";
-    el.touchCaptureFrame.style.left = p.x + "px";
-    el.touchCaptureFrame.style.top = p.y + "px";
-    // The DOF mask tracks the same rectangle so the crisp focal window always
-    // hugs the current framing — reticle move, zoom-out grow, and pinch centroid
-    // shifts all keep it aligned.
     updateDofMask();
   }
 
+  // Track the pointer only so a TAP can be told from a DRAG (and to feed the
+  // pinch centroid). Framing itself is centered + fixed, so moving the pointer
+  // no longer roams a reticle or pans the scene — the viewfinder stays put.
   function moveReticle(x, y) {
     state.touchPoint = { x, y };
-    if (el.touchReticle) {
-      el.touchReticle.style.left = x + "px";
-      el.touchReticle.style.top = y + "px";
-    }
-    // The capture frame tracks the camera so you see exactly what will be shot.
     layoutCaptureFrame();
-    // Re-anchor the zoom to the new aim point so the magnified view smoothly
-    // follows the reticle (the CSS transform transition does the gliding).
-    if (state.photoZoom && state.photoZoom !== 1) applySceneTransform();
-    // Re-evaluate which subject is framed as we aim (and reposition markers,
-    // since the zoom origin moved with the reticle) — BUT skip mid-pinch: the
-    // per-frame walk of every marker was a big source of pinch stutter on
-    // phones. Once the pinch ends (one finger lifts, or the last one goes up)
-    // onTouchUp catches markers back up.
+    // Re-evaluate which subject is framed — skip mid-pinch (the per-frame walk of
+    // every marker was a big source of pinch stutter on phones); onTouchUp
+    // catches markers back up once the pinch ends.
     const pinching = state.photoPointers.size >= 2 && state.pinchBase;
     if (state.touchMode === "aim" && !pinching) layoutPhotoTargets();
   }
@@ -6043,7 +5998,7 @@
       // little finger wobble should still count as a deliberate tap.) A real
       // drag past TAP_MOVE_PX only re-frames; a long touch-press never fires.
       const isTap = g.moved <= TAP_MOVE_PX && (!g.touch || elapsed <= TAP_MAX_MS);
-      if (isTap) captureAt(e.clientX, e.clientY);
+      if (isTap) captureAt();
     }
     if (g && g.id === e.pointerId) state.touchGesture = null;
     document.body.classList.remove("photo-dragging");
@@ -6089,10 +6044,12 @@
   // Take the shot: crop the region under the reticle, flash, sound, file it to
   // the case file, and pop the satisfying evidence flourish. Stays armed so you
   // can keep gathering evidence tap after tap.
-  function captureAt(x, y) {
-    moveReticle(x, y);
+  function captureAt() {
+    // The viewfinder is centered + fixed, so a shot always captures the centered
+    // 16:9 region — exactly the bright area framed by the letterbox mask.
+    const c = captureCenter();
     const boxPx = frameBoxPx();
-    const shot = evaluateShot(x, y, boxPx);
+    const shot = evaluateShot(c.x, c.y, boxPx);
     // WORTHY-SHOT GATE: once detection is live, a shot must FRAME a new subject
     // and hold it in FOCUS. Documented subjects and out-of-focus/empty frames
     // miss (no score). Before the first detection returns we give the benefit of
@@ -6102,15 +6059,9 @@
       return;
     }
     const subject = shot.ok ? shot.subject : null;
-    const region = screenBoxToNorm(x, y, boxPx.w, boxPx.h);
+    const region = screenBoxToNorm(c.x, c.y, boxPx.w, boxPx.h);
     const texture = captureSceneRegion(region, 512); // larger region → keep detail
     if (!texture) { showRendererToast("Couldn't capture \u2014 hold steady"); return; }
-    // Frame flash + shutter flash + recoil kick + snap for a tactile capture.
-    if (el.touchCaptureFrame) {
-      el.touchCaptureFrame.classList.remove("grab");
-      void el.touchCaptureFrame.offsetWidth;
-      el.touchCaptureFrame.classList.add("grab");
-    }
     flashShutter();
     photoKick();
     try { Sound.shutter(); } catch (_) {}
@@ -6119,7 +6070,7 @@
     // actually credited in printReceipt — never eagerly here, so a cancelled or
     // empty shot never burns a POI without banking its evidence.
     Photo.capture({
-      texture, region, kind: "photo", label: describeTouchRegion({ x, y }).label,
+      texture, region, kind: "photo", label: "the center of the view",
       zoom: state.photoZoom || 1, subject,
       focus: shot.ok ? shot.focus : null,
       focusGrade: shot.ok ? shot.grade : null,
