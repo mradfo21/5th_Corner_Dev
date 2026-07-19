@@ -214,22 +214,45 @@ def _download_and_save(image_url: str, caption: str, output_dir: Path) -> str | 
     return str(image_path)
 
 
+# Fields that are NOT part of the base fast-lightning-sdxl request contract.
+# If fal ever rejects the request for a bad field (validation error), we strip
+# these and retry so image generation can never fully break on an optional knob.
+_FAL_OPTIONAL_PAYLOAD_KEYS = ("negative_prompt",)
+
+
 def _call_fal(path: str, payload: dict, caption: str, output_dir: Path) -> str | None:
     if not FAL_API_KEY:
         print("[FAL] FATAL: No API key configured — cannot generate image.", flush=True)
         return None
 
     endpoint = f"{FAL_API_BASE}/{path}"
+
+    def _post(body: dict):
+        resp = requests.post(endpoint, headers=_auth_headers(), json=body, timeout=_REQUEST_TIMEOUT_SECONDS)
+        resp.raise_for_status()
+        return resp.json()
+
     try:
         print(f"[FAL] POST {endpoint} (steps={payload.get('num_inference_steps')})", flush=True)
-        resp = requests.post(endpoint, headers=_auth_headers(), json=payload, timeout=_REQUEST_TIMEOUT_SECONDS)
-        resp.raise_for_status()
-        result = resp.json()
+        result = _post(payload)
     except requests.exceptions.HTTPError as e:
         code = e.response.status_code if e.response is not None else "?"
         body = e.response.text if e.response is not None else ""
-        print(f"[FAL] ERROR: HTTP {code}: {body}", flush=True)
-        return None
+        # Self-heal: a 4xx validation error may be an unsupported optional field
+        # (e.g. negative_prompt isn't in the fast-lightning-sdxl schema). Strip
+        # optional keys and retry once with the known-good minimal contract.
+        strippable = [k for k in _FAL_OPTIONAL_PAYLOAD_KEYS if k in payload]
+        if code in (400, 422) and strippable:
+            minimal = {k: v for k, v in payload.items() if k not in _FAL_OPTIONAL_PAYLOAD_KEYS}
+            print(f"[FAL] HTTP {code} with optional fields {strippable}; retrying without them", flush=True)
+            try:
+                result = _post(minimal)
+            except Exception as e2:
+                print(f"[FAL] ERROR: retry without optional fields failed: {e2}", flush=True)
+                return None
+        else:
+            print(f"[FAL] ERROR: HTTP {code}: {body}", flush=True)
+            return None
     except Exception as e:
         print(f"[FAL] ERROR: request failed: {e}", flush=True)
         return None
