@@ -113,14 +113,88 @@ html, body {
   opacity: 1;
 }
 
-/* ---------- Danger vignette + health bar ---------- */
-/* One overlay, three states:
-     • SAFE     — invisible.
-     • WARNING  — red pulses at the edges (900ms breath), no damage.
-     • HURTING  — same pulse but faster (500ms throb) and hotter — health drains.
-   Radial gradient stays transparent in the center so the picture is never
-   obscured; the red only lives at the periphery. Non-interactive; sits above
-   the video and freeze buffer but below the HUD (10) and reticle. */
+/* ════════════════════════════════════════════════════════════════════════
+   DANGER FEEDBACK STACK
+   ════════════════════════════════════════════════════════════════════════
+   Layered like an action-game hit indicator system:
+
+     z=6  #danger-chroma           — chromatic-aberration RGB split on <video>
+                                     while HURTING / critical
+     z=8  #danger-vignette         — peripheral red pulse; container for
+                                     inner gradient + spatter + hit-flash +
+                                     directional arrows
+     z=11 #danger-health           — bottom-left VITAL bar w/ number + segs
+
+   Three modes:
+     • SAFE     — invisible, no drain, HP regens.
+     • WARNING  — red vignette, gentle 900ms breath, HP holds.
+     • HURTING  — red hotter, 500ms throb, chromatic aberration,
+                  screen shake on each hit, blood spatter, HP drains.
+
+   Everything below JS only toggles classes / retriggers animations —
+   nothing renders per-frame from JS. Body-level classes drive the
+   full-screen effects (screen shake, chroma) so they layer on top of
+   any active tool overlay. */
+
+/* Screen shake on damage tick — applied to <body> for the briefest
+   possible camera jolt. Amplitude scales via CSS var so the module can
+   dial harder shakes on bigger hits. */
+body.danger-shaking {
+  animation: danger-shake 200ms cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+}
+@keyframes danger-shake {
+  0%   { transform: translate3d(0, 0, 0); }
+  15%  { transform: translate3d(calc(var(--shake, 4px) * -1), calc(var(--shake, 4px) * 0.4), 0); }
+  30%  { transform: translate3d(var(--shake, 4px), calc(var(--shake, 4px) * -0.5), 0); }
+  45%  { transform: translate3d(calc(var(--shake, 4px) * -0.7), var(--shake, 4px), 0); }
+  60%  { transform: translate3d(var(--shake, 4px), calc(var(--shake, 4px) * -0.3), 0); }
+  75%  { transform: translate3d(calc(var(--shake, 4px) * -0.4), calc(var(--shake, 4px) * 0.6), 0); }
+  100% { transform: translate3d(0, 0, 0); }
+}
+
+/* Chromatic-aberration wash on the picture itself when HURTING. Two
+   duplicate red / cyan tints drawn as a full-bleed layer with slight
+   left / right offsets — reads like the video signal is fraying. Only
+   composited on top of the video (no effect on stills mode). */
+.danger-chroma {
+  position: fixed;
+  inset: 0;
+  z-index: 6;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 320ms ease-out;
+  mix-blend-mode: screen;
+  will-change: opacity;
+  contain: strict;
+  overflow: hidden;
+  /* Two thin RGB rims chase the edge — barely noticeable until HURTING. */
+  background:
+    linear-gradient(to right,
+      rgba(255, 40, 40, 0.35) 0%,
+      rgba(255, 40, 40, 0)    18%,
+      rgba(255, 40, 40, 0)    82%,
+      rgba(0, 200, 255, 0.30) 100%),
+    linear-gradient(to bottom,
+      rgba(255, 40, 40, 0.20) 0%,
+      rgba(255, 40, 40, 0)    22%,
+      rgba(0, 200, 255, 0)    78%,
+      rgba(0, 200, 255, 0.20) 100%);
+}
+body.danger-hurting .danger-chroma {
+  opacity: 0.7;
+  animation: danger-chroma-shift 220ms steps(2, jump-none) infinite;
+}
+body.danger-critical .danger-chroma {
+  opacity: 1;
+  animation: danger-chroma-shift 140ms steps(2, jump-none) infinite;
+}
+@keyframes danger-chroma-shift {
+  0%   { transform: translate3d(-1.5px, 0, 0); filter: saturate(1.4); }
+  50%  { transform: translate3d(1.5px, 0.5px, 0); filter: saturate(1.8); }
+  100% { transform: translate3d(-1.5px, -0.5px, 0); filter: saturate(1.4); }
+}
+
+/* ---------- Peripheral vignette ---------- */
 .danger-vignette {
   position: fixed;
   inset: 0;
@@ -151,7 +225,6 @@ html, body {
   transform: translateZ(0);
 }
 
-/* WARNING: vignette visible, gentle 900ms breath. Player has time to react. */
 .danger-vignette.on {
   opacity: 1;
 }
@@ -159,7 +232,6 @@ html, body {
   animation: danger-pulse 900ms cubic-bezier(0.45, 0, 0.55, 1) infinite;
 }
 
-/* HURTING: same red, faster 500ms throb, slightly hotter. Health is draining. */
 .danger-vignette.on.hurting .danger-vignette-inner {
   animation-duration: 500ms;
   filter: saturate(1.4) brightness(1.2);
@@ -176,81 +248,140 @@ html, body {
   50%      { opacity: 1.00; }
 }
 
-/* Reduced-motion: hold the red steady instead of pulsing. Still shows the
-   state clearly, just without the tempo. */
 @media (prefers-reduced-motion: reduce) {
   .danger-vignette.on .danger-vignette-inner {
     animation: none;
     opacity: 0.85;
   }
+  body.danger-shaking { animation: none; }
+  body.danger-hurting .danger-chroma,
+  body.danger-critical .danger-chroma { animation: none; }
 }
 
-/* Health bar. Bottom-left, tiny, VHS-crimson. Hidden at full health so it
-   only appears once you've taken damage — no permanent HUD clutter. */
-.danger-health {
-  position: fixed;
-  left: 22px;
-  bottom: 22px;
-  z-index: 11;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  pointer-events: none;
-  opacity: 1;
-  transition: opacity 380ms ease-out;
-  font-family: "VT323", "Share Tech Mono", ui-monospace, monospace;
-  font-size: 12px;
-  letter-spacing: 0.18em;
-  color: rgba(255, 90, 90, 0.85);
-  text-shadow: 0 0 6px rgba(200, 30, 30, 0.6);
-}
-
-.danger-health.hidden {
-  opacity: 0;
-}
-
-.danger-health-track {
-  width: 128px;
-  height: 4px;
-  background: rgba(60, 12, 12, 0.55);
-  border: 1px solid rgba(180, 30, 30, 0.55);
-  box-shadow: 0 0 8px rgba(200, 30, 30, 0.35),
-              inset 0 0 4px rgba(0, 0, 0, 0.6);
-  position: relative;
-  overflow: hidden;
-}
-
-.danger-health-fill {
+/* ---------- Directional damage arrows (CoD/Battlefield-style) ----------
+   Four chevrons pinned to the edges. On each damage tick the JS flips
+   .show on the one matching the incoming threat direction; it pulses in
+   for ~700ms then fades. Each has a red glow halo behind it so it reads
+   at a glance even during heavy pulse action. */
+.danger-arrow {
   position: absolute;
-  left: 0; top: 0; bottom: 0;
-  width: 100%;
-  background: linear-gradient(to right,
-              rgba(255, 80, 80, 0.95) 0%,
-              rgba(220, 40, 40, 0.95) 55%,
-              rgba(180, 20, 20, 0.95) 100%);
-  box-shadow: 0 0 6px rgba(255, 60, 60, 0.6);
-  /* Snappy but not instant — a felt "chunk taken" impact without jitter. */
-  transition: width 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  opacity: 0;
+  pointer-events: none;
+  transform-origin: center;
+  will-change: opacity, transform;
+}
+.danger-arrow-top    { top:    3vh;    left: 50%; transform: translate(-50%, 8px); }
+.danger-arrow-right  { top:    50%;    right: 3vw; transform: translate(-8px, -50%) rotate(90deg); }
+.danger-arrow-bottom { bottom: 3vh;    left: 50%; transform: translate(-50%, -8px) rotate(180deg); }
+.danger-arrow-left   { top:    50%;    left: 3vw;  transform: translate(8px, -50%) rotate(270deg); }
+
+/* The chevron itself — a ^ apex pointing UP. Cardinal rotation on the
+   parent picks which edge it points at. Solid crimson core with a
+   radial red-orange bloom behind so it reads over any picture. */
+.danger-arrow-chev {
+  display: block;
+  width: 64px;
+  height: 26px;
+  background: linear-gradient(180deg,
+                rgba(255, 120, 120, 1) 0%,
+                rgba(255, 40, 40, 1) 60%,
+                rgba(200, 20, 20, 1) 100%);
+  clip-path: polygon(
+    50% 0%,      /* apex top-center */
+    100% 100%,   /* bottom-right */
+    76% 100%,    /* inner bottom-right */
+    50% 40%,     /* inner V dip */
+    24% 100%,    /* inner bottom-left */
+    0% 100%      /* bottom-left */
+  );
+  filter: drop-shadow(0 0 8px rgba(255, 40, 40, 0.95))
+          drop-shadow(0 0 2px rgba(255, 255, 255, 0.4));
+}
+.danger-arrow-glow {
+  position: absolute;
+  inset: -18px -30px;
+  background: radial-gradient(ellipse at center,
+              rgba(255, 40, 40, 0.55) 0%,
+              rgba(255, 40, 40, 0.15) 40%,
+              rgba(255, 40, 40, 0)   70%);
+  filter: blur(6px);
+  z-index: -1;
 }
 
-/* Critical band: <25% health. Bar itself pulses to reinforce the vignette
-   throb, so you can feel both meters getting louder together. */
-.danger-health.critical .danger-health-track {
-  animation: danger-health-critical 500ms cubic-bezier(0.45, 0, 0.55, 1) infinite;
+.danger-arrow.show {
+  animation: danger-arrow-pulse 700ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
-.danger-health.critical {
-  color: rgba(255, 110, 110, 1);
-  text-shadow: 0 0 10px rgba(255, 40, 40, 0.9);
+@keyframes danger-arrow-pulse {
+  0%   { opacity: 0; }
+  15%  { opacity: 1; }
+  100% { opacity: 0; }
+}
+.danger-arrow-top.show    { animation-name: danger-arrow-pulse-top; }
+.danger-arrow-right.show  { animation-name: danger-arrow-pulse-right; }
+.danger-arrow-bottom.show { animation-name: danger-arrow-pulse-bottom; }
+.danger-arrow-left.show   { animation-name: danger-arrow-pulse-left; }
+@keyframes danger-arrow-pulse-top {
+  0%   { opacity: 0; transform: translate(-50%, 20px) scale(0.7); }
+  20%  { opacity: 1; transform: translate(-50%, 0)    scale(1.05); }
+  100% { opacity: 0; transform: translate(-50%, 8px)  scale(1); }
+}
+@keyframes danger-arrow-pulse-right {
+  0%   { opacity: 0; transform: translate(20px, -50%) rotate(90deg) scale(0.7); }
+  20%  { opacity: 1; transform: translate(0,    -50%) rotate(90deg) scale(1.05); }
+  100% { opacity: 0; transform: translate(-8px, -50%) rotate(90deg) scale(1); }
+}
+@keyframes danger-arrow-pulse-bottom {
+  0%   { opacity: 0; transform: translate(-50%, -20px) rotate(180deg) scale(0.7); }
+  20%  { opacity: 1; transform: translate(-50%,  0)    rotate(180deg) scale(1.05); }
+  100% { opacity: 0; transform: translate(-50%, -8px)  rotate(180deg) scale(1); }
+}
+@keyframes danger-arrow-pulse-left {
+  0%   { opacity: 0; transform: translate(-20px, -50%) rotate(270deg) scale(0.7); }
+  20%  { opacity: 1; transform: translate(0,     -50%) rotate(270deg) scale(1.05); }
+  100% { opacity: 0; transform: translate(8px,   -50%) rotate(270deg) scale(1); }
 }
 
-@keyframes danger-health-critical {
-  0%, 100% { box-shadow: 0 0 8px rgba(255, 40, 40, 0.5), inset 0 0 4px rgba(0, 0, 0, 0.6); }
-  50%      { box-shadow: 0 0 14px rgba(255, 60, 60, 0.95), inset 0 0 4px rgba(0, 0, 0, 0.6); }
+/* ---------- Blood spatter — one-shot on hit tick ----------
+   A cluster of dark-red radial blobs biased toward the incoming edge.
+   The JS sets --spatter-x / --spatter-y to place the primary blob at the
+   threat's on-screen center (or a random edge when direction is missing).
+   Additive on top of the hit flash for a wet, tactile impact. */
+.danger-blood-spatter {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  mix-blend-mode: multiply;
+  background:
+    radial-gradient(ellipse 22vw 14vh at var(--spatter-x, 50%) var(--spatter-y, 50%),
+      rgba(90, 6, 6, 0.75) 0%,
+      rgba(90, 6, 6, 0.35) 22%,
+      rgba(90, 6, 6, 0)    55%),
+    radial-gradient(ellipse 10vw 6vh at calc(var(--spatter-x, 50%) + 6vw) calc(var(--spatter-y, 50%) - 3vh),
+      rgba(60, 4, 4, 0.55) 0%,
+      rgba(60, 4, 4, 0)    60%),
+    radial-gradient(ellipse 7vw 4vh at calc(var(--spatter-x, 50%) - 4vw) calc(var(--spatter-y, 50%) + 4vh),
+      rgba(70, 4, 4, 0.60) 0%,
+      rgba(70, 4, 4, 0)    60%),
+    radial-gradient(ellipse 4vw 3vh at calc(var(--spatter-x, 50%) + 3vw) calc(var(--spatter-y, 50%) + 5vh),
+      rgba(50, 4, 4, 0.45) 0%,
+      rgba(50, 4, 4, 0)    60%);
+  filter: blur(0.4px);
+  will-change: opacity, transform;
+}
+.danger-blood-spatter.hit {
+  animation: danger-blood-spatter 620ms ease-out;
+}
+@keyframes danger-blood-spatter {
+  0%   { opacity: 0;    transform: scale(0.90); }
+  20%  { opacity: 0.95; transform: scale(1.06); }
+  60%  { opacity: 0.75; transform: scale(1.02); }
+  100% { opacity: 0;    transform: scale(1.00); }
 }
 
-/* One-shot flash overlay: fired on each fresh damage tick so the player
-   FEELS individual hits inside the sustained drain (a heartbeat rather than
-   a numeric ticker). Purely additive; independent of the pulse. */
+/* ---------- Hit flash (retained from the base build) ----------
+   One-shot red pop centered on the threat point. Faster / brighter than
+   the spatter — the two together read as "impact + wound". */
 .danger-vignette .danger-hit-flash {
   position: absolute;
   inset: 0;
@@ -265,11 +396,160 @@ html, body {
 .danger-vignette .danger-hit-flash.on {
   animation: danger-hit-flash 260ms ease-out;
 }
-
 @keyframes danger-hit-flash {
   0%   { opacity: 0; }
   30%  { opacity: 1; }
   100% { opacity: 0; }
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   HEALTH BAR — action-game shaped
+   VITAL label + segmented track + numeric readout, all pinned bottom-left.
+   Hidden at full HP; slides + fades in on first damage; pulses critical
+   below 25 %.
+   ════════════════════════════════════════════════════════════════════════ */
+.danger-health {
+  position: fixed;
+  left: 22px;
+  bottom: 22px;
+  z-index: 11;
+  pointer-events: none;
+  opacity: 1;
+  transform: translateX(0);
+  transition: opacity 380ms ease-out, transform 380ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  font-family: "VT323", "Share Tech Mono", ui-monospace, monospace;
+  color: rgba(255, 90, 90, 0.85);
+  text-shadow: 0 0 6px rgba(200, 30, 30, 0.6);
+}
+
+.danger-health.hidden {
+  opacity: 0;
+  transform: translateX(-14px);
+}
+
+.danger-health-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.danger-health-label {
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  color: rgba(255, 120, 120, 0.9);
+  text-shadow: 0 0 8px rgba(255, 40, 40, 0.55);
+}
+
+.danger-health-num {
+  font-size: 18px;
+  letter-spacing: 0.05em;
+  min-width: 2.2ch;
+  text-align: right;
+  color: rgba(255, 210, 210, 0.95);
+  text-shadow: 0 0 8px rgba(255, 40, 40, 0.8),
+               0 0 2px rgba(255, 255, 255, 0.4);
+  font-variant-numeric: tabular-nums;
+  transition: color 200ms ease-out, text-shadow 200ms ease-out;
+}
+.danger-health.critical .danger-health-num {
+  color: rgba(255, 240, 240, 1);
+  text-shadow: 0 0 14px rgba(255, 40, 40, 1),
+               0 0 3px rgba(255, 255, 255, 0.6);
+}
+
+.danger-health-track {
+  width: 168px;
+  height: 8px;
+  background: rgba(30, 6, 6, 0.72);
+  border: 1px solid rgba(180, 30, 30, 0.75);
+  box-shadow: 0 0 10px rgba(200, 30, 30, 0.4),
+              inset 0 0 6px rgba(0, 0, 0, 0.75);
+  position: relative;
+  overflow: hidden;
+  border-radius: 1px;
+}
+
+.danger-health-fill {
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 100%;
+  background: linear-gradient(to right,
+              rgba(255, 100, 100, 1) 0%,
+              rgba(220, 40, 40, 1)   55%,
+              rgba(180, 20, 20, 1)   100%);
+  box-shadow: 0 0 10px rgba(255, 60, 60, 0.75),
+              inset 0 -2px 0 rgba(255, 200, 200, 0.25),
+              inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  transition: width 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* 10 evenly-spaced segment dividers laid over the track — makes it read
+   like a Halo/CoD/Destiny HP bar instead of a raw progress bar. Divider
+   lines are inset shadows on 10 flex children so they stay pixel-aligned
+   at any track width. */
+.danger-health-segments {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  pointer-events: none;
+}
+.danger-health-segments span {
+  flex: 1 1 0;
+  border-right: 1px solid rgba(10, 4, 4, 0.85);
+  box-shadow: inset -1px 0 0 rgba(255, 100, 100, 0.15);
+}
+.danger-health-segments span:last-child {
+  border-right: 0;
+  box-shadow: none;
+}
+
+/* Regen shimmer: a diagonal highlight sweep across the bar while the
+   player is actively healing back. Adds a felt sense of "energy
+   returning" without a new number to read. Class toggled by JS. */
+.danger-health-shimmer {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  background: linear-gradient(105deg,
+              transparent 30%,
+              rgba(255, 220, 220, 0.55) 50%,
+              transparent 70%);
+  transform: translateX(-100%);
+}
+.danger-health.regenerating .danger-health-shimmer {
+  opacity: 1;
+  animation: danger-shimmer 1200ms linear infinite;
+}
+@keyframes danger-shimmer {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+/* Critical band: <25% health. Track pulses in sync with the vignette
+   throb; label + number brighten. */
+.danger-health.critical .danger-health-track {
+  animation: danger-health-critical 500ms cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  border-color: rgba(255, 60, 60, 1);
+}
+.danger-health.critical .danger-health-label {
+  color: rgba(255, 200, 200, 1);
+  text-shadow: 0 0 14px rgba(255, 40, 40, 1);
+}
+@keyframes danger-health-critical {
+  0%, 100% { box-shadow: 0 0 10px rgba(255, 40, 40, 0.5), inset 0 0 6px rgba(0, 0, 0, 0.75); }
+  50%      { box-shadow: 0 0 20px rgba(255, 80, 80, 1),   inset 0 0 6px rgba(0, 0, 0, 0.75); }
+}
+
+/* Damage bump: the number readout kicks up briefly on each hit so the
+   number FEELS the punch — retriggered by JS via class toggle. */
+.danger-health-num.bump {
+  animation: danger-num-bump 240ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+@keyframes danger-num-bump {
+  0%   { transform: scale(1); }
+  30%  { transform: scale(1.35); color: rgba(255, 255, 255, 1); }
+  100% { transform: scale(1); }
 }
 
 .scene-scrim {
