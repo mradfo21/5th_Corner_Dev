@@ -6064,6 +6064,97 @@
     let switching = false;
     let wasAutoPlay = false;     // restore auto-play on close if we paused it
     let lastFocus = null;        // restore focus on close (a11y)
+    // Dynamic per-character voice bookkeeping. `voiceInUse` is the voice_id
+    // actually attached to the live Convai session — so /api/talk/end can
+    // drop its refcount on close and session-cleanup can then reap it.
+    // `designPollTimer` polls /api/talk/voice/status for a still-designing
+    // voice so we can hot-swap it into the live call when it lands.
+    let voiceInUse = "";
+    let designPollTimer = null;
+    let designPollTries = 0;
+    let designCacheKey = "";
+
+    function stopDesignPoll() {
+      if (designPollTimer) { clearInterval(designPollTimer); designPollTimer = null; }
+      designPollTries = 0;
+      designCacheKey = "";
+    }
+
+    // Poll the server every ~1.5s for a background-designed voice; when it
+    // flips to ready, hot-swap the live Convai session onto it. Caps at ~21s
+    // of polling so a failed design falls silently back to the preset voice.
+    function startDesignPoll(cacheKey) {
+      stopDesignPoll();
+      if (!cacheKey) return;
+      designCacheKey = cacheKey;
+      designPollTries = 0;
+      designPollTimer = setInterval(async () => {
+        designPollTries++;
+        if (!open || designPollTries > 14 || designCacheKey !== cacheKey) {
+          stopDesignPoll();
+          return;
+        }
+        try {
+          const res = await fetch("/api/talk/voice/status?cache_key=" + encodeURIComponent(cacheKey));
+          if (!res.ok) return;
+          const data = await res.json();
+          if (!open || mode !== "voice" || designCacheKey !== cacheKey) return;
+          if (data.status === "ready" && data.voice_id) {
+            stopDesignPoll();
+            // Don't override a manual pick the player made mid-generation.
+            if (selectedVoiceId && selectedVoiceId !== voiceInUse) return;
+            hotSwapDesignedVoice(data.voice_id);
+          } else if (data.status === "failed" || data.status === "unknown") {
+            stopDesignPoll();
+          }
+        } catch (e) { /* transient; keep polling */ }
+      }, 1500);
+    }
+
+    // Rebuild the Convai session with the newly-designed voice id, preserving
+    // the opening line so we don't burn an LLM call regenerating a greeting.
+    // Distinct from user-driven changeVoice(): does NOT persist to
+    // localStorage (that's the human picker's contract) and logs a subtler
+    // "voice cast" line rather than a name-change notice.
+    async function hotSwapDesignedVoice(newVoiceId) {
+      if (!newVoiceId || switching || !open || mode !== "voice") return;
+      if (newVoiceId === voiceInUse) return;
+      switching = true;
+      setSub("casting character voice\u2026");
+      if (convo) { try { await convo.endSession(); } catch (_) {} convo = null; }
+      const reuseOpening = (lastSession && lastSession.context && lastSession.context.opening_line) || "";
+      let session = null;
+      try {
+        session = await postJSON("/api/talk/session",
+          { subject, voice_id: newVoiceId, opening_line: reuseOpening });
+      } catch (e) { console.warn("[talk] hot-swap fetch failed:", e); }
+      if (!open) { switching = false; return; }
+      if (!session || session.mode !== "voice") { switching = false; return; }
+      addLine("assistant", "\u2014 voice cast to fit " + (subject && subject.label) + " \u2014");
+      AgentLog.push("talk", "voice hot-swapped", "designed \u00b7 " + newVoiceId);
+      beginVoice(session, (session.context && session.context.opening_line) || "");
+    }
+
+    // Fire-and-forget notify so server can drop the voice refcount and
+    // reclaim the ElevenLabs voice slot at session end. sendBeacon survives
+    // pagehide/close; fetch with keepalive is the fallback.
+    function releaseVoiceOnClose(voiceId) {
+      if (!voiceId) return;
+      try {
+        const body = JSON.stringify({ voice_id: voiceId });
+        if (navigator.sendBeacon) {
+          const blob = new Blob([body], { type: "application/json" });
+          navigator.sendBeacon("/api/talk/end", blob);
+        } else {
+          fetch("/api/talk/end", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: body,
+            keepalive: true,
+          }).catch(() => {});
+        }
+      } catch (_) {}
+    }
 
     function isOpen() { return open; }
 
@@ -6196,6 +6287,24 @@
           el.talkModeToggle.classList.remove("hidden");
           el.talkModeToggle.textContent = micMuted ? "UNMUTE" : "MUTE";
           showVoiceControl(session.voice_id);
+          // Remember the voice we actually handed to Convai so /api/talk/end
+          // can release its refcount at close time. Every /api/talk/session
+          // call bumps the refcount, so on a re-connect (voice switch /
+          // hot-swap / user pick) we release the PREVIOUS voice first —
+          // otherwise its refcount would stay >0 across the whole session
+          // and block reclaim.
+          if (voiceInUse && voiceInUse !== session.voice_id) {
+            releaseVoiceOnClose(voiceInUse);
+          }
+          voiceInUse = session.voice_id || "";
+          // If a per-character voice is being designed in the background,
+          // start polling so we can hot-swap it in once it lands.
+          if (session.voice_status === "generating" && session.voice_cache_key) {
+            AgentLog.push("dim", "casting character voice", session.voice_cache_key);
+            startDesignPoll(session.voice_cache_key);
+          } else {
+            stopDesignPoll();
+          }
         },
         onDisconnect: () => { AgentLog.push("dim", "talk disconnected"); if (open && mode === "voice") { setSub("channel closed"); setOrbState("idle"); } },
         onError: (e) => { AgentLog.push("error", "talk error", AgentLog.clip(e && (e.message || e), 120)); console.warn("[talk] voice error:", e); },
@@ -6385,6 +6494,13 @@
       if (!open) return;
       open = false;
       switching = false;
+      stopDesignPoll();
+      // Notify the server so it drops the refcount on the voice we've been
+      // using. Once refcount hits zero, session cleanup + LRU eviction can
+      // reap the ElevenLabs slot. Capture-then-clear so this only fires once.
+      const releasedVoice = voiceInUse;
+      voiceInUse = "";
+      if (releasedVoice) releaseVoiceOnClose(releasedVoice);
       Sound.talkClose();
       if (convo) { try { convo.endSession(); } catch (_) {} convo = null; }
       closeVoiceMenu();
