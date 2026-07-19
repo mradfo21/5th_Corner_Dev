@@ -460,6 +460,28 @@ IMAGE_DIR = ROOT / "images"
 # while still excluding other threads, which is what was always intended.
 WORLD_STATE_LOCK = threading.RLock() # Global lock for world_state.json access
 
+# Multi-user session framework: WORLD_STATE_LOCK above only guards the brief
+# read-modify-write critical sections around a state file. It is deliberately
+# NOT held across the slow parts of a turn (LLM calls, image generation),
+# which instead read/write the module-global `state`/`history` mirrors
+# directly as a convenience for same-session polling (see engine.py's
+# "MULTI-USER SESSION CONTEXT SWITCHING" section). With multiple sessions now
+# live at once, two DIFFERENT sessions' background work running concurrently
+# would otherwise race on those shared mirrors — session A's turn could read
+# session B's world_prompt (or vice versa) for the few hundred milliseconds
+# between critical sections.
+#
+# TURN_LOCK closes that gap by fully serializing state-mutating engine work
+# system-wide: _process_turn_background (the /api/choose turn loop),
+# _perform_game_reset (the /api/reset new-game flow), and
+# _generate_and_append_scene_image (all scene-image generation) each hold it
+# for their ENTIRE body, not just the critical sections. This is the "only
+# one turn processed by the engine at a time" concurrency model documented in
+# LOBBY_MULTIUSER.md — an intentional throughput/correctness trade-off that's
+# reasonable here because per-turn latency is already dominated by multi-
+# second LLM + image API calls, not CPU.
+TURN_LOCK = threading.RLock()
+
 IMAGE_ENABLED       = True  # ENABLED for production
 WORLD_IMAGE_ENABLED = True  # ENABLED for production
 QUALITY_MODE        = True  # Quality mode: False=Gemini Flash (fast), True=Gemini Pro (high quality, slower)
@@ -1202,6 +1224,26 @@ def session_context(session_id):
                     _save_state(state, resolved)
         except Exception as e:
             logging.warning(f"[SESSION CTX] Failed to persist session '{resolved}' after request: {e}")
+
+
+def _sync_ambient_state(st: dict, session_id: str) -> None:
+    """Best-effort refresh of the module-global `state` mirror used by the
+    same-session /api/feed fast path (see set_active_session's no-op branch).
+
+    Background threads (turn processing, scene-image generation, world
+    evolution, vision reground) run well after the request that spawned them
+    returns, and by the time they finish, a DIFFERENT session's request may
+    have swapped the ambient mirror via session_context(). Blindly
+    reassigning `state` here would leak session_id's data into whichever
+    session is now active. Each caller already persists the authoritative
+    copy to disk via _save_state(); this only controls the in-memory
+    convenience mirror, so skip the write when session_id is no longer the
+    active one — the next request for session_id will simply reload from
+    disk (set_active_session always does on a real switch).
+    """
+    global state
+    if get_active_session_id() == session_id:
+        state = st
 
 
 def summarize_world_state(state: dict) -> str:
@@ -4347,16 +4389,19 @@ def extract_scene_elements(*args):
     return nouns
 
 # RENAMED from advance_turn
-def _process_turn_background(choice: str, initial_player_action_item_id: int, signal_file_path: Optional[str] = None, source: Optional[str] = None):
+def _process_turn_background(choice: str, initial_player_action_item_id: int, signal_file_path: Optional[str] = None, source: Optional[str] = None, session_id: str = 'default'):
     """Standalone feed turn — a thin adapter over the canonical two-phase
     session pipeline.
 
-    This runs in the background thread spawned by api_choose. It delegates the
-    actual turn work to advance_turn_image_fast + advance_turn_choices_deferred
-    on the 'default' session (the same pipeline the Discord/session path uses),
-    then translates their return dicts into the feed items the standalone UI
-    polls for. It replaces the previous ~600-line duplicate orchestration so
-    there is now ONE turn implementation.
+    This runs in the background thread spawned by api_choose, scoped to
+    whichever session issued the choice (see the `session_id` argument —
+    api_choose passes the requester's session so multiple users' turns never
+    cross-write each other's saves). It delegates the actual turn work to
+    advance_turn_image_fast + advance_turn_choices_deferred (the same
+    pipeline the Discord/session path uses), then translates their return
+    dicts into the feed items the standalone UI polls for. It replaces the
+    previous ~600-line duplicate orchestration so there is now ONE turn
+    implementation.
 
     Design decisions (previously divergent between the two paths):
       • Death: honor the consequence LLM's player_alive verdict (Phase 1),
@@ -4368,6 +4413,14 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
         running flat at NORMAL. `source` marks how the action was issued; SCAN
         object interactions ("scan_interact"/"scan_move") push risk harder so
         poking the world moves the story forward and raises the stakes.
+
+    NOTE ON CONCURRENCY: this function reads/writes a LOCAL `turn_state` dict
+    (always reloaded via _load_state(SID)) rather than the ambient module-
+    global `state`, specifically so that a DIFFERENT session's concurrent
+    background thread swapping the global mirror can't corrupt this turn's
+    own in-flight computation. `_sync_ambient_state` only mirrors our result
+    into the global when this session is still the active one (see its
+    docstring) — the on-disk save is always the source of truth regardless.
     """
     if signal_file_path:
         try:
@@ -4375,10 +4428,9 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
         except Exception:
             pass
 
-    global state, history
     time.sleep(0.75)  # brief pacing delay so the client renders the action first
 
-    SID = 'default'
+    SID = session_id
     try:
         # ── STORY ESCALATION + FATE ──
         # Drive the risk backend BEFORE the consequence generates, so the rising
@@ -4398,12 +4450,13 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
         # Image and world-evolution run in the background so narrative + choices
         # return fast.
         p1 = advance_turn_image_fast(choice, fate=turn_fate, is_timeout_penalty=False, session_id=SID, skip_image=True, skip_evolve=True, interaction=is_interaction)
-        state = _load_state(SID)
+        turn_state = _load_state(SID)
+        _sync_ambient_state(turn_state, SID)
 
         dispatch_text = (p1.get("dispatch") or "").strip() or "The situation evolves..."
         consequence_img_url = None  # streamed in asynchronously below
         vision_dispatch_text = p1.get("vision_dispatch", "")
-        player_alive = state.get("player_state", {}).get("alive", True)
+        player_alive = turn_state.get("player_state", {}).get("alive", True)
 
         turn_items: List[Dict[str, Any]] = [
             create_feed_item(type="narrative_event", content=dispatch_text, metadata={"source": "dispatch"})
@@ -4425,7 +4478,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
         _inventory_update = None
         try:
             from items import detect_item_pickups, add_items_to_inventory, ITEMS
-            current_inventory = state.get("inventory", [])
+            current_inventory = turn_state.get("inventory", [])
             picked_up = detect_item_pickups(dispatch_text, current_inventory)
             if picked_up:
                 updated_inventory, didnt_fit = add_items_to_inventory(current_inventory, picked_up)
@@ -4449,7 +4502,8 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                 st["inventory"] = _inventory_update
             _feed_extend(st, turn_items)
             _save_state(st, SID)
-            state = st
+            turn_state = st
+            _sync_ambient_state(st, SID)
 
         # ── DEATH: single mechanism — the Phase 1 player_alive verdict ──
         if not player_alive:
@@ -4460,14 +4514,14 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                 dispatch=dispatch_text,
                 choice=choice,
                 frame_idx=int(p1.get("frame_idx", 1)),
-                world_prompt=state.get("world_prompt", ""),
+                world_prompt=turn_state.get("world_prompt", ""),
                 hard_transition=bool(p1.get("hard_transition", False)),
                 session_id=SID,
             )
             game_over_item = create_feed_item(type="game_over", content="You have succumbed to the horrors. The transmission ends.")
             game_over_choices = _structure_choices_for_feed(
                 ["Restart Simulation"], "GAME OVER",
-                image_url=state.get("current_image_url"),
+                image_url=turn_state.get("current_image_url"),
             )
             with WORLD_STATE_LOCK:
                 st = _load_state(SID)
@@ -4475,12 +4529,13 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                 _feed_append(st, game_over_choices)
                 st["turn_count"] = int(st.get("turn_count", 0)) + 1
                 _save_state(st, SID)
-                state = st
+                turn_state = st
+                _sync_ambient_state(st, SID)
             return
 
         # Remember the pre-turn image so the async vision reground below can tell
         # when THIS turn's new guide image has actually landed.
-        _prev_image_url = state.get("current_image_url")
+        _prev_image_url = turn_state.get("current_image_url")
 
         # ── Stream the scene image asynchronously (FAST — never block choices on
         # the slow render, or the turn/ceremony stalls on the last step waiting
@@ -4492,7 +4547,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             dispatch=dispatch_text,
             choice=choice,
             frame_idx=int(p1.get("frame_idx", 1)),
-            world_prompt=state.get("world_prompt", ""),
+            world_prompt=turn_state.get("world_prompt", ""),
             hard_transition=bool(p1.get("hard_transition", False)),
             session_id=SID,
         )
@@ -4502,12 +4557,13 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             None, dispatch_text, vision_dispatch_text, choice,
             "", p1.get("hard_transition", False), SID,
         )
-        state = _load_state(SID)
+        turn_state = _load_state(SID)
+        _sync_ambient_state(turn_state, SID)
 
         next_choices = [c for c in (p2.get("choices") or []) if c and c.strip() and c.strip() != "\u2014"]
         prompt_item = _structure_choices_for_feed(
             next_choices, "What do you do next?",
-            state.get("current_image_url"),
+            turn_state.get("current_image_url"),
         )
 
         with WORLD_STATE_LOCK:
@@ -4518,7 +4574,8 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             if len(st.get("feed_log", [])) > MAX_FEED_LOG_ITEMS:
                 st["feed_log"] = st["feed_log"][-MAX_FEED_LOG_ITEMS:]
             _save_state(st, SID)
-            state = st
+            turn_state = st
+            _sync_ambient_state(st, SID)
 
         # ── Vision reground (non-blocking): once THIS turn's guide image has
         # rendered, regenerate the choices from what's ACTUALLY on screen and
@@ -4537,12 +4594,14 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
         try:
             critical_error_item = create_feed_item(type="error_event", content=f"System critical error during turn processing: {e_critical}")
             with WORLD_STATE_LOCK:
-                current_state_for_err = state if ('state' in globals() and state) else _load_state(SID)
+                current_state_for_err = _load_state(SID)
                 _feed_append(current_state_for_err, critical_error_item)
                 _save_state(current_state_for_err, SID)
+                _sync_ambient_state(current_state_for_err, SID)
         except Exception as e_final_log:
             log_error(f"Could not even log critical error to feed_log: {e_final_log}")
-    # No return value: runs in a thread and mutates global state / feed_log.
+    # No return value: runs in a thread; persists its session's state to disk
+    # and mirrors it into the ambient global only if still the active session.
 
 
 def _structure_choices_for_feed(choice_texts: List[str], prompt_text: str = "What do you do next?", image_url: Optional[str] = None) -> Dict[str, Any]:
@@ -4588,163 +4647,172 @@ def _generate_and_append_scene_image(caption: str, dispatch: str, choice: str, f
     global state, history
     if not WORLD_IMAGE_ENABLED:
         return None
-    try:
-        # _gen_image reads the module-global `history` to collect img2img
-        # reference frames — make sure it reflects this session.
-        history = _load_history(session_id)
-        result = _gen_image(
-            caption=caption or dispatch,
-            mode="normal",
-            choice=choice,
-            dispatch=dispatch,
-            world_prompt=world_prompt,
-            hard_transition=hard_transition,
-            frame_idx=frame_idx,
-            session_id=session_id,
-        )
-        img_path = result[0] if result else None
-        # Two different prompts for two different renderers:
-        #   • image_prompt (result[1]) — the diffusion prompt used for the
-        #     Gemini still; kept in state for debugging only.
-        #   • render_prompt — a clean, video-model-appropriate scene bible
-        #     used to STEER Reactor/Helios (see build_realtime_prompt). This
-        #     is what we hand the standalone client via metadata.prompt.
-        # Built up front (independent of the still) so realtime can keep
-        # steering the world off the prompt even when the still was blocked.
-        image_prompt = result[1] if (result and len(result) > 1) else ""
-        render_base = build_realtime_base(visual_scene=caption, narrative=dispatch)
-        render_prompt = build_realtime_prompt(
-            visual_scene=caption, narrative=dispatch, choice=choice
-        )
+    # _gen_image reads the module-global `history` (not a parameter) to
+    # collect img2img reference frames, so this whole body must hold
+    # TURN_LOCK for its duration — otherwise two sessions' image-generation
+    # threads running concurrently could each reassign `history` out from
+    # under the other mid-call, feeding session A's frames into session B's
+    # image (or vice versa). Doesn't affect single-session latency: a turn
+    # only ever has one image generation in flight at a time (see
+    # _process_turn_background), so this never contends with itself.
+    with TURN_LOCK:
+        try:
+            # _gen_image reads the module-global `history` to collect img2img
+            # reference frames — make sure it reflects this session.
+            history = _load_history(session_id)
+            result = _gen_image(
+                caption=caption or dispatch,
+                mode="normal",
+                choice=choice,
+                dispatch=dispatch,
+                world_prompt=world_prompt,
+                hard_transition=hard_transition,
+                frame_idx=frame_idx,
+                session_id=session_id,
+            )
+            img_path = result[0] if result else None
+            # Two different prompts for two different renderers:
+            #   • image_prompt (result[1]) — the diffusion prompt used for the
+            #     Gemini still; kept in state for debugging only.
+            #   • render_prompt — a clean, video-model-appropriate scene bible
+            #     used to STEER Reactor/Helios (see build_realtime_prompt). This
+            #     is what we hand the standalone client via metadata.prompt.
+            # Built up front (independent of the still) so realtime can keep
+            # steering the world off the prompt even when the still was blocked.
+            image_prompt = result[1] if (result and len(result) > 1) else ""
+            render_base = build_realtime_base(visual_scene=caption, narrative=dispatch)
+            render_prompt = build_realtime_prompt(
+                visual_scene=caption, narrative=dispatch, choice=choice
+            )
 
-        if not img_path:
-            # Image was blocked (content filter) or generation failed. Do NOT go
-            # silent: emitting nothing leaves the turn's ceremony parked on the
-            # guide-image step (a spinner that never resolves) and the scene
-            # visually frozen — which reads as "the game broke" (exactly the
-            # report: switching back to stills, "selecting an action didn't
-            # change scenes"). Emit a scene beat WITHOUT an image so the client
-            # still resolves the turn, realtime keeps steering off the prompt,
-            # and stills mode can surface a "signal lost" glitch instead of a
-            # dead UI. We deliberately keep the LAST good still as
-            # current_image_url so a fallback to stills still shows a real frame.
-            blocked_item = create_feed_item(
+            if not img_path:
+                # Image was blocked (content filter) or generation failed. Do NOT go
+                # silent: emitting nothing leaves the turn's ceremony parked on the
+                # guide-image step (a spinner that never resolves) and the scene
+                # visually frozen — which reads as "the game broke" (exactly the
+                # report: switching back to stills, "selecting an action didn't
+                # change scenes"). Emit a scene beat WITHOUT an image so the client
+                # still resolves the turn, realtime keeps steering off the prompt,
+                # and stills mode can surface a "signal lost" glitch instead of a
+                # dead UI. We deliberately keep the LAST good still as
+                # current_image_url so a fallback to stills still shows a real frame.
+                blocked_item = create_feed_item(
+                    type="scene_image",
+                    content="",
+                    image_url=None,
+                    metadata={
+                        "prompt": render_prompt,
+                        "base": render_base,
+                        "hard_transition": bool(hard_transition),
+                        "blocked": True,
+                    },
+                )
+                with WORLD_STATE_LOCK:
+                    st = _load_state(session_id)
+                    st['current_render_prompt'] = render_prompt
+                    st['current_render_base'] = render_base
+                    _feed_append(st, blocked_item)
+                    _save_state(st, session_id)
+                    _sync_ambient_state(st, session_id)
+                print(f"[SCENE IMG] image blocked/failed for {session_id}; emitted signal-lost beat "
+                      f"(turn resolves, realtime keeps steering)", flush=True)
+                return None
+
+            web = _to_web_image_url(img_path)
+            item = create_feed_item(
                 type="scene_image",
                 content="",
-                image_url=None,
+                image_url=web,
                 metadata={
                     "prompt": render_prompt,
+                    # 'base' (style + scene, no action) lets the client re-steer
+                    # instantly with the next action before the turn resolves.
                     "base": render_base,
                     "hard_transition": bool(hard_transition),
-                    "blocked": True,
                 },
             )
             with WORLD_STATE_LOCK:
                 st = _load_state(session_id)
+                st['current_image_url'] = web
+                st['current_image_prompt'] = image_prompt
                 st['current_render_prompt'] = render_prompt
                 st['current_render_base'] = render_base
-                _feed_append(st, blocked_item)
+                _feed_append(st, item)
                 _save_state(st, session_id)
-                state = st
-            print(f"[SCENE IMG] image blocked/failed for {session_id}; emitted signal-lost beat "
-                  f"(turn resolves, realtime keeps steering)", flush=True)
-            return None
+                _sync_ambient_state(st, session_id)
 
-        web = _to_web_image_url(img_path)
-        item = create_feed_item(
-            type="scene_image",
-            content="",
-            image_url=web,
-            metadata={
-                "prompt": render_prompt,
-                # 'base' (style + scene, no action) lets the client re-steer
-                # instantly with the next action before the turn resolves.
-                "base": render_base,
-                "hard_transition": bool(hard_transition),
-            },
-        )
-        with WORLD_STATE_LOCK:
-            st = _load_state(session_id)
-            st['current_image_url'] = web
-            st['current_image_prompt'] = image_prompt
-            st['current_render_prompt'] = render_prompt
-            st['current_render_base'] = render_base
-            _feed_append(st, item)
-            _save_state(st, session_id)
-            state = st
-
-        if write_history:
-            # Write the absolute image path back into history so the NEXT turn's
-            # img2img can use this frame for continuity.
-            if int(frame_idx) == 0:
-                # INTRO (frame 0): the opening image never goes through
-                # advance_turn_choices_deferred, so no history entry exists for it
-                # yet. Seed history[0] ourselves — otherwise the FIRST player turn
-                # finds no reference frame and falls back to text-to-image, so the
-                # very first image never passes itself to the second via img2img
-                # (breaking visual continuity right at the start of the game).
-                hist = _load_history(session_id)
-                if not hist:
-                    intro_entry = {
-                        "choice":            choice,
-                        "dispatch":          dispatch,
-                        # vision_dispatch is REQUIRED by the img2img reference gate
-                        # in _gen_image (it skips entries missing it).
-                        "vision_dispatch":   caption or dispatch,
-                        "world_prompt":      world_prompt,
-                        "image":             img_path,
-                        "image_url":         img_path,
-                        "analysis_image":    img_path,
-                        # Original hi-fi guide still, preserved so a later realtime
-                        # frame overwriting 'image' still leaves it as a secondary
-                        # img2img quality reference (see _ingest_realtime_frame).
-                        "guide_image":       img_path,
-                        "image_prompt":      image_prompt,
-                        "hard_transition":   bool(hard_transition),
-                    }
-                    hist.append(intro_entry)
-                    _save_history(hist, session_id)
-                    history = hist
-                    print(f"[SCENE IMG] intro frame seeded into history[0] for img2img continuity: {img_path}")
-                else:
-                    # A player turn already appended before the (async) intro image
-                    # landed. Seeding now would reorder history, so skip — the intro
-                    # still shows in the feed, we just don't chain off it this game.
-                    print(f"[SCENE IMG] intro image arrived after a turn was appended (len={len(hist)}); skipping history seed to avoid reordering")
-            else:
-                # Regular turn: frame_idx == len(history)+1 at turn start, so after
-                # the parallel choice append this turn's entry is at index
-                # frame_idx-1; wait briefly for it.
-                hist = _load_history(session_id)
-                target_idx = int(frame_idx) - 1
-                for _ in range(40):  # up to ~10s: append is quick, image is slow
-                    if 0 <= target_idx < len(hist):
-                        break
-                    time.sleep(0.25)
+            if write_history:
+                # Write the absolute image path back into history so the NEXT turn's
+                # img2img can use this frame for continuity.
+                if int(frame_idx) == 0:
+                    # INTRO (frame 0): the opening image never goes through
+                    # advance_turn_choices_deferred, so no history entry exists for it
+                    # yet. Seed history[0] ourselves — otherwise the FIRST player turn
+                    # finds no reference frame and falls back to text-to-image, so the
+                    # very first image never passes itself to the second via img2img
+                    # (breaking visual continuity right at the start of the game).
                     hist = _load_history(session_id)
-                if 0 <= target_idx < len(hist):
-                    hist[target_idx]["image"] = img_path
-                    hist[target_idx]["image_url"] = img_path
-                    # Record the original high-fidelity guide still separately so it
-                    # survives even after a realtime frame later overwrites 'image'
-                    # (see _ingest_realtime_frame) — it stays available as a
-                    # secondary img2img quality reference.
-                    hist[target_idx]["guide_image"] = img_path
-                    _save_history(hist, session_id)
-                    history = hist
-                elif hist:
-                    print(f"[SCENE IMG] WARN: turn entry idx {target_idx} absent (len={len(hist)}); writing hist[-1]")
-                    hist[-1]["image"] = img_path
-                    hist[-1]["image_url"] = img_path
-                    hist[-1]["guide_image"] = img_path
-                    _save_history(hist, session_id)
-                    history = hist
-        print(f"[SCENE IMG] scene appended for {session_id}: {web}", flush=True)
-        return {"img_path": img_path, "web_url": web,
-                "image_prompt": image_prompt, "render_prompt": render_prompt}
-    except Exception as e:
-        log_error(f"[SCENE IMG] failed: {e}")
-        return None
+                    if not hist:
+                        intro_entry = {
+                            "choice":            choice,
+                            "dispatch":          dispatch,
+                            # vision_dispatch is REQUIRED by the img2img reference gate
+                            # in _gen_image (it skips entries missing it).
+                            "vision_dispatch":   caption or dispatch,
+                            "world_prompt":      world_prompt,
+                            "image":             img_path,
+                            "image_url":         img_path,
+                            "analysis_image":    img_path,
+                            # Original hi-fi guide still, preserved so a later realtime
+                            # frame overwriting 'image' still leaves it as a secondary
+                            # img2img quality reference (see _ingest_realtime_frame).
+                            "guide_image":       img_path,
+                            "image_prompt":      image_prompt,
+                            "hard_transition":   bool(hard_transition),
+                        }
+                        hist.append(intro_entry)
+                        _save_history(hist, session_id)
+                        history = hist
+                        print(f"[SCENE IMG] intro frame seeded into history[0] for img2img continuity: {img_path}")
+                    else:
+                        # A player turn already appended before the (async) intro image
+                        # landed. Seeding now would reorder history, so skip — the intro
+                        # still shows in the feed, we just don't chain off it this game.
+                        print(f"[SCENE IMG] intro image arrived after a turn was appended (len={len(hist)}); skipping history seed to avoid reordering")
+                else:
+                    # Regular turn: frame_idx == len(history)+1 at turn start, so after
+                    # the parallel choice append this turn's entry is at index
+                    # frame_idx-1; wait briefly for it.
+                    hist = _load_history(session_id)
+                    target_idx = int(frame_idx) - 1
+                    for _ in range(40):  # up to ~10s: append is quick, image is slow
+                        if 0 <= target_idx < len(hist):
+                            break
+                        time.sleep(0.25)
+                        hist = _load_history(session_id)
+                    if 0 <= target_idx < len(hist):
+                        hist[target_idx]["image"] = img_path
+                        hist[target_idx]["image_url"] = img_path
+                        # Record the original high-fidelity guide still separately so it
+                        # survives even after a realtime frame later overwrites 'image'
+                        # (see _ingest_realtime_frame) — it stays available as a
+                        # secondary img2img quality reference.
+                        hist[target_idx]["guide_image"] = img_path
+                        _save_history(hist, session_id)
+                        history = hist
+                    elif hist:
+                        print(f"[SCENE IMG] WARN: turn entry idx {target_idx} absent (len={len(hist)}); writing hist[-1]")
+                        hist[-1]["image"] = img_path
+                        hist[-1]["image_url"] = img_path
+                        hist[-1]["guide_image"] = img_path
+                        _save_history(hist, session_id)
+                        history = hist
+            print(f"[SCENE IMG] scene appended for {session_id}: {web}", flush=True)
+            return {"img_path": img_path, "web_url": web,
+                    "image_prompt": image_prompt, "render_prompt": render_prompt}
+        except Exception as e:
+            log_error(f"[SCENE IMG] failed: {e}")
+            return None
 
 
 def _spawn_scene_image_async(caption: str, dispatch: str, choice: str, frame_idx: int,
@@ -4788,7 +4856,7 @@ def _evolve_world_async(session_id: str, consequence_summary: str, vision_dispat
                     if k in evolution_result:
                         st[k] = evolution_result[k]
                 _save_state(st, session_id)
-                state = st
+                _sync_ambient_state(st, session_id)
             print(f"[ASYNC EVOLVE] world updated for {session_id}", flush=True)
         except Exception as e:
             log_error(f"[ASYNC EVOLVE] failed: {e}")
@@ -4797,7 +4865,7 @@ def _evolve_world_async(session_id: str, consequence_summary: str, vision_dispat
 
 
 # Ensure generate_intro_turn_feed_items is defined AFTER _structure_choices_for_feed
-def generate_intro_turn_feed_items() -> List[Dict[str, Any]]:
+def generate_intro_turn_feed_items(session_id: str = 'default') -> List[Dict[str, Any]]:
     from choices import generate_choices # Local import
     global state 
     intro_items = [] # This list will be returned
@@ -4841,7 +4909,7 @@ def generate_intro_turn_feed_items() -> List[Dict[str, Any]]:
         choice="Initialize Simulation",
         frame_idx=0,
         world_prompt=state.get("world_prompt", "Initialization sequence."),
-        session_id='default',
+        session_id=session_id,
     )
 
     return intro_items
@@ -4849,10 +4917,18 @@ def generate_intro_turn_feed_items() -> List[Dict[str, Any]]:
 # --- Internal Reset Logic --- (Moved from api_reset for reusability)
 def _perform_game_reset() -> List[Dict[str, Any]]:
     global state, history, _last_image_path, _next_feed_item_id
-    logging.info(f"_perform_game_reset: ENTER. Initial global state object id: {id(state)}")
+    # Resolve to whichever session api.py's _session_scoped wrapper already
+    # swapped in via engine.session_context() before calling api_reset().
+    # Previously this (and the _load_state()/_save_state(state) calls below)
+    # defaulted to 'default' unconditionally, so /api/reset for ANY session
+    # silently read + overwrote the 'default' session's save file instead of
+    # the caller's own session — the multi-user "New Game" flow never
+    # actually created an isolated instance.
+    SID = get_active_session_id()
+    logging.info(f"_perform_game_reset: ENTER session='{SID}'. Initial global state object id: {id(state)}")
     
     # Reset state variables by loading a fresh copy and then clearing/setting specifics
-    current_state_at_reset_start = _load_state() 
+    current_state_at_reset_start = _load_state(SID) 
     logging.info(f"_perform_game_reset: After _load_state. Loaded state id: {id(current_state_at_reset_start)}. Its feed_log (len {len(current_state_at_reset_start.get('feed_log',[]))}) id: {id(current_state_at_reset_start.get('feed_log')) if current_state_at_reset_start.get('feed_log') is not None else 'None'}")
     
     # Generate random starting time/weather/mood for this session
@@ -4899,13 +4975,13 @@ def _perform_game_reset() -> List[Dict[str, Any]]:
     else:
         logging.info("_perform_game_reset: history.json does not exist, no need to clear.")
 
-    initial_items = generate_intro_turn_feed_items() # This should use the global `state` implicitly
+    initial_items = generate_intro_turn_feed_items(SID) # This should use the global `state` implicitly
     logging.info(f"_perform_game_reset: initial_items from generate_intro_turn_feed_items (IDs): {[item['id'] for item in initial_items if item]}")
     
     state['feed_log'].extend(initial_items) # Add to the new state's new feed_log
     logging.info(f"_perform_game_reset: state['feed_log'] before _save_state (IDs): {[item['id'] for item in state['feed_log'] if item]}")
     
-    _save_state(state) # Save the completely new state
+    _save_state(state, SID) # Save the completely new state
     logging.info(f"_perform_game_reset: Game reset complete. {len(initial_items)} initial items generated and saved.")
     return initial_items
 
@@ -4979,7 +5055,16 @@ def api_choose():
         
         player_choice_text = data['choice']
         context_item_id = data.get('context_item_id') # Optional, for context
-        session_id = data.get('session_id', 'default')
+        # Authoritative session id: whatever _session_scoped (api.py) already
+        # resolved and swapped in via engine.session_context() before this
+        # handler ran. Previously this re-derived from the request body with
+        # a 'default' fallback and then never actually used it below — every
+        # /api/choose call silently operated on the 'default' session's saved
+        # state regardless of which session the caller asked for. Using the
+        # active session id here (and threading it into the background
+        # thread below) is what makes each session's turns land in ITS OWN
+        # save file instead of everyone's turns landing in 'default'.
+        session_id = get_active_session_id()
         # How the action was issued. SCAN object interactions ("scan_interact"/
         # "scan_move") drive the story-escalation backend harder (see
         # _process_turn_background) so poking the world moves the plot + raises risk.
@@ -5013,10 +5098,10 @@ def api_choose():
         # fast-path, scene-image thread, or a reground worker) can't have its
         # save clobbered — and ours can't be clobbered by a stale snapshot.
         with WORLD_STATE_LOCK:
-            st = _load_state()
+            st = _load_state(session_id)
             _feed_append(st, player_action_item)
             st['last_choice'] = player_choice_text
-            _save_state(st)
+            _save_state(st, session_id)
             state = st
         if DEBUG_MODE: print(f"[DEBUG] api_choose - Player action item ID {player_action_item['id']} logged. Starting background thread for _process_turn_background.", flush=True)
 
@@ -5026,7 +5111,7 @@ def api_choose():
         temp_signal_file = ROOT / f"thread_signal_{player_action_item['id']}.tmp" # Use the correct ID here
         
         try:
-            thread = threading.Thread(target=_process_turn_background, args=(player_choice_text, player_action_item['id'], str(temp_signal_file)), kwargs={"source": action_source})
+            thread = threading.Thread(target=_process_turn_background, args=(player_choice_text, player_action_item['id'], str(temp_signal_file)), kwargs={"source": action_source, "session_id": session_id})
             # thread.daemon = True # Allow main program to exit even if threads are running. Temporarily commenting out for testing.
             thread.start()            
             # Check for signal from thread via temp file
@@ -5064,8 +5149,11 @@ def api_choose():
         # Attempt to log this error to the feed_log if state is available
         try:
             with WORLD_STATE_LOCK:
-                state.setdefault('feed_log', []).append(error_item)
-                _save_state(state)
+                err_session_id = get_active_session_id()
+                err_state = _load_state(err_session_id)
+                err_state.setdefault('feed_log', []).append(error_item)
+                _save_state(err_state, err_session_id)
+                state = err_state
         except Exception as e_log:
             log_error(f"Could not save error item to feed_log during api_choose error handling: {e_log}")
         return jsonify([error_item]), 500
@@ -5121,9 +5209,10 @@ def _ingest_realtime_frame(frame_b64: str, session_id: str = 'default'):
             hist[-1]['image'] = str(fpath)
             hist[-1]['image_url'] = str(fpath)
             _save_history(hist, session_id)
-            history = hist
+            if get_active_session_id() == session_id:
+                history = hist
         _save_state(st, session_id)
-        state = st
+        _sync_ambient_state(st, session_id)
 
     return (str(fpath), web)
 
@@ -6277,7 +6366,7 @@ def api_investigate():
             if len(invs) > MAX_INVESTIGATIONS:
                 del invs[:-MAX_INVESTIGATIONS]
             _save_state(st, session_id)
-            state = st
+            _sync_ambient_state(st, session_id)
         print(f"[INVESTIGATE] stored {kind} specimen {fname}", flush=True)
         return jsonify({"ok": True, **entry})
     except Exception as e:
@@ -6363,9 +6452,10 @@ def _spawn_observe_reground(fpath: str, web: str, session_id: str, prompt_id):
                     hist[-1]['vision_dispatch'] = vision
                     hist[-1]['vision_analysis'] = vision
                     _save_history(hist, session_id)
-                    history = hist
+                    if get_active_session_id() == session_id:
+                        history = hist
                 _save_state(st, session_id)
-                state = st
+                _sync_ambient_state(st, session_id)
 
             last_dispatch = ""
             for it in reversed(st.get('feed_log', [])):
@@ -6398,7 +6488,7 @@ def _spawn_observe_reground(fpath: str, web: str, session_id: str, prompt_id):
                 st['choices'] = [{"text": t} for t in texts]
                 _feed_append(st, item)
                 _save_state(st, session_id)
-                state = st
+                _sync_ambient_state(st, session_id)
             print(f"[OBSERVE] re-grounded on video frame; {len(texts)} choices", flush=True)
         except Exception as e:
             log_error(f"[OBSERVE] reground failed: {e}")
@@ -6477,7 +6567,7 @@ def api_regenerate_choices():
         with WORLD_STATE_LOCK:
             state.setdefault('feed_log', []).append(new_choice_prompt_item)
             state['choices'] = new_choice_prompt_item['choices'] # Update current choices in state
-            _save_state(state)
+            _save_state(state, get_active_session_id())
         
         logging.info(f"api_regenerate_choices: Regenerated choices. New prompt ID: {new_choice_prompt_item['id']}")
         return jsonify([new_choice_prompt_item])
@@ -6489,7 +6579,7 @@ def api_regenerate_choices():
         try:
             with WORLD_STATE_LOCK:
                 state.setdefault('feed_log', []).append(error_item)
-                _save_state(state)
+                _save_state(state, get_active_session_id())
         except Exception as e_log:
             log_error(f"Could not save error item to feed_log during api_regenerate_choices error handling: {e_log}")
         return jsonify([error_item]), 500
@@ -6859,7 +6949,7 @@ def advance_story_dynamics(session_id: str = 'default', risk_boost: int = 0) -> 
         st["threat_level"] = threat
         st["current_phase"] = phase
         _save_state(st, session_id)
-        state = st
+        _sync_ambient_state(st, session_id)
     phase_bias = {"normal": 0.0, "escalating": 0.12, "critical": 0.22}.get(phase, 0.0)
     # A risk_boost (SCAN interaction / entering the unknown) both accelerated the
     # phase above and tilts THIS turn's luck toward complication.

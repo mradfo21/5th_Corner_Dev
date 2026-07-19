@@ -120,20 +120,66 @@ with engine.session_context(session_id) as sid:
 
 ## Concurrency model
 
-Turns serialize on `WORLD_STATE_LOCK`. Two users on two sessions can
-each read / write their own on-disk state and interact with the game,
-but only one turn is being processed by the engine at a time.
+`engine.py` predates multi-user support: its turn pipeline
+(`advance_turn_image_fast`, `advance_turn_choices_deferred`,
+`_process_turn_background`, scene-image generation, world evolution,
+observe/reground, ...) reads and writes a handful of module-global
+mirrors (`state`, `history`) as a convenience, always reloading /
+saving the *correct* on-disk file for whichever `session_id` was
+passed in. That "always pass session_id explicitly to the file I/O"
+part was solid from the start; what was **broken until this pass**
+is that the standalone feed's turn loop (`_process_turn_background`,
+spawned by `/api/choose`) and the reset flow (`_perform_game_reset`,
+`generate_intro_turn_feed_items`) hardcoded `session_id = 'default'`
+internally, ignoring the caller's actual session entirely. Every
+`/api/choose` and `/api/reset` call — for ANY session — was silently
+reading and overwriting the `default` slot's save file. That's now
+fixed: both thread the caller's real session id through end-to-end
+(verified with two sessions taking concurrent turns while `default`'s
+`state.json` stays byte-for-byte unchanged).
 
-That trade-off is acceptable because:
+With that correctness bug fixed, a narrower concurrency question
+remains: two DIFFERENT sessions' background work (an in-flight turn,
+scene-image render, world-evolution rewrite, or observe/reground) can
+legitimately run on separate threads at the same time. Each of those
+paths persists its own session's state to disk correctly regardless.
+The one shared resource is the in-memory `state`/`history` mirror used
+as a same-session-polling convenience (so `/api/feed` doesn't have to
+re-read disk on every poll) — `_sync_ambient_state()` only refreshes
+that mirror when the session in question is still the *active* one
+(per `get_active_session_id()`), so a finished background task can
+never leak its data into whichever session is active by the time it
+completes. Scene-image generation additionally serializes system-wide
+via `TURN_LOCK`, because `_gen_image` reads img2img reference frames
+off the module-global `history` (not a parameter) — running two
+sessions' image renders at once would otherwise race on that global.
+This doesn't add latency for a single active session: a turn only
+ever has one image render in flight, and it already ran sequentially
+relative to that turn's own choice generation.
 
-1. Per-turn work is dominated by LLM + image API latency (multi-second
-   external calls), not by CPU on our box. The lock is unlikely to be
-   the actual bottleneck.
-2. It keeps the engine changes tiny — we didn't have to rewrite every
-   global-state reference in `engine.py` (~7000 lines).
-3. It's a good foundation for horizontal scaling later. Once we want
-   parallel turns, split by session id at the load balancer and give
-   each process its own subset of sessions — no client-side change.
+What's **not** fully closed: the deepest turn-pipeline functions
+(`advance_turn_image_fast`, `advance_turn_choices_deferred`) still
+read/write the ambient mirror many times across a multi-second body
+(LLM + image calls). If two *different* sessions' turns are being
+processed in that exact window at the same time, there's a narrow
+chance one turn's intermediate read observes the other session's
+mirrored data before its own next reload corrects it — the on-disk
+save is always correct either way, but a stray mid-turn read could
+theoretically use the wrong `world_prompt` for one generation step.
+Closing this completely would mean eliminating `engine.py`'s ambient-
+global pattern outright (it's also used by the Discord bot path),
+which is out of scope here. For the deployment scale this framework
+targets (a handful of concurrent friends, not a public arcade), the
+realistic collision window is small and turns already resolve over
+several seconds either way. If this becomes a real problem, the two
+follow-ups are (a) route all of `advance_turn_image_fast` /
+`advance_turn_choices_deferred` through local variables the same way
+`_process_turn_background` was, or (b) the horizontal-scaling option
+below.
+
+Longer term, once true parallel turns matter, split by session id at
+the load balancer and give each process its own subset of sessions —
+no client-side change needed.
 
 ## Client-side persistence
 
