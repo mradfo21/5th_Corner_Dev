@@ -2358,10 +2358,18 @@
       // still-running heartbeat/tinnitus.
       try { if (heartbeatOn) { Sound.heartbeatStop && Sound.heartbeatStop(); heartbeatOn = false; } } catch (_) {}
       try { if (tinnitusOn) { Sound.tinnitusStop && Sound.tinnitusStop(); tinnitusOn = false; } } catch (_) {}
-      try { document.body.classList.remove("danger-critical", "danger-hurting", "danger-warning", "danger-shaking"); } catch (_) {}
+      // Collapse mode BEFORE applyVisualForMode — otherwise mode is still
+      // "hurting" and applyVisualForMode would helpfully re-add the
+      // body.danger-hurting class we're about to remove, leaving the
+      // chromatic-aberration flicker running through the death overlay.
+      mode = "safe";
       setRegenerating(false);
-      updateHealthBar();
       applyVisualForMode();
+      // Redundant with applyVisualForMode's toggle-off, but explicit —
+      // also clears danger-critical (health-driven, not mode-driven) and
+      // any in-flight shake class so the game-over screen isn't jittering.
+      try { document.body.classList.remove("danger-critical", "danger-hurting", "danger-warning", "danger-shaking"); } catch (_) {}
+      updateHealthBar();
       log("DEATH — health hit 0");
       try {
         // Route through the existing game-over flow so the death overlay,
