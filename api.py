@@ -63,6 +63,13 @@ app.add_url_rule('/api/observe', 'standalone_api_observe', engine.api_observe, m
 # it plus their positions so the UI can float "starfield" tags. Stateless /
 # read-only (does not mutate the sim). See engine.api_detect.
 app.add_url_rule('/api/detect', 'standalone_api_detect', engine.api_detect, methods=['POST'])
+# Realtime danger grading for the peripheral-vignette / health system: the
+# client posts the on-screen video frame at ~1 Hz; the engine returns a single
+# ordinal threat level (0 safe / 1 threatened / 2 attacking) for that frame.
+# The level drives the client's danger state machine (SAFE → WARNING →
+# HURTING) which pulses the red peripheral vignette and drains health when
+# danger persists. Stateless / read-only. See engine.api_danger.
+app.add_url_rule('/api/danger', 'standalone_api_danger', engine.api_danger, methods=['POST'])
 # Opt-in experimental: same wire contract as /api/detect but the frame is
 # pushed into a persistent Gemini Live-API WebSocket session, and the endpoint
 # returns whatever detections that session has produced most recently. See

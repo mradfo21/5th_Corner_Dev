@@ -41,6 +41,21 @@
        advancing time in video mode feels as deliberate as it does with stills.
        Only driven by the realtime (reactor) renderer. -->
   <div id="reactor-fade" class="reactor-fade" aria-hidden="true"></div>
+  <!-- Peripheral danger vignette + health bar. Vision grades the live frame
+       every ~1s; the client's danger state machine (SAFE/WARNING/HURTING) sets
+       classes on #danger-vignette to pulse the edges red, and drains
+       #danger-health when HURTING. Non-interactive; sits above the video/freeze
+       but below the HUD/reticle. See DangerSystem in standalone.js. -->
+  <div id="danger-vignette" class="danger-vignette" aria-hidden="true">
+    <div class="danger-vignette-inner"></div>
+    <div id="danger-hit-flash" class="danger-hit-flash"></div>
+  </div>
+  <div id="danger-health" class="danger-health hidden" aria-hidden="true">
+    <div class="danger-health-track">
+      <div id="danger-health-fill" class="danger-health-fill"></div>
+    </div>
+    <div class="danger-health-label">VITAL</div>
+  </div>
   <div id="scene-flash"></div>
   <!-- VCR distortion burst: a heavy static/tracking glitch fired over the actual
        visible hand-off (still image swap, realtime freeze→video reveal, and the
