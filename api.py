@@ -141,6 +141,15 @@ app.add_url_rule('/api/investigations', 'standalone_api_investigations', engine.
 # See engine.api_talk_session / engine.api_talk_message.
 app.add_url_rule('/api/talk/session', 'standalone_api_talk_session', engine.api_talk_session, methods=['POST'])
 app.add_url_rule('/api/talk/message', 'standalone_api_talk_message', engine.api_talk_message, methods=['POST'])
+# Refcount + status endpoints for the dynamic per-character voices designed
+# on the fly by voice_design.py. /talk/end lets the client drop the refcount
+# on the active voice when the TALK widget closes so session-cleanup can
+# reap it; /talk/voice/status is the poll a client uses to hot-swap the
+# Convai TTS override once a designed voice lands. Both are best-effort:
+# 200s even on internal failure so end-of-call cleanup never surfaces as a
+# user-visible error, and both no-op when voice_design is unavailable.
+app.add_url_rule('/api/talk/end', 'standalone_api_talk_end', engine.api_talk_end, methods=['POST'])
+app.add_url_rule('/api/talk/voice/status', 'standalone_api_talk_voice_status', engine.api_talk_voice_status, methods=['GET'])
 # Opt-in experimental: bidirectional Gemini Live-API session for TALK,
 # replacing the ElevenLabs voice hop with native-audio streaming from Gemini
 # itself (and optionally sharing live video frames so the character sees the
@@ -1164,6 +1173,70 @@ def admin_reset_session():
             "session": session_id,
             "error": str(e),
         }), 500
+
+
+# ═══════════════════════════════════════════════════════════════════
+# DYNAMIC VOICES (admin)
+#
+# Read-only snapshot of the voice_design cache + workspace slot usage, and
+# a manual sweep trigger. Same ADMIN_TOKEN guard as the rest of /api/admin/*.
+# See voice_design.py + DYNAMIC_VOICES_PLAN.md.
+# ═══════════════════════════════════════════════════════════════════
+
+@app.route('/api/admin/voices', methods=['GET'])
+def admin_voices_snapshot():
+    if not _admin_token_ok():
+        return jsonify({
+            "error": "unauthorized",
+            "message": "Provide ADMIN_TOKEN via ?token=, X-Admin-Token header, or admin_token cookie."
+        }), 401
+    try:
+        import voice_design as _vd
+        return jsonify(_vd.cache_snapshot())
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e), "enabled": False, "entries": []}), 500
+
+
+@app.route('/api/admin/voices/sweep', methods=['POST'])
+def admin_voices_sweep():
+    if not _admin_token_ok():
+        return jsonify({
+            "error": "unauthorized",
+            "message": "Provide ADMIN_TOKEN via ?token=, X-Admin-Token header, or admin_token cookie."
+        }), 401
+    try:
+        import voice_design as _vd
+        active = _list_active_sessions()
+        result = _vd.sweep_orphans(active_session_ids=active)
+        return jsonify({"ok": True, "active_sessions": active, "result": result})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+def _list_active_sessions():
+    """Best-effort list of session-ids currently on disk. Used by the voice
+    sweeper to decide which designed voices belong to a live story vs a
+    session that's been reset/deleted."""
+    try:
+        sessions_dir = Path(__file__).parent / "sessions"
+        if not sessions_dir.exists():
+            return []
+        return [p.name for p in sessions_dir.iterdir() if p.is_dir()]
+    except Exception:
+        return []
+
+
+# Start the periodic voice-design sweep at import time so orphans left by a
+# crashed prior process are reaped shortly after boot (and every SWEEP_HOURS
+# thereafter). Guarded by voice_design.is_available() — a no-op when no
+# ElevenLabs key is configured, which matches the rest of the module.
+try:
+    import voice_design as _voice_design
+    _voice_design.start_periodic_sweep(active_sessions_getter=_list_active_sessions)
+except Exception as _e:  # noqa: BLE001
+    print(f"[VOICE DESIGN] sweep not armed: {_e}")
 
 
 # ═══════════════════════════════════════════════════════════════════
