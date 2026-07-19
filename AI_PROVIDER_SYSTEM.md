@@ -293,7 +293,7 @@ Medium and ~10-20x faster than Gemini Pro.
 
 **fal is the shipped production default** (`ai_config.json` →
 `image_provider: "fal"`, `image_model: "fal-ai/fast-lightning-sdxl"`), tuned
-for speed (2 steps, `sync_mode`, jpeg wire format, safety checker off).
+with 8 steps, `sync_mode`, jpeg wire format, and safety checker off.
 
 **Trade-off:** SDXL Lightning is a much smaller/older checkpoint than Gemini
 3.1 or Krea 2, so per-image fidelity, prompt adherence, and continuity are
@@ -315,7 +315,7 @@ Runtime (no redeploy), via Discord: `/ai_switch krea` (or `gemini`, `openai`,
 | Env var | Default | Purpose |
 |---------|---------|---------|
 | `FAL_API_KEY` (or `FAL_KEY`) | — | API key from fal.ai/dashboard/keys (**required** for fal) |
-| `FAL_NUM_INFERENCE_STEPS` | `2` | Lightning steps (`1`/`2`/`4`/`8`) — lower is faster/blurrier |
+| `FAL_NUM_INFERENCE_STEPS` | `8` | Lightning steps (`1`/`2`/`4`/`8`) — lower is faster/blurrier |
 | `FAL_IMAGE_SIZE` | `landscape_4_3` | fal's built-in aspect-ratio preset |
 | `FAL_IMG2IMG_STRENGTH` | `0.55` | 0-1, how much the img2img output may diverge from the reference frame |
 | `FAL_SYNC_MODE` | `1` | Return image inline as a data URI (skip CDN fetch) |
@@ -330,7 +330,7 @@ the simplest provider integration in the codebase:
 
 1. `POST /fal-ai/fast-lightning-sdxl` (or `/image-to-image`) with the prompt
    (+ a base64 data URI of the downsampled previous frame for continuity),
-   `sync_mode=true`, and 2 inference steps
+   `sync_mode=true`, and 8 inference steps
 2. The response contains the image inline (data URI) or a hosted URL —
    normalize to PNG and write the same `<name>.png` + `<name>_small.png`
    sidecar the rest of the engine expects.

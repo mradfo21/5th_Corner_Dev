@@ -13,7 +13,7 @@ for Krea Medium or ~15-30s for Gemini Pro). There is no async job/poll dance
 to write on our end.
 
 Speed defaults (override via env):
-  - 2 inference steps (Lightning supports 1/2/4/8; 2 is the speed/quality sweet spot)
+  - 8 inference steps (Lightning supports 1/2/4/8; 8 is the quality ceiling)
   - sync_mode=true so the image returns inline as a data URI (no CDN fetch hop)
   - jpeg over the wire, normalized to PNG + _small sidecar locally
   - safety checker off (we already sanitize prompts client-side)
@@ -58,15 +58,15 @@ FAL_API_KEY = (
 
 FAL_API_BASE = (os.getenv("FAL_API_BASE") or _config.get("FAL_API_BASE") or "https://fal.run").rstrip("/")
 
-# SDXL Lightning is distilled for 1/2/4/8-step inference. Default 2 = speed
-# preset (still holds composition; 1 is noticeably broken, 4+ costs latency).
+# SDXL Lightning is distilled for 1/2/4/8-step inference. Default 8 = max
+# quality for this checkpoint (still much faster than Krea/Gemini).
 FAL_MODEL = "fal-ai/fast-lightning-sdxl"
 try:
-    FAL_NUM_INFERENCE_STEPS = int(os.getenv("FAL_NUM_INFERENCE_STEPS") or _config.get("FAL_NUM_INFERENCE_STEPS") or 2)
+    FAL_NUM_INFERENCE_STEPS = int(os.getenv("FAL_NUM_INFERENCE_STEPS") or _config.get("FAL_NUM_INFERENCE_STEPS") or 8)
 except (TypeError, ValueError):
-    FAL_NUM_INFERENCE_STEPS = 2
+    FAL_NUM_INFERENCE_STEPS = 8
 if FAL_NUM_INFERENCE_STEPS not in (1, 2, 4, 8):
-    FAL_NUM_INFERENCE_STEPS = 2
+    FAL_NUM_INFERENCE_STEPS = 8
 
 # fal exposes fixed aspect-ratio presets rather than free-form ratios; this is
 # the closest built-in match to the project's 4:3 house style.
