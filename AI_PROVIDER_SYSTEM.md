@@ -227,21 +227,20 @@ Krea 2 is a foundation image model that plugs in as a **drop-in alternative to
 Gemini ("Nano Banana")** for image generation — the same way world models are
 swapped, but for stills. Text generation stays on Gemini in the Krea presets.
 
-Krea 2 is an optional **quality** image backend. The shipped production default
-is fal.ai SDXL Lightning (see below); switch here when fidelity matters more
-than latency.
+**Krea 2 Medium is the shipped production default** (`ai_config.json` →
+`image_provider: "krea"`, `image_model: "krea-2/medium"`) because it renders
+the world faster than Gemini Pro (~12s vs ~15-30s) while keeping strong quality.
 
 ### Switching between tiers / providers
 
-Runtime (no redeploy), via Discord: `/ai_switch krea` (Medium) or
-`/ai_switch krea_large` (Large, higher quality). Fall back to the speed default
-with `/ai_switch fal`, or Gemini/OpenAI/Veo with `/ai_switch gemini` etc. The
-engine routes on `ai_provider_manager.get_image_provider()`, so nothing else
-changes.
+Runtime (no redeploy), via Discord: `/ai_switch krea` (Medium, fast — default)
+or `/ai_switch krea_large` (Large, higher quality). Fall back to Gemini/OpenAI/
+Veo anytime with `/ai_switch gemini` etc. The engine routes on
+`ai_provider_manager.get_image_provider()`, so nothing else changes.
 
 | Preset | Image model | Approx. latency | Notes |
 |--------|-------------|-----------------|-------|
-| `krea` | `krea-2/medium` | ~12s | Higher fidelity than fal, style-transfer continuity |
+| `krea` | `krea-2/medium` | ~12s | **Default.** Fast, faster than Gemini Pro |
 | `krea_large` | `krea-2/large` | ~24s | Higher quality / more textured |
 
 The tier is driven by the **configured `image_model`** (the preset is
@@ -283,49 +282,37 @@ The public functions mirror `gemini_image_utils` exactly
 (`generate_with_krea`, `generate_krea_img2img`), so `engine._gen_image()` calls
 either provider through identical call sites.
 
-## ⚡ **fal.ai Image Backend (production default)**
+## ⚡ **fal.ai Image Backend (speed preset)**
 
-`fal.ai` serves SDXL Lightning (a distilled SDXL checkpoint) on
+`fal.ai` serves SDXL Lightning (a 4-step distilled SDXL checkpoint) on
 custom-optimized infrastructure. Unlike Krea's async job API, calls to
 `fal.run` are **synchronous** — the HTTP response only comes back once the
-image is ready, typically in **~1 second**. That's ~6-15x faster than Krea
+image is ready, typically in **~1-2 seconds**. That's ~6-15x faster than Krea
 Medium and ~10-20x faster than Gemini Pro.
 
-**fal is the shipped production default** (`ai_config.json` →
-`image_provider: "fal"`, `image_model: "fal-ai/fast-lightning-sdxl"`), but it
-is a **hybrid route**:
+**Trade-off:** SDXL Lightning is a much smaller/older checkpoint than Gemini
+3.1 or Krea 2, so per-image fidelity, prompt adherence, and continuity are
+noticeably lower. This is a "need it NOW" speed preset for demos/testing, not
+a quality replacement for the production defaults.
 
-- **Frame 0** (establishing still) → **Krea 2** (higher-fidelity anchor)
-- **Frame 1+** (updates) → **fal SDXL Lightning** (fast img2img, 8 steps,
-  `sync_mode`, jpeg wire format, safety checker off)
+### Switching to it
 
-`ai_provider_manager.resolve_image_provider_for_frame()` performs that swap
-inside `engine._gen_image()`.
-
-**Trade-off:** follow-up frames are still Lightning (lower fidelity than full
-Krea), but the world starts from a strong Krea still. Switch to `krea` /
-`krea_large` / `gemini` when every frame needs max quality.
-
-### Switching away / back
-
-Runtime (no redeploy), via Discord: `/ai_switch krea` (or `gemini`, `openai`,
-`veo`) for full-quality every frame. Return anytime with `/ai_switch fal`.
+Runtime (no redeploy), via Discord: `/ai_switch fal`. Fall back anytime with
+`/ai_switch krea` (or `gemini`, `openai`, `veo`). The engine routes on
+`ai_provider_manager.get_image_provider()`, so nothing else changes.
 
 | Preset | Image model | Approx. latency | Notes |
 |--------|-------------|-----------------|-------|
-| `fal` | Krea (frame 0) → `fal-ai/fast-lightning-sdxl` (updates) | **~12s then ~1s** | **Default hybrid.** |
+| `fal` | `fal-ai/fast-lightning-sdxl` | **~1-2s** | Fastest available. Lower fidelity/continuity. |
 
 ### Config / secrets
 
 | Env var | Default | Purpose |
 |---------|---------|---------|
 | `FAL_API_KEY` (or `FAL_KEY`) | — | API key from fal.ai/dashboard/keys (**required** for fal) |
-| `FAL_NUM_INFERENCE_STEPS` | `8` | Lightning steps (`1`/`2`/`4`/`8`) — lower is faster/blurrier |
+| `FAL_NUM_INFERENCE_STEPS` | `4` | Lightning steps (`1`/`2`/`4`/`8`) — lower is faster/blurrier |
 | `FAL_IMAGE_SIZE` | `landscape_4_3` | fal's built-in aspect-ratio preset |
 | `FAL_IMG2IMG_STRENGTH` | `0.55` | 0-1, how much the img2img output may diverge from the reference frame |
-| `FAL_SYNC_MODE` | `1` | Return image inline as a data URI (skip CDN fetch) |
-| `FAL_FORMAT` | `jpeg` | Wire format (`jpeg`/`png`); always saved locally as PNG |
-| `FAL_ENABLE_SAFETY_CHECKER` | `0` | fal NSFW checker (off by default for speed) |
 | `FAL_API_BASE` | `https://fal.run` | Override for testing |
 
 ### How it works (`fal_image_utils.py`)
@@ -334,10 +321,9 @@ Because `fal.run` is synchronous, there's no job/poll loop to write — this is
 the simplest provider integration in the codebase:
 
 1. `POST /fal-ai/fast-lightning-sdxl` (or `/image-to-image`) with the prompt
-   (+ a base64 data URI of the downsampled previous frame for continuity),
-   `sync_mode=true`, and 8 inference steps
-2. The response contains the image inline (data URI) or a hosted URL —
-   normalize to PNG and write the same `<name>.png` + `<name>_small.png`
+   (+ a base64 data URI of the downsampled previous frame for continuity)
+2. The response already contains the hosted image URL — download it,
+   normalize to PNG, and write the same `<name>.png` + `<name>_small.png`
    sidecar the rest of the engine expects.
 
 Only a single reference image is supported (no multi-frame continuity like

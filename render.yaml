@@ -25,18 +25,17 @@ services:
         sync: false
       - key: OPENAI_API_KEY
         sync: false
-      # Hybrid default imagery: Krea paints frame 0, fal Lightning paints
-      # follow-up updates. Both keys are required for the production path.
-      # fal.ai — https://fal.ai/dashboard/keys
-      # Optional: FAL_NUM_INFERENCE_STEPS (1/2/4/8, default 8), FAL_SYNC_MODE,
-      # FAL_IMG2IMG_STRENGTH.
-      - key: FAL_API_KEY
-        sync: false
-      # Krea 2 — https://krea.ai/settings/api-tokens
-      # Also used for the full "krea" / "krea_large" quality presets.
-      # Optional: KREA_CREATIVITY (raw|low|medium|high, default low),
+      # Krea 2 image backend (DEFAULT). Create an API token at
+      # krea.ai/settings/api-tokens. Powers the default image provider.
+      # Optional tuning: KREA_CREATIVITY (raw|low|medium|high, default low),
       # KREA_STYLE_STRENGTH (0..1 style-reference carry-over, default 0.6).
       - key: KREA_API_KEY
+        sync: false
+      # fal.ai image backend (optional speed preset). Create an API key at
+      # fal.ai/dashboard/keys. Only needed when the image provider is switched
+      # to "fal" (SDXL Lightning) via the admin dashboard's AI MODELS switcher,
+      # the Discord /ai_switch command, or ai_config.json.
+      - key: FAL_API_KEY
         sync: false
       - key: REPLICATE_API_TOKEN
         sync: false

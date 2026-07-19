@@ -3487,18 +3487,7 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
         image_path = img_dir / filename
         
         # --- ROUTE TO APPROPRIATE IMAGE PROVIDER ---
-        # fal preset is hybrid: Krea paints the establishing still (frame 0),
-        # then fal Lightning handles fast follow-up img2img updates.
-        configured_image_provider = ai_provider_manager.get_image_provider()
-        active_image_provider = ai_provider_manager.resolve_image_provider_for_frame(
-            frame_idx, configured_image_provider
-        )
-        if active_image_provider != configured_image_provider:
-            print(
-                f"[IMG] Hybrid route: configured={configured_image_provider} "
-                f"frame_idx={frame_idx} → using {active_image_provider}",
-                flush=True,
-            )
+        active_image_provider = ai_provider_manager.get_image_provider()
         if active_image_provider == "veo":
             try:
                 # Use Veo 3.1 for video-based image generation
@@ -4207,8 +4196,8 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
             return (result_path, prompt_str, None)
 
         elif active_image_provider == "fal":
-            # fal.ai SDXL Lightning — production default. Synchronous REST
-            # call typically completes in ~1s (vs ~12s Krea Medium / ~15-30s
+            # fal.ai SDXL Lightning — optional speed preset. Synchronous REST
+            # call typically completes in ~1-2s (vs ~12s Krea Medium / ~15-30s
             # Gemini Pro), at the cost of lower fidelity than either. Only a
             # single reference image is supported for continuity.
             print(f"[IMG] Using fal.ai (SDXL Lightning) provider")
