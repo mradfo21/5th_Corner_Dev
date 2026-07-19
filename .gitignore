@@ -46,6 +46,7 @@ test_*.py
 !test_with_images_intro_hardening.py
 !test_krea_provider.py
 !test_fal_provider.py
+!test_voice_design.py
 
 # Autoplay run artifacts
 autoplay_report.json
