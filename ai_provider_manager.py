@@ -136,7 +136,7 @@ def get_image_provider() -> str:
 def get_image_model() -> str:
     """Get current image generation model."""
     _ensure_initialized()
-    return load_ai_config().get("image_model", "gemini-3.1-flash-lite-image")
+    return load_ai_config().get("image_model", "gemini-3.1-flash-image")
 
 def set_preset(preset_name: str) -> bool:
     """

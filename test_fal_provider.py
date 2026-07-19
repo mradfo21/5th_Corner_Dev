@@ -12,24 +12,39 @@ no-API-key short-circuit. Run with:
 
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
+
+import requests
 
 import fal_image_utils as fal
 import ai_provider_manager as apm
 
 
 class TestPromptBuilding(unittest.TestCase):
-    def test_text2img_includes_scene_and_anchors(self):
+    def test_text2img_leads_with_scene_then_style_tags(self):
         p = fal._build_text2img_prompt("a rusted watchtower on the horizon")
-        self.assertIn("rusted watchtower", p)
-        self.assertIn("NO TEXT", p.upper())
-        self.assertLessEqual(len(p), 2000)
+        # Scene must lead so SDXL's CLIP encoder actually sees it.
+        self.assertTrue(p.strip().startswith("a rusted watchtower"))
+        self.assertIn("VHS", p)
+        # Lean prompt: no giant Gemini prose blocks.
+        self.assertLessEqual(len(p), 700)
+        self.assertNotIn("CINEMATIC PERSPECTIVE", p)
+
+    def test_anti_text_constraints_live_in_negative_prompt(self):
+        # The "no text / no border / no people" constraints belong in the
+        # negative prompt for SDXL, not buried in the positive prompt.
+        p = fal._build_text2img_prompt("a rusted watchtower on the horizon")
+        self.assertNotIn("NO TEXT", p.upper())
+        neg = fal._SDXL_NEGATIVE_PROMPT.lower()
+        for term in ("text", "border", "person"):
+            self.assertIn(term, neg)
 
     def test_img2img_includes_continuity_language(self):
         p = fal._build_img2img_prompt("step through the doorway")
         self.assertIn("doorway", p)
-        self.assertIn("previous moment", p.lower())
-        self.assertLessEqual(len(p), 2000)
+        self.assertIn("continuation", p.lower())
+        self.assertLessEqual(len(p), 700)
 
     def test_time_of_day_injected(self):
         p = fal._build_text2img_prompt("empty road", time_of_day="dusk, overcast")
@@ -94,6 +109,51 @@ class TestNoApiKeyShortCircuit(unittest.TestCase):
     def test_img2img_returns_none_without_key(self):
         fal.FAL_API_KEY = ""
         self.assertIsNone(fal.generate_fal_img2img("prompt", "caption", "ref.png"))
+
+
+class TestCallFalSelfHeal(unittest.TestCase):
+    """If fal rejects an optional field (e.g. negative_prompt), _call_fal must
+    strip it and retry so generation never fully breaks."""
+
+    def setUp(self):
+        self._old_key = fal.FAL_API_KEY
+        fal.FAL_API_KEY = "test-key"
+
+    def tearDown(self):
+        fal.FAL_API_KEY = self._old_key
+
+    def _make_422(self):
+        resp = mock.Mock()
+        resp.status_code = 422
+        resp.text = "unknown field negative_prompt"
+        err = requests.exceptions.HTTPError(response=resp)
+        resp.raise_for_status.side_effect = err
+        return resp
+
+    def _make_ok(self):
+        resp = mock.Mock()
+        resp.status_code = 200
+        resp.raise_for_status.side_effect = None
+        resp.json.return_value = {"images": [{"url": "https://x/a.png"}]}
+        return resp
+
+    def test_retries_without_optional_fields_on_422(self):
+        posts = [self._make_422(), self._make_ok()]
+        with mock.patch.object(fal.requests, "post", side_effect=posts) as p, \
+             mock.patch.object(fal, "_download_and_save", return_value="/tmp/a.png") as dl:
+            out = fal._call_fal(
+                fal.FAL_MODEL,
+                {"prompt": "scene", "negative_prompt": "text", "num_inference_steps": 8},
+                "cap",
+                None,
+            )
+        self.assertEqual(out, "/tmp/a.png")
+        self.assertEqual(p.call_count, 2)
+        # Second (retry) call must have dropped negative_prompt.
+        retry_body = p.call_args_list[1].kwargs["json"]
+        self.assertNotIn("negative_prompt", retry_body)
+        self.assertIn("prompt", retry_body)
+        dl.assert_called_once()
 
 
 class TestProviderManagerWiring(unittest.TestCase):

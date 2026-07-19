@@ -185,7 +185,14 @@ def get_voice_registry() -> dict:
 
 def _valid_voice_id(voice_id) -> str:
     """Return voice_id if it's a known/registered id, else ''. Guards against a
-    client sending an arbitrary/unknown voice into ElevenLabs."""
+    client sending an arbitrary/unknown voice into ElevenLabs.
+
+    "Known" now includes ids designed dynamically by ``voice_design`` and
+    cached in ``voice_design_cache.json`` — so a hot-swapped custom character
+    voice flows through the same validation as the static presets. When the
+    dynamic-voices module is unavailable/disabled, its cache lookup is a
+    quiet no-op and behavior falls back to today's static-only allowlist.
+    """
     vid = str(voice_id or "").strip()
     if not vid:
         return ""
@@ -194,13 +201,188 @@ def _valid_voice_id(voice_id) -> str:
     for c in (VOICES_CONFIG.get("cast") or {}).values():
         if isinstance(c, dict) and c.get("voice_id"):
             known.add(c["voice_id"])
-    return vid if vid in known else ""
+    if vid in known:
+        return vid
+    # Accept designed voices from the dynamic-voices cache. Wrapped in a
+    # broad try so a missing module / corrupt cache never blocks a TTS call.
+    try:
+        import voice_design as _vd
+        if _vd.is_ready_voice_id(vid):
+            return vid
+    except Exception:
+        pass
+    return ""
 
 
 def resolve_voice_for_kind(kind: str) -> str:
     """Pick the default voice for a SCAN subject kind (person/creature/…)."""
     by_kind = VOICES_CONFIG.get("by_kind") or {}
     return (by_kind.get((kind or "").strip().lower()) or _default_voice_id()).strip()
+
+
+# Label-token buckets that steer the fallback voice picker toward gender/age
+# hints WITHOUT running an LLM. Kept in sync with the classifiers in
+# voice_design.py so a subject's fallback voice at least matches the eventual
+# designed voice's basic timbre bracket.
+_FALLBACK_FEMALE_HINTS = (
+    "woman", "girl", "lady", "mother", "sister", "wife", "queen", "priestess",
+    "witch", "widow", "matriarch", "female", "nun", "mistress", "actress",
+    "waitress", "hostess",
+)
+_FALLBACK_MALE_HINTS = (
+    "man", "boy", "father", "brother", "husband", "king", "priest", "warden",
+    "sheriff", "guard", "soldier", "male", "monk", "master", "operator",
+    "captain", "detective", "cowboy", "hunter",
+)
+_FALLBACK_MACHINE_HINTS = (
+    "intercom", "radio", "speaker", "phone", "telephone", "handset", "walkie",
+    "loudspeaker", "megaphone", "pa system", "terminal", "computer", "robot",
+    "drone", "camera", "recorder", "machine",
+)
+
+
+def _hash_pick(seed: str, options: list) -> str:
+    """Deterministically pick one item from ``options`` by hashing ``seed``.
+    Returns "" when options is empty. Same seed always picks the same item —
+    so a given character keeps the same fallback voice across TALK opens
+    within a session (no "voice roulette" between reconnects)."""
+    if not options:
+        return ""
+    import hashlib as _h
+    digest = _h.sha1((seed or "").encode("utf-8", "ignore")).hexdigest()
+    idx = int(digest[:8], 16) % len(options)
+    return options[idx]
+
+
+def resolve_fallback_voice_for_subject(subject: dict) -> str:
+    """Pick a per-subject fallback voice from the static roster.
+
+    Different from ``resolve_voice_for_kind`` (which always returns the same
+    voice for every "person" / "creature" / etc.): this hashes the subject
+    label into a *pool* of roster voices filtered by inferred gender/kind,
+    so distinct characters get distinct-sounding voices IMMEDIATELY, before
+    the per-character designed voice is ready.
+
+    Used as the fallback in ``resolve_voice_for_subject`` when the dynamic
+    voice is disabled, still generating, or failed. Always returns a
+    non-empty voice_id from the registered ``voices.json`` roster.
+    """
+    if not isinstance(subject, dict):
+        subject = {}
+    label = str(subject.get("label") or "").strip().lower()
+    kind = str(subject.get("kind") or "").strip().lower()
+
+    voices = VOICES_CONFIG.get("voices") or []
+    # Exclude the narrator from the character pool — it's marked with a
+    # distinctive "the archive voice" tag and would break the fiction.
+    def _pool(pred):
+        return [
+            v.get("id") for v in voices
+            if isinstance(v, dict) and v.get("id") and pred(v)
+            and (v.get("name") or "").lower() != "narrator"
+        ]
+
+    def _has_hint(hints):
+        for h in hints:
+            if re.search(r"\b" + re.escape(h) + r"\b", label):
+                return True
+        return False
+
+    # Machines / voice-carriers: gender-neutral synthetic pool.
+    if kind == "machine" or _has_hint(_FALLBACK_MACHINE_HINTS):
+        pool = _pool(lambda v: (v.get("gender") or "").lower() == "neutral")
+        if pool:
+            return _hash_pick(label or "machine", pool)
+
+    # Gender hint from the label wins over kind default.
+    if _has_hint(_FALLBACK_FEMALE_HINTS):
+        pool = _pool(lambda v: (v.get("gender") or "").lower() == "female")
+        if pool:
+            return _hash_pick(label, pool)
+    if _has_hint(_FALLBACK_MALE_HINTS):
+        pool = _pool(lambda v: (v.get("gender") or "").lower() == "male")
+        if pool:
+            return _hash_pick(label, pool)
+
+    # Creatures / animals: prefer the deeper male roster (the husky-trickster
+    # feel already picked by by_kind), but vary between them.
+    if kind in ("creature", "animal"):
+        pool = _pool(lambda v: (v.get("gender") or "").lower() == "male")
+        if pool:
+            return _hash_pick(label or kind, pool)
+
+    # Everything else: hash across the whole human pool so two "figures" or
+    # two "characters" sound different.
+    pool = _pool(lambda v: (v.get("gender") or "").lower() in ("male", "female"))
+    if pool:
+        return _hash_pick(label or kind, pool)
+
+    return resolve_voice_for_kind(kind)
+
+
+def resolve_voice_for_subject(subject: dict, session_id: str = "default",
+                              context: dict = None, world_prompt: str = "",
+                              wait: float = 0.0) -> dict:
+    """Pick a voice for a SCAN subject, preferring a per-character voice
+    designed on the fly via ``voice_design`` and falling back to the static
+    ``by_kind`` roster.
+
+    Returns::
+
+        {
+          "voice_id":       <str>,          # ALWAYS non-empty (fallback is ok)
+          "cache_key":      <str|None>,     # non-null when a dyn voice exists / is generating
+          "source":         "cache" | "designed" | "generating" | "fallback" | "budget" | "failed" | "disabled",
+          "status":         "ready" | "generating" | "failed" | "disabled",
+          "description":    <str>,          # empty on the fallback path
+        }
+
+    The caller (``api_talk_session``) surfaces status/cache_key to the client
+    so it can poll ``/api/talk/voice/status`` and hot-swap the Convai voice
+    once the designed one lands. Guaranteed to always return a usable
+    ``voice_id`` so callers can never end up with an empty tts.voice_id.
+    """
+    # Smart per-subject fallback: hash the label into a gender/kind-filtered
+    # pool of roster voices so different characters sound different even
+    # before their per-character voice is designed. Falls back to the flat
+    # by_kind default if the roster is empty or the subject is malformed.
+    fallback = resolve_fallback_voice_for_subject(subject) \
+        or resolve_voice_for_kind(subject.get("kind") if isinstance(subject, dict) else "")
+    try:
+        import voice_design as _vd
+    except Exception:
+        return {"voice_id": fallback, "cache_key": None, "source": "disabled",
+                "status": "disabled", "description": ""}
+    if not _vd.is_available():
+        return {"voice_id": fallback, "cache_key": None, "source": "disabled",
+                "status": "disabled", "description": ""}
+    try:
+        result = _vd.get_or_design_voice(subject or {}, session_id, context=context,
+                                          world_prompt=world_prompt, wait=wait)
+    except Exception as _e:
+        log_error(f"[VOICE DESIGN] resolver failed: {_e}")
+        return {"voice_id": fallback, "cache_key": None, "source": "failed",
+                "status": "failed", "description": ""}
+    if not result:
+        return {"voice_id": fallback, "cache_key": None, "source": "fallback",
+                "status": "disabled", "description": ""}
+    if result.get("voice_id") and result.get("status") == "ready":
+        return {
+            "voice_id": result["voice_id"],
+            "cache_key": result.get("cache_key"),
+            "source": result.get("source") or "cache",
+            "status": "ready",
+            "description": result.get("description", ""),
+        }
+    # generating / failed / budget: use the fallback voice but surface the
+    # cache_key so the client can poll for the eventual designed voice.
+    return {
+        "voice_id": fallback,
+        "cache_key": result.get("cache_key"),
+        "source": result.get("source") or "fallback",
+        "status": result.get("status") or "generating",
+        "description": result.get("description", ""),
+    }
 
 
 def resolve_cast(character: str) -> dict:
@@ -440,13 +622,24 @@ def delete_session(session_id, archive_first=True):
     # Archive before deletion if requested
     if archive_first:
         archive_session(session_id, reason='manual_deletion')
-    
+
+    # Release any ElevenLabs voices designed for this session so we don't
+    # leak workspace slots. Runs before rmtree so a failure here still lets
+    # the disk cleanup proceed; the sweep will catch any stragglers later.
+    try:
+        import voice_design as _vd
+        released = _vd.release_session_voices(session_id)
+        if released.get("deleted") or released.get("skipped"):
+            print(f"[SESSION DELETE] voice_design: {released}")
+    except Exception as _e:
+        print(f"[SESSION DELETE] voice_design release failed: {_e}")
+
     # Count files before deletion for logging
     file_count = sum(1 for _ in session_root.rglob('*') if _.is_file())
-    
+
     # Delete the entire session directory
     shutil.rmtree(session_root)
-    
+
     print(f"[SESSION DELETE] Deleted session '{session_id}' ({file_count} files)")
     return {"session_id": session_id, "files_deleted": file_count}
 
@@ -2140,6 +2333,297 @@ def _detect_objects(image_path: str = None,
         safe_e = str(e).encode("ascii", "replace").decode("ascii")
         log_error(f"[DETECT] Failed to detect objects: {safe_e}")
         return []
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Realtime danger perception (for the peripheral-vignette / health system).
+#
+# One vision call, one answer: "is what's on screen dangerous, right now?"
+# Fired ~1x/second by the client against the live world-model frame. Kept
+# deliberately narrow — three ordinal levels + a short human-readable reason
+# + optional bbox of the primary threat — so the client's state machine has
+# a single, predictable signal to drive the red-vignette pulse and health
+# drain. Nothing here mutates world state; this is a read-only perception
+# probe, like /api/detect.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_DANGER_RESPONSE_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        # 0 = safe, 1 = threatened (hostile in frame, not committing),
+        # 2 = attacking (aimed/lunging at camera, or camera is IN a hazard).
+        "level": {"type": "INTEGER", "enum": [0, 1, 2]},
+        # A terse, human-readable reason (<=8 words). Shown in the client
+        # log for tuning and debugging; never rendered to the player.
+        "reason": {"type": "STRING"},
+        # Optional bbox of the primary threat, so the client can bias the
+        # vignette gradient toward the edge that thing is coming from.
+        # Same 0-1000 int format as _detect_objects for consistency.
+        "threat_box": {"type": "ARRAY", "items": {"type": "NUMBER"}},
+    },
+    "required": ["level"],
+}
+
+
+def _perceive_danger(image_bytes: bytes = None,
+                     mime_type: str = None,
+                     scene_prompt: str = "") -> dict:
+    """Grade the live frame's threat level for the peripheral-vignette loop.
+
+    Returns a dict:
+        {"level": 0|1|2,
+         "reason": str,
+         "direction": "left"|"right"|"top"|"bottom"|"center"|None,
+         "threat_cx": float,   # 0..1, only when a threat_box is present
+         "threat_cy": float}
+
+    ``level``:
+      • 0 — safe. Nothing hostile / actively harmful in frame.
+      • 1 — threatened. Hostile entity present and oriented toward camera,
+            OR player is adjacent to a live environmental hazard.
+      • 2 — attacking. Hostile weapon/limb pointed at or striking camera,
+            OR camera is physically inside a hazard (in the flames, on the
+            collapsing floor, engulfed by the toxic cloud, etc).
+
+    Returns level=0 with reason="" on any failure — the danger loop should
+    NEVER be able to hurt the player because a vision call went sideways.
+    """
+    import base64
+    import json as _json
+    import random as _random
+    import time as _time
+
+    safe = {"level": 0, "reason": "", "direction": None,
+            "threat_cx": None, "threat_cy": None}
+
+    if not LLM_ENABLED or not VISION_ENABLED or not GEMINI_API_KEY:
+        return safe
+    if not image_bytes:
+        return safe
+    if not mime_type:
+        mime_type = "image/jpeg"
+
+    try:
+        image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+
+        # Tuned rubric. Three levels, one paragraph each — the goal is that
+        # the SAME frame gets the SAME level on re-runs (client state machine
+        # stability), while ALSO being sensitive enough that a typical
+        # exploration scene actually surfaces threats. Prior version required
+        # a hostile to be aimed AT the camera to escalate, which made the
+        # loop effectively inert in a world-model exploration game (most
+        # frames are rooms/corridors, not gunfights). We now escalate on
+        # anything a person would reasonably flinch at: visible weapons,
+        # aggressive creatures, active hazards in-frame, high edges,
+        # aggressive approach — even when not committed AT camera yet.
+        danger_instructions = (
+            "You are a threat detector for a first-person survival exploration "
+            "game. Look at this single frame from the player's point-of-view "
+            "camera and grade its immediate danger to the person BEHIND the "
+            "camera. Return ONE JSON object with fields: level (integer 0, 1, "
+            "or 2), reason (<= 8 words, lowercase), and optionally threat_box "
+            "[ymin, xmin, ymax, xmax] integers 0-1000 (y top-to-bottom, "
+            "x left-to-right) around the single most dangerous thing in view.\n\n"
+            "LEVEL 0 — SAFE: nothing that could plausibly injure the player is "
+            "in frame. Calm empty rooms, benign scenery, cluttered but inert "
+            "spaces, distant crowds of non-hostile figures, safe outdoor areas. "
+            "Choose 0 only when the scene is clearly benign.\n\n"
+            "LEVEL 1 — THREATENED: something in the frame that a reasonable "
+            "person would want to move away from. Examples that qualify:\n"
+            "  • A visible weapon carried by anyone in view (gun, blade, "
+            "improvised weapon), whether or not it is aimed at camera.\n"
+            "  • A hostile-looking creature, monster, or aggressive animal "
+            "anywhere in frame, whether or not it faces camera.\n"
+            "  • A human figure with visibly hostile posture (raised fist, "
+            "advancing on camera, glaring / staring down camera).\n"
+            "  • An active environmental hazard visible in frame: open flame, "
+            "large fire, exposed live wiring / sparks, deep water, high drop / "
+            "cliff edge, unstable / collapsing structure, poisonous / toxic "
+            "atmosphere hints (smoke, gas, dense fog), extreme heights, "
+            "radiation / warning signs indicating current danger.\n"
+            "  • Blood, gore, or fresh signs of violence in the immediate area "
+            "(indicates the space is unsafe).\n"
+            "  • Camera is in a very unsafe posture: standing on a narrow "
+            "ledge, looking down a shaft, near a large predator, at the mouth "
+            "of a burning corridor.\n"
+            "You have a beat to react — the threat is present but not "
+            "yet committed to harming you.\n\n"
+            "LEVEL 2 — ATTACKING: damage is imminent or already happening. "
+            "Examples that qualify:\n"
+            "  • A weapon, limb, or projectile committed toward the camera "
+            "(muzzle flash, swinging blade close to lens, incoming projectile, "
+            "hands reaching for the lens).\n"
+            "  • A creature or hostile figure lunging / charging directly at "
+            "the camera, filling a significant portion of the frame.\n"
+            "  • Camera is PHYSICALLY INSIDE a hazard: engulfed in flames, "
+            "submerged in toxic fluid, buried under debris, falling, being "
+            "crushed, surrounded by fire on multiple sides.\n"
+            "  • The frame itself is visibly obscured by the attack: blood on "
+            "the lens, cracked visor, smoke choking the view.\n\n"
+            "RULES:\n"
+            "• Grade the FRAME, not the story. Don't infer off-screen dangers.\n"
+            "• Any visible weapon or hostile creature is at least LEVEL 1, even "
+            "if the camera isn't currently being targeted. In an exploration "
+            "game, seeing a threat is itself dangerous.\n"
+            "• Dark / low-visibility scenes are NOT automatically dangerous. "
+            "Grade what you can actually see; if the scene is dark but the "
+            "visible content is benign, choose 0.\n"
+            "• Prefer LEVEL 1 over LEVEL 0 whenever there is a plausible "
+            "threat in frame — the game's danger vignette should be a live "
+            "signal, not a rarely-triggered alarm."
+        )
+
+        prompt_prior = ""
+        if scene_prompt:
+            prior = scene_prompt.strip().replace("\n", " ")
+            if len(prior) > 400:
+                prior = prior[:400].rstrip() + "..."
+            prompt_prior = (
+                "This frame was rendered from the following scene prompt. "
+                "Use it as a hint for what the world contains, but grade "
+                "ONLY what you can actually see in the pixels.\n"
+                f"SCENE PROMPT: {prior}\n\n"
+            )
+
+        api_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent"
+        headers = {
+            "x-goog-api-key": GEMINI_API_KEY,
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "contents": [{
+                "parts": [
+                    {"inlineData": {"mimeType": mime_type, "data": image_b64}},
+                    {"text": prompt_prior + danger_instructions},
+                ]
+            }],
+            "generationConfig": {
+                "thinkingConfig": {"thinkingBudget": 0},
+                # Deterministic: same frame → same level. Predictability
+                # matters more here than variety.
+                "temperature": 0.0,
+                "maxOutputTokens": 120,
+                "responseMimeType": "application/json",
+                "responseSchema": _DANGER_RESPONSE_SCHEMA,
+            },
+            "safetySettings": [
+                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+            ],
+        }
+
+        # Same tight-timeout + one-retry pattern as _detect_objects. The
+        # danger loop is running at ~1 Hz, so a stalled call must NOT stack.
+        response = None
+        last_err = None
+        for attempt in range(2):
+            try:
+                response = _GEMINI_HTTP_SESSION.post(
+                    api_url, headers=headers, json=payload, timeout=6
+                )
+                if response.status_code == 429 or 500 <= response.status_code < 600:
+                    last_err = requests.exceptions.HTTPError(
+                        f"{response.status_code} {response.reason}", response=response
+                    )
+                    if attempt == 0:
+                        _time.sleep(0.25 + _random.random() * 0.25)
+                        continue
+                    raise last_err
+                response.raise_for_status()
+                last_err = None
+                break
+            except (requests.exceptions.Timeout,
+                    requests.exceptions.ConnectionError) as e:
+                last_err = e
+                if attempt == 0:
+                    _time.sleep(0.25 + _random.random() * 0.25)
+                    continue
+                raise
+        if last_err is not None and response is None:
+            raise last_err
+        result = response.json()
+
+        candidates = result.get("candidates") or []
+        if not candidates:
+            return safe
+        parts = (candidates[0].get("content") or {}).get("parts") or []
+        full_text = "".join(p.get("text", "") for p in parts).strip()
+        if not full_text:
+            return safe
+
+        try:
+            parsed = _json.loads(full_text)
+        except Exception as parse_err:
+            log_error(f"[DANGER] malformed response: {parse_err} :: {full_text[:200]}")
+            return safe
+        if not isinstance(parsed, dict):
+            return safe
+
+        try:
+            level = int(parsed.get("level", 0))
+        except Exception:
+            level = 0
+        if level not in (0, 1, 2):
+            level = max(0, min(2, level))
+        reason = str(parsed.get("reason") or "").strip().lower()
+        if len(reason) > 80:
+            reason = reason[:80]
+
+        # Compute a direction hint from the threat bbox (if present) so the
+        # client can bias the vignette gradient toward the edge the danger
+        # is coming from. Empty / degenerate boxes → direction None → the
+        # vignette stays symmetric.
+        direction = None
+        threat_cx = None
+        threat_cy = None
+        box = parsed.get("threat_box")
+        if isinstance(box, (list, tuple)) and len(box) >= 4:
+            try:
+                ymin, xmin, ymax, xmax = (float(box[0]), float(box[1]),
+                                          float(box[2]), float(box[3]))
+                ymin, ymax = sorted((ymin / 1000.0, ymax / 1000.0))
+                xmin, xmax = sorted((xmin / 1000.0, xmax / 1000.0))
+                cx = max(0.0, min(1.0, (xmin + xmax) / 2.0))
+                cy = max(0.0, min(1.0, (ymin + ymax) / 2.0))
+                w = max(0.0, min(1.0, xmax - xmin))
+                h = max(0.0, min(1.0, ymax - ymin))
+                if w > 0.001 and h > 0.001 and not (w >= 0.98 and h >= 0.98):
+                    threat_cx = round(cx, 3)
+                    threat_cy = round(cy, 3)
+                    # Cardinal direction from the box center, with a dead
+                    # zone in the middle so a threat dead-center reads as
+                    # "center" (symmetric vignette) rather than randomly
+                    # snapping to a side.
+                    dx = cx - 0.5
+                    dy = cy - 0.5
+                    if abs(dx) < 0.15 and abs(dy) < 0.15:
+                        direction = "center"
+                    elif abs(dx) >= abs(dy):
+                        direction = "right" if dx > 0 else "left"
+                    else:
+                        direction = "bottom" if dy > 0 else "top"
+            except Exception:
+                direction = None
+                threat_cx = None
+                threat_cy = None
+
+        return {
+            "level": level,
+            "reason": reason,
+            "direction": direction,
+            "threat_cx": threat_cx,
+            "threat_cy": threat_cy,
+        }
+    except requests.exceptions.HTTPError as e:
+        safe_e = str(e).encode("ascii", "replace").decode("ascii")
+        log_error(f"[DANGER] Gemini API HTTP error: {safe_e}")
+        return safe
+    except Exception as e:
+        safe_e = str(e).encode("ascii", "replace").decode("ascii")
+        log_error(f"[DANGER] Failed: {safe_e}")
+        return safe
 
 
 def _appraise_photo(image_path: str, max_items: int = 6) -> dict:
@@ -3932,7 +4416,7 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
             return (result_path, prompt_str, None)
 
         elif active_image_provider == "fal":
-            # Use fal.ai SDXL Lightning - the SPEED preset. Synchronous REST
+            # fal.ai SDXL Lightning — optional speed preset. Synchronous REST
             # call typically completes in ~1-2s (vs ~12s Krea Medium / ~15-30s
             # Gemini Pro), at the cost of lower fidelity than either. Only a
             # single reference image is supported for continuity.
@@ -5330,6 +5814,78 @@ def api_detect():
         return jsonify({"error": str(e), "objects": []}), 500
 
 
+def api_danger():
+    """Realtime danger grading for the peripheral-vignette / health system.
+
+    Accepts the frame currently on screen (a JPEG data URL captured client-side
+    from the live world-model video) and returns a single ordinal threat level
+    for that frame. The client fires this at ~1 Hz while the realtime renderer
+    is live; the returned level drives the client's danger state machine (SAFE
+    → WARNING → HURTING) which pulses the red peripheral vignette and drains
+    health when danger persists.
+
+    Request JSON:  {"frame": "data:image/jpeg;base64,..."}
+    Response JSON: {"level": 0|1|2,
+                    "reason": "<8 words",
+                    "direction": "left"|"right"|"top"|"bottom"|"center"|null,
+                    "threat_cx": float|null,
+                    "threat_cy": float|null}
+
+    Stateless and read-only, like /api/detect: never mutates world state,
+    history, or choices. Degrades to `level: 0` (safe) on ANY failure — the
+    danger loop must not be able to hurt the player because vision hiccuped.
+    """
+    import base64 as _b64, re as _re
+    safe = {"level": 0, "reason": "", "direction": None,
+            "threat_cx": None, "threat_cy": None}
+    try:
+        data = request.get_json(silent=True) or {}
+        frame_b64 = data.get('frame')
+        session_id = data.get('session_id', 'default')
+        if not frame_b64:
+            return jsonify({"error": "missing frame", **safe}), 400
+        mime_match = _re.match(r'^data:(image/[^;]+);base64,(.*)$', frame_b64, _re.DOTALL)
+        if mime_match:
+            mime_type = mime_match.group(1)
+            raw = mime_match.group(2)
+        else:
+            mime_type = "image/jpeg"
+            raw = frame_b64
+        try:
+            img_bytes = _b64.b64decode(raw)
+        except Exception:
+            return jsonify({"error": "bad frame encoding", **safe}), 400
+        if len(img_bytes) < 512:
+            # A tiny/black frame is almost certainly the freeze buffer or a
+            # blackout gap — grade it as safe so the vignette doesn't flash
+            # on transitions.
+            return jsonify(safe)
+
+        # Ground the danger call with the current scene prompt, same as
+        # /api/detect. Helps the model disambiguate "guard with rifle
+        # aimed at you" from "guard idling behind a desk".
+        scene_prompt = ""
+        try:
+            _st = get_state(session_id) or {}
+            scene_prompt = str(_st.get('current_image_prompt') or "")
+        except Exception:
+            scene_prompt = ""
+
+        result = _perceive_danger(
+            image_bytes=img_bytes,
+            mime_type=mime_type,
+            scene_prompt=scene_prompt,
+        )
+        return jsonify(result if isinstance(result, dict) else safe)
+    except Exception as e:
+        import traceback as _tb
+        log_error(f"[DANGER] failed: {e}")
+        _tb.print_exc()
+        # Return 200 with a safe reading — the client's loop should not treat
+        # a server error as danger. It'll ease back toward SAFE on its own.
+        return jsonify({"error": str(e), **safe})
+
+
 def api_photo():
     """Appraise a photograph the player just captured (the reward loop).
 
@@ -5772,11 +6328,47 @@ def api_talk_session():
         # line so we don't burn an LLM call regenerating an identical greeting.
         context = build_talk_context(subject, session_id, opening_override=data.get("opening_line", ""))
 
-        # Resolve the voice: an explicit (validated) client choice wins — this is
-        # what lets the player switch voices LIVE — otherwise fall back to the
-        # per-kind default, then the global default.
+        # Resolve the voice. Precedence:
+        #   1) Explicit (validated) client choice — that's what powers the
+        #      live voice-switcher pill in the TALK panel.
+        #   2) A per-character voice designed on the fly from the persona
+        #      brief (ElevenLabs Voice Design), cached per session and
+        #      deleted at session end. See voice_design.py.
+        #   3) The static by_kind default in voices.json (always available).
+        # The resolver also surfaces cache_key + status so the client can
+        # poll /api/talk/voice/status and hot-swap the Convai override once
+        # the designed voice lands (typically after the fallback opening).
         chosen_voice = _valid_voice_id(data.get("voice_id"))
-        resolved_voice = chosen_voice or resolve_voice_for_kind(context["subject"].get("kind"))
+        try:
+            _world_prompt = str((_load_state(session_id) or {}).get("world_prompt") or "")
+        except Exception:
+            _world_prompt = ""
+        voice_resolution = resolve_voice_for_subject(
+            context["subject"], session_id, context=context,
+            world_prompt=_world_prompt,
+            # Short blocking wait catches the fast path when a preview lands
+            # quickly, so the very first line is often already in-character.
+            wait=0.6,
+        )
+        if chosen_voice:
+            resolved_voice = chosen_voice
+            # Client override wins, but we still keep the designed voice
+            # cooking in the background — the picker can revert to "auto".
+            voice_status = "override"
+            voice_cache_key = None
+            voice_description = ""
+        else:
+            resolved_voice = voice_resolution["voice_id"]
+            voice_status = voice_resolution["status"]
+            voice_cache_key = voice_resolution.get("cache_key")
+            voice_description = voice_resolution.get("description", "")
+        # Bump the refcount for the voice we're about to hand to Convai so
+        # session cleanup can't yank it mid-call. /api/talk/end releases it.
+        try:
+            import voice_design as _vd
+            _vd.acquire(resolved_voice)
+        except Exception:
+            pass
 
         # Dynamic variables + prompt overrides an ElevenLabs agent can consume to
         # stay aware of the story (see ElevenLabs Conversational AI docs).
@@ -5868,6 +6460,11 @@ def api_talk_session():
             "agent_id": agent_id or None,
             "signed_url": signed_url,
             "voice_id": resolved_voice or None,
+            # Extra fields let the client hot-swap the Convai voice once a
+            # per-character voice designed in the background is ready.
+            "voice_status": voice_status,
+            "voice_cache_key": voice_cache_key,
+            "voice_description": voice_description,
             "voices": get_voice_registry(),
             "overrides": overrides,
             "dynamic_variables": dynamic_variables,
@@ -5887,6 +6484,61 @@ def api_talk_voices():
     except Exception as e:
         log_error(f"[TALK] voices failed: {e}")
         return jsonify({"voices": [], "default": None, "by_kind": {}, "cast": {}}), 500
+
+
+def api_talk_end():
+    """Client fires this when the TALK widget closes so we can drop the
+    refcount on the voice it was using. Voices with refcount == 0 become
+    eligible for session-end cleanup + LRU eviction.
+
+    Request JSON: ``{"voice_id": <str>}`` (session_id is optional, unused).
+    Response JSON: ``{"ok": true, "refcount": <int>}``. Always 200 — this is
+    fire-and-forget from the client; we never let an end-of-call cleanup
+    error surface as a user-visible failure.
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        voice_id = str(data.get("voice_id") or "").strip()
+        if not voice_id:
+            return jsonify({"ok": True, "refcount": 0})
+        try:
+            import voice_design as _vd
+            remaining = _vd.release(voice_id)
+        except Exception:
+            remaining = 0
+        return jsonify({"ok": True, "refcount": remaining})
+    except Exception as e:
+        log_error(f"[TALK] end failed: {e}")
+        return jsonify({"ok": True, "refcount": 0})
+
+
+def api_talk_voice_status():
+    """Poll for a still-designing per-character voice.
+
+    Request: ``GET /api/talk/voice/status?cache_key=<16-hex>``.
+    Response JSON: ``{"cache_key", "voice_id", "status", "description"}`` —
+    ``status`` cycles through ``"generating"`` -> ``"ready"`` (or ``"failed"``
+    / ``"unknown"``). When ``status == "ready"``, the client re-opens the
+    Convai override with the new ``voice_id`` so the character voice swaps
+    live mid-conversation.
+    """
+    try:
+        cache_key_str = str(request.args.get("cache_key") or "").strip()
+        if not cache_key_str:
+            return jsonify({"error": "missing cache_key"}), 400
+        try:
+            import voice_design as _vd
+            status = _vd.get_status(cache_key_str) or {
+                "cache_key": cache_key_str, "voice_id": None,
+                "status": "unknown", "description": "",
+            }
+        except Exception as _e:
+            status = {"cache_key": cache_key_str, "voice_id": None,
+                      "status": "unknown", "description": "", "error": str(_e)}
+        return jsonify(status)
+    except Exception as e:
+        log_error(f"[TALK] voice status failed: {e}")
+        return jsonify({"error": str(e), "status": "unknown"}), 500
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -7484,9 +8136,19 @@ def reset_state(session_id='default'):
     global state, history, _last_image_path, _vision_cache
     
     print(f"[RESET] Resetting session: {session_id}")
-    
+
     # Archive before deletion
     archive_session(session_id, reason='reset')
+
+    # Reset is a session boundary — release any designed voices so we don't
+    # keep casts around for a story that no longer exists.
+    try:
+        import voice_design as _vd
+        released = _vd.release_session_voices(session_id)
+        if released.get("deleted") or released.get("skipped"):
+            print(f"[RESET] voice_design: {released}")
+    except Exception as _e:
+        print(f"[RESET] voice_design release failed: {_e}")
     
     # Delete session-specific files
     state_path = _get_state_path(session_id)

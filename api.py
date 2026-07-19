@@ -90,6 +90,13 @@ app.add_url_rule('/api/observe', 'standalone_api_observe', engine.api_observe, m
 # it plus their positions so the UI can float "starfield" tags. Stateless /
 # read-only (does not mutate the sim). See engine.api_detect.
 app.add_url_rule('/api/detect', 'standalone_api_detect', engine.api_detect, methods=['POST'])
+# Realtime danger grading for the peripheral-vignette / health system: the
+# client posts the on-screen video frame at ~1 Hz; the engine returns a single
+# ordinal threat level (0 safe / 1 threatened / 2 attacking) for that frame.
+# The level drives the client's danger state machine (SAFE → WARNING →
+# HURTING) which pulses the red peripheral vignette and drains health when
+# danger persists. Stateless / read-only. See engine.api_danger.
+app.add_url_rule('/api/danger', 'standalone_api_danger', engine.api_danger, methods=['POST'])
 # Opt-in experimental: same wire contract as /api/detect but the frame is
 # pushed into a persistent Gemini Live-API WebSocket session, and the endpoint
 # returns whatever detections that session has produced most recently. See
@@ -161,6 +168,15 @@ app.add_url_rule('/api/investigations', 'standalone_api_investigations', engine.
 # See engine.api_talk_session / engine.api_talk_message.
 app.add_url_rule('/api/talk/session', 'standalone_api_talk_session', engine.api_talk_session, methods=['POST'])
 app.add_url_rule('/api/talk/message', 'standalone_api_talk_message', engine.api_talk_message, methods=['POST'])
+# Refcount + status endpoints for the dynamic per-character voices designed
+# on the fly by voice_design.py. /talk/end lets the client drop the refcount
+# on the active voice when the TALK widget closes so session-cleanup can
+# reap it; /talk/voice/status is the poll a client uses to hot-swap the
+# Convai TTS override once a designed voice lands. Both are best-effort:
+# 200s even on internal failure so end-of-call cleanup never surfaces as a
+# user-visible error, and both no-op when voice_design is unavailable.
+app.add_url_rule('/api/talk/end', 'standalone_api_talk_end', engine.api_talk_end, methods=['POST'])
+app.add_url_rule('/api/talk/voice/status', 'standalone_api_talk_voice_status', engine.api_talk_voice_status, methods=['GET'])
 # Opt-in experimental: bidirectional Gemini Live-API session for TALK,
 # replacing the ElevenLabs voice hop with native-audio streaming from Gemini
 # itself (and optionally sharing live video frames so the character sees the
@@ -1374,6 +1390,91 @@ def admin_reset_session():
 
 
 # ═══════════════════════════════════════════════════════════════════
+# DYNAMIC VOICES (admin)
+#
+# Read-only snapshot of the voice_design cache + workspace slot usage, and
+# a manual sweep trigger. Same ADMIN_TOKEN guard as the rest of /api/admin/*.
+# See voice_design.py + DYNAMIC_VOICES_PLAN.md.
+# ═══════════════════════════════════════════════════════════════════
+
+@app.route('/api/admin/voices', methods=['GET'])
+def admin_voices_snapshot():
+    if not _admin_token_ok():
+        return jsonify({
+            "error": "unauthorized",
+            "message": "Provide ADMIN_TOKEN via ?token=, X-Admin-Token header, or admin_token cookie."
+        }), 401
+    try:
+        import voice_design as _vd
+        return jsonify(_vd.cache_snapshot())
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e), "enabled": False, "entries": []}), 500
+
+
+@app.route('/api/admin/voices/sweep', methods=['POST'])
+def admin_voices_sweep():
+    if not _admin_token_ok():
+        return jsonify({
+            "error": "unauthorized",
+            "message": "Provide ADMIN_TOKEN via ?token=, X-Admin-Token header, or admin_token cookie."
+        }), 401
+    try:
+        import voice_design as _vd
+        active = _list_active_sessions()
+        result = _vd.sweep_orphans(active_session_ids=active)
+        return jsonify({"ok": True, "active_sessions": active, "result": result})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+def _list_active_sessions():
+    """Best-effort list of session-ids currently on disk. Used by the voice
+    sweeper to decide which designed voices belong to a live story vs a
+    session that's been reset/deleted."""
+    try:
+        sessions_dir = Path(__file__).parent / "sessions"
+        if not sessions_dir.exists():
+            return []
+        return [p.name for p in sessions_dir.iterdir() if p.is_dir()]
+    except Exception:
+        return []
+
+
+# Start the periodic voice-design sweep at import time so orphans left by a
+# crashed prior process are reaped shortly after boot (and every SWEEP_HOURS
+# thereafter). Guarded by voice_design.is_available() — a no-op when no
+# ElevenLabs key is configured, which matches the rest of the module.
+try:
+    import voice_design as _voice_design
+    # Loud, easy-to-grep startup line: makes it trivial to tell from prod
+    # logs whether a "voices sound the same" report is (a) the feature
+    # sitting disabled (missing key / flag off), (b) the fallback playing
+    # because a design is still generating, or (c) something else.
+    if _voice_design.is_available():
+        print(
+            "[VOICE DESIGN] ENABLED — model={m} budget/session={b} "
+            "concurrency={c} label_tag={t}".format(
+                m=_voice_design.TTV_MODEL,
+                b=_voice_design.DESIGN_BUDGET_PER_SESSION,
+                c=_voice_design.DESIGN_CONCURRENCY,
+                t=_voice_design.LABEL_TAG,
+            )
+        )
+        _voice_design.start_periodic_sweep(active_sessions_getter=_list_active_sessions)
+    else:
+        _reason = (
+            "no ELEVENLABS_API_KEY" if not _voice_design.API_KEY
+            else "ELEVENLABS_DYNAMIC_VOICES=0"
+        )
+        print(f"[VOICE DESIGN] DISABLED ({_reason}) — TALK will use the "
+              f"static by_kind roster only")
+except Exception as _e:  # noqa: BLE001
+    print(f"[VOICE DESIGN] init failed: {_e}")
+
+
+# ═══════════════════════════════════════════════════════════════════
 # AI PROVIDER SWITCHING (admin)
 #
 # Powers the drag-and-drop model switcher in the admin dashboard. Reads and
@@ -1390,7 +1491,7 @@ _PRESET_UI_META = {
     "fal": {"label": "fal.ai Lightning", "latency": "~1-2s", "speed": 5,
             "blurb": "SDXL Lightning. Fastest possible — lower fidelity. Needs FAL_API_KEY."},
     "krea": {"label": "Krea 2 Medium", "latency": "~12s", "speed": 3,
-             "blurb": "Fast, strong quality, style-transfer continuity. Needs KREA_API_KEY."},
+             "blurb": "Default. Fast, strong quality, style-transfer continuity. Needs KREA_API_KEY."},
     "krea_large": {"label": "Krea 2 Large", "latency": "~24s", "speed": 2,
                    "blurb": "Higher quality / more textured. Needs KREA_API_KEY."},
     "gemini": {"label": "Gemini (Nano Banana)", "latency": "~15-30s", "speed": 2,

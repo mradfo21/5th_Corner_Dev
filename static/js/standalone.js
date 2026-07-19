@@ -81,6 +81,14 @@
     talkInput: document.getElementById("talk-input"),
     talkSend: document.getElementById("talk-send"),
     talkClose: document.getElementById("talk-close"),
+    talkMin: document.getElementById("talk-min"),
+    talkChip: document.getElementById("talk-chip"),
+    talkChipName: document.getElementById("talk-chip-name"),
+    talkChipSub: document.getElementById("talk-chip-sub"),
+    talkChipOrb: document.getElementById("talk-chip-orb"),
+    talkFloat: document.getElementById("talk-float"),
+    talkFloatWho: document.getElementById("talk-float-who"),
+    talkFloatBody: document.getElementById("talk-float-body"),
     talkModeToggle: document.getElementById("talk-mode-toggle"),
     talkVoiceBtn: document.getElementById("talk-voice-btn"),
     talkVoiceName: document.getElementById("talk-voice-name"),
@@ -423,6 +431,102 @@
       src.start(t0);
       src.stop(t0 + (dur || 0.22) + 0.02);
     }
+
+    // ── Heartbeat loop ────────────────────────────────────────────────
+    // A muffled "lub-dub" repeated at BPM. Uses a shared low-pass so the
+    // heartbeat sits UNDER the mix (subwoofer territory) and never masks
+    // the hit / warning ticks. State kept in closure so start() while
+    // already running just re-tempos, and stop() is idempotent.
+    let hbTimer = null;
+    let hbBpm = 80;
+    function hbTick() {
+      if (!state.soundEnabled) return;
+      const c = ensure();
+      if (!c) return;
+      // "Lub" — deeper, heavier
+      const t0 = c.currentTime;
+      const lub = c.createOscillator(); const lubGain = c.createGain();
+      lub.type = "sine"; lub.frequency.setValueAtTime(70, t0);
+      lub.frequency.exponentialRampToValueAtTime(45, t0 + 0.12);
+      lubGain.gain.setValueAtTime(0.0001, t0);
+      lubGain.gain.exponentialRampToValueAtTime(0.14, t0 + 0.015);
+      lubGain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.14);
+      const lubLp = c.createBiquadFilter();
+      lubLp.type = "lowpass"; lubLp.frequency.value = 160;
+      lub.connect(lubLp); lubLp.connect(lubGain); lubGain.connect(c.destination);
+      lub.start(t0); lub.stop(t0 + 0.16);
+      // "Dub" — 90ms later, slightly brighter accent
+      const dt = 0.09;
+      const dub = c.createOscillator(); const dubGain = c.createGain();
+      dub.type = "sine"; dub.frequency.setValueAtTime(90, t0 + dt);
+      dub.frequency.exponentialRampToValueAtTime(60, t0 + dt + 0.10);
+      dubGain.gain.setValueAtTime(0.0001, t0 + dt);
+      dubGain.gain.exponentialRampToValueAtTime(0.10, t0 + dt + 0.012);
+      dubGain.gain.exponentialRampToValueAtTime(0.0001, t0 + dt + 0.12);
+      const dubLp = c.createBiquadFilter();
+      dubLp.type = "lowpass"; dubLp.frequency.value = 200;
+      dub.connect(dubLp); dubLp.connect(dubGain); dubGain.connect(c.destination);
+      dub.start(t0 + dt); dub.stop(t0 + dt + 0.14);
+    }
+    function hbSchedule() {
+      if (hbTimer) clearTimeout(hbTimer);
+      const period = Math.max(300, 60000 / Math.max(30, Math.min(220, hbBpm)));
+      hbTimer = setTimeout(() => { hbTick(); hbSchedule(); }, period);
+    }
+    function hbStart(bpm) {
+      hbBpm = bpm;
+      if (hbTimer) return; // already running — tempo updated
+      // Fire the first beat immediately so state entry feels responsive.
+      hbTick();
+      hbSchedule();
+    }
+    function hbSetBpm(bpm) {
+      hbBpm = bpm;
+      // Live-tempo change is just letting the next scheduled tick pick up
+      // the new period — no restart needed.
+    }
+    function hbStop() {
+      if (hbTimer) { clearTimeout(hbTimer); hbTimer = null; }
+    }
+
+    // ── Tinnitus tone ────────────────────────────────────────────────
+    // Sustained high sine (~3.7kHz) with slight FM wobble. Long fade-in +
+    // fade-out so it eases into your ears rather than beeping.
+    let tinNodes = null; // { osc, lfo, lfoGain, gain, ctx }
+    function tinStart() {
+      if (tinNodes) return;
+      if (!state.soundEnabled) return;
+      const c = ensure();
+      if (!c) return;
+      const t0 = c.currentTime;
+      const osc = c.createOscillator();
+      const gain = c.createGain();
+      const lfo = c.createOscillator();
+      const lfoGain = c.createGain();
+      osc.type = "sine"; osc.frequency.setValueAtTime(3720, t0);
+      lfo.type = "sine"; lfo.frequency.setValueAtTime(6, t0);
+      lfoGain.gain.setValueAtTime(24, t0); // ±24 Hz wobble around 3720
+      lfo.connect(lfoGain); lfoGain.connect(osc.frequency);
+      gain.gain.setValueAtTime(0.0001, t0);
+      gain.gain.exponentialRampToValueAtTime(0.024, t0 + 0.7);
+      osc.connect(gain); gain.connect(c.destination);
+      osc.start(t0); lfo.start(t0);
+      tinNodes = { osc, lfo, lfoGain, gain, ctx: c };
+    }
+    function tinStop() {
+      if (!tinNodes) return;
+      const { osc, lfo, gain, ctx } = tinNodes;
+      const t0 = ctx.currentTime;
+      try {
+        gain.gain.cancelScheduledValues(t0);
+        gain.gain.setValueAtTime(gain.gain.value, t0);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.5);
+        osc.stop(t0 + 0.55);
+        lfo.stop(t0 + 0.55);
+      } catch (_) {}
+      tinNodes = null;
+    }
+
     return {
       resume() { ensure(); },
       // Shared, gesture-unlocked AudioContext so the ambient scene score
@@ -439,6 +543,33 @@
       scene() { tone(180, 0.05, "sine", 0.05); tone([520, 380], 0.14, "sine", 0.04, 0.03); }, // new scene image streams in (shutter/whir)
       start() { tone([160, 520], 0.28, "sawtooth", 0.05); tone(880, 0.12, "triangle", 0.04, 0.18); }, // new tape / game start
       escalate() { tone([300, 620], 0.35, "sawtooth", 0.06); tone([620, 900], 0.3, "square", 0.03, 0.12); }, // phase escalates — tension rises
+      // ---- Danger vignette / damage / health ----
+      // WARNING is a taut two-note alert (heads up, back off); HURTING is a
+      // lower, uglier throb (you're bleeding); HIT is a short percussive tick
+      // that lands on each damage tick, so the steady drain feels like
+      // discrete impacts, not a numeric ticker. SAFE-CHIME is the "you're
+      // clear" descending mini-arpeggio when the red drops away. REGEN-DONE
+      // is the bright ascending sparkle when HP returns to full — the audio
+      // that closes the recover loop.
+      warning() { tone([880, 660], 0.14, "square", 0.055); tone(1240, 0.08, "square", 0.04, 0.12); },
+      hurting() { tone([320, 180], 0.30, "sawtooth", 0.08); tone([540, 300], 0.22, "sawtooth", 0.055, 0.10); },
+      hit()     { tone([520, 200], 0.10, "sawtooth", 0.08); tone([1100, 700], 0.06, "square", 0.04); },
+      safeChime()    { tone([740, 560], 0.16, "sine", 0.045); tone([560, 420], 0.20, "sine", 0.04, 0.10); },
+      regenComplete(){ tone([560, 880], 0.12, "triangle", 0.05); tone([880, 1320], 0.14, "triangle", 0.045, 0.08); tone(1760, 0.10, "triangle", 0.035, 0.16); },
+      // ---- Heartbeat loop (HURTING) ----
+      // A muffled two-thump per beat, tempo driven by heartbeatSetBpm(). The
+      // "lub-dub" is a low sine with a slightly higher accent 90ms later,
+      // filtered dark so it sits under the mix. Playing state persists
+      // across ensure() calls so mute/unmute doesn't stack loops.
+      heartbeatStart(bpm) { hbStart(bpm || 80); },
+      heartbeatSetBpm(bpm) { hbSetBpm(bpm || 80); },
+      heartbeatStop() { hbStop(); },
+      // ---- Tinnitus (critical HP) ----
+      // A sustained ~3.7kHz sine with a tiny FM wobble, faded in over ~700ms
+      // and out over ~500ms. Sits under everything else at low gain so it
+      // reads as "your ears are ringing", not "there's a beep".
+      tinnitusStart() { tinStart(); },
+      tinnitusStop() { tinStop(); },
       submit() { tone(700, 0.05, "square", 0.05); tone(1050, 0.11, "square", 0.045, 0.05); }, // custom action sent
       open() { tone([420, 760], 0.14, "triangle", 0.05); },    // free-will input reveal
       toggle() { tone(300, 0.04, "square", 0.04); },           // UI toggle click
@@ -756,6 +887,9 @@
       select: () => buzz(14),      // committing an action / choice
       strong: () => buzz([16, 24, 16]), // big moment (death / new game)
       soft: () => buzz(5),         // subtle nudge
+      // ---- Danger vignette / damage ----
+      warn: () => buzz([10, 60, 10]),  // entering the red — a heads-up shake
+      tick: () => buzz(18),            // each damage tick — a single firm punch
       // ---- Camera feel ----
       camera: () => buzz([10, 24, 18]), // raising the camera — a two-stage clunk
       shutter: () => buzz(24),          // the shot fires — one firm snap
@@ -1569,6 +1703,9 @@
         window.ReactorRenderer.enable().then((ok) => {
           buildModelSwitcher(); // config may refine the model list/labels
           if (ok && Renderer.lastScene) window.ReactorRenderer.applyScene(Renderer.lastScene);
+          // Reactor is up — kick off the vision-driven danger loop so the
+          // player has a live threat readout the moment the video renders.
+          try { DangerSystem.start(); } catch (_) {}
         });
       }
       updateRendererButton();
@@ -1640,12 +1777,19 @@
           // Steer the current scene immediately so switching mid-game shows
           // something without waiting for the next turn.
           if (ok && Renderer.lastScene) window.ReactorRenderer.applyScene(Renderer.lastScene);
+          // Reactor came up — spin up the danger vignette + health loop so
+          // the vision-driven threat readout tracks the live video.
+          try { DangerSystem.start(); } catch (_) {}
         });
       } else if (this.reactorAvailable()) {
         showRendererToast("Still images");
         try { window.ReactorRenderer.disable(); } catch (_) {}
         hideGuideThumbnail();
         hideCaptureThumbnail();
+        // Danger is a REALTIME-only mechanic (still images have no live
+        // frame to grade), so tear the loop down and clear the vignette
+        // whenever we drop back to stills.
+        try { DangerSystem.stop(); } catch (_) {}
       }
       // Ambient hotspots work in BOTH renderers — drop the tags so they re-map
       // to the new source (video vs still cover the viewport differently), then
@@ -1805,6 +1949,813 @@
   };
   // Expose for debugging + e2e (so tests can seed a scene base for movement).
   try { window.__Renderer = Renderer; } catch (_) {}
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // DangerSystem — realtime vision-driven danger vignette + health.
+  //
+  // Loop: every ~1s while the realtime renderer is showing frames, sample the
+  // on-screen video (captureFrame) and POST /api/danger to grade it. Vision
+  // returns one of three ordinal levels — 0 safe / 1 threatened / 2 attacking
+  // — which drives a tiny three-state machine on the client:
+  //
+  //   SAFE     → nothing hostile in view. Vignette off. Health regens.
+  //   WARNING  → level ≥ 1. Red vignette pulses at 900ms. Health HOLDS.
+  //              After WARNING_GRACE_MS of continuous WARNING → HURTING.
+  //   HURTING  → damage tick every second while in state. Vignette throbs
+  //              at 500ms (faster + hotter). Only level=0 held for
+  //              SAFE_CONFIRM_MS drops back to SAFE.
+  //
+  // Level 2 fast-tracks straight to HURTING with no grace — an "attacking"
+  // reading is defined as danger already committed, so the visual and the
+  // mechanic both snap on the same tick. Predictable: warning ALWAYS precedes
+  // damage unless the picture itself already shows the hit landing.
+  //
+  // Every tuning knob lives in one CONFIG object at the top so playtest can
+  // live-edit via window.__DANGER_CONFIG__. Nothing else in the file touches
+  // these numbers.
+  // ═══════════════════════════════════════════════════════════════════════
+  const DangerSystem = (function () {
+    const CONFIG = Object.assign({
+      SAMPLE_MS: 1000,             // how often we grade the frame
+      SAMPLE_MIN_MS: 900,          // minimum gap between calls (in-flight guard)
+      REQUEST_TIMEOUT_MS: 6000,    // client-side abort if the server hangs
+      BACKOFF_MS: 2500,            // after 2 consecutive failures
+      WARNING_GRACE_MS: 3000,      // WARNING → HURTING after this much red
+      SAFE_CONFIRM_MS: 2000,       // clean vision needed to fully de-escalate
+      DAMAGE_TICK_MS: 1000,        // one hit per tick while HURTING
+      DAMAGE_PER_TICK: 8,          // → 12.5s from full health to death
+      REGEN_PER_SEC: 5,            // → 20s from empty back to full
+      HEALTH_MAX: 100,
+      HEALTH_CRITICAL: 25,         // bar starts pulsing critical below this
+      BOOST_LUMA_DELTA: 0.30,      // brightness spike → extra out-of-band call
+      CAPTURE_WIDTH: 384,          // downscale for cheap POST payloads
+      DEATH_MSG: "Your body gave out.\nThe last thing you saw was the light.",
+    }, (typeof window !== "undefined" && window.__DANGER_CONFIG__) || {});
+
+    let el = {
+      vignette: null, inner: null, hitFlash: null,
+      spatter: null, chroma: null,
+      arrows: {}, // {top, right, bottom, left}
+      health: null, healthFill: null, healthNum: null, healthShimmer: null,
+    };
+    let running = false;
+    let sampleTimer = null;
+    let inFlight = false;
+    let lastPostMs = 0;
+    let consecutiveErrors = 0;
+    let lastLumaSample = null;   // most recent captureFrame luma (0..1)
+    let lastRegenerating = false; // did the previous rAF frame regen?
+    let heartbeatOn = false;      // is the looping heartbeat currently playing?
+    let tinnitusOn = false;       // is the tinnitus tone currently playing?
+
+    // Danger state machine. `mode` is one of "safe" | "warning" | "hurting".
+    // `stateSince` is the ms timestamp we entered the current mode; used to
+    // gate WARNING → HURTING (must hold for WARNING_GRACE_MS).
+    // `cleanSince` is the ms timestamp of the first level=0 reading in the
+    // current de-escalation streak; used to gate WARNING/HURTING → SAFE
+    // (must stay clean for SAFE_CONFIRM_MS).
+    let mode = "safe";
+    let stateSince = 0;
+    let cleanSince = 0;
+    let lastLevel = 0;
+    let lastReason = "";
+    let lastDirection = null;
+    let lastThreatCx = null; // 0..1, from last reading (for spatter placement)
+    let lastThreatCy = null;
+
+    // Health lives here as the single source of truth; ticks on rAF via a
+    // simple wall-clock delta so drain feels steady even if the sample loop
+    // stumbles. Never mutated from outside — call takeDamage() / regen()
+    // instead.
+    let health = CONFIG.HEALTH_MAX;
+    let healthTickTs = 0;
+    let nextDamageTick = 0;
+    let hpLoopId = null;
+    let dead = false;
+
+    function log(...args) {
+      if (typeof window !== "undefined" && window.__DEBUG_DANGER__) {
+        console.log("[danger]", ...args);
+      }
+    }
+
+    function now() { return performance.now(); }
+
+    function bindDom() {
+      if (el.vignette) return;
+      el.vignette     = document.getElementById("danger-vignette");
+      el.inner        = el.vignette && el.vignette.querySelector(".danger-vignette-inner");
+      el.hitFlash     = document.getElementById("danger-hit-flash");
+      el.spatter      = document.getElementById("danger-blood-spatter");
+      el.chroma       = document.getElementById("danger-chroma");
+      el.arrows = {
+        top:    el.vignette && el.vignette.querySelector(".danger-arrow-top"),
+        right:  el.vignette && el.vignette.querySelector(".danger-arrow-right"),
+        bottom: el.vignette && el.vignette.querySelector(".danger-arrow-bottom"),
+        left:   el.vignette && el.vignette.querySelector(".danger-arrow-left"),
+      };
+      el.health        = document.getElementById("danger-health");
+      el.healthFill    = document.getElementById("danger-health-fill");
+      el.healthNum     = document.getElementById("danger-health-num");
+      el.healthShimmer = document.getElementById("danger-health-shimmer");
+    }
+
+    function applyDirectionCss(direction) {
+      if (!el.vignette) return;
+      // Move the radial-gradient origin toward the edge the threat is on so
+      // the vignette pushes IN from that side. Center-biased for "center"
+      // and no-direction so it stays symmetric when we don't know.
+      let cx = "50%", cy = "50%";
+      switch (direction) {
+        case "left":   cx = "12%"; cy = "50%"; break;
+        case "right":  cx = "88%"; cy = "50%"; break;
+        case "top":    cx = "50%"; cy = "12%"; break;
+        case "bottom": cx = "50%"; cy = "88%"; break;
+        // "center" | null → symmetric
+      }
+      el.vignette.style.setProperty("--danger-cx", cx);
+      el.vignette.style.setProperty("--danger-cy", cy);
+    }
+
+    function setMode(next, reason) {
+      if (next === mode) return;
+      const prev = mode;
+      mode = next;
+      stateSince = now();
+      cleanSince = 0;
+      // Entering HURTING → deliver the first damage tick on the very next
+      // rAF frame so the punch (flash + audio hit) lands ON the same beat
+      // the pulse speeds up. Otherwise the "safe" branch of the health
+      // loop had been continuously pushing nextDamageTick forward, so the
+      // first drain would land a full second after entering HURTING.
+      if (next === "hurting") nextDamageTick = now();
+      log("mode", prev, "→", next, reason || "");
+      applyVisualForMode();
+      // Audio + haptic beats on state entry — WARNING is a soft ping (heads-
+      // up), HURTING is a heavier tone (you're in it now). Death has its own
+      // sound via the existing gameover flow.
+      try {
+        if (next === "warning" && prev === "safe") {
+          Sound.status(); // brief HUD tick
+          if (Sound.warning) Sound.warning();
+          try { Haptics.select(); } catch (_) {}
+        } else if (next === "hurting") {
+          if (Sound.hurting) Sound.hurting();
+          else Sound.error();
+          try { Haptics.warn && Haptics.warn(); } catch (_) {}
+        }
+        // De-escalation: the moment red drops off (any → safe) we play a
+        // short chime so the player audibly hears "you're clear". Missing
+        // this beat was the biggest gap — silence for exiting danger felt
+        // like an unresolved chord.
+        if (next === "safe" && prev !== "safe") {
+          if (Sound.safeChime) Sound.safeChime();
+        }
+        // Heartbeat management — running iff HURTING and alive. Started
+        // here on state entry; stopped here on state exit. Tempo is set
+        // per-frame from the health loop below so it accelerates as HP falls.
+        if (next === "hurting" && !heartbeatOn) {
+          if (Sound.heartbeatStart) Sound.heartbeatStart(computeHeartbeatBpm());
+          heartbeatOn = true;
+        } else if (next !== "hurting" && heartbeatOn) {
+          if (Sound.heartbeatStop) Sound.heartbeatStop();
+          heartbeatOn = false;
+        }
+      } catch (_) {}
+    }
+
+    // Heartbeat tempo maps HP → BPM. At full HP (100) beats at 78 (resting
+    // "you're stressed"); at 0 HP crescendos to 160 (adrenal spike). Called
+    // both on state entry and on every rAF frame while HURTING so tempo
+    // tracks live health changes.
+    function computeHeartbeatBpm() {
+      const hp = Math.max(0, Math.min(CONFIG.HEALTH_MAX, health));
+      const frac = 1 - (hp / CONFIG.HEALTH_MAX); // 0 → 1 as HP falls
+      return Math.round(78 + frac * 82);
+    }
+
+    function applyVisualForMode() {
+      if (!el.vignette) return;
+      const on = mode !== "safe";
+      el.vignette.classList.toggle("on", on);
+      el.vignette.classList.toggle("hurting", mode === "hurting");
+      // Body-level classes drive the chromatic-aberration wash + any
+      // future full-screen effects that need to overlay on top of tools.
+      try {
+        document.body.classList.toggle("danger-hurting", mode === "hurting");
+        document.body.classList.toggle("danger-warning", mode === "warning");
+      } catch (_) {}
+    }
+
+    function applyCriticalBodyClass() {
+      // Separate from applyVisualForMode because critical is a HEALTH threshold,
+      // not a mode. Drives the intensified chroma flicker at low HP.
+      try {
+        document.body.classList.toggle("danger-critical",
+          !dead && running && health <= CONFIG.HEALTH_CRITICAL);
+      } catch (_) {}
+    }
+
+    // ── Hit-effect stack ────────────────────────────────────────────────
+    // Screen shake — brief camera-jolt on <body>. Amplitude scales with the
+    // proportion of health you just lost, so bigger hits feel harder.
+    let shakeClearTimer = null;
+    function shakeScreen(amplitudePx) {
+      const px = Math.max(2, Math.min(12, amplitudePx || 5));
+      try {
+        document.body.style.setProperty("--shake", px + "px");
+        // Re-trigger the animation by pulling the class off and forcing reflow.
+        document.body.classList.remove("danger-shaking");
+        void document.body.offsetWidth;
+        document.body.classList.add("danger-shaking");
+        if (shakeClearTimer) clearTimeout(shakeClearTimer);
+        shakeClearTimer = setTimeout(() => {
+          document.body.classList.remove("danger-shaking");
+        }, 220);
+      } catch (_) {}
+    }
+
+    // Directional damage arrow — pulses the chevron on the edge the threat
+    // is on. Falls back to a random cardinal edge when the server didn't
+    // return a direction hint, so the player still gets a "hit came from
+    // *somewhere*" signal on every damage tick.
+    let arrowClearTimers = { top: null, right: null, bottom: null, left: null };
+    function flashArrow(direction) {
+      const dir = ({ top: "top", right: "right", bottom: "bottom", left: "left" })[direction]
+        || ["top", "right", "bottom", "left"][Math.floor(Math.random() * 4)];
+      const node = el.arrows && el.arrows[dir];
+      if (!node) return;
+      node.classList.remove("show");
+      void node.offsetWidth;
+      node.classList.add("show");
+      if (arrowClearTimers[dir]) clearTimeout(arrowClearTimers[dir]);
+      arrowClearTimers[dir] = setTimeout(() => node.classList.remove("show"), 720);
+    }
+
+    // Blood spatter — places the primary blob at the threat's on-screen
+    // point when we have coordinates from the server, else at a nudge
+    // toward the given cardinal direction (or random on the edges).
+    function flashSpatter(direction, threatCx, threatCy) {
+      if (!el.spatter) return;
+      let x, y;
+      if (typeof threatCx === "number" && typeof threatCy === "number") {
+        x = threatCx * 100;
+        y = threatCy * 100;
+      } else {
+        const bias = { top: [50, 25], right: [78, 50], bottom: [50, 78],
+                       left: [22, 50], center: [50, 50] }[direction || "center"];
+        x = bias[0]; y = bias[1];
+      }
+      el.spatter.style.setProperty("--spatter-x", x + "%");
+      el.spatter.style.setProperty("--spatter-y", y + "%");
+      el.spatter.classList.remove("hit");
+      void el.spatter.offsetWidth;
+      el.spatter.classList.add("hit");
+    }
+
+    function ingest(reading) {
+      if (dead || !running) return;
+      const level = Math.max(0, Math.min(2, Number(reading && reading.level) || 0));
+      lastLevel = level;
+      lastReason = (reading && reading.reason) || "";
+      lastDirection = (reading && reading.direction) || null;
+      lastThreatCx = (reading && typeof reading.threat_cx === "number")
+                     ? reading.threat_cx : null;
+      lastThreatCy = (reading && typeof reading.threat_cy === "number")
+                     ? reading.threat_cy : null;
+      applyDirectionCss(lastDirection);
+
+      const t = now();
+
+      // Fast-path: attacking-level danger. The picture ALREADY shows the hit
+      // being committed, so we snap straight to HURTING — no grace. This is
+      // still predictable because the tell is on screen; the vignette flips
+      // to the fast throb on the same tick and the player sees why.
+      if (level >= 2) {
+        cleanSince = 0;
+        if (mode !== "hurting") setMode("hurting", "level=2");
+        return;
+      }
+
+      if (level >= 1) {
+        cleanSince = 0;
+        if (mode === "safe") setMode("warning", "level=1");
+        else if (mode === "warning" &&
+                 t - stateSince >= CONFIG.WARNING_GRACE_MS) {
+          setMode("hurting", "warning grace exhausted");
+        }
+        // If we're already hurting, level=1 sustains it — no timer reset.
+        return;
+      }
+
+      // level === 0: begin / continue the SAFE_CONFIRM_MS de-escalation clock.
+      if (mode === "safe") { cleanSince = 0; return; }
+      if (!cleanSince) cleanSince = t;
+      if (t - cleanSince >= CONFIG.SAFE_CONFIRM_MS) {
+        setMode("safe", "clean vision confirmed");
+      }
+    }
+
+    // ── Health / damage ──────────────────────────────────────────────────
+    function showHealthBar(show) {
+      if (!el.health) return;
+      el.health.classList.toggle("hidden", !show);
+    }
+
+    function updateHealthBar() {
+      if (!el.healthFill) return;
+      const pct = Math.max(0, Math.min(100,
+                 (health / CONFIG.HEALTH_MAX) * 100));
+      el.healthFill.style.width = pct.toFixed(1) + "%";
+      if (el.healthNum) el.healthNum.textContent = Math.max(0, Math.round(health));
+      const critical = health <= CONFIG.HEALTH_CRITICAL;
+      if (el.health) el.health.classList.toggle("critical", critical && !dead);
+      showHealthBar(health < CONFIG.HEALTH_MAX);
+      applyCriticalBodyClass();
+    }
+
+    // The number readout kicks up briefly on damage so each hit lands
+    // visually on the meter itself. Retriggered by removing + re-adding
+    // the class after a forced reflow.
+    function bumpHealthNum() {
+      if (!el.healthNum) return;
+      el.healthNum.classList.remove("bump");
+      void el.healthNum.offsetWidth;
+      el.healthNum.classList.add("bump");
+    }
+
+    function setRegenerating(on) {
+      if (!el.health) return;
+      if (on === lastRegenerating) return;
+      lastRegenerating = on;
+      el.health.classList.toggle("regenerating", !!on);
+    }
+
+    function flashHit() {
+      if (!el.hitFlash) return;
+      // Red hit flash + spatter + directional arrow + screen shake + number
+      // bump + audio hit + haptic tick — all on the same beat so each
+      // damage tick lands as one felt "impact".
+      el.hitFlash.classList.remove("on");
+      void el.hitFlash.offsetWidth;
+      el.hitFlash.classList.add("on");
+      flashSpatter(lastDirection, lastThreatCx, lastThreatCy);
+      flashArrow(lastDirection);
+      // Shake harder as HP falls — a hit at 10% HP is more visceral than at 90%.
+      const hpFrac = Math.max(0, health / CONFIG.HEALTH_MAX);
+      const shakePx = 4 + (1 - hpFrac) * 6;
+      shakeScreen(shakePx);
+      bumpHealthNum();
+      try { if (Sound.hit) Sound.hit(); else Sound.error(); } catch (_) {}
+      try { Haptics.tick && Haptics.tick(); } catch (_) {}
+    }
+
+    function stopHealthLoop() {
+      if (hpLoopId) { cancelAnimationFrame(hpLoopId); hpLoopId = null; }
+    }
+
+    function startHealthLoop() {
+      stopHealthLoop();
+      healthTickTs = now();
+      nextDamageTick = healthTickTs + CONFIG.DAMAGE_TICK_MS;
+      const step = () => {
+        if (!running || dead) return;
+        const t = now();
+        const dt = Math.max(0, (t - healthTickTs) / 1000); // seconds
+        healthTickTs = t;
+
+        if (mode === "hurting") {
+          // Fairness gate: don't drain while a turn is being committed
+          // (state.processing) or the freeze buffer is up (isShowing=false).
+          // The picture the state machine is grading is stale during those
+          // windows, so a player who just made a good escape choice should
+          // not eat 40 HP waiting on server latency.
+          const R = window.ReactorRenderer;
+          // Fairness gate: skip drain during turn-processing / non-showing
+          // frames — EXCEPT during demoActive, where the mode was set by
+          // scripted code, not by grading a live frame, so no fairness
+          // gate applies. Without this, running the demo in still-image
+          // mode (or with reactor warming) would show the vignette + audio
+          // but never tick down health, which reads as broken.
+          const stale = !demoActive && (
+            state.processing ||
+            (R && R.isShowing && !R.isShowing())
+          );
+          if (!stale && t >= nextDamageTick) {
+            // Discrete hit: the drain is felt as a punch, not a smooth
+            // decrement, which reads better in an action loop.
+            const before = health;
+            health = Math.max(0, health - CONFIG.DAMAGE_PER_TICK);
+            if (health < before) flashHit();
+            nextDamageTick = t + CONFIG.DAMAGE_TICK_MS;
+            if (health <= 0) {
+              die();
+              return;
+            }
+          } else if (stale) {
+            // Keep the cadence rolling forward so the FIRST tick after the
+            // world settles doesn't land a "banked" hit from the pause.
+            nextDamageTick = t + CONFIG.DAMAGE_TICK_MS;
+          }
+        } else if (mode === "safe") {
+          // Smooth regen — feels less like an "advantage granted" and more
+          // like getting your breath back.
+          if (health < CONFIG.HEALTH_MAX) {
+            const before = health;
+            health = Math.min(CONFIG.HEALTH_MAX,
+                              health + CONFIG.REGEN_PER_SEC * dt);
+            setRegenerating(true);
+            // Regen-complete chime: fired once when HP crosses back up to
+            // full. Closes the audio loop of danger → damage → recover.
+            if (before < CONFIG.HEALTH_MAX && health >= CONFIG.HEALTH_MAX) {
+              try { if (Sound.regenComplete) Sound.regenComplete(); } catch (_) {}
+            }
+          } else {
+            setRegenerating(false);
+          }
+          nextDamageTick = t + CONFIG.DAMAGE_TICK_MS; // reset the drain cadence
+        } else {
+          // WARNING: hold at current value. The reset avoids a stale
+          // damage-tick landing the instant we escalate to HURTING.
+          nextDamageTick = t + CONFIG.DAMAGE_TICK_MS;
+          setRegenerating(false);
+        }
+
+        // Live heartbeat tempo tracking — tempo climbs as HP falls so the
+        // heartbeat itself telegraphs how close to death you are.
+        if (heartbeatOn) {
+          try { Sound.heartbeatSetBpm && Sound.heartbeatSetBpm(computeHeartbeatBpm()); } catch (_) {}
+        }
+
+        // Tinnitus tone: sustained ringing while at critical HP. Fires ONCE
+        // when we cross the threshold down; stopped as soon as HP recovers
+        // above it (so a brief dip doesn't leave a lingering hum).
+        try {
+          const isCritical = !dead && health <= CONFIG.HEALTH_CRITICAL;
+          if (isCritical && !tinnitusOn) {
+            if (Sound.tinnitusStart) Sound.tinnitusStart();
+            tinnitusOn = true;
+          } else if (!isCritical && tinnitusOn) {
+            if (Sound.tinnitusStop) Sound.tinnitusStop();
+            tinnitusOn = false;
+          }
+        } catch (_) {}
+
+        updateHealthBar();
+        hpLoopId = requestAnimationFrame(step);
+      };
+      hpLoopId = requestAnimationFrame(step);
+    }
+
+    function die() {
+      if (dead) return;
+      dead = true;
+      running = false;
+      stopHealthLoop();
+      if (sampleTimer) { clearTimeout(sampleTimer); sampleTimer = null; }
+      // Cut the sustained audio the moment death lands — the death SFX
+      // that enterGameOver plays should stand alone, not layer over a
+      // still-running heartbeat/tinnitus.
+      try { if (heartbeatOn) { Sound.heartbeatStop && Sound.heartbeatStop(); heartbeatOn = false; } } catch (_) {}
+      try { if (tinnitusOn) { Sound.tinnitusStop && Sound.tinnitusStop(); tinnitusOn = false; } } catch (_) {}
+      // Collapse mode BEFORE applyVisualForMode — otherwise mode is still
+      // "hurting" and applyVisualForMode would helpfully re-add the
+      // body.danger-hurting class we're about to remove, leaving the
+      // chromatic-aberration flicker running through the death overlay.
+      mode = "safe";
+      setRegenerating(false);
+      applyVisualForMode();
+      // Redundant with applyVisualForMode's toggle-off, but explicit —
+      // also clears danger-critical (health-driven, not mode-driven) and
+      // any in-flight shake class so the game-over screen isn't jittering.
+      try { document.body.classList.remove("danger-critical", "danger-hurting", "danger-warning", "danger-shaking"); } catch (_) {}
+      updateHealthBar();
+      log("DEATH — health hit 0");
+      try {
+        // Route through the existing game-over flow so the death overlay,
+        // narrator epitaph, tape archival, and reactor pause all fire the
+        // same way as a story-driven death.
+        enterGameOver(CONFIG.DEATH_MSG);
+      } catch (e) { console.warn("[danger] enterGameOver failed", e); }
+    }
+
+    // ── Sampling loop ────────────────────────────────────────────────────
+    function shouldSample() {
+      if (!running || dead) return false;
+      if (state.gameOver) return false;
+      if (Renderer.mode !== "reactor") return false;
+      if (!Renderer.reactorAvailable()) return false;
+      const R = window.ReactorRenderer;
+      if (!R.isShowing || !R.isShowing()) return false;
+      // Camera is being driven — the frame we'd grade is mid-motion and
+      // often mostly blur / partial. Coast on the last mode until the view
+      // settles; the state machine will de-escalate on its own via clean
+      // readings when sampling resumes.
+      if (state.moving) return false;
+      return true;
+    }
+
+    function readLuma(dataUrl) {
+      // Fast luma proxy from a tiny 8x8 downsample of the captured frame.
+      // Used to catch brightness spikes (muzzle flash / explosion) that a
+      // 1 Hz vision loop would miss. Async → we don't block sampling on it.
+      return new Promise((resolve) => {
+        try {
+          const img = new Image();
+          img.onload = () => {
+            try {
+              const c = document.createElement("canvas");
+              c.width = 8; c.height = 8;
+              const g = c.getContext("2d");
+              g.drawImage(img, 0, 0, 8, 8);
+              const d = g.getImageData(0, 0, 8, 8).data;
+              let s = 0;
+              for (let i = 0; i < d.length; i += 4) {
+                s += (0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]);
+              }
+              // 8×8 = 64 pixels, each contributing 0..255 → normalize to 0..1
+              // so BOOST_LUMA_DELTA is a legible "fraction of full range".
+              resolve(s / (64 * 255));
+            } catch (_) { resolve(null); }
+          };
+          img.onerror = () => resolve(null);
+          img.src = dataUrl;
+        } catch (_) { resolve(null); }
+      });
+    }
+
+    async function sampleOnce(reason) {
+      if (inFlight) return;
+      const R = window.ReactorRenderer;
+      if (!R || !R.captureFrame) return;
+      const frame = R.captureFrame(CONFIG.CAPTURE_WIDTH);
+      if (!frame) return;
+
+      // Cheap luma-delta boost: if the picture just got dramatically
+      // brighter, that's almost certainly a muzzle flash / explosion. We
+      // fire the vision call NOW rather than waiting for the next tick, so
+      // sudden violence has sub-second reaction time.
+      // (Sampling this AFTER we've already decided to do a call is fine —
+      // it seeds the next comparison.)
+      readLuma(frame).then((lum) => {
+        if (lum == null) return;
+        if (lastLumaSample != null) {
+          const delta = Math.abs(lum - lastLumaSample);
+          if (delta >= CONFIG.BOOST_LUMA_DELTA && !inFlight) {
+            log("luma spike", delta.toFixed(2), "→ boost");
+            // Trigger a fresh sample almost immediately, out of band.
+            setTimeout(() => { if (running) sampleOnce("luma-boost"); }, 60);
+          }
+        }
+        lastLumaSample = lum;
+      });
+
+      inFlight = true;
+      lastPostMs = now();
+      const controller = ("AbortController" in window) ? new AbortController() : null;
+      const timeout = controller ? setTimeout(() => {
+        try { controller.abort(); } catch (_) {}
+      }, CONFIG.REQUEST_TIMEOUT_MS) : null;
+
+      try {
+        const resp = await fetch("/api/danger", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ frame }),
+          signal: controller ? controller.signal : undefined,
+        });
+        if (timeout) clearTimeout(timeout);
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        const reading = await resp.json();
+        consecutiveErrors = 0;
+        log("reading", reading, reason || "");
+        ingest(reading);
+      } catch (err) {
+        if (timeout) clearTimeout(timeout);
+        consecutiveErrors += 1;
+        log("call failed", err && err.message);
+        // Don't ingest ANYTHING on failure — the state machine coasts on
+        // its last known level, which for a persistent outage means it
+        // will slowly de-escalate via clean-reading absence (see below).
+        // But we do NOT want to be stuck HURTING forever if the server is
+        // gone, so on repeated failures we synthesize a level=0 read to
+        // ease back toward SAFE.
+        if (consecutiveErrors >= 3) ingest({ level: 0, reason: "vision-offline" });
+      } finally {
+        inFlight = false;
+      }
+    }
+
+    function scheduleNext() {
+      if (sampleTimer) { clearTimeout(sampleTimer); sampleTimer = null; }
+      if (!running) return;
+      const gap = (consecutiveErrors >= 2) ? CONFIG.BACKOFF_MS : CONFIG.SAMPLE_MS;
+      sampleTimer = setTimeout(async () => {
+        try {
+          if (shouldSample()) await sampleOnce("tick");
+        } finally {
+          scheduleNext();
+        }
+      }, gap);
+    }
+
+    // ── Public control ──────────────────────────────────────────────────
+    function start() {
+      if (running) return;
+      bindDom();
+      if (!el.vignette) return; // DOM missing — abort silently
+      running = true;
+      dead = false;
+      consecutiveErrors = 0;
+      lastLumaSample = null;
+      health = CONFIG.HEALTH_MAX;
+      mode = "safe";
+      stateSince = now();
+      cleanSince = 0;
+      applyDirectionCss(null);
+      applyVisualForMode();
+      updateHealthBar();
+      showHealthBar(false);
+      startHealthLoop();
+      scheduleNext();
+      log("start");
+    }
+
+    function stop() {
+      if (!running) return;
+      running = false;
+      if (sampleTimer) { clearTimeout(sampleTimer); sampleTimer = null; }
+      stopHealthLoop();
+      mode = "safe";
+      applyVisualForMode();
+      // Tear down the sustained audio loops so leaving reactor mode (or
+      // pausing the game) doesn't leave a heartbeat / tinnitus running.
+      try { if (heartbeatOn) { Sound.heartbeatStop && Sound.heartbeatStop(); heartbeatOn = false; } } catch (_) {}
+      try { if (tinnitusOn) { Sound.tinnitusStop && Sound.tinnitusStop(); tinnitusOn = false; } } catch (_) {}
+      try { document.body.classList.remove("danger-critical", "danger-hurting", "danger-warning", "danger-shaking"); } catch (_) {}
+      setRegenerating(false);
+      log("stop");
+    }
+
+    function reset() {
+      // Clean slate — used by /api/reset & the death-overlay restart. Wipes
+      // health + mode + death flag, then re-arms the loop if realtime is
+      // active (a die() during the prior run set running=false, so without
+      // this the danger meter would be dark forever after a restart).
+      const wasRunning = running;
+      running = false;
+      if (sampleTimer) { clearTimeout(sampleTimer); sampleTimer = null; }
+      stopHealthLoop();
+      // Any lingering sustained audio from the prior run needs to end
+      // before we zero everything out.
+      try { if (heartbeatOn) { Sound.heartbeatStop && Sound.heartbeatStop(); heartbeatOn = false; } } catch (_) {}
+      try { if (tinnitusOn) { Sound.tinnitusStop && Sound.tinnitusStop(); tinnitusOn = false; } } catch (_) {}
+      try { document.body.classList.remove("danger-critical", "danger-hurting", "danger-warning", "danger-shaking"); } catch (_) {}
+      // End any in-flight demo/manual override so a game restart returns
+      // to normal vision-driven behavior.
+      try { if (demoActive) { demoActive = false; demoTimers.forEach((t) => clearTimeout(t)); demoTimers = []; } } catch (_) {}
+      dead = false;
+      consecutiveErrors = 0;
+      lastLumaSample = null;
+      lastThreatCx = lastThreatCy = null;
+      lastDirection = null;
+      health = CONFIG.HEALTH_MAX;
+      mode = "safe";
+      stateSince = now();
+      cleanSince = 0;
+      applyDirectionCss(null);
+      applyVisualForMode();
+      setRegenerating(false);
+      updateHealthBar();
+      showHealthBar(false);
+      const reactorLive = (typeof Renderer !== "undefined") &&
+                          Renderer.mode === "reactor" &&
+                          Renderer.reactorAvailable();
+      if (wasRunning || reactorLive) start();
+      log("reset");
+    }
+
+    function getState() {
+      return {
+        running, mode, health,
+        level: lastLevel, reason: lastReason, direction: lastDirection,
+        dead,
+      };
+    }
+
+    // On sound-toggle: the parent toggleSound() has already cut the
+    // sustained audio when muting. When re-enabling, we clear our own
+    // flags so the next health-loop frame notices "no heartbeat but we're
+    // HURTING" and restarts the tone, and same for the tinnitus threshold
+    // check. Muting side just clears the flags so the check is honest.
+    function onSoundToggled(on) {
+      heartbeatOn = false;
+      tinnitusOn = false;
+      if (on && mode === "hurting" && !dead) {
+        try { Sound.heartbeatStart && Sound.heartbeatStart(computeHeartbeatBpm()); heartbeatOn = true; } catch (_) {}
+      }
+      if (on && !dead && health <= CONFIG.HEALTH_CRITICAL) {
+        try { Sound.tinnitusStart && Sound.tinnitusStart(); tinnitusOn = true; } catch (_) {}
+      }
+    }
+
+    // ── Demo / manual test mode ──────────────────────────────────────
+    // A scripted safe → warning → hurting → warning → safe sequence that
+    // ignores the vision loop and just drives the state machine directly.
+    // Trigger with Shift+D (see keyboard handler far below) or the query
+    // string `?danger_demo=1`, or programmatically via DangerSystem.demo().
+    // Purpose: let anyone experience the full polish stack instantly on
+    // any scene, without hunting for one that trips the vision rubric.
+    // Suspends the sampling loop for the duration so live readings can't
+    // stomp the scripted mode.
+    // `demoActive` is the shared "vision loop is temporarily suspended in
+    // favour of a scripted / manual state" flag. Both demo() and
+    // forceMode() set it, and the shouldSample() override below gates on
+    // it so real readings can't stomp the scripted mode.
+    let demoActive = false;
+    let demoTimers = [];
+    function clearDemoTimers() {
+      demoTimers.forEach((t) => clearTimeout(t));
+      demoTimers = [];
+    }
+    function demoStep(delayMs, fn) {
+      demoTimers.push(setTimeout(fn, delayMs));
+    }
+    function endDemo() {
+      demoActive = false;
+      clearDemoTimers();
+      log("demo", "end");
+    }
+    function ensureLocallyRunning() {
+      // If start()'s reactor-gated flow hasn't already spun us up (e.g. we
+      // are in still-image mode or reactor is still warming), pull up the
+      // system locally so demo/forceMode still work. Live samples remain
+      // gated by shouldSample() so this doesn't add spurious API traffic.
+      if (running) return true;
+      bindDom();
+      if (!el.vignette) { log("abort — no DOM"); return false; }
+      running = true;
+      dead = false;
+      health = CONFIG.HEALTH_MAX;
+      mode = "safe";
+      stateSince = now();
+      applyDirectionCss(null);
+      applyVisualForMode();
+      updateHealthBar();
+      showHealthBar(false);
+      startHealthLoop();
+      return true;
+    }
+    function demo(opts) {
+      // Force the DangerSystem to visibly cycle through its states so a
+      // player (or a QA session) can experience the polish without needing
+      // vision to actually escalate. Health drops during the HURTING phase
+      // and regenerates during the recovery phase — same code path as a
+      // real run.
+      if (!ensureLocallyRunning()) return;
+      if (demoActive) endDemo();
+      demoActive = true;
+      clearDemoTimers();
+      const dir = (opts && opts.direction) || "right";
+      log("demo", "start", dir);
+      lastDirection = dir; lastThreatCx = 0.85; lastThreatCy = 0.5;
+      applyDirectionCss(dir);
+      setMode("warning", "demo");
+      demoStep(2400, () => { if (demoActive) setMode("hurting", "demo"); });
+      demoStep(6400, () => { if (demoActive) setMode("warning", "demo"); });
+      demoStep(8000, () => { if (demoActive) setMode("safe", "demo"); });
+      demoStep(9200, () => { if (demoActive) endDemo(); });
+    }
+
+    // Test-only setter: force a specific mode. Useful for taking
+    // screenshots or tuning individual states. Suspends live sampling
+    // until the caller calls forceMode("safe") or reset().
+    function forceMode(next, direction) {
+      if (!ensureLocallyRunning()) return;
+      demoActive = true;
+      if (direction) {
+        lastDirection = direction;
+        applyDirectionCss(direction);
+      }
+      setMode(next, "manual");
+      if (next === "safe") {
+        // "safe" through the manual gate is treated as "resume live sampling"
+        // so a tester can flip out of a forced state without calling reset().
+        demoActive = false;
+      }
+    }
+
+    // shouldSample() gate — extended to also suspend during demo/manual
+    // states so live readings don't overwrite the scripted mode.
+    const _baseShouldSample = shouldSample;
+    shouldSample = function () {
+      if (demoActive) return false;
+      return _baseShouldSample();
+    };
+
+    return { start, stop, reset, getState, onSoundToggled, demo, forceMode };
+  })();
+  try { window.__DangerSystem = DangerSystem; } catch (_) {}
 
   function updateRendererButton() {
     // Reveal the realtime SHAPE tool only when the realtime renderer is active.
@@ -3081,6 +4032,10 @@
       if (Renderer.reactorAvailable()) {
         try { window.ReactorRenderer.reset(); } catch (_) {}
       }
+      // Fresh run → full health, safe state, vignette cleared. If we're in
+      // realtime mode the loop keeps sampling; in stills mode reset() is a
+      // no-op beyond zeroing the meter.
+      try { DangerSystem.reset(); } catch (_) {}
       Renderer.lastScene = null;
       Renderer.lastBase = null;
       Renderer.observedPromptId = null;
@@ -6108,14 +7063,197 @@
     let switching = false;
     let wasAutoPlay = false;     // restore auto-play on close if we paused it
     let lastFocus = null;        // restore focus on close (a11y)
+    // Dynamic per-character voice bookkeeping. `voiceInUse` is the voice_id
+    // actually attached to the live Convai session — so /api/talk/end can
+    // drop its refcount on close and session-cleanup can then reap it.
+    // `designPollTimer` polls /api/talk/voice/status for a still-designing
+    // voice so we can hot-swap it into the live call when it lands.
+    let voiceInUse = "";
+    let designPollTimer = null;
+    let designPollTries = 0;
+    let designCacheKey = "";
+    // When a designed voice becomes ready while the AI is still speaking, we
+    // queue it and swap the moment the AI transitions back to listening —
+    // otherwise we'd cut the character off mid-word. Also tracks whether the
+    // opening line has finished so a swap doesn't force it to be re-spoken.
+    let pendingDesignedVoiceId = "";
+    let aiIsSpeaking = false;
+    let openingSpoken = false;
+
+    function stopDesignPoll() {
+      if (designPollTimer) { clearInterval(designPollTimer); designPollTimer = null; }
+      designPollTries = 0;
+      designCacheKey = "";
+    }
+
+    // Poll the server every ~1.5s for a background-designed voice; when it
+    // flips to ready, hot-swap the live Convai session onto it. Caps at ~21s
+    // of polling so a failed design falls silently back to the preset voice.
+    function startDesignPoll(cacheKey) {
+      stopDesignPoll();
+      if (!cacheKey) return;
+      designCacheKey = cacheKey;
+      designPollTries = 0;
+      designPollTimer = setInterval(async () => {
+        designPollTries++;
+        if (!open || designPollTries > 14 || designCacheKey !== cacheKey) {
+          stopDesignPoll();
+          return;
+        }
+        try {
+          const res = await fetch("/api/talk/voice/status?cache_key=" + encodeURIComponent(cacheKey));
+          if (!res.ok) return;
+          const data = await res.json();
+          if (!open || mode !== "voice" || designCacheKey !== cacheKey) return;
+          if (data.status === "ready" && data.voice_id) {
+            stopDesignPoll();
+            // Don't override a manual pick the player made mid-generation.
+            if (selectedVoiceId && selectedVoiceId !== voiceInUse) return;
+            // Defer the actual swap until (a) the opening line is done AND
+            // (b) the AI isn't mid-speech, so a hot-swap can never truncate
+            // the character. If either condition is missing we stash the
+            // voice id; the onModeChange -> "listening" path picks it up.
+            if (!openingSpoken || aiIsSpeaking) {
+              pendingDesignedVoiceId = data.voice_id;
+              AgentLog.push("dim", "designed voice ready, queued until pause");
+              return;
+            }
+            hotSwapDesignedVoice(data.voice_id);
+          } else if (data.status === "failed" || data.status === "unknown") {
+            stopDesignPoll();
+          }
+        } catch (e) { /* transient; keep polling */ }
+      }, 1500);
+    }
+
+    // Rebuild the Convai session with the newly-designed voice id.
+    // Distinct from user-driven changeVoice() in three ways so the swap
+    // stays invisible-feeling to the player:
+    //   1. Does NOT persist to localStorage (the human picker's contract).
+    //   2. Does NOT print a chat line (too meta / draws attention).
+    //   3. Passes __suppressFirstMessage so the character doesn't
+    //      re-introduce themselves — the opening was already said in the
+    //      fallback voice; the new voice takes over from the NEXT turn.
+    // Callers must gate on !aiIsSpeaking + openingSpoken so the reconnect
+    // never truncates the character mid-word.
+    async function hotSwapDesignedVoice(newVoiceId) {
+      if (!newVoiceId || switching || !open || mode !== "voice") return;
+      if (newVoiceId === voiceInUse) return;
+      pendingDesignedVoiceId = "";
+      switching = true;
+      setSub("channel live \u00b7 listening");
+      if (convo) { try { await convo.endSession(); } catch (_) {} convo = null; }
+      const reuseOpening = (lastSession && lastSession.context && lastSession.context.opening_line) || "";
+      let session = null;
+      try {
+        session = await postJSON("/api/talk/session",
+          { subject, voice_id: newVoiceId, opening_line: reuseOpening });
+      } catch (e) { console.warn("[talk] hot-swap fetch failed:", e); }
+      if (!open) { switching = false; return; }
+      if (!session || session.mode !== "voice") { switching = false; return; }
+      AgentLog.push("talk", "voice hot-swapped", "designed \u00b7 " + newVoiceId);
+      beginVoice(session, "", { suppressFirstMessage: true });
+    }
+
+    // Fire-and-forget notify so server can drop the voice refcount and
+    // reclaim the ElevenLabs voice slot at session end. sendBeacon survives
+    // pagehide/close; fetch with keepalive is the fallback.
+    function releaseVoiceOnClose(voiceId) {
+      if (!voiceId) return;
+      try {
+        const body = JSON.stringify({ voice_id: voiceId });
+        if (navigator.sendBeacon) {
+          const blob = new Blob([body], { type: "application/json" });
+          navigator.sendBeacon("/api/talk/end", blob);
+        } else {
+          fetch("/api/talk/end", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: body,
+            keepalive: true,
+          }).catch(() => {});
+        }
+      } catch (_) {}
+    }
+
+    // Collapsed "in-call" state: panel is folded away, but the chip stays on
+    // screen so the conversation is still felt. Persisted so it survives a
+    // voice-switch reconnect (which just reruns beginVoice, not start()).
+    let minimized = false;
+    let floatTimer = 0;
 
     function isOpen() { return open; }
+    function isMinimized() { return minimized && open; }
 
-    function setSub(text) { if (el.talkSub) el.talkSub.textContent = text || ""; }
+    function setSub(text) {
+      if (el.talkSub) el.talkSub.textContent = text || "";
+      if (el.talkChipSub) el.talkChipSub.textContent = text || "";
+    }
 
-    function setOrbState(s) { if (el.talkOrb) el.talkOrb.dataset.state = s || "idle"; }
+    function setOrbState(s) {
+      if (el.talkOrb) el.talkOrb.dataset.state = s || "idle";
+      if (el.talkChipOrb) el.talkChipOrb.dataset.state = s || "idle";
+    }
 
     function ensureSdk() { return ElevenSDK.load(); }
+
+    // Mirror the latest incoming line as a soft speech bubble floating over the
+    // scene — Coffee-Talk-style dialog that "hangs in the air" so a
+    // conversation can happen in your peripheral vision while you keep
+    // playing. Auto-fades; the transcript panel is still the source of truth.
+    function showFloat(content) {
+      if (!el.talkFloat || !el.talkFloatBody || !content) return;
+      if (el.talkFloatWho) el.talkFloatWho.textContent = subject ? subject.label.toUpperCase() : "—";
+      el.talkFloatBody.textContent = content;
+      el.talkFloat.classList.remove("hidden");
+      // Re-trigger the entrance animation even if it's already showing.
+      el.talkFloat.classList.remove("talk-float-in");
+      void el.talkFloat.offsetWidth;
+      el.talkFloat.classList.add("talk-float-in");
+      if (floatTimer) { clearTimeout(floatTimer); floatTimer = 0; }
+      // Longer lines linger longer, up to a comfortable ceiling.
+      const dwell = Math.min(9000, 3200 + content.length * 42);
+      floatTimer = setTimeout(hideFloat, dwell);
+    }
+    function hideFloat() {
+      if (floatTimer) { clearTimeout(floatTimer); floatTimer = 0; }
+      if (!el.talkFloat) return;
+      el.talkFloat.classList.remove("talk-float-in");
+      // After the fade, hide entirely so it never blocks a click while offscreen.
+      setTimeout(() => { if (el.talkFloat && !el.talkFloat.classList.contains("talk-float-in")) el.talkFloat.classList.add("hidden"); }, 320);
+    }
+
+    function setMinimized(next) {
+      if (!open) return;
+      next = !!next;
+      if (next === minimized) return;
+      minimized = next;
+      if (!el.talkOverlay) return;
+      el.talkOverlay.classList.toggle("talk-min", minimized);
+      // While minimized, the panel is folded so it's not modal — mirror that
+      // in ARIA so assistive tech tracks the state.
+      if (el.talkPanel) el.talkPanel.setAttribute("aria-hidden", minimized ? "true" : "false");
+      if (el.talkChip) {
+        el.talkChip.setAttribute("aria-hidden", minimized ? "false" : "true");
+        el.talkChip.classList.toggle("hidden", !minimized);
+        if (minimized && subject && el.talkChipName) el.talkChipName.textContent = subject.label;
+      }
+      if (minimized) {
+        // Nudge focus back to the world so the player can play right away.
+        try { document.activeElement && document.activeElement.blur && document.activeElement.blur(); } catch (_) {}
+        Haptics.select();
+      } else {
+        hideFloat();
+        setTimeout(() => { if (open && !minimized && el.talkInput && mode === "text") el.talkInput.focus(); }, 220);
+      }
+      // Subtle UI toggle sound (NOT the warm carrier tone that plays when a
+      // conversation OPENS/CLOSES). Folding is a HUD move, not a hang-up.
+      try {
+        if (minimized && Sound.menuClose) Sound.menuClose();
+        else if (!minimized && Sound.menuOpen) Sound.menuOpen();
+      } catch (_) {}
+    }
+    function toggleMinimize() { setMinimized(!minimized); }
 
     function addLine(role, content) {
       const line = document.createElement("div");
@@ -6130,6 +7268,11 @@
       line.appendChild(body);
       el.talkLog.appendChild(line);
       el.talkLog.scrollTop = el.talkLog.scrollHeight;
+      // When the panel is folded, the subject's lines still float out as an
+      // ephemeral bubble over the scene — coffee-talk-style, so you can hear
+      // the conversation from the corner of your eye while you keep playing.
+      // With the panel expanded, the transcript IS the bubble, so we skip it.
+      if (role !== "user" && minimized) showFloat(content);
       return line;
     }
 
@@ -6153,6 +7296,13 @@
       convo = null;
       micMuted = false;
       open = true;
+      // Reset the dynamic-voice bookkeeping so a new TALK never inherits
+      // a queued swap or stale "opening already spoken" state from a prior
+      // conversation (which would let a hot-swap fire mid-greeting).
+      pendingDesignedVoiceId = "";
+      aiIsSpeaking = false;
+      openingSpoken = false;
+      minimized = false;
       lastFocus = document.activeElement;
       Narrator.stop(); // a two-way conversation takes over from ambient narration
       // Auto-play shouldn't advance the world mid-conversation (restore on close).
@@ -6165,8 +7315,14 @@
       el.talkInput.value = "";
       el.talkInput.setAttribute("placeholder", "say something…");
       el.talkName.textContent = subject.label;
+      if (el.talkChipName) el.talkChipName.textContent = subject.label;
       setSub("establishing channel…");
       setOrbState("connecting");
+      // Reset the folded / floating states from any prior conversation.
+      if (el.talkOverlay) el.talkOverlay.classList.remove("talk-min");
+      if (el.talkChip) el.talkChip.classList.add("hidden");
+      if (el.talkPanel) el.talkPanel.setAttribute("aria-hidden", "false");
+      hideFloat();
       el.talkOverlay.classList.remove("hidden");
       el.talkOverlay.setAttribute("aria-hidden", "false");
       document.body.classList.add("talking");
@@ -6212,13 +7368,19 @@
     // orb reflects listening/speaking, and typing still works (sendUserMessage).
     // Any failure (SDK blocked, mic denied, connect error) degrades to the
     // server text conversation so TALK always works.
-    async function beginVoice(session, opening) {
+    async function beginVoice(session, opening, opts_ext) {
       mode = "voice";
       lastSession = session;
       if (session && session.voices) voices = session.voices;
-      setSub(switching ? "switching voice…" : "opening channel…");
+      setSub(switching ? "switching voice\u2026" : "opening channel\u2026");
       setOrbState("connecting");
-      el.talkInput.setAttribute("placeholder", "speak, or type…");
+      el.talkInput.setAttribute("placeholder", "speak, or type\u2026");
+      // Hot-swap path passes { suppressFirstMessage: true } so the character
+      // doesn't re-greet in the new voice — the opening was already said in
+      // the fallback voice. Also resets the opening-spoken gate so any
+      // NEXT designed-voice swap defers again until the (new) opening is done.
+      var suppressFirst = !!(opts_ext && opts_ext.suppressFirstMessage);
+      if (!suppressFirst) openingSpoken = false;
 
       let Conversation;
       try {
@@ -6240,6 +7402,24 @@
           el.talkModeToggle.classList.remove("hidden");
           el.talkModeToggle.textContent = micMuted ? "UNMUTE" : "MUTE";
           showVoiceControl(session.voice_id);
+          // Remember the voice we actually handed to Convai so /api/talk/end
+          // can release its refcount at close time. Every /api/talk/session
+          // call bumps the refcount, so on a re-connect (voice switch /
+          // hot-swap / user pick) we release the PREVIOUS voice first —
+          // otherwise its refcount would stay >0 across the whole session
+          // and block reclaim.
+          if (voiceInUse && voiceInUse !== session.voice_id) {
+            releaseVoiceOnClose(voiceInUse);
+          }
+          voiceInUse = session.voice_id || "";
+          // If a per-character voice is being designed in the background,
+          // start polling so we can hot-swap it in once it lands.
+          if (session.voice_status === "generating" && session.voice_cache_key) {
+            AgentLog.push("dim", "casting character voice", session.voice_cache_key);
+            startDesignPoll(session.voice_cache_key);
+          } else {
+            stopDesignPoll();
+          }
         },
         onDisconnect: () => { AgentLog.push("dim", "talk disconnected"); if (open && mode === "voice") { setSub("channel closed"); setOrbState("idle"); } },
         onError: (e) => { AgentLog.push("error", "talk error", AgentLog.clip(e && (e.message || e), 120)); console.warn("[talk] voice error:", e); },
@@ -6247,8 +7427,23 @@
         onModeChange: (m) => {
           if (!open) return;
           const md = (m && (m.mode || m)) || "";
-          if (md === "speaking") { setSub("channel live \u00b7 speaking"); setOrbState("speaking"); }
-          else if (md === "listening") { setSub("channel live \u00b7 listening"); setOrbState("listening"); }
+          if (md === "speaking") {
+            aiIsSpeaking = true;
+            setSub("channel live \u00b7 speaking"); setOrbState("speaking");
+          } else if (md === "listening") {
+            aiIsSpeaking = false;
+            // The AI just finished a turn. Mark opening-spoken (the first
+            // speaking->listening transition is when the greeting ends),
+            // and if a designed voice landed while we were speaking, apply
+            // it NOW so the swap never truncates the character.
+            openingSpoken = true;
+            setSub("channel live \u00b7 listening"); setOrbState("listening");
+            if (pendingDesignedVoiceId && !switching) {
+              const vid = pendingDesignedVoiceId;
+              pendingDesignedVoiceId = "";
+              hotSwapDesignedVoice(vid);
+            }
+          }
         },
         onMessage: (m) => {
           if (!open || !m) return;
@@ -6267,7 +7462,16 @@
         if (a) {
           opts.overrides.agent = {};
           if (a.prompt && a.prompt.prompt) opts.overrides.agent.prompt = { prompt: a.prompt.prompt };
-          if (a.first_message) opts.overrides.agent.firstMessage = a.first_message;
+          // Hot-swap explicitly suppresses the first message so the character
+          // doesn't re-greet in the new voice. A single space keeps the agent
+          // from falling back to its DASHBOARD-configured first message
+          // (which would defeat the purpose) while producing essentially no
+          // audio the player would notice.
+          if (suppressFirst) {
+            opts.overrides.agent.firstMessage = " ";
+          } else if (a.first_message) {
+            opts.overrides.agent.firstMessage = a.first_message;
+          }
           opts.overrides.agent.language = "en";
         }
         // Voice override — THIS is what actually makes a live voice switch change
@@ -6419,21 +7623,40 @@
     }
 
     function pulseOrb() {
-      if (!el.talkOrb) return;
-      el.talkOrb.classList.remove("talk-orb-pulse");
-      void el.talkOrb.offsetWidth;
-      el.talkOrb.classList.add("talk-orb-pulse");
+      // Pulse BOTH the panel orb and the chip orb so a new line reads as a
+      // "presence beat" whether the panel is unfolded or folded to a chip.
+      const orbs = [el.talkOrb, el.talkChipOrb];
+      for (const o of orbs) {
+        if (!o) continue;
+        o.classList.remove("talk-orb-pulse");
+        void o.offsetWidth;
+        o.classList.add("talk-orb-pulse");
+      }
     }
 
     function close() {
       if (!open) return;
       open = false;
+      minimized = false;
       switching = false;
+      hideFloat();
+      stopDesignPoll();
+      pendingDesignedVoiceId = "";
+      aiIsSpeaking = false;
+      openingSpoken = false;
+      // Notify the server so it drops the refcount on the voice we've been
+      // using. Once refcount hits zero, session cleanup + LRU eviction can
+      // reap the ElevenLabs slot. Capture-then-clear so this only fires once.
+      const releasedVoice = voiceInUse;
+      voiceInUse = "";
+      if (releasedVoice) releaseVoiceOnClose(releasedVoice);
       Sound.talkClose();
       if (convo) { try { convo.endSession(); } catch (_) {} convo = null; }
       closeVoiceMenu();
       if (el.talkVoiceBtn) el.talkVoiceBtn.classList.add("hidden");
+      if (el.talkChip) el.talkChip.classList.add("hidden");
       el.talkOverlay.classList.remove("talk-in");
+      el.talkOverlay.classList.remove("talk-min");
       el.talkOverlay.setAttribute("aria-hidden", "true");
       document.body.classList.remove("talking");
       setTimeout(() => {
@@ -6453,13 +7676,21 @@
       lastFocus = null;
     }
 
-    // Escape handler: collapse the voice menu first, else end the conversation.
+    // Escape handler: collapse the voice menu first, else fold the panel
+    // (first Esc collapses to the chip so the player can play); a second Esc
+    // ends the conversation entirely. Feels closer to a phone-call HUD than a
+    // modal dialog.
     function onEscape() {
       if (el.talkVoiceMenu && !el.talkVoiceMenu.classList.contains("hidden")) { closeVoiceMenu(); return; }
+      if (!minimized) { setMinimized(true); return; }
       close();
     }
 
-    return { start, close, isOpen, micToggle, send, toggleVoiceMenu, closeVoiceMenu, onEscape };
+    return {
+      start, close, isOpen, isMinimized, micToggle, send,
+      toggleVoiceMenu, closeVoiceMenu, onEscape,
+      toggleMinimize, setMinimized,
+    };
   })();
 
   // QA hook: expose the real Talk controller ONLY when explicitly requested via
@@ -7139,6 +8370,17 @@
     try { SceneAudio.setEnabled(state.soundEnabled); } catch (_) {}
     // Muting silences the narrator's ambient voice too (it plays real audio).
     if (!state.soundEnabled) { try { Narrator.stop(); } catch (_) {} }
+    // Danger's sustained tones (heartbeat, tinnitus) are actual live audio
+    // nodes, not one-shots, so a mute mid-HURTING has to explicitly cut
+    // them; the DangerSystem will restart them on the next state-machine
+    // tick once sound is enabled again.
+    if (!state.soundEnabled) {
+      try { Sound.heartbeatStop && Sound.heartbeatStop(); } catch (_) {}
+      try { Sound.tinnitusStop && Sound.tinnitusStop(); } catch (_) {}
+      try { DangerSystem && DangerSystem.onSoundToggled && DangerSystem.onSoundToggled(false); } catch (_) {}
+    } else {
+      try { DangerSystem && DangerSystem.onSoundToggled && DangerSystem.onSoundToggled(true); } catch (_) {}
+    }
   }
 
   function initVhsGrain() {
@@ -7195,12 +8437,18 @@
   // ------------------------------------------------------------------
 
   function onKeydown(e) {
-    // TALK owns the keyboard while a conversation is open: Esc ends it; the
-    // input handles typing/Enter itself. Swallow everything else so global
-    // shortcuts (number choices, R, V…) don't fire behind the panel.
+    // TALK is now a companion HUD, not a modal — the world stays playable
+    // while you converse. If focus is in the TALK input, let the field handle
+    // typing/Enter and only intercept Esc (which folds → then closes). If the
+    // panel is open but focus is elsewhere, global shortcuts (number choices,
+    // R, V, ACT, PHOTO…) still work, so the player can act mid-conversation.
     if (Talk.isOpen()) {
-      if (e.key === "Escape") { e.preventDefault(); Talk.onEscape(); }
-      return;
+      const typing = document.activeElement === el.talkInput;
+      if (e.key === "Escape") { e.preventDefault(); Talk.onEscape(); return; }
+      // `\` toggles the fold-to-chip state without leaving the conversation.
+      if (!typing && e.key === "\\") { e.preventDefault(); Talk.toggleMinimize(); return; }
+      if (typing) return; // let the composer handle the rest
+      // Otherwise fall through so global shortcuts fire.
     }
     // Tape playback owns the keyboard while open.
     if (tapeIsOpen()) {
@@ -7263,6 +8511,11 @@
       openTape();
     } else if (e.key.toLowerCase() === "n") {
       toggleNarrator(); // narrator — a voice frames the world
+    } else if (e.shiftKey && e.key === "D") {
+      // Danger demo — scripted safe → warning → hurting → safe sequence so
+      // the vignette / HP bar / shake / heartbeat can be experienced on any
+      // scene, even when the vision loop hasn't tripped. See DangerSystem.demo.
+      try { DangerSystem.demo(); } catch (_) {}
     } else if (e.key.toLowerCase() === "d") {
       AgentLog.toggle(); // voice-agent debug log
     } else if (e.key.toLowerCase() === "p") {
@@ -7385,6 +8638,8 @@
     }
     if (el.talkClose) el.talkClose.addEventListener("click", () => Talk.close());
     if (el.talkScrim) el.talkScrim.addEventListener("click", () => Talk.close());
+    if (el.talkMin) el.talkMin.addEventListener("click", (e) => { e.preventDefault(); Talk.setMinimized(true); });
+    if (el.talkChip) el.talkChip.addEventListener("click", (e) => { e.preventDefault(); Talk.setMinimized(false); });
     if (el.talkModeToggle) el.talkModeToggle.addEventListener("click", () => Talk.micToggle());
     if (el.talkVoiceBtn) el.talkVoiceBtn.addEventListener("click", (e) => { e.stopPropagation(); Talk.toggleVoiceMenu(); });
     // Click anywhere else in the panel closes the voice menu.
@@ -7425,9 +8680,69 @@
     startStatusPolling();
     refreshStatus();
 
+    // Danger-system dev affordances, all off by default:
+    //   ?danger_demo=1  — auto-runs the safe/warning/hurting/safe sequence
+    //                     shortly after boot, so QA / stakeholders can see
+    //                     the full polish stack without hunting for a scene
+    //                     that trips the vision rubric. (Same as Shift+D.)
+    //   ?danger_debug=1 — mounts a small on-screen readout showing the live
+    //                     danger mode, last level, last reason, and current
+    //                     health. Invaluable when tuning the rubric.
+    try {
+      const q = new URLSearchParams(location.search);
+      if (q.get("danger_demo") === "1") {
+        // Small delay so the reactor has a moment to warm; the demo will
+        // still fire on stills if the reactor is unavailable.
+        setTimeout(() => { try { DangerSystem.demo(); } catch (_) {} }, 2600);
+      }
+      if (q.get("danger_debug") === "1") mountDangerDebugHud();
+    } catch (_) {}
+
     // Resume an in-progress run if one exists, otherwise auto-start a fresh
     // game so a first-time visitor is never greeted by a blank screen.
     bootstrap();
+  }
+
+  // Debug HUD for the danger system. Off by default; enable with
+  // `?danger_debug=1`. Polls DangerSystem.getState() a few times per second
+  // and renders MODE / LEVEL / REASON / HP in a small bottom-right pill so
+  // you can watch the vision loop's readings in real time. Purposefully
+  // ugly + prefixed with __ so nobody mistakes it for a shipped HUD.
+  function mountDangerDebugHud() {
+    if (document.getElementById("__danger-debug-hud")) return;
+    const hud = document.createElement("div");
+    hud.id = "__danger-debug-hud";
+    hud.style.cssText = [
+      "position:fixed", "right:12px", "bottom:12px", "z-index:9999",
+      "font-family:ui-monospace,Menlo,Consolas,monospace", "font-size:11px",
+      "line-height:1.45", "color:#fff",
+      "background:rgba(20,4,4,0.86)",
+      "border:1px solid rgba(255,80,80,0.55)",
+      "border-radius:4px", "padding:6px 10px",
+      "box-shadow:0 4px 18px rgba(0,0,0,0.55)",
+      "pointer-events:none",
+      "min-width:180px", "letter-spacing:0.02em",
+    ].join(";");
+    hud.innerHTML =
+      "<div style='opacity:0.75;font-size:9px;letter-spacing:0.16em'>DANGER DEBUG</div>" +
+      "<div id='__ddb-mode'>mode: safe</div>" +
+      "<div id='__ddb-lvl'>lvl:  0</div>" +
+      "<div id='__ddb-hp'>hp:   100</div>" +
+      "<div id='__ddb-reason' style='opacity:0.7'>—</div>";
+    document.body.appendChild(hud);
+    setInterval(() => {
+      try {
+        const s = DangerSystem.getState();
+        const m = document.getElementById("__ddb-mode");
+        const l = document.getElementById("__ddb-lvl");
+        const h = document.getElementById("__ddb-hp");
+        const r = document.getElementById("__ddb-reason");
+        if (m) m.textContent = "mode: " + s.mode + (s.dead ? " [DEAD]" : "");
+        if (l) l.textContent = "lvl:  " + s.level + (s.direction ? " (" + s.direction + ")" : "");
+        if (h) h.textContent = "hp:   " + Math.round(s.health);
+        if (r) r.textContent = (s.reason || "—").slice(0, 40);
+      } catch (_) {}
+    }, 250);
   }
 
   if (document.readyState === "loading") {

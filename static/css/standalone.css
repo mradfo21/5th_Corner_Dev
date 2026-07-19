@@ -113,6 +113,445 @@ html, body {
   opacity: 1;
 }
 
+/* ════════════════════════════════════════════════════════════════════════
+   DANGER FEEDBACK STACK
+   ════════════════════════════════════════════════════════════════════════
+   Layered like an action-game hit indicator system:
+
+     z=6  #danger-chroma           — chromatic-aberration RGB split on <video>
+                                     while HURTING / critical
+     z=8  #danger-vignette         — peripheral red pulse; container for
+                                     inner gradient + spatter + hit-flash +
+                                     directional arrows
+     z=11 #danger-health           — bottom-left VITAL bar w/ number + segs
+
+   Three modes:
+     • SAFE     — invisible, no drain, HP regens.
+     • WARNING  — red vignette, gentle 900ms breath, HP holds.
+     • HURTING  — red hotter, 500ms throb, chromatic aberration,
+                  screen shake on each hit, blood spatter, HP drains.
+
+   Everything below JS only toggles classes / retriggers animations —
+   nothing renders per-frame from JS. Body-level classes drive the
+   full-screen effects (screen shake, chroma) so they layer on top of
+   any active tool overlay. */
+
+/* Screen shake on damage tick — applied to <body> for the briefest
+   possible camera jolt. Amplitude scales via CSS var so the module can
+   dial harder shakes on bigger hits. */
+body.danger-shaking {
+  animation: danger-shake 200ms cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+}
+@keyframes danger-shake {
+  0%   { transform: translate3d(0, 0, 0); }
+  15%  { transform: translate3d(calc(var(--shake, 4px) * -1), calc(var(--shake, 4px) * 0.4), 0); }
+  30%  { transform: translate3d(var(--shake, 4px), calc(var(--shake, 4px) * -0.5), 0); }
+  45%  { transform: translate3d(calc(var(--shake, 4px) * -0.7), var(--shake, 4px), 0); }
+  60%  { transform: translate3d(var(--shake, 4px), calc(var(--shake, 4px) * -0.3), 0); }
+  75%  { transform: translate3d(calc(var(--shake, 4px) * -0.4), calc(var(--shake, 4px) * 0.6), 0); }
+  100% { transform: translate3d(0, 0, 0); }
+}
+
+/* Chromatic-aberration wash on the picture itself when HURTING. Two
+   duplicate red / cyan tints drawn as a full-bleed layer with slight
+   left / right offsets — reads like the video signal is fraying. Only
+   composited on top of the video (no effect on stills mode). */
+.danger-chroma {
+  position: fixed;
+  inset: 0;
+  z-index: 6;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 320ms ease-out;
+  mix-blend-mode: screen;
+  will-change: opacity;
+  contain: strict;
+  overflow: hidden;
+  /* Two thin RGB rims chase the edge — barely noticeable until HURTING. */
+  background:
+    linear-gradient(to right,
+      rgba(255, 40, 40, 0.35) 0%,
+      rgba(255, 40, 40, 0)    18%,
+      rgba(255, 40, 40, 0)    82%,
+      rgba(0, 200, 255, 0.30) 100%),
+    linear-gradient(to bottom,
+      rgba(255, 40, 40, 0.20) 0%,
+      rgba(255, 40, 40, 0)    22%,
+      rgba(0, 200, 255, 0)    78%,
+      rgba(0, 200, 255, 0.20) 100%);
+}
+body.danger-hurting .danger-chroma {
+  opacity: 0.7;
+  animation: danger-chroma-shift 220ms steps(2, jump-none) infinite;
+}
+body.danger-critical .danger-chroma {
+  opacity: 1;
+  animation: danger-chroma-shift 140ms steps(2, jump-none) infinite;
+}
+@keyframes danger-chroma-shift {
+  0%   { transform: translate3d(-1.5px, 0, 0); filter: saturate(1.4); }
+  50%  { transform: translate3d(1.5px, 0.5px, 0); filter: saturate(1.8); }
+  100% { transform: translate3d(-1.5px, -0.5px, 0); filter: saturate(1.4); }
+}
+
+/* ---------- Peripheral vignette ---------- */
+.danger-vignette {
+  position: fixed;
+  inset: 0;
+  z-index: 8;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 260ms ease-out;
+  will-change: opacity;
+  contain: strict;
+  overflow: hidden;
+}
+
+/* The actual red gradient lives on an inner element so the outer opacity
+   controls SHOW/HIDE while the inner one carries the PULSE — the two
+   channels don't fight each other on class swaps. */
+.danger-vignette-inner {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse at var(--danger-cx, 50%) var(--danger-cy, 50%),
+      rgba(220, 20, 20, 0) 40%,
+      rgba(220, 20, 20, 0) 58%,
+      rgba(220, 20, 20, 0.55) 82%,
+      rgba(220, 20, 20, 0.90) 100%);
+  opacity: 0.55;
+  mix-blend-mode: screen;
+  will-change: opacity, filter;
+  transform: translateZ(0);
+}
+
+.danger-vignette.on {
+  opacity: 1;
+}
+.danger-vignette.on .danger-vignette-inner {
+  animation: danger-pulse 900ms cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+.danger-vignette.on.hurting .danger-vignette-inner {
+  animation-duration: 500ms;
+  filter: saturate(1.4) brightness(1.2);
+  background:
+    radial-gradient(ellipse at var(--danger-cx, 50%) var(--danger-cy, 50%),
+      rgba(255, 30, 30, 0) 34%,
+      rgba(255, 30, 30, 0) 52%,
+      rgba(255, 30, 30, 0.70) 78%,
+      rgba(255, 30, 30, 0.98) 100%);
+}
+
+@keyframes danger-pulse {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 1.00; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .danger-vignette.on .danger-vignette-inner {
+    animation: none;
+    opacity: 0.85;
+  }
+  body.danger-shaking { animation: none; }
+  body.danger-hurting .danger-chroma,
+  body.danger-critical .danger-chroma { animation: none; }
+}
+
+/* ---------- Directional damage arrows (CoD/Battlefield-style) ----------
+   Four chevrons pinned to the edges. On each damage tick the JS flips
+   .show on the one matching the incoming threat direction; it pulses in
+   for ~700ms then fades. Each has a red glow halo behind it so it reads
+   at a glance even during heavy pulse action. */
+.danger-arrow {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+  transform-origin: center;
+  will-change: opacity, transform;
+}
+.danger-arrow-top    { top:    3vh;    left: 50%; transform: translate(-50%, 8px); }
+.danger-arrow-right  { top:    50%;    right: 3vw; transform: translate(-8px, -50%) rotate(90deg); }
+.danger-arrow-bottom { bottom: 3vh;    left: 50%; transform: translate(-50%, -8px) rotate(180deg); }
+.danger-arrow-left   { top:    50%;    left: 3vw;  transform: translate(8px, -50%) rotate(270deg); }
+
+/* The chevron itself — a ^ apex pointing UP. Cardinal rotation on the
+   parent picks which edge it points at. Solid crimson core with a
+   radial red-orange bloom behind so it reads over any picture. */
+.danger-arrow-chev {
+  display: block;
+  width: 64px;
+  height: 26px;
+  background: linear-gradient(180deg,
+                rgba(255, 120, 120, 1) 0%,
+                rgba(255, 40, 40, 1) 60%,
+                rgba(200, 20, 20, 1) 100%);
+  clip-path: polygon(
+    50% 0%,      /* apex top-center */
+    100% 100%,   /* bottom-right */
+    76% 100%,    /* inner bottom-right */
+    50% 40%,     /* inner V dip */
+    24% 100%,    /* inner bottom-left */
+    0% 100%      /* bottom-left */
+  );
+  filter: drop-shadow(0 0 8px rgba(255, 40, 40, 0.95))
+          drop-shadow(0 0 2px rgba(255, 255, 255, 0.4));
+}
+.danger-arrow-glow {
+  position: absolute;
+  inset: -18px -30px;
+  background: radial-gradient(ellipse at center,
+              rgba(255, 40, 40, 0.55) 0%,
+              rgba(255, 40, 40, 0.15) 40%,
+              rgba(255, 40, 40, 0)   70%);
+  filter: blur(6px);
+  z-index: -1;
+}
+
+.danger-arrow.show {
+  animation: danger-arrow-pulse 700ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes danger-arrow-pulse {
+  0%   { opacity: 0; }
+  15%  { opacity: 1; }
+  100% { opacity: 0; }
+}
+.danger-arrow-top.show    { animation-name: danger-arrow-pulse-top; }
+.danger-arrow-right.show  { animation-name: danger-arrow-pulse-right; }
+.danger-arrow-bottom.show { animation-name: danger-arrow-pulse-bottom; }
+.danger-arrow-left.show   { animation-name: danger-arrow-pulse-left; }
+@keyframes danger-arrow-pulse-top {
+  0%   { opacity: 0; transform: translate(-50%, 20px) scale(0.7); }
+  20%  { opacity: 1; transform: translate(-50%, 0)    scale(1.05); }
+  100% { opacity: 0; transform: translate(-50%, 8px)  scale(1); }
+}
+@keyframes danger-arrow-pulse-right {
+  0%   { opacity: 0; transform: translate(20px, -50%) rotate(90deg) scale(0.7); }
+  20%  { opacity: 1; transform: translate(0,    -50%) rotate(90deg) scale(1.05); }
+  100% { opacity: 0; transform: translate(-8px, -50%) rotate(90deg) scale(1); }
+}
+@keyframes danger-arrow-pulse-bottom {
+  0%   { opacity: 0; transform: translate(-50%, -20px) rotate(180deg) scale(0.7); }
+  20%  { opacity: 1; transform: translate(-50%,  0)    rotate(180deg) scale(1.05); }
+  100% { opacity: 0; transform: translate(-50%, -8px)  rotate(180deg) scale(1); }
+}
+@keyframes danger-arrow-pulse-left {
+  0%   { opacity: 0; transform: translate(-20px, -50%) rotate(270deg) scale(0.7); }
+  20%  { opacity: 1; transform: translate(0,     -50%) rotate(270deg) scale(1.05); }
+  100% { opacity: 0; transform: translate(8px,   -50%) rotate(270deg) scale(1); }
+}
+
+/* ---------- Blood spatter — one-shot on hit tick ----------
+   A cluster of dark-red radial blobs biased toward the incoming edge.
+   The JS sets --spatter-x / --spatter-y to place the primary blob at the
+   threat's on-screen center (or a random edge when direction is missing).
+   Additive on top of the hit flash for a wet, tactile impact. */
+.danger-blood-spatter {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  mix-blend-mode: multiply;
+  background:
+    radial-gradient(ellipse 22vw 14vh at var(--spatter-x, 50%) var(--spatter-y, 50%),
+      rgba(90, 6, 6, 0.75) 0%,
+      rgba(90, 6, 6, 0.35) 22%,
+      rgba(90, 6, 6, 0)    55%),
+    radial-gradient(ellipse 10vw 6vh at calc(var(--spatter-x, 50%) + 6vw) calc(var(--spatter-y, 50%) - 3vh),
+      rgba(60, 4, 4, 0.55) 0%,
+      rgba(60, 4, 4, 0)    60%),
+    radial-gradient(ellipse 7vw 4vh at calc(var(--spatter-x, 50%) - 4vw) calc(var(--spatter-y, 50%) + 4vh),
+      rgba(70, 4, 4, 0.60) 0%,
+      rgba(70, 4, 4, 0)    60%),
+    radial-gradient(ellipse 4vw 3vh at calc(var(--spatter-x, 50%) + 3vw) calc(var(--spatter-y, 50%) + 5vh),
+      rgba(50, 4, 4, 0.45) 0%,
+      rgba(50, 4, 4, 0)    60%);
+  filter: blur(0.4px);
+  will-change: opacity, transform;
+}
+.danger-blood-spatter.hit {
+  animation: danger-blood-spatter 620ms ease-out;
+}
+@keyframes danger-blood-spatter {
+  0%   { opacity: 0;    transform: scale(0.90); }
+  20%  { opacity: 0.95; transform: scale(1.06); }
+  60%  { opacity: 0.75; transform: scale(1.02); }
+  100% { opacity: 0;    transform: scale(1.00); }
+}
+
+/* ---------- Hit flash (retained from the base build) ----------
+   One-shot red pop centered on the threat point. Faster / brighter than
+   the spatter — the two together read as "impact + wound". */
+.danger-vignette .danger-hit-flash {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse at var(--danger-cx, 50%) var(--danger-cy, 50%),
+      rgba(255, 60, 60, 0) 45%,
+      rgba(255, 60, 60, 0.85) 100%);
+  opacity: 0;
+  mix-blend-mode: screen;
+  pointer-events: none;
+}
+.danger-vignette .danger-hit-flash.on {
+  animation: danger-hit-flash 260ms ease-out;
+}
+@keyframes danger-hit-flash {
+  0%   { opacity: 0; }
+  30%  { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   HEALTH BAR — action-game shaped
+   VITAL label + segmented track + numeric readout, all pinned bottom-left.
+   Hidden at full HP; slides + fades in on first damage; pulses critical
+   below 25 %.
+   ════════════════════════════════════════════════════════════════════════ */
+.danger-health {
+  position: fixed;
+  left: 22px;
+  bottom: 22px;
+  z-index: 11;
+  pointer-events: none;
+  opacity: 1;
+  transform: translateX(0);
+  transition: opacity 380ms ease-out, transform 380ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  font-family: "VT323", "Share Tech Mono", ui-monospace, monospace;
+  color: rgba(255, 90, 90, 0.85);
+  text-shadow: 0 0 6px rgba(200, 30, 30, 0.6);
+}
+
+.danger-health.hidden {
+  opacity: 0;
+  transform: translateX(-14px);
+}
+
+.danger-health-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.danger-health-label {
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  color: rgba(255, 120, 120, 0.9);
+  text-shadow: 0 0 8px rgba(255, 40, 40, 0.55);
+}
+
+.danger-health-num {
+  font-size: 18px;
+  letter-spacing: 0.05em;
+  min-width: 2.2ch;
+  text-align: right;
+  color: rgba(255, 210, 210, 0.95);
+  text-shadow: 0 0 8px rgba(255, 40, 40, 0.8),
+               0 0 2px rgba(255, 255, 255, 0.4);
+  font-variant-numeric: tabular-nums;
+  transition: color 200ms ease-out, text-shadow 200ms ease-out;
+}
+.danger-health.critical .danger-health-num {
+  color: rgba(255, 240, 240, 1);
+  text-shadow: 0 0 14px rgba(255, 40, 40, 1),
+               0 0 3px rgba(255, 255, 255, 0.6);
+}
+
+.danger-health-track {
+  width: 168px;
+  height: 8px;
+  background: rgba(30, 6, 6, 0.72);
+  border: 1px solid rgba(180, 30, 30, 0.75);
+  box-shadow: 0 0 10px rgba(200, 30, 30, 0.4),
+              inset 0 0 6px rgba(0, 0, 0, 0.75);
+  position: relative;
+  overflow: hidden;
+  border-radius: 1px;
+}
+
+.danger-health-fill {
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 100%;
+  background: linear-gradient(to right,
+              rgba(255, 100, 100, 1) 0%,
+              rgba(220, 40, 40, 1)   55%,
+              rgba(180, 20, 20, 1)   100%);
+  box-shadow: 0 0 10px rgba(255, 60, 60, 0.75),
+              inset 0 -2px 0 rgba(255, 200, 200, 0.25),
+              inset 0 1px 0 rgba(255, 255, 255, 0.35);
+  transition: width 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* 10 evenly-spaced segment dividers laid over the track — makes it read
+   like a Halo/CoD/Destiny HP bar instead of a raw progress bar. Divider
+   lines are inset shadows on 10 flex children so they stay pixel-aligned
+   at any track width. */
+.danger-health-segments {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  pointer-events: none;
+}
+.danger-health-segments span {
+  flex: 1 1 0;
+  border-right: 1px solid rgba(10, 4, 4, 0.85);
+  box-shadow: inset -1px 0 0 rgba(255, 100, 100, 0.15);
+}
+.danger-health-segments span:last-child {
+  border-right: 0;
+  box-shadow: none;
+}
+
+/* Regen shimmer: a diagonal highlight sweep across the bar while the
+   player is actively healing back. Adds a felt sense of "energy
+   returning" without a new number to read. Class toggled by JS. */
+.danger-health-shimmer {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  background: linear-gradient(105deg,
+              transparent 30%,
+              rgba(255, 220, 220, 0.55) 50%,
+              transparent 70%);
+  transform: translateX(-100%);
+}
+.danger-health.regenerating .danger-health-shimmer {
+  opacity: 1;
+  animation: danger-shimmer 1200ms linear infinite;
+}
+@keyframes danger-shimmer {
+  0%   { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+/* Critical band: <25% health. Track pulses in sync with the vignette
+   throb; label + number brighten. */
+.danger-health.critical .danger-health-track {
+  animation: danger-health-critical 500ms cubic-bezier(0.45, 0, 0.55, 1) infinite;
+  border-color: rgba(255, 60, 60, 1);
+}
+.danger-health.critical .danger-health-label {
+  color: rgba(255, 200, 200, 1);
+  text-shadow: 0 0 14px rgba(255, 40, 40, 1);
+}
+@keyframes danger-health-critical {
+  0%, 100% { box-shadow: 0 0 10px rgba(255, 40, 40, 0.5), inset 0 0 6px rgba(0, 0, 0, 0.75); }
+  50%      { box-shadow: 0 0 20px rgba(255, 80, 80, 1),   inset 0 0 6px rgba(0, 0, 0, 0.75); }
+}
+
+/* Damage bump: the number readout kicks up briefly on each hit so the
+   number FEELS the punch — retriggered by JS via class toggle. */
+.danger-health-num.bump {
+  animation: danger-num-bump 240ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+@keyframes danger-num-bump {
+  0%   { transform: scale(1); }
+  30%  { transform: scale(1.35); color: rgba(255, 255, 255, 1); }
+  100% { transform: scale(1); }
+}
+
 .scene-scrim {
   position: fixed;
   inset: 0;
@@ -2123,23 +2562,30 @@ html.is-mobile #scan-tags .scan-tag.acting {
 html.is-mobile #scan-tags .scan-tag.acting .scan-tag-label { display: inline; }
 
 /* ============================================================
-   TALK overlay — a live, story-aware conversation panel.
-   A calm "transmission" surface that slides up over the scene: warm-gold
-   accents (matching the TALK verb) against the game's cool VHS palette, so a
-   conversation feels like a distinct, intimate layer of interaction.
+   TALK overlay — a Coffee-Talk-inspired conversation window.
+
+   The scene is the game — a conversation is a LAYER on top, never a takeover.
+   So this overlay:
+     * Docks to the bottom-LEFT of the viewport (below the top HUD, clear of
+       the center image and the bottom action wheel). Sits like a chat window
+       in a café: quiet, present, but out of the way.
+     * Uses very transparent warm-glass so the world bleeds through — you can
+       still see what you're talking to.
+     * Collapses to a small "in-call" chip in the corner, so you can PLAY
+       (choices, ACT, PHOTO, SCAN, drive) with a conversation still live.
+     * Mirrors the latest incoming line as an ephemeral speech bubble that
+       floats over the scene and fades — dialogue happens in your peripheral
+       vision, coffee-talk style.
    ============================================================ */
 /* The overlay is just a positioning frame. It NEVER darkens, blurs, or blocks
    the scene: pointer-events stay off so the world underneath is fully visible
-   and interactive — only the compact panel itself captures input. */
+   and interactive — only the panel and the chip capture input. */
 #talk-overlay {
   position: fixed;
   inset: 0;
   z-index: 34;
-  display: flex;
-  align-items: flex-end;
-  justify-content: center;
   opacity: 0;
-  transition: opacity 0.2s ease;
+  transition: opacity 0.22s ease;
   pointer-events: none;
 }
 #talk-overlay.talk-in { opacity: 1; }
@@ -2148,46 +2594,89 @@ html.is-mobile #scan-tags .scan-tag.acting .scan-tag-label { display: inline; }
 /* No full-screen scrim — the conversation must not take over the view. */
 #talk-scrim { display: none; }
 
+/* ---------- The main panel: a slim, warm-glass chat window ---------- */
 #talk-panel {
-  position: relative;
+  position: absolute;
+  left: calc(env(safe-area-inset-left, 0px) + 20px);
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 24px);
   pointer-events: auto;
-  width: min(380px, calc(100vw - 32px));
-  max-height: min(44vh, 400px);
-  margin-bottom: calc(env(safe-area-inset-bottom, 0px) + 20px);
+  width: 344px;
+  max-width: calc(100vw - 40px);
+  min-height: 220px;
+  max-height: min(440px, 54vh);
   display: flex;
   flex-direction: column;
-  /* A small, self-contained frosted card. The blur is scoped to the card's own
-     footprint, so it reads as a floating transmission chip over the scene —
-     never a full-screen takeover. */
-  background: linear-gradient(180deg, rgba(15, 17, 23, 0.72), rgba(9, 11, 16, 0.8));
-  backdrop-filter: blur(14px) saturate(1.15);
-  -webkit-backdrop-filter: blur(14px) saturate(1.15);
-  border: 1px solid rgba(255, 205, 140, 0.28);
-  border-radius: 14px;
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.45), 0 0 24px rgba(255, 190, 110, 0.08);
+  /* A café-lit glass card. More transparent than a modal — you can see the
+     scene through it — with a warm inner glow along the left edge that
+     doubles as the "presence" accent. */
+  background:
+    linear-gradient(180deg, rgba(18, 14, 20, 0.62), rgba(10, 9, 14, 0.72));
+  backdrop-filter: blur(18px) saturate(1.2);
+  -webkit-backdrop-filter: blur(18px) saturate(1.2);
+  border: 1px solid rgba(255, 205, 140, 0.22);
+  border-radius: 16px;
+  box-shadow:
+    0 14px 44px rgba(0, 0, 0, 0.5),
+    0 0 34px rgba(255, 180, 100, 0.08),
+    inset 3px 0 0 rgba(255, 190, 110, 0.35);
   overflow: hidden;
-  transform: translateY(16px) scale(0.98);
-  transition: transform 0.24s cubic-bezier(0.2, 0.9, 0.25, 1.05);
+  transform: translateY(14px) scale(0.985);
+  transition:
+    transform 0.28s cubic-bezier(0.2, 0.9, 0.25, 1.05),
+    opacity 0.22s ease;
   font-family: 'Share Tech Mono', monospace;
 }
 #talk-overlay.talk-in #talk-panel { transform: translateY(0) scale(1); }
+/* Warm ambient glow behind the panel — a lantern-in-the-corner effect. */
+#talk-panel::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(120% 60% at 0% 100%, rgba(255, 170, 100, 0.12), transparent 55%);
+  z-index: 0;
+}
+#talk-panel > * { position: relative; z-index: 1; }
+/* Grabber: a subtle handle. Only shown on mobile where the panel is a sheet. */
+.talk-grabber {
+  display: none;
+  align-self: center;
+  width: 34px;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(255, 210, 160, 0.35);
+  margin: 6px 0 -2px;
+}
 
-/* Header: pulsing orb "presence" indicator + who you're speaking with. */
+/* ---------- Minimized state: chip only, panel folded away ---------- */
+#talk-overlay.talk-min #talk-panel {
+  opacity: 0;
+  transform: translateY(20px) scale(0.96);
+  pointer-events: none;
+}
+#talk-overlay.talk-min #talk-chip { display: flex; }
+
+/* Header: pulsing orb "presence" indicator + who you're speaking with.
+   `flex-wrap` keeps things graceful if VOICE + MUTE + MIN + CLOSE all show up
+   at once on a narrow panel — the buttons drop to a second line rather than
+   crushing the name into an ellipsis. */
 #talk-head {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 12px 14px;
-  border-bottom: 1px solid rgba(255, 205, 140, 0.16);
-  background: rgba(255, 196, 120, 0.05);
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px 10px 14px;
+  border-bottom: 1px solid rgba(255, 205, 140, 0.14);
+  background:
+    linear-gradient(180deg, rgba(255, 196, 120, 0.07), rgba(255, 196, 120, 0.02));
 }
 #talk-orb {
   flex: 0 0 auto;
-  width: 12px;
-  height: 12px;
+  width: 14px;
+  height: 14px;
   border-radius: 50%;
   background: radial-gradient(circle at 35% 30%, #ffe4b0, #ff9d3c);
-  box-shadow: 0 0 10px rgba(255, 175, 90, 0.9);
+  box-shadow: 0 0 12px rgba(255, 175, 90, 0.9);
   animation: talk-orb-breathe 2.4s ease-in-out infinite;
 }
 @keyframes talk-orb-breathe {
@@ -2199,22 +2688,22 @@ html.is-mobile #scan-tags .scan-tag.acting .scan-tag-label { display: inline; }
 #talk-orb[data-state="connecting"] { opacity: 0.6; animation-duration: 1.1s; }
 #talk-orb[data-state="listening"] {
   background: radial-gradient(circle at 35% 30%, #bfe9ff, #4aa3dc);
-  box-shadow: 0 0 10px rgba(120, 190, 255, 0.9);
+  box-shadow: 0 0 12px rgba(120, 190, 255, 0.9);
 }
 #talk-orb[data-state="speaking"] {
   background: radial-gradient(circle at 35% 30%, #ffe4b0, #ff9d3c);
-  box-shadow: 0 0 16px rgba(255, 190, 110, 1);
+  box-shadow: 0 0 18px rgba(255, 190, 110, 1);
   animation-duration: 0.9s;
 }
 @keyframes talk-orb-ping {
   0%   { transform: scale(1); box-shadow: 0 0 0 rgba(255, 175, 90, 0.8); }
   60%  { transform: scale(1.5); box-shadow: 0 0 22px rgba(255, 200, 130, 0.95); }
-  100% { transform: scale(1); box-shadow: 0 0 10px rgba(255, 175, 90, 0.9); }
+  100% { transform: scale(1); box-shadow: 0 0 12px rgba(255, 175, 90, 0.9); }
 }
-#talk-id { flex: 1 1 auto; min-width: 0; }
+#talk-id { flex: 1 1 120px; min-width: 100px; }
 #talk-name {
-  font-size: 17px;
-  letter-spacing: 0.06em;
+  font-size: 15px;
+  letter-spacing: 0.08em;
   color: #ffe7bf;
   text-transform: uppercase;
   text-shadow: 0 1px 6px rgba(0,0,0,0.7);
@@ -2223,27 +2712,44 @@ html.is-mobile #scan-tags .scan-tag.acting .scan-tag-label { display: inline; }
   text-overflow: ellipsis;
 }
 #talk-sub {
-  font-size: 10px;
-  letter-spacing: 0.18em;
+  font-size: 9.5px;
+  letter-spacing: 0.2em;
   text-transform: uppercase;
-  color: rgba(255, 210, 160, 0.6);
+  color: rgba(255, 210, 160, 0.55);
   margin-top: 2px;
 }
-#talk-mode-toggle {
+/* Header pill buttons — tighter, quieter, sit together as an icon cluster. */
+#talk-mode-toggle,
+#talk-min {
   flex: 0 0 auto;
   font-family: inherit;
-  font-size: 10px;
+  font-size: 9.5px;
   letter-spacing: 0.14em;
-  padding: 5px 9px;
-  border-radius: 8px;
-  border: 1px solid rgba(255, 205, 140, 0.4);
-  background: rgba(255, 196, 120, 0.1);
+  padding: 5px 8px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 205, 140, 0.28);
+  background: rgba(255, 196, 120, 0.08);
   color: #ffe7bf;
   cursor: pointer;
-  transition: background 0.14s, border-color 0.14s;
+  transition: background 0.14s, border-color 0.14s, transform 0.12s;
 }
-#talk-mode-toggle:hover { background: rgba(255, 196, 120, 0.24); border-color: rgba(255, 216, 150, 0.9); }
-#talk-mode-toggle.hidden { display: none; }
+#talk-min {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+#talk-min svg { width: 14px; height: 14px; }
+#talk-mode-toggle:hover,
+#talk-min:hover {
+  background: rgba(255, 196, 120, 0.2);
+  border-color: rgba(255, 216, 150, 0.7);
+}
+#talk-min:active { transform: scale(0.92); }
+#talk-mode-toggle.hidden,
+#talk-min.hidden { display: none; }
 /* Muted mic state — reads as "off". */
 #talk-mode-toggle.muted {
   background: rgba(255, 90, 90, 0.16);
@@ -2258,20 +2764,20 @@ html.is-mobile #scan-tags .scan-tag.acting .scan-tag-label { display: inline; }
   align-items: center;
   gap: 5px;
   font-family: inherit;
-  font-size: 10px;
+  font-size: 9.5px;
   letter-spacing: 0.12em;
-  padding: 5px 9px;
-  max-width: 120px;
-  border-radius: 8px;
-  border: 1px solid rgba(255, 205, 140, 0.4);
-  background: rgba(255, 196, 120, 0.1);
+  padding: 5px 8px;
+  max-width: 108px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 205, 140, 0.28);
+  background: rgba(255, 196, 120, 0.08);
   color: #ffe7bf;
   cursor: pointer;
   transition: background 0.14s, border-color 0.14s;
 }
-#talk-voice-btn:hover { background: rgba(255, 196, 120, 0.24); border-color: rgba(255, 216, 150, 0.9); }
+#talk-voice-btn:hover { background: rgba(255, 196, 120, 0.2); border-color: rgba(255, 216, 150, 0.7); }
 #talk-voice-btn.hidden { display: none; }
-#talk-voice-btn svg { width: 13px; height: 13px; flex: 0 0 auto; }
+#talk-voice-btn svg { width: 12px; height: 12px; flex: 0 0 auto; }
 #talk-voice-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 #talk-voice-menu {
@@ -2319,14 +2825,148 @@ html.is-mobile #scan-tags .scan-tag.acting .scan-tag-label { display: inline; }
 .talk-voice-item .tv-tag { font-size: 10px; opacity: 0.6; }
 #talk-voice-btn.switching { opacity: 0.6; pointer-events: none; }
 
-/* Mobile: let the conversation panel and popover use the full width cleanly. */
-@media (max-width: 560px) {
-  #talk-panel { width: calc(100vw - 16px); max-height: 82vh; }
-  #talk-voice-menu { width: calc(100vw - 40px); right: 8px; max-height: 44vh; }
-  #talk-voice-btn { max-width: 92px; }
-  #narrator-bar { width: calc(100vw - 20px); }
-  #narrator-line { font-size: 17px; }
+/* ---------- Minimized "in-call" chip ---------- */
+/* Docks to the bottom-left, right where the expanded panel would be, so the
+   chip becomes the panel's shadow — click it and the window unfolds. */
+#talk-chip {
+  position: absolute;
+  left: calc(env(safe-area-inset-left, 0px) + 20px);
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 24px);
+  display: none;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px 8px 10px;
+  max-width: 260px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 205, 140, 0.3);
+  background: linear-gradient(180deg, rgba(22, 18, 24, 0.75), rgba(12, 10, 16, 0.82));
+  backdrop-filter: blur(14px) saturate(1.2);
+  -webkit-backdrop-filter: blur(14px) saturate(1.2);
+  box-shadow:
+    0 8px 22px rgba(0, 0, 0, 0.45),
+    0 0 22px rgba(255, 180, 100, 0.14);
+  color: #ffe7bf;
+  font-family: 'Share Tech Mono', monospace;
+  cursor: pointer;
+  pointer-events: auto;
+  animation: talk-chip-in 0.24s cubic-bezier(0.2, 0.9, 0.25, 1.05);
+  transition: transform 0.14s ease, box-shadow 0.14s ease, background 0.14s ease;
 }
+#talk-chip.hidden { display: none; }
+#talk-chip:hover {
+  transform: translateY(-1px);
+  box-shadow:
+    0 10px 28px rgba(0, 0, 0, 0.5),
+    0 0 28px rgba(255, 190, 110, 0.22);
+}
+#talk-chip:active { transform: translateY(0) scale(0.98); }
+@keyframes talk-chip-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.talk-chip-orb {
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #ffe4b0, #ff9d3c);
+  box-shadow: 0 0 10px rgba(255, 175, 90, 0.9);
+  animation: talk-orb-breathe 2.4s ease-in-out infinite;
+}
+.talk-chip-orb.talk-orb-pulse { animation: talk-orb-ping 0.6s ease-out, talk-orb-breathe 2.4s ease-in-out 0.6s infinite; }
+.talk-chip-orb[data-state="listening"] {
+  background: radial-gradient(circle at 35% 30%, #bfe9ff, #4aa3dc);
+  box-shadow: 0 0 10px rgba(120, 190, 255, 0.9);
+}
+.talk-chip-orb[data-state="speaking"] {
+  box-shadow: 0 0 14px rgba(255, 190, 110, 1);
+  animation-duration: 0.9s;
+}
+.talk-chip-orb[data-state="connecting"] { opacity: 0.6; animation-duration: 1.1s; }
+.talk-chip-text {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  min-width: 0;
+}
+.talk-chip-name {
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #ffe7bf;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
+}
+.talk-chip-sub {
+  font-size: 8.5px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: rgba(255, 210, 160, 0.55);
+}
+.talk-chip-caret {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 210, 160, 0.75);
+  transform: rotate(180deg);
+}
+.talk-chip-caret svg { width: 14px; height: 14px; }
+
+/* ---------- Ephemeral floating speech bubble ---------- */
+/* Mirrors the latest incoming line just above the chat window, so a
+   conversation "hangs in the air" over the scene like a coffee-talk speech
+   bubble. It auto-fades — the panel/log is still the source of truth. */
+#talk-float {
+  position: absolute;
+  left: calc(env(safe-area-inset-left, 0px) + 24px);
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 200px);
+  z-index: 33;
+  max-width: 340px;
+  padding: 10px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 205, 140, 0.32);
+  background: linear-gradient(180deg, rgba(255, 196, 120, 0.14), rgba(255, 180, 100, 0.08));
+  backdrop-filter: blur(10px) saturate(1.2);
+  -webkit-backdrop-filter: blur(10px) saturate(1.2);
+  color: #ffeed7;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 13px;
+  line-height: 1.45;
+  box-shadow:
+    0 10px 26px rgba(0, 0, 0, 0.45),
+    0 0 22px rgba(255, 180, 100, 0.14);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(6px) scale(0.98);
+  transition: opacity 0.28s ease, transform 0.28s cubic-bezier(0.2, 0.9, 0.25, 1.05);
+  border-bottom-left-radius: 4px;
+}
+#talk-float.hidden { display: none; }
+#talk-float.talk-float-in { opacity: 1; transform: translateY(0) scale(1); }
+#talk-float-who {
+  font-size: 8.5px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: rgba(255, 210, 160, 0.75);
+  margin-bottom: 3px;
+}
+#talk-float-body {
+  word-wrap: break-word;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+
+/* NOTE: the mobile @media block for TALK lives AT THE END of the TALK
+   section (after `#talk-log`, `#talk-form`, `#talk-input`, `#talk-send`,
+   `.talk-body`, etc.) so its same-specificity rules actually override
+   the desktop defaults on phone viewports. Do not move it back up here or
+   the mobile styles will get clobbered by later same-specificity rules. */
 
 /* ---------- NARRATOR caption bar (lower-third) ---------- */
 #narrator-bar {
@@ -2398,13 +3038,13 @@ html.is-mobile #scan-tags .scan-tag.acting .scan-tag-label { display: inline; }
 }
 #talk-close {
   flex: 0 0 auto;
-  width: 30px;
-  height: 30px;
-  border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
   background: rgba(255, 255, 255, 0.04);
   color: #f2e6d4;
-  font-size: 15px;
+  font-size: 13px;
   line-height: 1;
   cursor: pointer;
   transition: background 0.14s, transform 0.12s;
@@ -2412,14 +3052,14 @@ html.is-mobile #scan-tags .scan-tag.acting .scan-tag-label { display: inline; }
 #talk-close:hover { background: rgba(255, 90, 90, 0.25); transform: scale(1.08); }
 #talk-close:active { transform: scale(0.92); }
 
-/* Transcript log. */
+/* Transcript log. Softer, roomier, warm café-lit. */
 #talk-log {
   flex: 1 1 auto;
   overflow-y: auto;
   padding: 14px 14px 6px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 196, 120, 0.4) transparent;
 }
@@ -2429,44 +3069,48 @@ html.is-mobile #scan-tags .scan-tag.acting .scan-tag-label { display: inline; }
 .talk-line {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  max-width: 86%;
-  animation: talk-line-in 0.26s ease-out;
+  gap: 2px;
+  max-width: 90%;
+  animation: talk-line-in 0.28s cubic-bezier(0.2, 0.9, 0.25, 1.05);
 }
 @keyframes talk-line-in {
   from { opacity: 0; transform: translateY(6px); }
   to   { opacity: 1; transform: translateY(0); }
 }
 .talk-who {
-  font-size: 9px;
-  letter-spacing: 0.16em;
+  font-size: 8.5px;
+  letter-spacing: 0.2em;
   text-transform: uppercase;
-  opacity: 0.65;
+  opacity: 0.6;
+  padding: 0 4px;
 }
 .talk-body {
-  font-size: 14px;
+  font-size: 13.5px;
   line-height: 1.5;
   padding: 9px 12px;
-  border-radius: 12px;
+  border-radius: 14px;
   word-wrap: break-word;
 }
-/* The subject (them): warm, on the left. */
+/* The subject (them): warm, on the left. Speech-bubble tail on the bottom
+   left corner for the Coffee-Talk-style dialog feel. */
 .talk-them { align-self: flex-start; }
-.talk-them .talk-who { color: rgba(255, 210, 160, 0.75); }
+.talk-them .talk-who { color: rgba(255, 210, 160, 0.7); }
 .talk-them .talk-body {
-  background: rgba(255, 196, 120, 0.12);
+  background: linear-gradient(180deg, rgba(255, 196, 120, 0.16), rgba(255, 180, 100, 0.09));
   border: 1px solid rgba(255, 205, 140, 0.28);
   color: #ffeed7;
   border-bottom-left-radius: 4px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
 }
 /* You: cool, on the right. */
 .talk-you { align-self: flex-end; }
-.talk-you .talk-who { color: rgba(170, 220, 255, 0.75); text-align: right; }
+.talk-you .talk-who { color: rgba(170, 220, 255, 0.7); text-align: right; }
 .talk-you .talk-body {
-  background: rgba(140, 217, 255, 0.12);
-  border: 1px solid rgba(140, 217, 255, 0.3);
+  background: linear-gradient(180deg, rgba(140, 217, 255, 0.14), rgba(110, 180, 230, 0.08));
+  border: 1px solid rgba(140, 217, 255, 0.28);
   color: #e6f6ff;
   border-bottom-right-radius: 4px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
 }
 
 /* Typing indicator: three warm dots breathing. */
@@ -2483,55 +3127,140 @@ html.is-mobile #scan-tags .scan-tag.acting .scan-tag-label { display: inline; }
   50%      { opacity: 1; transform: translateY(-3px); }
 }
 
-/* Composer. */
+/* Composer. Slimmer, coffee-shop-form, still keyboard-friendly. */
 #talk-form {
   display: flex;
   gap: 8px;
-  padding: 12px 14px calc(env(safe-area-inset-bottom, 0px) + 12px);
-  border-top: 1px solid rgba(255, 205, 140, 0.16);
-  background: rgba(255, 196, 120, 0.04);
+  padding: 10px 12px calc(env(safe-area-inset-bottom, 0px) + 10px);
+  border-top: 1px solid rgba(255, 205, 140, 0.12);
+  background: linear-gradient(0deg, rgba(255, 196, 120, 0.045), rgba(255, 196, 120, 0));
 }
 #talk-form.hidden { display: none; }
 #talk-input {
   flex: 1 1 auto;
   min-width: 0;
   font-family: inherit;
-  font-size: 14px;
-  padding: 10px 13px;
-  border-radius: 10px;
-  border: 1px solid rgba(255, 205, 140, 0.32);
-  background: rgba(0, 0, 0, 0.35);
+  font-size: 13.5px;
+  padding: 9px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 205, 140, 0.28);
+  background: rgba(0, 0, 0, 0.32);
   color: #ffeed7;
   outline: none;
   transition: border-color 0.14s, box-shadow 0.14s;
 }
 #talk-input::placeholder { color: rgba(255, 224, 190, 0.4); }
 #talk-input:focus {
-  border-color: rgba(255, 216, 150, 0.85);
-  box-shadow: 0 0 0 3px rgba(255, 196, 120, 0.16);
+  border-color: rgba(255, 216, 150, 0.75);
+  box-shadow: 0 0 0 3px rgba(255, 196, 120, 0.14);
 }
 #talk-send {
   flex: 0 0 auto;
-  width: 44px;
+  width: 38px;
+  height: 38px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: 10px;
-  border: 1px solid rgba(255, 205, 140, 0.4);
+  border-radius: 50%;
+  border: 1px solid rgba(255, 205, 140, 0.35);
   background: rgba(255, 196, 120, 0.14);
   color: #ffe7bf;
   cursor: pointer;
   transition: background 0.14s, transform 0.12s, box-shadow 0.14s;
 }
-#talk-send svg { width: 18px; height: 18px; }
+#talk-send svg { width: 16px; height: 16px; }
 #talk-send:hover { background: rgba(255, 196, 120, 0.3); box-shadow: 0 0 14px rgba(255, 196, 120, 0.5); }
 #talk-send:active { transform: scale(0.92); }
 
 @media (prefers-reduced-motion: reduce) {
-  #talk-overlay, #talk-panel, #talk-orb, .talk-line, .talk-typing .talk-body i {
+  #talk-overlay, #talk-panel, #talk-chip, #talk-float,
+  #talk-orb, .talk-chip-orb, .talk-line, .talk-typing .talk-body i {
     animation: none !important;
     transition: opacity 0.15s ease !important;
   }
+}
+
+/* ---------- Mobile: panel becomes a slim, shorter bottom sheet ---------- */
+/* The action wheel is at the bottom; the TALK sheet sits ABOVE it so the
+   game's controls stay reachable. Kept short and semi-transparent so the
+   scene stays legible. This block is deliberately placed at the END of the
+   TALK CSS section so its same-specificity rules override the desktop
+   defaults for `#talk-log`, `#talk-form`, `.talk-body`, etc. (which appear
+   above). Moving it earlier will silently break the mobile layout. */
+@media (max-width: 640px) {
+  /* The panel is a compact, low-profile sheet — a strip of chat, not a
+     takeover. Height is CONTENT-driven so a short exchange stays short; a
+     tight ceiling keeps a long one from swallowing the scene. */
+  #talk-panel {
+    left: 8px;
+    right: 8px;
+    width: auto;
+    max-width: none;
+    /* Above the action wheel (~176-196px tall + safe area). */
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 210px);
+    min-height: 0;
+    max-height: min(220px, 30vh);
+    border-radius: 14px;
+  }
+  .talk-grabber { display: block; margin: 4px 0 -4px; height: 3px; width: 30px; }
+
+  /* Header: single tight strip. Sub-text is stripped since the character
+     name + orb (with its state color) already communicates presence, and the
+     sub was the biggest reason the mobile header ate two lines. */
+  #talk-head { padding: 8px 10px 8px 12px; gap: 6px; flex-wrap: nowrap; }
+  #talk-name { font-size: 13px; letter-spacing: 0.06em; }
+  #talk-sub  { display: none; }
+  #talk-orb  { width: 11px; height: 11px; }
+  #talk-mode-toggle, #talk-voice-btn {
+    padding: 4px 7px; font-size: 9px; letter-spacing: 0.1em;
+  }
+  #talk-voice-btn { max-width: 84px; }
+  #talk-voice-btn svg { width: 11px; height: 11px; }
+  #talk-min, #talk-close { width: 24px; height: 24px; }
+  #talk-min svg { width: 12px; height: 12px; }
+
+  /* Log: tighter, smaller lines so more of the room-tone gets through. */
+  #talk-log { padding: 10px 10px 4px; gap: 6px; }
+  .talk-body { font-size: 12.5px; padding: 7px 10px; line-height: 1.4; }
+  .talk-who  { display: none; }  /* the bubble color already tells you who */
+  .talk-line { max-width: 94%; }
+
+  /* Composer: slim strip. */
+  #talk-form  { padding: 8px 10px calc(env(safe-area-inset-bottom, 0px) + 8px); gap: 6px; }
+  #talk-input { font-size: 13px; padding: 7px 11px; }
+  #talk-send  { width: 34px; height: 34px; }
+  #talk-send svg { width: 14px; height: 14px; }
+
+  #talk-chip {
+    left: auto;
+    right: calc(env(safe-area-inset-right, 0px) + 12px);
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 216px);
+    max-width: 200px;
+    padding: 6px 10px 6px 8px;
+  }
+  .talk-chip-name { font-size: 11px; max-width: 130px; }
+  .talk-chip-sub  { font-size: 8px; }
+  /* Bubble hangs above the chip in the bottom-right, so a folded
+     conversation feels like a speech bubble growing out of the pill. */
+  #talk-float {
+    left: 10px;
+    right: calc(env(safe-area-inset-right, 0px) + 10px);
+    max-width: 78vw;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 260px);
+    border-bottom-left-radius: 14px;
+    border-bottom-right-radius: 4px;
+  }
+  /* Menu drops from the header of the (now bottom-anchored) panel. Cap it so
+     it never spills past the shorter mobile sheet. */
+  #talk-voice-menu { width: calc(100vw - 40px); right: 8px; max-height: min(220px, 30vh); top: 44px; }
+  #narrator-bar { width: calc(100vw - 20px); }
+  #narrator-line { font-size: 17px; }
+}
+
+/* Very short viewports: give the sheet a bit less headroom so it never sits
+   near the top-right objectives HUD. */
+@media (max-width: 640px) and (max-height: 640px) {
+  #talk-panel { max-height: min(180px, 26vh); }
 }
 
 /* ---------- Menu toggle (top-right corner) ---------- */

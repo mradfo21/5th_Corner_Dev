@@ -1,15 +1,16 @@
 {
   "text_provider": "gemini",
   "text_model": "gemini-3.1-flash-lite",
-  "image_provider": "krea",
-  "image_model": "krea-2/medium",
-  "last_updated": "2026-07-14T23:10:00.000000+00:00",
+  "image_provider": "gemini",
+  "image_model": "gemini-3.1-flash-image",
+  "last_updated": "2026-07-19T01:03:00.000000+00:00",
   "available_configs": {
     "gemini": {
       "text_provider": "gemini",
       "text_model": "gemini-3.1-flash-lite",
       "image_provider": "gemini",
-      "image_model": "gemini-3.1-flash-image"
+      "image_model": "gemini-3.1-flash-image",
+      "description": "Gemini (Nano Banana) images — high quality, multi-frame continuity. DEFAULT. Requires GEMINI_API_KEY."
     },
     "openai": {
       "text_provider": "openai",
@@ -53,5 +54,5 @@
       "description": "fal.ai SDXL Lightning images (~1-2s!) + Gemini narrative. SPEED preset - lower fidelity than Krea/Gemini. Requires FAL_API_KEY."
     }
   },
-  "description": "Using Krea 2 Medium for fast image generation (switch to krea_large for quality, fal for max speed, or gemini/openai/veo via /ai_switch)"
+  "description": "Using Gemini (Nano Banana) for high-quality, multi-frame-continuity image generation. Switch to krea/krea_large, fal (max speed), or openai/veo via /ai_switch."
 }
