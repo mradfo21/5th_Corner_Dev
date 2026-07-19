@@ -19,17 +19,29 @@ import ai_provider_manager as apm
 
 
 class TestPromptBuilding(unittest.TestCase):
-    def test_text2img_includes_scene_and_anchors(self):
+    def test_text2img_leads_with_scene_then_style_tags(self):
         p = fal._build_text2img_prompt("a rusted watchtower on the horizon")
-        self.assertIn("rusted watchtower", p)
-        self.assertIn("NO TEXT", p.upper())
-        self.assertLessEqual(len(p), 2000)
+        # Scene must lead so SDXL's CLIP encoder actually sees it.
+        self.assertTrue(p.strip().startswith("a rusted watchtower"))
+        self.assertIn("VHS", p)
+        # Lean prompt: no giant Gemini prose blocks.
+        self.assertLessEqual(len(p), 700)
+        self.assertNotIn("CINEMATIC PERSPECTIVE", p)
+
+    def test_anti_text_constraints_live_in_negative_prompt(self):
+        # The "no text / no border / no people" constraints belong in the
+        # negative prompt for SDXL, not buried in the positive prompt.
+        p = fal._build_text2img_prompt("a rusted watchtower on the horizon")
+        self.assertNotIn("NO TEXT", p.upper())
+        neg = fal._SDXL_NEGATIVE_PROMPT.lower()
+        for term in ("text", "border", "person"):
+            self.assertIn(term, neg)
 
     def test_img2img_includes_continuity_language(self):
         p = fal._build_img2img_prompt("step through the doorway")
         self.assertIn("doorway", p)
-        self.assertIn("previous moment", p.lower())
-        self.assertLessEqual(len(p), 2000)
+        self.assertIn("continuation", p.lower())
+        self.assertLessEqual(len(p), 700)
 
     def test_time_of_day_injected(self):
         p = fal._build_text2img_prompt("empty road", time_of_day="dusk, overcast")

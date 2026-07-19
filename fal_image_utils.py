@@ -105,58 +105,56 @@ else:
 # Prompt building (shared VHS identity, same anchors as the other providers)
 # ---------------------------------------------------------------------------
 
-_ANTI_TIMECODE = (
-    "NO TEXT ANYWHERE. Zero text, zero numbers, zero letters, zero symbols. "
-    "Do NOT render 'REC', dates, timecodes, timestamps, battery/recording icons, "
-    "captions or watermarks. The output must be 100% visual with no on-screen displays."
+# IMPORTANT: SDXL is conditioned by a CLIP text encoder that only reads ~77
+# tokens (~300-400 chars) and responds to short, comma-separated descriptors —
+# NOT the long prose instructions Gemini follows. Reusing the Gemini prompt
+# templates here buried the actual scene under ~1.5k chars of POV/cinematography
+# prose (and then got truncated), so SDXL effectively never "saw" the scene.
+# We now lead with the scene and append tight style tags, and push the
+# "no text / no border / no people" constraints into a proper negative prompt.
+
+_SDXL_STYLE_TAGS = (
+    "1990s VHS camcorder footage, analog videotape look, photorealistic, "
+    "real camera optics, heavy film grain, slight chromatic aberration, "
+    "first-person head-mounted camera POV, environment only, edge-to-edge full frame"
 )
 
-_ANTI_BORDER = (
-    "NO BORDERS OR FRAMES. The image fills the entire canvas edge-to-edge with "
-    "zero borders, frames, black bars, white borders, matting or letterboxing."
-)
-
-_ANTI_PERSON = (
-    "NO PERSON / PLAYER VISIBLE. Fixed first-person / mounted-camera view. "
-    "Never show any part of a human body. Show only the environment."
-)
-
-_PHOTOGRAPHIC_ANCHOR = (
-    "Photographic 1990s VHS camcorder footage: real light through real glass optics, "
-    "subtle grain, gentle noise, slight color shift. NOT a video game, 3D render, or CGI."
+# fal's SDXL endpoints accept a negative_prompt — the correct place for the
+# anti-text / anti-border / anti-person constraints (as tags, not prose).
+_SDXL_NEGATIVE_PROMPT = (
+    "text, words, letters, numbers, watermark, timecode, timestamp, REC icon, "
+    "caption, subtitles, logo, border, frame, black bars, letterboxing, "
+    "person, people, human, face, portrait, hands, "
+    "3d render, cgi, video game screenshot, illustration, cartoon, anime, painting, "
+    "deformed, distorted, blurry, low quality, jpeg artifacts"
 )
 
 
-def _clamp(prompt: str, limit: int = 2000) -> str:
-    # SDXL/CLIP text encoders truncate around ~75-225 tokens anyway, so a much
-    # shorter clamp than Gemini's 5000 keeps the critical instructions from
-    # being pushed out by boilerplate.
+def _clamp(prompt: str, limit: int = 700) -> str:
+    # SDXL/CLIP truncates around ~77 tokens (~300-400 chars). Keep the positive
+    # prompt short and scene-first so the subject is never pushed out.
     return prompt if len(prompt) <= limit else prompt[:limit]
 
 
-def _time_injection(time_of_day: str) -> str:
-    if not time_of_day:
-        return ""
-    return f"Time/atmosphere: {time_of_day}. Lighting and weather must match."
-
-
 def _build_text2img_prompt(prompt: str, time_of_day: str = "") -> str:
-    structured = PROMPTS["gemini_text_to_image_instructions"].format(prompt=prompt)
-    head = [_ANTI_TIMECODE, _time_injection(time_of_day), _ANTI_BORDER, _ANTI_PERSON, _PHOTOGRAPHIC_ANCHOR]
-    parts = [p for p in head if p] + [structured]
-    return _clamp(_sanitize_for_safety("\n".join(parts)))
+    scene = (prompt or "").strip()
+    parts = [scene]
+    if time_of_day:
+        parts.append(f"{time_of_day} lighting")
+    parts.append(_SDXL_STYLE_TAGS)
+    return _clamp(_sanitize_for_safety(", ".join(p for p in parts if p)))
 
 
 def _build_img2img_prompt(prompt: str, time_of_day: str = "") -> str:
-    structured = PROMPTS["gemini_image_to_image_instructions"].format(prompt=prompt)
-    continuity = (
-        "The reference image shows the PREVIOUS moment. Carry forward palette, grain, "
-        "lighting, time of day and VHS aesthetic. Keep the same camera height/viewpoint "
-        "unless the action explicitly moves the camera."
-    )
-    head = [_ANTI_TIMECODE, continuity, _time_injection(time_of_day), _ANTI_BORDER, _ANTI_PERSON, _PHOTOGRAPHIC_ANCHOR]
-    parts = [p for p in head if p] + [structured]
-    return _clamp(_sanitize_for_safety("\n".join(parts)))
+    scene = (prompt or "").strip()
+    parts = [
+        scene,
+        "direct continuation of the previous frame, same location and camera viewpoint",
+    ]
+    if time_of_day:
+        parts.append(f"{time_of_day} lighting")
+    parts.append(_SDXL_STYLE_TAGS)
+    return _clamp(_sanitize_for_safety(", ".join(p for p in parts if p)))
 
 
 # ---------------------------------------------------------------------------
@@ -306,11 +304,13 @@ def generate_with_fal(
     full_prompt = _build_text2img_prompt(prompt, time_of_day=time_of_day)
     payload = {
         "prompt": full_prompt,
+        "negative_prompt": _SDXL_NEGATIVE_PROMPT,
         "image_size": FAL_IMAGE_SIZE,
         "num_inference_steps": FAL_NUM_INFERENCE_STEPS,
         "format": "png",
     }
-    print(f"[FAL IMG] text2img via {FAL_MODEL}", flush=True)
+    print(f"[FAL IMG] text2img via {FAL_MODEL} (steps={FAL_NUM_INFERENCE_STEPS})", flush=True)
+    print(f"[FAL IMG] scene prompt: {full_prompt[:160]}", flush=True)
     return _call_fal(FAL_MODEL, payload, caption, output_dir)
 
 
@@ -373,12 +373,14 @@ def generate_fal_img2img(
     payload = {
         "image_url": data_uri,
         "prompt": full_prompt,
+        "negative_prompt": _SDXL_NEGATIVE_PROMPT,
         "image_size": FAL_IMAGE_SIZE,
         "num_inference_steps": FAL_NUM_INFERENCE_STEPS,
         "strength": img2img_strength,
         "format": "png",
     }
-    print(f"[FAL IMG] img2img via {FAL_MODEL} (strength={img2img_strength}, ref={Path(ref_path).name})", flush=True)
+    print(f"[FAL IMG] img2img via {FAL_MODEL} (strength={img2img_strength}, steps={FAL_NUM_INFERENCE_STEPS}, ref={Path(ref_path).name})", flush=True)
+    print(f"[FAL IMG] scene prompt: {full_prompt[:160]}", flush=True)
     return _call_fal(f"{FAL_MODEL}/image-to-image", payload, caption, output_dir)
 
 
