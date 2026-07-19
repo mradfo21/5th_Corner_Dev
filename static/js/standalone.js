@@ -209,6 +209,7 @@
     touchMode: null,            // TOUCH tool state: null | "aim" (reticle tracks cursor) | "prompt" (spot locked, field open)
     touchPoint: null,           // {x, y} viewport coords of the reticle / locked spot
     photoZoom: 1,               // optical zoom magnification while the camera is armed (1..PHOTO_ZOOM_MAX)
+    panFocus: null,             // {x, y} scene point (untransformed screen coords) shown at frame center — drag to pan while zoomed
     photoPointers: new Map(),   // active pointers on the camera layer, for pinch-to-zoom
     pinchBase: null,            // {dist, zoom} anchor captured when a two-finger pinch begins
     pinchActive: false,         // true once 2 fingers are down (suppresses the shot until release)
@@ -4284,8 +4285,8 @@
     // transform origin (viewport center).
     const t = getSceneTransform();
     if (t && t.scale !== 1) {
-      x = t.ox + (x - t.ox) / t.scale;
-      y = t.oy + (y - t.oy) / t.scale;
+      x = t.px + (x - t.cx) / t.scale;
+      y = t.py + (y - t.cy) / t.scale;
     }
     const size = currentSourceSize();
     if (!size || !size.w || !size.h) return { x: x / W, y: y / H };
@@ -5532,33 +5533,77 @@
   }
 
   // The scene transform currently applied (identity unless the camera is armed).
-  // Centralized so the capture crop math can invert it. The origin is the
-  // viewport CENTER — the viewfinder is a fixed, centered frame, so pushing in
-  // magnifies symmetrically about the middle of the shot.
+  // Centralized so the capture crop math can invert it. The transform magnifies
+  // the scene by `scale` and pins a FOCAL scene point (px,py — the point you've
+  // panned to) at the frame CENTER (cx,cy). Forward map of an untransformed
+  // screen point s: s' = scale*(s - focal) + center. Inverse: s = focal +
+  // (s' - center)/scale. With no pan the focal IS the center (scale-about-middle).
   function getSceneTransform() {
     const scale = sceneScale();
     const c = captureCenter();
-    return { scale, ox: c.x, oy: c.y };
+    const p = (scale > 1 && state.panFocus) ? state.panFocus : c;
+    return { scale, px: p.x, py: p.y, cx: c.x, cy: c.y };
   }
 
-  // Apply scale-about-reticle as `translate(t) scale(z)` with transform-origin
-  // 0 0, where t = (1 - z) * reticle. Expressing it this way (instead of moving
-  // transform-origin) means only the translate changes as the reticle moves, so
-  // the CSS transform transition can smoothly interpolate the pan — the view
-  // glides to follow the cursor instead of snapping.
+  // Express the magnify+pan as `translate(t) scale(z)` (transform-origin 0 0),
+  // where t = center - z*focal. Only the translate changes as you pan, so the
+  // CSS transform transition can smoothly glide the view.
   function applySceneTransform() {
-    const z = sceneScale();
+    const t = getSceneTransform();
+    const z = t.scale;
     let val = "";
     if (z !== 1) {
-      const t = getSceneTransform();
-      const tx = ((1 - z) * t.ox).toFixed(2);
-      const ty = ((1 - z) * t.oy).toFixed(2);
+      const tx = (t.cx - z * t.px).toFixed(2);
+      const ty = (t.cy - z * t.py).toFixed(2);
       val = `translate(${tx}px, ${ty}px) scale(${z.toFixed(4)})`;
     }
     [el.sceneA, el.sceneB, el.reactorVideo, el.reactorFreeze].forEach((n) => {
       if (n) n.style.transform = val;
     });
     if (el.touchZoom) el.touchZoom.innerHTML = (state.photoZoom || 1).toFixed(1) + "&times;";
+  }
+
+  // Displayed media rect (px) under the current object-fit — where the scene
+  // pixels actually sit on screen. Used to clamp panning to the scene bounds.
+  function displayedMediaRect() {
+    const W = window.innerWidth, H = window.innerHeight;
+    const size = currentSourceSize();
+    if (!size || !size.w || !size.h) return { ox: 0, oy: 0, dw: W, dh: H };
+    const scale = mediaFitScale(W, H, size.w, size.h);
+    const dw = size.w * scale, dh = size.h * scale;
+    return { ox: (W - dw) / 2, oy: (H - dh) / 2, dw, dh };
+  }
+
+  // Keep the panned focal point inside the scene so the (fixed, centered) 16:9
+  // frame never reveals a black edge. At 1x the focal is pinned to center.
+  function clampPanFocus() {
+    const z = sceneScale();
+    const c = captureCenter();
+    if (z <= 1) { state.panFocus = { x: c.x, y: c.y }; return; }
+    const fit = frameFitPx();
+    const m = displayedMediaRect();
+    const halfW = (fit.w / 2) / z, halfH = (fit.h / 2) / z;
+    const minX = m.ox + halfW, maxX = m.ox + m.dw - halfW;
+    const minY = m.oy + halfH, maxY = m.oy + m.dh - halfH;
+    const p = state.panFocus || { x: c.x, y: c.y };
+    state.panFocus = {
+      x: (minX <= maxX) ? Math.max(minX, Math.min(maxX, p.x)) : (m.ox + m.dw / 2),
+      y: (minY <= maxY) ? Math.max(minY, Math.min(maxY, p.y)) : (m.oy + m.dh / 2),
+    };
+  }
+
+  // Drag-to-pan the magnified view (mobile touch drag + desktop mouse drag).
+  // Content follows the finger: dragging right reveals content to the left.
+  function panBy(dx, dy) {
+    const z = sceneScale();
+    if (z <= 1) return; // nothing to explore at full frame
+    const c = captureCenter();
+    const p = state.panFocus || { x: c.x, y: c.y };
+    state.panFocus = { x: p.x - dx / z, y: p.y - dy / z };
+    clampPanFocus();
+    applySceneTransform();
+    updateDofMask();
+    if (state.touchMode === "aim") layoutPhotoTargets();
   }
 
   // Drive the LETTERBOX MASK: a centered 16:9 window sized to the current capture
@@ -5579,9 +5624,10 @@
     const clamped = clampZoom(z);
     if (!opts.force && Math.abs(clamped - state.photoZoom) < 0.004) return;
     state.photoZoom = clamped;
+    // Re-clamp the pan focal to the new zoom (a lower zoom shrinks the pan range
+    // and eases the view back toward center; 1x re-centers).
+    clampPanFocus();
     applySceneTransform();
-    // Zooming OUT grows the frame (and re-grades what's framed) even when the
-    // reticle hasn't moved, so the frame expands live under the scroll/pinch.
     layoutCaptureFrame();
     updateDofMask();
     // While CONTINUOUS gestures (pinch, wheel spin) fire, skip the per-frame
@@ -5601,6 +5647,7 @@
 
   function clearSceneZoom() {
     state.photoZoom = 1;
+    state.panFocus = null; // drop any pan so the next arming opens centered
     [el.sceneA, el.sceneB, el.reactorVideo, el.reactorFreeze].forEach((n) => {
       if (n) n.style.transform = "";
     });
@@ -5698,8 +5745,8 @@
     }
     const t = getSceneTransform();
     if (t && t.scale !== 1) {
-      x = t.ox + (x - t.ox) * t.scale;
-      y = t.oy + (y - t.oy) * t.scale;
+      x = t.scale * (x - t.px) + t.cx;
+      y = t.scale * (y - t.py) + t.cy;
     }
     return { x, y };
   }
@@ -5951,6 +5998,17 @@
         g.dragging = true;
         document.body.classList.add("photo-dragging");
       }
+      if (g.dragging) {
+        // Once dragging, PAN the magnified view so you can explore the scene
+        // (mobile touch-drag + desktop mouse-drag). panBy no-ops at 1x (nothing
+        // is hidden to pan to) and does its own re-layout, so return here.
+        panBy(e.clientX - g.lastX, e.clientY - g.lastY);
+        g.lastX = e.clientX;
+        g.lastY = e.clientY;
+        return;
+      }
+      g.lastX = e.clientX;
+      g.lastY = e.clientY;
     }
     moveReticle(e.clientX, e.clientY);
   }
@@ -5966,7 +6024,7 @@
     try { if (el.touchLayer && el.touchLayer.setPointerCapture) el.touchLayer.setPointerCapture(e.pointerId); } catch (_) {}
     state.photoPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (state.photoPointers.size === 1) {
-      state.touchGesture = { id: e.pointerId, x0: e.clientX, y0: e.clientY, t0: Date.now(), moved: 0, dragging: false, touch: isTouchPointer(e) };
+      state.touchGesture = { id: e.pointerId, x0: e.clientX, y0: e.clientY, t0: Date.now(), moved: 0, dragging: false, touch: isTouchPointer(e), lastX: e.clientX, lastY: e.clientY };
       moveReticle(e.clientX, e.clientY);
     } else if (state.photoPointers.size === 2) {
       // Second finger → pinch. Abandon the single-finger gesture so lifting
