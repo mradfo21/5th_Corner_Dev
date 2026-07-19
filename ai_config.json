@@ -1,9 +1,9 @@
 {
   "text_provider": "gemini",
   "text_model": "gemini-3.1-flash-lite",
-  "image_provider": "krea",
-  "image_model": "krea-2/medium",
-  "last_updated": "2026-07-14T23:10:00.000000+00:00",
+  "image_provider": "fal",
+  "image_model": "fal-ai/fast-lightning-sdxl",
+  "last_updated": "2026-07-19T00:00:00.000000+00:00",
   "available_configs": {
     "gemini": {
       "text_provider": "gemini",
@@ -22,7 +22,7 @@
       "text_model": "claude-opus-4-5",
       "image_provider": "gemini",
       "image_model": "gemini-3.1-flash-lite-image",
-      "description": "Claude Opus for narrative + Gemini for images. Premium storytelling quality."
+      "description": "Claude Opus for narrative + Gemini images. Premium storytelling quality."
     },
     "veo": {
       "text_provider": "gemini",
@@ -36,7 +36,7 @@
       "text_model": "gemini-3.1-flash-lite",
       "image_provider": "krea",
       "image_model": "krea-2/medium",
-      "description": "Krea 2 Medium images (~12s, style transfer for continuity) + Gemini narrative. Fast default. Requires KREA_API_KEY."
+      "description": "Krea 2 Medium images (~12s, style transfer for continuity) + Gemini narrative. Higher fidelity. Requires KREA_API_KEY."
     },
     "krea_large": {
       "text_provider": "gemini",
@@ -50,8 +50,8 @@
       "text_model": "gemini-3.1-flash-lite",
       "image_provider": "fal",
       "image_model": "fal-ai/fast-lightning-sdxl",
-      "description": "fal.ai SDXL Lightning images (~1-2s!) + Gemini narrative. SPEED preset - lower fidelity than Krea/Gemini. Requires FAL_API_KEY."
+      "description": "fal.ai SDXL Lightning images (~1s) + Gemini narrative. DEFAULT — optimized for speed. Requires FAL_API_KEY."
     }
   },
-  "description": "Using Krea 2 Medium for fast image generation (switch to krea_large for quality, fal for max speed, or gemini/openai/veo via /ai_switch)"
+  "description": "Using fal.ai SDXL Lightning for all imagery (max speed). Switch to krea/krea_large for quality, or gemini/openai/veo via /ai_switch."
 }

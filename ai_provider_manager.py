@@ -43,8 +43,8 @@ def load_ai_config() -> Dict[str, Any]:
             default_config = {
                 "text_provider": "gemini",
                 "text_model": "gemini-3.1-flash-lite",
-                "image_provider": "gemini",
-                "image_model": "gemini-3.1-flash-image",
+                "image_provider": "fal",
+                "image_model": "fal-ai/fast-lightning-sdxl",
                 "last_updated": datetime.now(timezone.utc).isoformat(),
                 "available_configs": {
                     "gemini": {
@@ -131,12 +131,12 @@ def get_text_model() -> str:
 def get_image_provider() -> str:
     """Get current image generation provider."""
     _ensure_initialized()
-    return load_ai_config().get("image_provider", "gemini")
+    return load_ai_config().get("image_provider", "fal")
 
 def get_image_model() -> str:
     """Get current image generation model."""
     _ensure_initialized()
-    return load_ai_config().get("image_model", "gemini-3.1-flash-lite-image")
+    return load_ai_config().get("image_model", "fal-ai/fast-lightning-sdxl")
 
 def set_preset(preset_name: str) -> bool:
     """

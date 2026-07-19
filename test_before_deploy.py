@@ -238,12 +238,17 @@ else:
     image_model = config.get('image_model', '')
 
     # Production default must be a known-fast still-image provider. We ship with
-    # Krea 2 Medium as the live renderer (faster than Gemini Pro); Gemini Flash
-    # remains a supported default too. Veo (video) is NOT a valid still default.
-    if image_provider not in ('gemini', 'krea'):
+    # fal.ai SDXL Lightning as the live renderer (~1s); Krea/Gemini remain
+    # supported quality fallbacks via /ai_switch. Veo (video) is NOT a valid
+    # still default.
+    if image_provider not in ('fal', 'gemini', 'krea'):
         print("[FAIL]")
-        print(f"    Expected provider: gemini or krea, Got: {image_provider}")
+        print(f"    Expected provider: fal, gemini, or krea, Got: {image_provider}")
         failed_tests.append("ai_config.json wrong provider")
+    elif image_provider == 'fal' and image_model != 'fal-ai/fast-lightning-sdxl':
+        print("[FAIL]")
+        print(f"    Expected model: fal-ai/fast-lightning-sdxl, Got: {image_model}")
+        failed_tests.append("ai_config.json wrong model")
     elif image_provider == 'gemini' and image_model != 'gemini-3.1-flash-lite-image':
         print("[FAIL]")
         print(f"    Expected model: gemini-3.1-flash-lite-image, Got: {image_model}")

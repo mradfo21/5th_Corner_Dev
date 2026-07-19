@@ -1,22 +1,25 @@
 """
 fal_image_utils.py - fal.ai "Lightning" image generation provider
 
-A drop-in ULTRA-FAST alternative image backend to gemini_image_utils.py and
-krea_image_utils.py. fal.ai serves SDXL Lightning (a 4-step distilled SDXL
-checkpoint) on custom-optimized infrastructure:
+DEFAULT image backend for the project. fal.ai serves SDXL Lightning (a
+distilled SDXL checkpoint) on custom-optimized infrastructure:
 
     POST https://fal.run/fal-ai/fast-lightning-sdxl               (text-to-image)
     POST https://fal.run/fal-ai/fast-lightning-sdxl/image-to-image (img2img)
 
 Both are SYNCHRONOUS - fal queues + polls internally and the HTTP response
-only comes back once the image is ready, typically in ~1-2 seconds (vs. ~12s
+only comes back once the image is ready, typically in ~1 second (vs. ~12s
 for Krea Medium or ~15-30s for Gemini Pro). There is no async job/poll dance
-to write on our end, which is what makes this the fastest provider to
-integrate AND the fastest provider at runtime.
+to write on our end.
 
-Trade-off: SDXL Lightning is a much smaller/older checkpoint than Gemini or
-Krea 2, so per-image fidelity and prompt adherence are lower. This is meant
-as a "need it NOW" speed preset, not a quality replacement.
+Speed defaults (override via env):
+  - 2 inference steps (Lightning supports 1/2/4/8; 2 is the speed/quality sweet spot)
+  - sync_mode=true so the image returns inline as a data URI (no CDN fetch hop)
+  - jpeg over the wire, normalized to PNG + _small sidecar locally
+  - safety checker off (we already sanitize prompts client-side)
+
+Trade-off: lower per-image fidelity than Gemini/Krea. Switch those presets
+when quality matters more than latency.
 
 Public surface mirrors gemini_image_utils / krea_image_utils so
 engine._gen_image() can route to it through identical call sites:
@@ -55,14 +58,15 @@ FAL_API_KEY = (
 
 FAL_API_BASE = (os.getenv("FAL_API_BASE") or _config.get("FAL_API_BASE") or "https://fal.run").rstrip("/")
 
-# SDXL Lightning is distilled for 1/2/4/8-step inference. 4 steps is the
-# fastest setting that still holds together compositionally; drop to 2 for an
-# even faster (blurrier) result.
+# SDXL Lightning is distilled for 1/2/4/8-step inference. Default 2 = speed
+# preset (still holds composition; 1 is noticeably broken, 4+ costs latency).
 FAL_MODEL = "fal-ai/fast-lightning-sdxl"
 try:
-    FAL_NUM_INFERENCE_STEPS = int(os.getenv("FAL_NUM_INFERENCE_STEPS") or _config.get("FAL_NUM_INFERENCE_STEPS") or 4)
+    FAL_NUM_INFERENCE_STEPS = int(os.getenv("FAL_NUM_INFERENCE_STEPS") or _config.get("FAL_NUM_INFERENCE_STEPS") or 2)
 except (TypeError, ValueError):
-    FAL_NUM_INFERENCE_STEPS = 4
+    FAL_NUM_INFERENCE_STEPS = 2
+if FAL_NUM_INFERENCE_STEPS not in (1, 2, 4, 8):
+    FAL_NUM_INFERENCE_STEPS = 2
 
 # fal exposes fixed aspect-ratio presets rather than free-form ratios; this is
 # the closest built-in match to the project's 4:3 house style.
@@ -76,21 +80,46 @@ try:
 except (TypeError, ValueError):
     FAL_IMG2IMG_STRENGTH = 0.55
 
+# sync_mode returns the image inline as a data URI (skips a CDN download hop).
+_FAL_SYNC_MODE = str(
+    os.getenv("FAL_SYNC_MODE") if os.getenv("FAL_SYNC_MODE") is not None
+    else _config.get("FAL_SYNC_MODE", "1")
+).strip().lower() not in ("0", "false", "no", "off")
+
+# Wire format for the fal response. jpeg is smaller/faster than png over the
+# wire; we always re-encode to PNG locally for the engine contract.
+FAL_FORMAT = (os.getenv("FAL_FORMAT") or _config.get("FAL_FORMAT") or "jpeg").strip().lower()
+if FAL_FORMAT not in ("jpeg", "png"):
+    FAL_FORMAT = "jpeg"
+
+# Safety checker adds latency and can blank horror-adjacent frames; prompts
+# are already sanitized client-side via _sanitize_for_safety.
+_FAL_ENABLE_SAFETY_CHECKER = str(
+    os.getenv("FAL_ENABLE_SAFETY_CHECKER") if os.getenv("FAL_ENABLE_SAFETY_CHECKER") is not None
+    else _config.get("FAL_ENABLE_SAFETY_CHECKER", "0")
+).strip().lower() in ("1", "true", "yes", "on")
+
 # Data URIs are only recommended for small files - always use the
 # downsampled 480x360 sidecar as the img2img reference (never full-res).
 USE_DOWNSAMPLED_FOR_IMG2IMG = True
 
 # Requests to fal.run block until the image is ready, so this is a plain HTTP
-# timeout, not a job-poll budget. Generation itself is ~1-2s; padding for
+# timeout, not a job-poll budget. Generation itself is ~1s; padding for
 # network/cold-start jitter.
-_REQUEST_TIMEOUT_SECONDS = 20.0
+_REQUEST_TIMEOUT_SECONDS = 15.0
 
 IMAGE_DIR = Path("images")
 
 if not FAL_API_KEY:
     print("[FAL INIT] WARNING: FAL_API_KEY not set — fal.ai image generation will be unavailable.")
 else:
-    print(f"[FAL INIT] FAL_API_KEY loaded ({FAL_API_KEY[:6]}...{FAL_API_KEY[-4:]}); base={FAL_API_BASE}")
+    print(
+        f"[FAL INIT] FAL_API_KEY loaded ({FAL_API_KEY[:6]}...{FAL_API_KEY[-4:]}); "
+        f"base={FAL_API_BASE}; steps={FAL_NUM_INFERENCE_STEPS}; "
+        f"sync={_FAL_SYNC_MODE}; format={FAL_FORMAT}; "
+        f"safety_checker={_FAL_ENABLE_SAFETY_CHECKER}",
+        flush=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -119,11 +148,25 @@ _PHOTOGRAPHIC_ANCHOR = (
 )
 
 
-def _clamp(prompt: str, limit: int = 2000) -> str:
-    # SDXL/CLIP text encoders truncate around ~75-225 tokens anyway, so a much
-    # shorter clamp than Gemini's 5000 keeps the critical instructions from
-    # being pushed out by boilerplate.
+def _clamp(prompt: str, limit: int = 1200) -> str:
+    # SDXL/CLIP text encoders truncate around ~75-225 tokens anyway, so a short
+    # clamp keeps the critical instructions from being pushed out by
+    # boilerplate and shaves a bit of request payload size.
     return prompt if len(prompt) <= limit else prompt[:limit]
+
+
+def _base_payload(prompt: str) -> dict:
+    """Shared speed-tuned fields for text2img + img2img."""
+    return {
+        "prompt": prompt,
+        "image_size": FAL_IMAGE_SIZE,
+        "num_inference_steps": FAL_NUM_INFERENCE_STEPS,
+        "num_images": 1,
+        "format": FAL_FORMAT,
+        "sync_mode": _FAL_SYNC_MODE,
+        "enable_safety_checker": _FAL_ENABLE_SAFETY_CHECKER,
+        "expand_prompt": False,
+    }
 
 
 def _time_injection(time_of_day: str) -> str:
@@ -279,12 +322,12 @@ def generate_with_fal(
     output_dir: Path = None,
 ) -> str | None:
     """Text-to-image with fal.ai SDXL Lightning. Returns a local image path,
-    or None on failure. Typically completes in ~1-2 seconds.
+    or None on failure. Typically completes in ~1 second.
 
     Signature intentionally matches gemini_image_utils.generate_with_gemini /
     krea_image_utils.generate_with_krea so engine._gen_image() can call any
     provider identically. `hd_mode` is accepted for interface parity but
-    Lightning has no HQ tier - it always runs the fast 4-step checkpoint.
+    Lightning has no HQ tier - it always runs the fast distilled checkpoint.
     """
     try:
         caption = caption.encode("ascii", "ignore").decode("ascii") or "image"
@@ -296,13 +339,12 @@ def generate_with_fal(
         return None
 
     full_prompt = _build_text2img_prompt(prompt, time_of_day=time_of_day)
-    payload = {
-        "prompt": full_prompt,
-        "image_size": FAL_IMAGE_SIZE,
-        "num_inference_steps": FAL_NUM_INFERENCE_STEPS,
-        "format": "png",
-    }
-    print(f"[FAL IMG] text2img via {FAL_MODEL}", flush=True)
+    payload = _base_payload(full_prompt)
+    print(
+        f"[FAL IMG] text2img via {FAL_MODEL} "
+        f"(steps={FAL_NUM_INFERENCE_STEPS}, sync={_FAL_SYNC_MODE})",
+        flush=True,
+    )
     return _call_fal(FAL_MODEL, payload, caption, output_dir)
 
 
@@ -362,15 +404,15 @@ def generate_fal_img2img(
     img2img_strength = max(0.05, min(1.0, img2img_strength))
 
     full_prompt = _build_img2img_prompt(prompt, time_of_day=time_of_day)
-    payload = {
-        "image_url": data_uri,
-        "prompt": full_prompt,
-        "image_size": FAL_IMAGE_SIZE,
-        "num_inference_steps": FAL_NUM_INFERENCE_STEPS,
-        "strength": img2img_strength,
-        "format": "png",
-    }
-    print(f"[FAL IMG] img2img via {FAL_MODEL} (strength={img2img_strength}, ref={Path(ref_path).name})", flush=True)
+    payload = _base_payload(full_prompt)
+    payload["image_url"] = data_uri
+    payload["strength"] = img2img_strength
+    print(
+        f"[FAL IMG] img2img via {FAL_MODEL} "
+        f"(strength={img2img_strength}, steps={FAL_NUM_INFERENCE_STEPS}, "
+        f"ref={Path(ref_path).name})",
+        flush=True,
+    )
     return _call_fal(f"{FAL_MODEL}/image-to-image", payload, caption, output_dir)
 
 

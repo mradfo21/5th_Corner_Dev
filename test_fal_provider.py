@@ -23,13 +23,13 @@ class TestPromptBuilding(unittest.TestCase):
         p = fal._build_text2img_prompt("a rusted watchtower on the horizon")
         self.assertIn("rusted watchtower", p)
         self.assertIn("NO TEXT", p.upper())
-        self.assertLessEqual(len(p), 2000)
+        self.assertLessEqual(len(p), 1200)
 
     def test_img2img_includes_continuity_language(self):
         p = fal._build_img2img_prompt("step through the doorway")
         self.assertIn("doorway", p)
         self.assertIn("previous moment", p.lower())
-        self.assertLessEqual(len(p), 2000)
+        self.assertLessEqual(len(p), 1200)
 
     def test_time_of_day_injected(self):
         p = fal._build_text2img_prompt("empty road", time_of_day="dusk, overcast")
@@ -102,6 +102,30 @@ class TestProviderManagerWiring(unittest.TestCase):
         self.assertIn("fal", presets)
         self.assertEqual(presets["fal"]["image_provider"], "fal")
         self.assertEqual(presets["fal"]["image_model"], "fal-ai/fast-lightning-sdxl")
+
+    def test_fal_is_shipped_default(self):
+        self.assertEqual(apm.get_image_provider(), "fal")
+        self.assertEqual(apm.get_image_model(), "fal-ai/fast-lightning-sdxl")
+
+
+class TestSpeedDefaults(unittest.TestCase):
+    def test_two_step_default(self):
+        self.assertEqual(fal.FAL_NUM_INFERENCE_STEPS, 2)
+
+    def test_sync_mode_on_by_default(self):
+        self.assertTrue(fal._FAL_SYNC_MODE)
+
+    def test_safety_checker_off_by_default(self):
+        self.assertFalse(fal._FAL_ENABLE_SAFETY_CHECKER)
+
+    def test_base_payload_is_speed_tuned(self):
+        payload = fal._base_payload("a wet alley")
+        self.assertEqual(payload["num_inference_steps"], 2)
+        self.assertEqual(payload["num_images"], 1)
+        self.assertTrue(payload["sync_mode"])
+        self.assertFalse(payload["enable_safety_checker"])
+        self.assertFalse(payload["expand_prompt"])
+        self.assertEqual(payload["format"], "jpeg")
 
 
 if __name__ == "__main__":
