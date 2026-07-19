@@ -113,6 +113,165 @@ html, body {
   opacity: 1;
 }
 
+/* ---------- Danger vignette + health bar ---------- */
+/* One overlay, three states:
+     • SAFE     — invisible.
+     • WARNING  — red pulses at the edges (900ms breath), no damage.
+     • HURTING  — same pulse but faster (500ms throb) and hotter — health drains.
+   Radial gradient stays transparent in the center so the picture is never
+   obscured; the red only lives at the periphery. Non-interactive; sits above
+   the video and freeze buffer but below the HUD (10) and reticle. */
+.danger-vignette {
+  position: fixed;
+  inset: 0;
+  z-index: 8;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 260ms ease-out;
+  will-change: opacity;
+  contain: strict;
+  overflow: hidden;
+}
+
+/* The actual red gradient lives on an inner element so the outer opacity
+   controls SHOW/HIDE while the inner one carries the PULSE — the two
+   channels don't fight each other on class swaps. */
+.danger-vignette-inner {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse at var(--danger-cx, 50%) var(--danger-cy, 50%),
+      rgba(220, 20, 20, 0) 40%,
+      rgba(220, 20, 20, 0) 58%,
+      rgba(220, 20, 20, 0.55) 82%,
+      rgba(220, 20, 20, 0.90) 100%);
+  opacity: 0.55;
+  mix-blend-mode: screen;
+  will-change: opacity, filter;
+  transform: translateZ(0);
+}
+
+/* WARNING: vignette visible, gentle 900ms breath. Player has time to react. */
+.danger-vignette.on {
+  opacity: 1;
+}
+.danger-vignette.on .danger-vignette-inner {
+  animation: danger-pulse 900ms cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+
+/* HURTING: same red, faster 500ms throb, slightly hotter. Health is draining. */
+.danger-vignette.on.hurting .danger-vignette-inner {
+  animation-duration: 500ms;
+  filter: saturate(1.4) brightness(1.2);
+  background:
+    radial-gradient(ellipse at var(--danger-cx, 50%) var(--danger-cy, 50%),
+      rgba(255, 30, 30, 0) 34%,
+      rgba(255, 30, 30, 0) 52%,
+      rgba(255, 30, 30, 0.70) 78%,
+      rgba(255, 30, 30, 0.98) 100%);
+}
+
+@keyframes danger-pulse {
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 1.00; }
+}
+
+/* Reduced-motion: hold the red steady instead of pulsing. Still shows the
+   state clearly, just without the tempo. */
+@media (prefers-reduced-motion: reduce) {
+  .danger-vignette.on .danger-vignette-inner {
+    animation: none;
+    opacity: 0.85;
+  }
+}
+
+/* Health bar. Bottom-left, tiny, VHS-crimson. Hidden at full health so it
+   only appears once you've taken damage — no permanent HUD clutter. */
+.danger-health {
+  position: fixed;
+  left: 22px;
+  bottom: 22px;
+  z-index: 11;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+  opacity: 1;
+  transition: opacity 380ms ease-out;
+  font-family: "VT323", "Share Tech Mono", ui-monospace, monospace;
+  font-size: 12px;
+  letter-spacing: 0.18em;
+  color: rgba(255, 90, 90, 0.85);
+  text-shadow: 0 0 6px rgba(200, 30, 30, 0.6);
+}
+
+.danger-health.hidden {
+  opacity: 0;
+}
+
+.danger-health-track {
+  width: 128px;
+  height: 4px;
+  background: rgba(60, 12, 12, 0.55);
+  border: 1px solid rgba(180, 30, 30, 0.55);
+  box-shadow: 0 0 8px rgba(200, 30, 30, 0.35),
+              inset 0 0 4px rgba(0, 0, 0, 0.6);
+  position: relative;
+  overflow: hidden;
+}
+
+.danger-health-fill {
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 100%;
+  background: linear-gradient(to right,
+              rgba(255, 80, 80, 0.95) 0%,
+              rgba(220, 40, 40, 0.95) 55%,
+              rgba(180, 20, 20, 0.95) 100%);
+  box-shadow: 0 0 6px rgba(255, 60, 60, 0.6);
+  /* Snappy but not instant — a felt "chunk taken" impact without jitter. */
+  transition: width 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* Critical band: <25% health. Bar itself pulses to reinforce the vignette
+   throb, so you can feel both meters getting louder together. */
+.danger-health.critical .danger-health-track {
+  animation: danger-health-critical 500ms cubic-bezier(0.45, 0, 0.55, 1) infinite;
+}
+.danger-health.critical {
+  color: rgba(255, 110, 110, 1);
+  text-shadow: 0 0 10px rgba(255, 40, 40, 0.9);
+}
+
+@keyframes danger-health-critical {
+  0%, 100% { box-shadow: 0 0 8px rgba(255, 40, 40, 0.5), inset 0 0 4px rgba(0, 0, 0, 0.6); }
+  50%      { box-shadow: 0 0 14px rgba(255, 60, 60, 0.95), inset 0 0 4px rgba(0, 0, 0, 0.6); }
+}
+
+/* One-shot flash overlay: fired on each fresh damage tick so the player
+   FEELS individual hits inside the sustained drain (a heartbeat rather than
+   a numeric ticker). Purely additive; independent of the pulse. */
+.danger-vignette .danger-hit-flash {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(ellipse at var(--danger-cx, 50%) var(--danger-cy, 50%),
+      rgba(255, 60, 60, 0) 45%,
+      rgba(255, 60, 60, 0.85) 100%);
+  opacity: 0;
+  mix-blend-mode: screen;
+  pointer-events: none;
+}
+.danger-vignette .danger-hit-flash.on {
+  animation: danger-hit-flash 260ms ease-out;
+}
+
+@keyframes danger-hit-flash {
+  0%   { opacity: 0; }
+  30%  { opacity: 1; }
+  100% { opacity: 0; }
+}
+
 .scene-scrim {
   position: fixed;
   inset: 0;

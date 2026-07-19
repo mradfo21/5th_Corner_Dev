@@ -447,6 +447,13 @@
       scene() { tone(180, 0.05, "sine", 0.05); tone([520, 380], 0.14, "sine", 0.04, 0.03); }, // new scene image streams in (shutter/whir)
       start() { tone([160, 520], 0.28, "sawtooth", 0.05); tone(880, 0.12, "triangle", 0.04, 0.18); }, // new tape / game start
       escalate() { tone([300, 620], 0.35, "sawtooth", 0.06); tone([620, 900], 0.3, "square", 0.03, 0.12); }, // phase escalates — tension rises
+      // Danger vignette state sounds. WARNING is a taut two-note alert (heads
+      // up, back off); HURTING is a lower, uglier throb (you're bleeding); HIT
+      // is a short percussive tick that lands on each damage tick, so the
+      // steady drain feels like discrete impacts, not a numeric ticker.
+      warning() { tone([880, 660], 0.14, "square", 0.055); tone(1240, 0.08, "square", 0.04, 0.12); },
+      hurting() { tone([320, 180], 0.30, "sawtooth", 0.08); tone([540, 300], 0.22, "sawtooth", 0.055, 0.10); },
+      hit()     { tone([440, 220], 0.09, "sawtooth", 0.07); },
       submit() { tone(700, 0.05, "square", 0.05); tone(1050, 0.11, "square", 0.045, 0.05); }, // custom action sent
       open() { tone([420, 760], 0.14, "triangle", 0.05); },    // free-will input reveal
       toggle() { tone(300, 0.04, "square", 0.04); },           // UI toggle click
@@ -764,6 +771,9 @@
       select: () => buzz(14),      // committing an action / choice
       strong: () => buzz([16, 24, 16]), // big moment (death / new game)
       soft: () => buzz(5),         // subtle nudge
+      // ---- Danger vignette / damage ----
+      warn: () => buzz([10, 60, 10]),  // entering the red — a heads-up shake
+      tick: () => buzz(18),            // each damage tick — a single firm punch
       // ---- Camera feel ----
       camera: () => buzz([10, 24, 18]), // raising the camera — a two-stage clunk
       shutter: () => buzz(24),          // the shot fires — one firm snap
@@ -1533,6 +1543,9 @@
         window.ReactorRenderer.enable().then((ok) => {
           buildModelSwitcher(); // config may refine the model list/labels
           if (ok && Renderer.lastScene) window.ReactorRenderer.applyScene(Renderer.lastScene);
+          // Reactor is up — kick off the vision-driven danger loop so the
+          // player has a live threat readout the moment the video renders.
+          try { DangerSystem.start(); } catch (_) {}
         });
       }
       updateRendererButton();
@@ -1604,12 +1617,19 @@
           // Steer the current scene immediately so switching mid-game shows
           // something without waiting for the next turn.
           if (ok && Renderer.lastScene) window.ReactorRenderer.applyScene(Renderer.lastScene);
+          // Reactor came up — spin up the danger vignette + health loop so
+          // the vision-driven threat readout tracks the live video.
+          try { DangerSystem.start(); } catch (_) {}
         });
       } else if (this.reactorAvailable()) {
         showRendererToast("Still images");
         try { window.ReactorRenderer.disable(); } catch (_) {}
         hideGuideThumbnail();
         hideCaptureThumbnail();
+        // Danger is a REALTIME-only mechanic (still images have no live
+        // frame to grade), so tear the loop down and clear the vignette
+        // whenever we drop back to stills.
+        try { DangerSystem.stop(); } catch (_) {}
       }
       // Ambient hotspots work in BOTH renderers — drop the tags so they re-map
       // to the new source (video vs still cover the viewport differently), then
@@ -1769,6 +1789,484 @@
   };
   // Expose for debugging + e2e (so tests can seed a scene base for movement).
   try { window.__Renderer = Renderer; } catch (_) {}
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // DangerSystem — realtime vision-driven danger vignette + health.
+  //
+  // Loop: every ~1s while the realtime renderer is showing frames, sample the
+  // on-screen video (captureFrame) and POST /api/danger to grade it. Vision
+  // returns one of three ordinal levels — 0 safe / 1 threatened / 2 attacking
+  // — which drives a tiny three-state machine on the client:
+  //
+  //   SAFE     → nothing hostile in view. Vignette off. Health regens.
+  //   WARNING  → level ≥ 1. Red vignette pulses at 900ms. Health HOLDS.
+  //              After WARNING_GRACE_MS of continuous WARNING → HURTING.
+  //   HURTING  → damage tick every second while in state. Vignette throbs
+  //              at 500ms (faster + hotter). Only level=0 held for
+  //              SAFE_CONFIRM_MS drops back to SAFE.
+  //
+  // Level 2 fast-tracks straight to HURTING with no grace — an "attacking"
+  // reading is defined as danger already committed, so the visual and the
+  // mechanic both snap on the same tick. Predictable: warning ALWAYS precedes
+  // damage unless the picture itself already shows the hit landing.
+  //
+  // Every tuning knob lives in one CONFIG object at the top so playtest can
+  // live-edit via window.__DANGER_CONFIG__. Nothing else in the file touches
+  // these numbers.
+  // ═══════════════════════════════════════════════════════════════════════
+  const DangerSystem = (function () {
+    const CONFIG = Object.assign({
+      SAMPLE_MS: 1000,             // how often we grade the frame
+      SAMPLE_MIN_MS: 900,          // minimum gap between calls (in-flight guard)
+      REQUEST_TIMEOUT_MS: 6000,    // client-side abort if the server hangs
+      BACKOFF_MS: 2500,            // after 2 consecutive failures
+      WARNING_GRACE_MS: 3000,      // WARNING → HURTING after this much red
+      SAFE_CONFIRM_MS: 2000,       // clean vision needed to fully de-escalate
+      DAMAGE_TICK_MS: 1000,        // one hit per tick while HURTING
+      DAMAGE_PER_TICK: 8,          // → 12.5s from full health to death
+      REGEN_PER_SEC: 5,            // → 20s from empty back to full
+      HEALTH_MAX: 100,
+      HEALTH_CRITICAL: 25,         // bar starts pulsing critical below this
+      BOOST_LUMA_DELTA: 0.30,      // brightness spike → extra out-of-band call
+      CAPTURE_WIDTH: 384,          // downscale for cheap POST payloads
+      DEATH_MSG: "Your body gave out.\nThe last thing you saw was the light.",
+    }, (typeof window !== "undefined" && window.__DANGER_CONFIG__) || {});
+
+    let el = { vignette: null, inner: null, hitFlash: null,
+               health: null, healthFill: null };
+    let running = false;
+    let sampleTimer = null;
+    let inFlight = false;
+    let lastPostMs = 0;
+    let consecutiveErrors = 0;
+    let lastLumaSample = null;   // {t, luma} of the most recent captureFrame
+
+    // Danger state machine. `mode` is one of "safe" | "warning" | "hurting".
+    // `stateSince` is the ms timestamp we entered the current mode; used to
+    // gate WARNING → HURTING (must hold for WARNING_GRACE_MS).
+    // `cleanSince` is the ms timestamp of the first level=0 reading in the
+    // current de-escalation streak; used to gate WARNING/HURTING → SAFE
+    // (must stay clean for SAFE_CONFIRM_MS).
+    let mode = "safe";
+    let stateSince = 0;
+    let cleanSince = 0;
+    let lastLevel = 0;
+    let lastReason = "";
+    let lastDirection = null;
+
+    // Health lives here as the single source of truth; ticks on rAF via a
+    // simple wall-clock delta so drain feels steady even if the sample loop
+    // stumbles. Never mutated from outside — call takeDamage() / regen()
+    // instead.
+    let health = CONFIG.HEALTH_MAX;
+    let healthTickTs = 0;
+    let nextDamageTick = 0;
+    let hpLoopId = null;
+    let dead = false;
+
+    function log(...args) {
+      if (typeof window !== "undefined" && window.__DEBUG_DANGER__) {
+        console.log("[danger]", ...args);
+      }
+    }
+
+    function now() { return performance.now(); }
+
+    function bindDom() {
+      if (el.vignette) return;
+      el.vignette   = document.getElementById("danger-vignette");
+      el.inner      = el.vignette && el.vignette.querySelector(".danger-vignette-inner");
+      el.hitFlash   = document.getElementById("danger-hit-flash");
+      el.health     = document.getElementById("danger-health");
+      el.healthFill = document.getElementById("danger-health-fill");
+    }
+
+    function applyDirectionCss(direction) {
+      if (!el.vignette) return;
+      // Move the radial-gradient origin toward the edge the threat is on so
+      // the vignette pushes IN from that side. Center-biased for "center"
+      // and no-direction so it stays symmetric when we don't know.
+      let cx = "50%", cy = "50%";
+      switch (direction) {
+        case "left":   cx = "12%"; cy = "50%"; break;
+        case "right":  cx = "88%"; cy = "50%"; break;
+        case "top":    cx = "50%"; cy = "12%"; break;
+        case "bottom": cx = "50%"; cy = "88%"; break;
+        // "center" | null → symmetric
+      }
+      el.vignette.style.setProperty("--danger-cx", cx);
+      el.vignette.style.setProperty("--danger-cy", cy);
+    }
+
+    function setMode(next, reason) {
+      if (next === mode) return;
+      const prev = mode;
+      mode = next;
+      stateSince = now();
+      cleanSince = 0;
+      // Entering HURTING → deliver the first damage tick on the very next
+      // rAF frame so the punch (flash + audio hit) lands ON the same beat
+      // the pulse speeds up. Otherwise the "safe" branch of the health
+      // loop had been continuously pushing nextDamageTick forward, so the
+      // first drain would land a full second after entering HURTING.
+      if (next === "hurting") nextDamageTick = now();
+      log("mode", prev, "→", next, reason || "");
+      applyVisualForMode();
+      // Audio + haptic beats on state entry — WARNING is a soft ping (heads-
+      // up), HURTING is a heavier tone (you're in it now). Death has its own
+      // sound via the existing gameover flow.
+      try {
+        if (next === "warning" && prev === "safe") {
+          Sound.status(); // brief HUD tick
+          if (Sound.warning) Sound.warning();
+          try { Haptics.select(); } catch (_) {}
+        } else if (next === "hurting") {
+          if (Sound.hurting) Sound.hurting();
+          else Sound.error();
+          try { Haptics.warn && Haptics.warn(); } catch (_) {}
+        }
+      } catch (_) {}
+    }
+
+    function applyVisualForMode() {
+      if (!el.vignette) return;
+      const on = mode !== "safe";
+      el.vignette.classList.toggle("on", on);
+      el.vignette.classList.toggle("hurting", mode === "hurting");
+    }
+
+    function ingest(reading) {
+      if (dead || !running) return;
+      const level = Math.max(0, Math.min(2, Number(reading && reading.level) || 0));
+      lastLevel = level;
+      lastReason = (reading && reading.reason) || "";
+      lastDirection = (reading && reading.direction) || null;
+      applyDirectionCss(lastDirection);
+
+      const t = now();
+
+      // Fast-path: attacking-level danger. The picture ALREADY shows the hit
+      // being committed, so we snap straight to HURTING — no grace. This is
+      // still predictable because the tell is on screen; the vignette flips
+      // to the fast throb on the same tick and the player sees why.
+      if (level >= 2) {
+        cleanSince = 0;
+        if (mode !== "hurting") setMode("hurting", "level=2");
+        return;
+      }
+
+      if (level >= 1) {
+        cleanSince = 0;
+        if (mode === "safe") setMode("warning", "level=1");
+        else if (mode === "warning" &&
+                 t - stateSince >= CONFIG.WARNING_GRACE_MS) {
+          setMode("hurting", "warning grace exhausted");
+        }
+        // If we're already hurting, level=1 sustains it — no timer reset.
+        return;
+      }
+
+      // level === 0: begin / continue the SAFE_CONFIRM_MS de-escalation clock.
+      if (mode === "safe") { cleanSince = 0; return; }
+      if (!cleanSince) cleanSince = t;
+      if (t - cleanSince >= CONFIG.SAFE_CONFIRM_MS) {
+        setMode("safe", "clean vision confirmed");
+      }
+    }
+
+    // ── Health / damage ──────────────────────────────────────────────────
+    function showHealthBar(show) {
+      if (!el.health) return;
+      el.health.classList.toggle("hidden", !show);
+    }
+
+    function updateHealthBar() {
+      if (!el.healthFill) return;
+      const pct = Math.max(0, Math.min(100,
+                 (health / CONFIG.HEALTH_MAX) * 100));
+      el.healthFill.style.width = pct.toFixed(1) + "%";
+      const critical = health <= CONFIG.HEALTH_CRITICAL;
+      if (el.health) el.health.classList.toggle("critical", critical && !dead);
+      showHealthBar(health < CONFIG.HEALTH_MAX);
+    }
+
+    function flashHit() {
+      if (!el.hitFlash) return;
+      el.hitFlash.classList.remove("on");
+      // Force reflow so the animation retriggers cleanly on the next tick.
+      // Reading offsetWidth is the standard idiom for this.
+      void el.hitFlash.offsetWidth;
+      el.hitFlash.classList.add("on");
+      try { if (Sound.hit) Sound.hit(); else Sound.error(); } catch (_) {}
+      try { Haptics.tick && Haptics.tick(); } catch (_) {}
+    }
+
+    function stopHealthLoop() {
+      if (hpLoopId) { cancelAnimationFrame(hpLoopId); hpLoopId = null; }
+    }
+
+    function startHealthLoop() {
+      stopHealthLoop();
+      healthTickTs = now();
+      nextDamageTick = healthTickTs + CONFIG.DAMAGE_TICK_MS;
+      const step = () => {
+        if (!running || dead) return;
+        const t = now();
+        const dt = Math.max(0, (t - healthTickTs) / 1000); // seconds
+        healthTickTs = t;
+
+        if (mode === "hurting") {
+          // Fairness gate: don't drain while a turn is being committed
+          // (state.processing) or the freeze buffer is up (isShowing=false).
+          // The picture the state machine is grading is stale during those
+          // windows, so a player who just made a good escape choice should
+          // not eat 40 HP waiting on server latency.
+          const R = window.ReactorRenderer;
+          const stale = state.processing ||
+                        (R && R.isShowing && !R.isShowing());
+          if (!stale && t >= nextDamageTick) {
+            // Discrete hit: the drain is felt as a punch, not a smooth
+            // decrement, which reads better in an action loop.
+            const before = health;
+            health = Math.max(0, health - CONFIG.DAMAGE_PER_TICK);
+            if (health < before) flashHit();
+            nextDamageTick = t + CONFIG.DAMAGE_TICK_MS;
+            if (health <= 0) {
+              die();
+              return;
+            }
+          } else if (stale) {
+            // Keep the cadence rolling forward so the FIRST tick after the
+            // world settles doesn't land a "banked" hit from the pause.
+            nextDamageTick = t + CONFIG.DAMAGE_TICK_MS;
+          }
+        } else if (mode === "safe") {
+          // Smooth regen — feels less like an "advantage granted" and more
+          // like getting your breath back.
+          if (health < CONFIG.HEALTH_MAX) {
+            health = Math.min(CONFIG.HEALTH_MAX,
+                              health + CONFIG.REGEN_PER_SEC * dt);
+          }
+          nextDamageTick = t + CONFIG.DAMAGE_TICK_MS; // reset the drain cadence
+        } else {
+          // WARNING: hold at current value. The reset avoids a stale
+          // damage-tick landing the instant we escalate to HURTING.
+          nextDamageTick = t + CONFIG.DAMAGE_TICK_MS;
+        }
+
+        updateHealthBar();
+        hpLoopId = requestAnimationFrame(step);
+      };
+      hpLoopId = requestAnimationFrame(step);
+    }
+
+    function die() {
+      if (dead) return;
+      dead = true;
+      running = false;
+      stopHealthLoop();
+      if (sampleTimer) { clearTimeout(sampleTimer); sampleTimer = null; }
+      updateHealthBar();
+      applyVisualForMode();
+      log("DEATH — health hit 0");
+      try {
+        // Route through the existing game-over flow so the death overlay,
+        // narrator epitaph, tape archival, and reactor pause all fire the
+        // same way as a story-driven death.
+        enterGameOver(CONFIG.DEATH_MSG);
+      } catch (e) { console.warn("[danger] enterGameOver failed", e); }
+    }
+
+    // ── Sampling loop ────────────────────────────────────────────────────
+    function shouldSample() {
+      if (!running || dead) return false;
+      if (state.gameOver) return false;
+      if (Renderer.mode !== "reactor") return false;
+      if (!Renderer.reactorAvailable()) return false;
+      const R = window.ReactorRenderer;
+      if (!R.isShowing || !R.isShowing()) return false;
+      // Camera is being driven — the frame we'd grade is mid-motion and
+      // often mostly blur / partial. Coast on the last mode until the view
+      // settles; the state machine will de-escalate on its own via clean
+      // readings when sampling resumes.
+      if (state.moving) return false;
+      return true;
+    }
+
+    function readLuma(dataUrl) {
+      // Fast luma proxy from a tiny 8x8 downsample of the captured frame.
+      // Used to catch brightness spikes (muzzle flash / explosion) that a
+      // 1 Hz vision loop would miss. Async → we don't block sampling on it.
+      return new Promise((resolve) => {
+        try {
+          const img = new Image();
+          img.onload = () => {
+            try {
+              const c = document.createElement("canvas");
+              c.width = 8; c.height = 8;
+              const g = c.getContext("2d");
+              g.drawImage(img, 0, 0, 8, 8);
+              const d = g.getImageData(0, 0, 8, 8).data;
+              let s = 0;
+              for (let i = 0; i < d.length; i += 4) {
+                s += (0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]);
+              }
+              // 8×8 = 64 pixels, each contributing 0..255 → normalize to 0..1
+              // so BOOST_LUMA_DELTA is a legible "fraction of full range".
+              resolve(s / (64 * 255));
+            } catch (_) { resolve(null); }
+          };
+          img.onerror = () => resolve(null);
+          img.src = dataUrl;
+        } catch (_) { resolve(null); }
+      });
+    }
+
+    async function sampleOnce(reason) {
+      if (inFlight) return;
+      const R = window.ReactorRenderer;
+      if (!R || !R.captureFrame) return;
+      const frame = R.captureFrame(CONFIG.CAPTURE_WIDTH);
+      if (!frame) return;
+
+      // Cheap luma-delta boost: if the picture just got dramatically
+      // brighter, that's almost certainly a muzzle flash / explosion. We
+      // fire the vision call NOW rather than waiting for the next tick, so
+      // sudden violence has sub-second reaction time.
+      // (Sampling this AFTER we've already decided to do a call is fine —
+      // it seeds the next comparison.)
+      readLuma(frame).then((lum) => {
+        if (lum == null) return;
+        if (lastLumaSample != null) {
+          const delta = Math.abs(lum - lastLumaSample);
+          if (delta >= CONFIG.BOOST_LUMA_DELTA && !inFlight) {
+            log("luma spike", delta.toFixed(2), "→ boost");
+            // Trigger a fresh sample almost immediately, out of band.
+            setTimeout(() => { if (running) sampleOnce("luma-boost"); }, 60);
+          }
+        }
+        lastLumaSample = lum;
+      });
+
+      inFlight = true;
+      lastPostMs = now();
+      const controller = ("AbortController" in window) ? new AbortController() : null;
+      const timeout = controller ? setTimeout(() => {
+        try { controller.abort(); } catch (_) {}
+      }, CONFIG.REQUEST_TIMEOUT_MS) : null;
+
+      try {
+        const resp = await fetch("/api/danger", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ frame }),
+          signal: controller ? controller.signal : undefined,
+        });
+        if (timeout) clearTimeout(timeout);
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+        const reading = await resp.json();
+        consecutiveErrors = 0;
+        log("reading", reading, reason || "");
+        ingest(reading);
+      } catch (err) {
+        if (timeout) clearTimeout(timeout);
+        consecutiveErrors += 1;
+        log("call failed", err && err.message);
+        // Don't ingest ANYTHING on failure — the state machine coasts on
+        // its last known level, which for a persistent outage means it
+        // will slowly de-escalate via clean-reading absence (see below).
+        // But we do NOT want to be stuck HURTING forever if the server is
+        // gone, so on repeated failures we synthesize a level=0 read to
+        // ease back toward SAFE.
+        if (consecutiveErrors >= 3) ingest({ level: 0, reason: "vision-offline" });
+      } finally {
+        inFlight = false;
+      }
+    }
+
+    function scheduleNext() {
+      if (sampleTimer) { clearTimeout(sampleTimer); sampleTimer = null; }
+      if (!running) return;
+      const gap = (consecutiveErrors >= 2) ? CONFIG.BACKOFF_MS : CONFIG.SAMPLE_MS;
+      sampleTimer = setTimeout(async () => {
+        try {
+          if (shouldSample()) await sampleOnce("tick");
+        } finally {
+          scheduleNext();
+        }
+      }, gap);
+    }
+
+    // ── Public control ──────────────────────────────────────────────────
+    function start() {
+      if (running) return;
+      bindDom();
+      if (!el.vignette) return; // DOM missing — abort silently
+      running = true;
+      dead = false;
+      consecutiveErrors = 0;
+      lastLumaSample = null;
+      health = CONFIG.HEALTH_MAX;
+      mode = "safe";
+      stateSince = now();
+      cleanSince = 0;
+      applyDirectionCss(null);
+      applyVisualForMode();
+      updateHealthBar();
+      showHealthBar(false);
+      startHealthLoop();
+      scheduleNext();
+      log("start");
+    }
+
+    function stop() {
+      if (!running) return;
+      running = false;
+      if (sampleTimer) { clearTimeout(sampleTimer); sampleTimer = null; }
+      stopHealthLoop();
+      mode = "safe";
+      applyVisualForMode();
+      log("stop");
+    }
+
+    function reset() {
+      // Clean slate — used by /api/reset & the death-overlay restart. Wipes
+      // health + mode + death flag, then re-arms the loop if realtime is
+      // active (a die() during the prior run set running=false, so without
+      // this the danger meter would be dark forever after a restart).
+      const wasRunning = running;
+      running = false;
+      if (sampleTimer) { clearTimeout(sampleTimer); sampleTimer = null; }
+      stopHealthLoop();
+      dead = false;
+      consecutiveErrors = 0;
+      lastLumaSample = null;
+      health = CONFIG.HEALTH_MAX;
+      mode = "safe";
+      stateSince = now();
+      cleanSince = 0;
+      applyDirectionCss(null);
+      applyVisualForMode();
+      updateHealthBar();
+      showHealthBar(false);
+      const reactorLive = (typeof Renderer !== "undefined") &&
+                          Renderer.mode === "reactor" &&
+                          Renderer.reactorAvailable();
+      if (wasRunning || reactorLive) start();
+      log("reset");
+    }
+
+    function getState() {
+      return {
+        running, mode, health,
+        level: lastLevel, reason: lastReason, direction: lastDirection,
+        dead,
+      };
+    }
+
+    return { start, stop, reset, getState };
+  })();
+  try { window.__DangerSystem = DangerSystem; } catch (_) {}
 
   function updateRendererButton() {
     // Reveal the realtime SHAPE tool only when the realtime renderer is active.
@@ -3045,6 +3543,10 @@
       if (Renderer.reactorAvailable()) {
         try { window.ReactorRenderer.reset(); } catch (_) {}
       }
+      // Fresh run → full health, safe state, vignette cleared. If we're in
+      // realtime mode the loop keeps sampling; in stills mode reset() is a
+      // no-op beyond zeroing the meter.
+      try { DangerSystem.reset(); } catch (_) {}
       Renderer.lastScene = null;
       Renderer.lastBase = null;
       Renderer.observedPromptId = null;
