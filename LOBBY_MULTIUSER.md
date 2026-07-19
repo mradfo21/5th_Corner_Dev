@@ -138,48 +138,62 @@ fixed: both thread the caller's real session id through end-to-end
 (verified with two sessions taking concurrent turns while `default`'s
 `state.json` stays byte-for-byte unchanged).
 
-With that correctness bug fixed, a narrower concurrency question
-remains: two DIFFERENT sessions' background work (an in-flight turn,
-scene-image render, world-evolution rewrite, or observe/reground) can
-legitimately run on separate threads at the same time. Each of those
-paths persists its own session's state to disk correctly regardless.
-The one shared resource is the in-memory `state`/`history` mirror used
-as a same-session-polling convenience (so `/api/feed` doesn't have to
-re-read disk on every poll) — `_sync_ambient_state()` only refreshes
-that mirror when the session in question is still the *active* one
-(per `get_active_session_id()`), so a finished background task can
-never leak its data into whichever session is active by the time it
-completes. Scene-image generation additionally serializes system-wide
-via `TURN_LOCK`, because `_gen_image` reads img2img reference frames
-off the module-global `history` (not a parameter) — running two
-sessions' image renders at once would otherwise race on that global.
-This doesn't add latency for a single active session: a turn only
-ever has one image render in flight, and it already ran sequentially
-relative to that turn's own choice generation.
+With that correctness bug fixed, two DIFFERENT sessions' background
+work (an in-flight turn, reset, scene-image render, world-evolution
+rewrite, or observe/reground) can still be dispatched on separate
+threads at the same time. Every one of those paths persists its own
+session's state to disk correctly regardless. There are two shared
+in-memory resources that concurrent work could otherwise race on, and
+both are now closed:
 
-What's **not** fully closed: the deepest turn-pipeline functions
-(`advance_turn_image_fast`, `advance_turn_choices_deferred`) still
-read/write the ambient mirror many times across a multi-second body
-(LLM + image calls). If two *different* sessions' turns are being
-processed in that exact window at the same time, there's a narrow
-chance one turn's intermediate read observes the other session's
-mirrored data before its own next reload corrects it — the on-disk
-save is always correct either way, but a stray mid-turn read could
-theoretically use the wrong `world_prompt` for one generation step.
-Closing this completely would mean eliminating `engine.py`'s ambient-
-global pattern outright (it's also used by the Discord bot path),
-which is out of scope here. For the deployment scale this framework
-targets (a handful of concurrent friends, not a public arcade), the
-realistic collision window is small and turns already resolve over
-several seconds either way. If this becomes a real problem, the two
-follow-ups are (a) route all of `advance_turn_image_fast` /
-`advance_turn_choices_deferred` through local variables the same way
-`_process_turn_background` was, or (b) the horizontal-scaling option
-below.
+1. **The deep turn pipeline's ambient `state`/`history` mirrors.**
+   `advance_turn_image_fast` and `advance_turn_choices_deferred`
+   read/write the module-global `state`/`history` many times across a
+   multi-second body (LLM + image calls), and `_gen_image` collects
+   its img2img reference frames off the module-global `history` (not a
+   parameter). Two different sessions running that pipeline at once
+   would interleave on those globals — one turn could pick up the
+   other session's `world_prompt` or reference frames for a generation
+   step. **`TURN_LOCK` now fully serializes every state-mutating engine
+   turn:** `_process_turn_background` (the `/api/choose` loop),
+   `_perform_game_reset` (the `/api/reset` new-game flow), and
+   `_generate_and_append_scene_image` (all scene-image generation) each
+   hold it for their ENTIRE body. This is the documented "only one turn
+   processed by the engine at a time" model — an intentional
+   throughput/correctness trade-off that's cheap here because per-turn
+   latency is dominated by multi-second LLM + image API calls, not CPU,
+   and a single session only ever has one turn in flight at a time.
 
-Longer term, once true parallel turns matter, split by session id at
-the load balancer and give each process its own subset of sessions —
-no client-side change needed.
+2. **The same-session-polling mirror.** `/api/feed` is polled
+   continuously by every connected browser. It used to read the shared
+   `state` global directly, which raced with OTHER sessions'
+   `session_context()` swaps (a poll for session A could land on top of
+   session B's swap-in and return B's `feed_log`). `/api/feed` now
+   resolves the caller's session id from the (thread-local) Flask
+   `request` and loads that session's `feed_log` straight from disk on
+   every poll — one small JSON read, no shared-global read at all.
+   Similarly, every background writer refreshes the ambient mirror only
+   through `_sync_ambient_state()`, which writes the global **only when
+   the session in question is still the active one** (per
+   `get_active_session_id()`), so a finished background task can never
+   leak its data into whichever session is active by the time it
+   completes. The `/api/choose` and `/api/reset` fast-path/error branches
+   that used to blind-assign `state = st` (or call `_save_state(state)`
+   with no session id, defaulting to `'default'`!) now go through the
+   guarded helper against an explicitly-resolved session id.
+
+Verification: an aggressive stress test creates 6 sessions, resets them
+all concurrently, then runs multiple rounds of all 6 taking a turn
+simultaneously with a unique marker string per session. Every round
+asserts each session's feed contains ONLY its own marker (no leaks, no
+missing turns) and that the shared `default` slot stays untouched. This
+passes consistently across repeated runs; before these fixes it failed
+immediately with cross-session leaks.
+
+Longer term, once true *parallel* (not just correct, serialized) turns
+matter, split by session id at the load balancer and give each process
+its own subset of sessions — `TURN_LOCK` is per-process, so horizontal
+scaling restores parallelism with no client-side change needed.
 
 ## Client-side persistence
 
