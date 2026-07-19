@@ -41,20 +41,60 @@
        advancing time in video mode feels as deliberate as it does with stills.
        Only driven by the realtime (reactor) renderer. -->
   <div id="reactor-fade" class="reactor-fade" aria-hidden="true"></div>
-  <!-- Peripheral danger vignette + health bar. Vision grades the live frame
-       every ~1s; the client's danger state machine (SAFE/WARNING/HURTING) sets
-       classes on #danger-vignette to pulse the edges red, and drains
-       #danger-health when HURTING. Non-interactive; sits above the video/freeze
-       but below the HUD/reticle. See DangerSystem in standalone.js. -->
+  <!-- Peripheral danger vignette + damage indicators + health bar. Vision
+       grades the live frame every ~1s; the client's danger state machine
+       (SAFE/WARNING/HURTING) sets classes on #danger-vignette to pulse the
+       edges red, drains #danger-health when HURTING, and drives a full
+       action-game feedback stack: chromatic aberration on the picture,
+       screen shake on hit, directional damage arrow pointing at the threat's
+       edge, blood spatter one-shot per hit, looping heartbeat while HURTING,
+       sustained tinnitus at critical health, and a de-escalation "safe"
+       chime + regen-to-full chime. Non-interactive; sits above the video /
+       freeze buffer but below the HUD / reticle.
+       See DangerSystem in standalone.js. -->
   <div id="danger-vignette" class="danger-vignette" aria-hidden="true">
     <div class="danger-vignette-inner"></div>
+    <div id="danger-blood-spatter" class="danger-blood-spatter"></div>
     <div id="danger-hit-flash" class="danger-hit-flash"></div>
-  </div>
-  <div id="danger-health" class="danger-health hidden" aria-hidden="true">
-    <div class="danger-health-track">
-      <div id="danger-health-fill" class="danger-health-fill"></div>
+    <!-- Directional damage arrow (CoD/Battlefield-style hit indicator). One
+         chevron per cardinal edge; the JS toggles the .show class on the
+         one matching the incoming threat direction for a brief pulse. -->
+    <div class="danger-arrow danger-arrow-top"   data-dir="top">
+      <span class="danger-arrow-chev"></span>
+      <span class="danger-arrow-glow"></span>
     </div>
-    <div class="danger-health-label">VITAL</div>
+    <div class="danger-arrow danger-arrow-right" data-dir="right">
+      <span class="danger-arrow-chev"></span>
+      <span class="danger-arrow-glow"></span>
+    </div>
+    <div class="danger-arrow danger-arrow-bottom" data-dir="bottom">
+      <span class="danger-arrow-chev"></span>
+      <span class="danger-arrow-glow"></span>
+    </div>
+    <div class="danger-arrow danger-arrow-left"  data-dir="left">
+      <span class="danger-arrow-chev"></span>
+      <span class="danger-arrow-glow"></span>
+    </div>
+  </div>
+  <!-- Chromatic-aberration overlay: two duplicated video-mask layers offset
+       red / cyan. Sits above the video (so it can composite through) but
+       below the vignette; only becomes visible in HURTING / critical, driven
+       by a CSS class on <body> so it can react without touching the video
+       element. Purely cosmetic — the picture underneath is untouched. -->
+  <div id="danger-chroma" class="danger-chroma" aria-hidden="true"></div>
+  <div id="danger-health" class="danger-health hidden" aria-hidden="true">
+    <div class="danger-health-row">
+      <span class="danger-health-label">VITAL</span>
+      <div class="danger-health-track">
+        <div id="danger-health-fill" class="danger-health-fill"></div>
+        <div class="danger-health-segments" aria-hidden="true">
+          <span></span><span></span><span></span><span></span><span></span>
+          <span></span><span></span><span></span><span></span><span></span>
+        </div>
+        <div id="danger-health-shimmer" class="danger-health-shimmer" aria-hidden="true"></div>
+      </div>
+      <span id="danger-health-num" class="danger-health-num">100</span>
+    </div>
   </div>
   <div id="scene-flash"></div>
   <!-- VCR distortion burst: a heavy static/tracking glitch fired over the actual

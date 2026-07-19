@@ -423,6 +423,102 @@
       src.start(t0);
       src.stop(t0 + (dur || 0.22) + 0.02);
     }
+
+    // ── Heartbeat loop ────────────────────────────────────────────────
+    // A muffled "lub-dub" repeated at BPM. Uses a shared low-pass so the
+    // heartbeat sits UNDER the mix (subwoofer territory) and never masks
+    // the hit / warning ticks. State kept in closure so start() while
+    // already running just re-tempos, and stop() is idempotent.
+    let hbTimer = null;
+    let hbBpm = 80;
+    function hbTick() {
+      if (!state.soundEnabled) return;
+      const c = ensure();
+      if (!c) return;
+      // "Lub" — deeper, heavier
+      const t0 = c.currentTime;
+      const lub = c.createOscillator(); const lubGain = c.createGain();
+      lub.type = "sine"; lub.frequency.setValueAtTime(70, t0);
+      lub.frequency.exponentialRampToValueAtTime(45, t0 + 0.12);
+      lubGain.gain.setValueAtTime(0.0001, t0);
+      lubGain.gain.exponentialRampToValueAtTime(0.14, t0 + 0.015);
+      lubGain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.14);
+      const lubLp = c.createBiquadFilter();
+      lubLp.type = "lowpass"; lubLp.frequency.value = 160;
+      lub.connect(lubLp); lubLp.connect(lubGain); lubGain.connect(c.destination);
+      lub.start(t0); lub.stop(t0 + 0.16);
+      // "Dub" — 90ms later, slightly brighter accent
+      const dt = 0.09;
+      const dub = c.createOscillator(); const dubGain = c.createGain();
+      dub.type = "sine"; dub.frequency.setValueAtTime(90, t0 + dt);
+      dub.frequency.exponentialRampToValueAtTime(60, t0 + dt + 0.10);
+      dubGain.gain.setValueAtTime(0.0001, t0 + dt);
+      dubGain.gain.exponentialRampToValueAtTime(0.10, t0 + dt + 0.012);
+      dubGain.gain.exponentialRampToValueAtTime(0.0001, t0 + dt + 0.12);
+      const dubLp = c.createBiquadFilter();
+      dubLp.type = "lowpass"; dubLp.frequency.value = 200;
+      dub.connect(dubLp); dubLp.connect(dubGain); dubGain.connect(c.destination);
+      dub.start(t0 + dt); dub.stop(t0 + dt + 0.14);
+    }
+    function hbSchedule() {
+      if (hbTimer) clearTimeout(hbTimer);
+      const period = Math.max(300, 60000 / Math.max(30, Math.min(220, hbBpm)));
+      hbTimer = setTimeout(() => { hbTick(); hbSchedule(); }, period);
+    }
+    function hbStart(bpm) {
+      hbBpm = bpm;
+      if (hbTimer) return; // already running — tempo updated
+      // Fire the first beat immediately so state entry feels responsive.
+      hbTick();
+      hbSchedule();
+    }
+    function hbSetBpm(bpm) {
+      hbBpm = bpm;
+      // Live-tempo change is just letting the next scheduled tick pick up
+      // the new period — no restart needed.
+    }
+    function hbStop() {
+      if (hbTimer) { clearTimeout(hbTimer); hbTimer = null; }
+    }
+
+    // ── Tinnitus tone ────────────────────────────────────────────────
+    // Sustained high sine (~3.7kHz) with slight FM wobble. Long fade-in +
+    // fade-out so it eases into your ears rather than beeping.
+    let tinNodes = null; // { osc, lfo, lfoGain, gain, ctx }
+    function tinStart() {
+      if (tinNodes) return;
+      if (!state.soundEnabled) return;
+      const c = ensure();
+      if (!c) return;
+      const t0 = c.currentTime;
+      const osc = c.createOscillator();
+      const gain = c.createGain();
+      const lfo = c.createOscillator();
+      const lfoGain = c.createGain();
+      osc.type = "sine"; osc.frequency.setValueAtTime(3720, t0);
+      lfo.type = "sine"; lfo.frequency.setValueAtTime(6, t0);
+      lfoGain.gain.setValueAtTime(24, t0); // ±24 Hz wobble around 3720
+      lfo.connect(lfoGain); lfoGain.connect(osc.frequency);
+      gain.gain.setValueAtTime(0.0001, t0);
+      gain.gain.exponentialRampToValueAtTime(0.024, t0 + 0.7);
+      osc.connect(gain); gain.connect(c.destination);
+      osc.start(t0); lfo.start(t0);
+      tinNodes = { osc, lfo, lfoGain, gain, ctx: c };
+    }
+    function tinStop() {
+      if (!tinNodes) return;
+      const { osc, lfo, gain, ctx } = tinNodes;
+      const t0 = ctx.currentTime;
+      try {
+        gain.gain.cancelScheduledValues(t0);
+        gain.gain.setValueAtTime(gain.gain.value, t0);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.5);
+        osc.stop(t0 + 0.55);
+        lfo.stop(t0 + 0.55);
+      } catch (_) {}
+      tinNodes = null;
+    }
+
     return {
       resume() { ensure(); },
       // Shared, gesture-unlocked AudioContext so the ambient scene score
@@ -439,13 +535,33 @@
       scene() { tone(180, 0.05, "sine", 0.05); tone([520, 380], 0.14, "sine", 0.04, 0.03); }, // new scene image streams in (shutter/whir)
       start() { tone([160, 520], 0.28, "sawtooth", 0.05); tone(880, 0.12, "triangle", 0.04, 0.18); }, // new tape / game start
       escalate() { tone([300, 620], 0.35, "sawtooth", 0.06); tone([620, 900], 0.3, "square", 0.03, 0.12); }, // phase escalates — tension rises
-      // Danger vignette state sounds. WARNING is a taut two-note alert (heads
-      // up, back off); HURTING is a lower, uglier throb (you're bleeding); HIT
-      // is a short percussive tick that lands on each damage tick, so the
-      // steady drain feels like discrete impacts, not a numeric ticker.
+      // ---- Danger vignette / damage / health ----
+      // WARNING is a taut two-note alert (heads up, back off); HURTING is a
+      // lower, uglier throb (you're bleeding); HIT is a short percussive tick
+      // that lands on each damage tick, so the steady drain feels like
+      // discrete impacts, not a numeric ticker. SAFE-CHIME is the "you're
+      // clear" descending mini-arpeggio when the red drops away. REGEN-DONE
+      // is the bright ascending sparkle when HP returns to full — the audio
+      // that closes the recover loop.
       warning() { tone([880, 660], 0.14, "square", 0.055); tone(1240, 0.08, "square", 0.04, 0.12); },
       hurting() { tone([320, 180], 0.30, "sawtooth", 0.08); tone([540, 300], 0.22, "sawtooth", 0.055, 0.10); },
-      hit()     { tone([440, 220], 0.09, "sawtooth", 0.07); },
+      hit()     { tone([520, 200], 0.10, "sawtooth", 0.08); tone([1100, 700], 0.06, "square", 0.04); },
+      safeChime()    { tone([740, 560], 0.16, "sine", 0.045); tone([560, 420], 0.20, "sine", 0.04, 0.10); },
+      regenComplete(){ tone([560, 880], 0.12, "triangle", 0.05); tone([880, 1320], 0.14, "triangle", 0.045, 0.08); tone(1760, 0.10, "triangle", 0.035, 0.16); },
+      // ---- Heartbeat loop (HURTING) ----
+      // A muffled two-thump per beat, tempo driven by heartbeatSetBpm(). The
+      // "lub-dub" is a low sine with a slightly higher accent 90ms later,
+      // filtered dark so it sits under the mix. Playing state persists
+      // across ensure() calls so mute/unmute doesn't stack loops.
+      heartbeatStart(bpm) { hbStart(bpm || 80); },
+      heartbeatSetBpm(bpm) { hbSetBpm(bpm || 80); },
+      heartbeatStop() { hbStop(); },
+      // ---- Tinnitus (critical HP) ----
+      // A sustained ~3.7kHz sine with a tiny FM wobble, faded in over ~700ms
+      // and out over ~500ms. Sits under everything else at low gain so it
+      // reads as "your ears are ringing", not "there's a beep".
+      tinnitusStart() { tinStart(); },
+      tinnitusStop() { tinStop(); },
       submit() { tone(700, 0.05, "square", 0.05); tone(1050, 0.11, "square", 0.045, 0.05); }, // custom action sent
       open() { tone([420, 760], 0.14, "triangle", 0.05); },    // free-will input reveal
       toggle() { tone(300, 0.04, "square", 0.04); },           // UI toggle click
@@ -1824,14 +1940,21 @@
       DEATH_MSG: "Your body gave out.\nThe last thing you saw was the light.",
     }, (typeof window !== "undefined" && window.__DANGER_CONFIG__) || {});
 
-    let el = { vignette: null, inner: null, hitFlash: null,
-               health: null, healthFill: null };
+    let el = {
+      vignette: null, inner: null, hitFlash: null,
+      spatter: null, chroma: null,
+      arrows: {}, // {top, right, bottom, left}
+      health: null, healthFill: null, healthNum: null, healthShimmer: null,
+    };
     let running = false;
     let sampleTimer = null;
     let inFlight = false;
     let lastPostMs = 0;
     let consecutiveErrors = 0;
-    let lastLumaSample = null;   // {t, luma} of the most recent captureFrame
+    let lastLumaSample = null;   // most recent captureFrame luma (0..1)
+    let lastRegenerating = false; // did the previous rAF frame regen?
+    let heartbeatOn = false;      // is the looping heartbeat currently playing?
+    let tinnitusOn = false;       // is the tinnitus tone currently playing?
 
     // Danger state machine. `mode` is one of "safe" | "warning" | "hurting".
     // `stateSince` is the ms timestamp we entered the current mode; used to
@@ -1845,6 +1968,8 @@
     let lastLevel = 0;
     let lastReason = "";
     let lastDirection = null;
+    let lastThreatCx = null; // 0..1, from last reading (for spatter placement)
+    let lastThreatCy = null;
 
     // Health lives here as the single source of truth; ticks on rAF via a
     // simple wall-clock delta so drain feels steady even if the sample loop
@@ -1866,11 +1991,21 @@
 
     function bindDom() {
       if (el.vignette) return;
-      el.vignette   = document.getElementById("danger-vignette");
-      el.inner      = el.vignette && el.vignette.querySelector(".danger-vignette-inner");
-      el.hitFlash   = document.getElementById("danger-hit-flash");
-      el.health     = document.getElementById("danger-health");
-      el.healthFill = document.getElementById("danger-health-fill");
+      el.vignette     = document.getElementById("danger-vignette");
+      el.inner        = el.vignette && el.vignette.querySelector(".danger-vignette-inner");
+      el.hitFlash     = document.getElementById("danger-hit-flash");
+      el.spatter      = document.getElementById("danger-blood-spatter");
+      el.chroma       = document.getElementById("danger-chroma");
+      el.arrows = {
+        top:    el.vignette && el.vignette.querySelector(".danger-arrow-top"),
+        right:  el.vignette && el.vignette.querySelector(".danger-arrow-right"),
+        bottom: el.vignette && el.vignette.querySelector(".danger-arrow-bottom"),
+        left:   el.vignette && el.vignette.querySelector(".danger-arrow-left"),
+      };
+      el.health        = document.getElementById("danger-health");
+      el.healthFill    = document.getElementById("danger-health-fill");
+      el.healthNum     = document.getElementById("danger-health-num");
+      el.healthShimmer = document.getElementById("danger-health-shimmer");
     }
 
     function applyDirectionCss(direction) {
@@ -1917,7 +2052,34 @@
           else Sound.error();
           try { Haptics.warn && Haptics.warn(); } catch (_) {}
         }
+        // De-escalation: the moment red drops off (any → safe) we play a
+        // short chime so the player audibly hears "you're clear". Missing
+        // this beat was the biggest gap — silence for exiting danger felt
+        // like an unresolved chord.
+        if (next === "safe" && prev !== "safe") {
+          if (Sound.safeChime) Sound.safeChime();
+        }
+        // Heartbeat management — running iff HURTING and alive. Started
+        // here on state entry; stopped here on state exit. Tempo is set
+        // per-frame from the health loop below so it accelerates as HP falls.
+        if (next === "hurting" && !heartbeatOn) {
+          if (Sound.heartbeatStart) Sound.heartbeatStart(computeHeartbeatBpm());
+          heartbeatOn = true;
+        } else if (next !== "hurting" && heartbeatOn) {
+          if (Sound.heartbeatStop) Sound.heartbeatStop();
+          heartbeatOn = false;
+        }
       } catch (_) {}
+    }
+
+    // Heartbeat tempo maps HP → BPM. At full HP (100) beats at 78 (resting
+    // "you're stressed"); at 0 HP crescendos to 160 (adrenal spike). Called
+    // both on state entry and on every rAF frame while HURTING so tempo
+    // tracks live health changes.
+    function computeHeartbeatBpm() {
+      const hp = Math.max(0, Math.min(CONFIG.HEALTH_MAX, health));
+      const frac = 1 - (hp / CONFIG.HEALTH_MAX); // 0 → 1 as HP falls
+      return Math.round(78 + frac * 82);
     }
 
     function applyVisualForMode() {
@@ -1925,6 +2087,78 @@
       const on = mode !== "safe";
       el.vignette.classList.toggle("on", on);
       el.vignette.classList.toggle("hurting", mode === "hurting");
+      // Body-level classes drive the chromatic-aberration wash + any
+      // future full-screen effects that need to overlay on top of tools.
+      try {
+        document.body.classList.toggle("danger-hurting", mode === "hurting");
+        document.body.classList.toggle("danger-warning", mode === "warning");
+      } catch (_) {}
+    }
+
+    function applyCriticalBodyClass() {
+      // Separate from applyVisualForMode because critical is a HEALTH threshold,
+      // not a mode. Drives the intensified chroma flicker at low HP.
+      try {
+        document.body.classList.toggle("danger-critical",
+          !dead && running && health <= CONFIG.HEALTH_CRITICAL);
+      } catch (_) {}
+    }
+
+    // ── Hit-effect stack ────────────────────────────────────────────────
+    // Screen shake — brief camera-jolt on <body>. Amplitude scales with the
+    // proportion of health you just lost, so bigger hits feel harder.
+    let shakeClearTimer = null;
+    function shakeScreen(amplitudePx) {
+      const px = Math.max(2, Math.min(12, amplitudePx || 5));
+      try {
+        document.body.style.setProperty("--shake", px + "px");
+        // Re-trigger the animation by pulling the class off and forcing reflow.
+        document.body.classList.remove("danger-shaking");
+        void document.body.offsetWidth;
+        document.body.classList.add("danger-shaking");
+        if (shakeClearTimer) clearTimeout(shakeClearTimer);
+        shakeClearTimer = setTimeout(() => {
+          document.body.classList.remove("danger-shaking");
+        }, 220);
+      } catch (_) {}
+    }
+
+    // Directional damage arrow — pulses the chevron on the edge the threat
+    // is on. Falls back to a random cardinal edge when the server didn't
+    // return a direction hint, so the player still gets a "hit came from
+    // *somewhere*" signal on every damage tick.
+    let arrowClearTimers = { top: null, right: null, bottom: null, left: null };
+    function flashArrow(direction) {
+      const dir = ({ top: "top", right: "right", bottom: "bottom", left: "left" })[direction]
+        || ["top", "right", "bottom", "left"][Math.floor(Math.random() * 4)];
+      const node = el.arrows && el.arrows[dir];
+      if (!node) return;
+      node.classList.remove("show");
+      void node.offsetWidth;
+      node.classList.add("show");
+      if (arrowClearTimers[dir]) clearTimeout(arrowClearTimers[dir]);
+      arrowClearTimers[dir] = setTimeout(() => node.classList.remove("show"), 720);
+    }
+
+    // Blood spatter — places the primary blob at the threat's on-screen
+    // point when we have coordinates from the server, else at a nudge
+    // toward the given cardinal direction (or random on the edges).
+    function flashSpatter(direction, threatCx, threatCy) {
+      if (!el.spatter) return;
+      let x, y;
+      if (typeof threatCx === "number" && typeof threatCy === "number") {
+        x = threatCx * 100;
+        y = threatCy * 100;
+      } else {
+        const bias = { top: [50, 25], right: [78, 50], bottom: [50, 78],
+                       left: [22, 50], center: [50, 50] }[direction || "center"];
+        x = bias[0]; y = bias[1];
+      }
+      el.spatter.style.setProperty("--spatter-x", x + "%");
+      el.spatter.style.setProperty("--spatter-y", y + "%");
+      el.spatter.classList.remove("hit");
+      void el.spatter.offsetWidth;
+      el.spatter.classList.add("hit");
     }
 
     function ingest(reading) {
@@ -1933,6 +2167,10 @@
       lastLevel = level;
       lastReason = (reading && reading.reason) || "";
       lastDirection = (reading && reading.direction) || null;
+      lastThreatCx = (reading && typeof reading.threat_cx === "number")
+                     ? reading.threat_cx : null;
+      lastThreatCy = (reading && typeof reading.threat_cy === "number")
+                     ? reading.threat_cy : null;
       applyDirectionCss(lastDirection);
 
       const t = now();
@@ -1977,18 +2215,45 @@
       const pct = Math.max(0, Math.min(100,
                  (health / CONFIG.HEALTH_MAX) * 100));
       el.healthFill.style.width = pct.toFixed(1) + "%";
+      if (el.healthNum) el.healthNum.textContent = Math.max(0, Math.round(health));
       const critical = health <= CONFIG.HEALTH_CRITICAL;
       if (el.health) el.health.classList.toggle("critical", critical && !dead);
       showHealthBar(health < CONFIG.HEALTH_MAX);
+      applyCriticalBodyClass();
+    }
+
+    // The number readout kicks up briefly on damage so each hit lands
+    // visually on the meter itself. Retriggered by removing + re-adding
+    // the class after a forced reflow.
+    function bumpHealthNum() {
+      if (!el.healthNum) return;
+      el.healthNum.classList.remove("bump");
+      void el.healthNum.offsetWidth;
+      el.healthNum.classList.add("bump");
+    }
+
+    function setRegenerating(on) {
+      if (!el.health) return;
+      if (on === lastRegenerating) return;
+      lastRegenerating = on;
+      el.health.classList.toggle("regenerating", !!on);
     }
 
     function flashHit() {
       if (!el.hitFlash) return;
+      // Red hit flash + spatter + directional arrow + screen shake + number
+      // bump + audio hit + haptic tick — all on the same beat so each
+      // damage tick lands as one felt "impact".
       el.hitFlash.classList.remove("on");
-      // Force reflow so the animation retriggers cleanly on the next tick.
-      // Reading offsetWidth is the standard idiom for this.
       void el.hitFlash.offsetWidth;
       el.hitFlash.classList.add("on");
+      flashSpatter(lastDirection, lastThreatCx, lastThreatCy);
+      flashArrow(lastDirection);
+      // Shake harder as HP falls — a hit at 10% HP is more visceral than at 90%.
+      const hpFrac = Math.max(0, health / CONFIG.HEALTH_MAX);
+      const shakePx = 4 + (1 - hpFrac) * 6;
+      shakeScreen(shakePx);
+      bumpHealthNum();
       try { if (Sound.hit) Sound.hit(); else Sound.error(); } catch (_) {}
       try { Haptics.tick && Haptics.tick(); } catch (_) {}
     }
@@ -2036,15 +2301,45 @@
           // Smooth regen — feels less like an "advantage granted" and more
           // like getting your breath back.
           if (health < CONFIG.HEALTH_MAX) {
+            const before = health;
             health = Math.min(CONFIG.HEALTH_MAX,
                               health + CONFIG.REGEN_PER_SEC * dt);
+            setRegenerating(true);
+            // Regen-complete chime: fired once when HP crosses back up to
+            // full. Closes the audio loop of danger → damage → recover.
+            if (before < CONFIG.HEALTH_MAX && health >= CONFIG.HEALTH_MAX) {
+              try { if (Sound.regenComplete) Sound.regenComplete(); } catch (_) {}
+            }
+          } else {
+            setRegenerating(false);
           }
           nextDamageTick = t + CONFIG.DAMAGE_TICK_MS; // reset the drain cadence
         } else {
           // WARNING: hold at current value. The reset avoids a stale
           // damage-tick landing the instant we escalate to HURTING.
           nextDamageTick = t + CONFIG.DAMAGE_TICK_MS;
+          setRegenerating(false);
         }
+
+        // Live heartbeat tempo tracking — tempo climbs as HP falls so the
+        // heartbeat itself telegraphs how close to death you are.
+        if (heartbeatOn) {
+          try { Sound.heartbeatSetBpm && Sound.heartbeatSetBpm(computeHeartbeatBpm()); } catch (_) {}
+        }
+
+        // Tinnitus tone: sustained ringing while at critical HP. Fires ONCE
+        // when we cross the threshold down; stopped as soon as HP recovers
+        // above it (so a brief dip doesn't leave a lingering hum).
+        try {
+          const isCritical = !dead && health <= CONFIG.HEALTH_CRITICAL;
+          if (isCritical && !tinnitusOn) {
+            if (Sound.tinnitusStart) Sound.tinnitusStart();
+            tinnitusOn = true;
+          } else if (!isCritical && tinnitusOn) {
+            if (Sound.tinnitusStop) Sound.tinnitusStop();
+            tinnitusOn = false;
+          }
+        } catch (_) {}
 
         updateHealthBar();
         hpLoopId = requestAnimationFrame(step);
@@ -2058,6 +2353,13 @@
       running = false;
       stopHealthLoop();
       if (sampleTimer) { clearTimeout(sampleTimer); sampleTimer = null; }
+      // Cut the sustained audio the moment death lands — the death SFX
+      // that enterGameOver plays should stand alone, not layer over a
+      // still-running heartbeat/tinnitus.
+      try { if (heartbeatOn) { Sound.heartbeatStop && Sound.heartbeatStop(); heartbeatOn = false; } } catch (_) {}
+      try { if (tinnitusOn) { Sound.tinnitusStop && Sound.tinnitusStop(); tinnitusOn = false; } } catch (_) {}
+      try { document.body.classList.remove("danger-critical", "danger-hurting", "danger-warning", "danger-shaking"); } catch (_) {}
+      setRegenerating(false);
       updateHealthBar();
       applyVisualForMode();
       log("DEATH — health hit 0");
@@ -2218,6 +2520,12 @@
       stopHealthLoop();
       mode = "safe";
       applyVisualForMode();
+      // Tear down the sustained audio loops so leaving reactor mode (or
+      // pausing the game) doesn't leave a heartbeat / tinnitus running.
+      try { if (heartbeatOn) { Sound.heartbeatStop && Sound.heartbeatStop(); heartbeatOn = false; } } catch (_) {}
+      try { if (tinnitusOn) { Sound.tinnitusStop && Sound.tinnitusStop(); tinnitusOn = false; } } catch (_) {}
+      try { document.body.classList.remove("danger-critical", "danger-hurting", "danger-warning", "danger-shaking"); } catch (_) {}
+      setRegenerating(false);
       log("stop");
     }
 
@@ -2230,15 +2538,23 @@
       running = false;
       if (sampleTimer) { clearTimeout(sampleTimer); sampleTimer = null; }
       stopHealthLoop();
+      // Any lingering sustained audio from the prior run needs to end
+      // before we zero everything out.
+      try { if (heartbeatOn) { Sound.heartbeatStop && Sound.heartbeatStop(); heartbeatOn = false; } } catch (_) {}
+      try { if (tinnitusOn) { Sound.tinnitusStop && Sound.tinnitusStop(); tinnitusOn = false; } } catch (_) {}
+      try { document.body.classList.remove("danger-critical", "danger-hurting", "danger-warning", "danger-shaking"); } catch (_) {}
       dead = false;
       consecutiveErrors = 0;
       lastLumaSample = null;
+      lastThreatCx = lastThreatCy = null;
+      lastDirection = null;
       health = CONFIG.HEALTH_MAX;
       mode = "safe";
       stateSince = now();
       cleanSince = 0;
       applyDirectionCss(null);
       applyVisualForMode();
+      setRegenerating(false);
       updateHealthBar();
       showHealthBar(false);
       const reactorLive = (typeof Renderer !== "undefined") &&
@@ -2256,7 +2572,23 @@
       };
     }
 
-    return { start, stop, reset, getState };
+    // On sound-toggle: the parent toggleSound() has already cut the
+    // sustained audio when muting. When re-enabling, we clear our own
+    // flags so the next health-loop frame notices "no heartbeat but we're
+    // HURTING" and restarts the tone, and same for the tinnitus threshold
+    // check. Muting side just clears the flags so the check is honest.
+    function onSoundToggled(on) {
+      heartbeatOn = false;
+      tinnitusOn = false;
+      if (on && mode === "hurting" && !dead) {
+        try { Sound.heartbeatStart && Sound.heartbeatStart(computeHeartbeatBpm()); heartbeatOn = true; } catch (_) {}
+      }
+      if (on && !dead && health <= CONFIG.HEALTH_CRITICAL) {
+        try { Sound.tinnitusStart && Sound.tinnitusStart(); tinnitusOn = true; } catch (_) {}
+      }
+    }
+
+    return { start, stop, reset, getState, onSoundToggled };
   })();
   try { window.__DangerSystem = DangerSystem; } catch (_) {}
 
@@ -7597,6 +7929,17 @@
     try { SceneAudio.setEnabled(state.soundEnabled); } catch (_) {}
     // Muting silences the narrator's ambient voice too (it plays real audio).
     if (!state.soundEnabled) { try { Narrator.stop(); } catch (_) {} }
+    // Danger's sustained tones (heartbeat, tinnitus) are actual live audio
+    // nodes, not one-shots, so a mute mid-HURTING has to explicitly cut
+    // them; the DangerSystem will restart them on the next state-machine
+    // tick once sound is enabled again.
+    if (!state.soundEnabled) {
+      try { Sound.heartbeatStop && Sound.heartbeatStop(); } catch (_) {}
+      try { Sound.tinnitusStop && Sound.tinnitusStop(); } catch (_) {}
+      try { DangerSystem && DangerSystem.onSoundToggled && DangerSystem.onSoundToggled(false); } catch (_) {}
+    } else {
+      try { DangerSystem && DangerSystem.onSoundToggled && DangerSystem.onSoundToggled(true); } catch (_) {}
+    }
   }
 
   function initVhsGrain() {
