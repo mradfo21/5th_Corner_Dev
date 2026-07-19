@@ -237,16 +237,19 @@ else:
     image_provider = config.get('image_provider', '')
     image_model = config.get('image_model', '')
 
-    # Production default must be a known-fast still-image provider. We ship with
-    # Krea 2 Medium as the live renderer (faster than Gemini Pro); Gemini Flash
-    # remains a supported default too. Veo (video) is NOT a valid still default.
+    # Production default must be a known-good still-image provider. We ship with
+    # Gemini (Nano Banana) as the live renderer (high quality, multi-frame
+    # continuity); Krea remains a supported default too. Veo (video) is NOT a
+    # valid still default.
     if image_provider not in ('gemini', 'krea'):
         print("[FAIL]")
         print(f"    Expected provider: gemini or krea, Got: {image_provider}")
         failed_tests.append("ai_config.json wrong provider")
-    elif image_provider == 'gemini' and image_model != 'gemini-3.1-flash-lite-image':
+    elif image_provider == 'gemini' and not (
+        image_model.startswith('gemini-3.1-flash') and 'image' in image_model
+    ):
         print("[FAIL]")
-        print(f"    Expected model: gemini-3.1-flash-lite-image, Got: {image_model}")
+        print(f"    Expected a gemini-3.1-flash*image model, Got: {image_model}")
         failed_tests.append("ai_config.json wrong model")
     elif image_provider == 'krea' and not image_model.startswith('krea-2/'):
         print("[FAIL]")
