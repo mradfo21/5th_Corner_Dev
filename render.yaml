@@ -70,6 +70,25 @@ services:
       # dynamic variables still keep it story-aware).
       - key: ELEVENLABS_ALLOW_OVERRIDES
         value: "1"
+      # Dynamic per-character voices (voice_design.py + DYNAMIC_VOICES_PLAN.md).
+      # When ON and ELEVENLABS_API_KEY is set, every SCAN subject gets a voice
+      # DESIGNED from its own description (label + kind + scene + persona) via
+      # ElevenLabs Voice Design, cached per session, and DELETED at session
+      # end so the workspace's voice-slot quota stays bounded.
+      # The first TALK line uses a hashed-per-subject fallback voice (so
+      # different characters already sound different immediately); the
+      # designed voice hot-swaps in for the NEXT AI turn without truncating
+      # the current one. Set to "0" to fully disable (falls back to today's
+      # by_kind roster only).
+      - key: ELEVENLABS_DYNAMIC_VOICES
+        value: "1"
+      # Optional tuning (all safe defaults; unset uses the value in parens):
+      #   ELEVENLABS_TTV_MODEL              (eleven_ttv_v3)
+      #   ELEVENLABS_DESIGN_BUDGET_PER_SESSION (8)   — cap per session
+      #   ELEVENLABS_DESIGN_CONCURRENCY        (3)   — process-wide semaphore
+      #   ELEVENLABS_VOICE_SOFT_CAP            (auto from /v1/user/subscription)
+      #   ELEVENLABS_VOICE_SWEEP_HOURS         (6)   — orphan sweep cadence
+      #   ELEVENLABS_VOICE_MAX_AGE_HOURS       (24)  — orphan age cutoff
       - key: REACTOR_MODEL
         value: "reactor/lingbot-world-2"
       # Default world model the mid-game switcher starts on ("lingbot-world-2"
