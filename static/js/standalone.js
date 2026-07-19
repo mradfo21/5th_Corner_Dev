@@ -1079,11 +1079,41 @@
     return api;
   })();
 
+  // Multi-user session framework: every request tells the server which
+  // instance of the experience it's talking to. The id is read once from
+  // ?session=<id> (or ?session_id=<id>) on the URL and stashed here so
+  // every /api/* call automatically threads it via the X-Session-Id header
+  // (see engine.set_active_session / api._session_scoped). If no id is on
+  // the URL, we fall back to 'default' — legacy /standalone bookmarks and
+  // embed links still work the way they always did.
+  const SESSION_ID = (function () {
+    try {
+      const u = new URL(window.location.href);
+      const raw = (u.searchParams.get("session") || u.searchParams.get("session_id") || "").trim();
+      if (raw && /^[A-Za-z0-9_\-]{1,40}$/.test(raw)) {
+        try { localStorage.setItem("somewhere.lobby.last_session", raw); } catch (_) {}
+        return raw;
+      }
+    } catch (_) {}
+    return "default";
+  })();
+
+  // Expose for debugging + for any tooling that wants to know which instance
+  // this page is bound to. Read-only; the framework does not support hot-swap.
+  try { window.__SOMEWHERE_SESSION__ = SESSION_ID; } catch (_) {}
+
   async function postJSON(url, body) {
+    const payload = Object.assign({}, body || {});
+    // Also embed it in the JSON body for endpoints (like /api/choose) that
+    // read the id off the body — belt-and-suspenders with the header.
+    if (payload.session_id === undefined) payload.session_id = SESSION_ID;
     const resp = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body || {}),
+      headers: {
+        "Content-Type": "application/json",
+        "X-Session-Id": SESSION_ID,
+      },
+      body: JSON.stringify(payload),
     });
     if (!resp.ok) {
       throw new Error(`${url} -> HTTP ${resp.status}`);
@@ -1092,7 +1122,21 @@
   }
 
   async function getJSON(url) {
-    const resp = await fetch(url);
+    // Append session_id as a query param so it also survives to endpoints
+    // that don't read the header. Do not clobber an existing session_id.
+    let target = url;
+    try {
+      const abs = new URL(url, window.location.origin);
+      if (!abs.searchParams.has("session_id")) {
+        abs.searchParams.set("session_id", SESSION_ID);
+      }
+      target = abs.pathname + (abs.search ? abs.search : "") + (abs.hash || "");
+    } catch (_) {
+      target = url + (url.includes("?") ? "&" : "?") + "session_id=" + encodeURIComponent(SESSION_ID);
+    }
+    const resp = await fetch(target, {
+      headers: { "X-Session-Id": SESSION_ID },
+    });
     if (!resp.ok) {
       throw new Error(`${url} -> HTTP ${resp.status}`);
     }

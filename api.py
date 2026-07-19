@@ -50,10 +50,37 @@ def add_embed_headers(response):
 # writes via _load_state()/_save_state().
 # ═══════════════════════════════════════════════════════════════════
 
-app.add_url_rule('/api/reset', 'standalone_api_reset', engine.api_reset, methods=['POST'])
-app.add_url_rule('/api/feed', 'standalone_api_feed', engine.api_feed, methods=['GET'])
-app.add_url_rule('/api/choose', 'standalone_api_choose', engine.api_choose, methods=['POST'])
-app.add_url_rule('/api/regenerate_choices', 'standalone_api_regenerate_choices', engine.api_regenerate_choices, methods=['POST'])
+# Session-context wrapper. The engine keeps one active game state in memory
+# for the feed endpoints, so before each session-scoped request we swap
+# engine.state to the requested instance (see engine.set_active_session).
+# session_id is read from ?session_id=... on the query string, the JSON body,
+# or the X-Session-Id header — clients pass whichever is convenient.
+def _session_scoped(handler):
+    """Decorator that resolves the caller's session id, swaps the engine's
+    active session for the duration of the request, and hands off to the
+    underlying feed handler. Backwards-compatible: no session id → 'default'."""
+    from functools import wraps
+    @wraps(handler)
+    def _wrapped(*args, **kwargs):
+        sid = (
+            request.args.get('session_id')
+            or (request.get_json(silent=True) or {}).get('session_id')
+            or request.headers.get('X-Session-Id')
+            or 'default'
+        )
+        try:
+            with engine.session_context(sid):
+                return handler(*args, **kwargs)
+        except Exception:
+            traceback.print_exc()
+            raise
+    return _wrapped
+
+
+app.add_url_rule('/api/reset', 'standalone_api_reset', _session_scoped(engine.api_reset), methods=['POST'])
+app.add_url_rule('/api/feed', 'standalone_api_feed', _session_scoped(engine.api_feed), methods=['GET'])
+app.add_url_rule('/api/choose', 'standalone_api_choose', _session_scoped(engine.api_choose), methods=['POST'])
+app.add_url_rule('/api/regenerate_choices', 'standalone_api_regenerate_choices', _session_scoped(engine.api_regenerate_choices), methods=['POST'])
 # Vision for the realtime renderer: the client posts the actual on-screen video
 # frame; the engine analyzes it and re-grounds the simulation so it tracks the
 # video instead of drifting from the still. See engine.api_observe.
@@ -301,11 +328,22 @@ def _standalone_asset_version():
 
 
 @app.route('/standalone', methods=['GET'])
+@app.route('/play', methods=['GET'])
 def serve_standalone():
-    """Serve the standalone immersive UI. Loading (or reloading) this page
-    auto-restarts the game from scratch — the client bootstrap always POSTs
-    /api/reset on load, so every visit begins a fresh run."""
-    return render_template('standalone.html', asset_version=_standalone_asset_version())
+    """Serve the standalone immersive UI. The multi-user session framework
+    lets each browser load a different persisted instance via ?session=<id>;
+    when no session is provided, we fall through to the legacy 'default'
+    slot so direct /standalone links keep working.
+
+    The client bootstrap POSTs /api/reset on cold load, but the reset call
+    is now session-aware — see engine.session_context — so a page loaded
+    with ?session=abc123 seeds/resets exactly that session's on-disk state
+    without touching any other user's run."""
+    return render_template(
+        'standalone.html',
+        asset_version=_standalone_asset_version(),
+        session_id=(request.args.get('session') or request.args.get('session_id') or ''),
+    )
 
 
 @app.route('/realtime', methods=['GET'])
@@ -321,6 +359,19 @@ def serve_realtime():
         'standalone.html',
         asset_version=_standalone_asset_version(),
         forced_renderer='reactor',
+        session_id=(request.args.get('session') or request.args.get('session_id') or ''),
+    )
+
+
+@app.route('/lobby', methods=['GET'])
+def serve_lobby():
+    """Splash / lobby page. Explains the world, shows recent runs the
+    visitor can resume, and lets them start a fresh instance. Delegates
+    session creation to /api/lobby/create and then routes the browser to
+    /play?session=<id> where the immersive UI takes over."""
+    return render_template(
+        'lobby.html',
+        asset_version=_standalone_asset_version(),
     )
 
 
@@ -834,6 +885,169 @@ def api_get_session_history(session_id):
     except Exception as e:
         traceback.print_exc()
         return error_response(f"Failed to get history for session '{session_id}'", str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════
+# LOBBY / MULTI-USER FRAMEWORK ENDPOINTS
+#
+# These wrap the lower-level session APIs above with lobby-oriented shapes:
+# the create endpoint mints a URL-safe id if none is supplied, and the list
+# endpoint returns just what the splash page needs (id, name, turn count,
+# last-accessed timestamp, alive/dead status) so the client can render the
+# "Continue" panel without pulling full state per row.
+# ═══════════════════════════════════════════════════════════════════
+
+def _mint_session_id() -> str:
+    """Short, URL-safe id used when the caller doesn't specify one. Uses a
+    base32-ish alphabet without look-alike characters (0/O, 1/I/l) so the
+    id is safe to read aloud, type on mobile, or share via chat."""
+    import secrets
+    alphabet = "23456789abcdefghjkmnpqrstuvwxyz"  # 31 chars, no lookalikes
+    return "".join(secrets.choice(alphabet) for _ in range(8))
+
+
+@app.route('/api/lobby/create', methods=['POST'])
+def api_lobby_create():
+    """Create a fresh game instance and return the resolved session id.
+
+    Body (all optional):
+        { "session_id": "custom-slug", "name": "My Run", "description": "..." }
+
+    If session_id is omitted (or is 'default'/blank), we mint a short
+    URL-safe id. If the requested id already exists, we return the existing
+    session's metadata rather than error out — a resume-by-id link should
+    always land the caller in something playable."""
+    try:
+        data = request.get_json(silent=True) or {}
+        requested = (data.get('session_id') or '').strip()
+        name = (data.get('name') or '').strip() or None
+        description = (data.get('description') or '').strip() or None
+
+        # Never let the lobby overwrite the shared 'default' slot; the
+        # lobby always mints a private id for a new instance.
+        if not requested or requested.lower() == 'default':
+            session_id = _mint_session_id()
+            # Vanishingly unlikely, but guard against a mint collision so
+            # we don't clobber an existing run.
+            attempts = 0
+            while (Path("sessions") / session_id).exists() and attempts < 5:
+                session_id = _mint_session_id()
+                attempts += 1
+        else:
+            # Client-supplied id: validate against the engine's rules.
+            try:
+                engine._validate_session_id(requested)
+            except Exception as e_val:
+                return error_response(f"Invalid session id: {e_val}", code=400)
+            session_id = requested
+
+        session_root = Path("sessions") / session_id
+        already_exists = session_root.exists()
+
+        # _create_session_metadata (used by engine) writes the initial meta
+        # file. For an existing session we just refresh metadata + return
+        # what we have so "create with an existing id" degrades to "join".
+        if already_exists:
+            try:
+                metadata = engine._load_session_metadata(session_id)
+                if name:
+                    metadata = engine._update_session_metadata(session_id, name=name)
+            except Exception:
+                metadata = engine._create_session_metadata(session_id, name=name, description=description)
+        else:
+            metadata = engine._create_session_metadata(session_id, name=name, description=description)
+
+        return jsonify(success_response({
+            "session_id": session_id,
+            "metadata": metadata,
+            "already_existed": already_exists,
+            "play_url": f"/play?session={session_id}",
+        }, f"Session '{session_id}' ready"))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to create session", str(e))
+
+
+@app.route('/api/lobby/sessions', methods=['GET'])
+def api_lobby_sessions():
+    """List runs the lobby's "Continue" panel can offer.
+
+    Query params:
+        ?limit=N (default 25) - cap the number of rows returned
+        ?include_default=false - hide the shared 'default' slot
+
+    Returns a compact per-session shape (id, name, turn_count, last_accessed,
+    player_alive) rather than the full state blob — the splash renders many
+    rows and can tolerate a slightly stale count for the trade-off of a
+    fast, cache-friendly list call."""
+    try:
+        limit = request.args.get('limit', default=25, type=int)
+        include_default = request.args.get('include_default', 'true').lower() != 'false'
+
+        sessions_root = Path("sessions")
+        if not sessions_root.exists():
+            return jsonify(success_response({"sessions": []}, "No sessions yet"))
+
+        rows = []
+        for session_dir in sessions_root.iterdir():
+            if not session_dir.is_dir():
+                continue
+            sid = session_dir.name
+            if sid == '__pycache__':
+                continue
+            if not include_default and sid == 'default':
+                continue
+            try:
+                meta = engine._load_session_metadata(sid, create_if_missing=False)
+            except FileNotFoundError:
+                # Session directory without metadata — surface a bare row so
+                # the user can still see + resume it.
+                meta = {"session_id": sid, "name": f"Run {sid}", "turn_count": 0, "player_alive": True}
+            except Exception:
+                continue
+
+            rows.append({
+                "session_id": sid,
+                "name": meta.get("name") or f"Run {sid}",
+                "description": meta.get("description") or "",
+                "turn_count": int(meta.get("turn_count", 0) or 0),
+                "player_alive": bool(meta.get("player_alive", True)),
+                "created_at": meta.get("created_at") or "",
+                "last_accessed": meta.get("last_accessed") or meta.get("created_at") or "",
+            })
+
+        rows.sort(key=lambda r: r.get("last_accessed", ""), reverse=True)
+        if limit and limit > 0:
+            rows = rows[:limit]
+
+        return jsonify(success_response({"sessions": rows}, f"{len(rows)} sessions"))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to list sessions", str(e))
+
+
+@app.route('/api/lobby/sessions/<session_id>', methods=['GET'])
+def api_lobby_session_status(session_id):
+    """Quick per-session status probe used by the lobby before it hands off
+    to /play — verifies the session actually exists and returns just enough
+    metadata to render the resume card."""
+    try:
+        sanitized = engine._sanitize_session_id(session_id)
+        session_root = Path("sessions") / sanitized
+        if not session_root.exists() and sanitized != 'default':
+            return error_response(f"Session '{sanitized}' not found", code=404)
+        try:
+            meta = engine._load_session_metadata(sanitized, create_if_missing=False)
+        except FileNotFoundError:
+            return error_response(f"Session '{sanitized}' not found", code=404)
+        return jsonify(success_response({
+            "session_id": sanitized,
+            "metadata": meta,
+            "play_url": f"/play?session={sanitized}",
+        }, "ok"))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to fetch session", str(e))
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1365,10 +1579,16 @@ def api_health():
 
 @app.route('/', methods=['GET'])
 def index():
-    """Root: send visitors straight to the playable game. Machine clients
-    that want the JSON info blob (previously served here) can use
-    /api/info instead, which has identical contents."""
-    return redirect('/standalone')
+    """Root: send visitors to the lobby splash. From there they either
+    start a fresh instance of the experience or resume a saved run — the
+    lobby then routes them to /play?session=<id> where the immersive UI
+    takes over. Machine clients that want the JSON info blob (previously
+    served here) can use /api/info instead, which has identical contents.
+
+    Legacy behavior: /standalone still serves the immersive UI directly
+    (defaulting to the shared 'default' session when no ?session=<id> is
+    supplied), so bookmarks and embed links continue to work."""
+    return redirect('/lobby')
 
 
 # ═══════════════════════════════════════════════════════════════════

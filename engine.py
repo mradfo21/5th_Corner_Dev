@@ -1055,6 +1055,155 @@ def _save_state(st: dict, session_id='default'):
             except Exception as e_remove:
                 logging.error(f"Error removing temporary state file {temp_state_file} after failed save: {e_remove}")
 
+
+# ═══════════════════════════════════════════════════════════════════
+# MULTI-USER SESSION CONTEXT SWITCHING
+#
+# The engine keeps ONE active game state in memory (module globals `state`,
+# `history`, `_next_feed_item_id`, `_last_image_path`, `history_path`) so
+# the standalone feed handlers (api_reset / api_feed / api_choose) can stay
+# simple. To let multiple people play concurrently against the same server
+# process, each with their own persistent instance on disk, we treat that
+# in-memory slot as a *context* and swap it before each session-scoped
+# request handler runs.
+#
+# Concurrency model: turns serialize on WORLD_STATE_LOCK. Two different
+# users on two different sessions can each read/write their own on-disk
+# state and each interact with the game — but only one turn is actively
+# being processed by the engine at a time. This is acceptable because the
+# per-turn work is dominated by LLM + image API latency (multi-second),
+# not CPU, and this framework lets us horizontally split later by process
+# without changing the client contract.
+#
+# Public API:
+#   engine.set_active_session(session_id) -> str
+#     Persist current state under its previous session id, then load the
+#     requested session's state into memory. Returns the resolved id.
+#   engine.get_active_session_id() -> str
+#     Returns the id of the session currently loaded in memory.
+#   engine.session_context(session_id)   [context manager]
+#     Acquires WORLD_STATE_LOCK, swaps active session, yields, then
+#     persists on exit. Use this around anything that mutates state.
+# ═══════════════════════════════════════════════════════════════════
+
+# The session id currently loaded into the module-global `state`. The
+# engine boots with the 'default' session (see _load_state('default') above)
+# so start there and update as we swap.
+_active_session_id: str = 'default'
+
+
+def get_active_session_id() -> str:
+    """Session id whose state is currently loaded in memory."""
+    return _active_session_id
+
+
+def _sanitize_session_id(session_id) -> str:
+    """
+    Normalize + validate an incoming session id. Falls back to 'default' if
+    the id is missing, empty, or does not match the allowed character set.
+    Never raises — a bad id from a URL simply routes to the default slot so
+    the caller still gets a working game instead of a 400.
+    """
+    if not session_id:
+        return 'default'
+    try:
+        sid = str(session_id).strip()
+        if not sid:
+            return 'default'
+        # _validate_session_id accepts alnum + '_' + '-' up to 100 chars.
+        _validate_session_id(sid)
+        return sid
+    except Exception:
+        logging.warning(f"[SESSION CTX] Rejected invalid session id: {session_id!r}; using 'default'")
+        return 'default'
+
+
+def set_active_session(session_id: str) -> str:
+    """
+    Swap the module-global game state to the requested session.
+
+    - Saves the currently active state to its own session file first so we
+      never lose in-flight progress when a different user takes a turn.
+    - Loads the target session's state (creating a fresh default state on
+      disk if it does not yet exist).
+    - Rebinds `state`, `history`, `history_path`, and advances
+      `_next_feed_item_id` past any ids persisted in the loaded feed_log so
+      newly generated items stay monotonically increasing.
+
+    Safe to call with the same id (no-op). Always returns the resolved id.
+    """
+    global state, history, history_path, _next_feed_item_id, _active_session_id
+
+    target = _sanitize_session_id(session_id)
+
+    with WORLD_STATE_LOCK:
+        if target == _active_session_id and isinstance(state, dict):
+            # Already loaded; nothing to do. Touch metadata so recent-access
+            # timestamps still bump for the lobby list.
+            try:
+                _update_session_metadata(target)
+            except Exception:
+                pass
+            return target
+
+        # Persist whatever is currently in memory back to its own slot before
+        # we overwrite the globals. This preserves in-flight progress even if
+        # a request handler forgot to _save_state() before returning.
+        try:
+            if isinstance(state, dict) and _active_session_id:
+                _save_state(state, _active_session_id)
+        except Exception as e_save_prev:
+            logging.warning(f"[SESSION CTX] Failed to persist previous session '{_active_session_id}' during swap: {e_save_prev}")
+
+        # Ensure the target session directory + metadata exist. _load_session_metadata
+        # creates a fresh session on disk when create_if_missing=True (default).
+        try:
+            _load_session_metadata(target)
+        except Exception as e_meta:
+            logging.warning(f"[SESSION CTX] Metadata init failed for '{target}': {e_meta}")
+
+        # Swap in the new session's persisted state.
+        state = _load_state(target)
+        history = _load_history(target)
+        history_path = _get_history_path(target)
+
+        # Feed-item ids must stay monotonically increasing per active session,
+        # so bump the module-global counter past whatever the loaded feed_log
+        # already contains. (This is the same guarantee the boot path makes.)
+        try:
+            feed = state.get('feed_log', []) if isinstance(state, dict) else []
+            max_id = max((int(i.get('id', 0)) for i in feed if isinstance(i, dict)), default=0)
+            if max_id > _next_feed_item_id:
+                _next_feed_item_id = max_id
+        except Exception:
+            pass
+
+        _active_session_id = target
+        logging.info(f"[SESSION CTX] Active session -> '{target}' (feed_log len={len(state.get('feed_log', []))})")
+        return target
+
+
+from contextlib import contextmanager as _contextmanager
+
+@_contextmanager
+def session_context(session_id):
+    """
+    Context manager that switches the engine's active session for the
+    duration of a request. Persists the state on exit so the on-disk copy
+    always reflects any mutations made inside the block.
+    """
+    resolved = set_active_session(session_id)
+    try:
+        yield resolved
+    finally:
+        try:
+            with WORLD_STATE_LOCK:
+                if isinstance(state, dict):
+                    _save_state(state, resolved)
+        except Exception as e:
+            logging.warning(f"[SESSION CTX] Failed to persist session '{resolved}' after request: {e}")
+
+
 def summarize_world_state(state: dict) -> str:
     """
     Return a single, actionable, dynamic sentence summarizing the most important, immediate world state or threat.
