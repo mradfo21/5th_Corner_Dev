@@ -1,5 +1,12 @@
 # Dynamic Character Voices — Implementation Plan
 
+> **Status:** Phases 1–3 are implemented on this branch. See
+> `voice_design.py`, the wiring in `engine.py` / `api.py`, the client
+> hot-swap in `static/js/standalone.js`, and `test_voice_design.py`
+> (30 offline tests + 1 live-gated integration test). The plan below is
+> preserved as the design record.
+
+
 **Goal:** stop mapping every SCAN subject to the same 5-voice `by_kind` roster and
 instead **design a voice per character on demand** from the character's own
 description (label + kind + scene + persona), then **delete the voice at session
