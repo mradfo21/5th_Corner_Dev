@@ -109,8 +109,8 @@ class TestProviderManagerWiring(unittest.TestCase):
 
 
 class TestSpeedDefaults(unittest.TestCase):
-    def test_two_step_default(self):
-        self.assertEqual(fal.FAL_NUM_INFERENCE_STEPS, 2)
+    def test_eight_step_default(self):
+        self.assertEqual(fal.FAL_NUM_INFERENCE_STEPS, 8)
 
     def test_sync_mode_on_by_default(self):
         self.assertTrue(fal._FAL_SYNC_MODE)
@@ -120,7 +120,7 @@ class TestSpeedDefaults(unittest.TestCase):
 
     def test_base_payload_is_speed_tuned(self):
         payload = fal._base_payload("a wet alley")
-        self.assertEqual(payload["num_inference_steps"], 2)
+        self.assertEqual(payload["num_inference_steps"], 8)
         self.assertEqual(payload["num_images"], 1)
         self.assertTrue(payload["sync_mode"])
         self.assertFalse(payload["enable_safety_checker"])

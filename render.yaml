@@ -28,7 +28,7 @@ services:
       # fal.ai image backend (DEFAULT). Create an API key at
       # fal.ai/dashboard/keys. Powers SDXL Lightning (~1s per frame) for all
       # imagery. Optional speed knobs: FAL_NUM_INFERENCE_STEPS (1/2/4/8,
-      # default 2), FAL_SYNC_MODE (default on), FAL_IMG2IMG_STRENGTH.
+      # default 8), FAL_SYNC_MODE (default on), FAL_IMG2IMG_STRENGTH.
       - key: FAL_API_KEY
         sync: false
       # Krea 2 image backend (optional quality preset). Create an API token at
