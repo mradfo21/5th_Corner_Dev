@@ -1951,6 +1951,268 @@ def _detect_objects(image_path: str = None,
         return []
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Realtime danger perception (for the peripheral-vignette / health system).
+#
+# One vision call, one answer: "is what's on screen dangerous, right now?"
+# Fired ~1x/second by the client against the live world-model frame. Kept
+# deliberately narrow — three ordinal levels + a short human-readable reason
+# + optional bbox of the primary threat — so the client's state machine has
+# a single, predictable signal to drive the red-vignette pulse and health
+# drain. Nothing here mutates world state; this is a read-only perception
+# probe, like /api/detect.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_DANGER_RESPONSE_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        # 0 = safe, 1 = threatened (hostile in frame, not committing),
+        # 2 = attacking (aimed/lunging at camera, or camera is IN a hazard).
+        "level": {"type": "INTEGER", "enum": [0, 1, 2]},
+        # A terse, human-readable reason (<=8 words). Shown in the client
+        # log for tuning and debugging; never rendered to the player.
+        "reason": {"type": "STRING"},
+        # Optional bbox of the primary threat, so the client can bias the
+        # vignette gradient toward the edge that thing is coming from.
+        # Same 0-1000 int format as _detect_objects for consistency.
+        "threat_box": {"type": "ARRAY", "items": {"type": "NUMBER"}},
+    },
+    "required": ["level"],
+}
+
+
+def _perceive_danger(image_bytes: bytes = None,
+                     mime_type: str = None,
+                     scene_prompt: str = "") -> dict:
+    """Grade the live frame's threat level for the peripheral-vignette loop.
+
+    Returns a dict:
+        {"level": 0|1|2,
+         "reason": str,
+         "direction": "left"|"right"|"top"|"bottom"|"center"|None,
+         "threat_cx": float,   # 0..1, only when a threat_box is present
+         "threat_cy": float}
+
+    ``level``:
+      • 0 — safe. Nothing hostile / actively harmful in frame.
+      • 1 — threatened. Hostile entity present and oriented toward camera,
+            OR player is adjacent to a live environmental hazard.
+      • 2 — attacking. Hostile weapon/limb pointed at or striking camera,
+            OR camera is physically inside a hazard (in the flames, on the
+            collapsing floor, engulfed by the toxic cloud, etc).
+
+    Returns level=0 with reason="" on any failure — the danger loop should
+    NEVER be able to hurt the player because a vision call went sideways.
+    """
+    import base64
+    import json as _json
+    import random as _random
+    import time as _time
+
+    safe = {"level": 0, "reason": "", "direction": None,
+            "threat_cx": None, "threat_cy": None}
+
+    if not LLM_ENABLED or not VISION_ENABLED or not GEMINI_API_KEY:
+        return safe
+    if not image_bytes:
+        return safe
+    if not mime_type:
+        mime_type = "image/jpeg"
+
+    try:
+        image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+
+        # Tight, unambiguous rubric. Three levels, one paragraph each — the
+        # goal is that the SAME frame gets the SAME level on re-runs, so the
+        # client's state machine stays stable turn-over-turn.
+        danger_instructions = (
+            "You are a threat detector for a first-person survival game. "
+            "Look at this single frame from the player's point-of-view camera "
+            "and grade its immediate danger to the person BEHIND the camera. "
+            "Return ONE JSON object with fields: level (integer 0, 1, or 2), "
+            "reason (<= 8 words, lowercase), and optionally threat_box "
+            "[ymin, xmin, ymax, xmax] integers 0-1000 (y top-to-bottom, "
+            "x left-to-right) around the single most dangerous thing in view.\n\n"
+            "LEVEL 0 — SAFE: no hostile entities in frame and no active "
+            "environmental hazard the camera is exposed to. Calm rooms, empty "
+            "corridors, distant scenery, benign objects. Even eerie or unsettling "
+            "scenes are 0 if nothing is actually moving to harm you.\n\n"
+            "LEVEL 1 — THREATENED: a hostile entity is in frame AND oriented "
+            "toward the camera (guard looking at you, creature turning to you, "
+            "aimed weapon not yet firing), OR the camera is close to an active "
+            "hazard (edge of a fire, near a toxic pool, at the lip of a drop, "
+            "unstable structure creaking overhead). Threat exists but you have "
+            "a beat to react.\n\n"
+            "LEVEL 2 — ATTACKING: a hostile weapon, limb, or projectile is "
+            "committed toward the camera (muzzle flash, lunging creature, "
+            "swinging blade, incoming projectile, hands reaching for the lens), "
+            "OR the camera is PHYSICALLY INSIDE a hazard (engulfed in flames, "
+            "submerged in toxic fluid, buried under debris, falling). Damage is "
+            "happening or milliseconds away.\n\n"
+            "RULES:\n"
+            "• Grade the FRAME, not the story. Don't infer off-screen dangers.\n"
+            "• A person alone in frame is only a threat if their body language, "
+            "gaze, or weapon actively targets the camera. Idle NPCs = LEVEL 0.\n"
+            "• Weapons only escalate a level when pointed at the camera.\n"
+            "• Dark / low-visibility scenes are NOT automatically dangerous. "
+            "Only grade what you can actually see.\n"
+            "• If in doubt between two levels, choose the LOWER one — the "
+            "player's death should always be predictable, never surprising."
+        )
+
+        prompt_prior = ""
+        if scene_prompt:
+            prior = scene_prompt.strip().replace("\n", " ")
+            if len(prior) > 400:
+                prior = prior[:400].rstrip() + "..."
+            prompt_prior = (
+                "This frame was rendered from the following scene prompt. "
+                "Use it as a hint for what the world contains, but grade "
+                "ONLY what you can actually see in the pixels.\n"
+                f"SCENE PROMPT: {prior}\n\n"
+            )
+
+        api_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent"
+        headers = {
+            "x-goog-api-key": GEMINI_API_KEY,
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "contents": [{
+                "parts": [
+                    {"inlineData": {"mimeType": mime_type, "data": image_b64}},
+                    {"text": prompt_prior + danger_instructions},
+                ]
+            }],
+            "generationConfig": {
+                "thinkingConfig": {"thinkingBudget": 0},
+                # Deterministic: same frame → same level. Predictability
+                # matters more here than variety.
+                "temperature": 0.0,
+                "maxOutputTokens": 120,
+                "responseMimeType": "application/json",
+                "responseSchema": _DANGER_RESPONSE_SCHEMA,
+            },
+            "safetySettings": [
+                {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+            ],
+        }
+
+        # Same tight-timeout + one-retry pattern as _detect_objects. The
+        # danger loop is running at ~1 Hz, so a stalled call must NOT stack.
+        response = None
+        last_err = None
+        for attempt in range(2):
+            try:
+                response = _GEMINI_HTTP_SESSION.post(
+                    api_url, headers=headers, json=payload, timeout=6
+                )
+                if response.status_code == 429 or 500 <= response.status_code < 600:
+                    last_err = requests.exceptions.HTTPError(
+                        f"{response.status_code} {response.reason}", response=response
+                    )
+                    if attempt == 0:
+                        _time.sleep(0.25 + _random.random() * 0.25)
+                        continue
+                    raise last_err
+                response.raise_for_status()
+                last_err = None
+                break
+            except (requests.exceptions.Timeout,
+                    requests.exceptions.ConnectionError) as e:
+                last_err = e
+                if attempt == 0:
+                    _time.sleep(0.25 + _random.random() * 0.25)
+                    continue
+                raise
+        if last_err is not None and response is None:
+            raise last_err
+        result = response.json()
+
+        candidates = result.get("candidates") or []
+        if not candidates:
+            return safe
+        parts = (candidates[0].get("content") or {}).get("parts") or []
+        full_text = "".join(p.get("text", "") for p in parts).strip()
+        if not full_text:
+            return safe
+
+        try:
+            parsed = _json.loads(full_text)
+        except Exception as parse_err:
+            log_error(f"[DANGER] malformed response: {parse_err} :: {full_text[:200]}")
+            return safe
+        if not isinstance(parsed, dict):
+            return safe
+
+        try:
+            level = int(parsed.get("level", 0))
+        except Exception:
+            level = 0
+        if level not in (0, 1, 2):
+            level = max(0, min(2, level))
+        reason = str(parsed.get("reason") or "").strip().lower()
+        if len(reason) > 80:
+            reason = reason[:80]
+
+        # Compute a direction hint from the threat bbox (if present) so the
+        # client can bias the vignette gradient toward the edge the danger
+        # is coming from. Empty / degenerate boxes → direction None → the
+        # vignette stays symmetric.
+        direction = None
+        threat_cx = None
+        threat_cy = None
+        box = parsed.get("threat_box")
+        if isinstance(box, (list, tuple)) and len(box) >= 4:
+            try:
+                ymin, xmin, ymax, xmax = (float(box[0]), float(box[1]),
+                                          float(box[2]), float(box[3]))
+                ymin, ymax = sorted((ymin / 1000.0, ymax / 1000.0))
+                xmin, xmax = sorted((xmin / 1000.0, xmax / 1000.0))
+                cx = max(0.0, min(1.0, (xmin + xmax) / 2.0))
+                cy = max(0.0, min(1.0, (ymin + ymax) / 2.0))
+                w = max(0.0, min(1.0, xmax - xmin))
+                h = max(0.0, min(1.0, ymax - ymin))
+                if w > 0.001 and h > 0.001 and not (w >= 0.98 and h >= 0.98):
+                    threat_cx = round(cx, 3)
+                    threat_cy = round(cy, 3)
+                    # Cardinal direction from the box center, with a dead
+                    # zone in the middle so a threat dead-center reads as
+                    # "center" (symmetric vignette) rather than randomly
+                    # snapping to a side.
+                    dx = cx - 0.5
+                    dy = cy - 0.5
+                    if abs(dx) < 0.15 and abs(dy) < 0.15:
+                        direction = "center"
+                    elif abs(dx) >= abs(dy):
+                        direction = "right" if dx > 0 else "left"
+                    else:
+                        direction = "bottom" if dy > 0 else "top"
+            except Exception:
+                direction = None
+                threat_cx = None
+                threat_cy = None
+
+        return {
+            "level": level,
+            "reason": reason,
+            "direction": direction,
+            "threat_cx": threat_cx,
+            "threat_cy": threat_cy,
+        }
+    except requests.exceptions.HTTPError as e:
+        safe_e = str(e).encode("ascii", "replace").decode("ascii")
+        log_error(f"[DANGER] Gemini API HTTP error: {safe_e}")
+        return safe
+    except Exception as e:
+        safe_e = str(e).encode("ascii", "replace").decode("ascii")
+        log_error(f"[DANGER] Failed: {safe_e}")
+        return safe
+
+
 def _appraise_photo(image_path: str, max_items: int = 6) -> dict:
     """Appraise a photograph the player captured — the reward loop's "feedback".
 
@@ -5090,6 +5352,78 @@ def api_detect():
         log_error(f"[DETECT] failed: {e}")
         _tb.print_exc()
         return jsonify({"error": str(e), "objects": []}), 500
+
+
+def api_danger():
+    """Realtime danger grading for the peripheral-vignette / health system.
+
+    Accepts the frame currently on screen (a JPEG data URL captured client-side
+    from the live world-model video) and returns a single ordinal threat level
+    for that frame. The client fires this at ~1 Hz while the realtime renderer
+    is live; the returned level drives the client's danger state machine (SAFE
+    → WARNING → HURTING) which pulses the red peripheral vignette and drains
+    health when danger persists.
+
+    Request JSON:  {"frame": "data:image/jpeg;base64,..."}
+    Response JSON: {"level": 0|1|2,
+                    "reason": "<8 words",
+                    "direction": "left"|"right"|"top"|"bottom"|"center"|null,
+                    "threat_cx": float|null,
+                    "threat_cy": float|null}
+
+    Stateless and read-only, like /api/detect: never mutates world state,
+    history, or choices. Degrades to `level: 0` (safe) on ANY failure — the
+    danger loop must not be able to hurt the player because vision hiccuped.
+    """
+    import base64 as _b64, re as _re
+    safe = {"level": 0, "reason": "", "direction": None,
+            "threat_cx": None, "threat_cy": None}
+    try:
+        data = request.get_json(silent=True) or {}
+        frame_b64 = data.get('frame')
+        session_id = data.get('session_id', 'default')
+        if not frame_b64:
+            return jsonify({"error": "missing frame", **safe}), 400
+        mime_match = _re.match(r'^data:(image/[^;]+);base64,(.*)$', frame_b64, _re.DOTALL)
+        if mime_match:
+            mime_type = mime_match.group(1)
+            raw = mime_match.group(2)
+        else:
+            mime_type = "image/jpeg"
+            raw = frame_b64
+        try:
+            img_bytes = _b64.b64decode(raw)
+        except Exception:
+            return jsonify({"error": "bad frame encoding", **safe}), 400
+        if len(img_bytes) < 512:
+            # A tiny/black frame is almost certainly the freeze buffer or a
+            # blackout gap — grade it as safe so the vignette doesn't flash
+            # on transitions.
+            return jsonify(safe)
+
+        # Ground the danger call with the current scene prompt, same as
+        # /api/detect. Helps the model disambiguate "guard with rifle
+        # aimed at you" from "guard idling behind a desk".
+        scene_prompt = ""
+        try:
+            _st = get_state(session_id) or {}
+            scene_prompt = str(_st.get('current_image_prompt') or "")
+        except Exception:
+            scene_prompt = ""
+
+        result = _perceive_danger(
+            image_bytes=img_bytes,
+            mime_type=mime_type,
+            scene_prompt=scene_prompt,
+        )
+        return jsonify(result if isinstance(result, dict) else safe)
+    except Exception as e:
+        import traceback as _tb
+        log_error(f"[DANGER] failed: {e}")
+        _tb.print_exc()
+        # Return 200 with a safe reading — the client's loop should not treat
+        # a server error as danger. It'll ease back toward SAFE on its own.
+        return jsonify({"error": str(e), **safe})
 
 
 def api_photo():
