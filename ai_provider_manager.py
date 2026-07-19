@@ -43,8 +43,8 @@ def load_ai_config() -> Dict[str, Any]:
             default_config = {
                 "text_provider": "gemini",
                 "text_model": "gemini-3.1-flash-lite",
-                "image_provider": "fal",
-                "image_model": "fal-ai/fast-lightning-sdxl",
+                "image_provider": "gemini",
+                "image_model": "gemini-3.1-flash-image",
                 "last_updated": datetime.now(timezone.utc).isoformat(),
                 "available_configs": {
                     "gemini": {
@@ -131,31 +131,12 @@ def get_text_model() -> str:
 def get_image_provider() -> str:
     """Get current image generation provider."""
     _ensure_initialized()
-    return load_ai_config().get("image_provider", "fal")
+    return load_ai_config().get("image_provider", "gemini")
 
 def get_image_model() -> str:
     """Get current image generation model."""
     _ensure_initialized()
-    return load_ai_config().get("image_model", "fal-ai/fast-lightning-sdxl")
-
-def resolve_image_provider_for_frame(frame_idx: int = 0, provider: str = None) -> str:
-    """Effective image provider for a given frame index.
-
-    The production ``fal`` preset is a hybrid:
-      • frame 0 (establishing still) → Krea (higher fidelity anchor)
-      • frame 1+ (updates) → fal SDXL Lightning (fast img2img)
-
-    Explicit ``krea`` / ``gemini`` / etc. presets are left unchanged.
-    """
-    configured = (provider if provider is not None else get_image_provider() or "fal")
-    configured = str(configured).strip().lower()
-    try:
-        idx = int(frame_idx or 0)
-    except (TypeError, ValueError):
-        idx = 0
-    if configured == "fal" and idx == 0:
-        return "krea"
-    return configured
+    return load_ai_config().get("image_model", "gemini-3.1-flash-lite-image")
 
 def set_preset(preset_name: str) -> bool:
     """
