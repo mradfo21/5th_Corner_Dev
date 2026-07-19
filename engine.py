@@ -220,6 +220,106 @@ def resolve_voice_for_kind(kind: str) -> str:
     return (by_kind.get((kind or "").strip().lower()) or _default_voice_id()).strip()
 
 
+# Label-token buckets that steer the fallback voice picker toward gender/age
+# hints WITHOUT running an LLM. Kept in sync with the classifiers in
+# voice_design.py so a subject's fallback voice at least matches the eventual
+# designed voice's basic timbre bracket.
+_FALLBACK_FEMALE_HINTS = (
+    "woman", "girl", "lady", "mother", "sister", "wife", "queen", "priestess",
+    "witch", "widow", "matriarch", "female", "nun", "mistress", "actress",
+    "waitress", "hostess",
+)
+_FALLBACK_MALE_HINTS = (
+    "man", "boy", "father", "brother", "husband", "king", "priest", "warden",
+    "sheriff", "guard", "soldier", "male", "monk", "master", "operator",
+    "captain", "detective", "cowboy", "hunter",
+)
+_FALLBACK_MACHINE_HINTS = (
+    "intercom", "radio", "speaker", "phone", "telephone", "handset", "walkie",
+    "loudspeaker", "megaphone", "pa system", "terminal", "computer", "robot",
+    "drone", "camera", "recorder", "machine",
+)
+
+
+def _hash_pick(seed: str, options: list) -> str:
+    """Deterministically pick one item from ``options`` by hashing ``seed``.
+    Returns "" when options is empty. Same seed always picks the same item —
+    so a given character keeps the same fallback voice across TALK opens
+    within a session (no "voice roulette" between reconnects)."""
+    if not options:
+        return ""
+    import hashlib as _h
+    digest = _h.sha1((seed or "").encode("utf-8", "ignore")).hexdigest()
+    idx = int(digest[:8], 16) % len(options)
+    return options[idx]
+
+
+def resolve_fallback_voice_for_subject(subject: dict) -> str:
+    """Pick a per-subject fallback voice from the static roster.
+
+    Different from ``resolve_voice_for_kind`` (which always returns the same
+    voice for every "person" / "creature" / etc.): this hashes the subject
+    label into a *pool* of roster voices filtered by inferred gender/kind,
+    so distinct characters get distinct-sounding voices IMMEDIATELY, before
+    the per-character designed voice is ready.
+
+    Used as the fallback in ``resolve_voice_for_subject`` when the dynamic
+    voice is disabled, still generating, or failed. Always returns a
+    non-empty voice_id from the registered ``voices.json`` roster.
+    """
+    if not isinstance(subject, dict):
+        subject = {}
+    label = str(subject.get("label") or "").strip().lower()
+    kind = str(subject.get("kind") or "").strip().lower()
+
+    voices = VOICES_CONFIG.get("voices") or []
+    # Exclude the narrator from the character pool — it's marked with a
+    # distinctive "the archive voice" tag and would break the fiction.
+    def _pool(pred):
+        return [
+            v.get("id") for v in voices
+            if isinstance(v, dict) and v.get("id") and pred(v)
+            and (v.get("name") or "").lower() != "narrator"
+        ]
+
+    def _has_hint(hints):
+        for h in hints:
+            if re.search(r"\b" + re.escape(h) + r"\b", label):
+                return True
+        return False
+
+    # Machines / voice-carriers: gender-neutral synthetic pool.
+    if kind == "machine" or _has_hint(_FALLBACK_MACHINE_HINTS):
+        pool = _pool(lambda v: (v.get("gender") or "").lower() == "neutral")
+        if pool:
+            return _hash_pick(label or "machine", pool)
+
+    # Gender hint from the label wins over kind default.
+    if _has_hint(_FALLBACK_FEMALE_HINTS):
+        pool = _pool(lambda v: (v.get("gender") or "").lower() == "female")
+        if pool:
+            return _hash_pick(label, pool)
+    if _has_hint(_FALLBACK_MALE_HINTS):
+        pool = _pool(lambda v: (v.get("gender") or "").lower() == "male")
+        if pool:
+            return _hash_pick(label, pool)
+
+    # Creatures / animals: prefer the deeper male roster (the husky-trickster
+    # feel already picked by by_kind), but vary between them.
+    if kind in ("creature", "animal"):
+        pool = _pool(lambda v: (v.get("gender") or "").lower() == "male")
+        if pool:
+            return _hash_pick(label or kind, pool)
+
+    # Everything else: hash across the whole human pool so two "figures" or
+    # two "characters" sound different.
+    pool = _pool(lambda v: (v.get("gender") or "").lower() in ("male", "female"))
+    if pool:
+        return _hash_pick(label or kind, pool)
+
+    return resolve_voice_for_kind(kind)
+
+
 def resolve_voice_for_subject(subject: dict, session_id: str = "default",
                               context: dict = None, world_prompt: str = "",
                               wait: float = 0.0) -> dict:
@@ -242,7 +342,12 @@ def resolve_voice_for_subject(subject: dict, session_id: str = "default",
     once the designed one lands. Guaranteed to always return a usable
     ``voice_id`` so callers can never end up with an empty tts.voice_id.
     """
-    fallback = resolve_voice_for_kind(subject.get("kind") if isinstance(subject, dict) else "")
+    # Smart per-subject fallback: hash the label into a gender/kind-filtered
+    # pool of roster voices so different characters sound different even
+    # before their per-character voice is designed. Falls back to the flat
+    # by_kind default if the roster is empty or the subject is malformed.
+    fallback = resolve_fallback_voice_for_subject(subject) \
+        or resolve_voice_for_kind(subject.get("kind") if isinstance(subject, dict) else "")
     try:
         import voice_design as _vd
     except Exception:

@@ -339,6 +339,101 @@ class TestEngineResolver(unittest.TestCase):
         self.assertEqual(r["status"], "disabled")
 
 
+class TestFallbackVoiceForSubject(unittest.TestCase):
+    """The smart fallback voice picker: hashes subject label into a
+    gender/kind-filtered pool of roster voices so different characters
+    sound different even before a per-character voice is designed."""
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib
+        import engine
+        importlib.reload(engine)
+        cls.engine = engine
+
+    def _name_of(self, vid):
+        return next((v.get("name") for v in self.engine.VOICES_CONFIG["voices"]
+                     if v.get("id") == vid), None)
+
+    def test_returns_a_registered_voice(self):
+        registered = {v["id"] for v in self.engine.VOICES_CONFIG["voices"]}
+        for lbl, kind in [("warden", "person"), ("creature", "creature"),
+                          ("intercom", "machine"), ("figure", "person")]:
+            vid = self.engine.resolve_fallback_voice_for_subject(
+                {"label": lbl, "kind": kind})
+            self.assertIn(vid, registered,
+                          f"{lbl}/{kind} returned unregistered {vid!r}")
+
+    def test_female_label_picks_female_voice(self):
+        female_ids = {v["id"] for v in self.engine.VOICES_CONFIG["voices"]
+                      if v.get("gender") == "female"}
+        for lbl in ("woman", "old woman", "mother", "sister", "young girl"):
+            vid = self.engine.resolve_fallback_voice_for_subject(
+                {"label": lbl, "kind": "person"})
+            self.assertIn(vid, female_ids,
+                          f"{lbl!r} should map to a female voice, got {self._name_of(vid)!r}")
+
+    def test_male_label_picks_male_voice(self):
+        male_ids = {v["id"] for v in self.engine.VOICES_CONFIG["voices"]
+                    if v.get("gender") == "male"}
+        for lbl in ("warden", "sheriff", "priest", "father", "old man"):
+            vid = self.engine.resolve_fallback_voice_for_subject(
+                {"label": lbl, "kind": "person"})
+            self.assertIn(vid, male_ids,
+                          f"{lbl!r} should map to a male voice, got {self._name_of(vid)!r}")
+
+    def test_machine_picks_neutral(self):
+        neutral_ids = {v["id"] for v in self.engine.VOICES_CONFIG["voices"]
+                       if v.get("gender") == "neutral"}
+        for lbl in ("rusted intercom", "static-filled radio", "PA system"):
+            vid = self.engine.resolve_fallback_voice_for_subject(
+                {"label": lbl, "kind": "machine"})
+            self.assertIn(vid, neutral_ids)
+
+    def test_never_picks_the_narrator(self):
+        # Narrator voice is "the archive voice" flavor and would break the
+        # fiction if a random character got it.
+        narrator_ids = {v["id"] for v in self.engine.VOICES_CONFIG["voices"]
+                        if (v.get("name") or "").lower() == "narrator"}
+        # Sample a broad label matrix to make an accidental narrator pick
+        # extremely unlikely to slip through unnoticed.
+        for lbl in ["figure", "shape", "watcher", "voice", "silhouette",
+                    "presence", "man", "woman", "creature", "child"]:
+            vid = self.engine.resolve_fallback_voice_for_subject(
+                {"label": lbl, "kind": "person"})
+            self.assertNotIn(vid, narrator_ids)
+
+    def test_same_label_picks_same_voice_deterministically(self):
+        v1 = self.engine.resolve_fallback_voice_for_subject(
+            {"label": "warden", "kind": "person"})
+        v2 = self.engine.resolve_fallback_voice_for_subject(
+            {"label": "warden", "kind": "person"})
+        v3 = self.engine.resolve_fallback_voice_for_subject(
+            {"label": "WARDEN", "kind": "person"})
+        self.assertEqual(v1, v2)
+        self.assertEqual(v1, v3)
+
+    def test_different_labels_spread_across_multiple_voices(self):
+        # 12 distinct people labels should produce at least 4 distinct
+        # voices — proves the hash distributes and we're not accidentally
+        # collapsing everyone to the same fallback (which would defeat the
+        # whole point of this function).
+        labels = ["warden", "sheriff", "priest", "detective", "watcher",
+                  "figure", "man", "operator", "hunter", "guard",
+                  "captain", "cowboy"]
+        chosen = {self.engine.resolve_fallback_voice_for_subject(
+            {"label": lbl, "kind": "person"}) for lbl in labels}
+        self.assertGreaterEqual(len(chosen), 4,
+                                f"Only {len(chosen)} distinct voices for "
+                                f"{len(labels)} distinct labels: {chosen}")
+
+    def test_malformed_subject_still_returns_a_voice(self):
+        for bad in [None, {}, {"label": None, "kind": None},
+                    {"label": "", "kind": ""}]:
+            vid = self.engine.resolve_fallback_voice_for_subject(bad)
+            self.assertTrue(vid, f"empty subject {bad!r} returned {vid!r}")
+
+
 @unittest.skipUnless(
     os.getenv("ELEVENLABS_API_KEY"),
     "no ELEVENLABS_API_KEY — skipping live integration test",
