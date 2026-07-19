@@ -6,13 +6,17 @@ instance of SOMEWHERE against the same server process.
 
 ## User flow
 
+The lobby is deliberately modeled on a **familiar game main-menu flow**
+— think Minecraft's Singleplayer world list, or a JRPG save screen —
+rather than a marketing landing page. One centered card, two obvious
+actions, and picking either reveals exactly the next thing you need:
+
 ```
-              ┌──────────────┐        ┌──────────────────┐
-Visitor ──▶   │  GET /lobby  │  ────▶ │  Splash page:    │
-              │  (splash)    │        │   • start new    │
-              └──────────────┘        │   • resume saved │
-                                      │   • join by code │
-                                      └────────┬─────────┘
+              ┌────────────────────┐
+Visitor ──▶   │      SOMEWHERE     │
+              │  ▶ NEW GAME        │──▶ optional name / code ──▶ PLAY
+              │  ◧ CONTINUE (3)    │──▶ save-slot list ─────────▶ pick a row
+              └────────────────────┘
                                                │
                      POST /api/lobby/create    │  (fresh)
                      ────────────────────────▶ │
@@ -27,8 +31,18 @@ Visitor ──▶   │  GET /lobby  │  ────▶ │  Splash page:    �
 ```
 
 * `/` redirects to `/lobby`.
-* `/lobby` renders `templates/lobby.html` — a VHS/analog-horror splash
-  that explains the game and gates the entry.
+* `/lobby` renders `templates/lobby.html` — a single menu card with
+  "NEW GAME" and "CONTINUE" buttons. Clicking either expands an inline
+  accordion panel right below the buttons (only one open at a time);
+  nothing else to scroll past to get into a run. A collapsed `<details>`
+  ("How does this work?") holds the 4-step explainer for anyone who
+  wants it, out of the way by default.
+* The "CONTINUE" button carries a badge with the saved-run count,
+  fetched quietly on page load — like a console menu that already
+  knows how many save files exist before you open the list.
+* The resume list itself is styled as save-slot rows (name, turn count,
+  last-played, alive/ended status, a play chevron) — the same shape as
+  a world-select screen, not a marketing card grid.
 * `/play` (alias of `/standalone`) reads `?session=<id>` and boots the
   immersive UI against that specific persisted run.
 
@@ -140,9 +154,12 @@ via a JSON body field + `X-Session-Id` header.
 
 ## Files added / touched
 
-* **new** `templates/lobby.html` — splash + panels
-* **new** `static/css/lobby.css` — VHS/CRT lobby styling
-* **new** `static/js/lobby.js` — session mint + resume list controller
+* **new** `templates/lobby.html` — main-menu card (New Game / Continue
+  accordion, no separate marketing sections)
+* **new** `static/css/lobby.css` — VHS/CRT dressing kept subtle; layout
+  is a single centered card with save-slot-style resume rows
+* **new** `static/js/lobby.js` — accordion controller, session mint,
+  resume list rendering
 * **new** `LOBBY_MULTIUSER.md` — this doc
 * `api.py` — `/lobby`, `/play`, `/api/lobby/*` routes;
   `_session_scoped()` wrapper; root `/` now redirects to `/lobby`

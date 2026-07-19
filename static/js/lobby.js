@@ -1,17 +1,18 @@
 /* ============================================================
-   SOMEWHERE // Lobby — splash page controller
+   SOMEWHERE // Lobby — main menu controller
+
+   Deliberately modeled on a familiar game main-menu flow (Minecraft's
+   Singleplayer world list, a JRPG save screen): two buttons up front
+   ("New Game" / "Continue"), each expanding an inline panel with exactly
+   what's needed next. Nothing else to configure before you're playing.
 
    Responsibilities:
-     - Render the ambient clock in the header
-     - "Start a new run" flow: POST /api/lobby/create, remember the id
-       locally, then hand the browser off to /play?session=<id>.
-     - "Resume" flow: list recent sessions (server-known + browser-known)
-       and let the visitor either click one or paste a code to jump in.
-
-   The lobby maintains its own tiny local index of recently-played sessions
-   in localStorage keyed under "somewhere.lobby.recent". Server-known
-   sessions still show up even in a brand-new browser; the local index
-   only adds "◆" recent-badges to rows we know this browser has touched.
+     - Ambient header clock
+     - Accordion: only one of the New Game / Continue panels open at a time
+     - "New Game": POST /api/lobby/create, remember the id locally, then
+       hand the browser off to /play?session=<id>.
+     - "Continue": list recent sessions (server-known + browser-known) as
+       save-slot rows; also accepts a pasted code to jump straight in.
    ============================================================ */
 
 (function () {
@@ -114,11 +115,75 @@
   tickClock();
   setInterval(tickClock, 1000);
 
-  // ---------- Resume list ----------
+  // ---------- Accordion: New Game / Continue panels ----------
+
+  var panels = {
+    "cta-start": "panel-new",
+    "cta-continue": "panel-resume",
+  };
+
+  function closeAllPanels(exceptId) {
+    Object.keys(panels).forEach(function (btnId) {
+      if (btnId === exceptId) return;
+      var btn = el(btnId);
+      var panel = el(panels[btnId]);
+      if (btn) btn.setAttribute("aria-expanded", "false");
+      if (panel) panel.hidden = true;
+    });
+  }
+
+  function togglePanel(btnId) {
+    var btn = el(btnId);
+    var panel = el(panels[btnId]);
+    if (!btn || !panel) return;
+    var isOpen = btn.getAttribute("aria-expanded") === "true";
+    if (isOpen) {
+      btn.setAttribute("aria-expanded", "false");
+      panel.hidden = true;
+      return;
+    }
+    closeAllPanels(btnId);
+    btn.setAttribute("aria-expanded", "true");
+    panel.hidden = false;
+    // Focus the first meaningful field so keyboard/quick players can go
+    // straight into typing without an extra click — mirrors how console
+    // menus auto-focus the first list item on expand.
+    var firstField = panel.querySelector("input[type='text']");
+    if (firstField) {
+      try { firstField.focus({ preventScroll: true }); } catch (_) { firstField.focus(); }
+    }
+  }
+
+  var startBtn = el("cta-start");
+  var continueBtn = el("cta-continue");
+  if (startBtn) startBtn.addEventListener("click", function () { togglePanel("cta-start"); });
+  if (continueBtn) {
+    continueBtn.addEventListener("click", function () {
+      togglePanel("cta-continue");
+      if (continueBtn.getAttribute("aria-expanded") === "true") loadSessions();
+    });
+  }
+
+  // ---------- Advanced (custom code) disclosure ----------
+
+  var advToggle = el("advanced-toggle");
+  var advFields = el("advanced-fields");
+  if (advToggle && advFields) {
+    advToggle.addEventListener("click", function () {
+      var isOpen = advToggle.getAttribute("aria-expanded") === "true";
+      advToggle.setAttribute("aria-expanded", isOpen ? "false" : "true");
+      advFields.hidden = isOpen;
+      if (!isOpen) {
+        var input = advFields.querySelector("input[type='text']");
+        if (input) input.focus();
+      }
+    });
+  }
+
+  // ---------- Resume / save-slot list ----------
 
   function renderResumeList(sessions) {
     var host = el("resume-list");
-    var empty = el("resume-empty");
     if (!host) return;
 
     var recents = recentSet();
@@ -143,7 +208,6 @@
       }
     });
 
-    // Sort recents to the top; otherwise use the server ordering (last accessed).
     rows.sort(function (a, b) {
       var aR = recents.has(a.session_id) ? 1 : 0;
       var bR = recents.has(b.session_id) ? 1 : 0;
@@ -151,23 +215,23 @@
       return (b.last_accessed || "").localeCompare(a.last_accessed || "");
     });
 
-    // Filter out the shared 'default' slot unless the user has explicitly
-    // touched it in this browser — it isn't a personal run.
+    // The shared 'default' slot isn't a personal run — only surface it if
+    // this browser has explicitly touched it.
     rows = rows.filter(function (r) {
       if (r.session_id === "default") return recents.has("default");
       return true;
     });
 
+    updateContinueBadge(rows.length);
+
     host.innerHTML = "";
     if (rows.length === 0) {
       var e = document.createElement("div");
       e.className = "resume-empty";
-      e.innerHTML = '<span class="resume-empty-glyph" aria-hidden="true">□</span>' +
-        '<span>No saved runs yet — start one above and it\'ll show up here.</span>';
+      e.innerHTML = "<span>No saved runs yet — start a New Game and it'll show up here.</span>";
       host.appendChild(e);
       return;
     }
-    if (empty && empty.parentNode) empty.parentNode.removeChild(empty);
 
     rows.forEach(function (row) {
       var sid = row.session_id;
@@ -183,34 +247,50 @@
       card.className = classes.join(" ");
       card.href = "/play?session=" + encodeURIComponent(sid);
       card.setAttribute("data-session-id", sid);
-      card.setAttribute("title", "Resume '" + sid + "'");
+      card.setAttribute("title", "Continue '" + sid + "'");
       card.innerHTML =
-        '<div>' +
+        '<div class="resume-card-main">' +
           '<div class="resume-card-name">' + escapeHTML(name) + '</div>' +
-          '<div class="resume-card-code">' + escapeHTML(sid) + '</div>' +
+          '<div class="resume-card-meta">' +
+            '<span>' + (turns > 0 ? (turns + ' turn' + (turns === 1 ? '' : 's')) : 'fresh') + '</span>' +
+            (when ? '<span class="sep">·</span><span>' + escapeHTML(when) + '</span>' : '') +
+            (!alive ? '<span class="sep">·</span><span>ended</span>' : '') +
+          '</div>' +
         '</div>' +
-        '<div class="resume-card-play" aria-hidden="true">▶</div>' +
-        '<div class="resume-card-meta">' +
-          '<span>' + (turns > 0 ? (turns + ' TURN' + (turns === 1 ? '' : 'S')) : 'FRESH') + '</span>' +
-          (when ? '<span class="sep">·</span><span>' + escapeHTML(when) + '</span>' : '') +
-          (row._tentative ? '<span class="sep">·</span><span>LOCAL</span>' : '') +
-          (!alive ? '<span class="sep">·</span><span>ENDED</span>' : '') +
-        '</div>';
+        '<div class="resume-card-play" aria-hidden="true">▶</div>';
 
-      card.addEventListener("click", function (ev) {
-        // Let normal navigation take over so opening in a new tab still works,
-        // but stamp the local recent-index first so the badge shows next time.
+      card.addEventListener("click", function () {
         rememberSession(sid, name);
       });
       host.appendChild(card);
     });
   }
 
+  function updateContinueBadge(count) {
+    var badge = el("continue-badge");
+    var hint = el("continue-hint");
+    if (badge) {
+      if (count > 0) {
+        badge.hidden = false;
+        badge.textContent = String(count);
+      } else {
+        badge.hidden = true;
+      }
+    }
+    if (hint) {
+      hint.textContent = count > 0
+        ? (count === 1 ? "1 saved run" : count + " saved runs")
+        : "resume a saved run";
+    }
+  }
+
+  var sessionsLoaded = false;
   function loadSessions() {
     fetch("/api/lobby/sessions?limit=25&include_default=false")
       .then(function (res) { return safeJSON(res); })
       .then(function (json) {
         var sessions = (json && json.data && json.data.sessions) || [];
+        sessionsLoaded = true;
         renderResumeList(sessions);
       })
       .catch(function (err) {
@@ -219,7 +299,13 @@
       });
   }
 
-  // ---------- New instance flow ----------
+  // Pre-fetch quietly on load (without opening the panel) so the Continue
+  // button's badge count is accurate the moment the page renders — like a
+  // console menu that already knows how many save files exist.
+  loadSessions();
+  window.addEventListener("focus", loadSessions);
+
+  // ---------- New game flow ----------
 
   var BOOT_MESSAGES = [
     "requesting instance…",
@@ -292,8 +378,6 @@
         var sid = data.session_id;
         rememberSession(sid, (payload && payload.name) || "");
         boot.advance("handing off to /play…");
-        // Small delay so the transition feels intentional. The redirect will
-        // then trigger a full reload into the immersive UI.
         setTimeout(function () {
           boot.done();
           window.location.href = data.play_url || ("/play?session=" + encodeURIComponent(sid));
@@ -302,43 +386,8 @@
       .catch(function (err) {
         boot.done();
         hideBoot();
-        showFormError("Could not boot instance: " + (err && err.message ? err.message : err));
+        showFormError("Could not start: " + (err && err.message ? err.message : err));
       });
-  }
-
-  // ---------- Wire up controls ----------
-
-  var startBtn = el("cta-start");
-  if (startBtn) {
-    startBtn.addEventListener("click", function () {
-      showFormError(null);
-      // Prefer any values the user already typed into the form below; fall
-      // back to a fully auto-generated instance if the fields are empty.
-      var nameInput = el("new-run-name");
-      var codeInput = el("new-run-code");
-      var payload = {};
-      var name = (nameInput && nameInput.value ? nameInput.value.trim() : "");
-      var code = (codeInput && codeInput.value ? codeInput.value.trim() : "");
-      var codeCheck = validateCode(code);
-      if (!codeCheck.ok) {
-        showFormError("Custom code: " + codeCheck.reason);
-        if (codeInput) codeInput.focus();
-        return;
-      }
-      if (name) payload.name = name;
-      if (codeCheck.code) payload.session_id = codeCheck.code;
-      bootInstance(payload);
-    });
-  }
-
-  var resumeFocusBtn = el("cta-resume-focus");
-  if (resumeFocusBtn) {
-    resumeFocusBtn.addEventListener("click", function () {
-      var panel = el("panel-resume");
-      if (panel && panel.scrollIntoView) panel.scrollIntoView({ behavior: "smooth", block: "start" });
-      var input = el("resume-code");
-      if (input) input.focus({ preventScroll: true });
-    });
   }
 
   var form = el("new-run-form");
@@ -363,6 +412,8 @@
     });
   }
 
+  // ---------- Join by code (inside the Continue panel) ----------
+
   function joinByCode() {
     var input = el("resume-code");
     if (!input) return;
@@ -370,17 +421,12 @@
     if (!raw) { input.focus(); return; }
     var check = validateCode(raw);
     if (!check.ok) {
-      // Reuse the resume input's UI: flash the border briefly.
       input.style.borderColor = "var(--accent-red)";
       setTimeout(function () { input.style.borderColor = ""; }, 900);
       return;
     }
     var sid = check.code;
     rememberSession(sid, "");
-    // Probe first so we don't send the user into a 404 experience if the code
-    // is stale. If the probe fails, fall through and let /play handle it —
-    // the standalone UI will boot the run from scratch (session_context
-    // creates missing sessions on demand).
     fetch("/api/lobby/sessions/" + encodeURIComponent(sid))
       .then(function () {})
       .catch(function () {})
@@ -397,12 +443,5 @@
       if (ev.key === "Enter") { ev.preventDefault(); joinByCode(); }
     });
   }
-
-  // ---------- Initial load ----------
-
-  loadSessions();
-  // Refresh the resume list on window focus so a user who plays a run and
-  // clicks the "Lobby" link sees the updated turn count without a hard reload.
-  window.addEventListener("focus", loadSessions);
 
 })();

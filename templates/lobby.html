@@ -6,7 +6,7 @@
 <title>SOMEWHERE // Lobby</title>
 <meta name="description" content="An AI-driven first-person survival story generator. Every scene is created in real-time. Every choice matters. Enter your instance.">
 <meta property="og:title" content="SOMEWHERE — Enter the Signal">
-<meta property="og:description" content="A survival story generated live by AI. Boot up a fresh instance, or resume a saved run.">
+<meta property="og:description" content="A survival story generated live by AI. Start a new game, or continue a saved run.">
 <meta property="og:type" content="website">
 <link rel="icon" href="{{ url_for('static', filename='Logo.jpg') }}">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -24,138 +24,105 @@
   <div class="crt-vignette" aria-hidden="true"></div>
   <div class="crt-glow" aria-hidden="true"></div>
 
-  <!-- Top bar: signal-in header. Mimics a broadcast slate. -->
+  <!-- Top bar: signal-in header. Mimics a broadcast slate / game HUD corner. -->
   <header class="lobby-header">
     <div class="lobby-header-left">
       <span class="rec-dot" aria-hidden="true">●</span>
-      <span class="lobby-header-label">INCOMING SIGNAL</span>
+      <span class="lobby-header-label">SIGNAL ONLINE</span>
     </div>
     <div class="lobby-header-right">
       <span class="lobby-header-meta" id="lobby-clock">--:--:--</span>
-      <span class="lobby-header-sep">·</span>
-      <span class="lobby-header-meta">CH 05</span>
     </div>
   </header>
 
-  <main class="lobby-main">
+  <!-- ==================== MAIN MENU ====================
+       Single centered menu card, like a title-screen: logo, one-line
+       pitch, then the two familiar actions (new game / continue). Picking
+       either expands an inline panel right below the buttons — nothing
+       else to scroll past to get into a run. -->
+  <main class="menu">
+    <div class="menu-card">
 
-    <!-- ==================== HERO / SPLASH ==================== -->
-    <section class="hero" aria-labelledby="hero-title">
-      <div class="hero-inner">
-        <p class="hero-eyebrow" aria-hidden="true">A LIVE-GENERATED SURVIVAL DISPATCH</p>
-        <h1 id="hero-title" class="hero-title" data-glitch="SOMEWHERE">SOMEWHERE</h1>
-        <p class="hero-subtitle">Every scene is drawn live by an AI. Every choice pulls the world further off its rails.
-          Enter the signal, take a breath, and try to survive whatever it decides is out there.</p>
+      <div class="menu-brand">
+        <h1 class="menu-title" data-glitch="SOMEWHERE">SOMEWHERE</h1>
+        <p class="menu-tagline">A survival story, drawn live by AI. Every choice changes what happens next.</p>
+      </div>
 
-        <div class="hero-cta-row">
-          <button id="cta-start" class="btn btn-primary" type="button">
-            <span class="btn-glyph" aria-hidden="true">▶</span>
-            <span class="btn-label">START A NEW RUN</span>
-            <span class="btn-sub">boot a fresh instance</span>
+      <nav class="menu-actions" aria-label="Main menu">
+        <button id="cta-start" class="menu-btn menu-btn-primary" type="button" aria-expanded="false" aria-controls="panel-new">
+          <span class="menu-btn-ico" aria-hidden="true">▶</span>
+          <span class="menu-btn-text">
+            <span class="menu-btn-label">NEW GAME</span>
+            <span class="menu-btn-hint">start a fresh instance</span>
+          </span>
+        </button>
+        <button id="cta-continue" class="menu-btn" type="button" aria-expanded="false" aria-controls="panel-resume">
+          <span class="menu-btn-ico" aria-hidden="true">◧</span>
+          <span class="menu-btn-text">
+            <span class="menu-btn-label">CONTINUE</span>
+            <span class="menu-btn-hint" id="continue-hint">resume a saved run</span>
+          </span>
+          <span class="menu-btn-badge" id="continue-badge" hidden>0</span>
+        </button>
+      </nav>
+
+      <!-- ---- New game panel (collapsed by default) ---- -->
+      <section class="menu-panel" id="panel-new" hidden>
+        <form id="new-run-form" class="run-form" autocomplete="off">
+          <label class="run-field">
+            <span class="run-field-label">Name your run</span>
+            <input type="text" id="new-run-name" name="name" maxlength="60"
+                   placeholder="optional — e.g. desert-fence-01" spellcheck="false">
+          </label>
+
+          <button type="button" id="advanced-toggle" class="advanced-toggle" aria-expanded="false" aria-controls="advanced-fields">
+            <span class="advanced-toggle-caret" aria-hidden="true">▸</span> Advanced: pick your own code
           </button>
-          <button id="cta-resume-focus" class="btn btn-ghost" type="button" title="Jump to saved runs">
-            <span class="btn-glyph" aria-hidden="true">◧</span>
-            <span class="btn-label">RESUME A RUN</span>
-            <span class="btn-sub">continue where you left off</span>
-          </button>
-        </div>
+          <div class="advanced-fields" id="advanced-fields" hidden>
+            <label class="run-field">
+              <span class="run-field-label">Custom code <em>letters, numbers, - and _ only</em></span>
+              <input type="text" id="new-run-code" name="session_id" maxlength="40"
+                     placeholder="leave blank to auto-generate" spellcheck="false" pattern="[A-Za-z0-9_\-]+">
+            </label>
+          </div>
 
-        <div class="hero-marquee" aria-hidden="true">
-          <div class="hero-marquee-track">
-            <span>▮ AI-DRAWN SCENES</span><span>▮ PERMADEATH</span><span>▮ 15-SEC CHOICES</span>
-            <span>▮ VHS TAPE REPLAYS</span><span>▮ VISION-GROUNDED CHOICES</span><span>▮ REAL CONSEQUENCES</span>
-            <span>▮ AI-DRAWN SCENES</span><span>▮ PERMADEATH</span><span>▮ 15-SEC CHOICES</span>
-            <span>▮ VHS TAPE REPLAYS</span><span>▮ VISION-GROUNDED CHOICES</span><span>▮ REAL CONSEQUENCES</span>
+          <button type="submit" class="menu-btn menu-btn-primary menu-btn-confirm" id="new-run-submit">
+            <span class="menu-btn-ico" aria-hidden="true">▶</span>
+            <span class="menu-btn-text"><span class="menu-btn-label">PLAY</span></span>
+          </button>
+          <p class="run-form-error" id="new-run-error" role="alert" hidden></p>
+        </form>
+      </section>
+
+      <!-- ---- Continue panel (collapsed by default) ---- -->
+      <section class="menu-panel" id="panel-resume" hidden>
+        <div class="resume-list" id="resume-list" aria-live="polite">
+          <div class="resume-empty" id="resume-empty">
+            <span>Loading saved runs…</span>
           </div>
         </div>
-      </div>
-    </section>
-
-    <!-- ==================== WHAT IT IS ==================== -->
-    <section class="brief" aria-labelledby="brief-title">
-      <h2 id="brief-title" class="section-title">// THE BRIEF</h2>
-      <div class="brief-grid">
-        <article class="brief-card">
-          <div class="brief-glyph" aria-hidden="true">◉</div>
-          <h3>You are the camera</h3>
-          <p>First-person POV. Bodycam grain. The scene in front of you is generated live from the world state, one frame at a time.</p>
-        </article>
-        <article class="brief-card">
-          <div class="brief-glyph" aria-hidden="true">◈</div>
-          <h3>Your choices bend it</h3>
-          <p>Four options every turn, drawn from what the AI can actually see. Hesitate too long and the world takes the turn for you.</p>
-        </article>
-        <article class="brief-card">
-          <div class="brief-glyph" aria-hidden="true">▤</div>
-          <h3>The tape remembers</h3>
-          <p>Every run saves a persistent instance you can pause and resume. When it ends, the tape ejects — a VHS replay of your last minutes.</p>
-        </article>
-        <article class="brief-card">
-          <div class="brief-glyph" aria-hidden="true">⌥</div>
-          <h3>Death is permanent</h3>
-          <p>No respawn, no soft-reset. When the run ends, it ends. Start a fresh instance and the world will be somewhere else entirely.</p>
-        </article>
-      </div>
-    </section>
-
-    <!-- ==================== NEW INSTANCE PANEL ==================== -->
-    <section class="panel" id="panel-new" aria-labelledby="new-title">
-      <h2 id="new-title" class="section-title">// NEW INSTANCE</h2>
-      <p class="section-caption">Boot up a private run. We generate a short code you can bookmark to come back.</p>
-      <form id="new-run-form" class="run-form" autocomplete="off">
-        <label class="run-field">
-          <span class="run-field-label">Run name <em>optional</em></span>
-          <input type="text" id="new-run-name" name="name" maxlength="60"
-                 placeholder="e.g. desert-fence-01" spellcheck="false">
-        </label>
-        <label class="run-field">
-          <span class="run-field-label">Custom code <em>optional — leave blank to auto-generate</em></span>
-          <input type="text" id="new-run-code" name="session_id" maxlength="40"
-                 placeholder="e.g. jason-run-3" spellcheck="false" pattern="[A-Za-z0-9_\-]+">
-        </label>
-        <button type="submit" class="btn btn-primary btn-inline" id="new-run-submit">
-          <span class="btn-glyph" aria-hidden="true">▶</span>
-          <span class="btn-label">BOOT INSTANCE</span>
-        </button>
-        <p class="run-form-error" id="new-run-error" role="alert" hidden></p>
-      </form>
-    </section>
-
-    <!-- ==================== RESUME PANEL ==================== -->
-    <section class="panel" id="panel-resume" aria-labelledby="resume-title">
-      <h2 id="resume-title" class="section-title">// RESUME</h2>
-      <p class="section-caption">Runs you've already booted — from this browser and from the server's archives.</p>
-
-      <div class="resume-controls">
-        <input type="text" id="resume-code" placeholder="Paste a run code (e.g. abc12xyz)"
-               maxlength="40" spellcheck="false" pattern="[A-Za-z0-9_\-]+" autocomplete="off">
-        <button type="button" id="resume-code-go" class="btn btn-ghost btn-inline">
-          <span class="btn-glyph" aria-hidden="true">↳</span>
-          <span class="btn-label">JOIN BY CODE</span>
-        </button>
-      </div>
-
-      <div class="resume-list" id="resume-list" aria-live="polite">
-        <div class="resume-empty" id="resume-empty">
-          <span class="resume-empty-glyph" aria-hidden="true">□</span>
-          <span>Loading saved runs…</span>
+        <div class="resume-join">
+          <input type="text" id="resume-code" placeholder="or paste a run code, e.g. abc12xyz"
+                 maxlength="40" spellcheck="false" pattern="[A-Za-z0-9_\-]+" autocomplete="off">
+          <button type="button" id="resume-code-go" class="menu-btn-small">GO</button>
         </div>
-      </div>
-    </section>
+      </section>
 
-    <!-- ==================== HOW TO PLAY ==================== -->
-    <section class="howto" aria-labelledby="howto-title">
-      <h2 id="howto-title" class="section-title">// HOW TO PLAY</h2>
-      <ol class="howto-list">
-        <li><span class="howto-num">01</span><span class="howto-body">Boot a new instance above. You'll get a private URL you can bookmark to resume anytime.</span></li>
-        <li><span class="howto-num">02</span><span class="howto-body">Read the dispatch. Look at the scene. The AI has drawn what your character is looking at right now.</span></li>
-        <li><span class="howto-num">03</span><span class="howto-body">Pick one of four choices — or type your own. You have 15 seconds. The world doesn't wait forever.</span></li>
-        <li><span class="howto-num">04</span><span class="howto-body">Survive as long as you can. Your run auto-saves. When it ends, come back here and start another.</span></li>
-      </ol>
-    </section>
+      <!-- ---- How to play (collapsed disclosure, not a full page section) ---- -->
+      <details class="menu-howto">
+        <summary>How does this work?</summary>
+        <ol class="howto-list">
+          <li>Start a new game, or continue one — you get a private link you can bookmark.</li>
+          <li>Read the dispatch and look at the scene. It's drawn live from where you are right now.</li>
+          <li>Pick one of four choices, or type your own. You have 15 seconds — the world doesn't wait.</li>
+          <li>Survive as long as you can. Your run saves itself. Death is permanent, so make it count.</li>
+        </ol>
+      </details>
+
+    </div>
 
     <footer class="lobby-footer">
-      <span class="lobby-footer-sig">↯ SOMEWHERE STORYGEN · SIGNAL STABLE</span>
+      <span class="lobby-footer-sig">SOMEWHERE STORYGEN</span>
       <span class="lobby-footer-links">
         <a href="/standalone">/standalone</a>
         <span class="dot">·</span>
