@@ -292,23 +292,28 @@ image is ready, typically in **~1 second**. That's ~6-15x faster than Krea
 Medium and ~10-20x faster than Gemini Pro.
 
 **fal is the shipped production default** (`ai_config.json` →
-`image_provider: "fal"`, `image_model: "fal-ai/fast-lightning-sdxl"`), tuned
-with 8 steps, `sync_mode`, jpeg wire format, and safety checker off.
+`image_provider: "fal"`, `image_model: "fal-ai/fast-lightning-sdxl"`), but it
+is a **hybrid route**:
 
-**Trade-off:** SDXL Lightning is a much smaller/older checkpoint than Gemini
-3.1 or Krea 2, so per-image fidelity, prompt adherence, and continuity are
-noticeably lower. Switch to `krea` / `krea_large` / `gemini` when quality
-matters more than latency.
+- **Frame 0** (establishing still) → **Krea 2** (higher-fidelity anchor)
+- **Frame 1+** (updates) → **fal SDXL Lightning** (fast img2img, 8 steps,
+  `sync_mode`, jpeg wire format, safety checker off)
+
+`ai_provider_manager.resolve_image_provider_for_frame()` performs that swap
+inside `engine._gen_image()`.
+
+**Trade-off:** follow-up frames are still Lightning (lower fidelity than full
+Krea), but the world starts from a strong Krea still. Switch to `krea` /
+`krea_large` / `gemini` when every frame needs max quality.
 
 ### Switching away / back
 
 Runtime (no redeploy), via Discord: `/ai_switch krea` (or `gemini`, `openai`,
-`veo`) for quality. Return anytime with `/ai_switch fal`. The engine routes on
-`ai_provider_manager.get_image_provider()`, so nothing else changes.
+`veo`) for full-quality every frame. Return anytime with `/ai_switch fal`.
 
 | Preset | Image model | Approx. latency | Notes |
 |--------|-------------|-----------------|-------|
-| `fal` | `fal-ai/fast-lightning-sdxl` | **~1s** | **Default.** Fastest available. Lower fidelity/continuity. |
+| `fal` | Krea (frame 0) → `fal-ai/fast-lightning-sdxl` (updates) | **~12s then ~1s** | **Default hybrid.** |
 
 ### Config / secrets
 

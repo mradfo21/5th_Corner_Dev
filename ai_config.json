@@ -50,8 +50,8 @@
       "text_model": "gemini-3.1-flash-lite",
       "image_provider": "fal",
       "image_model": "fal-ai/fast-lightning-sdxl",
-      "description": "fal.ai SDXL Lightning images (~1s) + Gemini narrative. DEFAULT — optimized for speed. Requires FAL_API_KEY."
+      "description": "DEFAULT hybrid: Krea for the establishing still (frame 0), fal SDXL Lightning for fast updates. Needs KREA_API_KEY + FAL_API_KEY."
     }
   },
-  "description": "Using fal.ai SDXL Lightning for all imagery (max speed). Switch to krea/krea_large for quality, or gemini/openai/veo via /ai_switch."
+  "description": "Hybrid default: Krea establishes frame 0, fal Lightning paints follow-up updates. Switch to krea/krea_large for full quality, or gemini/openai/veo via /ai_switch."
 }
