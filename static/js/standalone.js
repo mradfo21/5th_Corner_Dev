@@ -5513,29 +5513,32 @@
     return { w, h };
   }
 
-  // Current capture region (16:9), centered. Zooming IN shrinks it — a tighter
-  // CROP of the scene — instead of magnifying the pixels. Returns { w, h } px.
+  // The on-screen capture frame is a CONSTANT centered 16:9 window — pushing in
+  // does NOT shrink it; it magnifies the scene inside (see sceneScale), so the
+  // whole frame shows the cropped-in view. The captured crop is recovered by
+  // inverting that magnification in screenToNorm. Returns { w, h } px.
   function frameBoxPx() {
     const fit = frameFitPx();
-    const z = Math.max(1, state.touchMode ? (state.photoZoom || 1) : 1);
-    return { w: Math.round(fit.w / z), h: Math.round(fit.h / z) };
+    return { w: Math.round(fit.w), h: Math.round(fit.h) };
   }
 
-  // The scene is never optically magnified in the immersive viewfinder — zoom
-  // only resizes the capture region. Keeping this as a function (returning 1)
-  // means the capture-crop math and transform plumbing stay identity-safe.
+  // Pushing IN magnifies the scene about the center so the cropped area fills the
+  // frame — it genuinely feels like you're looking at (and can explore) the
+  // cropped-in image, not a shrinking window. The capture-crop math inverts this
+  // magnification in screenToNorm, so the shot matches exactly what's framed.
   function sceneScale() {
-    return 1;
+    const z = state.touchMode ? (state.photoZoom || 1) : 1;
+    return Math.max(1, z);
   }
 
   // The scene transform currently applied (identity unless the camera is armed).
   // Centralized so the capture crop math can invert it. The origin is the
-  // RETICLE point: scaling about it keeps whatever is under the reticle locked
-  // under the reticle while everything else magnifies around it.
+  // viewport CENTER — the viewfinder is a fixed, centered frame, so pushing in
+  // magnifies symmetrically about the middle of the shot.
   function getSceneTransform() {
     const scale = sceneScale();
-    const p = state.touchPoint || { x: window.innerWidth / 2, y: window.innerHeight / 2 };
-    return { scale, ox: p.x, oy: p.y };
+    const c = captureCenter();
+    return { scale, ox: c.x, oy: c.y };
   }
 
   // Apply scale-about-reticle as `translate(t) scale(z)` with transform-origin
