@@ -1253,10 +1253,10 @@ except Exception as _e:  # noqa: BLE001
 # preset name; unknown presets fall back to sensible defaults derived from the
 # preset config itself.
 _PRESET_UI_META = {
-    "fal": {"label": "fal.ai Lightning", "latency": "~1-2s", "speed": 5,
-            "blurb": "SDXL Lightning. Fastest possible — lower fidelity. Needs FAL_API_KEY."},
+    "fal": {"label": "fal.ai Lightning (default)", "latency": "~1s", "speed": 5,
+            "blurb": "SDXL Lightning. Default for all imagery — optimized for speed. Needs FAL_API_KEY."},
     "krea": {"label": "Krea 2 Medium", "latency": "~12s", "speed": 3,
-             "blurb": "Fast, strong quality, style-transfer continuity. Needs KREA_API_KEY."},
+             "blurb": "Higher fidelity, style-transfer continuity. Needs KREA_API_KEY."},
     "krea_large": {"label": "Krea 2 Large", "latency": "~24s", "speed": 2,
                    "blurb": "Higher quality / more textured. Needs KREA_API_KEY."},
     "gemini": {"label": "Gemini (Nano Banana)", "latency": "~15-30s", "speed": 2,

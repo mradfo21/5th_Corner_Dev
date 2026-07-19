@@ -4091,8 +4091,8 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
             return (result_path, prompt_str, None)
 
         elif active_image_provider == "fal":
-            # Use fal.ai SDXL Lightning - the SPEED preset. Synchronous REST
-            # call typically completes in ~1-2s (vs ~12s Krea Medium / ~15-30s
+            # fal.ai SDXL Lightning — production default. Synchronous REST
+            # call typically completes in ~1s (vs ~12s Krea Medium / ~15-30s
             # Gemini Pro), at the cost of lower fidelity than either. Only a
             # single reference image is supported for continuity.
             print(f"[IMG] Using fal.ai (SDXL Lightning) provider")
