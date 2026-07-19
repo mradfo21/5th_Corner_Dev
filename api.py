@@ -51,14 +51,27 @@ def add_embed_headers(response):
 # ═══════════════════════════════════════════════════════════════════
 
 # Session-context wrapper. The engine keeps one active game state in memory
-# for the feed endpoints, so before each session-scoped request we swap
-# engine.state to the requested instance (see engine.set_active_session).
-# session_id is read from ?session_id=... on the query string, the JSON body,
-# or the X-Session-Id header — clients pass whichever is convenient.
+# for the feed endpoints, so before each state-MUTATING session request we
+# swap engine.state to the requested instance (see engine.set_active_session)
+# — this is where the per-session feed-item-id counter is advanced and the
+# session's metadata dir is created. session_id is read from ?session_id=...
+# on the query string, the JSON body, or the X-Session-Id header — clients
+# pass whichever is convenient.
+#
+# IMPORTANT: the swap mutates module-global mirrors (engine.state / history /
+# _active_session_id) shared by EVERY request thread. Doing it on the
+# high-frequency read-only poll (/api/feed) raced the background turn
+# pipeline: a poll for session B, landing mid-turn for session A, would swap
+# the mirror out from under A's in-flight save and cross-contaminate the two
+# sessions' feeds. So /api/feed is deliberately NOT wrapped — its handler
+# resolves the caller's session id itself and reads that session's feed_log
+# straight from disk (see engine.api_feed), touching no shared global.
 def _session_scoped(handler):
     """Decorator that resolves the caller's session id, swaps the engine's
     active session for the duration of the request, and hands off to the
-    underlying feed handler. Backwards-compatible: no session id → 'default'."""
+    underlying handler. Used ONLY for the state-mutating endpoints (reset /
+    choose / regenerate) that rely on set_active_session's per-session id-
+    counter bump + metadata creation. Backwards-compatible: no id → 'default'."""
     from functools import wraps
     @wraps(handler)
     def _wrapped(*args, **kwargs):
@@ -78,7 +91,11 @@ def _session_scoped(handler):
 
 
 app.add_url_rule('/api/reset', 'standalone_api_reset', _session_scoped(engine.api_reset), methods=['POST'])
-app.add_url_rule('/api/feed', 'standalone_api_feed', _session_scoped(engine.api_feed), methods=['GET'])
+# /api/feed is intentionally registered WITHOUT _session_scoped: it is polled
+# continuously by every connected client and must not swap the shared global
+# mirror (see comment above). engine.api_feed resolves its own session id and
+# reads from disk.
+app.add_url_rule('/api/feed', 'standalone_api_feed', engine.api_feed, methods=['GET'])
 app.add_url_rule('/api/choose', 'standalone_api_choose', _session_scoped(engine.api_choose), methods=['POST'])
 app.add_url_rule('/api/regenerate_choices', 'standalone_api_regenerate_choices', _session_scoped(engine.api_regenerate_choices), methods=['POST'])
 # Vision for the realtime renderer: the client posts the actual on-screen video
@@ -436,11 +453,13 @@ def api_objectives():
     Response JSON: {"lead": str, "detail": str, "generated": bool}
     """
     try:
-        s = engine.state or {}
-        key = (s.get("turn_count", 0), s.get("current_phase", "normal"), len(s.get("seen_elements") or []))
+        session_id = engine._resolve_request_session_id()
+        s = engine.get_state(session_id) or {}
+        # Cache is keyed by session too, so two players' leads never collide.
+        key = (session_id, s.get("turn_count", 0), s.get("current_phase", "normal"), len(s.get("seen_elements") or []))
         if _OBJECTIVES_CACHE.get("key") == key and _OBJECTIVES_CACHE.get("value"):
             return jsonify(_OBJECTIVES_CACHE["value"])
-        directive = engine.generate_directive("default")
+        directive = engine.generate_directive(session_id)
         if not isinstance(directive, dict) or not directive.get("lead"):
             directive = {"lead": "Survey the area",
                          "detail": "Read the scene and document your first real subject.",
@@ -459,9 +478,16 @@ def api_objectives():
 @app.route('/api/status', methods=['GET'])
 def api_status():
     """Lightweight state snapshot for the standalone UI's HUD. Does not
-    call any LLM/image backend — pure read of the in-memory/disk state."""
+    call any LLM/image backend — pure read of the on-disk state.
+
+    Session-aware: reads the caller's OWN session from disk (resolved from
+    ?session_id=/body/X-Session-Id) instead of the shared engine.state global.
+    Reading the global made the HUD show whichever session most recently
+    swapped the mirror — wrong (and flickering) as soon as two people play at
+    once."""
     try:
-        s = engine.state or {}
+        session_id = engine._resolve_request_session_id()
+        s = engine.get_state(session_id) or {}
 
         # Resolve inventory item ids to display names + emoji for the HUD.
         inventory = []

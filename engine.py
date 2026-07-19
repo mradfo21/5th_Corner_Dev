@@ -1480,10 +1480,51 @@ def _sync_ambient_state(st: dict, session_id: str) -> None:
     convenience mirror, so skip the write when session_id is no longer the
     active one — the next request for session_id will simply reload from
     disk (set_active_session always does on a real switch).
+
+    The check-and-set runs under WORLD_STATE_LOCK so it is atomic with
+    respect to set_active_session() (which also holds that lock while it
+    swaps `_active_session_id` and `state` together). Without the lock the
+    `get_active_session_id() == session_id` test and the `state = st` write
+    straddle a window in which a concurrent set_active_session could change
+    the active session out from under us, leaving `state` pointing at one
+    session's data while `_active_session_id` names another — which the
+    session_context exit-save would then persist to the WRONG file.
     """
     global state
-    if get_active_session_id() == session_id:
+    with WORLD_STATE_LOCK:
+        if get_active_session_id() == session_id:
+            state = st
+
+
+def _sync_ambient_history(hist: list, session_id: str) -> None:
+    """History counterpart of _sync_ambient_state: refresh the module-global
+    `history` mirror only when session_id is still the active session, under
+    WORLD_STATE_LOCK for atomicity with set_active_session. The on-disk copy
+    (via _save_history) is always the source of truth; this only controls the
+    in-memory convenience mirror so a finished background task can't leak its
+    frames into whichever session is active by the time it completes."""
+    global history
+    with WORLD_STATE_LOCK:
+        if get_active_session_id() == session_id:
+            history = hist
+
+
+def _publish_ambient(st=None, hist=None) -> None:
+    """UNCONDITIONALLY set the module-global state/history mirrors.
+
+    Used ONLY by the legacy single-session Discord bot turn path
+    (advance_turn_image_fast / advance_turn_choices_deferred called with
+    local_only=False), whose interaction handlers read engine.state /
+    engine.history directly after a turn resolves. The bot process runs a
+    single game flow and never calls set_active_session, so an unconditional
+    write is correct there. The web multi-user path passes local_only=True and
+    never calls this — it keeps everything in locals + on-disk per session, so
+    no concurrent request can corrupt an in-flight turn via the shared mirror."""
+    global state, history
+    if st is not None:
         state = st
+    if hist is not None:
+        history = hist
 
 
 def summarize_world_state(state: dict) -> str:
@@ -2871,8 +2912,11 @@ def generate_directive(session_id: str = "default") -> dict:
     import re as _re
     import requests
 
+    # Always read the requested session from disk (not the shared `state`
+    # global) so a concurrent different-session request can't make this
+    # objective describe the wrong player's world.
     try:
-        st = state if session_id == "default" else _load_state(session_id)
+        st = _load_state(session_id)
     except Exception:
         st = state or {}
 
@@ -3516,15 +3560,25 @@ def _build_vhs_prompt(base_prompt: str, use_img2img: bool = False) -> str:
     return full_prompt
 
 
-def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optional[str] = None, previous_caption: Optional[str] = None, previous_mode: Optional[str] = None, strength: float = 0.25, image_description: str = "", time_of_day: Optional[str] = None, use_edit_mode: bool = False, frame_idx: int = 0, dispatch: str = "", world_prompt: str = "", hard_transition: bool = False, is_timeout_penalty: bool = False, session_id: str = 'default') -> Optional[tuple[str, str, Optional[str]]]:
+def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optional[str] = None, previous_caption: Optional[str] = None, previous_mode: Optional[str] = None, strength: float = 0.25, image_description: str = "", time_of_day: Optional[str] = None, use_edit_mode: bool = False, frame_idx: int = 0, dispatch: str = "", world_prompt: str = "", hard_transition: bool = False, is_timeout_penalty: bool = False, session_id: str = 'default', history_ref: Optional[list] = None) -> Optional[tuple[str, str, Optional[str]]]:
     """Generate image and return (image_path, prompt_used, video_path).
     
     video_path is None for non-Veo providers or when video generation fails/disabled.
     
     time_of_day: If None, will use state['time_of_day'] for consistency
     session_id: Session ID for storing images in correct directory
+    history_ref: The caller's session history to collect img2img reference frames
+        from. Pass this (rather than relying on the module-global `history`) from
+        any multi-user path — a concurrent different-session request can swap the
+        global mirror out mid-render, which would otherwise feed one session's
+        reference frames into another session's image. Falls back to the global
+        for legacy single-session callers (the Discord bot) that don't pass it.
     """
     global _last_image_path
+    # Resolve the history this render reads its img2img reference frames from.
+    # Local variable so a concurrent set_active_session()/session swap can't
+    # change it mid-function (the whole point of the history_ref parameter).
+    _hist = history_ref if history_ref is not None else history
     import random
     if not (IMAGE_ENABLED and LLM_ENABLED):
         print("[IMG] Image or LLM disabled, returning None")
@@ -3561,18 +3615,18 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
         # anchor QUALITY on it while spatial state follows the live frame.
         primary_guide_image_path = None
         
-        if frame_idx > 0 and history:
+        if frame_idx > 0 and _hist:
             last_imgs = []
             # Use 2 reference images for better stability
             num_images_to_collect = 2
             print(f"\n{'='*70}")
             print(f"[IMG2IMG COLLECT] Frame {frame_idx} - Starting reference collection")
-            print(f"[IMG2IMG COLLECT] History has {len(history)} entries")
+            print(f"[IMG2IMG COLLECT] History has {len(_hist)} entries")
             print(f"[IMG2IMG COLLECT] Collecting up to {num_images_to_collect} reference images")
             print(f"[IMG2IMG COLLECT] Will stop at last hard transition (location change)")
             print(f"{'='*70}\n")
             
-            for idx, entry in enumerate(reversed(history)):
+            for idx, entry in enumerate(reversed(_hist)):
                 has_image = bool(entry.get("image"))
                 has_vision = bool(entry.get("vision_dispatch"))
                 was_hard_transition = entry.get("hard_transition", False)
@@ -3655,8 +3709,8 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
                 # Toggle: Set USE_FRAME_0_ANCHOR = False to disable
                 USE_FRAME_0_ANCHOR = False  # Set to False to disable frame 0 anchoring
                 
-                if USE_FRAME_0_ANCHOR and len(history) > 0 and frame_idx > 1:
-                    frame_0_image = history[0].get("image")
+                if USE_FRAME_0_ANCHOR and len(_hist) > 0 and frame_idx > 1:
+                    frame_0_image = _hist[0].get("image")
                     if frame_0_image and frame_0_image not in prev_img_paths_list:
                         frame_0_path = str(_resolve_image_path(frame_0_image))
                         if not os.path.exists(frame_0_path):
@@ -4991,7 +5045,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             # ── PHASE 1: consequence dispatch only (fast text; NO image, async evolve) ──
             # Image and world-evolution run in the background so narrative + choices
             # return fast.
-            p1 = advance_turn_image_fast(choice, fate=turn_fate, is_timeout_penalty=False, session_id=SID, skip_image=True, skip_evolve=True, interaction=is_interaction)
+            p1 = advance_turn_image_fast(choice, fate=turn_fate, is_timeout_penalty=False, session_id=SID, skip_image=True, skip_evolve=True, interaction=is_interaction, local_only=True)
             turn_state = _load_state(SID)
             _sync_ambient_state(turn_state, SID)
 
@@ -5097,7 +5151,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             # ── PHASE 2: fast text-grounded choices so the turn resolves promptly. ──
             p2 = advance_turn_choices_deferred(
                 None, dispatch_text, vision_dispatch_text, choice,
-                "", p1.get("hard_transition", False), SID,
+                "", p1.get("hard_transition", False), SID, local_only=True,
             )
             turn_state = _load_state(SID)
             _sync_ambient_state(turn_state, SID)
@@ -5189,19 +5243,17 @@ def _generate_and_append_scene_image(caption: str, dispatch: str, choice: str, f
     global state, history
     if not WORLD_IMAGE_ENABLED:
         return None
-    # _gen_image reads the module-global `history` (not a parameter) to
-    # collect img2img reference frames, so this whole body must hold
-    # TURN_LOCK for its duration — otherwise two sessions' image-generation
-    # threads running concurrently could each reassign `history` out from
-    # under the other mid-call, feeding session A's frames into session B's
-    # image (or vice versa). Doesn't affect single-session latency: a turn
-    # only ever has one image generation in flight at a time (see
-    # _process_turn_background), so this never contends with itself.
+    # Serialize scene-image generation system-wide with TURN_LOCK so it never
+    # runs concurrently with a turn's own state mutations (and, for the bot
+    # path, so two channels' renders don't collide on the module globals).
+    # We read this session's history from disk into a LOCAL and hand it to
+    # _gen_image via history_ref, so a concurrent different-session request
+    # swapping the module-global `history` can't feed the wrong session's
+    # frames into this render. Single-session latency is unaffected: a turn
+    # only ever has one image generation in flight (see _process_turn_background).
     with TURN_LOCK:
         try:
-            # _gen_image reads the module-global `history` to collect img2img
-            # reference frames — make sure it reflects this session.
-            history = _load_history(session_id)
+            local_history = _load_history(session_id)
             result = _gen_image(
                 caption=caption or dispatch,
                 mode="normal",
@@ -5211,6 +5263,7 @@ def _generate_and_append_scene_image(caption: str, dispatch: str, choice: str, f
                 hard_transition=hard_transition,
                 frame_idx=frame_idx,
                 session_id=session_id,
+                history_ref=local_history,
             )
             img_path = result[0] if result else None
             # Two different prompts for two different renderers:
@@ -5314,7 +5367,7 @@ def _generate_and_append_scene_image(caption: str, dispatch: str, choice: str, f
                         }
                         hist.append(intro_entry)
                         _save_history(hist, session_id)
-                        history = hist
+                        _sync_ambient_history(hist, session_id)
                         print(f"[SCENE IMG] intro frame seeded into history[0] for img2img continuity: {img_path}")
                     else:
                         # A player turn already appended before the (async) intro image
@@ -5341,14 +5394,14 @@ def _generate_and_append_scene_image(caption: str, dispatch: str, choice: str, f
                         # secondary img2img quality reference.
                         hist[target_idx]["guide_image"] = img_path
                         _save_history(hist, session_id)
-                        history = hist
+                        _sync_ambient_history(hist, session_id)
                     elif hist:
                         print(f"[SCENE IMG] WARN: turn entry idx {target_idx} absent (len={len(hist)}); writing hist[-1]")
                         hist[-1]["image"] = img_path
                         hist[-1]["image_url"] = img_path
                         hist[-1]["guide_image"] = img_path
                         _save_history(hist, session_id)
-                        history = hist
+                        _sync_ambient_history(hist, session_id)
             print(f"[SCENE IMG] scene appended for {session_id}: {web}", flush=True)
             return {"img_path": img_path, "web_url": web,
                     "image_prompt": image_prompt, "render_prompt": render_prompt}
@@ -7768,7 +7821,7 @@ def _phase_escalation_beat(phase: str) -> str:
     return random.choice(beats) if beats else ""
 
 # ───────── game loop ──────────────────────────────────────────────────────────
-def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalty: bool = False, session_id: str = 'default', skip_image: bool = False, skip_evolve: bool = False, interaction: bool = False) -> dict:
+def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalty: bool = False, session_id: str = 'default', skip_image: bool = False, skip_evolve: bool = False, interaction: bool = False, local_only: bool = False) -> dict:
     """
     PHASE 1 (FAST): Generate dispatch and image, return immediately.
 
@@ -7776,6 +7829,15 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
     skip_evolve=True  -> run the world-evolution rewrite in the background
                          (it only affects the next turn), so the turn's
                          narrative + choices return fast.
+    local_only=True   -> operate entirely on LOCAL `state`/`history` variables
+                         (loaded + saved per session_id) and never touch the
+                         module-global mirrors. The web multi-user path passes
+                         this so a concurrent different-session request that
+                         swaps the shared mirror can't corrupt this turn's
+                         in-flight computation or make its _save_state write the
+                         wrong session's data. The Discord bot keeps the default
+                         (False), which publishes the result to the globals its
+                         interaction handlers read after a turn.
     
     Args:
         session_id: Session ID for state management
@@ -7786,8 +7848,12 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
         fate: Luck modifier - "LUCKY", "NORMAL", or "UNLUCKY"
         is_timeout_penalty: If True, maintains EXACT camera position (no movement/teleportation)
     """
-    global state, history
-    
+    # NOTE: `state` / `history` below are LOCAL variables (no `global`
+    # declaration on purpose — see local_only in the docstring). The bot path
+    # mirrors them into the module globals at the end via _publish_ambient.
+    state = None
+    history = None
+
     # CRITICAL: Log everything for Render debugging
     safe_choice = choice[:100].encode('ascii', 'replace').decode('ascii')
     print(f"[ADVANCE_TURN] Choice: '{safe_choice}'")
@@ -7912,7 +7978,8 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
                 world_prompt=state.get("world_prompt", ""),
                 hard_transition=hard_transition,
                 is_timeout_penalty=is_timeout_penalty,  # Pass flag to image generation
-                session_id=session_id  # Session-specific image directory
+                session_id=session_id,  # Session-specific image directory
+                history_ref=history,  # LOCAL history — never the shared global mirror
             )
             consequence_video_url = None
             if result:
@@ -7934,6 +8001,12 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             import traceback
             traceback.print_exc()
         
+        # Bot path only: mirror this turn's result into the module globals its
+        # interaction handlers read after the turn. Web (local_only=True) keeps
+        # everything local + on-disk so concurrent sessions never collide.
+        if not local_only:
+            _publish_ambient(st=state, hist=history)
+
         return {
             "dispatch": dispatch,
             "vision_dispatch": vision_dispatch,
@@ -7962,15 +8035,18 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             "mode": "camcorder"
         }
 
-def advance_turn_choices_deferred(consequence_img_url: str, dispatch: str, vision_dispatch: str, choice: str, consequence_img_prompt: str = "", hard_transition: bool = False, session_id: str = 'default') -> dict:
+def advance_turn_choices_deferred(consequence_img_url: str, dispatch: str, vision_dispatch: str, choice: str, consequence_img_prompt: str = "", hard_transition: bool = False, session_id: str = 'default', local_only: bool = False) -> dict:
     """
     PHASE 2 (DEFERRED): Generate choices after image is displayed.
     
     Args:
         session_id: Session ID for state management
+        local_only: When True (web multi-user path), operate on LOCAL state/
+            history only and never touch the module-global mirrors — see
+            advance_turn_image_fast's docstring.
     """
     try:
-        return _advance_turn_choices_deferred_impl(consequence_img_url, dispatch, vision_dispatch, choice, consequence_img_prompt, hard_transition, session_id)
+        return _advance_turn_choices_deferred_impl(consequence_img_url, dispatch, vision_dispatch, choice, consequence_img_prompt, hard_transition, session_id, local_only)
     except Exception as e:
         import traceback
         print(f"[PHASE 2] Fatal error in advance_turn_choices_deferred: {e}", flush=True)
@@ -7988,11 +8064,16 @@ def advance_turn_choices_deferred(consequence_img_url: str, dispatch: str, visio
         }
 
 
-def _advance_turn_choices_deferred_impl(consequence_img_url: str, dispatch: str, vision_dispatch: str, choice: str, consequence_img_prompt: str = "", hard_transition: bool = False, session_id: str = 'default') -> dict:
-    """Internal implementation of Phase 2 choice generation."""
-    global state, history
+def _advance_turn_choices_deferred_impl(consequence_img_url: str, dispatch: str, vision_dispatch: str, choice: str, consequence_img_prompt: str = "", hard_transition: bool = False, session_id: str = 'default', local_only: bool = False) -> dict:
+    """Internal implementation of Phase 2 choice generation.
+
+    `state` / `history` below are LOCAL variables (no `global` on purpose): the
+    web path (local_only=True) must not touch the shared module mirrors, and
+    the bot path mirrors the result at the end via _publish_ambient."""
     from choices import generate_choices
-    
+
+    state = None
+    history = None
     state = _load_state(session_id)
     
     # --- FLIPBOOK GROUNDING ---
@@ -8122,7 +8203,12 @@ def _advance_turn_choices_deferred_impl(consequence_img_url: str, dispatch: str,
     }
     history.append(history_entry)
     _save_history(history, session_id)
-    
+
+    # Bot path only: mirror into the module globals its handlers read after a
+    # turn. Web (local_only=True) stays fully local + on-disk per session.
+    if not local_only:
+        _publish_ambient(st=state, hist=history)
+
     return {
         "choices": next_choices,
         "situation_report": situation_summary,
