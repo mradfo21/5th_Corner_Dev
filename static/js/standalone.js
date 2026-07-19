@@ -6143,8 +6143,12 @@
         hideFloat();
         setTimeout(() => { if (open && !minimized && el.talkInput && mode === "text") el.talkInput.focus(); }, 220);
       }
-      // Feedback: a soft click sound on either transition.
-      try { Sound.talkClose && (minimized ? Sound.talkClose() : Sound.talkOpen && Sound.talkOpen()); } catch (_) {}
+      // Subtle UI toggle sound (NOT the warm carrier tone that plays when a
+      // conversation OPENS/CLOSES). Folding is a HUD move, not a hang-up.
+      try {
+        if (minimized && Sound.menuClose) Sound.menuClose();
+        else if (!minimized && Sound.menuOpen) Sound.menuOpen();
+      } catch (_) {}
     }
     function toggleMinimize() { setMinimized(!minimized); }
 
@@ -6462,10 +6466,15 @@
     }
 
     function pulseOrb() {
-      if (!el.talkOrb) return;
-      el.talkOrb.classList.remove("talk-orb-pulse");
-      void el.talkOrb.offsetWidth;
-      el.talkOrb.classList.add("talk-orb-pulse");
+      // Pulse BOTH the panel orb and the chip orb so a new line reads as a
+      // "presence beat" whether the panel is unfolded or folded to a chip.
+      const orbs = [el.talkOrb, el.talkChipOrb];
+      for (const o of orbs) {
+        if (!o) continue;
+        o.classList.remove("talk-orb-pulse");
+        void o.offsetWidth;
+        o.classList.add("talk-orb-pulse");
+      }
     }
 
     function close() {
