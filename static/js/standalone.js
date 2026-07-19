@@ -2287,8 +2287,16 @@
           // windows, so a player who just made a good escape choice should
           // not eat 40 HP waiting on server latency.
           const R = window.ReactorRenderer;
-          const stale = state.processing ||
-                        (R && R.isShowing && !R.isShowing());
+          // Fairness gate: skip drain during turn-processing / non-showing
+          // frames — EXCEPT during demoActive, where the mode was set by
+          // scripted code, not by grading a live frame, so no fairness
+          // gate applies. Without this, running the demo in still-image
+          // mode (or with reactor warming) would show the vignette + audio
+          // but never tick down health, which reads as broken.
+          const stale = !demoActive && (
+            state.processing ||
+            (R && R.isShowing && !R.isShowing())
+          );
           if (!stale && t >= nextDamageTick) {
             // Discrete hit: the drain is felt as a punch, not a smooth
             // decrement, which reads better in an action loop.
@@ -2559,6 +2567,9 @@
       try { if (heartbeatOn) { Sound.heartbeatStop && Sound.heartbeatStop(); heartbeatOn = false; } } catch (_) {}
       try { if (tinnitusOn) { Sound.tinnitusStop && Sound.tinnitusStop(); tinnitusOn = false; } } catch (_) {}
       try { document.body.classList.remove("danger-critical", "danger-hurting", "danger-warning", "danger-shaking"); } catch (_) {}
+      // End any in-flight demo/manual override so a game restart returns
+      // to normal vision-driven behavior.
+      try { if (demoActive) { demoActive = false; demoTimers.forEach((t) => clearTimeout(t)); demoTimers = []; } } catch (_) {}
       dead = false;
       consecutiveErrors = 0;
       lastLumaSample = null;
@@ -2604,7 +2615,101 @@
       }
     }
 
-    return { start, stop, reset, getState, onSoundToggled };
+    // ── Demo / manual test mode ──────────────────────────────────────
+    // A scripted safe → warning → hurting → warning → safe sequence that
+    // ignores the vision loop and just drives the state machine directly.
+    // Trigger with Shift+D (see keyboard handler far below) or the query
+    // string `?danger_demo=1`, or programmatically via DangerSystem.demo().
+    // Purpose: let anyone experience the full polish stack instantly on
+    // any scene, without hunting for one that trips the vision rubric.
+    // Suspends the sampling loop for the duration so live readings can't
+    // stomp the scripted mode.
+    // `demoActive` is the shared "vision loop is temporarily suspended in
+    // favour of a scripted / manual state" flag. Both demo() and
+    // forceMode() set it, and the shouldSample() override below gates on
+    // it so real readings can't stomp the scripted mode.
+    let demoActive = false;
+    let demoTimers = [];
+    function clearDemoTimers() {
+      demoTimers.forEach((t) => clearTimeout(t));
+      demoTimers = [];
+    }
+    function demoStep(delayMs, fn) {
+      demoTimers.push(setTimeout(fn, delayMs));
+    }
+    function endDemo() {
+      demoActive = false;
+      clearDemoTimers();
+      log("demo", "end");
+    }
+    function ensureLocallyRunning() {
+      // If start()'s reactor-gated flow hasn't already spun us up (e.g. we
+      // are in still-image mode or reactor is still warming), pull up the
+      // system locally so demo/forceMode still work. Live samples remain
+      // gated by shouldSample() so this doesn't add spurious API traffic.
+      if (running) return true;
+      bindDom();
+      if (!el.vignette) { log("abort — no DOM"); return false; }
+      running = true;
+      dead = false;
+      health = CONFIG.HEALTH_MAX;
+      mode = "safe";
+      stateSince = now();
+      applyDirectionCss(null);
+      applyVisualForMode();
+      updateHealthBar();
+      showHealthBar(false);
+      startHealthLoop();
+      return true;
+    }
+    function demo(opts) {
+      // Force the DangerSystem to visibly cycle through its states so a
+      // player (or a QA session) can experience the polish without needing
+      // vision to actually escalate. Health drops during the HURTING phase
+      // and regenerates during the recovery phase — same code path as a
+      // real run.
+      if (!ensureLocallyRunning()) return;
+      if (demoActive) endDemo();
+      demoActive = true;
+      clearDemoTimers();
+      const dir = (opts && opts.direction) || "right";
+      log("demo", "start", dir);
+      lastDirection = dir; lastThreatCx = 0.85; lastThreatCy = 0.5;
+      applyDirectionCss(dir);
+      setMode("warning", "demo");
+      demoStep(2400, () => { if (demoActive) setMode("hurting", "demo"); });
+      demoStep(6400, () => { if (demoActive) setMode("warning", "demo"); });
+      demoStep(8000, () => { if (demoActive) setMode("safe", "demo"); });
+      demoStep(9200, () => { if (demoActive) endDemo(); });
+    }
+
+    // Test-only setter: force a specific mode. Useful for taking
+    // screenshots or tuning individual states. Suspends live sampling
+    // until the caller calls forceMode("safe") or reset().
+    function forceMode(next, direction) {
+      if (!ensureLocallyRunning()) return;
+      demoActive = true;
+      if (direction) {
+        lastDirection = direction;
+        applyDirectionCss(direction);
+      }
+      setMode(next, "manual");
+      if (next === "safe") {
+        // "safe" through the manual gate is treated as "resume live sampling"
+        // so a tester can flip out of a forced state without calling reset().
+        demoActive = false;
+      }
+    }
+
+    // shouldSample() gate — extended to also suspend during demo/manual
+    // states so live readings don't overwrite the scripted mode.
+    const _baseShouldSample = shouldSample;
+    shouldSample = function () {
+      if (demoActive) return false;
+      return _baseShouldSample();
+    };
+
+    return { start, stop, reset, getState, onSoundToggled, demo, forceMode };
   })();
   try { window.__DangerSystem = DangerSystem; } catch (_) {}
 
@@ -8362,6 +8467,11 @@
       openTape();
     } else if (e.key.toLowerCase() === "n") {
       toggleNarrator(); // narrator — a voice frames the world
+    } else if (e.shiftKey && e.key === "D") {
+      // Danger demo — scripted safe → warning → hurting → safe sequence so
+      // the vignette / HP bar / shake / heartbeat can be experienced on any
+      // scene, even when the vision loop hasn't tripped. See DangerSystem.demo.
+      try { DangerSystem.demo(); } catch (_) {}
     } else if (e.key.toLowerCase() === "d") {
       AgentLog.toggle(); // voice-agent debug log
     } else if (e.key.toLowerCase() === "p") {
@@ -8526,9 +8636,69 @@
     startStatusPolling();
     refreshStatus();
 
+    // Danger-system dev affordances, all off by default:
+    //   ?danger_demo=1  — auto-runs the safe/warning/hurting/safe sequence
+    //                     shortly after boot, so QA / stakeholders can see
+    //                     the full polish stack without hunting for a scene
+    //                     that trips the vision rubric. (Same as Shift+D.)
+    //   ?danger_debug=1 — mounts a small on-screen readout showing the live
+    //                     danger mode, last level, last reason, and current
+    //                     health. Invaluable when tuning the rubric.
+    try {
+      const q = new URLSearchParams(location.search);
+      if (q.get("danger_demo") === "1") {
+        // Small delay so the reactor has a moment to warm; the demo will
+        // still fire on stills if the reactor is unavailable.
+        setTimeout(() => { try { DangerSystem.demo(); } catch (_) {} }, 2600);
+      }
+      if (q.get("danger_debug") === "1") mountDangerDebugHud();
+    } catch (_) {}
+
     // Resume an in-progress run if one exists, otherwise auto-start a fresh
     // game so a first-time visitor is never greeted by a blank screen.
     bootstrap();
+  }
+
+  // Debug HUD for the danger system. Off by default; enable with
+  // `?danger_debug=1`. Polls DangerSystem.getState() a few times per second
+  // and renders MODE / LEVEL / REASON / HP in a small bottom-right pill so
+  // you can watch the vision loop's readings in real time. Purposefully
+  // ugly + prefixed with __ so nobody mistakes it for a shipped HUD.
+  function mountDangerDebugHud() {
+    if (document.getElementById("__danger-debug-hud")) return;
+    const hud = document.createElement("div");
+    hud.id = "__danger-debug-hud";
+    hud.style.cssText = [
+      "position:fixed", "right:12px", "bottom:12px", "z-index:9999",
+      "font-family:ui-monospace,Menlo,Consolas,monospace", "font-size:11px",
+      "line-height:1.45", "color:#fff",
+      "background:rgba(20,4,4,0.86)",
+      "border:1px solid rgba(255,80,80,0.55)",
+      "border-radius:4px", "padding:6px 10px",
+      "box-shadow:0 4px 18px rgba(0,0,0,0.55)",
+      "pointer-events:none",
+      "min-width:180px", "letter-spacing:0.02em",
+    ].join(";");
+    hud.innerHTML =
+      "<div style='opacity:0.75;font-size:9px;letter-spacing:0.16em'>DANGER DEBUG</div>" +
+      "<div id='__ddb-mode'>mode: safe</div>" +
+      "<div id='__ddb-lvl'>lvl:  0</div>" +
+      "<div id='__ddb-hp'>hp:   100</div>" +
+      "<div id='__ddb-reason' style='opacity:0.7'>—</div>";
+    document.body.appendChild(hud);
+    setInterval(() => {
+      try {
+        const s = DangerSystem.getState();
+        const m = document.getElementById("__ddb-mode");
+        const l = document.getElementById("__ddb-lvl");
+        const h = document.getElementById("__ddb-hp");
+        const r = document.getElementById("__ddb-reason");
+        if (m) m.textContent = "mode: " + s.mode + (s.dead ? " [DEAD]" : "");
+        if (l) l.textContent = "lvl:  " + s.level + (s.direction ? " (" + s.direction + ")" : "");
+        if (h) h.textContent = "hp:   " + Math.round(s.health);
+        if (r) r.textContent = (s.reason || "—").slice(0, 40);
+      } catch (_) {}
+    }, 250);
   }
 
   if (document.readyState === "loading") {

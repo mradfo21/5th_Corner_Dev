@@ -2215,42 +2215,71 @@ def _perceive_danger(image_bytes: bytes = None,
     try:
         image_b64 = base64.b64encode(image_bytes).decode("utf-8")
 
-        # Tight, unambiguous rubric. Three levels, one paragraph each — the
-        # goal is that the SAME frame gets the SAME level on re-runs, so the
-        # client's state machine stays stable turn-over-turn.
+        # Tuned rubric. Three levels, one paragraph each — the goal is that
+        # the SAME frame gets the SAME level on re-runs (client state machine
+        # stability), while ALSO being sensitive enough that a typical
+        # exploration scene actually surfaces threats. Prior version required
+        # a hostile to be aimed AT the camera to escalate, which made the
+        # loop effectively inert in a world-model exploration game (most
+        # frames are rooms/corridors, not gunfights). We now escalate on
+        # anything a person would reasonably flinch at: visible weapons,
+        # aggressive creatures, active hazards in-frame, high edges,
+        # aggressive approach — even when not committed AT camera yet.
         danger_instructions = (
-            "You are a threat detector for a first-person survival game. "
-            "Look at this single frame from the player's point-of-view camera "
-            "and grade its immediate danger to the person BEHIND the camera. "
-            "Return ONE JSON object with fields: level (integer 0, 1, or 2), "
-            "reason (<= 8 words, lowercase), and optionally threat_box "
+            "You are a threat detector for a first-person survival exploration "
+            "game. Look at this single frame from the player's point-of-view "
+            "camera and grade its immediate danger to the person BEHIND the "
+            "camera. Return ONE JSON object with fields: level (integer 0, 1, "
+            "or 2), reason (<= 8 words, lowercase), and optionally threat_box "
             "[ymin, xmin, ymax, xmax] integers 0-1000 (y top-to-bottom, "
             "x left-to-right) around the single most dangerous thing in view.\n\n"
-            "LEVEL 0 — SAFE: no hostile entities in frame and no active "
-            "environmental hazard the camera is exposed to. Calm rooms, empty "
-            "corridors, distant scenery, benign objects. Even eerie or unsettling "
-            "scenes are 0 if nothing is actually moving to harm you.\n\n"
-            "LEVEL 1 — THREATENED: a hostile entity is in frame AND oriented "
-            "toward the camera (guard looking at you, creature turning to you, "
-            "aimed weapon not yet firing), OR the camera is close to an active "
-            "hazard (edge of a fire, near a toxic pool, at the lip of a drop, "
-            "unstable structure creaking overhead). Threat exists but you have "
-            "a beat to react.\n\n"
-            "LEVEL 2 — ATTACKING: a hostile weapon, limb, or projectile is "
-            "committed toward the camera (muzzle flash, lunging creature, "
-            "swinging blade, incoming projectile, hands reaching for the lens), "
-            "OR the camera is PHYSICALLY INSIDE a hazard (engulfed in flames, "
-            "submerged in toxic fluid, buried under debris, falling). Damage is "
-            "happening or milliseconds away.\n\n"
+            "LEVEL 0 — SAFE: nothing that could plausibly injure the player is "
+            "in frame. Calm empty rooms, benign scenery, cluttered but inert "
+            "spaces, distant crowds of non-hostile figures, safe outdoor areas. "
+            "Choose 0 only when the scene is clearly benign.\n\n"
+            "LEVEL 1 — THREATENED: something in the frame that a reasonable "
+            "person would want to move away from. Examples that qualify:\n"
+            "  • A visible weapon carried by anyone in view (gun, blade, "
+            "improvised weapon), whether or not it is aimed at camera.\n"
+            "  • A hostile-looking creature, monster, or aggressive animal "
+            "anywhere in frame, whether or not it faces camera.\n"
+            "  • A human figure with visibly hostile posture (raised fist, "
+            "advancing on camera, glaring / staring down camera).\n"
+            "  • An active environmental hazard visible in frame: open flame, "
+            "large fire, exposed live wiring / sparks, deep water, high drop / "
+            "cliff edge, unstable / collapsing structure, poisonous / toxic "
+            "atmosphere hints (smoke, gas, dense fog), extreme heights, "
+            "radiation / warning signs indicating current danger.\n"
+            "  • Blood, gore, or fresh signs of violence in the immediate area "
+            "(indicates the space is unsafe).\n"
+            "  • Camera is in a very unsafe posture: standing on a narrow "
+            "ledge, looking down a shaft, near a large predator, at the mouth "
+            "of a burning corridor.\n"
+            "You have a beat to react — the threat is present but not "
+            "yet committed to harming you.\n\n"
+            "LEVEL 2 — ATTACKING: damage is imminent or already happening. "
+            "Examples that qualify:\n"
+            "  • A weapon, limb, or projectile committed toward the camera "
+            "(muzzle flash, swinging blade close to lens, incoming projectile, "
+            "hands reaching for the lens).\n"
+            "  • A creature or hostile figure lunging / charging directly at "
+            "the camera, filling a significant portion of the frame.\n"
+            "  • Camera is PHYSICALLY INSIDE a hazard: engulfed in flames, "
+            "submerged in toxic fluid, buried under debris, falling, being "
+            "crushed, surrounded by fire on multiple sides.\n"
+            "  • The frame itself is visibly obscured by the attack: blood on "
+            "the lens, cracked visor, smoke choking the view.\n\n"
             "RULES:\n"
             "• Grade the FRAME, not the story. Don't infer off-screen dangers.\n"
-            "• A person alone in frame is only a threat if their body language, "
-            "gaze, or weapon actively targets the camera. Idle NPCs = LEVEL 0.\n"
-            "• Weapons only escalate a level when pointed at the camera.\n"
+            "• Any visible weapon or hostile creature is at least LEVEL 1, even "
+            "if the camera isn't currently being targeted. In an exploration "
+            "game, seeing a threat is itself dangerous.\n"
             "• Dark / low-visibility scenes are NOT automatically dangerous. "
-            "Only grade what you can actually see.\n"
-            "• If in doubt between two levels, choose the LOWER one — the "
-            "player's death should always be predictable, never surprising."
+            "Grade what you can actually see; if the scene is dark but the "
+            "visible content is benign, choose 0.\n"
+            "• Prefer LEVEL 1 over LEVEL 0 whenever there is a plausible "
+            "threat in frame — the game's danger vignette should be a live "
+            "signal, not a rarely-triggered alarm."
         )
 
         prompt_prior = ""
