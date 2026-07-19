@@ -1616,7 +1616,9 @@ body.moving #scan-layer { opacity: 0 !important; pointer-events: none !important
   position: fixed;
   inset: 0;
   z-index: 35;
-  cursor: none;
+  /* The roaming reticle is gone (fixed centered viewfinder), so show a real
+     aim cursor on desktop — hiding it entirely left the pointer invisible. */
+  cursor: crosshair;
   /* Own all touch gestures so the browser never scrolls/pinch-zooms the page
      out from under the camera; we drive pinch-to-zoom ourselves. */
   touch-action: none;
