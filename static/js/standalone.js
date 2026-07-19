@@ -109,6 +109,7 @@
     touchLock: document.getElementById("touch-lock"),
     touchDof: document.getElementById("touch-dof"),
     evidenceCard: document.getElementById("evidence-card"),
+    captureCinema: document.getElementById("capture-cinema"),
     evidenceHud: document.getElementById("evidence-hud"),
     objectivesHud: document.getElementById("objectives-hud"),
     objHead: document.getElementById("obj-head"),
@@ -6066,6 +6067,7 @@
     photoKick();
     try { Sound.shutter(); } catch (_) {}
     try { Haptics.shutter(); } catch (_) {}
+    presentCapture(texture); // full-screen cinematic hold on the shot
     // NOTE: the subject is "spent" (document-once) only once the appraisal is
     // actually credited in printReceipt — never eagerly here, so a cancelled or
     // empty shot never burns a POI without banking its evidence.
@@ -6116,6 +6118,42 @@
     return { label, phrase: "at " + label };
   }
 
+  // Cinematic full-screen hold on the shot you just took: the photo fills the
+  // screen on pure black for ~2s — a beat to admire your creation, like a
+  // classic war-photography reveal in a film — then fades, handing off to the
+  // scoring receipt (which is developing underneath). Tap anywhere to skip.
+  let _cinemaHoldTimer = 0, _cinemaOutTimer = 0;
+  function presentCapture(texture) {
+    const c = el.captureCinema;
+    if (!c || !texture) return;
+    if (prefersReducedMotion()) return; // no full-screen takeover under reduced motion
+    const photo = c.querySelector(".capture-cinema-photo");
+    if (photo) photo.style.backgroundImage = `url('${texture}')`;
+    clearTimeout(_cinemaHoldTimer);
+    clearTimeout(_cinemaOutTimer);
+    c.classList.remove("hidden", "out");
+    void c.offsetWidth; // restart the entrance animation on rapid re-shoots
+    c.classList.add("show");
+    let dismissed = false;
+    const dismiss = () => {
+      if (dismissed) return;
+      dismissed = true;
+      clearTimeout(_cinemaHoldTimer);
+      c.removeEventListener("pointerdown", onTap);
+      c.classList.remove("show");
+      c.classList.add("out");
+      _cinemaOutTimer = setTimeout(() => {
+        c.classList.remove("out");
+        c.classList.add("hidden");
+      }, 520);
+    };
+    function onTap(e) { e.preventDefault(); e.stopPropagation(); dismiss(); }
+    // Tap anywhere on the takeover to skip ahead to the score.
+    c.addEventListener("pointerdown", onTap);
+    // Hold the creation on screen for ~2 seconds, then fade out.
+    _cinemaHoldTimer = setTimeout(dismiss, 2000);
+  }
+
   // The satisfying "gathered evidence" flourish: the freshly captured photo pops
   // up big for a beat, then files itself down into the CASE FILE tray and fades.
   function showEvidence(texture) {
@@ -6156,6 +6194,7 @@
     photoKick();
     try { Sound.shutter(); } catch (_) {}
     try { Haptics.shutter(); } catch (_) {}
+    presentCapture(texture); // full-screen cinematic hold on the shot
     // Spent only when the appraisal is credited (see printReceipt), not here.
     Photo.capture({
       texture, region, kind: "photo", label: "the center of the view",

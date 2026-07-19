@@ -1769,6 +1769,71 @@ body.touch-aiming #realtime-btn.aiming { animation: photo-exit-pulse 1.6s ease-i
   .touch-hint { animation: none; }
 }
 
+/* ---------- Capture "cinema" ----------
+   The instant a shot lands, the photo fills the screen on a pure-black field
+   for a beat — a cinematic hold on your creation (classic war-photography
+   reveal), then it fades to hand off to the scoring receipt. It sits above
+   everything (even the raised camera controls). Tap anywhere to skip. */
+#capture-cinema {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+  opacity: 0;
+  pointer-events: none;
+}
+#capture-cinema.hidden { display: none; }
+#capture-cinema.show {
+  pointer-events: auto;
+  animation: capture-cinema-in 0.28s ease-out both;
+}
+#capture-cinema.out { animation: capture-cinema-out 0.5s ease-in both; }
+@keyframes capture-cinema-in  { from { opacity: 0; } to { opacity: 1; } }
+@keyframes capture-cinema-out { from { opacity: 1; } to { opacity: 0; } }
+
+/* Stage holds the frame + a soft vignette so the photo reads as "presented". */
+.capture-cinema-stage {
+  position: relative;
+  width: min(92vw, calc(86vh * 16 / 9));
+  aspect-ratio: 16 / 9;
+}
+.capture-cinema-photo {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  background-position: center;
+  background-color: #050505;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12),
+              0 30px 90px rgba(0, 0, 0, 0.9);
+}
+/* A quiet vignette + a fine grain-ish sheen over the still for that filmic,
+   printed-photograph feel. */
+.capture-cinema-stage::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  box-shadow: inset 0 0 90px 12px rgba(0, 0, 0, 0.55);
+  background: radial-gradient(ellipse at center, transparent 60%, rgba(0, 0, 0, 0.28) 100%);
+}
+/* Slow cinematic push-in on the photo while it's held; a hard bright "exposure"
+   pop on entry sells the shutter. */
+#capture-cinema.show .capture-cinema-photo {
+  animation: capture-photo-reveal 2.5s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+@keyframes capture-photo-reveal {
+  0%   { opacity: 0; transform: scale(1.07); filter: brightness(1.5) contrast(1.15); }
+  9%   { opacity: 1; filter: brightness(1.05) contrast(1.08); }
+  100% { opacity: 1; transform: scale(1.0); filter: brightness(1) contrast(1.04); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #capture-cinema.show { animation: capture-cinema-in 0.01s both; }
+  #capture-cinema.show .capture-cinema-photo { animation: none; }
+}
+
 /* Investigation capture frame — corner brackets that show the region the TOUCH
    tool grabs as a specimen texture. Follows the reticle (positioned in JS) and
    flashes on capture, so touching a spot reads as "taking a sample". */
