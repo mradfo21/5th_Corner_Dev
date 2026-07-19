@@ -55,14 +55,16 @@ FAL_API_KEY = (
 
 FAL_API_BASE = (os.getenv("FAL_API_BASE") or _config.get("FAL_API_BASE") or "https://fal.run").rstrip("/")
 
-# SDXL Lightning is distilled for 1/2/4/8-step inference. 4 steps is the
-# fastest setting that still holds together compositionally; drop to 2 for an
-# even faster (blurrier) result.
+# SDXL Lightning is distilled for 1/2/4/8-step inference. Default to 8 (the
+# checkpoint's max) — it's the best fidelity Lightning can produce and still
+# far faster than Krea/Gemini. Drop via env for a faster/blurrier result.
 FAL_MODEL = "fal-ai/fast-lightning-sdxl"
 try:
-    FAL_NUM_INFERENCE_STEPS = int(os.getenv("FAL_NUM_INFERENCE_STEPS") or _config.get("FAL_NUM_INFERENCE_STEPS") or 4)
+    FAL_NUM_INFERENCE_STEPS = int(os.getenv("FAL_NUM_INFERENCE_STEPS") or _config.get("FAL_NUM_INFERENCE_STEPS") or 8)
 except (TypeError, ValueError):
-    FAL_NUM_INFERENCE_STEPS = 4
+    FAL_NUM_INFERENCE_STEPS = 8
+if FAL_NUM_INFERENCE_STEPS not in (1, 2, 4, 8):
+    FAL_NUM_INFERENCE_STEPS = 8
 
 # fal exposes fixed aspect-ratio presets rather than free-form ratios; this is
 # the closest built-in match to the project's 4:3 house style.
@@ -70,11 +72,13 @@ FAL_IMAGE_SIZE = (os.getenv("FAL_IMAGE_SIZE") or _config.get("FAL_IMAGE_SIZE") o
 
 # img2img "strength" = how much the output is allowed to diverge from the
 # reference (0..1). Lower keeps continuity tighter; SDXL Lightning img2img
-# defaults to 0.95 (near-total repaint) so we pull it down for continuity.
+# defaults to 0.95 (near-total repaint) so we pull it well down. 0.45 keeps
+# frame-to-frame continuity close so the world stops "melting" between turns.
 try:
-    FAL_IMG2IMG_STRENGTH = float(os.getenv("FAL_IMG2IMG_STRENGTH") or _config.get("FAL_IMG2IMG_STRENGTH") or 0.55)
+    FAL_IMG2IMG_STRENGTH = float(os.getenv("FAL_IMG2IMG_STRENGTH") or _config.get("FAL_IMG2IMG_STRENGTH") or 0.45)
 except (TypeError, ValueError):
-    FAL_IMG2IMG_STRENGTH = 0.55
+    FAL_IMG2IMG_STRENGTH = 0.45
+FAL_IMG2IMG_STRENGTH = max(0.05, min(1.0, FAL_IMG2IMG_STRENGTH))
 
 # Data URIs are only recommended for small files - always use the
 # downsampled 480x360 sidecar as the img2img reference (never full-res).
@@ -90,7 +94,11 @@ IMAGE_DIR = Path("images")
 if not FAL_API_KEY:
     print("[FAL INIT] WARNING: FAL_API_KEY not set — fal.ai image generation will be unavailable.")
 else:
-    print(f"[FAL INIT] FAL_API_KEY loaded ({FAL_API_KEY[:6]}...{FAL_API_KEY[-4:]}); base={FAL_API_BASE}")
+    print(
+        f"[FAL INIT] FAL_API_KEY loaded ({FAL_API_KEY[:6]}...{FAL_API_KEY[-4:]}); "
+        f"base={FAL_API_BASE}; steps={FAL_NUM_INFERENCE_STEPS}; "
+        f"img2img_strength={FAL_IMG2IMG_STRENGTH}"
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -310,9 +310,9 @@ Runtime (no redeploy), via Discord: `/ai_switch fal`. Fall back anytime with
 | Env var | Default | Purpose |
 |---------|---------|---------|
 | `FAL_API_KEY` (or `FAL_KEY`) | — | API key from fal.ai/dashboard/keys (**required** for fal) |
-| `FAL_NUM_INFERENCE_STEPS` | `4` | Lightning steps (`1`/`2`/`4`/`8`) — lower is faster/blurrier |
+| `FAL_NUM_INFERENCE_STEPS` | `8` | Lightning steps (`1`/`2`/`4`/`8`) — lower is faster/blurrier |
 | `FAL_IMAGE_SIZE` | `landscape_4_3` | fal's built-in aspect-ratio preset |
-| `FAL_IMG2IMG_STRENGTH` | `0.55` | 0-1, how much the img2img output may diverge from the reference frame |
+| `FAL_IMG2IMG_STRENGTH` | `0.45` | 0-1, how much the img2img output may diverge from the reference frame (lower = tighter continuity) |
 | `FAL_API_BASE` | `https://fal.run` | Override for testing |
 
 ### How it works (`fal_image_utils.py`)
