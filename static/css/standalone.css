@@ -2962,83 +2962,11 @@ html.is-mobile #scan-tags .scan-tag.acting .scan-tag-label { display: inline; }
   overflow: hidden;
 }
 
-/* ---------- Mobile: panel becomes a slim, shorter bottom sheet ---------- */
-/* The action wheel is at the bottom; the TALK sheet sits ABOVE it so the
-   game's controls stay reachable. Kept short and semi-transparent so the
-   scene stays legible. Collapsed to a chip on tight screens by default. */
-@media (max-width: 640px) {
-  /* Mobile: the panel is a compact, low-profile sheet — a strip of chat, not
-     a takeover. Height is CONTENT-driven so a short exchange stays short; a
-     tight ceiling keeps a long one from swallowing the scene. */
-  #talk-panel {
-    left: 8px;
-    right: 8px;
-    width: auto;
-    max-width: none;
-    /* Above the action wheel (~176-196px tall + safe area). */
-    bottom: calc(env(safe-area-inset-bottom, 0px) + 210px);
-    min-height: 0;
-    max-height: min(220px, 30vh);
-    border-radius: 14px;
-  }
-  .talk-grabber { display: block; margin: 4px 0 -4px; height: 3px; width: 30px; }
-
-  /* Header: single tight strip. Sub-text is stripped since the character
-     name + orb (with its state color) already communicates presence, and the
-     sub was the biggest reason the mobile header ate two lines. */
-  #talk-head { padding: 8px 10px 8px 12px; gap: 6px; flex-wrap: nowrap; }
-  #talk-name { font-size: 13px; letter-spacing: 0.06em; }
-  #talk-sub  { display: none; }
-  #talk-orb  { width: 11px; height: 11px; }
-  #talk-mode-toggle, #talk-voice-btn {
-    padding: 4px 7px; font-size: 9px; letter-spacing: 0.1em;
-  }
-  #talk-voice-btn svg { width: 11px; height: 11px; }
-  #talk-min, #talk-close { width: 24px; height: 24px; }
-  #talk-min svg { width: 12px; height: 12px; }
-
-  /* Log: tighter, smaller lines so more of the room-tone gets through. */
-  #talk-log { padding: 10px 10px 4px; gap: 6px; }
-  .talk-body { font-size: 12.5px; padding: 7px 10px; }
-  .talk-who  { display: none; }  /* the bubble color already tells you who */
-
-  /* Composer: slim strip. */
-  #talk-form  { padding: 8px 10px calc(env(safe-area-inset-bottom, 0px) + 8px); gap: 6px; }
-  #talk-input { font-size: 13px; padding: 7px 11px; }
-  #talk-send  { width: 34px; height: 34px; }
-  #talk-send svg { width: 14px; height: 14px; }
-
-  #talk-chip {
-    left: auto;
-    right: calc(env(safe-area-inset-right, 0px) + 12px);
-    bottom: calc(env(safe-area-inset-bottom, 0px) + 216px);
-    max-width: 200px;
-    padding: 6px 10px 6px 8px;
-  }
-  .talk-chip-name { font-size: 11px; max-width: 130px; }
-  .talk-chip-sub  { font-size: 8px; }
-  /* Mobile: the bubble hangs above the chip in the bottom-right, so a folded
-     conversation feels like a speech bubble growing out of the pill. */
-  #talk-float {
-    left: 10px;
-    right: calc(env(safe-area-inset-right, 0px) + 10px);
-    max-width: 78vw;
-    bottom: calc(env(safe-area-inset-bottom, 0px) + 260px);
-    border-bottom-left-radius: 14px;
-    border-bottom-right-radius: 4px;
-  }
-  /* Menu drops from the header of the (now bottom-anchored) panel. Cap it so
-     it never spills past the shorter mobile sheet. */
-  #talk-voice-menu { width: calc(100vw - 40px); right: 8px; max-height: min(220px, 30vh); top: 44px; }
-  #narrator-bar { width: calc(100vw - 20px); }
-  #narrator-line { font-size: 17px; }
-}
-
-/* Very short viewports: give the sheet a bit less headroom so it never sits
-   near the top-right objectives HUD. */
-@media (max-width: 640px) and (max-height: 640px) {
-  #talk-panel { max-height: min(180px, 26vh); }
-}
+/* NOTE: the mobile @media block for TALK lives AT THE END of the TALK
+   section (after `#talk-log`, `#talk-form`, `#talk-input`, `#talk-send`,
+   `.talk-body`, etc.) so its same-specificity rules actually override
+   the desktop defaults on phone viewports. Do not move it back up here or
+   the mobile styles will get clobbered by later same-specificity rules. */
 
 /* ---------- NARRATOR caption bar (lower-third) ---------- */
 #narrator-bar {
@@ -3250,6 +3178,89 @@ html.is-mobile #scan-tags .scan-tag.acting .scan-tag-label { display: inline; }
     animation: none !important;
     transition: opacity 0.15s ease !important;
   }
+}
+
+/* ---------- Mobile: panel becomes a slim, shorter bottom sheet ---------- */
+/* The action wheel is at the bottom; the TALK sheet sits ABOVE it so the
+   game's controls stay reachable. Kept short and semi-transparent so the
+   scene stays legible. This block is deliberately placed at the END of the
+   TALK CSS section so its same-specificity rules override the desktop
+   defaults for `#talk-log`, `#talk-form`, `.talk-body`, etc. (which appear
+   above). Moving it earlier will silently break the mobile layout. */
+@media (max-width: 640px) {
+  /* The panel is a compact, low-profile sheet — a strip of chat, not a
+     takeover. Height is CONTENT-driven so a short exchange stays short; a
+     tight ceiling keeps a long one from swallowing the scene. */
+  #talk-panel {
+    left: 8px;
+    right: 8px;
+    width: auto;
+    max-width: none;
+    /* Above the action wheel (~176-196px tall + safe area). */
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 210px);
+    min-height: 0;
+    max-height: min(220px, 30vh);
+    border-radius: 14px;
+  }
+  .talk-grabber { display: block; margin: 4px 0 -4px; height: 3px; width: 30px; }
+
+  /* Header: single tight strip. Sub-text is stripped since the character
+     name + orb (with its state color) already communicates presence, and the
+     sub was the biggest reason the mobile header ate two lines. */
+  #talk-head { padding: 8px 10px 8px 12px; gap: 6px; flex-wrap: nowrap; }
+  #talk-name { font-size: 13px; letter-spacing: 0.06em; }
+  #talk-sub  { display: none; }
+  #talk-orb  { width: 11px; height: 11px; }
+  #talk-mode-toggle, #talk-voice-btn {
+    padding: 4px 7px; font-size: 9px; letter-spacing: 0.1em;
+  }
+  #talk-voice-btn { max-width: 84px; }
+  #talk-voice-btn svg { width: 11px; height: 11px; }
+  #talk-min, #talk-close { width: 24px; height: 24px; }
+  #talk-min svg { width: 12px; height: 12px; }
+
+  /* Log: tighter, smaller lines so more of the room-tone gets through. */
+  #talk-log { padding: 10px 10px 4px; gap: 6px; }
+  .talk-body { font-size: 12.5px; padding: 7px 10px; line-height: 1.4; }
+  .talk-who  { display: none; }  /* the bubble color already tells you who */
+  .talk-line { max-width: 94%; }
+
+  /* Composer: slim strip. */
+  #talk-form  { padding: 8px 10px calc(env(safe-area-inset-bottom, 0px) + 8px); gap: 6px; }
+  #talk-input { font-size: 13px; padding: 7px 11px; }
+  #talk-send  { width: 34px; height: 34px; }
+  #talk-send svg { width: 14px; height: 14px; }
+
+  #talk-chip {
+    left: auto;
+    right: calc(env(safe-area-inset-right, 0px) + 12px);
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 216px);
+    max-width: 200px;
+    padding: 6px 10px 6px 8px;
+  }
+  .talk-chip-name { font-size: 11px; max-width: 130px; }
+  .talk-chip-sub  { font-size: 8px; }
+  /* Bubble hangs above the chip in the bottom-right, so a folded
+     conversation feels like a speech bubble growing out of the pill. */
+  #talk-float {
+    left: 10px;
+    right: calc(env(safe-area-inset-right, 0px) + 10px);
+    max-width: 78vw;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 260px);
+    border-bottom-left-radius: 14px;
+    border-bottom-right-radius: 4px;
+  }
+  /* Menu drops from the header of the (now bottom-anchored) panel. Cap it so
+     it never spills past the shorter mobile sheet. */
+  #talk-voice-menu { width: calc(100vw - 40px); right: 8px; max-height: min(220px, 30vh); top: 44px; }
+  #narrator-bar { width: calc(100vw - 20px); }
+  #narrator-line { font-size: 17px; }
+}
+
+/* Very short viewports: give the sheet a bit less headroom so it never sits
+   near the top-right objectives HUD. */
+@media (max-width: 640px) and (max-height: 640px) {
+  #talk-panel { max-height: min(180px, 26vh); }
 }
 
 /* ---------- Menu toggle (top-right corner) ---------- */
