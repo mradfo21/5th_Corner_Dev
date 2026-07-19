@@ -6923,6 +6923,13 @@
     let designPollTimer = null;
     let designPollTries = 0;
     let designCacheKey = "";
+    // When a designed voice becomes ready while the AI is still speaking, we
+    // queue it and swap the moment the AI transitions back to listening —
+    // otherwise we'd cut the character off mid-word. Also tracks whether the
+    // opening line has finished so a swap doesn't force it to be re-spoken.
+    let pendingDesignedVoiceId = "";
+    let aiIsSpeaking = false;
+    let openingSpoken = false;
 
     function stopDesignPoll() {
       if (designPollTimer) { clearInterval(designPollTimer); designPollTimer = null; }
@@ -6953,6 +6960,15 @@
             stopDesignPoll();
             // Don't override a manual pick the player made mid-generation.
             if (selectedVoiceId && selectedVoiceId !== voiceInUse) return;
+            // Defer the actual swap until (a) the opening line is done AND
+            // (b) the AI isn't mid-speech, so a hot-swap can never truncate
+            // the character. If either condition is missing we stash the
+            // voice id; the onModeChange -> "listening" path picks it up.
+            if (!openingSpoken || aiIsSpeaking) {
+              pendingDesignedVoiceId = data.voice_id;
+              AgentLog.push("dim", "designed voice ready, queued until pause");
+              return;
+            }
             hotSwapDesignedVoice(data.voice_id);
           } else if (data.status === "failed" || data.status === "unknown") {
             stopDesignPoll();
@@ -6961,16 +6977,22 @@
       }, 1500);
     }
 
-    // Rebuild the Convai session with the newly-designed voice id, preserving
-    // the opening line so we don't burn an LLM call regenerating a greeting.
-    // Distinct from user-driven changeVoice(): does NOT persist to
-    // localStorage (that's the human picker's contract) and logs a subtler
-    // "voice cast" line rather than a name-change notice.
+    // Rebuild the Convai session with the newly-designed voice id.
+    // Distinct from user-driven changeVoice() in three ways so the swap
+    // stays invisible-feeling to the player:
+    //   1. Does NOT persist to localStorage (the human picker's contract).
+    //   2. Does NOT print a chat line (too meta / draws attention).
+    //   3. Passes __suppressFirstMessage so the character doesn't
+    //      re-introduce themselves — the opening was already said in the
+    //      fallback voice; the new voice takes over from the NEXT turn.
+    // Callers must gate on !aiIsSpeaking + openingSpoken so the reconnect
+    // never truncates the character mid-word.
     async function hotSwapDesignedVoice(newVoiceId) {
       if (!newVoiceId || switching || !open || mode !== "voice") return;
       if (newVoiceId === voiceInUse) return;
+      pendingDesignedVoiceId = "";
       switching = true;
-      setSub("casting character voice\u2026");
+      setSub("channel live \u00b7 listening");
       if (convo) { try { await convo.endSession(); } catch (_) {} convo = null; }
       const reuseOpening = (lastSession && lastSession.context && lastSession.context.opening_line) || "";
       let session = null;
@@ -6980,9 +7002,8 @@
       } catch (e) { console.warn("[talk] hot-swap fetch failed:", e); }
       if (!open) { switching = false; return; }
       if (!session || session.mode !== "voice") { switching = false; return; }
-      addLine("assistant", "\u2014 voice cast to fit " + (subject && subject.label) + " \u2014");
       AgentLog.push("talk", "voice hot-swapped", "designed \u00b7 " + newVoiceId);
-      beginVoice(session, (session.context && session.context.opening_line) || "");
+      beginVoice(session, "", { suppressFirstMessage: true });
     }
 
     // Fire-and-forget notify so server can drop the voice refcount and
@@ -7126,6 +7147,12 @@
       convo = null;
       micMuted = false;
       open = true;
+      // Reset the dynamic-voice bookkeeping so a new TALK never inherits
+      // a queued swap or stale "opening already spoken" state from a prior
+      // conversation (which would let a hot-swap fire mid-greeting).
+      pendingDesignedVoiceId = "";
+      aiIsSpeaking = false;
+      openingSpoken = false;
       minimized = false;
       lastFocus = document.activeElement;
       Narrator.stop(); // a two-way conversation takes over from ambient narration
@@ -7192,13 +7219,19 @@
     // orb reflects listening/speaking, and typing still works (sendUserMessage).
     // Any failure (SDK blocked, mic denied, connect error) degrades to the
     // server text conversation so TALK always works.
-    async function beginVoice(session, opening) {
+    async function beginVoice(session, opening, opts_ext) {
       mode = "voice";
       lastSession = session;
       if (session && session.voices) voices = session.voices;
-      setSub(switching ? "switching voice…" : "opening channel…");
+      setSub(switching ? "switching voice\u2026" : "opening channel\u2026");
       setOrbState("connecting");
-      el.talkInput.setAttribute("placeholder", "speak, or type…");
+      el.talkInput.setAttribute("placeholder", "speak, or type\u2026");
+      // Hot-swap path passes { suppressFirstMessage: true } so the character
+      // doesn't re-greet in the new voice — the opening was already said in
+      // the fallback voice. Also resets the opening-spoken gate so any
+      // NEXT designed-voice swap defers again until the (new) opening is done.
+      var suppressFirst = !!(opts_ext && opts_ext.suppressFirstMessage);
+      if (!suppressFirst) openingSpoken = false;
 
       let Conversation;
       try {
@@ -7245,8 +7278,23 @@
         onModeChange: (m) => {
           if (!open) return;
           const md = (m && (m.mode || m)) || "";
-          if (md === "speaking") { setSub("channel live \u00b7 speaking"); setOrbState("speaking"); }
-          else if (md === "listening") { setSub("channel live \u00b7 listening"); setOrbState("listening"); }
+          if (md === "speaking") {
+            aiIsSpeaking = true;
+            setSub("channel live \u00b7 speaking"); setOrbState("speaking");
+          } else if (md === "listening") {
+            aiIsSpeaking = false;
+            // The AI just finished a turn. Mark opening-spoken (the first
+            // speaking->listening transition is when the greeting ends),
+            // and if a designed voice landed while we were speaking, apply
+            // it NOW so the swap never truncates the character.
+            openingSpoken = true;
+            setSub("channel live \u00b7 listening"); setOrbState("listening");
+            if (pendingDesignedVoiceId && !switching) {
+              const vid = pendingDesignedVoiceId;
+              pendingDesignedVoiceId = "";
+              hotSwapDesignedVoice(vid);
+            }
+          }
         },
         onMessage: (m) => {
           if (!open || !m) return;
@@ -7265,7 +7313,16 @@
         if (a) {
           opts.overrides.agent = {};
           if (a.prompt && a.prompt.prompt) opts.overrides.agent.prompt = { prompt: a.prompt.prompt };
-          if (a.first_message) opts.overrides.agent.firstMessage = a.first_message;
+          // Hot-swap explicitly suppresses the first message so the character
+          // doesn't re-greet in the new voice. A single space keeps the agent
+          // from falling back to its DASHBOARD-configured first message
+          // (which would defeat the purpose) while producing essentially no
+          // audio the player would notice.
+          if (suppressFirst) {
+            opts.overrides.agent.firstMessage = " ";
+          } else if (a.first_message) {
+            opts.overrides.agent.firstMessage = a.first_message;
+          }
           opts.overrides.agent.language = "en";
         }
         // Voice override — THIS is what actually makes a live voice switch change
@@ -7435,6 +7492,9 @@
       switching = false;
       hideFloat();
       stopDesignPoll();
+      pendingDesignedVoiceId = "";
+      aiIsSpeaking = false;
+      openingSpoken = false;
       // Notify the server so it drops the refcount on the voice we've been
       // using. Once refcount hits zero, session cleanup + LRU eviction can
       // reap the ElevenLabs slot. Capture-then-clear so this only fires once.
