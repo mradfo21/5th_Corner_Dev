@@ -1896,6 +1896,12 @@
       mode = next;
       stateSince = now();
       cleanSince = 0;
+      // Entering HURTING → deliver the first damage tick on the very next
+      // rAF frame so the punch (flash + audio hit) lands ON the same beat
+      // the pulse speeds up. Otherwise the "safe" branch of the health
+      // loop had been continuously pushing nextDamageTick forward, so the
+      // first drain would land a full second after entering HURTING.
+      if (next === "hurting") nextDamageTick = now();
       log("mode", prev, "→", next, reason || "");
       applyVisualForMode();
       // Audio + haptic beats on state entry — WARNING is a soft ping (heads-
@@ -2002,7 +2008,15 @@
         healthTickTs = t;
 
         if (mode === "hurting") {
-          if (t >= nextDamageTick) {
+          // Fairness gate: don't drain while a turn is being committed
+          // (state.processing) or the freeze buffer is up (isShowing=false).
+          // The picture the state machine is grading is stale during those
+          // windows, so a player who just made a good escape choice should
+          // not eat 40 HP waiting on server latency.
+          const R = window.ReactorRenderer;
+          const stale = state.processing ||
+                        (R && R.isShowing && !R.isShowing());
+          if (!stale && t >= nextDamageTick) {
             // Discrete hit: the drain is felt as a punch, not a smooth
             // decrement, which reads better in an action loop.
             const before = health;
@@ -2013,6 +2027,10 @@
               die();
               return;
             }
+          } else if (stale) {
+            // Keep the cadence rolling forward so the FIRST tick after the
+            // world settles doesn't land a "banked" hit from the pause.
+            nextDamageTick = t + CONFIG.DAMAGE_TICK_MS;
           }
         } else if (mode === "safe") {
           // Smooth regen — feels less like an "advantage granted" and more
@@ -2085,7 +2103,9 @@
               for (let i = 0; i < d.length; i += 4) {
                 s += (0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]);
               }
-              resolve(s / (16 * 255)); // 8*8 pixels → 64 samples, but /16 * 255 keeps it in 0..1 range
+              // 8×8 = 64 pixels, each contributing 0..255 → normalize to 0..1
+              // so BOOST_LUMA_DELTA is a legible "fraction of full range".
+              resolve(s / (64 * 255));
             } catch (_) { resolve(null); }
           };
           img.onerror = () => resolve(null);
