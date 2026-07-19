@@ -1234,9 +1234,30 @@ def _list_active_sessions():
 # ElevenLabs key is configured, which matches the rest of the module.
 try:
     import voice_design as _voice_design
-    _voice_design.start_periodic_sweep(active_sessions_getter=_list_active_sessions)
+    # Loud, easy-to-grep startup line: makes it trivial to tell from prod
+    # logs whether a "voices sound the same" report is (a) the feature
+    # sitting disabled (missing key / flag off), (b) the fallback playing
+    # because a design is still generating, or (c) something else.
+    if _voice_design.is_available():
+        print(
+            "[VOICE DESIGN] ENABLED — model={m} budget/session={b} "
+            "concurrency={c} label_tag={t}".format(
+                m=_voice_design.TTV_MODEL,
+                b=_voice_design.DESIGN_BUDGET_PER_SESSION,
+                c=_voice_design.DESIGN_CONCURRENCY,
+                t=_voice_design.LABEL_TAG,
+            )
+        )
+        _voice_design.start_periodic_sweep(active_sessions_getter=_list_active_sessions)
+    else:
+        _reason = (
+            "no ELEVENLABS_API_KEY" if not _voice_design.API_KEY
+            else "ELEVENLABS_DYNAMIC_VOICES=0"
+        )
+        print(f"[VOICE DESIGN] DISABLED ({_reason}) — TALK will use the "
+              f"static by_kind roster only")
 except Exception as _e:  # noqa: BLE001
-    print(f"[VOICE DESIGN] sweep not armed: {_e}")
+    print(f"[VOICE DESIGN] init failed: {_e}")
 
 
 # ═══════════════════════════════════════════════════════════════════
