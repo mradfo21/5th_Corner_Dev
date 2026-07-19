@@ -107,6 +107,17 @@ class TestProviderManagerWiring(unittest.TestCase):
         self.assertEqual(apm.get_image_provider(), "fal")
         self.assertEqual(apm.get_image_model(), "fal-ai/fast-lightning-sdxl")
 
+    def test_fal_hybrid_routes_frame0_to_krea(self):
+        self.assertEqual(apm.resolve_image_provider_for_frame(0, "fal"), "krea")
+        self.assertEqual(apm.resolve_image_provider_for_frame(1, "fal"), "fal")
+        self.assertEqual(apm.resolve_image_provider_for_frame(5, "fal"), "fal")
+
+    def test_pure_presets_unchanged_by_hybrid_router(self):
+        self.assertEqual(apm.resolve_image_provider_for_frame(0, "krea"), "krea")
+        self.assertEqual(apm.resolve_image_provider_for_frame(1, "krea"), "krea")
+        self.assertEqual(apm.resolve_image_provider_for_frame(0, "gemini"), "gemini")
+        self.assertEqual(apm.resolve_image_provider_for_frame(2, "gemini"), "gemini")
+
 
 class TestSpeedDefaults(unittest.TestCase):
     def test_eight_step_default(self):

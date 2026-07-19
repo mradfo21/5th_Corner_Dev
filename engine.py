@@ -3382,7 +3382,18 @@ def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optiona
         image_path = img_dir / filename
         
         # --- ROUTE TO APPROPRIATE IMAGE PROVIDER ---
-        active_image_provider = ai_provider_manager.get_image_provider()
+        # fal preset is hybrid: Krea paints the establishing still (frame 0),
+        # then fal Lightning handles fast follow-up img2img updates.
+        configured_image_provider = ai_provider_manager.get_image_provider()
+        active_image_provider = ai_provider_manager.resolve_image_provider_for_frame(
+            frame_idx, configured_image_provider
+        )
+        if active_image_provider != configured_image_provider:
+            print(
+                f"[IMG] Hybrid route: configured={configured_image_provider} "
+                f"frame_idx={frame_idx} → using {active_image_provider}",
+                flush=True,
+            )
         if active_image_provider == "veo":
             try:
                 # Use Veo 3.1 for video-based image generation

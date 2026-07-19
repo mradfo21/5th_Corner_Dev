@@ -138,6 +138,25 @@ def get_image_model() -> str:
     _ensure_initialized()
     return load_ai_config().get("image_model", "fal-ai/fast-lightning-sdxl")
 
+def resolve_image_provider_for_frame(frame_idx: int = 0, provider: str = None) -> str:
+    """Effective image provider for a given frame index.
+
+    The production ``fal`` preset is a hybrid:
+      • frame 0 (establishing still) → Krea (higher fidelity anchor)
+      • frame 1+ (updates) → fal SDXL Lightning (fast img2img)
+
+    Explicit ``krea`` / ``gemini`` / etc. presets are left unchanged.
+    """
+    configured = (provider if provider is not None else get_image_provider() or "fal")
+    configured = str(configured).strip().lower()
+    try:
+        idx = int(frame_idx or 0)
+    except (TypeError, ValueError):
+        idx = 0
+    if configured == "fal" and idx == 0:
+        return "krea"
+    return configured
+
 def set_preset(preset_name: str) -> bool:
     """
     Set AI configuration from a preset.

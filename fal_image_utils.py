@@ -1,7 +1,8 @@
 """
 fal_image_utils.py - fal.ai "Lightning" image generation provider
 
-DEFAULT image backend for the project. fal.ai serves SDXL Lightning (a
+Fast follow-up image backend for the project (frame 1+ when the fal preset
+is active; frame 0 is routed to Krea). fal.ai serves SDXL Lightning (a
 distilled SDXL checkpoint) on custom-optimized infrastructure:
 
     POST https://fal.run/fal-ai/fast-lightning-sdxl               (text-to-image)
