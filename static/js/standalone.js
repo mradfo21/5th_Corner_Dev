@@ -109,6 +109,7 @@
     touchLock: document.getElementById("touch-lock"),
     touchDof: document.getElementById("touch-dof"),
     evidenceCard: document.getElementById("evidence-card"),
+    captureCinema: document.getElementById("capture-cinema"),
     evidenceHud: document.getElementById("evidence-hud"),
     objectivesHud: document.getElementById("objectives-hud"),
     objHead: document.getElementById("obj-head"),
@@ -208,6 +209,7 @@
     touchMode: null,            // TOUCH tool state: null | "aim" (reticle tracks cursor) | "prompt" (spot locked, field open)
     touchPoint: null,           // {x, y} viewport coords of the reticle / locked spot
     photoZoom: 1,               // optical zoom magnification while the camera is armed (1..PHOTO_ZOOM_MAX)
+    panFocus: null,             // {x, y} scene point (untransformed screen coords) shown at frame center — drag to pan while zoomed
     photoPointers: new Map(),   // active pointers on the camera layer, for pinch-to-zoom
     pinchBase: null,            // {dist, zoom} anchor captured when a two-finger pinch begins
     pinchActive: false,         // true once 2 fingers are down (suppresses the shot until release)
@@ -4283,8 +4285,8 @@
     // transform origin (viewport center).
     const t = getSceneTransform();
     if (t && t.scale !== 1) {
-      x = t.ox + (x - t.ox) / t.scale;
-      y = t.oy + (y - t.oy) / t.scale;
+      x = t.px + (x - t.cx) / t.scale;
+      y = t.py + (y - t.cy) / t.scale;
     }
     const size = currentSourceSize();
     if (!size || !size.w || !size.h) return { x: x / W, y: y / H };
@@ -5512,49 +5514,96 @@
     return { w, h };
   }
 
-  // Current capture region (16:9), centered. Zooming IN shrinks it — a tighter
-  // CROP of the scene — instead of magnifying the pixels. Returns { w, h } px.
+  // The on-screen capture frame is a CONSTANT centered 16:9 window — pushing in
+  // does NOT shrink it; it magnifies the scene inside (see sceneScale), so the
+  // whole frame shows the cropped-in view. The captured crop is recovered by
+  // inverting that magnification in screenToNorm. Returns { w, h } px.
   function frameBoxPx() {
     const fit = frameFitPx();
-    const z = Math.max(1, state.touchMode ? (state.photoZoom || 1) : 1);
-    return { w: Math.round(fit.w / z), h: Math.round(fit.h / z) };
+    return { w: Math.round(fit.w), h: Math.round(fit.h) };
   }
 
-  // The scene is never optically magnified in the immersive viewfinder — zoom
-  // only resizes the capture region. Keeping this as a function (returning 1)
-  // means the capture-crop math and transform plumbing stay identity-safe.
+  // Pushing IN magnifies the scene about the center so the cropped area fills the
+  // frame — it genuinely feels like you're looking at (and can explore) the
+  // cropped-in image, not a shrinking window. The capture-crop math inverts this
+  // magnification in screenToNorm, so the shot matches exactly what's framed.
   function sceneScale() {
-    return 1;
+    const z = state.touchMode ? (state.photoZoom || 1) : 1;
+    return Math.max(1, z);
   }
 
   // The scene transform currently applied (identity unless the camera is armed).
-  // Centralized so the capture crop math can invert it. The origin is the
-  // RETICLE point: scaling about it keeps whatever is under the reticle locked
-  // under the reticle while everything else magnifies around it.
+  // Centralized so the capture crop math can invert it. The transform magnifies
+  // the scene by `scale` and pins a FOCAL scene point (px,py — the point you've
+  // panned to) at the frame CENTER (cx,cy). Forward map of an untransformed
+  // screen point s: s' = scale*(s - focal) + center. Inverse: s = focal +
+  // (s' - center)/scale. With no pan the focal IS the center (scale-about-middle).
   function getSceneTransform() {
     const scale = sceneScale();
-    const p = state.touchPoint || { x: window.innerWidth / 2, y: window.innerHeight / 2 };
-    return { scale, ox: p.x, oy: p.y };
+    const c = captureCenter();
+    const p = (scale > 1 && state.panFocus) ? state.panFocus : c;
+    return { scale, px: p.x, py: p.y, cx: c.x, cy: c.y };
   }
 
-  // Apply scale-about-reticle as `translate(t) scale(z)` with transform-origin
-  // 0 0, where t = (1 - z) * reticle. Expressing it this way (instead of moving
-  // transform-origin) means only the translate changes as the reticle moves, so
-  // the CSS transform transition can smoothly interpolate the pan — the view
-  // glides to follow the cursor instead of snapping.
+  // Express the magnify+pan as `translate(t) scale(z)` (transform-origin 0 0),
+  // where t = center - z*focal. Only the translate changes as you pan, so the
+  // CSS transform transition can smoothly glide the view.
   function applySceneTransform() {
-    const z = sceneScale();
+    const t = getSceneTransform();
+    const z = t.scale;
     let val = "";
     if (z !== 1) {
-      const t = getSceneTransform();
-      const tx = ((1 - z) * t.ox).toFixed(2);
-      const ty = ((1 - z) * t.oy).toFixed(2);
+      const tx = (t.cx - z * t.px).toFixed(2);
+      const ty = (t.cy - z * t.py).toFixed(2);
       val = `translate(${tx}px, ${ty}px) scale(${z.toFixed(4)})`;
     }
     [el.sceneA, el.sceneB, el.reactorVideo, el.reactorFreeze].forEach((n) => {
       if (n) n.style.transform = val;
     });
     if (el.touchZoom) el.touchZoom.innerHTML = (state.photoZoom || 1).toFixed(1) + "&times;";
+  }
+
+  // Displayed media rect (px) under the current object-fit — where the scene
+  // pixels actually sit on screen. Used to clamp panning to the scene bounds.
+  function displayedMediaRect() {
+    const W = window.innerWidth, H = window.innerHeight;
+    const size = currentSourceSize();
+    if (!size || !size.w || !size.h) return { ox: 0, oy: 0, dw: W, dh: H };
+    const scale = mediaFitScale(W, H, size.w, size.h);
+    const dw = size.w * scale, dh = size.h * scale;
+    return { ox: (W - dw) / 2, oy: (H - dh) / 2, dw, dh };
+  }
+
+  // Keep the panned focal point inside the scene so the (fixed, centered) 16:9
+  // frame never reveals a black edge. At 1x the focal is pinned to center.
+  function clampPanFocus() {
+    const z = sceneScale();
+    const c = captureCenter();
+    if (z <= 1) { state.panFocus = { x: c.x, y: c.y }; return; }
+    const fit = frameFitPx();
+    const m = displayedMediaRect();
+    const halfW = (fit.w / 2) / z, halfH = (fit.h / 2) / z;
+    const minX = m.ox + halfW, maxX = m.ox + m.dw - halfW;
+    const minY = m.oy + halfH, maxY = m.oy + m.dh - halfH;
+    const p = state.panFocus || { x: c.x, y: c.y };
+    state.panFocus = {
+      x: (minX <= maxX) ? Math.max(minX, Math.min(maxX, p.x)) : (m.ox + m.dw / 2),
+      y: (minY <= maxY) ? Math.max(minY, Math.min(maxY, p.y)) : (m.oy + m.dh / 2),
+    };
+  }
+
+  // Drag-to-pan the magnified view (mobile touch drag + desktop mouse drag).
+  // Content follows the finger: dragging right reveals content to the left.
+  function panBy(dx, dy) {
+    const z = sceneScale();
+    if (z <= 1) return; // nothing to explore at full frame
+    const c = captureCenter();
+    const p = state.panFocus || { x: c.x, y: c.y };
+    state.panFocus = { x: p.x - dx / z, y: p.y - dy / z };
+    clampPanFocus();
+    applySceneTransform();
+    updateDofMask();
+    if (state.touchMode === "aim") layoutPhotoTargets();
   }
 
   // Drive the LETTERBOX MASK: a centered 16:9 window sized to the current capture
@@ -5575,9 +5624,10 @@
     const clamped = clampZoom(z);
     if (!opts.force && Math.abs(clamped - state.photoZoom) < 0.004) return;
     state.photoZoom = clamped;
+    // Re-clamp the pan focal to the new zoom (a lower zoom shrinks the pan range
+    // and eases the view back toward center; 1x re-centers).
+    clampPanFocus();
     applySceneTransform();
-    // Zooming OUT grows the frame (and re-grades what's framed) even when the
-    // reticle hasn't moved, so the frame expands live under the scroll/pinch.
     layoutCaptureFrame();
     updateDofMask();
     // While CONTINUOUS gestures (pinch, wheel spin) fire, skip the per-frame
@@ -5597,6 +5647,7 @@
 
   function clearSceneZoom() {
     state.photoZoom = 1;
+    state.panFocus = null; // drop any pan so the next arming opens centered
     [el.sceneA, el.sceneB, el.reactorVideo, el.reactorFreeze].forEach((n) => {
       if (n) n.style.transform = "";
     });
@@ -5694,8 +5745,8 @@
     }
     const t = getSceneTransform();
     if (t && t.scale !== 1) {
-      x = t.ox + (x - t.ox) * t.scale;
-      y = t.oy + (y - t.oy) * t.scale;
+      x = t.scale * (x - t.px) + t.cx;
+      y = t.scale * (y - t.py) + t.cy;
     }
     return { x, y };
   }
@@ -5947,6 +5998,17 @@
         g.dragging = true;
         document.body.classList.add("photo-dragging");
       }
+      if (g.dragging) {
+        // Once dragging, PAN the magnified view so you can explore the scene
+        // (mobile touch-drag + desktop mouse-drag). panBy no-ops at 1x (nothing
+        // is hidden to pan to) and does its own re-layout, so return here.
+        panBy(e.clientX - g.lastX, e.clientY - g.lastY);
+        g.lastX = e.clientX;
+        g.lastY = e.clientY;
+        return;
+      }
+      g.lastX = e.clientX;
+      g.lastY = e.clientY;
     }
     moveReticle(e.clientX, e.clientY);
   }
@@ -5962,7 +6024,7 @@
     try { if (el.touchLayer && el.touchLayer.setPointerCapture) el.touchLayer.setPointerCapture(e.pointerId); } catch (_) {}
     state.photoPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (state.photoPointers.size === 1) {
-      state.touchGesture = { id: e.pointerId, x0: e.clientX, y0: e.clientY, t0: Date.now(), moved: 0, dragging: false, touch: isTouchPointer(e) };
+      state.touchGesture = { id: e.pointerId, x0: e.clientX, y0: e.clientY, t0: Date.now(), moved: 0, dragging: false, touch: isTouchPointer(e), lastX: e.clientX, lastY: e.clientY };
       moveReticle(e.clientX, e.clientY);
     } else if (state.photoPointers.size === 2) {
       // Second finger → pinch. Abandon the single-finger gesture so lifting
@@ -6066,6 +6128,7 @@
     photoKick();
     try { Sound.shutter(); } catch (_) {}
     try { Haptics.shutter(); } catch (_) {}
+    presentCapture(texture); // full-screen cinematic hold on the shot
     // NOTE: the subject is "spent" (document-once) only once the appraisal is
     // actually credited in printReceipt — never eagerly here, so a cancelled or
     // empty shot never burns a POI without banking its evidence.
@@ -6116,6 +6179,42 @@
     return { label, phrase: "at " + label };
   }
 
+  // Cinematic full-screen hold on the shot you just took: the photo fills the
+  // screen on pure black for ~2s — a beat to admire your creation, like a
+  // classic war-photography reveal in a film — then fades, handing off to the
+  // scoring receipt (which is developing underneath). Tap anywhere to skip.
+  let _cinemaHoldTimer = 0, _cinemaOutTimer = 0;
+  function presentCapture(texture) {
+    const c = el.captureCinema;
+    if (!c || !texture) return;
+    if (prefersReducedMotion()) return; // no full-screen takeover under reduced motion
+    const photo = c.querySelector(".capture-cinema-photo");
+    if (photo) photo.style.backgroundImage = `url('${texture}')`;
+    clearTimeout(_cinemaHoldTimer);
+    clearTimeout(_cinemaOutTimer);
+    c.classList.remove("hidden", "out");
+    void c.offsetWidth; // restart the entrance animation on rapid re-shoots
+    c.classList.add("show");
+    let dismissed = false;
+    const dismiss = () => {
+      if (dismissed) return;
+      dismissed = true;
+      clearTimeout(_cinemaHoldTimer);
+      c.removeEventListener("pointerdown", onTap);
+      c.classList.remove("show");
+      c.classList.add("out");
+      _cinemaOutTimer = setTimeout(() => {
+        c.classList.remove("out");
+        c.classList.add("hidden");
+      }, 520);
+    };
+    function onTap(e) { e.preventDefault(); e.stopPropagation(); dismiss(); }
+    // Tap anywhere on the takeover to skip ahead to the score.
+    c.addEventListener("pointerdown", onTap);
+    // Hold the creation on screen for ~2 seconds, then fade out.
+    _cinemaHoldTimer = setTimeout(dismiss, 2000);
+  }
+
   // The satisfying "gathered evidence" flourish: the freshly captured photo pops
   // up big for a beat, then files itself down into the CASE FILE tray and fades.
   function showEvidence(texture) {
@@ -6156,6 +6255,7 @@
     photoKick();
     try { Sound.shutter(); } catch (_) {}
     try { Haptics.shutter(); } catch (_) {}
+    presentCapture(texture); // full-screen cinematic hold on the shot
     // Spent only when the appraisal is credited (see printReceipt), not here.
     Photo.capture({
       texture, region, kind: "photo", label: "the center of the view",
