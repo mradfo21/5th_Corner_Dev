@@ -1333,6 +1333,39 @@ def _sanitize_session_id(session_id) -> str:
         return 'default'
 
 
+def _resolve_request_session_id() -> str:
+    """Resolve the session id for the CURRENT request straight from Flask's
+    `request` object — NOT from `get_active_session_id()` / the shared
+    `_active_session_id` global.
+
+    Why this matters: `_active_session_id` (and the `state`/`history`
+    mirrors) are module-level globals shared by every request thread. Flask
+    runs concurrent requests on separate threads (see app.run(threaded=True)
+    in api.py), so between the moment `_session_scoped` swaps the active
+    session in for THIS request and the moment this request's handler body
+    actually reads `get_active_session_id()`, a DIFFERENT thread handling a
+    DIFFERENT session's request can run its own swap and change that shared
+    global out from under us. That raced in practice: two sessions taking
+    turns at the same instant could see one player's action land in BOTH
+    sessions' saves.
+
+    `flask.request` is a context-local proxy — safe to read from any thread
+    handling its own request — so re-deriving the session id here (mirroring
+    the exact precedence `_session_scoped` used in api.py: query string,
+    then JSON body, then header) gives each request thread its own correct
+    answer regardless of what any other concurrent request is doing.
+    """
+    try:
+        sid = (
+            request.args.get('session_id')
+            or (request.get_json(silent=True) or {}).get('session_id')
+            or request.headers.get('X-Session-Id')
+        )
+    except Exception:
+        sid = None
+    return _sanitize_session_id(sid)
+
+
 def set_active_session(session_id: str) -> str:
     """
     Swap the module-global game state to the requested session.
@@ -1405,7 +1438,21 @@ def session_context(session_id):
     """
     Context manager that switches the engine's active session for the
     duration of a request. Persists the state on exit so the on-disk copy
-    always reflects any mutations made inside the block.
+    always reflects any mutations made inside the block — but ONLY if
+    `resolved` is still the active session when we exit.
+
+    Why the guard: `state` is a module-global mirror shared by every
+    request thread. If a DIFFERENT session's request ran (and swapped the
+    mirror again) while this request's handler was doing slow work, `state`
+    at exit time no longer belongs to `resolved` — blindly saving it here
+    would stomp `resolved`'s on-disk file with another session's data. Every
+    handler that actually needs to persist mutations now does so itself
+    against an explicitly-resolved session id (see _resolve_request_session_id
+    and api_choose / _perform_game_reset / api_regenerate_choices), so this
+    is a safety net for anything else, not the only path to disk. When the
+    mirror has moved on, the swap that moved it already persisted whatever
+    was in `resolved`'s slot at that time (see set_active_session), so
+    skipping here loses nothing.
     """
     resolved = set_active_session(session_id)
     try:
@@ -1413,7 +1460,7 @@ def session_context(session_id):
     finally:
         try:
             with WORLD_STATE_LOCK:
-                if isinstance(state, dict):
+                if isinstance(state, dict) and get_active_session_id() == resolved:
                     _save_state(state, resolved)
         except Exception as e:
             logging.warning(f"[SESSION CTX] Failed to persist session '{resolved}' after request: {e}")
@@ -4915,84 +4962,128 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
     time.sleep(0.75)  # brief pacing delay so the client renders the action first
 
     SID = session_id
-    try:
-        # ── STORY ESCALATION + FATE ──
-        # Drive the risk backend BEFORE the consequence generates, so the rising
-        # phase feeds the prompt (advance_turn_image_fast reads current_phase for
-        # its grounding block) and the rolled fate colors THIS turn's outcome.
-        # SCAN interactions ("scan_interact"/"scan_move") are deliberate meddling
-        # with the world, so they push threat harder and bias fate toward risk —
-        # exactly the "interacting moves the story forward + raises stakes" goal.
-        is_interaction = source in ("scan_interact", "scan_move")
-        risk_boost = 2 if is_interaction else 0
-        dyn = advance_story_dynamics(session_id=SID, risk_boost=risk_boost)
-        turn_fate = dyn.get("fate", "NORMAL")
-        print(f"[TURN DYNAMICS] source={source} phase={dyn.get('phase')} "
-              f"threat={dyn.get('threat_level')} fate={turn_fate} escalated={dyn.get('escalated')}", flush=True)
-
-        # ── PHASE 1: consequence dispatch only (fast text; NO image, async evolve) ──
-        # Image and world-evolution run in the background so narrative + choices
-        # return fast.
-        p1 = advance_turn_image_fast(choice, fate=turn_fate, is_timeout_penalty=False, session_id=SID, skip_image=True, skip_evolve=True, interaction=is_interaction)
-        turn_state = _load_state(SID)
-        _sync_ambient_state(turn_state, SID)
-
-        dispatch_text = (p1.get("dispatch") or "").strip() or "The situation evolves..."
-        consequence_img_url = None  # streamed in asynchronously below
-        vision_dispatch_text = p1.get("vision_dispatch", "")
-        player_alive = turn_state.get("player_state", {}).get("alive", True)
-
-        turn_items: List[Dict[str, Any]] = [
-            create_feed_item(type="narrative_event", content=dispatch_text, metadata={"source": "dispatch"})
-        ]
-
-        # Phase escalation sting: when this turn tipped the story into a higher
-        # phase, surface an in-world beat (the client renders `threat_escalation`
-        # with its own style + escalation sound) so the player FEELS the stakes
-        # climb. Skip on the death turn — the game-over beat carries that weight.
-        if player_alive and dyn.get("escalated"):
-            beat = _phase_escalation_beat(dyn.get("phase", ""))
-            if beat:
-                turn_items.append(create_feed_item(
-                    type="threat_escalation", content=beat,
-                    metadata={"phase": dyn.get("phase"), "threat_level": dyn.get("threat_level")},
-                ))
-
-        # Item pickup detection (feed notification; inventory itself is in state).
-        _inventory_update = None
+    # Serialize this session's ENTIRE turn pipeline (dispatch generation,
+    # world evolution kickoff, choice generation) against every OTHER
+    # session's turn/reset processing. advance_turn_image_fast and
+    # advance_turn_choices_deferred still read/write the module-global
+    # `state`/`history` mirrors internally (see their docstrings) — TURN_LOCK
+    # is what actually prevents two sessions' turns from interleaving on
+    # those shared mirrors, matching the documented "only one turn processed
+    # by the engine at a time" model. Scene-image generation is spawned as a
+    # separate background thread (_spawn_scene_image_async) that acquires
+    # TURN_LOCK itself once this function returns, so it isn't held here.
+    with TURN_LOCK:
         try:
-            from items import detect_item_pickups, add_items_to_inventory, ITEMS
-            current_inventory = turn_state.get("inventory", [])
-            picked_up = detect_item_pickups(dispatch_text, current_inventory)
-            if picked_up:
-                updated_inventory, didnt_fit = add_items_to_inventory(current_inventory, picked_up)
-                _inventory_update = updated_inventory
-                names = [ITEMS[i]["display"] for i in picked_up if i in ITEMS]
-                if names:
-                    turn_items.append(create_feed_item(type="inventory_pickup", content=f"\U0001F392 **Picked up:** {', '.join(names)}"))
-                overflow = [ITEMS[i]["display"] for i in (didnt_fit or []) if i in ITEMS]
-                if overflow:
-                    turn_items.append(create_feed_item(type="inventory_full", content=f"\u26A0\uFE0F Inventory full! Couldn't pick up: {', '.join(overflow)}"))
-        except Exception as e_pick:
-            log_error(f"Error detecting item pickups: {e_pick}")
+            # ── STORY ESCALATION + FATE ──
+            # Drive the risk backend BEFORE the consequence generates, so the rising
+            # phase feeds the prompt (advance_turn_image_fast reads current_phase for
+            # its grounding block) and the rolled fate colors THIS turn's outcome.
+            # SCAN interactions ("scan_interact"/"scan_move") are deliberate meddling
+            # with the world, so they push threat harder and bias fate toward risk —
+            # exactly the "interacting moves the story forward + raises stakes" goal.
+            is_interaction = source in ("scan_interact", "scan_move")
+            risk_boost = 2 if is_interaction else 0
+            dyn = advance_story_dynamics(session_id=SID, risk_boost=risk_boost)
+            turn_fate = dyn.get("fate", "NORMAL")
+            print(f"[TURN DYNAMICS] source={source} phase={dyn.get('phase')} "
+                  f"threat={dyn.get('threat_level')} fate={turn_fate} escalated={dyn.get('escalated')}", flush=True)
 
-        # Atomic append (reload inside the lock) so concurrent realtime writers
-        # (/api/observe, scene-image, reground) can't clobber these feed items —
-        # the bug that made SCAN/realtime turns "freeze" (narrative + choices
-        # vanished from feed_log and the client polled an empty feed forever).
-        with WORLD_STATE_LOCK:
-            st = _load_state(SID)
-            if _inventory_update is not None:
-                st["inventory"] = _inventory_update
-            _feed_extend(st, turn_items)
-            _save_state(st, SID)
-            turn_state = st
-            _sync_ambient_state(st, SID)
+            # ── PHASE 1: consequence dispatch only (fast text; NO image, async evolve) ──
+            # Image and world-evolution run in the background so narrative + choices
+            # return fast.
+            p1 = advance_turn_image_fast(choice, fate=turn_fate, is_timeout_penalty=False, session_id=SID, skip_image=True, skip_evolve=True, interaction=is_interaction)
+            turn_state = _load_state(SID)
+            _sync_ambient_state(turn_state, SID)
 
-        # ── DEATH: single mechanism — the Phase 1 player_alive verdict ──
-        if not player_alive:
-            # Still render the death moment's scene image — it streams in
-            # behind the "YOU DIED" overlay and lands on the tape.
+            dispatch_text = (p1.get("dispatch") or "").strip() or "The situation evolves..."
+            consequence_img_url = None  # streamed in asynchronously below
+            vision_dispatch_text = p1.get("vision_dispatch", "")
+            player_alive = turn_state.get("player_state", {}).get("alive", True)
+
+            turn_items: List[Dict[str, Any]] = [
+                create_feed_item(type="narrative_event", content=dispatch_text, metadata={"source": "dispatch"})
+            ]
+
+            # Phase escalation sting: when this turn tipped the story into a higher
+            # phase, surface an in-world beat (the client renders `threat_escalation`
+            # with its own style + escalation sound) so the player FEELS the stakes
+            # climb. Skip on the death turn — the game-over beat carries that weight.
+            if player_alive and dyn.get("escalated"):
+                beat = _phase_escalation_beat(dyn.get("phase", ""))
+                if beat:
+                    turn_items.append(create_feed_item(
+                        type="threat_escalation", content=beat,
+                        metadata={"phase": dyn.get("phase"), "threat_level": dyn.get("threat_level")},
+                    ))
+
+            # Item pickup detection (feed notification; inventory itself is in state).
+            _inventory_update = None
+            try:
+                from items import detect_item_pickups, add_items_to_inventory, ITEMS
+                current_inventory = turn_state.get("inventory", [])
+                picked_up = detect_item_pickups(dispatch_text, current_inventory)
+                if picked_up:
+                    updated_inventory, didnt_fit = add_items_to_inventory(current_inventory, picked_up)
+                    _inventory_update = updated_inventory
+                    names = [ITEMS[i]["display"] for i in picked_up if i in ITEMS]
+                    if names:
+                        turn_items.append(create_feed_item(type="inventory_pickup", content=f"\U0001F392 **Picked up:** {', '.join(names)}"))
+                    overflow = [ITEMS[i]["display"] for i in (didnt_fit or []) if i in ITEMS]
+                    if overflow:
+                        turn_items.append(create_feed_item(type="inventory_full", content=f"\u26A0\uFE0F Inventory full! Couldn't pick up: {', '.join(overflow)}"))
+            except Exception as e_pick:
+                log_error(f"Error detecting item pickups: {e_pick}")
+
+            # Atomic append (reload inside the lock) so concurrent realtime writers
+            # (/api/observe, scene-image, reground) can't clobber these feed items —
+            # the bug that made SCAN/realtime turns "freeze" (narrative + choices
+            # vanished from feed_log and the client polled an empty feed forever).
+            with WORLD_STATE_LOCK:
+                st = _load_state(SID)
+                if _inventory_update is not None:
+                    st["inventory"] = _inventory_update
+                _feed_extend(st, turn_items)
+                _save_state(st, SID)
+                turn_state = st
+                _sync_ambient_state(st, SID)
+
+            # ── DEATH: single mechanism — the Phase 1 player_alive verdict ──
+            if not player_alive:
+                # Still render the death moment's scene image — it streams in
+                # behind the "YOU DIED" overlay and lands on the tape.
+                _spawn_scene_image_async(
+                    caption=vision_dispatch_text or dispatch_text,
+                    dispatch=dispatch_text,
+                    choice=choice,
+                    frame_idx=int(p1.get("frame_idx", 1)),
+                    world_prompt=turn_state.get("world_prompt", ""),
+                    hard_transition=bool(p1.get("hard_transition", False)),
+                    session_id=SID,
+                )
+                game_over_item = create_feed_item(type="game_over", content="You have succumbed to the horrors. The transmission ends.")
+                game_over_choices = _structure_choices_for_feed(
+                    ["Restart Simulation"], "GAME OVER",
+                    image_url=turn_state.get("current_image_url"),
+                )
+                with WORLD_STATE_LOCK:
+                    st = _load_state(SID)
+                    _feed_append(st, game_over_item)
+                    _feed_append(st, game_over_choices)
+                    st["turn_count"] = int(st.get("turn_count", 0)) + 1
+                    _save_state(st, SID)
+                    turn_state = st
+                    _sync_ambient_state(st, SID)
+                return
+
+            # Remember the pre-turn image so the async vision reground below can tell
+            # when THIS turn's new guide image has actually landed.
+            _prev_image_url = turn_state.get("current_image_url")
+
+            # ── Stream the scene image asynchronously (FAST — never block choices on
+            # the slow render, or the turn/ceremony stalls on the last step waiting
+            # for the prompt). The choices are re-grounded on the rendered image via
+            # a NON-BLOCKING vision pass below, so they stop going stale without
+            # gating the whole turn on image + vision. ──
             _spawn_scene_image_async(
                 caption=vision_dispatch_text or dispatch_text,
                 dispatch=dispatch_text,
@@ -5002,88 +5093,55 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                 hard_transition=bool(p1.get("hard_transition", False)),
                 session_id=SID,
             )
-            game_over_item = create_feed_item(type="game_over", content="You have succumbed to the horrors. The transmission ends.")
-            game_over_choices = _structure_choices_for_feed(
-                ["Restart Simulation"], "GAME OVER",
-                image_url=turn_state.get("current_image_url"),
+
+            # ── PHASE 2: fast text-grounded choices so the turn resolves promptly. ──
+            p2 = advance_turn_choices_deferred(
+                None, dispatch_text, vision_dispatch_text, choice,
+                "", p1.get("hard_transition", False), SID,
             )
+            turn_state = _load_state(SID)
+            _sync_ambient_state(turn_state, SID)
+
+            next_choices = [c for c in (p2.get("choices") or []) if c and c.strip() and c.strip() != "\u2014"]
+            prompt_item = _structure_choices_for_feed(
+                next_choices, "What do you do next?",
+                turn_state.get("current_image_url"),
+            )
+
             with WORLD_STATE_LOCK:
                 st = _load_state(SID)
-                _feed_append(st, game_over_item)
-                _feed_append(st, game_over_choices)
+                _feed_append(st, prompt_item)
                 st["turn_count"] = int(st.get("turn_count", 0)) + 1
+                MAX_FEED_LOG_ITEMS = 100  # keep feed_log manageable
+                if len(st.get("feed_log", [])) > MAX_FEED_LOG_ITEMS:
+                    st["feed_log"] = st["feed_log"][-MAX_FEED_LOG_ITEMS:]
                 _save_state(st, SID)
                 turn_state = st
                 _sync_ambient_state(st, SID)
-            return
 
-        # Remember the pre-turn image so the async vision reground below can tell
-        # when THIS turn's new guide image has actually landed.
-        _prev_image_url = turn_state.get("current_image_url")
+            # ── Vision reground (non-blocking): once THIS turn's guide image has
+            # rendered, regenerate the choices from what's ACTUALLY on screen and
+            # push them as a choices_revised item the client swaps in place — so the
+            # options reflect the real scene instead of the dispatch text. Bounded +
+            # guarded; if the image never lands it simply gives up. This is what
+            # makes choices image-derived WITHOUT stalling the turn on the render. ──
+            try:
+                _spawn_scene_choices_reground(prompt_item.get("id"), _prev_image_url, SID)
+            except Exception as _e_reground:
+                log_error(f"[REGROUND] spawn failed: {_e_reground}")
 
-        # ── Stream the scene image asynchronously (FAST — never block choices on
-        # the slow render, or the turn/ceremony stalls on the last step waiting
-        # for the prompt). The choices are re-grounded on the rendered image via
-        # a NON-BLOCKING vision pass below, so they stop going stale without
-        # gating the whole turn on image + vision. ──
-        _spawn_scene_image_async(
-            caption=vision_dispatch_text or dispatch_text,
-            dispatch=dispatch_text,
-            choice=choice,
-            frame_idx=int(p1.get("frame_idx", 1)),
-            world_prompt=turn_state.get("world_prompt", ""),
-            hard_transition=bool(p1.get("hard_transition", False)),
-            session_id=SID,
-        )
-
-        # ── PHASE 2: fast text-grounded choices so the turn resolves promptly. ──
-        p2 = advance_turn_choices_deferred(
-            None, dispatch_text, vision_dispatch_text, choice,
-            "", p1.get("hard_transition", False), SID,
-        )
-        turn_state = _load_state(SID)
-        _sync_ambient_state(turn_state, SID)
-
-        next_choices = [c for c in (p2.get("choices") or []) if c and c.strip() and c.strip() != "\u2014"]
-        prompt_item = _structure_choices_for_feed(
-            next_choices, "What do you do next?",
-            turn_state.get("current_image_url"),
-        )
-
-        with WORLD_STATE_LOCK:
-            st = _load_state(SID)
-            _feed_append(st, prompt_item)
-            st["turn_count"] = int(st.get("turn_count", 0)) + 1
-            MAX_FEED_LOG_ITEMS = 100  # keep feed_log manageable
-            if len(st.get("feed_log", [])) > MAX_FEED_LOG_ITEMS:
-                st["feed_log"] = st["feed_log"][-MAX_FEED_LOG_ITEMS:]
-            _save_state(st, SID)
-            turn_state = st
-            _sync_ambient_state(st, SID)
-
-        # ── Vision reground (non-blocking): once THIS turn's guide image has
-        # rendered, regenerate the choices from what's ACTUALLY on screen and
-        # push them as a choices_revised item the client swaps in place — so the
-        # options reflect the real scene instead of the dispatch text. Bounded +
-        # guarded; if the image never lands it simply gives up. This is what
-        # makes choices image-derived WITHOUT stalling the turn on the render. ──
-        try:
-            _spawn_scene_choices_reground(prompt_item.get("id"), _prev_image_url, SID)
-        except Exception as _e_reground:
-            log_error(f"[REGROUND] spawn failed: {_e_reground}")
-
-    except Exception as e_critical:
-        log_error(f"Critical unhandled error in _process_turn_background thread: {e_critical}")
-        logging.exception("CRITICAL EXCEPTION in _process_turn_background thread top level:")
-        try:
-            critical_error_item = create_feed_item(type="error_event", content=f"System critical error during turn processing: {e_critical}")
-            with WORLD_STATE_LOCK:
-                current_state_for_err = _load_state(SID)
-                _feed_append(current_state_for_err, critical_error_item)
-                _save_state(current_state_for_err, SID)
-                _sync_ambient_state(current_state_for_err, SID)
-        except Exception as e_final_log:
-            log_error(f"Could not even log critical error to feed_log: {e_final_log}")
+        except Exception as e_critical:
+            log_error(f"Critical unhandled error in _process_turn_background thread: {e_critical}")
+            logging.exception("CRITICAL EXCEPTION in _process_turn_background thread top level:")
+            try:
+                critical_error_item = create_feed_item(type="error_event", content=f"System critical error during turn processing: {e_critical}")
+                with WORLD_STATE_LOCK:
+                    current_state_for_err = _load_state(SID)
+                    _feed_append(current_state_for_err, critical_error_item)
+                    _save_state(current_state_for_err, SID)
+                    _sync_ambient_state(current_state_for_err, SID)
+            except Exception as e_final_log:
+                log_error(f"Could not even log critical error to feed_log: {e_final_log}")
     # No return value: runs in a thread; persists its session's state to disk
     # and mirrors it into the ambient global only if still the active session.
 
@@ -5349,9 +5407,22 @@ def _evolve_world_async(session_id: str, consequence_summary: str, vision_dispat
 
 
 # Ensure generate_intro_turn_feed_items is defined AFTER _structure_choices_for_feed
-def generate_intro_turn_feed_items(session_id: str = 'default') -> List[Dict[str, Any]]:
+def generate_intro_turn_feed_items(session_id: str = 'default', new_state: Optional[dict] = None) -> List[Dict[str, Any]]:
+    """Build the intro feed items for a fresh session.
+
+    `new_state` — the LOCAL (not module-global) fresh-state dict the caller
+    just built for `session_id`. Reading/writing it directly (instead of the
+    ambient `state` global) matters here because this function makes a slow
+    synchronous LLM call (generate_choices); if it touched the ambient
+    global, a concurrent request resetting a DIFFERENT session could swap
+    that global out from under us mid-call, corrupting either session's
+    dict. Falls back to the ambient global only for legacy direct callers
+    that don't pass one.
+    """
     from choices import generate_choices # Local import
-    global state 
+    global state
+    if new_state is None:
+        new_state = state
     intro_items = [] # This list will be returned
     
     initial_narrative_content = (
@@ -5371,7 +5442,7 @@ def generate_intro_turn_feed_items(session_id: str = 'default') -> List[Dict[str
             client=client,
             prompt_tmpl=choice_tmpl,
             last_dispatch=initial_narrative_content,
-            world_prompt=state.get("world_prompt", "System Online."),
+            world_prompt=new_state.get("world_prompt", "System Online."),
             image_description="Golden-hour desert at the perimeter fence of the Horizon facility; red mesas, chain-link fence, abandoned vehicles.",
             situation_summary="You are crouched at the fence line of the quarantined Horizon facility as the sun drops. This is your way in.",
             n=3
@@ -5383,7 +5454,7 @@ def generate_intro_turn_feed_items(session_id: str = 'default') -> List[Dict[str
     choice_prompt_text = "The fence line waits. What's your first move?"
     choices_item = _structure_choices_for_feed(initial_choice_texts, choice_prompt_text, None)
     intro_items.append(choices_item)
-    state["choices"] = choices_item['choices']
+    new_state["choices"] = choices_item['choices']
 
     # The intro scene image renders in the background and streams into the feed,
     # so reset returns immediately instead of blocking on image generation.
@@ -5392,7 +5463,7 @@ def generate_intro_turn_feed_items(session_id: str = 'default') -> List[Dict[str
         dispatch=initial_narrative_content,
         choice="Initialize Simulation",
         frame_idx=0,
-        world_prompt=state.get("world_prompt", "Initialization sequence."),
+        world_prompt=new_state.get("world_prompt", "Initialization sequence."),
         session_id=session_id,
     )
 
@@ -5401,84 +5472,113 @@ def generate_intro_turn_feed_items(session_id: str = 'default') -> List[Dict[str
 # --- Internal Reset Logic --- (Moved from api_reset for reusability)
 def _perform_game_reset() -> List[Dict[str, Any]]:
     global state, history, _last_image_path, _next_feed_item_id
-    # Resolve to whichever session api.py's _session_scoped wrapper already
-    # swapped in via engine.session_context() before calling api_reset().
-    # Previously this (and the _load_state()/_save_state(state) calls below)
-    # defaulted to 'default' unconditionally, so /api/reset for ANY session
-    # silently read + overwrote the 'default' session's save file instead of
-    # the caller's own session — the multi-user "New Game" flow never
-    # actually created an isolated instance.
-    SID = get_active_session_id()
-    logging.info(f"_perform_game_reset: ENTER session='{SID}'. Initial global state object id: {id(state)}")
+    # Resolve THIS request's session id straight from Flask's request object
+    # (see _resolve_request_session_id's docstring) rather than the shared
+    # get_active_session_id() global, which a concurrent different-session
+    # request can swap out from under us between _session_scoped's swap-in
+    # and this line running. Previously this (and the _load_state()/
+    # _save_state(state) calls below) defaulted to 'default' unconditionally,
+    # so /api/reset for ANY session silently read + overwrote the 'default'
+    # session's save file instead of the caller's own session — the
+    # multi-user "New Game" flow never actually created an isolated instance.
+    # Serialize the ENTIRE reset (state build, intro-turn LLM call, save)
+    # against every OTHER session's turn/reset processing — see TURN_LOCK's
+    # definition and _process_turn_background's matching wrapper. Without
+    # this, a concurrent /api/choose or /api/reset for a DIFFERENT session
+    # could interleave with generate_intro_turn_feed_items()'s calls into
+    # the deep turn pipeline (which still touch the module-global `state`/
+    # `history` mirrors internally) and corrupt either session's data.
+    with TURN_LOCK:
+        SID = _resolve_request_session_id()
+        logging.info(f"_perform_game_reset: ENTER session='{SID}'. Initial global state object id: {id(state)}")
     
-    # Reset state variables by loading a fresh copy and then clearing/setting specifics
-    current_state_at_reset_start = _load_state(SID) 
-    logging.info(f"_perform_game_reset: After _load_state. Loaded state id: {id(current_state_at_reset_start)}. Its feed_log (len {len(current_state_at_reset_start.get('feed_log',[]))}) id: {id(current_state_at_reset_start.get('feed_log')) if current_state_at_reset_start.get('feed_log') is not None else 'None'}")
+        # Reset state variables by loading a fresh copy and then clearing/setting specifics
+        current_state_at_reset_start = _load_state(SID) 
+        logging.info(f"_perform_game_reset: After _load_state. Loaded state id: {id(current_state_at_reset_start)}. Its feed_log (len {len(current_state_at_reset_start.get('feed_log',[]))}) id: {id(current_state_at_reset_start.get('feed_log')) if current_state_at_reset_start.get('feed_log') is not None else 'None'}")
     
-    # Generate random starting time/weather/mood for this session
-    starting_time = _generate_random_starting_time()
+        # Generate random starting time/weather/mood for this session
+        starting_time = _generate_random_starting_time()
     
-    # Explicitly create a new dictionary for the state to ensure no shared references for critical parts
-    state = {
-        "world_prompt": PROMPTS.get("world_initial_state", "Default world starting point."),
-        "current_phase": "normal",
-        "chaos_level": 0,
-        "last_choice": "",
-        "last_saved": datetime.now(timezone.utc).isoformat(),
-        "seen_elements": [],
-        "player_state": {"alive": True},
-        "feed_log": [],  # Explicitly a new empty list
-        "current_image_url": None,
-        "choices": [],
-        "choices_metadata": {},
-        "turn_count": 0,
-        "interim_index": 0,
-        "in_combat": False,
-        "threat_level": 0,
-        "time_of_day": starting_time
-        # Add any other essential keys that should be present from a fresh state
-    }
-    logging.info(f"_perform_game_reset: New state object created. New state id: {id(state)}. Its feed_log (len {len(state['feed_log'])}) id: {id(state['feed_log'])}")
+        # Explicitly create a new dictionary for the state to ensure no shared references for critical parts.
+        # This is a LOCAL variable — NOT assigned to the ambient `state` global
+        # yet — because generate_intro_turn_feed_items() below makes a slow
+        # synchronous LLM call. If we reassigned the global here, a concurrent
+        # /api/reset for a DIFFERENT session could swap it out (or itself get
+        # clobbered) mid-call; see generate_intro_turn_feed_items's docstring.
+        new_state = {
+            "world_prompt": PROMPTS.get("world_initial_state", "Default world starting point."),
+            "current_phase": "normal",
+            "chaos_level": 0,
+            "last_choice": "",
+            "last_saved": datetime.now(timezone.utc).isoformat(),
+            "seen_elements": [],
+            "player_state": {"alive": True},
+            "feed_log": [],  # Explicitly a new empty list
+            "current_image_url": None,
+            "choices": [],
+            "choices_metadata": {},
+            "turn_count": 0,
+            "interim_index": 0,
+            "in_combat": False,
+            "threat_level": 0,
+            "time_of_day": starting_time
+            # Add any other essential keys that should be present from a fresh state
+        }
+        logging.info(f"_perform_game_reset: New state object created. New state id: {id(new_state)}. Its feed_log (len {len(new_state['feed_log'])}) id: {id(new_state['feed_log'])}")
 
-    _last_image_path = None
+        _last_image_path = None
 
-    # NOTE: Do NOT reset _next_feed_item_id here. Feed item ids must stay
-    # monotonically increasing across resets — a connected client tracks the
-    # last id it has seen (and dedups by id), so restarting the counter made
-    # a fresh intro reuse low ids that the client had already rendered, which
-    # got deduped away → "Reset does nothing". Keeping the counter monotonic
-    # guarantees the new intro's items are always newer than anything seen.
+        # NOTE: Do NOT reset _next_feed_item_id here. Feed item ids must stay
+        # monotonically increasing across resets — a connected client tracks the
+        # last id it has seen (and dedups by id), so restarting the counter made
+        # a fresh intro reuse low ids that the client had already rendered, which
+        # got deduped away → "Reset does nothing". Keeping the counter monotonic
+        # guarantees the new intro's items are always newer than anything seen.
 
-    history = []
-    if history_path.exists():
-        try:
-            history_path.write_text("[]", encoding='utf-8') # Clear history file
-            logging.info("_perform_game_reset: history.json cleared.")
-        except Exception as e_hist_clear:
-            logging.error(f"_perform_game_reset: Error clearing history.json: {e_hist_clear}")
-    else:
-        logging.info("_perform_game_reset: history.json does not exist, no need to clear.")
+        new_history: List[dict] = []
+        hist_path_for_sid = _get_history_path(SID)
+        if hist_path_for_sid.exists():
+            try:
+                hist_path_for_sid.write_text("[]", encoding='utf-8') # Clear history file
+                logging.info("_perform_game_reset: history.json cleared.")
+            except Exception as e_hist_clear:
+                logging.error(f"_perform_game_reset: Error clearing history.json: {e_hist_clear}")
+        else:
+            logging.info("_perform_game_reset: history.json does not exist, no need to clear.")
 
-    initial_items = generate_intro_turn_feed_items(SID) # This should use the global `state` implicitly
-    logging.info(f"_perform_game_reset: initial_items from generate_intro_turn_feed_items (IDs): {[item['id'] for item in initial_items if item]}")
+        initial_items = generate_intro_turn_feed_items(SID, new_state)
+        logging.info(f"_perform_game_reset: initial_items from generate_intro_turn_feed_items (IDs): {[item['id'] for item in initial_items if item]}")
     
-    state['feed_log'].extend(initial_items) # Add to the new state's new feed_log
-    logging.info(f"_perform_game_reset: state['feed_log'] before _save_state (IDs): {[item['id'] for item in state['feed_log'] if item]}")
+        new_state['feed_log'].extend(initial_items) # Add to the new state's new feed_log
+        logging.info(f"_perform_game_reset: state['feed_log'] before _save_state (IDs): {[item['id'] for item in new_state['feed_log'] if item]}")
     
-    _save_state(state, SID) # Save the completely new state
-    logging.info(f"_perform_game_reset: Game reset complete. {len(initial_items)} initial items generated and saved.")
-    return initial_items
+        _save_state(new_state, SID) # Save the completely new state to THIS session's file
+        # Mirror into the ambient globals only if SID is still the active
+        # session (see _sync_ambient_state) — same reasoning applies to `history`.
+        if get_active_session_id() == SID:
+            state = new_state
+            history = new_history
+        logging.info(f"_perform_game_reset: Game reset complete. {len(initial_items)} initial items generated and saved.")
+        return initial_items
 
 def api_reset():
-    global state # Ensure we're interacting with the global state
-    logging.info(f"api_reset: POST request received. Current state ID before reset: {id(state)}")
+    # Resolve THIS request's session id straight from Flask's request object
+    # (see _resolve_request_session_id's docstring) rather than reading the
+    # ambient `state` global below — _perform_game_reset() already does the
+    # same resolution internally and is now serialized system-wide via
+    # TURN_LOCK, but the fallback/error paths here used to read/write the
+    # shared `state` mirror directly (and `_save_state(state)` with no
+    # session_id at all, which defaults to 'default'!), so a concurrent
+    # different-session reset could make this handler report or persist the
+    # WRONG session's data.
+    SID = _resolve_request_session_id()
+    logging.info(f"api_reset: POST request received for session='{SID}'.")
     try:
         initial_items = _perform_game_reset()
-        logging.info(f"api_reset: _perform_game_reset completed. Current state ID after reset: {id(state)}. Feed log length: {len(state.get('feed_log', []))}")
         if not initial_items:
             logging.warning("api_reset: _perform_game_reset returned no items, but this might be okay if feed_log is now populated by it.")
-            # Fallback to checking the state's feed_log if initial_items is empty from return
-            initial_items = state.get('feed_log', [])
+            # Fallback to checking THIS session's on-disk feed_log if initial_items is empty from return
+            initial_items = _load_state(SID).get('feed_log', [])
 
         # Fallback: If still no player_choice_prompt, add a default
         has_choice_prompt = any(item.get('type') == 'player_choice_prompt' for item in initial_items)
@@ -5502,32 +5602,43 @@ def api_reset():
         logging.exception("Exception in api_reset:")
         # In case of an error, ensure a valid JSON response is sent.
         # _perform_game_reset might have partially modified state, or failed before creating items.
-        # Return an error item and an empty list if state itself is problematic.
         error_feed_item = create_feed_item(type="error_event", content=f"Failed to reset game: {str(e)}")
-        # Attempt to log this error to the feed_log if state is available
+        # Attempt to log this error to THIS session's on-disk feed_log.
         try:
-            state.setdefault('feed_log', []).append(error_feed_item)
-            _save_state(state)
+            with WORLD_STATE_LOCK:
+                err_state = _load_state(SID)
+                err_state.setdefault('feed_log', []).append(error_feed_item)
+                _save_state(err_state, SID)
+                _sync_ambient_state(err_state, SID)
         except Exception as e_log:
             log_error(f"Could not save error item to feed_log during api_reset error handling: {e_log}")
         return jsonify([error_feed_item]), 500
 
 def api_feed():
-    global state
+    # Resolve straight from Flask's (thread-local) request object rather than
+    # reading the ambient `state` global directly. `/api/feed` is polled
+    # continuously by every connected browser, so with multiple sessions live
+    # at once this handler runs concurrently across many threads — reading
+    # the shared `state` mirror here raced with OTHER sessions' concurrent
+    # session_context() swaps (a poll for session A could land squarely on
+    # top of session B's swap-in and read B's feed_log instead of A's).
+    # Loading directly from THIS session's disk file every poll costs one
+    # small JSON read and closes that race entirely.
+    session_id = _resolve_request_session_id()
     since_id_str = request.args.get('since_id')
     items_to_return = []
-    if state.get('feed_log'):
-        with WORLD_STATE_LOCK: # Ensure thread-safe access to state['feed_log']
-            feed_log = state.get('feed_log', [])
-            if since_id_str:
-                try:
-                    since_id = int(since_id_str)
-                    items_to_return = [item for item in feed_log if item.get('id', 0) > since_id]
-                except ValueError:
-                    log_error(f"/api/feed: Invalid since_id '{since_id_str}'. Returning full feed.")
-                    items_to_return = list(feed_log) # Return a copy
-            else:
-                items_to_return = list(feed_log) # Return a copy of the full feed log            
+    with WORLD_STATE_LOCK: # Ensure thread-safe access to the on-disk feed_log
+        st = _load_state(session_id)
+        feed_log = st.get('feed_log', [])
+        if since_id_str:
+            try:
+                since_id = int(since_id_str)
+                items_to_return = [item for item in feed_log if item.get('id', 0) > since_id]
+            except ValueError:
+                log_error(f"/api/feed: Invalid since_id '{since_id_str}'. Returning full feed.")
+                items_to_return = list(feed_log) # Return a copy
+        else:
+            items_to_return = list(feed_log) # Return a copy of the full feed log
     return jsonify(items_to_return)
 
 def api_choose():
@@ -5539,16 +5650,18 @@ def api_choose():
         
         player_choice_text = data['choice']
         context_item_id = data.get('context_item_id') # Optional, for context
-        # Authoritative session id: whatever _session_scoped (api.py) already
-        # resolved and swapped in via engine.session_context() before this
-        # handler ran. Previously this re-derived from the request body with
-        # a 'default' fallback and then never actually used it below — every
-        # /api/choose call silently operated on the 'default' session's saved
-        # state regardless of which session the caller asked for. Using the
-        # active session id here (and threading it into the background
+        # Session id for THIS request, resolved straight from Flask's request
+        # object (see _resolve_request_session_id's docstring for why this
+        # must NOT be get_active_session_id() — that shared global can be
+        # swapped by a concurrent, different-session request between when
+        # _session_scoped entered session_context() and this line running).
+        # Previously this defaulted to 'default' and was never actually used
+        # below — every /api/choose call silently operated on the 'default'
+        # session's saved state regardless of which session the caller
+        # asked for. Using it here (and threading it into the background
         # thread below) is what makes each session's turns land in ITS OWN
         # save file instead of everyone's turns landing in 'default'.
-        session_id = get_active_session_id()
+        session_id = _resolve_request_session_id()
         # How the action was issued. SCAN object interactions ("scan_interact"/
         # "scan_move") drive the story-escalation backend harder (see
         # _process_turn_background) so poking the world moves the plot + raises risk.
@@ -5586,7 +5699,16 @@ def api_choose():
             _feed_append(st, player_action_item)
             st['last_choice'] = player_choice_text
             _save_state(st, session_id)
-            state = st
+            # Guarded mirror update (see _sync_ambient_state's docstring): a
+            # blind `state = st` here raced with OTHER sessions' concurrent
+            # /api/choose calls — this request thread's `st` could overwrite
+            # the ambient mirror right before a DIFFERENT session's request
+            # exits session_context() and (seeing its own session still
+            # "active") persists that stale mirror over ITS OWN save file.
+            # That was a real, reproducible cross-session leak under
+            # concurrent load; _sync_ambient_state's active-session check
+            # closes it.
+            _sync_ambient_state(st, session_id)
         if DEBUG_MODE: print(f"[DEBUG] api_choose - Player action item ID {player_action_item['id']} logged. Starting background thread for _process_turn_background.", flush=True)
 
         # 2. Start background processing for the rest of the turn
@@ -5633,11 +5755,11 @@ def api_choose():
         # Attempt to log this error to the feed_log if state is available
         try:
             with WORLD_STATE_LOCK:
-                err_session_id = get_active_session_id()
+                err_session_id = _resolve_request_session_id()
                 err_state = _load_state(err_session_id)
                 err_state.setdefault('feed_log', []).append(error_item)
                 _save_state(err_state, err_session_id)
-                state = err_state
+                _sync_ambient_state(err_state, err_session_id)
         except Exception as e_log:
             log_error(f"Could not save error item to feed_log during api_choose error handling: {e_log}")
         return jsonify([error_item]), 500
@@ -7154,9 +7276,17 @@ def api_regenerate_choices():
     global state
     logging.info("api_regenerate_choices: POST request received.")
     try:
+        # Resolve THIS request's session id directly from Flask's request
+        # object (see _resolve_request_session_id) rather than the shared
+        # get_active_session_id() global — this handler calls a slow LLM
+        # (generate_choices) synchronously, so a concurrent different-
+        # session request has plenty of time to swap the ambient mirror
+        # before we get to the save at the end.
+        SID = _resolve_request_session_id()
         with WORLD_STATE_LOCK:
-            current_feed_log = list(state.get('feed_log', [])) # Operate on a copy for reading context
-            state_snapshot_for_context = state.copy() # For world prompt, etc.
+            fresh_state = _load_state(SID)
+            current_feed_log = list(fresh_state.get('feed_log', [])) # Operate on a copy for reading context
+            state_snapshot_for_context = fresh_state.copy() # For world prompt, etc.
 
         last_choice_prompt = None
         last_dispatch_text = "No recent dispatch found."
@@ -7217,9 +7347,11 @@ def api_regenerate_choices():
         )
 
         with WORLD_STATE_LOCK:
-            state.setdefault('feed_log', []).append(new_choice_prompt_item)
-            state['choices'] = new_choice_prompt_item['choices'] # Update current choices in state
-            _save_state(state, get_active_session_id())
+            st = _load_state(SID)
+            st.setdefault('feed_log', []).append(new_choice_prompt_item)
+            st['choices'] = new_choice_prompt_item['choices'] # Update current choices in state
+            _save_state(st, SID)
+            _sync_ambient_state(st, SID)
         
         logging.info(f"api_regenerate_choices: Regenerated choices. New prompt ID: {new_choice_prompt_item['id']}")
         return jsonify([new_choice_prompt_item])
@@ -7229,9 +7361,12 @@ def api_regenerate_choices():
         logging.exception("Exception in api_regenerate_choices:")
         error_item = create_feed_item(type="error_event", content=f"Failed to regenerate choices: {str(e)}")
         try:
+            err_sid = _resolve_request_session_id()
             with WORLD_STATE_LOCK:
-                state.setdefault('feed_log', []).append(error_item)
-                _save_state(state, get_active_session_id())
+                err_state = _load_state(err_sid)
+                err_state.setdefault('feed_log', []).append(error_item)
+                _save_state(err_state, err_sid)
+                _sync_ambient_state(err_state, err_sid)
         except Exception as e_log:
             log_error(f"Could not save error item to feed_log during api_regenerate_choices error handling: {e_log}")
         return jsonify([error_item]), 500
