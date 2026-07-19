@@ -49,3 +49,4 @@ test_*.py
 
 # Autoplay run artifacts
 autoplay_report.json
+voice_design_cache.json
