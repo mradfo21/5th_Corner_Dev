@@ -464,21 +464,7 @@
   onScroll();
   window.addEventListener("scroll", onScroll, { passive: true });
 
-  // ---------- Mobile nav toggle ----------
-  var navToggle = el("navToggle");
-  var navLinks = el("navLinks");
-  function closeNav() {
-    if (navLinks) navLinks.classList.remove("is-open");
-    if (navToggle) navToggle.setAttribute("aria-expanded", "false");
-  }
-  if (navToggle && navLinks) {
-    navToggle.addEventListener("click", function () {
-      var open = navLinks.classList.toggle("is-open");
-      navToggle.setAttribute("aria-expanded", open ? "true" : "false");
-    });
-  }
-
-  // ---------- Smooth-scroll helper (also closes the mobile nav) ----------
+  // ---------- Smooth-scroll helper ----------
   function scrollToId(id) {
     var target = document.getElementById(id);
     if (!target) return;
@@ -510,7 +496,6 @@
 
       if (scrollTarget) {
         ev.preventDefault();
-        closeNav();
         scrollToId(scrollTarget);
       }
 
