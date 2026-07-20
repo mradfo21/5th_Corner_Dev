@@ -145,7 +145,99 @@ Try the negative paths too:
 
 ---
 
-## 7. What's next (post-MVP)
+## 7. Free-play testing & influencer links
+
+Two ways to give someone free continues without a real charge — pick whichever
+fits.
+
+### Option A — Global "test mode" (best for staging / your own dogfooding)
+
+Set `COINOP_TEST_MODE=1` on any deploy. Every continue on that deploy is free
+and never touches Stripe — the button just relabels itself
+**⚡ TEST MODE — FREE CONTINUE** in gold, and clicking it revives the player
+immediately.
+
+Recommended pattern: enable this on a **preview / staging URL** (a second
+Render service pointing at the same repo but a `staging` branch, for example),
+never on the production one. Every dev + tester who lands on the staging URL
+gets the full paid flow for free.
+
+```env
+FEATURE_COINOP=1
+COINOP_TEST_MODE=1
+STRIPE_SECRET_KEY=sk_test_...   # still needed so the module considers itself
+STRIPE_PUBLISHABLE_KEY=pk_test_... # "enabled"; the keys are never actually called
+```
+
+### Option B — Named comp codes (best for influencer / friends-and-family links)
+
+On any deploy (including production), add an allowlist of "comp" codes and a
+per-code global cap:
+
+```env
+FEATURE_COINOP=1
+COINOP_FREE_PLAY_CODES=alpha,influencer-jane,podcast-ep12,gdc26
+COINOP_FREE_PLAY_CAP=50
+```
+
+Then hand out a URL to a specific person:
+
+- **`https://somewhere.example.com/play?comp=influencer-jane`**
+
+When they land on it:
+
+1. The client picks up `?comp=influencer-jane`, saves it to `sessionStorage`,
+   and strips it from the visible URL (no code showing in screen recordings).
+2. `/api/coinop/config?comp=influencer-jane` responds with a `comp.active: true`
+   block, so the continue button renders in **gold** as
+   **⚡ COMP — FREE CONTINUE (49 left)** instead of the paid label.
+3. Clicking it does the exact same UX ceremony as a paid continue — same
+   coin-drop sound, same "the transmission stutters back to life" line, same
+   revive state — but skips the Stripe hop entirely. One click, one revive.
+
+Details worth knowing:
+
+- **Codes are case-insensitive.** `?comp=Jane` matches an allowlist entry of
+  `jane`.
+- **The cap is global per code**, not per person. Setting the cap to `50` and
+  handing `influencer-jane` to a podcast host means the *whole world* using
+  that link gets at most 50 free continues combined. Once exhausted the button
+  reverts to the paid flow automatically.
+- **Codes never grant anything except the "continue" feature.** They don't
+  unlock unlimited plays or bypass other paid features.
+- **Every comp is logged.** Each session's `sessions/<sid>/coinop.json` gets a
+  `grants` entry with `source: "comp"` (vs `source: "stripe"` for real
+  payments) so analytics / tax / dashboards can cleanly split the two.
+- **The global counter file** lives at `sessions/_coinop_comp_counters.json`
+  and just tracks `{code: uses}` — safe to delete if you want to reset a code.
+- **Forging is server-checked.** Comp voucher ids look like `comp_<hex>` and
+  are only accepted at redemption if the server itself minted them for the
+  caller's session. Hand-typing a `comp_...` in the URL bar does nothing.
+
+### Which one to use when
+
+| Situation | Use |
+|---|---|
+| Internal QA on a staging URL | `COINOP_TEST_MODE=1` |
+| Give ONE influencer / streamer 20 free continues | `COINOP_FREE_PLAY_CODES=name-of-influencer` + link |
+| Onboard beta testers with different tracked cohorts | `COINOP_FREE_PLAY_CODES=beta-slack,beta-discord,beta-newsletter` |
+| Convention floor / demo laptop | `COINOP_TEST_MODE=1` on that specific deploy |
+| Anyone with any code, on prod | Do NOT set `COINOP_TEST_MODE=1` on prod. Use codes only. |
+
+### Sharing a link with an influencer — copy/paste example
+
+> Hey Jane — this is a private preview link. It bypasses payment for you, so
+> continues are free while you play (up to 50 total across your audience if you
+> stream it). Every time you die you'll see a gold **⚡ COMP — FREE CONTINUE**
+> button next to the red RESTART — one click and you're back in the run. If it
+> ever shows the regular $0.99 button instead, the comp budget was used up;
+> just DM me and I'll bump it.
+>
+> **https://somewhere.example.com/play?comp=influencer-jane**
+
+---
+
+## 8. What's next (post-MVP)
 
 See `COIN_OP_MONETIZATION_PLAN.md` for the full roadmap. Nearest wins:
 

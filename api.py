@@ -113,7 +113,12 @@ app.add_url_rule('/api/regenerate_choices', 'standalone_api_regenerate_choices',
 
 @app.route('/api/coinop/config', methods=['GET'])
 def _coinop_config():
-    return jsonify(coinop.public_config())
+    # Optional ?comp=<code> query so the client can render a "COMP MODE"
+    # badge before the player ever clicks. The server never enumerates
+    # allowlisted codes — it only ever reflects back the specific code the
+    # client asked about.
+    comp = request.args.get('comp') or None
+    return jsonify(coinop.public_config(comp))
 
 
 @app.route('/api/coinop/checkout', methods=['POST'])
@@ -122,8 +127,10 @@ def _coinop_checkout():
     if not coinop.is_enabled():
         return jsonify({"error": "coinop_disabled"}), 404
     sid = engine._resolve_request_session_id()
+    data = request.get_json(silent=True) or {}
+    comp_code = (data.get('comp') or '').strip() or None
     try:
-        out = coinop.create_checkout(sid, request)
+        out = coinop.create_checkout(sid, request, comp_code=comp_code)
         return jsonify(out)
     except Exception as e:  # noqa: BLE001
         traceback.print_exc()

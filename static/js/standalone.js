@@ -8616,6 +8616,35 @@
 
   const CoinOp = (function () {
     let cfg = { enabled: false };
+    // Comp code = the "free-play token" a tester or influencer was given.
+    // We accept it from ?comp=<code> once, persist it in sessionStorage
+    // for the tab's lifetime (so it survives the death overlay → redeem
+    // → new run cycle without needing to keep it in the URL), and strip
+    // it from the URL immediately for tidiness + screen-recording privacy.
+    let compCode = null;
+
+    function readCompFromUrlOrStorage() {
+      try {
+        const q = new URLSearchParams(location.search);
+        const fromUrl = (q.get("comp") || "").trim();
+        if (fromUrl) {
+          try { sessionStorage.setItem("coinop_comp_code", fromUrl); } catch (_) {}
+          // Strip it from the URL so refreshes/screenshots don't leak the code.
+          try {
+            q.delete("comp");
+            const rest = q.toString();
+            const clean = location.pathname + (rest ? `?${rest}` : "") + location.hash;
+            history.replaceState(null, "", clean);
+          } catch (_) {}
+          return fromUrl;
+        }
+        try {
+          const fromStore = sessionStorage.getItem("coinop_comp_code");
+          if (fromStore) return fromStore.trim();
+        } catch (_) {}
+      } catch (_) {}
+      return null;
+    }
 
     function setStatus(msg, isError) {
       if (!el.deathContinueStatus) return;
@@ -8631,7 +8660,10 @@
 
     async function fetchConfig() {
       try {
-        const resp = await fetch("/api/coinop/config", { method: "GET" });
+        const url = compCode
+          ? `/api/coinop/config?comp=${encodeURIComponent(compCode)}`
+          : "/api/coinop/config";
+        const resp = await fetch(url, { method: "GET" });
         if (!resp.ok) return { enabled: false };
         return await resp.json();
       } catch (_) {
@@ -8646,16 +8678,36 @@
         return;
       }
       el.deathContinue.classList.remove("hidden");
-      if (el.deathContinuePrice) {
-        el.deathContinuePrice.textContent = cfg.display_price ? `(${cfg.display_price})` : "";
-      }
       const labelEl = el.deathContinue.querySelector(".continue-label");
-      if (labelEl && cfg.label) labelEl.textContent = cfg.label;
+      const slotEl = el.deathContinue.querySelector(".coin-slot");
+      const compActive = !!(cfg.comp && cfg.comp.active);
+      if (compActive) {
+        // Free-play mode: relabel the button so the tester / influencer
+        // sees the same coin-op ceremony without any dollar figure — and
+        // so anyone watching a screen recording knows this isn't a real
+        // charge. The button keeps its shape/animation for demo footage.
+        el.deathContinue.classList.add("comp");
+        if (labelEl) labelEl.textContent = cfg.comp.label || "Free Continue";
+        if (slotEl) slotEl.textContent = "\u26A1"; // lightning bolt
+        if (el.deathContinuePrice) {
+          el.deathContinuePrice.textContent = (cfg.comp.remaining != null)
+            ? `(${cfg.comp.remaining} left)`
+            : "";
+        }
+      } else {
+        el.deathContinue.classList.remove("comp");
+        if (labelEl && cfg.label) labelEl.textContent = cfg.label;
+        if (slotEl) slotEl.textContent = "\u25C9"; // filled circle (coin)
+        if (el.deathContinuePrice) {
+          el.deathContinuePrice.textContent = cfg.display_price ? `(${cfg.display_price})` : "";
+        }
+      }
     }
 
     async function startCheckout() {
       if (!cfg.enabled) return;
-      setStatus("Opening Stripe Checkout…", false);
+      const compActive = !!(cfg.comp && cfg.comp.active);
+      setStatus(compActive ? "Dropping a comp coin…" : "Opening Stripe Checkout…", false);
       el.deathContinue.classList.add("busy");
       try {
         const resp = await fetch("/api/coinop/checkout", {
@@ -8664,17 +8716,28 @@
             "Content-Type": "application/json",
             "X-Session-Id": SESSION_ID,
           },
-          body: JSON.stringify({ session_id: SESSION_ID }),
+          body: JSON.stringify({
+            session_id: SESSION_ID,
+            comp: compCode || undefined,
+          }),
         });
         if (!resp.ok) {
           throw new Error(`checkout HTTP ${resp.status}`);
         }
         const data = await resp.json();
+
+        // COMP path: the server didn't create a Stripe session and returned
+        // a comp voucher instead. Skip the redirect entirely and go
+        // straight to redeem — the whole flow completes in one round trip
+        // with no leaving the game.
+        if (data.comp && data.checkout_session_id) {
+          await redeem(data.checkout_session_id, /* isComp */ true);
+          return;
+        }
+
+        // Paid path: hand off to Stripe Checkout via a top-window redirect
+        // so it works even when the game is embedded in an iframe.
         if (!data.url) throw new Error("no checkout url returned");
-        // Redirect the top window so this works even when the game is
-        // embedded in an iframe on the main site (Stripe refuses to load
-        // inside a third-party frame). Falls back to a same-frame redirect
-        // when top navigation is blocked.
         try {
           window.top.location.href = data.url;
         } catch (_) {
@@ -8684,6 +8747,56 @@
         console.error("[coinop] checkout failed:", err);
         setStatus("Could not open checkout. Try again in a moment.", true);
         el.deathContinue.classList.remove("busy");
+      }
+    }
+
+    async function redeem(checkoutSessionId, isComp) {
+      try {
+        const resp = await fetch("/api/coinop/redeem", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Session-Id": SESSION_ID,
+          },
+          body: JSON.stringify({
+            session_id: SESSION_ID,
+            checkout_session_id: checkoutSessionId,
+          }),
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.ok) {
+          const reason = (data && data.reason) || `HTTP ${resp.status}`;
+          setStatus(
+            isComp
+              ? `Comp failed: ${reason}.`
+              : `Continue failed: ${reason}. Contact support if you were charged.`,
+            true,
+          );
+          el.deathContinue.classList.remove("busy");
+          return false;
+        }
+        setStatus("");
+        el.deathContinue.classList.remove("busy");
+        try { Sound.pickup(); } catch (_) {}
+        try { exitGameOver(); } catch (_) {}
+        try { if (typeof pollOnce === "function") pollOnce(); } catch (_) {}
+        // Refresh config so the comp counter in the button reflects the
+        // new "remaining" figure for this tester.
+        try {
+          cfg = await fetchConfig();
+          paintButton();
+        } catch (_) {}
+        return true;
+      } catch (err) {
+        console.error("[coinop] redeem failed:", err);
+        setStatus(
+          isComp
+            ? "Could not apply comp — the server rejected the voucher."
+            : "Could not verify payment. Contact support if you were charged.",
+          true,
+        );
+        el.deathContinue.classList.remove("busy");
+        return false;
       }
     }
 
@@ -8715,42 +8828,12 @@
         setStatus("Continue is not available on this server.", true);
         return;
       }
-
       setStatus("Verifying payment…", false);
-      try {
-        const resp = await fetch("/api/coinop/redeem", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Session-Id": SESSION_ID,
-          },
-          body: JSON.stringify({
-            session_id: SESSION_ID,
-            checkout_session_id: csId,
-          }),
-        });
-        const data = await resp.json();
-        if (!resp.ok || !data.ok) {
-          const reason = (data && data.reason) || `HTTP ${resp.status}`;
-          setStatus(`Continue failed: ${reason}. Contact support if you were charged.`, true);
-          return;
-        }
-        // Redeem succeeded server-side; the engine has appended the
-        // revive feed items. Clear the death overlay FIRST (so the fresh
-        // player_choice_prompt is treated as a real choice prompt and not
-        // as another death-screen restart), then trigger a manual poll so
-        // the new items surface without waiting for the poll tick.
-        setStatus("");
-        try { Sound.pickup(); } catch (_) {}
-        try { exitGameOver(); } catch (_) {}
-        try { if (typeof pollOnce === "function") pollOnce(); } catch (_) {}
-      } catch (err) {
-        console.error("[coinop] redeem failed:", err);
-        setStatus("Could not verify payment. Contact support if you were charged.", true);
-      }
+      await redeem(csId, /* isComp */ false);
     }
 
     async function init() {
+      compCode = readCompFromUrlOrStorage();
       cfg = await fetchConfig();
       paintButton();
       if (el.deathContinue) {

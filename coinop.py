@@ -25,6 +25,18 @@ Environment variables:
   COINOP_CONTINUE_LABEL           button label (default: "Insert Coin — Continue")
   COINOP_PRODUCT_NAME             Stripe line-item name (default: "SOMEWHERE — Continue")
   PUBLIC_BASE_URL                 e.g. https://somewhere.example.com; falls back to request.host_url
+
+Free-play (dev / QA / influencer):
+  COINOP_TEST_MODE                "1" makes ALL continues free (no Stripe hit).
+                                  Intended for staging / preview deploys ONLY.
+  COINOP_FREE_PLAY_CODES          comma-separated allowlist of "comp" codes,
+                                  e.g. "alpha,beta,influencer-jane,gdc26".
+                                  Any player who lands on /play?comp=<code>
+                                  gets free continues (up to the cap below).
+  COINOP_FREE_PLAY_CAP            max free continues per code, globally
+                                  (default: 100). A leaked link can't drain
+                                  more than this before the button reverts to
+                                  the normal paid flow.
 """
 
 from __future__ import annotations
@@ -70,7 +82,25 @@ def _cfg() -> Dict[str, Any]:
         "label": os.environ.get("COINOP_CONTINUE_LABEL", _DEFAULT_LABEL).strip() or _DEFAULT_LABEL,
         "product_name": os.environ.get("COINOP_PRODUCT_NAME", _DEFAULT_PRODUCT_NAME).strip() or _DEFAULT_PRODUCT_NAME,
         "public_base_url": os.environ.get("PUBLIC_BASE_URL", "").strip().rstrip("/"),
+        "test_mode": os.environ.get("COINOP_TEST_MODE", "").strip() in ("1", "true", "on", "yes"),
+        "free_play_codes": _parse_codes(os.environ.get("COINOP_FREE_PLAY_CODES", "")),
+        "free_play_cap": _int_env("COINOP_FREE_PLAY_CAP", 100),
     }
+
+
+def _parse_codes(raw: str) -> set:
+    """Parse a comma-separated env var into a normalized set of comp codes.
+
+    Codes are normalized: trimmed, lowercased. That way the URL param match
+    is case-insensitive — a link shared as ?comp=Jane still hits an
+    allowlist entry of `jane`, which is what humans expect from a code.
+    Empty entries are dropped so a stray comma doesn't accidentally allow
+    an empty ('') code."""
+    return {p.strip().lower() for p in (raw or "").split(",") if p.strip()}
+
+
+def _normalize_code(code: Optional[str]) -> str:
+    return (code or "").strip().lower()
 
 
 def is_enabled() -> bool:
@@ -86,12 +116,18 @@ def is_enabled() -> bool:
     return True
 
 
-def public_config() -> Dict[str, Any]:
-    """Safe subset of config to expose to the browser."""
+def public_config(comp: Optional[str] = None) -> Dict[str, Any]:
+    """Safe subset of config to expose to the browser.
+
+    When called with a `comp` code, the response includes a `comp` sub-object
+    describing whether the code is currently valid (and, if so, how many
+    free continues remain against the global cap). The client uses this to
+    style the continue button as 'COMP MODE' before the player ever clicks.
+    """
     c = _cfg()
     if not is_enabled():
         return {"enabled": False}
-    return {
+    out: Dict[str, Any] = {
         "enabled": True,
         "publishable_key": c["publishable_key"],
         "price_cents": c["price_cents"],
@@ -99,6 +135,38 @@ def public_config() -> Dict[str, Any]:
         "label": c["label"],
         "display_price": _display_price(c["price_cents"], c["currency"]),
     }
+    # Test-mode: everything is free on this deploy, no code required.
+    if c["test_mode"]:
+        out["comp"] = {
+            "active": True,
+            "reason": "test_mode",
+            "label": "\u26A1 TEST MODE \u2014 FREE CONTINUE",
+            "remaining": None,
+        }
+        return out
+    # Comp-code path (only reported when a code was passed in — the client
+    # doesn't get to enumerate the allowlist just by hitting /config).
+    code = _normalize_code(comp)
+    if code and code in c["free_play_codes"]:
+        used = _comp_used(code)
+        remaining = max(0, c["free_play_cap"] - used)
+        if remaining > 0:
+            out["comp"] = {
+                "active": True,
+                "reason": "code",
+                "code": code,
+                "label": f"\u26A1 COMP \u2014 FREE CONTINUE",
+                "remaining": remaining,
+            }
+        else:
+            out["comp"] = {
+                "active": False,
+                "reason": "code_exhausted",
+                "code": code,
+                "label": None,
+                "remaining": 0,
+            }
+    return out
 
 
 def _display_price(cents: int, currency: str) -> str:
@@ -173,14 +241,101 @@ def _already_redeemed(session_id: str, checkout_session_id: str) -> bool:
     return checkout_session_id in (g.get("redeemed") or [])
 
 
-def _mark_redeemed(session_id: str, checkout_session_id: str) -> None:
+def _mark_redeemed(session_id: str, checkout_session_id: str, source: str = "stripe", code: Optional[str] = None) -> None:
     with _GRANT_LOCK:
         g = _load_grants(session_id)
         if checkout_session_id in (g.get("redeemed") or []):
             return
         g.setdefault("redeemed", []).append(checkout_session_id)
         g["revives_granted"] = int(g.get("revives_granted", 0)) + 1
+        # Audit trail: was this a real Stripe payment, or a comp/test-mode grant?
+        # Kept separate from `seen_paid` so tax / analytics / dashboards can
+        # cleanly distinguish comped revives from paid ones.
+        g.setdefault("grants", []).append({
+            "cs": checkout_session_id,
+            "source": source,
+            "code": code,
+            "ts": int(time.time()),
+        })
         _save_grants(session_id, g)
+
+
+# ─── Global comp counter (shared across all sessions) ───────────────────
+#
+# Codes have a GLOBAL usage cap (e.g. 100 per code). We keep the counters
+# in one small file at sessions/_coinop_comp_counters.json rather than
+# scanning every per-session coinop.json to sum. Cheap, atomic under the
+# same _GRANT_LOCK.
+
+def _comp_counters_path() -> Path:
+    root = Path("sessions")
+    root.mkdir(parents=True, exist_ok=True)
+    return root / "_coinop_comp_counters.json"
+
+
+def _load_comp_counters() -> Dict[str, int]:
+    p = _comp_counters_path()
+    if not p.exists():
+        return {}
+    try:
+        data = json.loads(p.read_text("utf-8"))
+        return {str(k): int(v) for k, v in (data or {}).items()}
+    except Exception:
+        return {}
+
+
+def _save_comp_counters(counters: Dict[str, int]) -> None:
+    p = _comp_counters_path()
+    tmp = p.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(counters, indent=2, sort_keys=True), encoding="utf-8")
+    tmp.replace(p)
+
+
+def _comp_used(code: str) -> int:
+    if not code:
+        return 0
+    return int(_load_comp_counters().get(code, 0))
+
+
+def _bump_comp_counter(code: str) -> int:
+    """Atomically increment the counter for a comp code. Returns the new value."""
+    with _GRANT_LOCK:
+        counters = _load_comp_counters()
+        counters[code] = int(counters.get(code, 0)) + 1
+        _save_comp_counters(counters)
+        return counters[code]
+
+
+def _comp_available(comp_code: Optional[str]) -> Dict[str, Any]:
+    """Decide whether a comp grant should be issued for this request.
+
+    Returns {'ok': bool, 'reason': str, 'code': Optional[str]}. Three
+    accept paths: (1) COINOP_TEST_MODE=1 makes every request a comp;
+    (2) an allowlisted code below its cap; (3) nothing else — normal paid
+    flow proceeds.
+    """
+    c = _cfg()
+    if c["test_mode"]:
+        return {"ok": True, "reason": "test_mode", "code": None}
+    code = _normalize_code(comp_code)
+    if not code:
+        return {"ok": False, "reason": "no_code", "code": None}
+    if code not in c["free_play_codes"]:
+        return {"ok": False, "reason": "unknown_code", "code": code}
+    if _comp_used(code) >= c["free_play_cap"]:
+        return {"ok": False, "reason": "code_exhausted", "code": code}
+    return {"ok": True, "reason": "code", "code": code}
+
+
+def _mint_comp_id() -> str:
+    """Produce a Stripe-Checkout-Session-shaped-but-clearly-not-real id.
+
+    The prefix `comp_` is how verify_and_redeem tells a comp from a real
+    Stripe id at redemption time — real Stripe checkout ids start `cs_`.
+    Using the same length + shape keeps client code paths identical.
+    """
+    import secrets
+    return f"comp_{secrets.token_hex(12)}"
 
 
 # ─── Stripe Checkout ────────────────────────────────────────────────────
@@ -201,14 +356,48 @@ def _resolve_return_base(request) -> str:
     return request.host_url.rstrip("/")
 
 
-def create_checkout(session_id: str, request) -> Dict[str, Any]:
-    """Create a Stripe Checkout Session for a single 'continue' purchase.
+def create_checkout(session_id: str, request, comp_code: Optional[str] = None) -> Dict[str, Any]:
+    """Create a Stripe Checkout Session for a single 'continue' purchase,
+    OR — if COINOP_TEST_MODE is on, or a valid comp code was supplied —
+    mint a comp voucher instead and return it directly.
 
-    Returns {'url': ..., 'checkout_session_id': ...} on success. Raises
-    on config errors so the API layer can 500 cleanly.
+    Return shape:
+      * paid path:  {'url': <stripe url>, 'checkout_session_id': 'cs_...',  'comp': False}
+      * comp path:  {'url': null,          'checkout_session_id': 'comp_...', 'comp': True,
+                     'comp_reason': 'test_mode' | 'code',
+                     'comp_code': <lowercased code or null>}
+
+    Client behavior differs only in whether to redirect to Stripe (paid) or
+    directly call /api/coinop/redeem with the comp id (comp). Server-side,
+    verify_and_redeem handles the two id prefixes ("cs_" vs "comp_")
+    interchangeably.
     """
     if not is_enabled():
         raise RuntimeError("coinop feature is not enabled")
+
+    # Free-play short-circuit. Everything from here to the Stripe call is
+    # skipped when a comp applies — no Stripe API call, no network hop.
+    avail = _comp_available(comp_code)
+    if avail["ok"]:
+        comp_id = _mint_comp_id()
+        # Global counter bumped now so a burst of clicks can't over-grant
+        # against a code's cap. verify_and_redeem later just checks that
+        # the id was minted (via the per-session seen_paid record we add
+        # here) — it does NOT re-check the cap, so no race.
+        if avail["code"]:
+            _bump_comp_counter(avail["code"])
+        _mark_seen_paid(session_id, comp_id, 0, "comp")
+        log.info(
+            "coinop: minted COMP id=%s for session=%s reason=%s code=%s",
+            comp_id, session_id, avail["reason"], avail["code"],
+        )
+        return {
+            "url": None,
+            "checkout_session_id": comp_id,
+            "comp": True,
+            "comp_reason": avail["reason"],
+            "comp_code": avail["code"],
+        }
 
     c = _cfg()
     s = _stripe_client()
@@ -255,7 +444,7 @@ def create_checkout(session_id: str, request) -> Dict[str, Any]:
         expires_at=int(time.time()) + 30 * 60,
     )
     log.info("coinop: created checkout session %s for game session %s", checkout.id, session_id)
-    return {"url": checkout.url, "checkout_session_id": checkout.id}
+    return {"url": checkout.url, "checkout_session_id": checkout.id, "comp": False}
 
 
 def _fetch_checkout(checkout_session_id: str):
@@ -276,7 +465,9 @@ def verify_and_redeem(session_id: str, checkout_session_id: str) -> Dict[str, An
     """
     if not is_enabled():
         return {"ok": False, "reason": "feature_disabled"}
-    if not checkout_session_id or not checkout_session_id.startswith("cs_"):
+    if not checkout_session_id or not (
+        checkout_session_id.startswith("cs_") or checkout_session_id.startswith("comp_")
+    ):
         return {"ok": False, "reason": "bad_checkout_id"}
 
     if _already_redeemed(session_id, checkout_session_id):
@@ -284,6 +475,22 @@ def verify_and_redeem(session_id: str, checkout_session_id: str) -> Dict[str, An
         # should just proceed to revive if it hasn't already; the engine's
         # api_revive is itself idempotent w.r.t. an already-alive player.
         return {"ok": True, "already_redeemed": True}
+
+    # Comp path: no Stripe call. We only accept a comp id we ourselves
+    # minted for THIS session earlier (checked via seen_paid). This closes
+    # the loop where somebody hand-forges a `comp_...` string.
+    if checkout_session_id.startswith("comp_"):
+        g = _load_grants(session_id)
+        minted = any(row.get("cs") == checkout_session_id for row in g.get("seen_paid", []))
+        if not minted:
+            return {"ok": False, "reason": "unknown_comp_id"}
+        # Recover the comp code from the minting log for the audit trail.
+        # (seen_paid rows for comp ids record currency='comp'; if we ever
+        # care about which code was used, verify_and_redeem's grants entry
+        # captures it via the source/code fields.)
+        _mark_redeemed(session_id, checkout_session_id, source="comp", code=None)
+        log.info("coinop: redeemed COMP %s for game session %s", checkout_session_id, session_id)
+        return {"ok": True, "already_redeemed": False, "comp": True}
 
     try:
         cs = _fetch_checkout(checkout_session_id)
@@ -311,9 +518,9 @@ def verify_and_redeem(session_id: str, checkout_session_id: str) -> Dict[str, An
         int(getattr(cs, "amount_total", 0) or 0),
         (getattr(cs, "currency", "") or "").lower(),
     )
-    _mark_redeemed(session_id, checkout_session_id)
+    _mark_redeemed(session_id, checkout_session_id, source="stripe")
     log.info("coinop: redeemed checkout %s for game session %s", checkout_session_id, session_id)
-    return {"ok": True, "already_redeemed": False}
+    return {"ok": True, "already_redeemed": False, "comp": False}
 
 
 # ─── Webhook (optional) ────────────────────────────────────────────────
