@@ -432,18 +432,24 @@ if _sock is not None:
 
 
 def _standalone_asset_version():
-    """Cache-bust CSS/JS on every deploy so browsers never serve stale UI."""
-    try:
-        css = os.path.getmtime("static/css/standalone.css")
-        js = os.path.getmtime("static/js/standalone.js")
-        rjs = 0
+    """Cache-bust CSS/JS on every deploy so browsers never serve stale UI.
+
+    Covers the standalone immersive UI and the lobby landing page so an edit
+    to either set of assets forces a fresh fetch."""
+    candidates = [
+        "static/css/standalone.css",
+        "static/js/standalone.js",
+        "static/js/reactor_renderer.js",
+        "static/css/lobby.css",
+        "static/js/lobby.js",
+    ]
+    latest = 0
+    for path in candidates:
         try:
-            rjs = os.path.getmtime("static/js/reactor_renderer.js")
+            latest = max(latest, os.path.getmtime(path))
         except Exception:
             pass
-        return str(int(max(css, js, rjs)))
-    except Exception:
-        return "0"
+    return str(int(latest)) if latest else "0"
 
 
 @app.route('/standalone', methods=['GET'])

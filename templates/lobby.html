@@ -3,52 +3,108 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>SOMEWHERE // Lobby</title>
-<meta name="description" content="An AI-driven first-person survival story generator. Every scene is created in real-time. Every choice matters. Enter your instance.">
-<meta property="og:title" content="SOMEWHERE — Enter the Signal">
-<meta property="og:description" content="A survival story generated live by AI. Start a new game, or continue a saved run.">
+<title>SOMEWHERE // an AI survival story, drawn live</title>
+<meta name="description" content="A first-person survival horror story generated live by AI. Every scene drawn as you play. One life. Runs in your browser.">
+<meta property="og:title" content="SOMEWHERE — an AI survival story, drawn live">
+<meta property="og:description" content="A first-person survival horror experience generated in real time. Start a run, or continue a saved one.">
 <meta property="og:type" content="website">
+<meta name="theme-color" content="#050708">
 <link rel="icon" href="{{ url_for('static', filename='Logo.jpg') }}">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=VT323&family=Share+Tech+Mono&display=swap" media="print" onload="this.media='all'">
-<noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=VT323&family=Share+Tech+Mono&display=swap"></noscript>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Space+Grotesk:wght@400;500;600;700&family=VT323&display=swap">
+<link rel="preload" as="image" href="{{ url_for('static', filename='img/lobby/hero_highway.jpg') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/lobby.css') }}?v={{ asset_version }}">
 </head>
 <body>
 
-  <!-- Ambient VHS layers: analog grain + scanlines + gentle chromatic drift.
-       These are pure decoration; the page still works if they fail to render. -->
+  <!-- Ambient VHS layers: subtle grain + scanlines + vignette. Decorative. -->
   <div class="crt-scanlines" aria-hidden="true"></div>
   <div class="crt-grain" aria-hidden="true"></div>
   <div class="crt-vignette" aria-hidden="true"></div>
-  <div class="crt-glow" aria-hidden="true"></div>
 
-  <!-- Top bar: signal-in header. Mimics a broadcast slate / game HUD corner. -->
-  <header class="lobby-header">
-    <div class="lobby-header-left">
+  <!-- ===================== MINIMAL NAV ===================== -->
+  <header class="site-nav" id="siteNav">
+    <a class="nav-brand" href="#top" data-scroll>
       <span class="rec-dot" aria-hidden="true">●</span>
-      <span class="lobby-header-label">SIGNAL ONLINE</span>
-    </div>
-    <div class="lobby-header-right">
-      <span class="lobby-header-meta" id="lobby-clock">--:--:--</span>
-    </div>
+      <span class="nav-brand-word">SOMEWHERE</span>
+    </a>
+    <button class="nav-cta" type="button" data-enter="new">
+      <span aria-hidden="true">▶</span> PLAY
+    </button>
   </header>
 
-  <!-- ==================== MAIN MENU ====================
-       Single centered menu card, like a title-screen: logo, one-line
-       pitch, then the two familiar actions (new game / continue). Picking
-       either expands an inline panel right below the buttons — nothing
-       else to scroll past to get into a run. -->
-  <main class="menu">
-    <div class="menu-card">
+  <!-- ===================== HERO ===================== -->
+  <section class="hero" id="top">
+    <div class="hero-media" aria-hidden="true">
+      <img class="hero-img" src="{{ url_for('static', filename='img/lobby/hero_highway.jpg') }}" alt="">
+      <div class="hero-media-scan"></div>
+      <div class="hero-media-fade"></div>
+    </div>
 
+    <div class="hero-hud hero-hud-tl" aria-hidden="true">
+      <span class="hero-hud-rec"><span class="rec-dot">●</span> REC</span>
+      <span id="lobby-clock">--:--:--</span>
+    </div>
+
+    <div class="hero-inner">
+      <h1 class="hero-title glitch" data-text="SOMEWHERE">SOMEWHERE</h1>
+      <p class="hero-tagline reveal">A survival story, drawn live by AI.</p>
+      <div class="hero-actions reveal">
+        <button class="btn btn-primary" type="button" data-enter="new">
+          <span class="btn-ico" aria-hidden="true">▶</span> ENTER
+        </button>
+        <button class="btn btn-ghost" type="button" data-enter="continue">CONTINUE</button>
+      </div>
+    </div>
+
+    <a class="hero-scrollcue" href="#reel" data-scroll aria-label="Scroll">
+      <span class="hero-scrollcue-arrow" aria-hidden="true">▽</span>
+    </a>
+  </section>
+
+  <!-- ===================== CINEMATIC REEL =====================
+       One continuous scroll of full-bleed frames. The imagery leads;
+       each frame carries a single short line. -->
+  <div class="reel" id="reel">
+    <section class="frame" style="background-image:url('{{ url_for('static', filename='img/lobby/gal_crossroads.jpg') }}')">
+      <div class="frame-caption reveal"><h2>No two runs alike.</h2></div>
+    </section>
+
+    <section class="frame" style="background-image:url('{{ url_for('static', filename='img/lobby/gal_gasstation.jpg') }}')">
+      <div class="frame-caption reveal"><h2>Every frame, drawn live.</h2></div>
+    </section>
+
+    <section class="frame" style="background-image:url('{{ url_for('static', filename='img/lobby/gal_corridor.jpg') }}')">
+      <div class="frame-caption reveal"><h2>It reacts to you.</h2></div>
+    </section>
+
+    <section class="frame" style="background-image:url('{{ url_for('static', filename='img/lobby/gal_motel.jpg') }}')">
+      <div class="frame-caption reveal"><h2>The world remembers.</h2></div>
+    </section>
+
+    <section class="frame" style="background-image:url('{{ url_for('static', filename='img/lobby/gal_forest.jpg') }}')">
+      <div class="frame-caption reveal"><h2>Fifteen seconds to decide.</h2></div>
+    </section>
+
+    <section class="frame frame-final" style="background-image:url('{{ url_for('static', filename='img/lobby/gal_figure.jpg') }}')">
+      <div class="frame-caption reveal">
+        <span class="frame-kicker">death is permanent</span>
+        <h2>One life.</h2>
+      </div>
+    </section>
+  </div>
+
+  <!-- ===================== ENTER (functional menu) ===================== -->
+  <section class="section-enter" id="enter">
+    <div class="enter-glow" aria-hidden="true"></div>
+    <div class="menu-card reveal">
       <div class="menu-brand">
-        <h1 class="menu-title" data-glitch="SOMEWHERE">SOMEWHERE</h1>
-        <p class="menu-tagline">A survival story, drawn live by AI. Every choice changes what happens next.</p>
+        <h2 class="menu-title glitch" data-text="ENTER">ENTER</h2>
+        <p class="menu-tagline">New instance, or a saved run.</p>
       </div>
 
-      <nav class="menu-actions" aria-label="Main menu">
+      <nav class="menu-actions" aria-label="Start a run">
         <button id="cta-start" class="menu-btn menu-btn-primary" type="button" aria-expanded="false" aria-controls="panel-new">
           <span class="menu-btn-ico" aria-hidden="true">▶</span>
           <span class="menu-btn-text">
@@ -66,7 +122,7 @@
         </button>
       </nav>
 
-      <!-- ---- New game panel (collapsed by default) ---- -->
+      <!-- New game panel -->
       <section class="menu-panel" id="panel-new" hidden>
         <form id="new-run-form" class="run-form" autocomplete="off">
           <label class="run-field">
@@ -94,7 +150,7 @@
         </form>
       </section>
 
-      <!-- ---- Continue panel (collapsed by default) ---- -->
+      <!-- Continue panel -->
       <section class="menu-panel" id="panel-resume" hidden>
         <div class="resume-list" id="resume-list" aria-live="polite">
           <div class="resume-empty" id="resume-empty">
@@ -108,7 +164,6 @@
         </div>
       </section>
 
-      <!-- ---- How to play (collapsed disclosure, not a full page section) ---- -->
       <details class="menu-howto">
         <summary>How does this work?</summary>
         <ol class="howto-list">
@@ -118,27 +173,28 @@
           <li>Survive as long as you can. Your run saves itself. Death is permanent, so make it count.</li>
         </ol>
       </details>
-
     </div>
+  </section>
 
-    <footer class="lobby-footer">
-      <span class="lobby-footer-sig">SOMEWHERE STORYGEN</span>
-      <span class="lobby-footer-links">
-        <a href="/standalone">/standalone</a>
-        <span class="dot">·</span>
-        <a href="/live">/live</a>
-        <span class="dot">·</span>
-        <a href="/api/info">/api/info</a>
-      </span>
-    </footer>
-  </main>
+  <!-- ===================== FOOTER ===================== -->
+  <footer class="site-footer">
+    <div class="site-footer-brand">
+      <span class="rec-dot" aria-hidden="true">●</span> SOMEWHERE <span class="dim">STORYGEN</span>
+    </div>
+    <div class="site-footer-links">
+      <a href="/standalone">/standalone</a>
+      <span class="dot">·</span>
+      <a href="/live">/live</a>
+      <span class="dot">·</span>
+      <a href="/api/info">/api/info</a>
+    </div>
+    <div class="site-footer-note">Imagery is placeholder — real captures coming.</div>
+  </footer>
 
-  <!-- Full-screen "booting" overlay shown between session mint and redirect.
-       Gives the handoff to /play a proper sense-of-weight instead of a raw
-       blink. The message rotates to feel like the system is actually working. -->
+  <!-- Full-screen "booting" overlay shown between session mint and redirect. -->
   <div id="boot-overlay" class="boot-overlay" hidden aria-hidden="true">
     <div class="boot-inner">
-      <div class="boot-brand">SOMEWHERE</div>
+      <div class="boot-brand glitch" data-text="SOMEWHERE">SOMEWHERE</div>
       <div class="boot-line" id="boot-line">requesting instance…</div>
       <div class="boot-progress"><div class="boot-progress-fill" id="boot-progress-fill"></div></div>
       <div class="boot-code" id="boot-code" aria-live="polite"></div>

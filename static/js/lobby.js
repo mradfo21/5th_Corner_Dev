@@ -18,6 +18,10 @@
 (function () {
   "use strict";
 
+  // Mark JS as available so the stylesheet can hide .reveal elements only
+  // when we can actually animate them in (no-JS visitors see everything).
+  document.documentElement.classList.add("js");
+
   var LS_RECENT_KEY = "somewhere.lobby.recent";
   var LS_LAST_KEY = "somewhere.lobby.last_session";
   var MAX_RECENT = 12;
@@ -442,6 +446,89 @@
     resumeCodeInput.addEventListener("keydown", function (ev) {
       if (ev.key === "Enter") { ev.preventDefault(); joinByCode(); }
     });
+  }
+
+  /* ============================================================
+     Landing-page interactions (nav, smooth-scroll, scroll-reveal,
+     hero CTA -> menu panels). Kept separate from the menu controller
+     above so the tested New Game / Continue flow is untouched.
+     ============================================================ */
+
+  // ---------- Sticky nav: condense on scroll ----------
+  var siteNav = el("siteNav");
+  function onScroll() {
+    if (!siteNav) return;
+    if (window.scrollY > 24) siteNav.classList.add("is-scrolled");
+    else siteNav.classList.remove("is-scrolled");
+  }
+  onScroll();
+  window.addEventListener("scroll", onScroll, { passive: true });
+
+  // ---------- Smooth-scroll helper ----------
+  function scrollToId(id) {
+    var target = document.getElementById(id);
+    if (!target) return;
+    target.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  // ---------- Force a menu panel open (used by hero / nav CTAs) ----------
+  function openPanel(btnId) {
+    var btn = el(btnId);
+    if (!btn) return;
+    if (btn.getAttribute("aria-expanded") !== "true") {
+      togglePanel(btnId);
+    }
+    if (btnId === "cta-continue") loadSessions();
+  }
+
+  // ---------- Wire every [data-scroll] and [data-enter] control ----------
+  document.querySelectorAll("[data-scroll], [data-enter]").forEach(function (node) {
+    node.addEventListener("click", function (ev) {
+      var enter = node.getAttribute("data-enter");
+      var href = node.getAttribute("href") || "";
+      var scrollTarget = null;
+
+      if (enter) {
+        scrollTarget = "enter";
+      } else if (href.charAt(0) === "#") {
+        scrollTarget = href.slice(1);
+      }
+
+      if (scrollTarget) {
+        ev.preventDefault();
+        scrollToId(scrollTarget);
+      }
+
+      if (enter) {
+        // Open the relevant panel; delay a touch so the scroll settles and
+        // the field-focus inside togglePanel doesn't fight the scroll.
+        setTimeout(function () {
+          openPanel(enter === "continue" ? "cta-continue" : "cta-start");
+        }, 460);
+      }
+    });
+  });
+
+  // ---------- Scroll-reveal ----------
+  var revealNodes = Array.prototype.slice.call(document.querySelectorAll(".reveal"));
+  function revealAll() { revealNodes.forEach(function (n) { n.classList.add("is-visible"); }); }
+  if ("IntersectionObserver" in window && revealNodes.length) {
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        if (entry.isIntersecting) {
+          entry.target.classList.add("is-visible");
+          io.unobserve(entry.target);
+        }
+      });
+    }, { rootMargin: "0px 0px -8% 0px", threshold: 0.08 });
+    revealNodes.forEach(function (n) { io.observe(n); });
+    // Safety net: never let content stay hidden. If the observer hasn't fired
+    // for something within a few seconds (headless renderers, odd scroll
+    // restoration, IO edge cases), reveal everything so the page is never
+    // stuck blank below the fold.
+    setTimeout(revealAll, 2600);
+  } else {
+    revealAll();
   }
 
 })();
