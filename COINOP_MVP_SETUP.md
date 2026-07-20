@@ -68,7 +68,33 @@ pip install -r requirements.txt
 
 ---
 
-## 4. End-to-end test (Stripe test mode)
+## 4. Where the button appears
+
+The continue button lives inside the death overlay, which is shared by all
+three renderer modes:
+
+- **`/play` / `/standalone`** — image (stills) mode.
+- **`/play?renderer=reactor` or `/realtime` or `/live`** — realtime world-model
+  mode.
+- **Discord embedded app** iframe — same underlying page, same overlay.
+
+In realtime mode two additional things happen automatically on a coin-op
+revive that don't apply to stills mode:
+
+- The paused reactor stream (`ReactorRenderer.pause()` fires on death) is
+  resumed via `ReactorRenderer.resume()`, so the live video keeps flowing.
+- The client-side `DangerSystem` is reset to `SAFE` with a full HP bar, so
+  the player doesn't immediately re-die from a lingering peripheral-vignette
+  damage state. (This matters because a realtime session can die *client-side*
+  from vision-driven HP damage before the server's own death verdict fires;
+  the revive works uniformly in both cases.)
+
+Both are handled inside the client's `exitGameOverAndResume()` helper; no
+per-mode branching or configuration is required.
+
+---
+
+## 5. End-to-end test (Stripe test mode)
 
 1. Set env vars with `FEATURE_COINOP=1` + your `sk_test_...` / `pk_test_...`
    keys. Restart the server.
@@ -107,7 +133,7 @@ Try the negative paths too:
 
 ---
 
-## 5. Going live
+## 6. Going live
 
 1. In the Stripe dashboard, flip to **Live mode** and complete Stripe's
    activation checklist (business details, bank account).
@@ -121,7 +147,7 @@ Try the negative paths too:
 
 ---
 
-## 6. Operating notes
+## 7. Operating notes
 
 - **Refunds:** issue from the Stripe dashboard (`Payments → click a payment
   → Refund`). Refunding does NOT auto-un-revive the player — this is fine at
@@ -145,7 +171,7 @@ Try the negative paths too:
 
 ---
 
-## 7. Free-play testing & influencer links
+## 8. Free-play testing & influencer links
 
 Two ways to give someone free continues without a real charge — pick whichever
 fits.
@@ -233,11 +259,19 @@ Details worth knowing:
 > ever shows the regular $0.99 button instead, the comp budget was used up;
 > just DM me and I'll bump it.
 >
-> **https://somewhere.example.com/play?comp=influencer-jane**
+> **Stills (photorealistic AI scenes):** <https://somewhere.example.com/play?comp=influencer-jane>
+> **Realtime (live AI video, best in Chrome desktop):** <https://somewhere.example.com/live?comp=influencer-jane>
+>
+> The comp code works on both. Same button, same one-click revive.
+
+The `?comp=` param is honored by all three routes: `/play`, `/standalone`, and
+`/live` (a.k.a. `/realtime`). It's stripped from the URL on load and stored in
+`sessionStorage` for the tab's lifetime, so a revive → new run in the same tab
+keeps working without needing the code in the URL again.
 
 ---
 
-## 8. What's next (post-MVP)
+## 9. What's next (post-MVP)
 
 See `COIN_OP_MONETIZATION_PLAN.md` for the full roadmap. Nearest wins:
 

@@ -150,13 +150,26 @@ def _coinop_redeem():
     result = coinop.verify_and_redeem(sid, checkout_session_id)
     if not result.get('ok'):
         return jsonify(result), 402  # 402 Payment Required
-    # Payment verified server-side → grant one revive by invoking the
-    # engine's api_revive on the caller's session. api_revive is itself
-    # idempotent (a no-op on an already-alive player).
+    # Idempotent replay of the return URL (or a duplicate redeem call
+    # from a racy retry): the FIRST successful redeem already invoked
+    # api_revive and the resulting continue_used + player_choice_prompt
+    # feed items are in the session's feed_log. Running api_revive again
+    # would double-append the narrative beat, which reads as a stutter
+    # on screen. The client already has everything it needs from the
+    # normal /api/feed polling, so just acknowledge the replay.
+    if result.get('already_redeemed'):
+        return jsonify({
+            "ok": True,
+            "already_redeemed": True,
+            "comp": result.get('comp', False),
+            "revive_items": [],
+        })
+    # First-time redeem for this checkout id → mint the actual revive.
     revive_response = engine.api_revive()
     return jsonify({
         "ok": True,
-        "already_redeemed": result.get('already_redeemed', False),
+        "already_redeemed": False,
+        "comp": result.get('comp', False),
         "revive_items": revive_response.get_json() if hasattr(revive_response, 'get_json') else None,
     })
 

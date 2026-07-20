@@ -3831,6 +3831,39 @@
     el.deathOverlay.classList.add("hidden");
   }
 
+  /**
+   * Dismiss the death overlay AND undo the side effects enterGameOver
+   * applied — used by the coin-op continue flow, which is a REVIVE on
+   * the current run rather than a fresh restart.
+   *
+   * Two things enterGameOver does that a plain exitGameOver leaves
+   * broken for revive:
+   *   1. In realtime mode, it pauses the reactor's live video stream
+   *      (see enterGameOver's ReactorRenderer.pause() call). Without
+   *      the matching resume() the world is frozen after the revive.
+   *   2. In realtime mode the DangerSystem may have already fired its
+   *      client-side die() (peripheral-vignette damage → HP zero),
+   *      which set its internal `dead=true` flag and cut its sampling
+   *      loop. DangerSystem.reset() is the same primitive resetGame()
+   *      uses for a fresh run: refills HP, clears mode/vignette, and
+   *      restarts monitoring if reactor is live. It's a no-op beyond
+   *      internal-state reset in stills mode, so calling it
+   *      unconditionally is safe.
+   *
+   * Explicitly does NOT touch scene layers, history, inventory, or
+   * timers — this is a revive on the current run, not a restart. The
+   * server has already appended the `continue_used` narrative beat
+   * and a fresh `player_choice_prompt`; a manual pollOnce right after
+   * this call surfaces them without waiting for the poll tick.
+   */
+  function exitGameOverAndResume() {
+    exitGameOver();
+    try { DangerSystem.reset(); } catch (_) {}
+    if (Renderer.mode === "reactor" && Renderer.reactorAvailable()) {
+      try { window.ReactorRenderer.resume(); } catch (_) {}
+    }
+  }
+
   function renderItem(item) {
     if (!item || typeof item.id !== "number") return;
     // Dedup: never render the same server feed item twice (guards against
@@ -8778,7 +8811,12 @@
         setStatus("");
         el.deathContinue.classList.remove("busy");
         try { Sound.pickup(); } catch (_) {}
-        try { exitGameOver(); } catch (_) {}
+        // exitGameOverAndResume vs plain exitGameOver: this call also
+        // resumes the reactor's live stream and resets DangerSystem so
+        // the revive works cleanly in realtime sessions (where death
+        // paused the video and the client-side danger loop). In stills
+        // mode the reactor branch is a no-op.
+        try { exitGameOverAndResume(); } catch (_) {}
         try { if (typeof pollOnce === "function") pollOnce(); } catch (_) {}
         // Refresh config so the comp counter in the button reflects the
         // new "remaining" figure for this tester.

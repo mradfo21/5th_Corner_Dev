@@ -5687,15 +5687,16 @@ def api_revive():
         with WORLD_STATE_LOCK:
             st = _load_state(SID)
             ps = st.get("player_state") or {}
-            # Idempotency: already alive → nothing to do. Return an empty
-            # list; the client should treat that as success.
-            if ps.get("alive", True):
-                return jsonify([])
-
-            # Bring the player back. HP restored to a partial value so the
-            # revive feels earned, not god-mode. Any downstream 'alive'
-            # readers see True; the death overlay clears on the client when
-            # it sees the continue_used feed item below.
+            # NOTE: no "already alive → no-op" guard here. In realtime
+            # sessions the client's peripheral-vignette DangerSystem can
+            # kill the player CLIENT-side (see standalone.js DangerSystem.
+            # die() and its enterGameOver call) before the server's Phase-1
+            # verdict has flipped alive→False. If we no-op'd on
+            # alive==True, a legitimately-paid coin-op continue in that
+            # window would silently do nothing and the death overlay would
+            # never dismiss. Idempotency for double-charges lives one
+            # layer up in coinop.verify_and_redeem's redeemed-set — this
+            # function trusts its caller.
             ps["alive"] = True
             if isinstance(ps.get("health"), (int, float)):
                 # Best-effort partial heal when the run tracks a numeric HP;
