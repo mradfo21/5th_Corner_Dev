@@ -174,6 +174,11 @@
     deathContinue: document.getElementById("death-continue"),
     deathContinuePrice: document.getElementById("death-continue-price"),
     deathContinueStatus: document.getElementById("death-continue-status"),
+    coinopBlock: document.getElementById("coinop-block"),
+    coinopCountdown: document.getElementById("coinop-countdown"),
+    coinopCeremony: document.getElementById("coinop-ceremony"),
+    continuesHud: document.getElementById("continues-hud"),
+    continuesHudCount: document.getElementById("continues-hud-count"),
     tapeBtn: document.getElementById("tape-btn"),
     tapeOverlay: document.getElementById("tape-overlay"),
     tapeFrameA: document.getElementById("tape-frameA"),
@@ -540,6 +545,22 @@
       glitch() { noise(0.24, 0.055); },                        // VCR transition static burst
       text() { tone(430, 0.09, "sine", 0.045); },              // narrative / world text lands
       pickup() { tone([600, 900], 0.16, "triangle", 0.06); },  // item pickup
+      // ---- Coin-op ----
+      // coin: two bright metallic pings 40ms apart — the "kaCHING" of a quarter
+      //       hitting a slot's ramp then dropping into the hopper. Tighter and
+      //       higher than pickup so it never blurs into an item cue.
+      // coinReady: an ascending three-tone chime — "CONTINUE READY" arcade
+      //       fanfare played on return-from-checkout, right before the death
+      //       overlay dissolves and the run resumes.
+      coin() {
+        tone([1760, 1320], 0.06, "square", 0.06);
+        tone([1180, 780], 0.14, "triangle", 0.05, 0.04);
+      },
+      coinReady() {
+        tone(660, 0.09, "triangle", 0.05);
+        tone(990, 0.09, "triangle", 0.05, 0.07);
+        tone(1320, 0.14, "triangle", 0.055, 0.14);
+      },
       choices() { tone(680, 0.07, "triangle", 0.05); tone(920, 0.09, "triangle", 0.045, 0.07); }, // choices ready
       select() { tone(520, 0.05, "square", 0.05); tone(790, 0.10, "square", 0.05, 0.055); },       // confirm choice
       status() { tone(320, 0.05, "sine", 0.03); },             // HUD tick
@@ -3824,6 +3845,10 @@
     if (Renderer.mode === "reactor" && Renderer.reactorAvailable()) {
       try { window.ReactorRenderer.pause(); } catch (_) {}
     }
+    // Kick off the arcade "CONTINUE? 10…9…8…" countdown + autofocus the
+    // continue button. CoinOp is a no-op when the feature isn't enabled,
+    // so this is safe unconditionally.
+    try { CoinOp.onGameOverShown(); } catch (_) {}
   }
 
   function exitGameOver() {
@@ -4046,6 +4071,9 @@
     try {
       stopPolling(); // avoid a mid-reset poll racing the rebuilt feed
       clearTurnWatchdog(); // don't let a stale turn timer fire into the new run
+      // Reset coin-op run state (countdown, credits HUD, button busy flag)
+      // before we tear down anything else. Safe no-op when coin-op is off.
+      try { CoinOp.onRunReset(); } catch (_) {}
       exitGameOver();
       Talk.close(); // end any conversation from the prior run
       Narrator.stop(); // silence any narration from the prior run
@@ -8565,9 +8593,13 @@
       else if (e.key === "Escape") hideCaseWin();
       return;
     }
-    // While dead, only R (restart) is meaningful.
+    // While dead, R restarts and C inserts a coin to continue. C is a
+    // no-op when the coin-op feature is disabled, so no per-mode branching
+    // is needed here.
     if (state.gameOver) {
-      if (e.key.toLowerCase() === "r") resetGame();
+      const k = e.key.toLowerCase();
+      if (k === "r") resetGame();
+      else if (k === "c") { try { CoinOp.insertCoin(); } catch (_) {} }
       return;
     }
     // Drive joystick owns the drive keys while realtime video is on — hold to go,
@@ -8656,6 +8688,17 @@
     // it from the URL immediately for tidiness + screen-recording privacy.
     let compCode = null;
 
+    // Run-scoped credit counter shown in the corner HUD.
+    let continuesUsed = 0;
+
+    // CONTINUE? countdown state. Purely visual urgency — we never actually
+    // block the button on countdown expiry, since the arcade cabinet's
+    // "10 seconds to insert coin" pattern is nostalgic but user-hostile
+    // when applied to a real payment flow.
+    const COUNTDOWN_START = 10;
+    let countdownTimer = null;
+    let countdownValue = COUNTDOWN_START;
+
     function readCompFromUrlOrStorage() {
       try {
         const q = new URLSearchParams(location.search);
@@ -8706,19 +8749,22 @@
 
     function paintButton() {
       if (!el.deathContinue) return;
+      // The wrapping .coinop-block owns visibility now — the button itself
+      // stays laid out inside so the coin-drop animation has a stable
+      // relative-positioned parent.
       if (!cfg.enabled) {
-        el.deathContinue.classList.add("hidden");
+        if (el.coinopBlock) el.coinopBlock.classList.add("hidden");
         return;
       }
-      el.deathContinue.classList.remove("hidden");
+      if (el.coinopBlock) el.coinopBlock.classList.remove("hidden");
       const labelEl = el.deathContinue.querySelector(".continue-label");
       const slotEl = el.deathContinue.querySelector(".coin-slot");
       const compActive = !!(cfg.comp && cfg.comp.active);
       if (compActive) {
-        // Free-play mode: relabel the button so the tester / influencer
-        // sees the same coin-op ceremony without any dollar figure — and
-        // so anyone watching a screen recording knows this isn't a real
-        // charge. The button keeps its shape/animation for demo footage.
+        // Free-play mode: relabel so the tester / influencer sees the same
+        // coin-op ceremony without any dollar figure — and so anyone
+        // watching a screen recording knows this isn't a real charge. The
+        // button keeps its shape/animation for demo footage.
         el.deathContinue.classList.add("comp");
         if (labelEl) labelEl.textContent = cfg.comp.label || "Free Continue";
         if (slotEl) slotEl.textContent = "\u26A1"; // lightning bolt
@@ -8737,40 +8783,172 @@
       }
     }
 
+    // ── CONTINUE? countdown ────────────────────────────────────────────
+    //
+    // Fires when the death overlay opens (see enterGameOver → startCountdown
+    // hook below). Ticks once per second, pulses the number, turns red
+    // below 4s. On zero we DON'T disable the button — we just soften the
+    // number and stop pulsing, so the arcade urgency lands without ever
+    // actually blocking a paying player. Any click, keypress, or restart
+    // cancels the countdown early via stopCountdown().
+
+    function startCountdown() {
+      stopCountdown();
+      if (!cfg.enabled || !el.coinopCountdown) return;
+      countdownValue = COUNTDOWN_START;
+      el.coinopCountdown.textContent = String(countdownValue);
+      el.coinopCountdown.classList.remove("urgent", "finished");
+      countdownTimer = setInterval(() => {
+        countdownValue -= 1;
+        if (countdownValue < 0) {
+          stopCountdown(/* finished */ true);
+          return;
+        }
+        el.coinopCountdown.textContent = String(countdownValue);
+        // A brief scale pop each tick so the number feels alive.
+        el.coinopCountdown.classList.remove("tick");
+        void el.coinopCountdown.offsetWidth; // reflow so animation restarts
+        el.coinopCountdown.classList.add("tick");
+        if (countdownValue <= 3) {
+          el.coinopCountdown.classList.add("urgent");
+          try { Sound.status(); } catch (_) {} // faint tick sound in the red zone
+        }
+      }, 1000);
+    }
+
+    function stopCountdown(finished) {
+      if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+      if (!el.coinopCountdown) return;
+      if (finished) {
+        el.coinopCountdown.textContent = "\u2014";
+        el.coinopCountdown.classList.add("finished");
+        el.coinopCountdown.classList.remove("urgent", "tick");
+      } else {
+        el.coinopCountdown.classList.remove("tick");
+      }
+    }
+
+    // ── Coin-drop micro-animation ──────────────────────────────────────
+    //
+    // Adds .dropping to the button for the duration of the CSS keyframes
+    // (see #death-continue.dropping .coin-drop in standalone.css). Returns
+    // a promise so callers can await the physical moment before doing the
+    // network hop — that way the redirect never beats the animation.
+
+    function playCoinDrop() {
+      return new Promise((resolve) => {
+        if (!el.deathContinue) return resolve();
+        el.deathContinue.classList.remove("dropping");
+        void el.deathContinue.offsetWidth; // reflow so anim restarts on rapid clicks
+        el.deathContinue.classList.add("dropping");
+        try { Sound.coin(); } catch (_) {}
+        try { Haptics.strong(); } catch (_) {}
+        setTimeout(() => {
+          el.deathContinue.classList.remove("dropping");
+          resolve();
+        }, 460); // matches the 0.44s keyframe + a hair of slack
+      });
+    }
+
+    // ── Return ceremony ────────────────────────────────────────────────
+    //
+    // Right before we dismiss the death overlay on a successful revive:
+    // flash a phosphor-green "CONTINUE" over the overlay for ~700ms. This
+    // gives the return moment weight — the run doesn't just "un-die," it
+    // reboots.
+
+    function playReturnCeremony() {
+      return new Promise((resolve) => {
+        if (!el.coinopCeremony) return resolve();
+        el.coinopCeremony.classList.remove("playing", "hidden");
+        void el.coinopCeremony.offsetWidth;
+        el.coinopCeremony.classList.add("playing");
+        try { Sound.coinReady(); } catch (_) {}
+        try { Sound.glitch(); } catch (_) {}
+        setTimeout(() => {
+          el.coinopCeremony.classList.remove("playing");
+          el.coinopCeremony.classList.add("hidden");
+          resolve();
+        }, 720);
+      });
+    }
+
+    // ── Continues-used HUD ─────────────────────────────────────────────
+    //
+    // A small "CREDITS: N" chip in the corner that fades in the first
+    // time a continue lands and stays put for the rest of the run. Ticks
+    // (glowing pulse) on each increment so the counter feels like a
+    // physical cabinet indicator.
+
+    function bumpContinuesHud() {
+      continuesUsed += 1;
+      if (!el.continuesHud || !el.continuesHudCount) return;
+      el.continuesHudCount.textContent = String(continuesUsed);
+      el.continuesHud.classList.remove("hidden");
+      el.continuesHud.classList.remove("tick");
+      void el.continuesHud.offsetWidth;
+      el.continuesHud.classList.add("tick");
+    }
+
+    function resetContinuesHud() {
+      continuesUsed = 0;
+      if (!el.continuesHud || !el.continuesHudCount) return;
+      el.continuesHudCount.textContent = "0";
+      el.continuesHud.classList.add("hidden");
+      el.continuesHud.classList.remove("tick");
+    }
+
     async function startCheckout() {
       if (!cfg.enabled) return;
+      // The click has been received — kill the urgency countdown; the
+      // player is committing to the flow either way now.
+      stopCountdown();
       const compActive = !!(cfg.comp && cfg.comp.active);
-      setStatus(compActive ? "Dropping a comp coin…" : "Opening Stripe Checkout…", false);
+      // Play the coin-drop animation FIRST, then kick off the network
+      // call in parallel with its remaining frames — perceived latency
+      // becomes "how long the coin takes to fall," not "how long the API
+      // takes to answer." Same feel as an arcade cabinet's mechanical
+      // ingest.
       el.deathContinue.classList.add("busy");
+      const coinAnim = playCoinDrop();
+      setStatus(compActive ? "Coin registered…" : "Opening Stripe Checkout…", false);
       try {
-        const resp = await fetch("/api/coinop/checkout", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Session-Id": SESSION_ID,
-          },
-          body: JSON.stringify({
-            session_id: SESSION_ID,
-            comp: compCode || undefined,
+        const [_, resp] = await Promise.all([
+          coinAnim,
+          fetch("/api/coinop/checkout", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Session-Id": SESSION_ID,
+            },
+            body: JSON.stringify({
+              session_id: SESSION_ID,
+              comp: compCode || undefined,
+            }),
           }),
-        });
+        ]);
         if (!resp.ok) {
           throw new Error(`checkout HTTP ${resp.status}`);
         }
         const data = await resp.json();
 
-        // COMP path: the server didn't create a Stripe session and returned
-        // a comp voucher instead. Skip the redirect entirely and go
-        // straight to redeem — the whole flow completes in one round trip
-        // with no leaving the game.
+        // COMP path: no Stripe session was created — the server returned a
+        // comp voucher instead. Skip the redirect entirely and go straight
+        // to redeem, so the whole flow completes in one round trip without
+        // ever leaving the game.
         if (data.comp && data.checkout_session_id) {
           await redeem(data.checkout_session_id, /* isComp */ true);
           return;
         }
 
         // Paid path: hand off to Stripe Checkout via a top-window redirect
-        // so it works even when the game is embedded in an iframe.
+        // (works even when the game is embedded in an iframe on the main
+        // site, since Stripe refuses to render inside a third-party frame).
+        // A quick VCR glitch cue makes the navigation feel intentional
+        // rather than jarring — same primitive used for scene transitions.
         if (!data.url) throw new Error("no checkout url returned");
+        try { Sound.glitch(); } catch (_) {}
+        try { glitchTransition && glitchTransition(280); } catch (_) {}
         try {
           window.top.location.href = data.url;
         } catch (_) {
@@ -8810,12 +8988,16 @@
         }
         setStatus("");
         el.deathContinue.classList.remove("busy");
-        try { Sound.pickup(); } catch (_) {}
-        // exitGameOverAndResume vs plain exitGameOver: this call also
-        // resumes the reactor's live stream and resets DangerSystem so
-        // the revive works cleanly in realtime sessions (where death
-        // paused the video and the client-side danger loop). In stills
-        // mode the reactor branch is a no-op.
+        stopCountdown();
+        // Bump the run HUD BEFORE the ceremony so the counter is already
+        // ticking in the corner as the phosphor flash lifts.
+        bumpContinuesHud();
+        // Return ceremony: a phosphor "CONTINUE" flash over the death
+        // overlay, then dismiss + resume. Awaiting the ceremony means the
+        // overlay stays put for its ~700ms; the revive feels earned, not
+        // like the modal blinked out. In realtime mode the reactor's
+        // resume + DangerSystem.reset happen inside exitGameOverAndResume.
+        try { await playReturnCeremony(); } catch (_) {}
         try { exitGameOverAndResume(); } catch (_) {}
         try { if (typeof pollOnce === "function") pollOnce(); } catch (_) {}
         // Refresh config so the comp counter in the button reflects the
@@ -8870,6 +9052,17 @@
       await redeem(csId, /* isComp */ false);
     }
 
+    // Public helper used by the C keyboard shortcut and any other caller
+    // that wants to "click" the continue button without a real DOM click
+    // (e.g. onboarding tour, e2e test, remote-play).
+    function insertCoin() {
+      if (!cfg.enabled) return;
+      if (!el.deathContinue) return;
+      if (el.deathContinue.classList.contains("busy")) return;
+      if (el.coinopBlock && el.coinopBlock.classList.contains("hidden")) return;
+      startCheckout();
+    }
+
     async function init() {
       compCode = readCompFromUrlOrStorage();
       cfg = await fetchConfig();
@@ -8881,7 +9074,30 @@
       handleReturnIfPresent();
     }
 
-    return { init };
+    return {
+      init,
+      insertCoin,
+      // Lifecycle hooks called from enterGameOver / resetGame so the
+      // countdown + HUD + button focus all follow the game's own state
+      // machine without CoinOp having to observe it.
+      onGameOverShown() {
+        if (!cfg.enabled) return;
+        startCountdown();
+        // Autofocus so keyboard players can tap Enter/Space or C right
+        // away — no mouse hunt required. Small delay so the overlay's
+        // fade-in doesn't fight the focus scroll.
+        if (el.deathContinue) {
+          setTimeout(() => { try { el.deathContinue.focus({ preventScroll: true }); } catch (_) {} }, 60);
+        }
+      },
+      onRunReset() {
+        stopCountdown();
+        resetContinuesHud();
+        if (el.deathContinue) el.deathContinue.classList.remove("busy");
+        setStatus("");
+      },
+      isEnabled() { return !!cfg.enabled; },
+    };
   })();
 
   // ------------------------------------------------------------------
