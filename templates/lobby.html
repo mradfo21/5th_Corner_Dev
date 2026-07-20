@@ -3,52 +3,276 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>SOMEWHERE // Lobby</title>
-<meta name="description" content="An AI-driven first-person survival story generator. Every scene is created in real-time. Every choice matters. Enter your instance.">
-<meta property="og:title" content="SOMEWHERE — Enter the Signal">
-<meta property="og:description" content="A survival story generated live by AI. Start a new game, or continue a saved run.">
+<title>SOMEWHERE // an AI survival story, drawn live</title>
+<meta name="description" content="SOMEWHERE is a first-person survival horror story generated live by AI. Every scene is drawn as you play. Every choice rewrites what happens next. One life. No two runs alike. Runs in your browser — no download.">
+<meta property="og:title" content="SOMEWHERE — an AI survival story, drawn live">
+<meta property="og:description" content="A first-person survival horror experience generated in real time. Start a run, or continue a saved one. Runs in your browser.">
 <meta property="og:type" content="website">
+<meta name="theme-color" content="#050708">
 <link rel="icon" href="{{ url_for('static', filename='Logo.jpg') }}">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=VT323&family=Share+Tech+Mono&display=swap" media="print" onload="this.media='all'">
-<noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=VT323&family=Share+Tech+Mono&display=swap"></noscript>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Space+Grotesk:wght@400;500;600;700&family=VT323&display=swap">
+<link rel="preload" as="image" href="{{ url_for('static', filename='img/lobby/hero_highway.jpg') }}">
 <link rel="stylesheet" href="{{ url_for('static', filename='css/lobby.css') }}?v={{ asset_version }}">
 </head>
 <body>
 
   <!-- Ambient VHS layers: analog grain + scanlines + gentle chromatic drift.
-       These are pure decoration; the page still works if they fail to render. -->
+       Pure decoration; the page still works if they fail to render. -->
   <div class="crt-scanlines" aria-hidden="true"></div>
   <div class="crt-grain" aria-hidden="true"></div>
   <div class="crt-vignette" aria-hidden="true"></div>
-  <div class="crt-glow" aria-hidden="true"></div>
 
-  <!-- Top bar: signal-in header. Mimics a broadcast slate / game HUD corner. -->
-  <header class="lobby-header">
-    <div class="lobby-header-left">
+  <!-- ===================== TOP NAV ===================== -->
+  <header class="site-nav" id="siteNav">
+    <a class="nav-brand" href="#top" data-scroll>
       <span class="rec-dot" aria-hidden="true">●</span>
-      <span class="lobby-header-label">SIGNAL ONLINE</span>
-    </div>
-    <div class="lobby-header-right">
-      <span class="lobby-header-meta" id="lobby-clock">--:--:--</span>
-    </div>
+      <span class="nav-brand-word">SOMEWHERE</span>
+      <span class="nav-brand-sub">STORYGEN</span>
+    </a>
+
+    <nav class="nav-links" id="navLinks" aria-label="Primary">
+      <a href="#features" data-scroll>Features</a>
+      <a href="#loop" data-scroll>The Loop</a>
+      <a href="#signals" data-scroll>Signals</a>
+      <a href="#gallery" data-scroll>Transmissions</a>
+      <a class="nav-cta" href="#enter" data-scroll data-enter="new">
+        <span aria-hidden="true">▶</span> PLAY
+      </a>
+    </nav>
+
+    <button class="nav-toggle" id="navToggle" type="button" aria-label="Toggle menu" aria-expanded="false" aria-controls="navLinks">
+      <span></span><span></span><span></span>
+    </button>
   </header>
 
-  <!-- ==================== MAIN MENU ====================
-       Single centered menu card, like a title-screen: logo, one-line
-       pitch, then the two familiar actions (new game / continue). Picking
-       either expands an inline panel right below the buttons — nothing
-       else to scroll past to get into a run. -->
-  <main class="menu">
-    <div class="menu-card">
+  <!-- ===================== HERO ===================== -->
+  <section class="hero" id="top">
+    <div class="hero-media" aria-hidden="true">
+      <img class="hero-img" src="{{ url_for('static', filename='img/lobby/hero_highway.jpg') }}" alt="">
+      <div class="hero-media-scan"></div>
+      <div class="hero-media-fade"></div>
+    </div>
 
+    <!-- Broadcast-slate HUD flavor, top corners of the frame -->
+    <div class="hero-hud hero-hud-tl" aria-hidden="true">
+      <span class="hero-hud-rec"><span class="rec-dot">●</span> REC</span>
+      <span id="lobby-clock">--:--:--</span>
+    </div>
+    <div class="hero-hud hero-hud-tr" aria-hidden="true">
+      <span>SIGNAL&nbsp;ONLINE</span>
+      <span class="hero-hud-bars"><i></i><i></i><i></i><i></i><i></i></span>
+    </div>
+
+    <div class="hero-inner">
+      <p class="hero-eyebrow reveal">First-person survival horror · generated live</p>
+      <h1 class="hero-title glitch" data-text="SOMEWHERE">SOMEWHERE</h1>
+      <p class="hero-tagline reveal">
+        A survival story <em>drawn as you play</em>. The world is written and
+        rendered in real time by AI — no two runs alike, and every choice
+        rewrites what happens next.
+      </p>
+      <div class="hero-actions reveal">
+        <button class="btn btn-primary" type="button" data-enter="new">
+          <span class="btn-ico" aria-hidden="true">▶</span> ENTER THE SIGNAL
+        </button>
+        <button class="btn btn-ghost" type="button" data-enter="continue">
+          <span class="btn-ico" aria-hidden="true">◧</span> CONTINUE A RUN
+        </button>
+      </div>
+      <p class="hero-fineprint reveal">
+        Runs in your browser · no download · one life per run
+      </p>
+    </div>
+
+    <a class="hero-scrollcue" href="#features" data-scroll aria-label="Scroll to learn more">
+      <span>SCROLL</span>
+      <span class="hero-scrollcue-arrow" aria-hidden="true">▽</span>
+    </a>
+  </section>
+
+  <!-- ===================== MARQUEE ===================== -->
+  <div class="marquee" aria-hidden="true">
+    <div class="marquee-track">
+      <span>NO TWO RUNS ALIKE</span><span class="marquee-dot">✦</span>
+      <span>DEATH IS PERMANENT</span><span class="marquee-dot">✦</span>
+      <span>THE WORLD REMEMBERS</span><span class="marquee-dot">✦</span>
+      <span>15 SECONDS TO DECIDE</span><span class="marquee-dot">✦</span>
+      <span>EVERY SCENE DRAWN LIVE</span><span class="marquee-dot">✦</span>
+      <span>NO TWO RUNS ALIKE</span><span class="marquee-dot">✦</span>
+      <span>DEATH IS PERMANENT</span><span class="marquee-dot">✦</span>
+      <span>THE WORLD REMEMBERS</span><span class="marquee-dot">✦</span>
+      <span>15 SECONDS TO DECIDE</span><span class="marquee-dot">✦</span>
+      <span>EVERY SCENE DRAWN LIVE</span><span class="marquee-dot">✦</span>
+    </div>
+  </div>
+
+  <!-- ===================== FEATURES ===================== -->
+  <section class="section" id="features">
+    <div class="section-head reveal">
+      <span class="section-kicker">// what you're stepping into</span>
+      <h2 class="section-title">A machine that dreams a nightmare, one turn at a time.</h2>
+      <p class="section-lede">
+        SOMEWHERE isn't a scripted game — it's a story engine. It writes the
+        scene, paints it, and reacts to you, live. Here's what makes each run
+        yours alone.
+      </p>
+    </div>
+
+    <div class="feature-grid">
+      <article class="feature-card reveal">
+        <div class="feature-ico" aria-hidden="true">▚</div>
+        <h3>Scenes drawn live</h3>
+        <p>Every frame is generated the instant you reach it — a first-person
+           camcorder feed into a world that has never existed before.</p>
+      </article>
+      <article class="feature-card reveal">
+        <div class="feature-ico" aria-hidden="true">⌥</div>
+        <h3>Choices that fork the world</h3>
+        <p>Four options every turn, or type your own. The story bends around
+           what you do — not a branch you picked from a script.</p>
+      </article>
+      <article class="feature-card reveal">
+        <div class="feature-ico" aria-hidden="true">✝</div>
+        <h3>Permanent death</h3>
+        <p>One life. When the signal cuts, that run is over — and it's sealed
+           to a VHS death-tape you can play back.</p>
+      </article>
+      <article class="feature-card reveal">
+        <div class="feature-ico" aria-hidden="true">◔</div>
+        <h3>The clock is always running</h3>
+        <p>Fifteen seconds to act. Hesitate and the world moves without you —
+           and the world is rarely kind.</p>
+      </article>
+      <article class="feature-card reveal">
+        <div class="feature-ico" aria-hidden="true">❖</div>
+        <h3>A world that remembers</h3>
+        <p>Location, injuries, inventory, the things you've seen — all tracked
+           and folded back into every scene that follows.</p>
+      </article>
+      <article class="feature-card reveal">
+        <div class="feature-ico" aria-hidden="true">⟳</div>
+        <h3>Pick up where you left off</h3>
+        <p>Every run gets a private link. Bookmark it, share the code, and
+           slip back into your instance from any device.</p>
+      </article>
+    </div>
+  </section>
+
+  <!-- ===================== THE LOOP ===================== -->
+  <section class="section section-loop" id="loop">
+    <div class="section-head reveal">
+      <span class="section-kicker">// the loop</span>
+      <h2 class="section-title">See it. Read it. Decide. Live with it.</h2>
+      <p class="section-lede">One turn, on repeat, until the signal cuts.</p>
+    </div>
+
+    <ol class="loop-track">
+      <li class="loop-step reveal">
+        <span class="loop-num">01</span>
+        <h3>The scene loads</h3>
+        <p>A live-drawn frame drops you exactly where you are — a highway, a
+           doorway, the dark between the trees.</p>
+      </li>
+      <li class="loop-step reveal">
+        <span class="loop-num">02</span>
+        <h3>The dispatch reads</h3>
+        <p>A terse, present-tense read of what's happening around you —
+           grounded in what the camera can actually see.</p>
+      </li>
+      <li class="loop-step reveal">
+        <span class="loop-num">03</span>
+        <h3>You choose</h3>
+        <p>Four moves, or your own words. Fifteen seconds on the clock. No
+           take-backs.</p>
+      </li>
+      <li class="loop-step reveal">
+        <span class="loop-num">04</span>
+        <h3>The world answers</h3>
+        <p>Consequences resolve, the world evolves, a new frame is drawn — and
+           the loop begins again.</p>
+      </li>
+    </ol>
+  </section>
+
+  <!-- ===================== SIGNALS (stats) ===================== -->
+  <section class="section section-signals" id="signals">
+    <div class="signals-grid">
+      <div class="signal reveal">
+        <span class="signal-num">∞</span>
+        <span class="signal-label">possible worlds</span>
+      </div>
+      <div class="signal reveal">
+        <span class="signal-num">15<em>s</em></span>
+        <span class="signal-label">to decide, every turn</span>
+      </div>
+      <div class="signal reveal">
+        <span class="signal-num">1</span>
+        <span class="signal-label">life per run</span>
+      </div>
+      <div class="signal reveal">
+        <span class="signal-num">0<em>s</em></span>
+        <span class="signal-label">install — plays in-browser</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== GALLERY ===================== -->
+  <section class="section" id="gallery">
+    <div class="section-head reveal">
+      <span class="section-kicker">// recovered transmissions</span>
+      <h2 class="section-title">Frames pulled from the feed.</h2>
+      <p class="section-lede">
+        A few stills from the signal. <strong>Placeholder captures</strong> —
+        we'll swap these for real frames straight out of live runs.
+      </p>
+    </div>
+
+    <div class="gallery-grid">
+      <figure class="shot reveal">
+        <img loading="lazy" src="{{ url_for('static', filename='img/lobby/gal_gasstation.jpg') }}" alt="An abandoned gas station lit at dusk">
+        <span class="shot-tag">PLACEHOLDER</span>
+        <figcaption><span>FUEL STOP</span><span>9:12PM</span></figcaption>
+      </figure>
+      <figure class="shot shot-wide reveal">
+        <img loading="lazy" src="{{ url_for('static', filename='img/lobby/gal_crossroads.jpg') }}" alt="A desert crossroads under a storm sky at dusk">
+        <span class="shot-tag">PLACEHOLDER</span>
+        <figcaption><span>CROSSROADS</span><span>07-19-1993 · 7:58PM</span></figcaption>
+      </figure>
+      <figure class="shot shot-wide reveal">
+        <img loading="lazy" src="{{ url_for('static', filename='img/lobby/gal_corridor.jpg') }}" alt="A dark corridor lit by a flashlight beam">
+        <span class="shot-tag">PLACEHOLDER</span>
+        <figcaption><span>INTERIOR</span><span>2:04AM</span></figcaption>
+      </figure>
+      <figure class="shot reveal">
+        <img loading="lazy" src="{{ url_for('static', filename='img/lobby/gal_motel.jpg') }}" alt="A run-down motel room lit by a static-filled CRT television">
+        <span class="shot-tag">PLACEHOLDER</span>
+        <figcaption><span>ROOM 6</span><span>11:58PM</span></figcaption>
+      </figure>
+      <figure class="shot reveal">
+        <img loading="lazy" src="{{ url_for('static', filename='img/lobby/gal_forest.jpg') }}" alt="A pine forest at night seen through night vision">
+        <span class="shot-tag">PLACEHOLDER</span>
+        <figcaption><span>TREELINE · NIGHTMODE</span><span>1:17AM</span></figcaption>
+      </figure>
+      <figure class="shot shot-wide reveal">
+        <img loading="lazy" src="{{ url_for('static', filename='img/lobby/gal_figure.jpg') }}" alt="A distant silhouette standing in fog at night">
+        <span class="shot-tag shot-tag-warn">PLACEHOLDER</span>
+        <figcaption><span>???</span><span>3:33AM</span></figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <!-- ===================== ENTER (functional menu) ===================== -->
+  <section class="section section-enter" id="enter">
+    <div class="enter-glow" aria-hidden="true"></div>
+    <div class="menu-card reveal">
       <div class="menu-brand">
-        <h1 class="menu-title" data-glitch="SOMEWHERE">SOMEWHERE</h1>
-        <p class="menu-tagline">A survival story, drawn live by AI. Every choice changes what happens next.</p>
+        <h2 class="menu-title glitch" data-text="ENTER">ENTER</h2>
+        <p class="menu-tagline">Start a fresh instance, or drop back into a saved run.</p>
       </div>
 
-      <nav class="menu-actions" aria-label="Main menu">
+      <nav class="menu-actions" aria-label="Start a run">
         <button id="cta-start" class="menu-btn menu-btn-primary" type="button" aria-expanded="false" aria-controls="panel-new">
           <span class="menu-btn-ico" aria-hidden="true">▶</span>
           <span class="menu-btn-text">
@@ -66,7 +290,7 @@
         </button>
       </nav>
 
-      <!-- ---- New game panel (collapsed by default) ---- -->
+      <!-- New game panel -->
       <section class="menu-panel" id="panel-new" hidden>
         <form id="new-run-form" class="run-form" autocomplete="off">
           <label class="run-field">
@@ -94,7 +318,7 @@
         </form>
       </section>
 
-      <!-- ---- Continue panel (collapsed by default) ---- -->
+      <!-- Continue panel -->
       <section class="menu-panel" id="panel-resume" hidden>
         <div class="resume-list" id="resume-list" aria-live="polite">
           <div class="resume-empty" id="resume-empty">
@@ -108,7 +332,6 @@
         </div>
       </section>
 
-      <!-- ---- How to play (collapsed disclosure, not a full page section) ---- -->
       <details class="menu-howto">
         <summary>How does this work?</summary>
         <ol class="howto-list">
@@ -118,27 +341,30 @@
           <li>Survive as long as you can. Your run saves itself. Death is permanent, so make it count.</li>
         </ol>
       </details>
-
     </div>
+  </section>
 
-    <footer class="lobby-footer">
-      <span class="lobby-footer-sig">SOMEWHERE STORYGEN</span>
-      <span class="lobby-footer-links">
-        <a href="/standalone">/standalone</a>
-        <span class="dot">·</span>
-        <a href="/live">/live</a>
-        <span class="dot">·</span>
-        <a href="/api/info">/api/info</a>
-      </span>
-    </footer>
-  </main>
+  <!-- ===================== FOOTER ===================== -->
+  <footer class="site-footer">
+    <div class="site-footer-brand">
+      <span class="rec-dot" aria-hidden="true">●</span> SOMEWHERE <span class="dim">STORYGEN</span>
+    </div>
+    <div class="site-footer-links">
+      <a href="#top" data-scroll>Top</a>
+      <span class="dot">·</span>
+      <a href="/standalone">/standalone</a>
+      <span class="dot">·</span>
+      <a href="/live">/live</a>
+      <span class="dot">·</span>
+      <a href="/api/info">/api/info</a>
+    </div>
+    <div class="site-footer-note">Every image on this page is placeholder — real captures coming.</div>
+  </footer>
 
-  <!-- Full-screen "booting" overlay shown between session mint and redirect.
-       Gives the handoff to /play a proper sense-of-weight instead of a raw
-       blink. The message rotates to feel like the system is actually working. -->
+  <!-- Full-screen "booting" overlay shown between session mint and redirect. -->
   <div id="boot-overlay" class="boot-overlay" hidden aria-hidden="true">
     <div class="boot-inner">
-      <div class="boot-brand">SOMEWHERE</div>
+      <div class="boot-brand glitch" data-text="SOMEWHERE">SOMEWHERE</div>
       <div class="boot-line" id="boot-line">requesting instance…</div>
       <div class="boot-progress"><div class="boot-progress-fill" id="boot-progress-fill"></div></div>
       <div class="boot-code" id="boot-code" aria-live="polite"></div>
