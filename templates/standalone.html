@@ -579,9 +579,48 @@
       <div class="death-static"></div>
       <h1 class="death-title">YOU DIED</h1>
       <p id="death-message">The transmission ends.</p>
+
+      <!-- Coin-op section: only surfaced when /api/coinop/config returns
+           enabled=true. Wraps the CONTINUE? arcade header, the countdown,
+           the continue button, and the status line so the whole block
+           can be shown/hidden as one unit. -->
+      <div id="coinop-block" class="hidden">
+        <div class="coinop-header">
+          <span class="coinop-title">CONTINUE?</span>
+          <span id="coinop-countdown" class="coinop-countdown" aria-live="polite">10</span>
+        </div>
+        <button id="death-continue" type="button" data-price="" data-currency="">
+          <span class="coin-slot" aria-hidden="true">◉</span>
+          <span class="continue-label">Insert Coin — Continue</span>
+          <span class="continue-price" id="death-continue-price"></span>
+          <!-- One-shot coin sprite that animates into the slot on click. -->
+          <span class="coin-drop" aria-hidden="true"></span>
+        </button>
+        <div id="death-continue-status" class="continue-status hidden" aria-live="polite"></div>
+        <div class="death-hint coinop-hint">press <b>C</b> to insert coin</div>
+      </div>
+
       <button id="death-restart" type="button">▶ RESTART SIMULATION</button>
-      <div class="death-hint">press R to restart</div>
+      <div class="death-hint">press <b>R</b> to restart</div>
     </div>
+
+    <!-- Return ceremony veil: a quick CRT flash + phosphor pulse over the
+         dying screen, right before we dismiss the overlay on a successful
+         revive. Sits above the death overlay content so it visually
+         "reboots" the world instead of the overlay just vanishing. -->
+    <div id="coinop-ceremony" class="coinop-ceremony hidden" aria-hidden="true">
+      <div class="coinop-ceremony-bar"></div>
+      <div class="coinop-ceremony-text">CONTINUE</div>
+    </div>
+  </div>
+
+  <!-- Continues-used HUD chip. Shown only after the first paid/comp continue
+       lands, then persists in the corner for the rest of the run — the same
+       arcade cabinet counter that shows how many quarters this run cost. -->
+  <div id="continues-hud" class="continues-hud hidden" aria-live="polite">
+    <span class="continues-hud-icon">◉</span>
+    <span class="continues-hud-label">CREDITS</span>
+    <span id="continues-hud-count" class="continues-hud-count">0</span>
   </div>
 
   <!-- Backend / connectivity tag -->

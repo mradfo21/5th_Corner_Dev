@@ -12,6 +12,7 @@ from flask_cors import CORS
 import engine
 import ai_provider_manager
 import scene_audio
+import coinop
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
@@ -98,6 +99,91 @@ app.add_url_rule('/api/reset', 'standalone_api_reset', _session_scoped(engine.ap
 app.add_url_rule('/api/feed', 'standalone_api_feed', engine.api_feed, methods=['GET'])
 app.add_url_rule('/api/choose', 'standalone_api_choose', _session_scoped(engine.api_choose), methods=['POST'])
 app.add_url_rule('/api/regenerate_choices', 'standalone_api_regenerate_choices', _session_scoped(engine.api_regenerate_choices), methods=['POST'])
+
+# ─── COIN-OP (buy-a-continue) ────────────────────────────────────────────
+# All coin-op routes are dark-shipped: when FEATURE_COINOP is unset or the
+# Stripe keys are missing, /api/coinop/config returns {"enabled": false} and
+# the client never renders the button. See coinop.py + COINOP_MVP_SETUP.md.
+#
+# api_revive is guarded so a client CANNOT revive without first calling
+# /api/coinop/redeem — which itself server-side-verifies the Stripe Checkout
+# Session before this endpoint can run. This route is only hit through the
+# thin _coinop_revive helper below.
+
+
+@app.route('/api/coinop/config', methods=['GET'])
+def _coinop_config():
+    # Optional ?comp=<code> query so the client can render a "COMP MODE"
+    # badge before the player ever clicks. The server never enumerates
+    # allowlisted codes — it only ever reflects back the specific code the
+    # client asked about.
+    comp = request.args.get('comp') or None
+    return jsonify(coinop.public_config(comp))
+
+
+@app.route('/api/coinop/checkout', methods=['POST'])
+@_session_scoped
+def _coinop_checkout():
+    if not coinop.is_enabled():
+        return jsonify({"error": "coinop_disabled"}), 404
+    sid = engine._resolve_request_session_id()
+    data = request.get_json(silent=True) or {}
+    comp_code = (data.get('comp') or '').strip() or None
+    try:
+        out = coinop.create_checkout(sid, request, comp_code=comp_code)
+        return jsonify(out)
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        return jsonify({"error": "checkout_failed", "detail": str(e)}), 500
+
+
+@app.route('/api/coinop/redeem', methods=['POST'])
+@_session_scoped
+def _coinop_redeem():
+    if not coinop.is_enabled():
+        return jsonify({"error": "coinop_disabled"}), 404
+    sid = engine._resolve_request_session_id()
+    data = request.get_json(silent=True) or {}
+    checkout_session_id = (data.get('checkout_session_id') or '').strip()
+    if not checkout_session_id:
+        return jsonify({"ok": False, "reason": "missing_checkout_session_id"}), 400
+    result = coinop.verify_and_redeem(sid, checkout_session_id)
+    if not result.get('ok'):
+        return jsonify(result), 402  # 402 Payment Required
+    # Idempotent replay of the return URL (or a duplicate redeem call
+    # from a racy retry): the FIRST successful redeem already invoked
+    # api_revive and the resulting continue_used + player_choice_prompt
+    # feed items are in the session's feed_log. Running api_revive again
+    # would double-append the narrative beat, which reads as a stutter
+    # on screen. The client already has everything it needs from the
+    # normal /api/feed polling, so just acknowledge the replay.
+    if result.get('already_redeemed'):
+        return jsonify({
+            "ok": True,
+            "already_redeemed": True,
+            "comp": result.get('comp', False),
+            "revive_items": [],
+        })
+    # First-time redeem for this checkout id → mint the actual revive.
+    revive_response = engine.api_revive()
+    return jsonify({
+        "ok": True,
+        "already_redeemed": False,
+        "comp": result.get('comp', False),
+        "revive_items": revive_response.get_json() if hasattr(revive_response, 'get_json') else None,
+    })
+
+
+@app.route('/webhook/stripe', methods=['POST'])
+def _coinop_webhook():
+    if not coinop.is_enabled():
+        return jsonify({"error": "coinop_disabled"}), 404
+    payload = request.get_data()
+    sig = request.headers.get('Stripe-Signature', '')
+    result = coinop.handle_webhook(payload, sig)
+    if not result.get('ok'):
+        return jsonify(result), 400
+    return jsonify(result)
 # Vision for the realtime renderer: the client posts the actual on-screen video
 # frame; the engine analyzes it and re-grounds the simulation so it tracks the
 # video instead of drifting from the still. See engine.api_observe.

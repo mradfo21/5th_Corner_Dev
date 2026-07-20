@@ -5667,6 +5667,103 @@ def api_reset():
             log_error(f"Could not save error item to feed_log during api_reset error handling: {e_log}")
         return jsonify([error_feed_item]), 500
 
+
+def api_revive():
+    """Bring a dead player back to life on the CURRENT run.
+
+    Intended to be called by the coin-op layer AFTER a payment has been
+    verified server-side (see coinop.verify_and_redeem). This endpoint is
+    itself agnostic to payment — it simply flips the death state, restores a
+    partial health, and appends a short narrative beat + a fresh choice
+    prompt so the player can keep going.
+
+    Idempotent: calling api_revive on an already-alive player is a no-op
+    that returns the (empty) list of newly appended items, so a duplicate
+    return-URL redemption cannot double-revive or corrupt state.
+    """
+    SID = _resolve_request_session_id()
+    appended: List[Dict[str, Any]] = []
+    try:
+        with WORLD_STATE_LOCK:
+            st = _load_state(SID)
+            ps = st.get("player_state") or {}
+            # NOTE: no "already alive → no-op" guard here. In realtime
+            # sessions the client's peripheral-vignette DangerSystem can
+            # kill the player CLIENT-side (see standalone.js DangerSystem.
+            # die() and its enterGameOver call) before the server's Phase-1
+            # verdict has flipped alive→False. If we no-op'd on
+            # alive==True, a legitimately-paid coin-op continue in that
+            # window would silently do nothing and the death overlay would
+            # never dismiss. Idempotency for double-charges lives one
+            # layer up in coinop.verify_and_redeem's redeemed-set — this
+            # function trusts its caller.
+            ps["alive"] = True
+            if isinstance(ps.get("health"), (int, float)):
+                # Best-effort partial heal when the run tracks a numeric HP;
+                # if it doesn't, the flag flip is all that's needed.
+                ps["health"] = max(int(ps["health"]), 25)
+            ps["revived"] = True
+            ps["revive_count"] = int(ps.get("revive_count", 0)) + 1
+            st["player_state"] = ps
+
+            # Bookkeeping so downstream logic (e.g. tape / analytics) can
+            # tell a run apart from one that was never dead.
+            revives = int(st.get("continues_used", 0)) + 1
+            st["continues_used"] = revives
+
+            # Narrative beat: a short, arcade-native line. Kept intentionally
+            # separate from the standard 'narrative_event' so the client can
+            # style it (CRT flicker, coin-drop cue) if it wants to. Falls
+            # back to 'narrative_event' rendering in older clients.
+            revive_item = create_feed_item(
+                type="continue_used",
+                content=(
+                    "\U0001FA99 A coin drops. The transmission stutters back to life. "
+                    "You are on your feet, breathing hard. Keep moving."
+                ),
+            )
+            _feed_append(st, revive_item)
+            appended.append(revive_item)
+
+            # Give the player something to do next. We use a set of
+            # deliberately safe, universally applicable choices so the
+            # revive never lands the player in a broken decision point; the
+            # next real turn will regenerate choices from vision as normal.
+            prompt_item = _structure_choices_for_feed(
+                [
+                    "Look around carefully.",
+                    "Move forward, cautiously.",
+                    "Check yourself for injuries.",
+                    "Wait a moment and listen.",
+                ],
+                "What do you do next?",
+                image_url=st.get("current_image_url"),
+            )
+            _feed_append(st, prompt_item)
+            appended.append(prompt_item)
+
+            _save_state(st, SID)
+            _sync_ambient_state(st, SID)
+
+        logging.info(f"api_revive: revived session='{SID}' (revive_count={ps.get('revive_count')})")
+        return jsonify(appended)
+    except Exception as e:  # noqa: BLE001
+        log_error(f"api_revive: error reviving session='{SID}': {e}")
+        logging.exception("Exception in api_revive:")
+        err = create_feed_item(
+            type="error_event",
+            content=f"Continue failed: {e}. The run remains ended.",
+        )
+        try:
+            with WORLD_STATE_LOCK:
+                st = _load_state(SID)
+                _feed_append(st, err)
+                _save_state(st, SID)
+        except Exception:
+            pass
+        return jsonify([err]), 500
+
+
 def api_feed():
     # Resolve straight from Flask's (thread-local) request object rather than
     # reading the ambient `state` global directly. `/api/feed` is polled
