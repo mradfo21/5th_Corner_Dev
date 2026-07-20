@@ -101,15 +101,15 @@
     <div class="menu-card reveal">
       <div class="menu-brand">
         <h2 class="menu-title glitch" data-text="ENTER">ENTER</h2>
-        <p class="menu-tagline">New instance, or a saved run.</p>
+        <p class="menu-tagline">One tap and you're in.</p>
       </div>
 
       <nav class="menu-actions" aria-label="Start a run">
-        <button id="cta-start" class="menu-btn menu-btn-primary" type="button" aria-expanded="false" aria-controls="panel-new">
+        <button id="cta-start" class="menu-btn menu-btn-primary" type="button">
           <span class="menu-btn-ico" aria-hidden="true">▶</span>
           <span class="menu-btn-text">
             <span class="menu-btn-label">NEW GAME</span>
-            <span class="menu-btn-hint">start a fresh instance</span>
+            <span class="menu-btn-hint">jump straight in — no setup</span>
           </span>
         </button>
         <button id="cta-continue" class="menu-btn" type="button" aria-expanded="false" aria-controls="panel-resume">
@@ -122,17 +122,21 @@
         </button>
       </nav>
 
-      <!-- New game panel -->
-      <section class="menu-panel" id="panel-new" hidden>
+      <p class="run-form-error" id="new-run-error" role="alert" hidden></p>
+
+      <!-- Optional: name your run / custom code. Collapsed by default so it
+           never gets between the player and hitting NEW GAME. -->
+      <details class="menu-options">
+        <summary>Name your run or set a code <span class="opt">(optional)</span></summary>
         <form id="new-run-form" class="run-form" autocomplete="off">
           <label class="run-field">
             <span class="run-field-label">Name your run</span>
             <input type="text" id="new-run-name" name="name" maxlength="60"
-                   placeholder="optional — e.g. desert-fence-01" spellcheck="false">
+                   placeholder="e.g. desert-fence-01" spellcheck="false">
           </label>
 
           <button type="button" id="advanced-toggle" class="advanced-toggle" aria-expanded="false" aria-controls="advanced-fields">
-            <span class="advanced-toggle-caret" aria-hidden="true">▸</span> Advanced: pick your own code
+            <span class="advanced-toggle-caret" aria-hidden="true">▸</span> Pick your own code
           </button>
           <div class="advanced-fields" id="advanced-fields" hidden>
             <label class="run-field">
@@ -144,11 +148,10 @@
 
           <button type="submit" class="menu-btn menu-btn-primary menu-btn-confirm" id="new-run-submit">
             <span class="menu-btn-ico" aria-hidden="true">▶</span>
-            <span class="menu-btn-text"><span class="menu-btn-label">PLAY</span></span>
+            <span class="menu-btn-text"><span class="menu-btn-label">START THIS RUN</span></span>
           </button>
-          <p class="run-form-error" id="new-run-error" role="alert" hidden></p>
         </form>
-      </section>
+      </details>
 
       <!-- Continue panel -->
       <section class="menu-panel" id="panel-resume" hidden>

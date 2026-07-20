@@ -119,10 +119,9 @@
   tickClock();
   setInterval(tickClock, 1000);
 
-  // ---------- Accordion: New Game / Continue panels ----------
+  // ---------- Continue panel (New Game starts instantly, no panel) ----------
 
   var panels = {
-    "cta-start": "panel-new",
     "cta-continue": "panel-resume",
   };
 
@@ -160,7 +159,9 @@
 
   var startBtn = el("cta-start");
   var continueBtn = el("cta-continue");
-  if (startBtn) startBtn.addEventListener("click", function () { togglePanel("cta-start"); });
+  // NEW GAME = instant start. No name, no panel, no second tap — just mint a
+  // session and go. Naming is available in the optional disclosure below.
+  if (startBtn) startBtn.addEventListener("click", function () { bootInstance({}); });
   if (continueBtn) {
     continueBtn.addEventListener("click", function () {
       togglePanel("cta-continue");
@@ -471,14 +472,11 @@
     target.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
-  // ---------- Force a menu panel open (used by hero / nav CTAs) ----------
-  function openPanel(btnId) {
-    var btn = el(btnId);
-    if (!btn) return;
-    if (btn.getAttribute("aria-expanded") !== "true") {
-      togglePanel(btnId);
-    }
-    if (btnId === "cta-continue") loadSessions();
+  // ---------- Open the Continue (resume) panel ----------
+  function openContinue() {
+    var btn = el("cta-continue");
+    if (btn && btn.getAttribute("aria-expanded") !== "true") togglePanel("cta-continue");
+    loadSessions();
   }
 
   // ---------- Wire every [data-scroll] and [data-enter] control ----------
@@ -486,25 +484,25 @@
     node.addEventListener("click", function (ev) {
       var enter = node.getAttribute("data-enter");
       var href = node.getAttribute("href") || "";
-      var scrollTarget = null;
 
-      if (enter) {
-        scrollTarget = "enter";
-      } else if (href.charAt(0) === "#") {
-        scrollTarget = href.slice(1);
-      }
-
-      if (scrollTarget) {
+      // NEW GAME from anywhere (hero ENTER, top-nav PLAY) = instant start.
+      if (enter === "new") {
         ev.preventDefault();
-        scrollToId(scrollTarget);
+        bootInstance({});
+        return;
       }
 
-      if (enter) {
-        // Open the relevant panel; delay a touch so the scroll settles and
-        // the field-focus inside togglePanel doesn't fight the scroll.
-        setTimeout(function () {
-          openPanel(enter === "continue" ? "cta-continue" : "cta-start");
-        }, 460);
+      // CONTINUE = drop to the menu and reveal saved runs.
+      if (enter === "continue") {
+        ev.preventDefault();
+        scrollToId("enter");
+        setTimeout(openContinue, 460);
+        return;
+      }
+
+      if (href.charAt(0) === "#") {
+        ev.preventDefault();
+        scrollToId(href.slice(1));
       }
     });
   });
