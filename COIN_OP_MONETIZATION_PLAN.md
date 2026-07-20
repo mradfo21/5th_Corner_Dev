@@ -373,3 +373,159 @@ Broken into shippable chunks. Each phase is behind a feature flag (`FEATURE_COIN
 6. **First quarter of real revenue** is achievable once phases 0–5 are complete, without touching a single line of the story-generation pipeline.
 
 The coin slot is the interface. The pack is the transaction. The webhook is the truth. Everything else is decoration — and we should make the decoration *beautiful*.
+
+---
+---
+
+# APPENDIX A — "The \$0.50 problem": how to *actually* charge a real fifty cents
+
+> The core plan above uses a credit-pack model to work *around* the Stripe fee floor. This appendix answers the different question the user asked: **if we insist on charging a real \$0.50 per continue, how do we build it and which rail costs us the least?** Short answer: no card rail can do it profitably — the answer is either PayPal Micropayments (best off-the-shelf), USDC on Solana (best-in-class), or a hybrid multi-rail wallet that lets each user pick.
+
+## A1. First, the honest fee table for a **single \$0.50 charge**
+
+| Rail | Formula (2026, US) | Fee on \$0.50 | You keep | Effective fee | Notes |
+|---|---|---:|---:|---:|---|
+| **Stripe (cards, standard)** | 2.9% + \$0.30 | \$0.315 | **\$0.185** | **62.9%** | Also: \$0.50 is Stripe's minimum charge. |
+| Stripe (cards, EU/UK) | 1.5% + \$0.25 | \$0.258 | \$0.242 | 51.5% | Regulated interchange helps a bit. |
+| Square | 2.9% + \$0.30 | \$0.315 | \$0.185 | 62.9% | No micropayments tier. |
+| PayPal standard | 2.99% + \$0.49 | \$0.505 | –\$0.005 | 100%+ | You *lose* money. |
+| **PayPal Micropayments** (opt-in) | 4.99% + \$0.09 | \$0.115 | **\$0.385** | **23.0%** | Best off-the-shelf card-adjacent rail for \$0.50. |
+| Braintree Micropayments | 4.99% + \$0.09 | \$0.115 | \$0.385 | 23.0% | Same as PayPal (same parent). |
+| Stripe ACH Direct Debit | 0.8%, no flat, \$5 cap | \$0.004 → \$0.01 min | \$0.49–0.50 | \~1% | Cheap, but 4-day settle + microdeposit setup. Fails the "instant continue" test. |
+| Stripe Instant Bank Payments | 2.6% + \$0.30 | \$0.313 | \$0.187 | 62.6% | Same shape as cards. |
+| Cash App Pay via Stripe | 2.9% + \$0.30 | \$0.315 | \$0.185 | 62.9% | Same cost as cards; different UX. |
+| **Coinbase Commerce** (USDC) | 1%, no flat | \$0.005 | **\$0.495** | **1.0%** | Custodial-ish hosted checkout, multi-chain. |
+| **Helio / MoonPay Commerce** (USDC on Solana) | 0.75%, no flat | \$0.004 | **\$0.496** | **0.75%** | Non-custodial, funds land in your wallet. |
+| **Self-integrated Solana Pay** (USDC on Solana) | \~\$0.0005 network fee | \~\$0.001 | **\$0.499+** | **<0.2%** | You run the wallet + reconciler; no processor cut at all. |
+| USDC on Base (Ethereum L2) | \~\$0.005–\$0.01 network fee | \~\$0.01 | \~\$0.49 | \~2% | Broader wallet support than Solana in some segments. |
+| USDC on Ethereum L1 | \~\$0.10–\$2 gas | \$0.10+ | \$0.40 or less | **20%+** | Do not use for micropayments. |
+
+### What this tells us bluntly
+
+- **Card rails cannot profitably charge \$0.50.** Not Stripe, not Square, not any competitor. The \$0.30 flat fee is baked into the entire card-network economics. This is not a Stripe problem; it is a Visa/Mastercard/AmEx problem, and every card processor inherits it.
+- **PayPal's Micropayments tier** is the *only* off-the-shelf card-adjacent rail where \$0.50 gross yields > \$0.35 net. That's the honest "we swapped Stripe out" answer.
+- **Crypto (USDC on Solana) is the only rail where a real \$0.50 charge keeps ~\$0.49.** No processor is involved; you're paying the network directly and it charges tenths of a cent.
+- **ACH is nearly free but not "instant"** in the emotional sense — 4-day settlement and a mandate-setup step, so useless as a death-screen "insert coin" button. Great for large top-ups.
+
+## A2. Chargebacks change the picture
+
+Fee % is only half the cost. The other half is chargeback risk, and it's *very* real for a game selling revives to frustrated players.
+
+| Rail | Chargeback fee | Chargeback probability (games segment) | Effective added cost |
+|---|---|---|---|
+| Stripe cards | \$15 per dispute | 0.3–1.5% typical | +\$0.05–\$0.23 per successful \$0.50 charge |
+| PayPal Micropayments | \$20 per dispute + PayPal tends to side with buyer | Higher than cards | +\$0.10–\$0.40 per successful \$0.50 charge |
+| ACH | \$15 dispute + \$4 for failed debit | Low but returns are painful | +\$0.05 per successful charge |
+| **Crypto (USDC)** | **\$0. Chargebacks do not exist on-chain.** | 0% | \$0 |
+
+Once chargebacks are priced in, **crypto's advantage over cards for micro-transactions is larger than the raw fee table already shows.** Card-adjacent rails for a \$0.50 continue realistically net you \$0.15–\$0.30, not the \$0.18–\$0.38 the fee table implies.
+
+## A3. The **structural** ways to bypass the fee (rail-agnostic)
+
+Independent of which processor we pick, three architectural patterns each let you *not pay the flat fee per continue*:
+
+### Pattern 1 — **Prepaid credit wallet** (the core plan above)
+Charge \$5 once, grant 10 tokens, spend one per continue. Stripe fee on the \$5 is \$0.445 (8.9%), amortized across 10 continues = \~\$0.044/continue. **Perceived price: \$0.50/continue. Actual cost to us: 8.9% not 63%.** This is what real arcades did in 1983. It is still the right answer for the majority of players.
+
+### Pattern 2 — **Auth-and-Capture "tab"** (Stripe Multi-Capture, GA in 2025)
+Authorize \$5 up front, then use Stripe's *multi-capture* API to capture \$0.50 at a time as continues are used. Card auth holds for ~7 days on most Visa/MC. When it expires or is drained, we auto-re-authorize. Fees are still charged per capture (2.9% + \$0.30 each) *unless* we batch → so this is only useful if we capture in **\$5 chunks** anyway. In practice this collapses back into Pattern 1, but it lets us refund unspent tokens frictionlessly. Nice-to-have, not the primary answer.
+
+### Pattern 3 — **Deferred settlement via a stablecoin channel**
+User funds a merchant-controlled sub-wallet on Solana (or a "streaming payment" via Superfluid on Base). Each continue debits the sub-wallet on-chain for exactly \$0.50 USDC at \~\$0.0005 network cost. When the sub-wallet is empty, the widget prompts a top-up. This is closest to a true "\$0.50 charge per continue" with near-zero fees. Wallet UX friction is the tax you trade for the fee savings.
+
+## A4. Recommended architecture — **Multi-rail Coin Op with a smart router**
+
+Rather than pick one rail, expose all three intelligently through the same widget. The user always sees "1 TOKEN = \$0.50"; the router decides how they pay.
+
+```
+                   ┌─ WIDGET (CRT coin-slot) ─┐
+                   │                          │
+                   │  [ ▶ INSERT COIN ]       │
+                   │                          │
+                   │  paid with ▼ (Cards | PayPal | Crypto | Bank)  │
+                   └────────────┬─────────────┘
+                                │
+              ┌─────────────────┴──────────────────┐
+              │      COIN-OP ROUTER  (server)      │
+              └───┬────────────┬────────────┬──────┘
+                  │            │            │
+              ┌───▼───┐   ┌────▼─────┐  ┌───▼─────────┐
+              │Stripe │   │ PayPal   │  │ Helio /     │
+              │Payment│   │ Micro-   │  │ Solana Pay  │
+              │Element│   │ payments │  │ (USDC)      │
+              └───┬───┘   └────┬─────┘  └───┬─────────┘
+                  │            │            │
+                  └────────────┴────────────┘
+                               │
+                        WEBHOOK / on-chain listener
+                               │
+                        credit_ledger (single source of truth)
+```
+
+### Rail selection defaults
+
+- **Default rail = Stripe cards + Express Checkout Element** for the widest audience.
+  - Only sells packs ≥ \$5 (≤ 8.9% fee).
+  - This is the "boring, works everywhere" rail.
+- **Second rail = PayPal Micropayments** for users who prefer PayPal, or for anyone who insists on a \$1 pack (still 23% but not fatal). We apply for the Micropayments tier when we hit the volume threshold to enable it (PayPal opts merchants in on request).
+- **Third rail = Crypto (USDC on Solana via Helio)** for the true bypass.
+  - This is the only rail that offers a **real \$0.50 single-continue** with <1% fees.
+  - Widget shows this option as: `Pay \$0.50 with USDC ⚡ (best price)`. Small, unobtrusive; power-user path.
+  - Helio is the fastest integration (Shopify-plugin-quality embed, non-custodial — funds arrive in *our* wallet); self-integrated Solana Pay is a cheaper long-term destination if volume justifies it.
+- **Fourth rail = ACH Direct Debit** for the "power user pack" only: top up \$25 for \$0.20 fee (0.8%), get 50 tokens. Never offered as a per-continue path.
+
+### What the user sees
+
+- Casual player, first time: cards path. Sees packs. Picks \$5, gets 10 tokens, plays.
+- Casual player, second time: one-tap Apple Pay (Express Checkout Element) → \$5 → 10 tokens.
+- Crypto-native player: sees the `PAY \$0.50 WITH USDC` chip, taps → Phantom or wallet-connect popup → signs → \$0.499 lands in our Solana wallet → 1 token → continue. **This is the user who literally pays 50 cents.**
+- Whale: taps "MORE OPTIONS" → picks the ACH-funded \$25 super-pack. Slower settle, but 0.8% fee.
+
+## A5. Concrete recommendation, in three lines
+
+1. **Ship the credit-pack UX (from the core plan) with Stripe cards as the default rail.** Non-negotiable — it's the widest, most-conversion-optimized experience and it makes \$0.50 tokens feel like a real thing.
+2. **Add PayPal Micropayments as a secondary rail** as soon as we have any evidence of PayPal-preferring players. This is our best off-the-shelf answer for a \$1 pack or smaller.
+3. **Integrate Helio (or self-Solana Pay) as a "power user" rail** to unlock literal \$0.50 continues at near-zero fee. Advertise it in the widget as `PAY \$0.50 WITH CRYPTO ⚡` — a tasteful nod, not a shove. This is the only actual answer to "how do we let users pay exactly fifty cents without losing money."
+
+Combined, this stack lets us honestly tell a user "yes, you can pay just fifty cents" while still being economically sane for the 95% of players who don't want to touch a crypto wallet.
+
+## A6. Fee math summary — cost per continue at \$0.50 perceived price
+
+Assume 100 continues delivered to a mix of users. Which rails do they use?
+
+| Scenario | Rail mix | Weighted revenue kept |
+|---|---|---:|
+| Cards only, \$0.50 charges | 100% Stripe cards @ 63% fee | **\$18.50** of \$50 |
+| Cards with credit-pack UX | 100% Stripe cards in \$5 packs @ 8.9% | **\$45.55** of \$50 |
+| Cards + PayPal Micro | 70% Stripe packs + 30% PayPal \$0.50 | \$45.55 × 0.7 + \$38.50 × 0.3 = **\$43.44** of \$50 |
+| **Multi-rail (recommended)** | 60% Stripe packs + 20% PayPal Micro + 20% Crypto \$0.50 | \$45.55 × 0.6 + \$38.50 × 0.2 + \$49.60 × 0.2 = **\$44.96** of \$50 |
+| Pure crypto (Solana self-integrated) | 100% USDC \$0.50 charges | **\$49.90** of \$50 (but tiny addressable audience without wallet UX) |
+
+The multi-rail model captures ~90% of revenue AND lets any user who insists on paying real fifty cents do so. Pure-crypto captures 99.8% but only from the sliver of players who already have a Solana wallet.
+
+## A7. Additional engineering deltas vs the core plan
+
+Everything in the core plan still applies. Only the following changes:
+
+1. **`coinop.py` module becomes a router,** not a Stripe wrapper. It exposes the same public interface (`quote`, `spend`, `balance`, `webhook`) but dispatches to one of `rails/stripe.py`, `rails/paypal.py`, `rails/helio.py`, `rails/solana_pay.py`.
+2. **`credit_ledger` gains a `rail` column** (`stripe|paypal|helio|solana|ach`) and a `fee_paid_cents` column (denormalized from the processor confirmation) so we can report gross vs net per-continue economics in the dashboard.
+3. **Webhooks become plural.** One per rail, each verified with that rail's signing method. For Solana Pay self-integrated, we run a lightweight on-chain listener (or use Helio's webhook if we're on Helio).
+4. **Currency handling.** USDC is dollar-denominated so no FX exposure. PayPal Micropayments is per-currency (rate table above). Cards go through Stripe's currency layer. All are normalized to USD in the ledger for reporting.
+5. **KYT / AML for crypto.** Helio bundles this; if we self-integrate Solana Pay we should add a Chainalysis or TRM Labs address-screening call on incoming payments. At \$0.50/txn our exposure is small but we still need it.
+6. **Legal.** Adding a crypto rail means adding a crypto-specific ToS clause (no refunds to burned wallets, we don't hold your crypto, etc.). Standard boilerplate — Helio provides a template.
+7. **Widget copy.** The `PAY \$0.50 WITH CRYPTO ⚡` chip is only rendered when the browser has a detectable wallet (Phantom, MetaMask, Solflare) OR when the user opts into "power user options". We never surface it to a player who has no idea what a wallet is; that would feel weird and reduce conversion.
+
+## A8. What we should NOT do
+
+- **Do not build our own custodial crypto wallet.** Regulatory nightmare (money transmitter licensing state-by-state). Use Helio's non-custodial model — funds go straight to our wallet, we never hold user funds.
+- **Do not accept "raw" ETH or BTC.** Volatile, fee-heavy, and half the payments would settle for the wrong amount by the time they confirm. Stablecoins (USDC) only.
+- **Do not offer literal \$0.50 card charges as a UX option.** Even if PayPal Micropayments makes it technically viable, that flow encourages a 23%-tax pattern when the same user could have paid \$5 once at 8.9%. Nudge users to packs; reserve the true-\$0.50 path for the crypto rail where it's actually cheap.
+- **Do not let widget copy imply crypto is the "cheaper for you" option.** It isn't — the user pays the same \$0.50 regardless. It's only cheaper *for us*. Say `⚡ instant` or `⚡ no card needed`, not "save money."
+
+## A9. TL;DR of the appendix
+
+- **Card rails cannot profitably charge \$0.50.** That is a card-network fact, not a Stripe-specific fact. Switching processors alone will not solve this.
+- **PayPal Micropayments** is the best off-the-shelf swap-for-Stripe answer: 23% fee instead of 63% on a \$0.50 charge.
+- **USDC on Solana** (via Helio, or self-integrated Solana Pay) is the only rail where a real \$0.50 charge nets us ~\$0.49 — because on that rail there is no "processor" at all, only a fifty-thousandth-of-a-dollar network fee.
+- **Recommended shipping order:** (1) core plan's Stripe credit-pack UX, (2) add PayPal Micropayments as second rail, (3) add Helio USDC as the "power user \$0.50 button." All three route into the same credit ledger through a small `rails/*` dispatcher. The widget stays a single beautiful CRT coin-slot; the router quietly picks the cheapest rail per user.
+- The user's ask — *"let people pay just 50 cents, losing as little money as possible"* — has a real answer: **make the crypto rail the actual \$0.50 path, and keep the card path on packs.** That is the way to do it "the right way."
