@@ -921,9 +921,14 @@ try:
     print("[OK]")
 
     # 15k: narrative_dispatch is sanitized before reaching the image prompt
+    #
+    # _gen_image is now a thin cost-tracking wrapper (see cost_tracker.py /
+    # ADMIN_COST_ANALYTICS_DASHBOARD_PLAN.md) around the real multi-provider
+    # implementation, which was renamed to _gen_image_impl. The sanitization
+    # logic this check is looking for lives in the impl, not the wrapper.
     print("  Checking narrative_dispatch is sanitized before image prompt...", end=" ")
-    gen_image_fn = engine_src[engine_src.find("def _gen_image"):
-                              engine_src.find("\ndef ", engine_src.find("def _gen_image") + 10)]
+    gen_image_fn = engine_src[engine_src.find("def _gen_image_impl"):
+                              engine_src.find("\ndef ", engine_src.find("def _gen_image_impl") + 10)]
     assert "sanitized_narrative_dispatch" in gen_image_fn, (
         "_gen_image must define sanitized_narrative_dispatch"
     )

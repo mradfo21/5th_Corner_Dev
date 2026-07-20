@@ -54,6 +54,29 @@ import ai_provider_manager
 print("[ENGINE] ai_provider_manager imported", flush=True)
 sys.stdout.flush(); sys.stderr.flush()
 
+# cost_tracker records every paid-provider call for the admin Analytics tab.
+# Import is best-effort: a broken/missing analytics module must never take
+# down the game engine. See ADMIN_COST_ANALYTICS_DASHBOARD_PLAN.md.
+try:
+    import cost_tracker
+except Exception as _cost_tracker_import_error:
+    print(f"[ENGINE] WARNING: cost_tracker unavailable ({_cost_tracker_import_error}); cost tracking disabled.", flush=True)
+
+    class _NoopCostTracker:
+        def record_usage(self, *args, **kwargs):
+            return None
+
+        def track(self, *args, **kwargs):
+            from contextlib import contextmanager
+
+            @contextmanager
+            def _noop(*_a, **_k):
+                yield {}
+
+            return _noop()
+
+    cost_tracker = _NoopCostTracker()
+
 # lore_cache_manager is imported lazily (only when a lore-backed _ask runs)
 # so the disabled-by-default lore cache does not load with the core engine.
 
@@ -1597,6 +1620,32 @@ def _ask(prompt: str, model="gemini", temp=1.0, tokens=90, image_path: str = Non
         print(f"[ASK ERROR] Unknown provider: {provider}, falling back to Gemini")
         return _ask_gemini(prompt, model_name, temp, tokens, image_path, use_lore)
 
+def _record_text_usage(provider: str, model_name: str, *, success: bool,
+                        input_units: Optional[float] = None,
+                        output_units: Optional[float] = None,
+                        error_message: Optional[str] = None) -> None:
+    """
+    Record one text-generation call for the admin Analytics tab.
+
+    Attribution uses `get_active_session_id()` rather than a threaded-through
+    `session_id` param — `_ask()`/`_ask_gemini()`/`_ask_openai()`/`_ask_claude()`
+    have ~10 call sites across engine.py and none of them carry session_id
+    today. This is the same known tradeoff already documented for
+    `_active_session_id` elsewhere (see `_resolve_request_session_id`'s
+    docstring): accurate for the common case (one active session at a time),
+    imprecise under truly concurrent multi-session load. Good enough for a
+    cost *estimate* dashboard; revisit if/when that becomes the norm.
+    """
+    try:
+        cost_tracker.record_usage(
+            get_active_session_id(), "text", provider, model_name,
+            operation="ask", input_units=input_units, output_units=output_units,
+            unit_type="tokens", success=success, error_message=error_message,
+        )
+    except Exception as _e:
+        print(f"[COST TRACKER] _record_text_usage failed (non-fatal): {_e}", flush=True)
+
+
 def _ask_gemini(prompt: str, model_name: str, temp: float, tokens: int, image_path: str = None, use_lore: bool = True) -> str:
     """Gemini text generation implementation with optional lore cache."""
     import requests
@@ -1677,16 +1726,20 @@ def _ask_gemini(prompt: str, model_name: str, temp: float, tokens: int, image_pa
                 break
             except requests.exceptions.Timeout:
                 print(f"[GEMINI TEXT ERROR] API timeout after 15 seconds!", flush=True)
+                _record_text_usage("gemini", model_name, success=False, error_message="timeout")
                 return "Signal interrupted due to timeout..."
             except requests.exceptions.HTTPError as e:
                 print(f"[GEMINI TEXT ERROR] HTTP error: {e}", flush=True)
+                _record_text_usage("gemini", model_name, success=False, error_message=str(e))
                 return "Signal interrupted due to API error..."
             except Exception as e:
                 print(f"[GEMINI TEXT ERROR] Unexpected error: {type(e).__name__}: {e}", flush=True)
                 import traceback
                 traceback.print_exc()
+                _record_text_usage("gemini", model_name, success=False, error_message=str(e))
                 return "Signal interrupted..."
         if response_data is None:
+            _record_text_usage("gemini", model_name, success=False, error_message="rate_limited")
             return "Signal interrupted due to rate limiting..."
         
         # Check for error response from Gemini API
@@ -1695,15 +1748,25 @@ def _ask_gemini(prompt: str, model_name: str, temp: float, tokens: int, image_pa
             if "error" in response_data:
                 error_details = response_data['error']
                 print(f"[ASK GEMINI ERROR] Code: {error_details.get('code')}, Message: {error_details.get('message')}", flush=True)
+            _record_text_usage("gemini", model_name, success=False, error_message=str(response_data.get("error")))
             return "The transmission wavers... static fills the air as the signal struggles to maintain connection."
         
         result = response_data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        # Gemini's raw REST response already includes token counts — just never
+        # read them until now. See ADMIN_COST_ANALYTICS_DASHBOARD_PLAN.md §4.
+        usage = response_data.get("usageMetadata", {}) or {}
+        _record_text_usage(
+            "gemini", model_name, success=True,
+            input_units=usage.get("promptTokenCount"),
+            output_units=usage.get("candidatesTokenCount"),
+        )
         return result if result else "..."
     except Exception as e:
         # Catch any unexpected errors not handled above
         log_error(f"[ASK GEMINI CRITICAL] Unexpected error: {e}")
         import traceback
         traceback.print_exc()
+        _record_text_usage("gemini", model_name, success=False, error_message=str(e))
         return "Signal interrupted..."
 
 def _ask_openai(prompt: str, model_name: str, temp: float, tokens: int, image_path: str = None) -> str:
@@ -1763,9 +1826,16 @@ def _ask_openai(prompt: str, model_name: str, temp: float, tokens: int, image_pa
         )
         
         result = response.choices[0].message.content.strip()
+        usage = getattr(response, "usage", None)
+        _record_text_usage(
+            "openai", model_name, success=True,
+            input_units=getattr(usage, "prompt_tokens", None) if usage else None,
+            output_units=getattr(usage, "completion_tokens", None) if usage else None,
+        )
         return result if result else "..."
     except Exception as e:
         log_error(f"[ASK OPENAI] {e}")
+        _record_text_usage("openai", model_name, success=False, error_message=str(e))
         return "Signal interrupted..."
 
 def _ask_claude(prompt: str, model_name: str, temp: float, tokens: int, image_path: str = None) -> str:
@@ -1814,11 +1884,18 @@ def _ask_claude(prompt: str, model_name: str, temp: float, tokens: int, image_pa
         )
         result = response.content[0].text.strip()
         print(f"[CLAUDE TEXT] Response received ({len(result)} chars)", flush=True)
+        usage = getattr(response, "usage", None)
+        _record_text_usage(
+            "anthropic", model_name, success=True,
+            input_units=getattr(usage, "input_tokens", None) if usage else None,
+            output_units=getattr(usage, "output_tokens", None) if usage else None,
+        )
         return result if result else "..."
     except Exception as e:
         log_error(f"[ASK CLAUDE] {e}")
         import traceback
         traceback.print_exc()
+        _record_text_usage("anthropic", model_name, success=False, error_message=str(e))
         return "Signal interrupted..."
 
 # ───────── path resolution helper ───────────────────────────────────────────
@@ -3560,7 +3637,49 @@ def _build_vhs_prompt(base_prompt: str, use_img2img: bool = False) -> str:
     return full_prompt
 
 
-def _gen_image(caption: str, mode: str, choice: str, previous_image_url: Optional[str] = None, previous_caption: Optional[str] = None, previous_mode: Optional[str] = None, strength: float = 0.25, image_description: str = "", time_of_day: Optional[str] = None, use_edit_mode: bool = False, frame_idx: int = 0, dispatch: str = "", world_prompt: str = "", hard_transition: bool = False, is_timeout_penalty: bool = False, session_id: str = 'default', history_ref: Optional[list] = None) -> Optional[tuple[str, str, Optional[str]]]:
+def _gen_image(*args, session_id: str = 'default', **kwargs) -> Optional[tuple[str, str, Optional[str]]]:
+    """
+    Thin cost-tracking wrapper around `_gen_image_impl` (the real
+    900+-line, multi-provider implementation below). Deliberately does NOT
+    touch the implementation's internals — it just times the call, reads
+    which provider/model was active, and records one usage event based on
+    whether an image path came back. This keeps the (fragile, many-return-
+    path) implementation untouched while still covering every provider
+    branch (gemini/krea/fal/veo/openai) from a single call site.
+
+    Image providers don't return granular token usage the way text APIs do
+    (Krea/fal/Veo bill per-image or per-second at a flat published rate, not
+    per-request usage metadata), so this records exactly one image (or, for
+    Veo, one ~8s video clip) per call — see pricing.json / ADMIN_COST_ANALYTICS_DASHBOARD_PLAN.md §4.
+    """
+    provider = ai_provider_manager.get_image_provider()
+    model_name = ai_provider_manager.get_image_model()
+    t0 = time.time()
+    result = _gen_image_impl(*args, session_id=session_id, **kwargs)
+    latency_ms = int((time.time() - t0) * 1000)
+
+    try:
+        image_path, _prompt_used, video_path = result if result else (None, "", None)
+        success = bool(image_path)
+        if provider == "veo" and video_path:
+            cost_tracker.record_usage(
+                session_id, "video", provider, model_name, operation="gen_image",
+                output_units=8.0, unit_type="seconds", latency_ms=latency_ms, success=success,
+                error_message=None if success else "no_image_returned",
+            )
+        else:
+            cost_tracker.record_usage(
+                session_id, "image", provider, model_name, operation="gen_image",
+                output_units=1.0, unit_type="images", latency_ms=latency_ms, success=success,
+                error_message=None if success else "no_image_returned",
+            )
+    except Exception as _e:
+        print(f"[COST TRACKER] _gen_image usage recording failed (non-fatal): {_e}", flush=True)
+
+    return result
+
+
+def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Optional[str] = None, previous_caption: Optional[str] = None, previous_mode: Optional[str] = None, strength: float = 0.25, image_description: str = "", time_of_day: Optional[str] = None, use_edit_mode: bool = False, frame_idx: int = 0, dispatch: str = "", world_prompt: str = "", hard_transition: bool = False, is_timeout_penalty: bool = False, session_id: str = 'default', history_ref: Optional[list] = None) -> Optional[tuple[str, str, Optional[str]]]:
     """Generate image and return (image_path, prompt_used, video_path).
     
     video_path is None for non-Veo providers or when video generation fails/disabled.
@@ -6836,6 +6955,7 @@ def _tts_synthesize(text: str, voice_id: str, settings: dict = None):
     text = (text or "").strip()
     if not text or not ELEVENLABS_API_KEY or not voice_id:
         return None
+    t0 = time.time()
     try:
         import requests as _rq
         vs = {"stability": 0.5, "similarity_boost": 0.75}
@@ -6843,19 +6963,34 @@ def _tts_synthesize(text: str, voice_id: str, settings: dict = None):
             for k in ("stability", "similarity_boost", "style", "speed", "use_speaker_boost"):
                 if k in settings and settings[k] is not None:
                     vs[k] = settings[k]
+        billed_text = text[:2500]
         resp = _rq.post(
             f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
             headers={"xi-api-key": ELEVENLABS_API_KEY, "Content-Type": "application/json"},
             params={"output_format": "mp3_44100_128"},
-            json={"text": text[:2500], "model_id": ELEVENLABS_TTS_MODEL, "voice_settings": vs},
+            json={"text": billed_text, "model_id": ELEVENLABS_TTS_MODEL, "voice_settings": vs},
             timeout=30,
         )
         if resp.status_code == 200:
+            cost_tracker.record_usage(
+                get_active_session_id(), "voice", "elevenlabs", "tts", operation="tts_synthesize",
+                input_units=len(billed_text), unit_type="characters", success=True,
+                latency_ms=int((time.time() - t0) * 1000),
+            )
             return resp.content
         log_error(f"[NARRATOR] tts {resp.status_code}: {resp.text[:180]}")
+        cost_tracker.record_usage(
+            get_active_session_id(), "voice", "elevenlabs", "tts", operation="tts_synthesize",
+            input_units=len(billed_text), unit_type="characters", success=False,
+            error_message=f"http_{resp.status_code}", latency_ms=int((time.time() - t0) * 1000),
+        )
         return None
     except Exception as e:
         log_error(f"[NARRATOR] tts failed: {e}")
+        cost_tracker.record_usage(
+            get_active_session_id(), "voice", "elevenlabs", "tts", operation="tts_synthesize",
+            success=False, error_message=str(e), latency_ms=int((time.time() - t0) * 1000),
+        )
         return None
 
 

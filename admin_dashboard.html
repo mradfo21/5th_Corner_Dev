@@ -9,7 +9,11 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Inter:wght@300;400;600&display=swap" rel="stylesheet">
-    
+
+    <!-- Chart.js for the Cost Analytics tab (CDN, no build step — matches the
+         rest of this dashboard's zero-tooling approach). -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+
     <style>
         * {
             margin: 0;
@@ -1026,6 +1030,138 @@
             animation: pulse 1s ease-in-out infinite;
         }
 
+        /* ═══════════════════════════════════════════════════════════
+           COST ANALYTICS TAB
+           ═══════════════════════════════════════════════════════════ */
+
+        .analytics-toolbar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 25px;
+        }
+
+        .range-pills {
+            display: flex;
+            gap: 6px;
+            border: 1px solid var(--color-border-red);
+            padding: 3px;
+        }
+
+        .range-pill {
+            font-family: var(--font-ocr);
+            font-size: 0.7rem;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+            padding: 6px 12px;
+            background: transparent;
+            border: none;
+            color: var(--color-text-dim);
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .range-pill:hover {
+            color: var(--color-blood-red);
+        }
+
+        .range-pill.active {
+            background: var(--color-blood-red);
+            color: var(--color-near-black);
+        }
+
+        .kpi-note {
+            font-family: var(--font-ocr);
+            font-size: 0.6rem;
+            color: var(--color-text-ghost);
+            letter-spacing: 0.05em;
+            margin-top: 6px;
+        }
+
+        .stat-value.unpriced-flag {
+            color: var(--color-warning);
+        }
+
+        .charts-grid {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .chart-card {
+            background: var(--color-dark-gray);
+            border: 1px solid var(--color-border-red);
+            padding: 20px;
+        }
+
+        .chart-card h3 {
+            font-size: 0.8rem;
+            margin-bottom: 15px;
+        }
+
+        .chart-card canvas {
+            max-height: 280px;
+        }
+
+        .analytics-subgrid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-top: 20px;
+        }
+
+        @media (max-width: 900px) {
+            .charts-grid, .analytics-subgrid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .cost-cell {
+            font-family: var(--font-ocr);
+            color: var(--color-off-white);
+        }
+
+        .cost-breakdown-pill {
+            display: inline-block;
+            font-size: 0.6rem;
+            padding: 2px 6px;
+            margin: 1px 2px;
+            border: 1px solid var(--color-border-red);
+            color: var(--color-text-faint);
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+        }
+
+        .pricing-table input {
+            width: 90px;
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid var(--color-border-red);
+            color: var(--color-off-white);
+            font-family: var(--font-ocr);
+            font-size: 0.7rem;
+            padding: 4px 6px;
+        }
+
+        .pricing-table input:focus {
+            outline: none;
+            border-color: var(--color-blood-red);
+            box-shadow: 0 0 6px rgba(220, 20, 60, 0.4);
+        }
+
+        .unpriced-tag {
+            color: var(--color-warning);
+            font-size: 0.6rem;
+            letter-spacing: 0.1em;
+            text-transform: uppercase;
+        }
+
+        .error-row td {
+            color: var(--color-blood-red) !important;
+        }
+
         /* Responsive Design */
         @media (max-width: 1024px) {
             .stats-grid {
@@ -1136,6 +1272,9 @@
             <button id="tab-models" class="tab-button" onclick="switchTab('models')">
                 AI MODELS
             </button>
+            <button id="tab-analytics" class="tab-button" onclick="switchTab('analytics')">
+                COST ANALYTICS
+            </button>
         </div>
 
         <!-- ACTIVE SESSIONS TAB -->
@@ -1214,6 +1353,119 @@
                 <div id="models-shelf" class="models-shelf"></div>
             </div>
         </div>
+
+        <!-- COST ANALYTICS TAB -->
+        <div id="tab-content-analytics" class="tab-content" style="display: none;">
+            <div class="sessions-section">
+                <div class="analytics-toolbar">
+                    <div>
+                        <h2 class="section-title" style="margin-bottom: 10px;">Cost & Usage Analytics</h2>
+                        <div class="last-updated" id="analytics-last-updated">Last updated: Never</div>
+                    </div>
+                    <div style="display:flex; gap: 15px; align-items: center; flex-wrap: wrap;">
+                        <div class="range-pills" id="analytics-range-pills">
+                            <button class="range-pill" data-range="24h">24H</button>
+                            <button class="range-pill active" data-range="7d">7D</button>
+                            <button class="range-pill" data-range="30d">30D</button>
+                            <button class="range-pill" data-range="all">ALL</button>
+                        </div>
+                        <button class="btn btn-primary" onclick="AdminAnalytics.refresh()">↻ Refresh</button>
+                        <button class="btn btn-secondary" onclick="AdminAnalytics.exportCsv()">⬇ Export CSV</button>
+                    </div>
+                </div>
+
+                <div id="analytics-loading" class="loading">Loading analytics…</div>
+
+                <div id="analytics-content" style="display:none;">
+                    <!-- KPI CARDS -->
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-label">Total Spend</div>
+                            <div class="stat-value" id="kpi-total-spend">-</div>
+                            <div class="kpi-note" id="kpi-total-spend-note"></div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Spend Today</div>
+                            <div class="stat-value" id="kpi-spend-today">-</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Avg Cost / Session</div>
+                            <div class="stat-value" id="kpi-avg-session">-</div>
+                            <div class="kpi-note" id="kpi-session-count-note"></div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Projected Monthly</div>
+                            <div class="stat-value" id="kpi-projected">-</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Error Rate</div>
+                            <div class="stat-value" id="kpi-error-rate">-</div>
+                            <div class="kpi-note" id="kpi-error-count-note"></div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-label">Unpriced Calls</div>
+                            <div class="stat-value unpriced-flag" id="kpi-unpriced">-</div>
+                            <div class="kpi-note">Set a rate in Pricing below</div>
+                        </div>
+                    </div>
+
+                    <!-- CHARTS -->
+                    <div class="charts-grid">
+                        <div class="chart-card">
+                            <h3>Spend Over Time (by service)</h3>
+                            <canvas id="chart-timeseries"></canvas>
+                        </div>
+                        <div class="chart-card">
+                            <h3>Spend by Provider</h3>
+                            <canvas id="chart-provider-donut"></canvas>
+                        </div>
+                    </div>
+                    <div class="analytics-subgrid">
+                        <div class="chart-card">
+                            <h3>Spend by Service Type</h3>
+                            <canvas id="chart-service-bar"></canvas>
+                        </div>
+                        <div class="chart-card">
+                            <h3>Provider / Model Breakdown</h3>
+                            <div id="analytics-providers-table"></div>
+                        </div>
+                    </div>
+
+                    <!-- SESSIONS BY COST -->
+                    <div class="section-header" style="margin-top: 30px;">
+                        <div>
+                            <h2 class="section-title">Sessions by Cost</h2>
+                        </div>
+                        <div>
+                            <select id="analytics-session-sort" onchange="AdminAnalytics.refreshSessions()"
+                                    class="btn btn-secondary" style="cursor:pointer;">
+                                <option value="cost_desc">Highest cost first</option>
+                                <option value="recent">Most recent activity</option>
+                                <option value="events_desc">Most events first</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div id="analytics-sessions-table"></div>
+
+                    <!-- PRICING EDITOR -->
+                    <div class="section-header" style="margin-top: 30px;">
+                        <div>
+                            <h2 class="section-title">Pricing (live-editable, no redeploy)</h2>
+                            <div class="last-updated">Rates are $ per unit noted. Token/character rates are per 1,000 units.</div>
+                        </div>
+                    </div>
+                    <div id="analytics-pricing-table"></div>
+
+                    <!-- RECENT ERRORS -->
+                    <div class="section-header" style="margin-top: 30px;">
+                        <div>
+                            <h2 class="section-title">Recent Errors</h2>
+                        </div>
+                    </div>
+                    <div id="analytics-errors-table"></div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <!-- Session Details Modal -->
@@ -1224,6 +1476,17 @@
                 <button class="close-btn" onclick="closeModal()">&times;</button>
             </div>
             <div id="modal-body"></div>
+        </div>
+    </div>
+
+    <!-- Session Cost Drill-Down Modal -->
+    <div id="cost-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 class="modal-title" id="cost-modal-title">Session Cost Detail</h3>
+                <button class="close-btn" onclick="AdminAnalytics.closeCostModal()">&times;</button>
+            </div>
+            <div id="cost-modal-body"></div>
         </div>
     </div>
 
@@ -2124,6 +2387,8 @@
                 refreshArchives();
             } else if (tabName === 'models') {
                 refreshAiModels();
+            } else if (tabName === 'analytics') {
+                if (window.AdminAnalytics) window.AdminAnalytics.refresh();
             } else {
                 refreshData();
             }
@@ -2804,6 +3069,13 @@
             }
         }
     </script>
+
+    <!-- Cost Analytics tab logic — split into its own file to keep this
+         already-large dashboard file from growing further. Loaded AFTER the
+         inline script above so it can reuse ADMIN_TOKEN / API_BASE /
+         adminFetch() / escapeHtml() / showError() / showSuccess() as globals
+         instead of duplicating them. -->
+    <script src="/static/js/admin_analytics.js"></script>
 </body>
 </html>
 

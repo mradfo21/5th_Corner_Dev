@@ -1,0 +1,109 @@
+{
+  "last_updated": "2026-07-20T20:31:00.000000+00:00",
+  "notes": "Rates are $ per unit as noted. Token rates are $ per 1,000 tokens. Editable live from the admin dashboard's Analytics > Pricing panel (no redeploy needed) via GET/PUT /api/admin/pricing. A null rate means 'unpriced' and shows as such in the dashboard instead of silently costing $0.",
+  "rates": {
+    "gemini:gemini-3.1-flash-lite": {
+      "unit_type": "tokens",
+      "input_per_1k": 0.0375,
+      "output_per_1k": 0.15
+    },
+    "gemini:gemini-2.0-flash": {
+      "unit_type": "tokens",
+      "input_per_1k": 0.075,
+      "output_per_1k": 0.3
+    },
+    "gemini:gemini-3.1-flash-image": {
+      "unit_type": "images",
+      "per_unit": 0.039
+    },
+    "gemini:gemini-3.1-flash-lite-image": {
+      "unit_type": "images",
+      "per_unit": 0.02
+    },
+    "gemini:models/lyria-realtime-exp": {
+      "unit_type": "seconds",
+      "per_unit": null
+    },
+    "gemini:default": {
+      "unit_type": "tokens",
+      "input_per_1k": 0.075,
+      "output_per_1k": 0.3
+    },
+    "openai:gpt-4o-mini": {
+      "unit_type": "tokens",
+      "input_per_1k": 0.15,
+      "output_per_1k": 0.6
+    },
+    "openai:gpt-image-1": {
+      "unit_type": "images",
+      "per_unit": 0.167
+    },
+    "openai:default": {
+      "unit_type": "tokens",
+      "input_per_1k": 0.15,
+      "output_per_1k": 0.6
+    },
+    "anthropic:claude-opus-4-5": {
+      "unit_type": "tokens",
+      "input_per_1k": 15.0,
+      "output_per_1k": 75.0
+    },
+    "anthropic:default": {
+      "unit_type": "tokens",
+      "input_per_1k": 15.0,
+      "output_per_1k": 75.0
+    },
+    "krea:krea-2/medium": {
+      "unit_type": "images",
+      "per_unit": 0.02
+    },
+    "krea:krea-2/large": {
+      "unit_type": "images",
+      "per_unit": 0.04
+    },
+    "krea:default": {
+      "unit_type": "images",
+      "per_unit": 0.03
+    },
+    "fal:fal-ai/fast-lightning-sdxl": {
+      "unit_type": "images",
+      "per_unit": 0.0035
+    },
+    "fal:default": {
+      "unit_type": "images",
+      "per_unit": 0.0035
+    },
+    "veo:veo-3.1-generate-preview": {
+      "unit_type": "seconds",
+      "per_unit": 0.4
+    },
+    "veo:default": {
+      "unit_type": "seconds",
+      "per_unit": 0.4
+    },
+    "elevenlabs:tts": {
+      "unit_type": "characters",
+      "per_1k": 0.18
+    },
+    "elevenlabs:voice_design": {
+      "unit_type": "calls",
+      "per_unit": 0.05
+    },
+    "elevenlabs:talk_agent": {
+      "unit_type": "seconds",
+      "per_unit": 0.0016
+    },
+    "elevenlabs:default": {
+      "unit_type": "characters",
+      "per_1k": 0.18
+    },
+    "reactor:default": {
+      "unit_type": "seconds",
+      "per_unit": null
+    },
+    "gemini_live:default": {
+      "unit_type": "seconds",
+      "per_unit": null
+    }
+  }
+}

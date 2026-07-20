@@ -22,11 +22,23 @@ import hashlib
 import json
 import os
 import threading
+import time
 import wave
 from io import BytesIO
 from pathlib import Path
 
 ROOT = Path(__file__).parent.resolve()
+
+# Best-effort cost tracking (see ADMIN_COST_ANALYTICS_DASHBOARD_PLAN.md). A
+# broken/missing analytics module must never break scene audio.
+try:
+    import cost_tracker
+except Exception:
+    class _NoopCostTracker:
+        def record_usage(self, *args, **kwargs):
+            return None
+
+    cost_tracker = _NoopCostTracker()
 
 # Reuse the same key the rest of the stack already deploys (see
 # veo_video_utils.py / engine.py). Env wins, then config.json.
@@ -280,13 +292,29 @@ def get_scene_audio(scene_prompt: str, session_id: str = "default",
         # Another waiter may have finished while we blocked on the lock.
         if fpath.exists() and fpath.stat().st_size > 44:
             return {"audio_url": web_url, "cached": True}
+        gen_t0 = time.time()
         try:
             pcm = _run_stream_blocking(scene_prompt, seconds)
             if not pcm:
+                cost_tracker.record_usage(
+                    session_id, "voice", "gemini", LYRIA_MODEL, operation="lyria_music",
+                    success=False, error_message="empty_pcm",
+                    latency_ms=int((time.time() - gen_t0) * 1000),
+                )
                 return None
             fpath.write_bytes(_pcm_to_wav_bytes(pcm))
+            cost_tracker.record_usage(
+                session_id, "voice", "gemini", LYRIA_MODEL, operation="lyria_music",
+                output_units=seconds, unit_type="seconds", success=True,
+                latency_ms=int((time.time() - gen_t0) * 1000),
+            )
         except Exception as e:  # noqa: BLE001
             print(f"[SCENE AUDIO] generation failed: {e}", flush=True)
+            cost_tracker.record_usage(
+                session_id, "voice", "gemini", LYRIA_MODEL, operation="lyria_music",
+                success=False, error_message=str(e),
+                latency_ms=int((time.time() - gen_t0) * 1000),
+            )
             return None
         finally:
             with _INFLIGHT_LOCK:

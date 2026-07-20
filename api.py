@@ -1760,6 +1760,195 @@ def public_ai_switch():
 
 
 # ═══════════════════════════════════════════════════════════════════
+# COST & USAGE ANALYTICS (admin)
+#
+# Backs the dashboard's "Analytics" tab: KPI totals, time-series spend,
+# a cost-sortable session list, per-session drill-down, provider/model
+# breakdown, recent errors, and a CSV export. Every route here is read-only
+# and reads from the `usage_events` / `session_cost_rollup` tables that
+# cost_tracker.record_usage() writes to from every instrumented provider
+# call site. Same ADMIN_TOKEN guard as the rest of /api/admin/*.
+# See ADMIN_COST_ANALYTICS_DASHBOARD_PLAN.md for the full design record.
+# ═══════════════════════════════════════════════════════════════════
+
+_VALID_RANGES = ("24h", "7d", "30d", "all")
+
+
+def _admin_unauthorized():
+    return jsonify({
+        "error": "unauthorized",
+        "message": "Provide ADMIN_TOKEN via ?token=, X-Admin-Token header, or admin_token cookie."
+    }), 401
+
+
+def _clean_range(value):
+    return value if value in _VALID_RANGES else "7d"
+
+
+@app.route('/api/admin/analytics/summary', methods=['GET'])
+def admin_analytics_summary():
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import cost_tracker
+        range_key = _clean_range(request.args.get('range', '7d'))
+        return jsonify(success_response(cost_tracker.get_summary(range_key)))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to load analytics summary", str(e))
+
+
+@app.route('/api/admin/analytics/timeseries', methods=['GET'])
+def admin_analytics_timeseries():
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import cost_tracker
+        range_key = _clean_range(request.args.get('range', '7d'))
+        granularity = 'hour' if request.args.get('granularity') == 'hour' else 'day'
+        return jsonify(success_response(cost_tracker.get_timeseries(range_key, granularity)))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to load analytics timeseries", str(e))
+
+
+@app.route('/api/admin/analytics/sessions', methods=['GET'])
+def admin_analytics_sessions():
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import cost_tracker
+        sort = request.args.get('sort', 'cost_desc')
+        limit = min(max(request.args.get('limit', 50, type=int) or 50, 1), 500)
+        offset = max(request.args.get('offset', 0, type=int) or 0, 0)
+        return jsonify(success_response(cost_tracker.get_sessions(sort=sort, limit=limit, offset=offset)))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to load session cost list", str(e))
+
+
+@app.route('/api/admin/analytics/sessions/<session_id>', methods=['GET'])
+def admin_analytics_session_detail(session_id):
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import cost_tracker
+        limit = min(max(request.args.get('limit', 500, type=int) or 500, 1), 2000)
+        return jsonify(success_response(cost_tracker.get_session_detail(session_id, limit=limit)))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response(f"Failed to load cost detail for session '{session_id}'", str(e))
+
+
+@app.route('/api/admin/analytics/providers', methods=['GET'])
+def admin_analytics_providers():
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import cost_tracker
+        range_key = _clean_range(request.args.get('range', '30d'))
+        return jsonify(success_response(cost_tracker.get_providers_breakdown(range_key)))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to load provider breakdown", str(e))
+
+
+@app.route('/api/admin/analytics/errors', methods=['GET'])
+def admin_analytics_errors():
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import cost_tracker
+        range_key = _clean_range(request.args.get('range', '7d'))
+        limit = min(max(request.args.get('limit', 100, type=int) or 100, 1), 500)
+        return jsonify(success_response(cost_tracker.get_errors(range_key, limit=limit)))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to load recent errors", str(e))
+
+
+@app.route('/api/admin/analytics/export.csv', methods=['GET'])
+def admin_analytics_export_csv():
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import csv
+        import io as _io
+        import cost_tracker
+        range_key = _clean_range(request.args.get('range', '30d'))
+
+        buf = _io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow([
+            "id", "ts", "session_id", "turn_count", "service_type", "provider", "model",
+            "operation", "input_units", "output_units", "unit_type", "cost_usd", "latency_ms",
+            "success", "error_message"
+        ])
+        for row in cost_tracker.iter_events_for_export(range_key):
+            writer.writerow([
+                row["id"], row["ts"], row["session_id"], row["turn_count"], row["service_type"],
+                row["provider"], row["model"], row["operation"], row["input_units"],
+                row["output_units"], row["unit_type"], row["cost_usd"], row["latency_ms"],
+                row["success"], row["error_message"],
+            ])
+
+        response = make_response(buf.getvalue())
+        response.headers["Content-Type"] = "text/csv"
+        response.headers["Content-Disposition"] = f"attachment; filename=usage_{range_key}.csv"
+        return response
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to export usage CSV", str(e))
+
+
+@app.route('/api/admin/pricing', methods=['GET'])
+def admin_pricing_get():
+    """Current provider:model rate table for the Analytics > Pricing panel."""
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import pricing
+        return jsonify(success_response(pricing.load_pricing(force=True)))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to load pricing", str(e))
+
+
+@app.route('/api/admin/pricing', methods=['PUT'])
+def admin_pricing_put():
+    """
+    Update one provider:model rate (or the whole table) without a redeploy —
+    mirrors the ai_config.json hot-swap pattern used by /api/admin/ai_switch.
+
+    Body: either {"provider": "krea", "model": "krea-2/medium", "rate": {...}}
+    to set a single row, or {"rates": {...}} to replace the whole rate map.
+    """
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import pricing
+        body = request.get_json(silent=True) or {}
+        if 'rates' in body and isinstance(body['rates'], dict):
+            data = pricing.load_pricing(force=True)
+            data = dict(data)
+            data['rates'] = body['rates']
+            pricing.save_pricing(data)
+            return jsonify(success_response(pricing.load_pricing(force=True), "Pricing table replaced"))
+
+        provider = body.get('provider')
+        model = body.get('model')
+        rate = body.get('rate')
+        if not provider or not model or not isinstance(rate, dict):
+            return error_response("Body must include 'provider', 'model', and a 'rate' object "
+                                   "(or a top-level 'rates' object to replace the whole table).", code=400)
+        data = pricing.set_rate(provider, model, rate)
+        return jsonify(success_response(data, f"Updated rate for {provider}:{model}"))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to update pricing", str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════
 # INFO & HEALTH ENDPOINTS
 # ═══════════════════════════════════════════════════════════════════
 

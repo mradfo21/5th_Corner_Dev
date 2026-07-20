@@ -43,6 +43,17 @@ from typing import Any, Dict, List, Optional, Tuple
 
 ROOT = Path(__file__).parent.resolve()
 
+# Best-effort cost tracking (see ADMIN_COST_ANALYTICS_DASHBOARD_PLAN.md). A
+# broken/missing analytics module must never break voice design.
+try:
+    import cost_tracker
+except Exception:
+    class _NoopCostTracker:
+        def record_usage(self, *args, **kwargs):
+            return None
+
+    cost_tracker = _NoopCostTracker()
+
 # ────────────────────────────────────────────────────────────────────────────
 # Configuration (all env-gated with safe defaults)
 # ────────────────────────────────────────────────────────────────────────────
@@ -667,6 +678,14 @@ def _design_and_save(key: str, brief: Dict[str, Any],
     _evict_if_over_soft_cap(need=1)
 
     result = _post_design(brief)
+    # ElevenLabs bills the /design call itself (a fixed credit cost) whether
+    # or not we go on to /save a preview, so record it here regardless of
+    # what happens next.
+    cost_tracker.record_usage(
+        session_id, "voice", "elevenlabs", "voice_design", operation="design",
+        output_units=1, unit_type="calls", success=bool(result),
+        error_message=None if result else "design_call_failed",
+    )
     if not result:
         _put_entry(key, {
             **(_get_entry(key) or {}),
