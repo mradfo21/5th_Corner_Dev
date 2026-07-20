@@ -480,6 +480,17 @@ img { display: block; max-width: 100%; }
 }
 .menu-btn-small:hover { filter: brightness(1.15); }
 
+.menu-options { margin-top: 1rem; }
+.menu-options > summary {
+  cursor: pointer; color: var(--ink-dim); font-size: 0.84rem; letter-spacing: 0.04em;
+  list-style: none; padding: 0.5rem 0;
+}
+.menu-options > summary::-webkit-details-marker { display: none; }
+.menu-options > summary::before { content: "▸ "; color: var(--accent); }
+.menu-options[open] > summary::before { content: "▾ "; }
+.menu-options > summary .opt { color: var(--ink-fade); }
+.menu-options .run-form { margin-top: 0.6rem; padding-top: 0.9rem; border-top: 1px dashed var(--border-soft); }
+
 .menu-howto { margin-top: 1.4rem; border-top: 1px dashed var(--border-soft); padding-top: 1rem; }
 .menu-howto summary {
   cursor: pointer; color: var(--ink-dim); font-size: 0.86rem; letter-spacing: 0.08em;
