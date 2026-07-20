@@ -1106,15 +1106,8 @@
             max-height: 280px;
         }
 
-        .analytics-subgrid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-            margin-top: 20px;
-        }
-
         @media (max-width: 900px) {
-            .charts-grid, .analytics-subgrid {
+            .charts-grid {
                 grid-template-columns: 1fr;
             }
         }
@@ -1151,11 +1144,25 @@
             box-shadow: 0 0 6px rgba(220, 20, 60, 0.4);
         }
 
-        .unpriced-tag {
+        .flag-tag {
             color: var(--color-warning);
             font-size: 0.6rem;
             letter-spacing: 0.1em;
             text-transform: uppercase;
+        }
+
+        .collapsible-header {
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .collapsible-header:hover .section-title {
+            color: var(--color-blood-red);
+        }
+
+        #pricing-toggle-caret {
+            display: inline-block;
+            transition: transform 0.15s ease;
         }
 
         .error-row td {
@@ -1391,28 +1398,18 @@
                         <div class="stat-card">
                             <div class="stat-label">Avg Cost / Session</div>
                             <div class="stat-value" id="kpi-avg-session">-</div>
-                            <div class="kpi-note" id="kpi-session-count-note"></div>
-                        </div>
-                        <div class="stat-card">
-                            <div class="stat-label">Projected Monthly</div>
-                            <div class="stat-value" id="kpi-projected">-</div>
                         </div>
                         <div class="stat-card">
                             <div class="stat-label">Error Rate</div>
                             <div class="stat-value" id="kpi-error-rate">-</div>
                             <div class="kpi-note" id="kpi-error-count-note"></div>
                         </div>
-                        <div class="stat-card">
-                            <div class="stat-label">Unpriced Calls</div>
-                            <div class="stat-value unpriced-flag" id="kpi-unpriced">-</div>
-                            <div class="kpi-note">Set a rate in Pricing below</div>
-                        </div>
                     </div>
 
                     <!-- CHARTS -->
                     <div class="charts-grid">
                         <div class="chart-card">
-                            <h3>Spend Over Time (by service)</h3>
+                            <h3>Spend Over Time</h3>
                             <canvas id="chart-timeseries"></canvas>
                         </div>
                         <div class="chart-card">
@@ -1420,16 +1417,12 @@
                             <canvas id="chart-provider-donut"></canvas>
                         </div>
                     </div>
-                    <div class="analytics-subgrid">
-                        <div class="chart-card">
-                            <h3>Spend by Service Type</h3>
-                            <canvas id="chart-service-bar"></canvas>
-                        </div>
-                        <div class="chart-card">
-                            <h3>Provider / Model Breakdown</h3>
-                            <div id="analytics-providers-table"></div>
-                        </div>
+
+                    <!-- PROVIDER / MODEL BREAKDOWN -->
+                    <div class="section-header" style="margin-top: 30px;">
+                        <div><h2 class="section-title">Provider / Model Breakdown</h2></div>
                     </div>
+                    <div id="analytics-providers-table"></div>
 
                     <!-- SESSIONS BY COST -->
                     <div class="section-header" style="margin-top: 30px;">
@@ -1447,22 +1440,26 @@
                     </div>
                     <div id="analytics-sessions-table"></div>
 
-                    <!-- PRICING EDITOR -->
-                    <div class="section-header" style="margin-top: 30px;">
-                        <div>
-                            <h2 class="section-title">Pricing (live-editable, no redeploy)</h2>
-                            <div class="last-updated">Rates are $ per unit noted. Token/character rates are per 1,000 units.</div>
+                    <!-- RECENT ERRORS (only rendered when there are any — see admin_analytics.js) -->
+                    <div id="analytics-errors-section" style="display:none;">
+                        <div class="section-header" style="margin-top: 30px;">
+                            <div><h2 class="section-title">Recent Errors</h2></div>
                         </div>
+                        <div id="analytics-errors-table"></div>
                     </div>
-                    <div id="analytics-pricing-table"></div>
 
-                    <!-- RECENT ERRORS -->
-                    <div class="section-header" style="margin-top: 30px;">
+                    <!-- PRICING EDITOR — collapsed by default; it's a settings
+                         panel, not a report, so it shouldn't compete with the
+                         data above for attention. -->
+                    <div class="section-header collapsible-header" style="margin-top: 30px;" onclick="AdminAnalytics.togglePricing()">
                         <div>
-                            <h2 class="section-title">Recent Errors</h2>
+                            <h2 class="section-title"><span id="pricing-toggle-caret">▸</span> Pricing</h2>
                         </div>
                     </div>
-                    <div id="analytics-errors-table"></div>
+                    <div id="analytics-pricing-panel" style="display:none;">
+                        <div class="last-updated" style="margin-bottom: 10px;">Live-editable, no redeploy. Token/character rates are per 1,000 units.</div>
+                        <div id="analytics-pricing-table"></div>
+                    </div>
                 </div>
             </div>
         </div>

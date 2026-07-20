@@ -62,17 +62,24 @@
 
     function renderKpis(summary) {
         document.getElementById('kpi-total-spend').textContent = fmtUsd(summary.total_cost_usd);
-        document.getElementById('kpi-total-spend-note').textContent =
-            `${summary.event_count || 0} calls · ${summary.session_count || 0} sessions`;
+        // Fold "projected monthly" and "unpriced calls" in as a note instead
+        // of their own cards — only shown when they add information (a
+        // projection needs a bounded range; an unpriced flag only matters
+        // when it's non-zero).
+        const notes = [];
+        if (summary.projected_monthly_usd) {
+            notes.push(`≈ ${fmtUsd(summary.projected_monthly_usd)}/mo projected`);
+        }
+        if (summary.unpriced_event_count) {
+            notes.push(`${summary.unpriced_event_count} unpriced call${summary.unpriced_event_count === 1 ? '' : 's'}`);
+        }
+        document.getElementById('kpi-total-spend-note').textContent = notes.join(' · ');
+
         document.getElementById('kpi-spend-today').textContent = fmtUsd(summary.spend_today_usd);
         document.getElementById('kpi-avg-session').textContent = fmtUsd(summary.avg_cost_per_session_usd);
-        document.getElementById('kpi-session-count-note').textContent =
-            summary.session_count ? `across ${summary.session_count} sessions` : 'no sessions yet';
-        document.getElementById('kpi-projected').textContent =
-            summary.projected_monthly_usd == null ? 'n/a (select 24h/7d/30d)' : fmtUsd(summary.projected_monthly_usd);
         document.getElementById('kpi-error-rate').textContent = fmtPct(summary.error_rate);
-        document.getElementById('kpi-error-count-note').textContent = `${summary.error_count || 0} failed calls`;
-        document.getElementById('kpi-unpriced').textContent = summary.unpriced_event_count || 0;
+        document.getElementById('kpi-error-count-note').textContent =
+            summary.error_count ? `${summary.error_count} failed call${summary.error_count === 1 ? '' : 's'}` : '';
     }
 
     // ─────────────────────────── Charts ───────────────────────────
@@ -158,35 +165,6 @@
         });
     }
 
-    function renderServiceBar(summary) {
-        destroyChart('serviceBar');
-        const ctx = document.getElementById('chart-service-bar');
-        if (!ctx || typeof Chart === 'undefined') return;
-
-        const rows = summary.cost_by_service || [];
-        state.charts.serviceBar = new Chart(ctx, {
-            type: 'bar',
-            data: {
-                labels: rows.map(r => r.service_type),
-                datasets: [{
-                    label: 'Cost ($)',
-                    data: rows.map(r => r.cost_usd),
-                    backgroundColor: rows.map((r, i) => colorFor(r.service_type, i)),
-                }],
-            },
-            options: {
-                plugins: {
-                    legend: { display: false },
-                    tooltip: { callbacks: { label: (c) => fmtUsd(c.raw) } },
-                },
-                scales: {
-                    x: { ticks: { color: COLORS.dim, font: { family: 'Share Tech Mono' } }, grid: { display: false } },
-                    y: { ticks: { color: COLORS.dim, callback: (v) => `$${v}` }, grid: { color: COLORS.grid } },
-                },
-            },
-        });
-    }
-
     // ─────────────────────────── Tables ───────────────────────────
 
     function renderProvidersTable(payload) {
@@ -199,7 +177,7 @@
         el.innerHTML = `
             <table class="sessions-table">
                 <thead><tr>
-                    <th>Provider</th><th>Model</th><th>Type</th><th>Calls</th><th>Avg Latency</th><th>Cost</th>
+                    <th>Provider</th><th>Model</th><th>Type</th><th>Calls</th><th>Cost</th>
                 </tr></thead>
                 <tbody>
                     ${rows.map(r => `
@@ -208,12 +186,20 @@
                             <td>${escapeHtml(r.model)}</td>
                             <td>${escapeHtml(r.service_type)}</td>
                             <td>${r.n}</td>
-                            <td>${r.avg_latency_ms != null ? Math.round(r.avg_latency_ms) + 'ms' : '—'}</td>
-                            <td class="cost-cell">${fmtUsd(r.cost)}${r.unpriced ? ' <span class="unpriced-tag">unpriced</span>' : ''}</td>
+                            <td class="cost-cell">${fmtUsd(r.cost)}${r.unpriced ? ' <span class="flag-tag">unpriced</span>' : ''}</td>
                         </tr>
                     `).join('')}
                 </tbody>
             </table>`;
+    }
+
+    function serviceBreakdownPills(costByService) {
+        const entries = Object.entries(costByService || {}).sort((a, b) => b[1] - a[1]);
+        const shown = entries.slice(0, 3)
+            .map(([k, v]) => `<span class="cost-breakdown-pill">${escapeHtml(k)} ${fmtUsd(v)}</span>`)
+            .join('');
+        const rest = entries.length - 3;
+        return shown + (rest > 0 ? `<span class="cost-breakdown-pill">+${rest} more</span>` : '');
     }
 
     function renderSessionsTable(payload) {
@@ -226,17 +212,15 @@
         el.innerHTML = `
             <table class="sessions-table">
                 <thead><tr>
-                    <th>Session</th><th>Total Cost</th><th>By Service</th><th>Calls</th><th>Errors</th><th>Last Activity</th>
+                    <th>Session</th><th>Total Cost</th><th>By Service</th><th>Calls</th><th>Last Activity</th>
                 </tr></thead>
                 <tbody>
                     ${rows.map(r => `
                         <tr onclick="AdminAnalytics.openCostModal('${escapeAttr(r.session_id)}')">
                             <td>${escapeHtml(r.session_id)}</td>
-                            <td class="cost-cell">${fmtUsd(r.total_cost_usd)}${r.unpriced_event_count ? ' <span class="unpriced-tag">+unpriced</span>' : ''}</td>
-                            <td>${Object.entries(r.cost_by_service || {}).map(([k, v]) =>
-                                `<span class="cost-breakdown-pill">${escapeHtml(k)}: ${fmtUsd(v)}</span>`).join('')}</td>
-                            <td>${r.event_count}</td>
-                            <td>${r.error_count || 0}</td>
+                            <td class="cost-cell">${fmtUsd(r.total_cost_usd)}${r.unpriced_event_count ? ' <span class="flag-tag">+unpriced</span>' : ''}</td>
+                            <td>${serviceBreakdownPills(r.cost_by_service)}</td>
+                            <td>${r.event_count}${r.error_count ? ` <span class="flag-tag">(${r.error_count} failed)</span>` : ''}</td>
                             <td>${r.last_event_ts ? new Date(r.last_event_ts).toLocaleString() : '—'}</td>
                         </tr>
                     `).join('')}
@@ -246,11 +230,15 @@
 
     function renderErrorsTable(payload) {
         const rows = payload.errors || [];
+        const section = document.getElementById('analytics-errors-section');
         const el = document.getElementById('analytics-errors-table');
+        // Nothing wrong -> no section at all. An empty "no errors" table is
+        // exactly the low-value info this cleanup is trying to cut.
         if (!rows.length) {
-            el.innerHTML = '<div class="loading">No errors in this range. 🎉</div>';
+            section.style.display = 'none';
             return;
         }
+        section.style.display = 'block';
         el.innerHTML = `
             <table class="sessions-table">
                 <thead><tr>
@@ -271,33 +259,31 @@
             </table>`;
     }
 
-    function unitLabel(rate) {
-        if (!rate) return '';
-        switch (rate.unit_type) {
-            case 'tokens': return 'per 1K tokens (in/out)';
-            case 'characters': return 'per 1K characters';
-            default: return 'per unit';
-        }
-    }
-
     function renderPricingTable(pricingData) {
         state.pricing = pricingData;
         const rates = (pricingData && pricingData.rates) || {};
-        const keys = Object.keys(rates).sort();
+        // Only show rates for providers/models actually seen in usage, plus
+        // any row already showing "unpriced" — the full table (every preset
+        // model across every provider, most never used) is exactly the kind
+        // of low-signal clutter this view should avoid. Falls back to
+        // showing everything if we haven't loaded provider usage yet.
+        const relevantKeys = state.knownProviderModelKeys;
+        const keys = Object.keys(rates)
+            .filter(k => !relevantKeys || relevantKeys.has(k))
+            .sort();
         const el = document.getElementById('analytics-pricing-table');
         if (!keys.length) {
-            el.innerHTML = '<div class="loading">No pricing rows configured.</div>';
+            el.innerHTML = '<div class="loading">No priced providers in this range yet.</div>';
             return;
         }
         el.innerHTML = `
             <table class="sessions-table pricing-table">
                 <thead><tr>
-                    <th>Provider : Model</th><th>Unit</th><th>Rate(s)</th><th></th>
+                    <th>Provider : Model</th><th>Unit</th><th>Rate</th><th></th>
                 </tr></thead>
                 <tbody>
                     ${keys.map(key => {
                         const rate = rates[key] || {};
-                        const [provider, model] = key.split(/:(.+)/);
                         let fields = '';
                         if (rate.unit_type === 'tokens') {
                             fields = `
@@ -311,7 +297,7 @@
                         return `
                             <tr>
                                 <td>${escapeHtml(key)}</td>
-                                <td>${escapeHtml(rate.unit_type || '')} <span style="color:#666">(${unitLabel(rate)})</span></td>
+                                <td>${escapeHtml(rate.unit_type || '')}</td>
                                 <td>${fields}</td>
                                 <td><button class="btn btn-small btn-secondary" onclick="AdminAnalytics.savePricingRow('${escapeAttr(key)}')">Save</button></td>
                             </tr>`;
@@ -447,10 +433,13 @@
                 fetchJson(`/admin/analytics/errors?range=${state.range}`),
             ]);
 
+            state.knownProviderModelKeys = new Set(
+                (providers.providers || []).map(r => `${r.provider}:${r.model}`)
+            );
+
             renderKpis(summary);
             renderTimeseriesChart(timeseries);
             renderProviderDonut(summary);
-            renderServiceBar(summary);
             renderProvidersTable(providers);
             renderSessionsTable(sessions);
             renderPricingTable(pricingData);
@@ -466,6 +455,14 @@
             loading.style.display = 'block';
             content.style.display = 'none';
         }
+    }
+
+    function togglePricing() {
+        const panel = document.getElementById('analytics-pricing-panel');
+        const caret = document.getElementById('pricing-toggle-caret');
+        const isOpen = panel.style.display !== 'none';
+        panel.style.display = isOpen ? 'none' : 'block';
+        caret.style.transform = isOpen ? 'rotate(0deg)' : 'rotate(90deg)';
     }
 
     function exportCsv() {
@@ -497,5 +494,6 @@
         openCostModal,
         closeCostModal,
         savePricingRow,
+        togglePricing,
     };
 })();
