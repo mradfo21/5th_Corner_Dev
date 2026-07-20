@@ -261,13 +261,28 @@ Details worth knowing:
 >
 > **Stills (photorealistic AI scenes):** <https://somewhere.example.com/play?comp=influencer-jane>
 > **Realtime (live AI video, best in Chrome desktop):** <https://somewhere.example.com/live?comp=influencer-jane>
+> **Lobby (recommended — pick your own run name, resume saved runs):** <https://somewhere.example.com/lobby?comp=influencer-jane>
+> **Root also works:** <https://somewhere.example.com/?comp=influencer-jane>
 >
-> The comp code works on both. Same button, same one-click revive.
+> The comp code works on all of them. Same gold button, same one-click revive.
 
-The `?comp=` param is honored by all three routes: `/play`, `/standalone`, and
-`/live` (a.k.a. `/realtime`). It's stripped from the URL on load and stored in
-`sessionStorage` for the tab's lifetime, so a revive → new run in the same tab
-keeps working without needing the code in the URL again.
+The `?comp=` param is honored by every entry point: `/`, `/lobby`, `/play`,
+`/standalone`, and `/live` (a.k.a. `/realtime`).
+
+* On the **lobby** it flashes a small gold `COMP · <code>` chip in the top-left
+  HUD (next to REC/clock) so the tester knows the token registered, then rides
+  through every "New Game", "Continue", and join-by-code exit into
+  `/play?session=<id>&comp=<code>` — so a fresh run started from the lobby
+  still gets free continues without you having to hand-craft the play URL.
+* On **`/`**, the query string is preserved through the redirect to `/lobby`
+  (so `?comp=<code>` is not silently dropped when someone shares the naked
+  domain).
+* On **`/play`** / **`/live`** / **`/standalone`** it's stripped from the URL
+  on load and stashed in `sessionStorage` for the tab's lifetime, so a
+  death → revive → new run cycle in the same tab keeps working without
+  needing the code back in the URL. The lobby uses the SAME `sessionStorage`
+  key, so a comp picked up on `/lobby` also survives if the URL forwarding
+  ever misses an exit for any reason.
 
 ---
 
