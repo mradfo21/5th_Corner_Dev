@@ -171,6 +171,9 @@
     deathOverlay: document.getElementById("death-overlay"),
     deathMessage: document.getElementById("death-message"),
     deathRestart: document.getElementById("death-restart"),
+    deathContinue: document.getElementById("death-continue"),
+    deathContinuePrice: document.getElementById("death-continue-price"),
+    deathContinueStatus: document.getElementById("death-continue-status"),
     tapeBtn: document.getElementById("tape-btn"),
     tapeOverlay: document.getElementById("tape-overlay"),
     tapeFrameA: document.getElementById("tape-frameA"),
@@ -8598,6 +8601,169 @@
   }
 
   // ------------------------------------------------------------------
+  // Coin-op — "insert coin to continue" (MVP)
+  //
+  // Fetches /api/coinop/config on init; if enabled, reveals the continue
+  // button in the death overlay and, on click, redirects to Stripe Checkout
+  // with a success URL back to /play. On page load, if the URL carries
+  // ?coinop=success&cs=<checkout_session_id>, we POST /api/coinop/redeem
+  // (server-side verifies the payment with Stripe, then internally invokes
+  // engine.api_revive) and clear the death overlay so the run continues.
+  //
+  // Fully dark-shippable: without server-side config, /api/coinop/config
+  // returns {enabled:false} and none of this code changes any UI.
+  // ------------------------------------------------------------------
+
+  const CoinOp = (function () {
+    let cfg = { enabled: false };
+
+    function setStatus(msg, isError) {
+      if (!el.deathContinueStatus) return;
+      if (!msg) {
+        el.deathContinueStatus.classList.add("hidden");
+        el.deathContinueStatus.textContent = "";
+        return;
+      }
+      el.deathContinueStatus.textContent = msg;
+      el.deathContinueStatus.classList.remove("hidden");
+      el.deathContinueStatus.classList.toggle("error", !!isError);
+    }
+
+    async function fetchConfig() {
+      try {
+        const resp = await fetch("/api/coinop/config", { method: "GET" });
+        if (!resp.ok) return { enabled: false };
+        return await resp.json();
+      } catch (_) {
+        return { enabled: false };
+      }
+    }
+
+    function paintButton() {
+      if (!el.deathContinue) return;
+      if (!cfg.enabled) {
+        el.deathContinue.classList.add("hidden");
+        return;
+      }
+      el.deathContinue.classList.remove("hidden");
+      if (el.deathContinuePrice) {
+        el.deathContinuePrice.textContent = cfg.display_price ? `(${cfg.display_price})` : "";
+      }
+      const labelEl = el.deathContinue.querySelector(".continue-label");
+      if (labelEl && cfg.label) labelEl.textContent = cfg.label;
+    }
+
+    async function startCheckout() {
+      if (!cfg.enabled) return;
+      setStatus("Opening Stripe Checkout…", false);
+      el.deathContinue.classList.add("busy");
+      try {
+        const resp = await fetch("/api/coinop/checkout", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Session-Id": SESSION_ID,
+          },
+          body: JSON.stringify({ session_id: SESSION_ID }),
+        });
+        if (!resp.ok) {
+          throw new Error(`checkout HTTP ${resp.status}`);
+        }
+        const data = await resp.json();
+        if (!data.url) throw new Error("no checkout url returned");
+        // Redirect the top window so this works even when the game is
+        // embedded in an iframe on the main site (Stripe refuses to load
+        // inside a third-party frame). Falls back to a same-frame redirect
+        // when top navigation is blocked.
+        try {
+          window.top.location.href = data.url;
+        } catch (_) {
+          window.location.href = data.url;
+        }
+      } catch (err) {
+        console.error("[coinop] checkout failed:", err);
+        setStatus("Could not open checkout. Try again in a moment.", true);
+        el.deathContinue.classList.remove("busy");
+      }
+    }
+
+    async function handleReturnIfPresent() {
+      let q;
+      try { q = new URLSearchParams(location.search); } catch (_) { return; }
+      const status = q.get("coinop");
+      if (!status) return;
+      const csId = q.get("cs") || "";
+
+      // Clean the URL immediately so a refresh doesn't re-trigger anything
+      // and so a copy/paste of the return URL doesn't leak the session id.
+      try {
+        q.delete("coinop");
+        q.delete("cs");
+        const rest = q.toString();
+        const clean = location.pathname + (rest ? `?${rest}` : "") + location.hash;
+        history.replaceState(null, "", clean);
+      } catch (_) {}
+
+      if (status === "cancel") {
+        setStatus("Checkout cancelled. You can still restart.", false);
+        return;
+      }
+      if (status !== "success" || !csId) return;
+
+      if (!cfg.enabled) cfg = await fetchConfig();
+      if (!cfg.enabled) {
+        setStatus("Continue is not available on this server.", true);
+        return;
+      }
+
+      setStatus("Verifying payment…", false);
+      try {
+        const resp = await fetch("/api/coinop/redeem", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Session-Id": SESSION_ID,
+          },
+          body: JSON.stringify({
+            session_id: SESSION_ID,
+            checkout_session_id: csId,
+          }),
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.ok) {
+          const reason = (data && data.reason) || `HTTP ${resp.status}`;
+          setStatus(`Continue failed: ${reason}. Contact support if you were charged.`, true);
+          return;
+        }
+        // Redeem succeeded server-side; the engine has appended the
+        // revive feed items. Clear the death overlay FIRST (so the fresh
+        // player_choice_prompt is treated as a real choice prompt and not
+        // as another death-screen restart), then trigger a manual poll so
+        // the new items surface without waiting for the poll tick.
+        setStatus("");
+        try { Sound.pickup(); } catch (_) {}
+        try { exitGameOver(); } catch (_) {}
+        try { if (typeof pollOnce === "function") pollOnce(); } catch (_) {}
+      } catch (err) {
+        console.error("[coinop] redeem failed:", err);
+        setStatus("Could not verify payment. Contact support if you were charged.", true);
+      }
+    }
+
+    async function init() {
+      cfg = await fetchConfig();
+      paintButton();
+      if (el.deathContinue) {
+        el.deathContinue.addEventListener("click", startCheckout);
+      }
+      // Handle the redirect back from Stripe (if that's how we got here).
+      handleReturnIfPresent();
+    }
+
+    return { init };
+  })();
+
+  // ------------------------------------------------------------------
   // Bootstrap — every visit / reload starts a fresh run from scratch
   // ------------------------------------------------------------------
 
@@ -8608,7 +8774,17 @@
    * choices (and, in realtime, a fresh world-model stage) come up immediately.
    */
   async function bootstrap() {
-    await resetGame();
+    // If we're returning from Stripe (?coinop=success), skip the automatic
+    // reset — a reset would blow away the run the player just paid to
+    // continue. CoinOp.init() will handle the redeem+revive itself.
+    let returningFromCoinop = false;
+    try {
+      const q = new URLSearchParams(location.search);
+      returningFromCoinop = q.get("coinop") === "success";
+    } catch (_) {}
+    if (!returningFromCoinop) {
+      await resetGame();
+    }
   }
 
   // ------------------------------------------------------------------
@@ -8643,6 +8819,7 @@
     Menu.init();
     Tactile.init();
     el.deathRestart.addEventListener("click", resetGame);
+    CoinOp.init();
     if (el.caseRestart) el.caseRestart.addEventListener("click", resetGame);
     if (el.caseContinue) el.caseContinue.addEventListener("click", hideCaseWin);
     el.freeWillBtn.addEventListener("click", openFreeWill);

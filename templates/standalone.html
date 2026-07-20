@@ -579,6 +579,15 @@
       <div class="death-static"></div>
       <h1 class="death-title">YOU DIED</h1>
       <p id="death-message">The transmission ends.</p>
+      <!-- Coin-op: rendered only when /api/coinop/config returns enabled=true.
+           Kept as a plain <button> so it inherits screen-reader / focus
+           behavior from the rest of the death overlay controls. -->
+      <button id="death-continue" type="button" class="hidden" data-price="" data-currency="">
+        <span class="coin-slot" aria-hidden="true">◉</span>
+        <span class="continue-label">Insert Coin — Continue</span>
+        <span class="continue-price" id="death-continue-price"></span>
+      </button>
+      <div id="death-continue-status" class="continue-status hidden"></div>
       <button id="death-restart" type="button">▶ RESTART SIMULATION</button>
       <div class="death-hint">press R to restart</div>
     </div>

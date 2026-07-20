@@ -11,3 +11,4 @@ opencv-python
 google-genai>=1.52.0
 anthropic
 flask-sock
+stripe>=10.0.0

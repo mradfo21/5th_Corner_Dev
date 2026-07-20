@@ -1100,6 +1100,74 @@ body.story-log-on .story-log { display: flex; }
   transform: translateY(1px);
 }
 
+/* ---------- Coin-op continue button (death overlay) ----------
+   Renders above the RESTART button when /api/coinop/config returns
+   enabled=true. Deliberately styled in phosphor green — the color the
+   game already uses for "system online / positive signal" — so it reads
+   as an alternative to the red RESTART, not a variant of it. Never
+   present if the feature flag or Stripe keys are missing. */
+
+#death-continue {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-width: 260px;
+  margin: 0 auto 14px;
+  padding: 14px 24px;
+  background: rgba(80, 220, 140, 0.14);
+  border: 1px solid rgba(120, 240, 170, 0.7);
+  color: #d6ffd6;
+  font-family: 'VT323', 'Share Tech Mono', monospace;
+  font-size: 18px;
+  letter-spacing: 0.08em;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.08s, box-shadow 0.2s;
+  text-shadow: 0 0 6px rgba(160, 255, 190, 0.35);
+  box-shadow: 0 0 0 rgba(120, 240, 170, 0);
+}
+
+#death-continue:hover {
+  background: rgba(80, 220, 140, 0.28);
+  box-shadow: 0 0 18px rgba(120, 240, 170, 0.25);
+}
+
+#death-continue:active {
+  transform: translateY(1px);
+}
+
+#death-continue[disabled],
+#death-continue.busy {
+  opacity: 0.6;
+  cursor: progress;
+  pointer-events: none;
+}
+
+#death-continue .coin-slot {
+  font-size: 20px;
+  color: #ffe066;
+  text-shadow: 0 0 8px rgba(255, 224, 102, 0.5);
+}
+
+#death-continue .continue-price {
+  font-size: 14px;
+  opacity: 0.85;
+  letter-spacing: 0.05em;
+}
+
+.continue-status {
+  margin: 0 auto 14px;
+  max-width: 420px;
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  color: rgba(200, 220, 200, 0.8);
+}
+
+.continue-status.error {
+  color: #f5b0b0;
+}
+
 .death-hint {
   margin-top: 14px;
   font-size: 11px;
