@@ -1,7 +1,7 @@
 """
 Direct engine proxy for SOMEWHERE Game Engine.
 
-bot.py imports this as its engine handle:
+Provides a thin, per-session engine handle:
 
     from api_client import api as engine
     result = api.advance_turn_image_fast(choice, fate, session_id=sid)

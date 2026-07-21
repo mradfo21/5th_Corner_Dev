@@ -211,7 +211,7 @@ def get_available_presets() -> Dict[str, Dict[str, str]]:
 # this changes the existing preset/config behavior above — it only
 # activates when something explicitly opts in via set_backend_override()
 # or the STORYGEN_BACKEND env var. Production engine.py / choices.py /
-# bot.py / admin / session API are unaffected unless they choose to call
+# admin / session API are unaffected unless they choose to call
 # into chat()/vision()/generate_image() or check active_backend().
 # ═══════════════════════════════════════════════════════════════════
 

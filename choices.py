@@ -437,7 +437,7 @@ def generate_choices(
     # Robust response parser — Gemini will sometimes return a candidates entry
     # with `finishReason: SAFETY` and NO `content.parts`, or `parts` containing
     # only a `functionCall` instead of `text`. Either case used to throw an
-    # unhandled IndexError/KeyError that bubbled up to bot.py's Phase 2 guard
+    # unhandled IndexError/KeyError that bubbled up through the turn guard
     # and produced fallback choices, which is what the player saw as
     # "Generating choices failed". Now we extract text defensively and fall
     # back to contextual choices if no usable text is found.

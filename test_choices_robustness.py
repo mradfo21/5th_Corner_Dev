@@ -3,7 +3,7 @@
 
 This suite locks in the fix for "Generating choices failed on latest on
 the initial turn" by exercising the four classic Gemini failure modes that
-used to bubble up to bot.py's Phase 2 guard and produce generic "Look
+used to bubble up through the choice generator and produce generic "Look
 around / Move forward / Wait" filler:
 
   1. Empty `candidates` array.
@@ -15,10 +15,6 @@ We also test the source-level invariants:
 
   5. The choices payload must include BLOCK_NONE safetySettings (or the
      same SAFETY block above will silently strip text again).
-  6. The bot's intro fallback builder (`_build_intro_fallback_choices`) must
-     never produce the legacy "Look around carefully / Move forward slowly /
-     Wait and observe" string — those are explicitly forbidden by the
-     player_choice_generation_instructions prompt.
 
 Run hermetically:
 
@@ -39,7 +35,6 @@ if str(WORKSPACE) not in sys.path:
 # Hermetic environment
 os.environ.setdefault("GEMINI_API_KEY", "test_key_choices")
 os.environ.setdefault("OPENAI_API_KEY", "")
-os.environ.setdefault("DISCORD_ENABLED", "0")
 
 
 def _make_response(status: int, payload: dict) -> MagicMock:
@@ -178,45 +173,6 @@ class TestChoicesPayloadHasSafetySettings(unittest.TestCase):
             "HARM_CATEGORY_DANGEROUS_CONTENT",
         ):
             self.assertIn(cat, src, f"Missing {cat} in choices safety settings")
-
-
-class TestBotIntroFallbackIsContextual(unittest.TestCase):
-    """`_build_intro_fallback_choices` must not return legacy corporate filler."""
-
-    def test_fallback_not_legacy_filler(self):
-        """The forbidden strings must NEVER be emitted by the fallback."""
-        src = (WORKSPACE / "bot.py").read_text(encoding="utf-8")
-        # The function must exist…
-        self.assertIn("def _build_intro_fallback_choices", src)
-        # …and the legacy strings must NOT appear inside its body. We
-        # detect the function body via a slice from the def to the next
-        # top-level def, which is good enough for a static check.
-        start = src.find("def _build_intro_fallback_choices")
-        next_def = src.find("\n    def ", start + 1)
-        body = src[start:next_def] if next_def != -1 else src[start:]
-        forbidden = (
-            "Look around carefully",
-            "Move forward slowly",
-            "Wait and observe",
-        )
-        for f in forbidden:
-            self.assertNotIn(
-                f, body,
-                f"Intro fallback must not emit legacy corporate filler: {f!r}",
-            )
-
-    def test_intro_path_uses_contextual_fallback(self):
-        """Both PlayButton and PlayNoImagesButton must call the contextual
-        fallback builder when Phase 2 / generate_intro_turn yields no
-        choices — never the old hard-coded list."""
-        src = (WORKSPACE / "bot.py").read_text(encoding="utf-8")
-        # The function must be called at least 3 times (PlayButton with-images
-        # path, PlayButton no-images path, PlayNoImagesButton legacy path).
-        self.assertGreaterEqual(
-            src.count("_build_intro_fallback_choices("),
-            3,
-            "Intro fallback builder must be called from all intro code paths",
-        )
 
 
 class TestMeaninglessChoiceFilter(unittest.TestCase):
