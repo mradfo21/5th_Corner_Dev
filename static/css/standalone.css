@@ -4175,24 +4175,18 @@ body.moment-underlay-paused .reactor-freeze {
 #moment-overlay.moment-in .moment-letterbox-top,
 #moment-overlay.moment-in .moment-letterbox-bottom { transform: translateY(0); }
 
-/* Portrait frame — cinematic medium shot, fills the letterboxed stage. */
+/* Portrait — a FULL-SCREEN cinematic medium shot. The character render fills
+   the entire viewport (object-fit: cover); the letterbox bars, nameplate,
+   notifications, and caption bar all sit ON TOP of it. */
 #moment-portrait {
   position: absolute;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -52%);
-  width: min(920px, 92vw);
-  height: min(58vh, 520px);
+  inset: 0;
   z-index: 1;
-  border-radius: 4px;
   overflow: hidden;
   background:
-    radial-gradient(120% 80% at 50% 40%, rgba(40, 28, 22, 0.85), rgba(8, 6, 10, 0.95));
-  box-shadow:
-    0 0 0 1px rgba(255, 205, 140, 0.12),
-    0 24px 80px rgba(0, 0, 0, 0.65);
+    radial-gradient(120% 90% at 50% 40%, rgba(40, 28, 22, 0.85), rgba(8, 6, 10, 0.98));
   opacity: 0;
-  transition: opacity 0.4s ease, transform 0.5s cubic-bezier(0.2, 0.9, 0.25, 1);
+  transition: opacity 0.4s ease;
 }
 #moment-overlay.moment-in #moment-portrait { opacity: 1; }
 #moment-portrait-video {
@@ -4433,11 +4427,7 @@ body.moment-conversation #talk-float-who {
 }
 
 @media (max-width: 640px) {
-  #moment-portrait {
-    width: calc(100vw - 20px);
-    height: min(46vh, 360px);
-    transform: translate(-50%, -48%);
-  }
+  /* Portrait stays full-bleed on mobile too (inherits inset:0). */
   #moment-nameplate {
     left: 14px;
     top: calc(10vh + 10px);
