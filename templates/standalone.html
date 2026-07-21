@@ -114,6 +114,22 @@
     <div id="vhs-timecode">REC <span id="rec-dot">●</span> <span id="timecode-text">00:00:00</span></div>
   </div>
 
+  <!-- Coin meter: always-visible arcade credit HUD chip. Sits below the
+       REC timecode in the top-right so it reads as part of the same
+       arcade cabinet readout. Hidden until /api/coinop/config confirms
+       gating is on; once on, we render "🪙 CREDITS 07 · SPENT $0.99"
+       and gently pulse the count when it drops to <= 2 so the player
+       feels the countdown coming. Clickable — a click opens the
+       insert-coin pause overlay so the player can top up before hitting
+       zero (no need to actually run out to buy more). -->
+  <button id="credit-meter" class="credit-meter hidden" type="button"
+          aria-live="polite" title="Click to buy more credits">
+    <span class="credit-meter-coin" aria-hidden="true">◉</span>
+    <span class="credit-meter-count" id="credit-meter-count">—</span>
+    <span class="credit-meter-sep" aria-hidden="true">·</span>
+    <span class="credit-meter-spent" id="credit-meter-spent">$0.00</span>
+  </button>
+
   <!-- Menu toggle: a single always-visible button in the very top-right corner.
        The control menu starts COLLAPSED so the scene stays unobstructed; this
        button opens/closes it (toggles body.menu-open). Also reachable with Tab. -->
@@ -642,8 +658,50 @@
        arcade cabinet counter that shows how many quarters this run cost. -->
   <div id="continues-hud" class="continues-hud hidden" aria-live="polite">
     <span class="continues-hud-icon">◉</span>
-    <span class="continues-hud-label">CREDITS</span>
+    <span class="continues-hud-label">CONTINUES</span>
     <span id="continues-hud-count" class="continues-hud-count">0</span>
+  </div>
+
+  <!-- OUT-OF-COINS pause overlay. Fires when /api/choose returns 402 with
+       {needs_coin: true} because the credit meter hit zero. The world is
+       frozen behind it (see body.coinop-paused CSS) so the transmission
+       feel is preserved — this is the arcade cabinet's "INSERT COIN TO
+       CONTINUE" screen, adapted to a life-simulation rhythm. Layout
+       mirrors #death-overlay so the coin-drop / ceremony animations and
+       the C keyboard shortcut are structurally reusable. -->
+  <div id="coinop-pause-overlay" class="coinop-pause-overlay hidden" aria-hidden="true">
+    <div class="pause-inner">
+      <div class="pause-static"></div>
+      <div class="pause-eyebrow">TRANSMISSION PAUSED</div>
+      <h1 class="pause-title">INSERT COIN</h1>
+      <p class="pause-sub" id="pause-sub">
+        Your credits ran out. Drop a coin to keep playing —
+        <span id="pause-pack-blurb">20 credits per coin.</span>
+      </p>
+      <div id="coinop-pause-block" class="coinop-block">
+        <div class="coinop-header">
+          <span class="coinop-title">CONTINUE?</span>
+          <span id="pause-countdown" class="coinop-countdown" aria-live="polite">10</span>
+        </div>
+        <button id="pause-continue" type="button" data-price="" data-currency="">
+          <span class="coin-slot" aria-hidden="true">◉</span>
+          <span class="continue-label">Insert Coin — Add Credits</span>
+          <span class="continue-price" id="pause-continue-price"></span>
+          <span class="coin-drop" aria-hidden="true"></span>
+        </button>
+        <div id="pause-continue-status" class="continue-status hidden" aria-live="polite"></div>
+        <div class="death-hint coinop-hint">press <b>C</b> to insert coin</div>
+      </div>
+      <button id="pause-restart" type="button" class="pause-secondary">▶ RESTART SIMULATION</button>
+      <div class="death-hint">press <b>R</b> to restart from scratch</div>
+    </div>
+    <!-- Coin-drop / return ceremony reuse. Sits above the pause content
+         so the phosphor flash reads as "reboot" instead of the overlay
+         just vanishing. -->
+    <div id="pause-ceremony" class="coinop-ceremony hidden" aria-hidden="true">
+      <div class="coinop-ceremony-bar"></div>
+      <div class="coinop-ceremony-text">CONTINUE</div>
+    </div>
   </div>
 
   <!-- Backend / connectivity tag -->

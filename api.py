@@ -97,7 +97,72 @@ app.add_url_rule('/api/reset', 'standalone_api_reset', _session_scoped(engine.ap
 # mirror (see comment above). engine.api_feed resolves its own session id and
 # reads from disk.
 app.add_url_rule('/api/feed', 'standalone_api_feed', engine.api_feed, methods=['GET'])
-app.add_url_rule('/api/choose', 'standalone_api_choose', _session_scoped(engine.api_choose), methods=['POST'])
+
+
+def _credit_gated_choose():
+    """Wrap engine.api_choose with the arcade credit meter.
+
+    Flow (only active when COINOP_CREDIT_GATING=1 — otherwise a straight
+    pass-through so nothing changes for deploys that only want the paid
+    death-continue flow):
+
+    1. Attempt a single atomic spend_credit(1) BEFORE touching the engine.
+       This is the check + debit in one lock-held operation, so two
+       concurrent /api/choose calls for the same session can never both
+       succeed off a balance of 1 (the second would see 0 and refuse).
+    2. If the spend refuses (balance was 0), return HTTP 402 with
+       {needs_coin: true, balance: 0} and do NOT process the turn. The
+       client pops the "OUT OF COINS" pause overlay.
+    3. Otherwise let the engine handle the turn. On any server error,
+       REFUND the credit so a Stripe-live player doesn't lose money to
+       a transient LLM outage. Refund is best-effort — if it fails,
+       we've cost the player one credit; better than double-charging.
+
+    Why spend-then-maybe-refund instead of check-then-maybe-debit: the
+    former composes atomically under a single lock hold, the latter
+    has a check-to-debit window where a concurrent turn can slip
+    through. The refund on error is cheap and safe (it can never grant
+    more credits than were spent).
+    """
+    sid = engine._resolve_request_session_id()
+    gated = coinop.is_credit_gating_enabled()
+    debited = False
+    if gated:
+        spend = coinop.spend_credit(sid, amount=1, reason="choose")
+        if not spend.get("ok"):
+            return jsonify({
+                "needs_coin": True,
+                "balance": int(spend.get("balance", 0)),
+                "reason": spend.get("reason", "insufficient_credits"),
+                "message": "Out of coins — insert more to keep playing.",
+            }), 402
+        debited = True
+
+    try:
+        response = engine.api_choose()
+    except Exception:
+        if debited:
+            try:
+                coinop.grant_credits(sid, 1, source="refund")
+            except Exception:
+                traceback.print_exc()
+        raise
+
+    try:
+        status = response.status_code if hasattr(response, 'status_code') else 200
+    except Exception:
+        status = 200
+    if debited and status >= 500:
+        # The engine returned a 5xx (server-side failure) — refund so we
+        # don't burn a coin on a turn the player never saw.
+        try:
+            coinop.grant_credits(sid, 1, source="refund")
+        except Exception:
+            traceback.print_exc()
+    return response
+
+
+app.add_url_rule('/api/choose', 'standalone_api_choose', _session_scoped(_credit_gated_choose), methods=['POST'])
 app.add_url_rule('/api/regenerate_choices', 'standalone_api_regenerate_choices', _session_scoped(engine.api_regenerate_choices), methods=['POST'])
 
 # ─── COIN-OP (buy-a-continue) ────────────────────────────────────────────
@@ -119,6 +184,21 @@ def _coinop_config():
     # client asked about.
     comp = request.args.get('comp') or None
     return jsonify(coinop.public_config(comp))
+
+
+@app.route('/api/coinop/balance', methods=['GET'])
+@_session_scoped
+def _coinop_balance():
+    """Snapshot of the session's credit ledger.
+
+    Polled by the client to render the always-visible credit HUD chip
+    (top-right, next to the REC timecode) and to decide whether the
+    "OUT OF COINS" pause overlay should be dismissed after a successful
+    purchase. Idempotent — the first call to a fresh session's ledger
+    grants the one-shot free starter tier (see coinop._ensure_free_starter).
+    """
+    sid = engine._resolve_request_session_id()
+    return jsonify(coinop.get_balance(sid))
 
 
 @app.route('/api/coinop/checkout', methods=['POST'])
@@ -152,25 +232,51 @@ def _coinop_redeem():
         return jsonify(result), 402  # 402 Payment Required
     # Idempotent replay of the return URL (or a duplicate redeem call
     # from a racy retry): the FIRST successful redeem already invoked
-    # api_revive and the resulting continue_used + player_choice_prompt
-    # feed items are in the session's feed_log. Running api_revive again
-    # would double-append the narrative beat, which reads as a stutter
-    # on screen. The client already has everything it needs from the
-    # normal /api/feed polling, so just acknowledge the replay.
+    # api_revive (if applicable) and granted credits. Running either
+    # again would double-append the narrative beat / double-grant
+    # credits, which reads as a stutter on screen and a phantom refund.
     if result.get('already_redeemed'):
         return jsonify({
             "ok": True,
             "already_redeemed": True,
             "comp": result.get('comp', False),
             "revive_items": [],
+            "balance": coinop.get_balance(sid).get("balance", 0),
         })
-    # First-time redeem for this checkout id → mint the actual revive.
-    revive_response = engine.api_revive()
+
+    # First-time redeem for this checkout id. Two behaviours, decided by
+    # the actual player state — one payment endpoint serves both flows:
+    #
+    #   * DEAD player → mint the revive (calls api_revive to bring them
+    #     back and append the continue_used narrative beat), on top of
+    #     the credits that verify_and_redeem already granted.
+    #   * ALIVE player → don't revive (there's nothing to revive from),
+    #     just report the new balance. This is the "insert coin to keep
+    #     playing" pause overlay's happy path.
+    #
+    # This lets one Stripe SKU serve both the death-continue and the
+    # credit-topup flows — cheaper cognitively for the player, and we
+    # don't have to run two separate product/price ids on the Stripe
+    # side just to distinguish them.
+    revive_items = None
+    try:
+        st = engine.get_state(sid) or {}
+        alive = (st.get("player_state") or {}).get("alive", True)
+    except Exception:
+        alive = True
+
+    if not alive:
+        revive_response = engine.api_revive()
+        revive_items = revive_response.get_json() if hasattr(revive_response, 'get_json') else None
+
     return jsonify({
         "ok": True,
         "already_redeemed": False,
         "comp": result.get('comp', False),
-        "revive_items": revive_response.get_json() if hasattr(revive_response, 'get_json') else None,
+        "revived": (revive_items is not None),
+        "credits_added": result.get('credits_added', 0),
+        "balance": result.get('balance', coinop.get_balance(sid).get("balance", 0)),
+        "revive_items": revive_items,
     })
 
 

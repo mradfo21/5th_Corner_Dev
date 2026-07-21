@@ -1417,10 +1417,346 @@ body.story-log-on .story-log { display: flex; }
   animation: coinop-hud-tick 0.5s ease-out;
 }
 
+/* Slide the continues-used chip down a row when the credit meter is on,
+   so the two arcade readouts stack cleanly in the top-right corner
+   instead of overlapping. Owned by the credit meter's mount state
+   (body.credit-meter-on) so a deploy without gating enabled keeps the
+   old single-chip layout untouched. */
+body.credit-meter-on .continues-hud {
+  top: calc(env(safe-area-inset-top, 0px) + 52px);
+}
+
 @keyframes coinop-hud-tick {
   0%   { box-shadow: 0 0 14px rgba(0, 0, 0, 0.5), 0 0 0 rgba(160, 255, 190, 0); }
   40%  { box-shadow: 0 0 14px rgba(0, 0, 0, 0.5), 0 0 22px rgba(160, 255, 190, 0.7); }
   100% { box-shadow: 0 0 14px rgba(0, 0, 0, 0.5), 0 0 0 rgba(160, 255, 190, 0); }
+}
+
+/* ================================================================
+   CREDIT METER (arcade "insert coin" HUD chip)
+   ================================================================
+   Always-visible top-right chip that reads like part of the same
+   arcade cabinet readout as REC / timecode. Renders "◉ 07 · $0.99"
+   where the count is the remaining credits and the dollar figure is
+   total spent on this run.
+
+   States:
+     .hidden               — pre-config or gating off
+     .low                  — <= 2 credits, subtle amber pulse
+     .empty                — 0 credits, red pulse (rarely seen; the
+                             pause overlay usually takes over first)
+     .tick                 — one-shot flash when the count decrements
+     .refilled             — one-shot green flash on credit grant
+*/
+
+.credit-meter {
+  position: fixed;
+  /* Sit BELOW the REC timecode (which is at top+16 with ~22px of
+     visual height). The gap (~18px) matches the REC-to-menu-button
+     visual rhythm on the right rail. */
+  top: calc(env(safe-area-inset-top, 0px) + 38px);
+  right: calc(env(safe-area-inset-right, 0px) + 62px);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px 4px 8px;
+  background: rgba(0, 20, 8, 0.68);
+  border: 1px solid rgba(120, 240, 170, 0.5);
+  border-radius: 3px;
+  color: #d6ffd6;
+  font-family: 'VT323', 'Share Tech Mono', monospace;
+  font-size: 14px;
+  letter-spacing: 0.12em;
+  text-shadow: 0 0 6px rgba(160, 255, 190, 0.35);
+  box-shadow: 0 0 12px rgba(0, 0, 0, 0.5);
+  z-index: 6;
+  cursor: pointer;
+  transition: opacity 0.35s, transform 0.35s, border-color 0.4s,
+              background 0.4s, color 0.4s;
+}
+
+.credit-meter:hover {
+  border-color: rgba(160, 255, 190, 0.85);
+  background: rgba(0, 30, 12, 0.82);
+}
+
+.credit-meter.hidden {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-4px);
+  display: inline-flex; /* keep laid-out so show animates in */
+}
+
+.credit-meter-coin {
+  color: #ffe066;
+  text-shadow: 0 0 6px rgba(255, 224, 102, 0.55);
+  font-size: 12px;
+}
+
+.credit-meter-count {
+  color: #fff5cf;
+  font-weight: bold;
+  min-width: 2ch;
+  text-align: center;
+}
+
+.credit-meter-sep {
+  opacity: 0.4;
+}
+
+.credit-meter-spent {
+  color: rgba(214, 255, 214, 0.65);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+}
+
+.credit-meter.low {
+  border-color: rgba(255, 200, 90, 0.75);
+  color: #ffe1a3;
+  animation: credit-meter-low-pulse 1.8s ease-in-out infinite;
+}
+.credit-meter.low .credit-meter-count {
+  color: #ffd76a;
+  text-shadow: 0 0 8px rgba(255, 215, 106, 0.6);
+}
+
+.credit-meter.empty {
+  border-color: rgba(255, 90, 90, 0.85);
+  color: #ffc3c3;
+  animation: credit-meter-empty-pulse 1.1s ease-in-out infinite;
+}
+.credit-meter.empty .credit-meter-count {
+  color: #ff8686;
+  text-shadow: 0 0 10px rgba(255, 96, 96, 0.7);
+}
+
+.credit-meter.tick {
+  animation: credit-meter-tick 0.42s ease-out;
+}
+.credit-meter.refilled {
+  animation: credit-meter-refilled 0.9s ease-out;
+}
+
+@keyframes credit-meter-low-pulse {
+  0%, 100% { box-shadow: 0 0 12px rgba(0, 0, 0, 0.5), 0 0 0 rgba(255, 215, 106, 0); }
+  50%      { box-shadow: 0 0 12px rgba(0, 0, 0, 0.5), 0 0 14px rgba(255, 215, 106, 0.45); }
+}
+@keyframes credit-meter-empty-pulse {
+  0%, 100% { box-shadow: 0 0 12px rgba(0, 0, 0, 0.5), 0 0 0 rgba(255, 90, 90, 0); }
+  50%      { box-shadow: 0 0 12px rgba(0, 0, 0, 0.5), 0 0 18px rgba(255, 90, 90, 0.65); }
+}
+@keyframes credit-meter-tick {
+  0%   { transform: scale(1.0); }
+  35%  { transform: scale(1.14); }
+  100% { transform: scale(1.0); }
+}
+@keyframes credit-meter-refilled {
+  0%   { box-shadow: 0 0 12px rgba(0, 0, 0, 0.5), 0 0 0 rgba(120, 255, 170, 0); border-color: rgba(120, 240, 170, 0.5); }
+  30%  { box-shadow: 0 0 12px rgba(0, 0, 0, 0.5), 0 0 26px rgba(120, 255, 170, 0.85); border-color: rgba(160, 255, 190, 1); }
+  100% { box-shadow: 0 0 12px rgba(0, 0, 0, 0.5), 0 0 0 rgba(120, 255, 170, 0); border-color: rgba(120, 240, 170, 0.5); }
+}
+
+/* ================================================================
+   INSERT-COIN PAUSE OVERLAY (out-of-credits screen)
+   ================================================================
+   Mirrors the death overlay's visual language so the coin-op flow is
+   one consistent arcade experience: same phosphor CRT skin, same
+   green-on-black chrome, same coin-slot / coin-drop / return
+   ceremony primitives. The world behind is frozen via
+   body.coinop-paused (below) so the transmission "stops" rather than
+   just receding.
+*/
+
+.coinop-pause-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;                /* above realtime canvas + labels, below menus */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background:
+    radial-gradient(ellipse at center, rgba(0, 15, 8, 0.68) 0%, rgba(0, 0, 0, 0.94) 100%);
+  color: #d6ffd6;
+  text-align: center;
+  font-family: 'VT323', 'Share Tech Mono', monospace;
+  animation: coinop-pause-fadein 0.35s ease-out;
+  backdrop-filter: blur(3px) saturate(0.6);
+  -webkit-backdrop-filter: blur(3px) saturate(0.6);
+}
+
+.coinop-pause-overlay.hidden {
+  display: none;
+}
+
+@keyframes coinop-pause-fadein {
+  0%   { opacity: 0; }
+  100% { opacity: 1; }
+}
+
+.coinop-pause-overlay .pause-inner {
+  position: relative;
+  padding: 32px 48px 28px;
+  max-width: 560px;
+}
+
+.coinop-pause-overlay .pause-static {
+  position: absolute;
+  inset: -20px;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(0deg,
+      rgba(255,255,255,0.03) 0px,
+      rgba(255,255,255,0.03) 1px,
+      transparent 1px,
+      transparent 3px);
+  opacity: 0.6;
+  mix-blend-mode: overlay;
+}
+
+.coinop-pause-overlay .pause-eyebrow {
+  font-size: 12px;
+  letter-spacing: 0.32em;
+  color: rgba(214, 255, 214, 0.55);
+  margin-bottom: 12px;
+}
+
+.coinop-pause-overlay .pause-title {
+  margin: 0 0 10px;
+  font-size: clamp(46px, 8vw, 84px);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: #ffe066;
+  text-shadow:
+    0 0 12px rgba(255, 224, 102, 0.55),
+    0 0 30px rgba(255, 224, 102, 0.25),
+    0 2px 0 rgba(0, 0, 0, 0.6);
+  animation: coinop-pause-title-flicker 3.4s steps(20, end) infinite;
+}
+
+@keyframes coinop-pause-title-flicker {
+  0%, 92%, 100% { opacity: 1; }
+  93%           { opacity: 0.65; }
+  94%           { opacity: 1; }
+  96%           { opacity: 0.85; }
+}
+
+.coinop-pause-overlay .pause-sub {
+  margin: 0 auto 22px;
+  font-size: 15px;
+  letter-spacing: 0.06em;
+  color: rgba(214, 255, 214, 0.85);
+  max-width: 440px;
+  line-height: 1.4;
+}
+
+.coinop-pause-overlay #pause-pack-blurb {
+  color: #ffe066;
+}
+
+.coinop-pause-overlay #coinop-pause-block {
+  display: block; /* always shown when the overlay is open — this IS the point */
+}
+
+.coinop-pause-overlay #pause-continue {
+  /* Inherit the death-continue button vibes; explicit rules mirror
+     #death-continue so the two buttons look identical. */
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 24px;
+  background: linear-gradient(180deg, rgba(255, 224, 102, 0.14) 0%, rgba(255, 190, 30, 0.06) 100%);
+  border: 1px solid rgba(255, 224, 102, 0.6);
+  color: #fff5cf;
+  font-family: 'VT323', 'Share Tech Mono', monospace;
+  font-size: 20px;
+  letter-spacing: 0.12em;
+  cursor: pointer;
+  position: relative;
+  overflow: hidden;
+  transition: background 0.2s, border-color 0.2s, transform 0.1s;
+  text-transform: uppercase;
+}
+
+.coinop-pause-overlay #pause-continue:hover:not(.busy) {
+  background: linear-gradient(180deg, rgba(255, 224, 102, 0.28) 0%, rgba(255, 190, 30, 0.12) 100%);
+  border-color: rgba(255, 224, 102, 1);
+}
+.coinop-pause-overlay #pause-continue:active { transform: translateY(1px); }
+.coinop-pause-overlay #pause-continue.busy { opacity: 0.7; cursor: wait; }
+
+.coinop-pause-overlay #pause-continue .coin-slot {
+  font-size: 20px;
+  color: #ffe066;
+  text-shadow: 0 0 8px rgba(255, 224, 102, 0.5);
+}
+.coinop-pause-overlay #pause-continue .continue-price {
+  font-size: 14px;
+  opacity: 0.85;
+  letter-spacing: 0.05em;
+}
+.coinop-pause-overlay #pause-continue .coin-drop {
+  position: absolute;
+  top: -22px;
+  left: 22px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 30% 30%, #fff9c9 0%, #ffe066 45%, #b78d1a 100%);
+  box-shadow: 0 0 10px rgba(255, 224, 102, 0.7);
+  opacity: 0;
+  pointer-events: none;
+}
+.coinop-pause-overlay #pause-continue.dropping .coin-drop {
+  animation: coinop-coin-drop 0.44s cubic-bezier(0.4, 0, 0.6, 1) forwards;
+}
+.coinop-pause-overlay #pause-continue.dropping .coin-slot {
+  animation: coinop-slot-flash 0.44s ease-out;
+}
+/* Gold-pulse variant for the comp path: no charge is happening, so
+   swap the copy hint by tinting the button clearly "free". */
+.coinop-pause-overlay #pause-continue.comp {
+  background: linear-gradient(180deg, rgba(255, 224, 102, 0.28) 0%, rgba(255, 190, 30, 0.14) 100%);
+  animation: coinop-comp-pulse 2.4s ease-in-out infinite;
+}
+@keyframes coinop-comp-pulse {
+  0%, 100% { box-shadow: 0 0 0 rgba(255, 224, 102, 0.0); }
+  50%      { box-shadow: 0 0 22px rgba(255, 224, 102, 0.55); }
+}
+
+.coinop-pause-overlay .pause-secondary {
+  margin-top: 22px;
+  padding: 8px 22px;
+  background: transparent;
+  border: 1px solid rgba(240, 200, 200, 0.35);
+  color: rgba(240, 200, 200, 0.75);
+  font-family: 'VT323', 'Share Tech Mono', monospace;
+  font-size: 15px;
+  letter-spacing: 0.14em;
+  cursor: pointer;
+  text-transform: uppercase;
+  transition: color 0.2s, border-color 0.2s;
+}
+.coinop-pause-overlay .pause-secondary:hover {
+  color: #ffb3b3;
+  border-color: rgba(255, 179, 179, 0.75);
+}
+
+/* Freeze the world behind the pause overlay: kill pointer events on
+   the action wheel so the player can't race the overlay, and drop the
+   scene into a dim/grayscale state so the pause reads as physical
+   rather than just "a modal appeared over your game". The overlay
+   itself catches all clicks. */
+body.coinop-paused #action-wheel,
+body.coinop-paused #choices-container {
+  pointer-events: none;
+  filter: grayscale(0.4) brightness(0.55);
+  transition: filter 0.35s;
+}
+body.coinop-paused #sceneA,
+body.coinop-paused #sceneB,
+body.coinop-paused #reactor-video {
+  filter: grayscale(0.6) brightness(0.42) blur(0.4px);
+  transition: filter 0.4s;
 }
 
 #death-continue .coin-slot {
