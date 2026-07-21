@@ -181,6 +181,20 @@
     coinopCeremony: document.getElementById("coinop-ceremony"),
     continuesHud: document.getElementById("continues-hud"),
     continuesHudCount: document.getElementById("continues-hud-count"),
+    // Arcade credit meter + pause overlay (see CoinOp.Meter / CoinOp.Pause
+    // in the CoinOp module below). Always resolved even when gating is
+    // off — we just leave them .hidden. Cheap to hold refs.
+    creditMeter: document.getElementById("credit-meter"),
+    creditMeterCount: document.getElementById("credit-meter-count"),
+    creditMeterSpent: document.getElementById("credit-meter-spent"),
+    pauseOverlay: document.getElementById("coinop-pause-overlay"),
+    pauseContinue: document.getElementById("pause-continue"),
+    pauseContinuePrice: document.getElementById("pause-continue-price"),
+    pauseContinueStatus: document.getElementById("pause-continue-status"),
+    pauseCountdown: document.getElementById("pause-countdown"),
+    pauseCeremony: document.getElementById("pause-ceremony"),
+    pauseRestart: document.getElementById("pause-restart"),
+    pausePackBlurb: document.getElementById("pause-pack-blurb"),
     tapeBtn: document.getElementById("tape-btn"),
     tapeOverlay: document.getElementById("tape-overlay"),
     tapeFrameA: document.getElementById("tape-frameA"),
@@ -1282,7 +1296,18 @@
       body: JSON.stringify(payload),
     });
     if (!resp.ok) {
-      throw new Error(`${url} -> HTTP ${resp.status}`);
+      // Attach the response body + status onto the thrown error so callers
+      // that care about a structured failure (specifically /api/choose
+      // returning 402 with `needs_coin: true` when the credit meter is
+      // empty) can inspect it without needing a parallel fetch. Best-
+      // effort JSON parse — a non-JSON error body (e.g. a proxy's HTML
+      // 502) just leaves body=null, no throw.
+      let errBody = null;
+      try { errBody = await resp.json(); } catch (_) {}
+      const err = new Error(`${url} -> HTTP ${resp.status}`);
+      err.status = resp.status;
+      err.body = errBody;
+      throw err;
     }
     return resp.json();
   }
@@ -4601,7 +4626,24 @@
       });
       renderItems(items); // immediately shows the player_action echo
       beginFastPolling();
+      // The server debits one credit on a successful turn. Poll the
+      // balance so the HUD chip reflects the new number right away —
+      // otherwise the count would drift until the next background poll.
+      try { CoinOp.onTurnCompleted(); } catch (_) {}
     } catch (err) {
+      // 402 + {needs_coin: true} = credit meter emptied out on the
+      // server side. Pop the "INSERT COIN" pause overlay instead of
+      // surfacing a raw error, and don't advance any turn state — the
+      // engine didn't process the turn, so nothing was consumed and
+      // there's nothing to "undo".
+      if (err && err.status === 402 && err.body && err.body.needs_coin) {
+        clearTurnWatchdog();
+        cancelMoveTransition();
+        hideVeil();
+        state.awaitingResolution = false;
+        try { CoinOp.pausePrompt(err.body); } catch (_) {}
+        return;
+      }
       console.error("[standalone] makeChoice failed:", err);
       clearTurnWatchdog();
       cancelMoveTransition(); // never leave the pre-fade hanging on a failed send
@@ -8970,6 +9012,16 @@
       else if (k === "c") { try { CoinOp.insertCoin(); } catch (_) {} }
       return;
     }
+    // While the "OUT OF COINS" pause overlay is up, the world is frozen
+    // behind it — same keyboard contract as game-over. Also prevents the
+    // regular 'C = capturePhoto' shortcut from firing invisibly under
+    // the modal.
+    if (CoinOp.isPaused && CoinOp.isPaused()) {
+      const k = e.key.toLowerCase();
+      if (k === "r") { resetGame(); return; }
+      if (k === "c") { try { CoinOp.insertCoin(); } catch (_) {} return; }
+      if (e.key === "Escape") { return; }
+    }
     // Drive joystick owns the drive keys while realtime video is on — hold to go,
     // release to stop: W/S (and ↑/↓) move forward/back, A/D (and ←/→) look
     // left/right. This reassigns those keys in LIVE mode only (D no longer
@@ -9061,8 +9113,30 @@
     // it from the URL immediately for tidiness + screen-recording privacy.
     let compCode = null;
 
-    // Run-scoped credit counter shown in the corner HUD.
+    // Run-scoped continue counter shown in the corner HUD. Separate
+    // concept from the credit meter (credit balance is server-owned;
+    // continuesUsed is a purely client-side lifetime revive count).
     let continuesUsed = 0;
+
+    // Last-known snapshot from /api/coinop/balance. Used by the meter
+    // (paint) and by pausePrompt() to decide when to auto-dismiss the
+    // pause overlay after a top-up. Missing/zeroed shape until the
+    // first successful fetchBalance() lands.
+    let bal = { balance: 0, spent_cents: 0, gating_enabled: false };
+    // Poll timer for the meter — used only in realtime sessions where
+    // "turn boundaries" don't cleanly correspond to a client action
+    // (the danger system can spend credits via server-side hooks in
+    // the future). Cheap: one HEAD-ish call every N seconds when the
+    // meter is visible.
+    let balancePollTimer = null;
+    // Pause-overlay countdown state (mirrors the death overlay's
+    // countdownTimer/countdownValue but kept separate so the two can
+    // coexist without stomping on each other in weird timing edge cases).
+    let pauseCountdownTimer = null;
+    let pauseCountdownValue = 10;
+    // Guard so a second 402 while the pause overlay is opening doesn't
+    // stack multiple "insert coin" prompts.
+    let pauseOpen = false;
 
     // CONTINUE? countdown state. Purely visual urgency — we never actually
     // block the button on countdown expiry, since the arcade cabinet's
@@ -9378,7 +9452,11 @@
         try {
           cfg = await fetchConfig();
           paintButton();
+          paintPauseButton();
         } catch (_) {}
+        // The revive endpoint also grants a fresh pack of credits — pull
+        // the new balance so the arcade meter chip glows on the way up.
+        try { await refreshBalance(); } catch (_) {}
         return true;
       } catch (err) {
         console.error("[coinop] redeem failed:", err);
@@ -9427,22 +9505,415 @@
 
     // Public helper used by the C keyboard shortcut and any other caller
     // that wants to "click" the continue button without a real DOM click
-    // (e.g. onboarding tour, e2e test, remote-play).
+    // (e.g. onboarding tour, e2e test, remote-play). Routes to whichever
+    // overlay is currently active — pause takes precedence over death
+    // (a dead-and-broke player who just paid a top-up on the pause
+    // overlay would be unnervingly odd, so pause never coexists with
+    // gameOver in practice, but the ordering here matches user intent
+    // in the edge case).
     function insertCoin() {
       if (!cfg.enabled) return;
+      if (pauseOpen && el.pauseContinue) {
+        if (el.pauseContinue.classList.contains("busy")) return;
+        pauseCheckout();
+        return;
+      }
       if (!el.deathContinue) return;
       if (el.deathContinue.classList.contains("busy")) return;
       if (el.coinopBlock && el.coinopBlock.classList.contains("hidden")) return;
       startCheckout();
     }
 
+    // ==================================================================
+    // ARCADE CREDIT METER (always-visible HUD chip)
+    // ==================================================================
+    //
+    // A live readout of the session's remaining credits + total spent.
+    // Reads from /api/coinop/balance, which is server-authoritative — the
+    // client never mutates the balance directly. Refresh cadence:
+    //
+    //   * Once at init(), so the HUD lands before the first turn.
+    //   * After every successful /api/choose (see onTurnCompleted()).
+    //   * After every successful redeem (see redeem() → refresh block).
+    //   * A slow background poll (10s) in realtime sessions as a safety
+    //     net — the server can theoretically spend credits via other
+    //     future paths (auto-turn, danger-driven costs) that don't
+    //     round-trip through /api/choose.
+    //
+    // Silent no-op when gating is off: fetchBalance still runs (so the
+    // client can log dev telemetry), but paintMeter leaves the chip
+    // .hidden.
+
+    async function fetchBalance() {
+      try {
+        const url = `/api/coinop/balance?session_id=${encodeURIComponent(SESSION_ID)}`;
+        const resp = await fetch(url, { headers: { "X-Session-Id": SESSION_ID } });
+        if (!resp.ok) return null;
+        return await resp.json();
+      } catch (_) {
+        return null;
+      }
+    }
+
+    function paintMeter() {
+      if (!el.creditMeter || !el.creditMeterCount) return;
+      if (!bal || !bal.gating_enabled) {
+        el.creditMeter.classList.add("hidden");
+        try { document.body.classList.remove("credit-meter-on"); } catch (_) {}
+        return;
+      }
+      el.creditMeter.classList.remove("hidden");
+      try { document.body.classList.add("credit-meter-on"); } catch (_) {}
+      const n = Math.max(0, Number(bal.balance || 0));
+      el.creditMeterCount.textContent = String(n);
+      if (el.creditMeterSpent) {
+        const cents = Number(bal.spent_cents || 0);
+        // $1.98 for 198 cents; $0 stays "$0.00" for consistent width.
+        el.creditMeterSpent.textContent = `$${(cents / 100).toFixed(2)}`;
+      }
+      el.creditMeter.classList.toggle("low", n > 0 && n <= 2);
+      el.creditMeter.classList.toggle("empty", n === 0);
+    }
+
+    function flashMeterTick() {
+      if (!el.creditMeter) return;
+      el.creditMeter.classList.remove("tick");
+      void el.creditMeter.offsetWidth;
+      el.creditMeter.classList.add("tick");
+    }
+
+    function flashMeterRefilled() {
+      if (!el.creditMeter) return;
+      el.creditMeter.classList.remove("refilled");
+      void el.creditMeter.offsetWidth;
+      el.creditMeter.classList.add("refilled");
+    }
+
+    async function refreshBalance(opts) {
+      const next = await fetchBalance();
+      if (!next) return null;
+      const wasBalance = Number(bal.balance || 0);
+      bal = next;
+      paintMeter();
+      // Visual feedback: a tick when the count went DOWN, a green
+      // refilled flash when it went UP. If nothing changed (or this is
+      // the very first paint after config), stay quiet.
+      if (opts && opts.silent) return next;
+      if (typeof wasBalance === "number" && Number(next.balance) < wasBalance) flashMeterTick();
+      if (typeof wasBalance === "number" && Number(next.balance) > wasBalance) flashMeterRefilled();
+      return next;
+    }
+
+    function startBalancePolling() {
+      stopBalancePolling();
+      // Only run the safety poll in realtime mode — image mode is
+      // strictly turn-driven, so /api/choose is a perfect signal.
+      if (!bal || !bal.gating_enabled) return;
+      if (Renderer && Renderer.mode !== "reactor") return;
+      balancePollTimer = setInterval(() => {
+        // If the pause overlay is up we're already polling on its own
+        // cadence; skip the background poll to avoid a double-fetch.
+        if (pauseOpen) return;
+        refreshBalance({ silent: true }).catch(() => {});
+      }, 10000);
+    }
+
+    function stopBalancePolling() {
+      if (balancePollTimer) { clearInterval(balancePollTimer); balancePollTimer = null; }
+    }
+
+    // ==================================================================
+    // OUT-OF-CREDITS PAUSE OVERLAY
+    // ==================================================================
+    //
+    // Symmetrical with the death overlay — same coin-op button, same
+    // C-to-continue keyboard shortcut, same coin-drop / return
+    // ceremony — but framed as "INSERT COIN TO KEEP PLAYING" instead
+    // of "YOU DIED". Fires when /api/choose returns 402 with
+    // {needs_coin: true}, and dismisses itself the moment a successful
+    // top-up lands. The world freezes visually behind it via
+    // body.coinop-paused (see standalone.css).
+
+    function paintPauseButton() {
+      if (!el.pauseContinue) return;
+      const labelEl = el.pauseContinue.querySelector(".continue-label");
+      const slotEl = el.pauseContinue.querySelector(".coin-slot");
+      const compActive = !!(cfg.comp && cfg.comp.active);
+      const pack = Number(cfg.credits_per_coin || 20);
+      if (compActive) {
+        el.pauseContinue.classList.add("comp");
+        if (labelEl) labelEl.textContent = cfg.comp.label || `Free · +${pack} credits`;
+        if (slotEl) slotEl.textContent = "\u26A1";
+        if (el.pauseContinuePrice) {
+          el.pauseContinuePrice.textContent = (cfg.comp.remaining != null)
+            ? `(${cfg.comp.remaining} left)`
+            : "";
+        }
+      } else {
+        el.pauseContinue.classList.remove("comp");
+        if (labelEl) labelEl.textContent = `Insert Coin · +${pack} credits`;
+        if (slotEl) slotEl.textContent = "\u25C9";
+        if (el.pauseContinuePrice) {
+          el.pauseContinuePrice.textContent = cfg.display_price ? `(${cfg.display_price})` : "";
+        }
+      }
+      if (el.pausePackBlurb) {
+        el.pausePackBlurb.textContent = compActive
+          ? `${pack} credits · comp, on the house.`
+          : `${pack} credits per coin.`;
+      }
+    }
+
+    function setPauseStatus(msg, isError) {
+      if (!el.pauseContinueStatus) return;
+      if (!msg) {
+        el.pauseContinueStatus.classList.add("hidden");
+        el.pauseContinueStatus.textContent = "";
+        return;
+      }
+      el.pauseContinueStatus.textContent = msg;
+      el.pauseContinueStatus.classList.remove("hidden");
+      el.pauseContinueStatus.classList.toggle("error", !!isError);
+    }
+
+    function startPauseCountdown() {
+      stopPauseCountdown();
+      if (!el.pauseCountdown) return;
+      pauseCountdownValue = 10;
+      el.pauseCountdown.textContent = String(pauseCountdownValue);
+      el.pauseCountdown.classList.remove("urgent", "finished");
+      pauseCountdownTimer = setInterval(() => {
+        pauseCountdownValue -= 1;
+        if (pauseCountdownValue < 0) { stopPauseCountdown(true); return; }
+        el.pauseCountdown.textContent = String(pauseCountdownValue);
+        el.pauseCountdown.classList.remove("tick");
+        void el.pauseCountdown.offsetWidth;
+        el.pauseCountdown.classList.add("tick");
+        if (pauseCountdownValue <= 3) {
+          el.pauseCountdown.classList.add("urgent");
+          try { Sound.status(); } catch (_) {}
+        }
+      }, 1000);
+    }
+
+    function stopPauseCountdown(finished) {
+      if (pauseCountdownTimer) { clearInterval(pauseCountdownTimer); pauseCountdownTimer = null; }
+      if (el.pauseCountdown && finished) {
+        el.pauseCountdown.classList.add("finished");
+        el.pauseCountdown.textContent = "0";
+      }
+    }
+
+    function playPauseCoinDrop() {
+      return new Promise((resolve) => {
+        if (!el.pauseContinue) return resolve();
+        el.pauseContinue.classList.remove("dropping");
+        void el.pauseContinue.offsetWidth;
+        el.pauseContinue.classList.add("dropping");
+        try { Sound.coin(); } catch (_) {}
+        setTimeout(() => {
+          el.pauseContinue.classList.remove("dropping");
+          resolve();
+        }, 440);
+      });
+    }
+
+    function playPauseCeremony() {
+      return new Promise((resolve) => {
+        if (!el.pauseCeremony) return resolve();
+        el.pauseCeremony.classList.remove("playing", "hidden");
+        void el.pauseCeremony.offsetWidth;
+        el.pauseCeremony.classList.add("playing");
+        try { Sound.coinReady && Sound.coinReady(); } catch (_) {}
+        try { Sound.glitch(); } catch (_) {}
+        setTimeout(() => {
+          el.pauseCeremony.classList.remove("playing");
+          el.pauseCeremony.classList.add("hidden");
+          resolve();
+        }, 720);
+      });
+    }
+
+    function openPauseOverlay(errBody) {
+      if (!el.pauseOverlay) return;
+      pauseOpen = true;
+      paintPauseButton();
+      el.pauseOverlay.classList.remove("hidden");
+      el.pauseOverlay.setAttribute("aria-hidden", "false");
+      document.body.classList.add("coinop-paused");
+      startPauseCountdown();
+      // Copy any server-provided message into the subtitle for context.
+      if (errBody && errBody.message && el.pauseContinueStatus) {
+        setPauseStatus(errBody.message, false);
+      } else {
+        setPauseStatus("");
+      }
+      if (el.pauseContinue) {
+        setTimeout(() => { try { el.pauseContinue.focus({ preventScroll: true }); } catch (_) {} }, 60);
+      }
+    }
+
+    function closePauseOverlay() {
+      if (!el.pauseOverlay) return;
+      pauseOpen = false;
+      stopPauseCountdown();
+      el.pauseOverlay.classList.add("hidden");
+      el.pauseOverlay.setAttribute("aria-hidden", "true");
+      document.body.classList.remove("coinop-paused");
+      if (el.pauseContinue) el.pauseContinue.classList.remove("busy");
+      setPauseStatus("");
+    }
+
+    // Public: open the "OUT OF COINS" overlay. Called from makeChoice()
+    // when /api/choose returned 402 (see the catch-block near the top
+    // of this file), and reachable via a direct click on the credit
+    // meter chip (so a player can proactively top up before hitting 0).
+    function pausePrompt(errBody) {
+      if (!cfg.enabled) return;
+      // Refresh the config in case the comp status flipped (e.g. code
+      // exhausted) since init(). This determines the button copy.
+      // Non-blocking: paint now, upgrade later if the config changes.
+      openPauseOverlay(errBody || null);
+      fetchConfig().then((c) => {
+        cfg = c || cfg;
+        paintPauseButton();
+      }).catch(() => {});
+      refreshBalance({ silent: true }).catch(() => {});
+    }
+
+    async function pauseCheckout() {
+      if (!cfg.enabled || !el.pauseContinue) return;
+      stopPauseCountdown();
+      const compActive = !!(cfg.comp && cfg.comp.active);
+      el.pauseContinue.classList.add("busy");
+      const coinAnim = playPauseCoinDrop();
+      setPauseStatus(compActive ? "Coin registered…" : "Opening Stripe Checkout…", false);
+      try {
+        const [_, resp] = await Promise.all([
+          coinAnim,
+          fetch("/api/coinop/checkout", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Session-Id": SESSION_ID,
+            },
+            body: JSON.stringify({
+              session_id: SESSION_ID,
+              comp: compCode || undefined,
+            }),
+          }),
+        ]);
+        if (!resp.ok) throw new Error(`checkout HTTP ${resp.status}`);
+        const data = await resp.json();
+
+        // COMP path: mint a comp voucher server-side, then redeem it
+        // inline without ever leaving the page. Same shape as the
+        // death overlay's comp path.
+        if (data.comp && data.checkout_session_id) {
+          await pauseRedeem(data.checkout_session_id, /* isComp */ true);
+          return;
+        }
+        // Paid path: hand off to Stripe. On successful return the
+        // top-level handleReturnIfPresent() → redeem() flow will
+        // credit the account and pollOnce.
+        if (!data.url) throw new Error("no checkout url returned");
+        try { Sound.glitch(); } catch (_) {}
+        try { glitchTransition && glitchTransition(280); } catch (_) {}
+        try { window.top.location.href = data.url; }
+        catch (_) { window.location.href = data.url; }
+      } catch (err) {
+        console.error("[coinop] pauseCheckout failed:", err);
+        setPauseStatus("Could not open checkout. Try again in a moment.", true);
+        el.pauseContinue.classList.remove("busy");
+      }
+    }
+
+    async function pauseRedeem(checkoutSessionId, isComp) {
+      try {
+        const resp = await fetch("/api/coinop/redeem", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Session-Id": SESSION_ID,
+          },
+          body: JSON.stringify({
+            session_id: SESSION_ID,
+            checkout_session_id: checkoutSessionId,
+          }),
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.ok) {
+          const reason = (data && data.reason) || `HTTP ${resp.status}`;
+          setPauseStatus(
+            isComp ? `Comp failed: ${reason}.`
+                   : `Top-up failed: ${reason}. Contact support if you were charged.`,
+            true,
+          );
+          el.pauseContinue.classList.remove("busy");
+          return false;
+        }
+        setPauseStatus("");
+        el.pauseContinue.classList.remove("busy");
+        // Refresh balance so the meter chip glows green on the way up.
+        await refreshBalance();
+        // Return ceremony THEN dismiss — order matters so the phosphor
+        // flash lifts over the pause overlay, not after it's gone.
+        try { await playPauseCeremony(); } catch (_) {}
+        closePauseOverlay();
+        // Latest feed tick so any incidental narration lands promptly.
+        try { if (typeof pollOnce === "function") pollOnce(); } catch (_) {}
+        // Comp counter in the config may have decremented; refresh so a
+        // second Insert-Coin on the same overlay reflects the new state.
+        try { cfg = await fetchConfig() || cfg; paintPauseButton(); paintButton(); } catch (_) {}
+        return true;
+      } catch (err) {
+        console.error("[coinop] pauseRedeem failed:", err);
+        setPauseStatus(
+          isComp ? "Could not apply comp — the server rejected the voucher."
+                 : "Could not verify payment. Contact support if you were charged.",
+          true,
+        );
+        el.pauseContinue.classList.remove("busy");
+        return false;
+      }
+    }
+
+    // ── Public hook: called from makeChoice() after a turn succeeds.
+    // Refreshes the meter so the count reflects the server-authoritative
+    // debit. Cheap: one GET, no side effects if gating is off.
+    function onTurnCompleted() {
+      if (!cfg.enabled) return;
+      refreshBalance({ silent: false }).catch(() => {});
+    }
+
     async function init() {
       compCode = readCompFromUrlOrStorage();
       cfg = await fetchConfig();
       paintButton();
+      paintPauseButton();
       if (el.deathContinue) {
         el.deathContinue.addEventListener("click", startCheckout);
       }
+      if (el.pauseContinue) {
+        el.pauseContinue.addEventListener("click", pauseCheckout);
+      }
+      if (el.pauseRestart) {
+        el.pauseRestart.addEventListener("click", () => {
+          try { closePauseOverlay(); } catch (_) {}
+          try { resetGame(); } catch (_) {}
+        });
+      }
+      if (el.creditMeter) {
+        // Clicking the meter proactively opens the pause overlay so a
+        // player can top up before hitting zero.
+        el.creditMeter.addEventListener("click", () => {
+          if (!cfg.enabled) return;
+          pausePrompt(null);
+        });
+      }
+      // Initial balance paint — establishes the HUD chip if gating is on.
+      await refreshBalance({ silent: true });
+      startBalancePolling();
       // Handle the redirect back from Stripe (if that's how we got here).
       handleReturnIfPresent();
     }
@@ -9450,6 +9921,11 @@
     return {
       init,
       insertCoin,
+      // Public balance hooks — see JSDoc on each.
+      onTurnCompleted,
+      pausePrompt,
+      refreshBalance: () => refreshBalance({ silent: false }),
+      isPaused: () => pauseOpen,
       // Lifecycle hooks called from enterGameOver / resetGame so the
       // countdown + HUD + button focus all follow the game's own state
       // machine without CoinOp having to observe it.
@@ -9465,9 +9941,15 @@
       },
       onRunReset() {
         stopCountdown();
+        stopPauseCountdown();
+        closePauseOverlay();
         resetContinuesHud();
         if (el.deathContinue) el.deathContinue.classList.remove("busy");
+        if (el.pauseContinue) el.pauseContinue.classList.remove("busy");
         setStatus("");
+        setPauseStatus("");
+        // Balance may have changed (fresh session) — repaint next tick.
+        setTimeout(() => refreshBalance({ silent: true }).catch(() => {}), 200);
       },
       isEnabled() { return !!cfg.enabled; },
     };
