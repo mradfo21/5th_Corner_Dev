@@ -3354,6 +3354,50 @@ html.is-mobile .photo-target { transition: opacity 0.2s ease; }
   100% { opacity: 0; }
 }
 
+/* World tap: tapping the scene itself (when no instrument is open) fires a scan.
+   A quick, tactile ripple blooms right at the tap point the instant you press —
+   before the OCR round-trip — so the world feels touched. Spawned on <body> at
+   fixed coords so it shows even while the hotspot overlay is still hidden, and
+   self-removes. Cosmetic only (pointer-events: none), so it never blocks input. */
+.world-tap-ripple {
+  position: fixed;
+  transform: translate(-50%, -50%);
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 2px solid rgba(190, 236, 255, 0.92);
+  box-shadow: 0 0 22px rgba(140, 217, 255, 0.7), inset 0 0 12px rgba(140, 217, 255, 0.3);
+  pointer-events: none;
+  z-index: 46;
+  opacity: 0;
+  animation: world-tap-ring 0.62s cubic-bezier(0.16, 0.8, 0.3, 1) forwards;
+}
+.world-tap-ripple::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(220, 244, 255, 1) 0%, rgba(140, 217, 255, 0) 72%);
+  box-shadow: 0 0 16px rgba(190, 236, 255, 0.95);
+  animation: world-tap-core 0.46s ease-out forwards;
+}
+@keyframes world-tap-ring {
+  0%   { opacity: 0; transform: translate(-50%, -50%) scale(0.28); }
+  16%  { opacity: 1; }
+  100% { opacity: 0; transform: translate(-50%, -50%) scale(3.4); border-width: 0.5px; }
+}
+@keyframes world-tap-core {
+  0%   { opacity: 0.95; transform: scale(0.6); }
+  100% { opacity: 0; transform: scale(1.8); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .world-tap-ripple { animation: scan-pulse-fade 0.45s ease-out forwards; }
+  .world-tap-ripple::before { animation: none; }
+}
+
 /* Inline interact prompt, revealed when the + button is pressed. */
 /* Inline action bar: sleek icon buttons revealed when a tag is tapped. */
 .scan-tag-actions { display: none; align-items: center; gap: 6px; }

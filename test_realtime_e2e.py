@@ -1022,6 +1022,49 @@ class TestRealtimeRenderer(unittest.TestCase):
         finally:
             page.close()
 
+    def test_tapping_the_world_triggers_a_scan(self):
+        """Tapping the scene itself (when no instrument/mode is open) fires the
+        same on-demand scan the button does, with a tactile ripple at the tap
+        point. Clicking a control instead is left to that control — it must not
+        scan the world."""
+        page = self._new_realtime_page()
+        scene_items = [
+            {"id": 1, "type": "narrative", "content": "Intro."},
+            {"id": 2, "type": "scene_image", "content": "", "image_url": TINY_PNG_DATA_URL,
+             "metadata": {"prompt": "scene one", "base": "A dock.", "hard_transition": False}},
+            {"id": 3, "type": "player_choice_prompt", "content": "?", "choices": [{"text": "Go"}]},
+        ]
+        detects = []
+        page.route("**/api/reset", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(scene_items)))
+        page.route("**/api/feed*", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
+        page.route("**/api/choose", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
+
+        def detect_handler(route):
+            detects.append(route.request.url)
+            route.fulfill(status=200, content_type="application/json", body=json.dumps({
+                "objects": [{"label": "wooden crate", "cx": 0.3, "cy": 0.4, "w": 0.2, "h": 0.2}]}))
+        page.route("**/api/detect", detect_handler)
+        try:
+            page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
+            page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
+            page.wait_for_timeout(500)
+            # Clicking a CONTROL (the action wheel container) must NOT scan.
+            page.eval_on_selector("#action-wheel", "el => el.click()")
+            page.wait_for_timeout(300)
+            self.assertEqual(len(detects), 0, f"clicking a control must not scan the world. logs:\n{self._dump_logs()}")
+            # Tap the WORLD (empty scene, clear of the wheel/objectives/rail).
+            page.mouse.click(430, 300)
+            # A tactile ripple blooms at the tap point...
+            page.wait_for_selector(".world-tap-ripple", timeout=1500)
+            # ...and the tap fires exactly the same scan the button does.
+            page.wait_for_function("document.querySelectorAll('#scan-tags .scan-tag').length >= 1", timeout=12000)
+            self.assertGreaterEqual(len(detects), 1, f"tapping the world must run detection. logs:\n{self._dump_logs()}")
+        except Exception:
+            print("\n=== REACTOR CONSOLE LOG (world-tap) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
     def test_scanned_hotspots_fade_out_on_their_own(self):
         """After a scan lands, the hotspots FADE OUT on their own after
         SCAN_TTL_MS so they can never go stale — the overlay tears itself down

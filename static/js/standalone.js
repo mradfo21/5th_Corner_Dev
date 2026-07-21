@@ -6915,6 +6915,8 @@
   // claiming the view? (Independent of whether a scene is currently readable.)
   function ambientContextAllowed() {
     if (state.gameOver || state.touchMode || state.freeWillOpen) return false;
+    // Frozen behind the coin-op "out of credits" pause — the world isn't live.
+    if (typeof CoinOp !== "undefined" && CoinOp.isPaused && CoinOp.isPaused()) return false;
     // While the camera is being driven the scene is in motion, so the OCR
     // hotspots (detected against a drifting frame) are stale/inaccurate — keep
     // them down. They regenerate when movement stops (see onMovementStop).
@@ -6935,7 +6937,10 @@
   const SCAN_TTL_MS =
     (typeof window !== "undefined" && window.__SCAN_TTL_MS__) || 5000;
 
-  function triggerScan() {
+  // origin (optional): {x, y} viewport point of a world tap — when present we
+  // bloom a tactile ripple right there the instant the scan starts. The SCAN
+  // button passes none (its own ring pulse is the feedback).
+  function triggerScan(origin) {
     if (state.gameOver) return;
     // A full-screen instrument (camera/tape/free-will/conversation) or a turn
     // in flight owns the view — don't scan into it.
@@ -6951,6 +6956,9 @@
     state.scanBusy = true;
     document.body.classList.add("scan-busy");
     if (el.scanBtn) el.scanBtn.classList.add("scanning");
+    // Tactile feedback the instant you tap the world — ripple at the tap point,
+    // a radar-sweep sound, a soft haptic — then the OCR runs (below).
+    if (origin && typeof origin.x === "number") spawnTapRipple(origin.x, origin.y);
     try { Sound.scan(); } catch (_) {} // radar sweep on the press
     try { Haptics.soft && Haptics.soft(); } catch (_) {}
     postJSON("/api/detect", { frame: cap.frame })
@@ -7037,6 +7045,20 @@
     el.scanHint.classList.toggle("hidden", !text);
   }
 
+  // A quick ripple at a world-tap point (viewport coords). Lives on <body> so it
+  // shows even while the hotspot overlay is still hidden, and self-cleans. Purely
+  // cosmetic feedback for "I tapped the world" — the scan/OCR runs separately.
+  function spawnTapRipple(x, y) {
+    const r = document.createElement("div");
+    r.className = "world-tap-ripple";
+    r.style.left = x + "px";
+    r.style.top = y + "px";
+    document.body.appendChild(r);
+    const kill = () => { if (r.parentNode) r.parentNode.removeChild(r); };
+    r.addEventListener("animationend", kill, { once: true });
+    setTimeout(kill, 900); // safety net (reduced-motion / missed animationend)
+  }
+
   // ---- Movement ↔ ambient hotspots ----------------------------------------
   // The OCR hotspots (and the choices grounded on them) are detected against the
   // current frame, so they're wrong the instant the camera starts travelling.
@@ -7092,16 +7114,24 @@
     highlightNearestTag(e.clientX, e.clientY);
   }
 
-  // Tapping empty scene (not a tag/control) dismisses an open action bar. On
-  // mobile the tags themselves are tapped directly (their own click handler).
-  function onScanTap(e) {
-    if (!state.scanOn) return;
+  // Tapping the WORLD itself scans it — the same on-demand OCR the SCAN button
+  // fires, but it makes you feel like you're reaching out and touching the
+  // scene. Only when no instrument/mode owns the view (a click on a control,
+  // overlay, joystick, or the camera layer is left to that element). A tap while
+  // an action bar is open just dismisses the bar (no re-scan). triggerScan gates
+  // on context (camera/tape/talk/turn/paused/…) and only ripples if it starts.
+  const WORLD_TAP_IGNORE =
+    "#action-wheel, #control-rail, #scan-layer, #verb-bar, #move-pad, " +
+    "#menu-toggle, #tape-overlay, #death-overlay, #coinop-pause-overlay, " +
+    "#talk-overlay, #touch-layer, #rt-log, #story-log, " +
+    "button, a, input, textarea, select, form, label";
+  function onWorldTap(e) {
+    // Only primary (left) button / touch taps scan the world.
+    if (typeof e.button === "number" && e.button !== 0) return;
     const t = e.target;
-    if (t && t.closest && t.closest(
-      "#action-wheel, #control-rail, #scan-tags, #tape-overlay, " +
-      "#death-overlay, #rt-log, button, a, input, form"
-    )) return;
-    if (state.scanTagActing) closeTagPrompt(state.scanTagActing);
+    if (t && t.closest && t.closest(WORLD_TAP_IGNORE)) return;
+    if (state.scanTagActing) { closeTagPrompt(state.scanTagActing); return; }
+    triggerScan({ x: e.clientX, y: e.clientY });
   }
 
   function highlightNearestTag(x, y) {
@@ -10085,7 +10115,7 @@
     if (el.caseContinue) el.caseContinue.addEventListener("click", hideCaseWin);
     el.freeWillBtn.addEventListener("click", openFreeWill);
     if (el.realtimeBtn) el.realtimeBtn.addEventListener("click", openTouch);
-    if (el.scanBtn) el.scanBtn.addEventListener("click", triggerScan);
+    if (el.scanBtn) el.scanBtn.addEventListener("click", () => triggerScan());
     if (el.touchLayer) {
       // Pointer events cover mouse (hover to aim) AND touch (drag to aim, tap to
       // shoot) — so the camera works on iOS where mousemove never fires.
@@ -10102,11 +10132,13 @@
     // button) can't leave the tap/pinch state stuck.
     window.addEventListener("pointerup", onTouchPointerCleanup);
     window.addEventListener("pointercancel", onTouchPointerCleanup);
-    // Ambient hotspots are non-modal: the overlay doesn't capture the pointer
-    // (so choices and controls stay live). We watch pointer moves to highlight
-    // the nearest interaction possibility and taps to dismiss an open bar.
+    // Hotspots are non-modal: the overlay doesn't capture the pointer (so
+    // choices and controls stay live). We watch pointer moves to highlight the
+    // nearest interaction possibility, and a click on the scene taps the world
+    // to scan it (see onWorldTap). Click (not pointerdown) keeps it a real
+    // "tap" — it won't fire mid-drag on the joystick or a swipe.
     window.addEventListener("pointermove", onScanMove);
-    window.addEventListener("pointerdown", onScanTap);
+    window.addEventListener("click", onWorldTap);
     // Reflow overlays on resize AND orientation change (portrait ⇄ landscape):
     // the scan dots and, if the camera is up, its target markers must re-map to
     // the newly-shaped scene rect so nothing drifts when the phone is rotated.
