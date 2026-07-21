@@ -233,7 +233,7 @@
     touchMode: null,            // TOUCH tool state: null | "aim" (reticle tracks cursor) | "prompt" (spot locked, field open)
     touchPoint: null,           // {x, y} viewport coords of the reticle / locked spot
     photoZoom: 1,               // optical zoom magnification while the camera is armed (1..PHOTO_ZOOM_MAX)
-    panFocus: null,             // {x, y} scene point (untransformed screen coords) shown at frame center — drag to pan while zoomed
+    panFocus: null,             // {x, y} scene point (untransformed screen coords) shown at frame center — driven by mouselook / touch-drag while zoomed
     photoPointers: new Map(),   // active pointers on the camera layer, for pinch-to-zoom
     pinchBase: null,            // {dist, zoom} anchor captured when a two-finger pinch begins
     pinchActive: false,         // true once 2 fingers are down (suppresses the shot until release)
@@ -5956,11 +5956,15 @@
     state.photoPointers.clear();
     state.pinchBase = null;
     state.pinchActive = false;
-    setPhotoZoom(PHOTO_ZOOM_ARMED, { silent: true, force: true });
+    // Open dead wide, then immediately + smoothly PUSH IN to a tighter FOV so
+    // raising the camera feels like snapping to a scope in an FPS — not a flat,
+    // fully-wide viewfinder you then have to fiddle with (see pushInToArmed).
+    setPhotoZoom(PHOTO_ZOOM_MIN, { silent: true, force: true });
     try { Evidence.reveal(); } catch (_) {} // surface the CASE FILE goal on pickup
     // The viewfinder is centered; seed the aim point at center for tap/drag math.
     moveReticle(window.innerWidth / 2, window.innerHeight / 2);
     if (el.touchLayer) el.touchLayer.classList.remove("hidden");
+    pushInToArmed(); // the cinematic push-in
     startPhotoTargeting(); // begin surfacing photographable subjects
     // Raising the camera: a servo whir + haptic clunk so activating photo mode
     // lands with weight. NO screen shake on entry — the shake is reserved for the
@@ -5978,7 +5982,8 @@
   // ------------------------------------------------------------------
   const PHOTO_ZOOM_MIN = 1.0;    // widest: the capture region = the whole 16:9 frame
   const PHOTO_ZOOM_MAX = 3.0;    // tightest crop
-  const PHOTO_ZOOM_ARMED = 1.0;  // open on the full frame (the whole scene = the shot)
+  const PHOTO_ZOOM_ARMED = 1.6;  // raising the camera pushes in to this tighter FOV
+  const PHOTO_PUSHIN_MS = 620;   // duration of the cinematic push-in on arming
 
   function clampZoom(z) { return Math.max(PHOTO_ZOOM_MIN, Math.min(PHOTO_ZOOM_MAX, z)); }
 
@@ -6092,6 +6097,33 @@
     if (state.touchMode === "aim") layoutPhotoTargets();
   }
 
+  // FPS-style mouselook: while pushed in, the framed region simply FOLLOWS the
+  // cursor — no clicking, no dragging. The pointer's position within the frame
+  // maps absolutely onto the pan range (cursor at the left edge looks left, at
+  // the top looks up, dead-center recenters), and the eased CSS transform makes
+  // the view glide there smoothly. This is what makes aiming feel like sweeping
+  // a scope instead of hauling the scene around by hand. Caller re-lays the
+  // markers/reticle (via moveReticle) so we skip that here.
+  function lookAt(x, y) {
+    const z = sceneScale();
+    if (z <= 1) return; // nothing hidden to look toward at the full frame
+    const fit = frameFitPx();
+    const c = captureCenter();
+    const m = displayedMediaRect();
+    const halfW = (fit.w / 2) / z, halfH = (fit.h / 2) / z;
+    const minX = m.ox + halfW, maxX = m.ox + m.dw - halfW;
+    const minY = m.oy + halfH, maxY = m.oy + m.dh - halfH;
+    // Cursor position as a 0..1 fraction across the centered capture frame.
+    const fx = Math.max(0, Math.min(1, (x - (c.x - fit.w / 2)) / fit.w));
+    const fy = Math.max(0, Math.min(1, (y - (c.y - fit.h / 2)) / fit.h));
+    state.panFocus = {
+      x: (minX <= maxX) ? (minX + fx * (maxX - minX)) : (m.ox + m.dw / 2),
+      y: (minY <= maxY) ? (minY + fy * (maxY - minY)) : (m.oy + m.dh / 2),
+    };
+    applySceneTransform();
+    updateDofMask();
+  }
+
   // Drive the LETTERBOX MASK: a centered 16:9 window sized to the current capture
   // region. #touch-dof is styled as a transparent rectangle with a huge dimming
   // box-shadow, so everything OUTSIDE the window darkens — the bright area you
@@ -6129,6 +6161,30 @@
     if (!opts.silent && !opts.continuous) {
       try { Sound.zoom((clamped - PHOTO_ZOOM_MIN) / (PHOTO_ZOOM_MAX - PHOTO_ZOOM_MIN)); } catch (_) {}
     }
+  }
+
+  // The cinematic push-in. Raising the camera opens on the full wide frame, then
+  // this glides the zoom into PHOTO_ZOOM_ARMED over a long, eased transform so it
+  // reads as "snapping to a scope" — immediate, but smooth. A dedicated
+  // `photo-pushing` class swaps in the longer easing for just this beat; normal
+  // zoom (wheel/pinch) keeps its snappy 0.16s chase. Under reduced-motion we just
+  // land on the armed FOV with no animation.
+  function pushInToArmed() {
+    if (prefersReducedMotion()) {
+      setPhotoZoom(PHOTO_ZOOM_ARMED, { silent: true, force: true });
+      return;
+    }
+    document.body.classList.add("photo-pushing");
+    // Commit the wide (1×) frame first, THEN kick the zoom, so the transform has
+    // a real starting value to ease from (a two-rAF settle avoids the browser
+    // collapsing both into one non-animated jump).
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (state.touchMode !== "aim") { document.body.classList.remove("photo-pushing"); return; }
+        setPhotoZoom(PHOTO_ZOOM_ARMED, { silent: true, force: true });
+      });
+    });
+    setTimeout(() => document.body.classList.remove("photo-pushing"), PHOTO_PUSHIN_MS + 40);
   }
 
   function clearSceneZoom() {
@@ -6475,6 +6531,18 @@
       }
       return; // don't fall through into the single-finger drag path
     }
+    // DESKTOP FPS-LOOK: a mouse doesn't need to grab-and-drag to reframe. While
+    // pushed in, the view simply follows the cursor (hover OR click-held alike),
+    // so aiming feels like sweeping a scope. A click still shoots (onTouchUp),
+    // it just no longer has to double as a pan handle. Touch keeps drag-to-pan
+    // below since it has no hover.
+    if (!isTouchPointer(e)) {
+      lookAt(e.clientX, e.clientY);
+      const gm = state.touchGesture;
+      if (gm && gm.id === e.pointerId) { gm.lastX = e.clientX; gm.lastY = e.clientY; }
+      moveReticle(e.clientX, e.clientY);
+      return;
+    }
     // Track travel for the active single-finger gesture so release can tell a
     // tap from a drag, and flip on 1:1 tracking the moment it becomes a drag.
     const g = state.touchGesture;
@@ -6542,10 +6610,11 @@
     // a mouse click (essentially zero travel) still shoots as before.
     if (cleanRelease && g && g.id === e.pointerId) {
       const elapsed = Date.now() - g.t0;
-      // Small travel = a tap → shoot. (1:1 pan may have engaged at 6px, but a
-      // little finger wobble should still count as a deliberate tap.) A real
-      // drag past TAP_MOVE_PX only re-frames; a long touch-press never fires.
-      const isTap = g.moved <= TAP_MOVE_PX && (!g.touch || elapsed <= TAP_MAX_MS);
+      // On DESKTOP the mouse looks around by hover, so a click never doubles as a
+      // pan — any clean left-click shoots, even if the cursor was gliding. On
+      // TOUCH a tap must stay put and be quick (small travel, released fast);
+      // a real drag past TAP_MOVE_PX only re-frames and a long press never fires.
+      const isTap = g.touch ? (g.moved <= TAP_MOVE_PX && elapsed <= TAP_MAX_MS) : true;
       if (isTap) captureAt();
     }
     if (g && g.id === e.pointerId) state.touchGesture = null;
