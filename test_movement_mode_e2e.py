@@ -132,6 +132,12 @@ class TestMovementMode(unittest.TestCase):
     def _dump_logs(self):
         return "\n".join(self._logs[-60:])
 
+    def _scan_now(self, page, timeout=15000):
+        """Fire a manual SCAN pass (the button's action). Playwright auto-waits
+        for the button to be actionable (enabled + clickable). Scanning is gated
+        behind the SCAN button now; nothing detects on its own."""
+        page.click("#scan-btn", timeout=timeout)
+
     def _boot_live(self, page, model=None):
         """Load /realtime, connect the mock world model, and reveal live video.
 
@@ -320,13 +326,14 @@ class TestMovementMode(unittest.TestCase):
         finally:
             page.close()
 
-    def test_ocr_hotspots_hide_while_moving_and_regenerate_on_stop(self):
-        """The OCR hotspots (and the choices grounded on them) are inaccurate
-        while the camera travels: they must hide the moment movement starts, no
-        detection runs while moving, and once you stop they re-detect and reappear."""
+    def test_ocr_hotspots_hide_while_moving_and_can_rescan_on_stop(self):
+        """The hotspots (and the choices grounded on them) are inaccurate while
+        the camera travels: a scanned overlay must tear down the moment movement
+        starts, no detection runs while moving, and once you stop a fresh SCAN
+        reads the new vantage."""
         page = self._new_realtime_page()
-        # Fast settle + no turn cooldown so the post-stop re-detect fires quickly.
-        page.add_init_script("window.__MOVE_SETTLE_MS__ = 250; window.__SCAN_TURN_COOLDOWN_MS__ = 0;")
+        # Fast settle so the SCAN button re-enables quickly after stopping.
+        page.add_init_script("window.__MOVE_SETTLE_MS__ = 250; window.__SCAN_TTL_MS__ = 60000;")
         scene_items = [
             {"id": 1, "type": "narrative", "content": "Intro."},
             {"id": 2, "type": "scene_image", "content": "", "image_url": TINY_PNG_DATA_URL,
@@ -350,11 +357,12 @@ class TestMovementMode(unittest.TestCase):
         try:
             page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
             page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
-            # Hotspots appear on their own once the scene is on screen.
+            # Press SCAN to surface the hotspots.
+            self._scan_now(page)
             page.wait_for_function("document.querySelectorAll('#scan-tags .scan-tag').length >= 1", timeout=12000)
             self.assertFalse(page.evaluate("document.getElementById('scan-layer').classList.contains('hidden')"))
 
-            # Start moving -> hotspots hide (body.moving, scan-layer hidden).
+            # Start moving -> the scanned overlay tears down (body.moving, hidden).
             page.keyboard.down("w")
             page.wait_for_function("document.body.classList.contains('moving')", timeout=4000)
             page.wait_for_function("document.getElementById('scan-layer').classList.contains('hidden')", timeout=4000)
@@ -364,12 +372,13 @@ class TestMovementMode(unittest.TestCase):
             page.wait_for_timeout(700)
             self.assertEqual(len(detects), before, "detection must not run while the camera moves")
 
-            # Stop -> movement clears, and hotspots re-detect + reappear.
+            # Stop -> movement clears; a fresh SCAN reads the new vantage.
             page.keyboard.up("w")
             page.wait_for_function("!document.body.classList.contains('moving')", timeout=4000)
+            self._scan_now(page)
             page.wait_for_function("document.querySelectorAll('#scan-tags .scan-tag').length >= 1", timeout=8000)
             self.assertFalse(page.evaluate("document.getElementById('scan-layer').classList.contains('hidden')"))
-            self.assertGreater(len(detects), before, "hotspots must regenerate (re-detect) after stopping")
+            self.assertGreater(len(detects), before, "a fresh SCAN after stopping must re-detect")
         except Exception:
             print("\n=== CONSOLE LOG (hotspots-while-moving) ===\n" + self._dump_logs())
             raise

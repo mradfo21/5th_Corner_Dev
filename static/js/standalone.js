@@ -1134,6 +1134,7 @@
         state.turnImageLoaded = false;
         // The progress bar takes over the play button's spot for the turn.
         if (el.actionWheel) el.actionWheel.classList.add("turn-active");
+        try { updateScanButton(); } catch (_) {} // dim SCAN while the turn runs
         // Reset all chips to pending.
         if (el.ceremonySteps) {
           Array.from(el.ceremonySteps.children).forEach((n) => n.classList.remove("active", "done", "beat"));
@@ -6893,7 +6894,8 @@
   // up yet) or an instrument/turn owns the view.
   function updateScanButton() {
     if (!el.scanBtn) return;
-    const ok = !state.gameOver && ambientContextAllowed() &&
+    const turnActive = !!(el.actionWheel && el.actionWheel.classList.contains("turn-active"));
+    const ok = !state.gameOver && ambientContextAllowed() && !turnActive &&
       !state.processing && !state.awaitingResolution && scanAvailable();
     el.scanBtn.disabled = !ok;
   }
@@ -8479,16 +8481,21 @@
   }
 
   // Drop the current tags (e.g. when a turn changes the scene) so stale labels
-  // don't hover over a shot they no longer describe; the next scan repopulates.
+  // don't hover over a shot they no longer describe; the next SCAN repopulates.
   function clearScanTags() {
     if (!el.scanTags) return;
+    // A scene change makes the auto fade-out moot — cancel it so a pending
+    // teardown can't fire against the next scan.
+    clearTimeout(state.scanFadeTimer); state.scanFadeTimer = null;
+    clearTimeout(state.scanFadeOutTimer); state.scanFadeOutTimer = null;
     el.scanTags.innerHTML = "";
     state.scanObjects = [];
     state.scanTagActing = null;
     // The scene is changing — drop the stale detection so hotspots never linger
-    // from the previous shot; the new scene re-detects once it settles.
+    // from the previous shot; the next SCAN reads the new scene fresh.
     state.scanPrewarm = { objects: [], size: null, ts: 0 };
     setScanHint("");
+    updateScanButton();
   }
 
   function repositionScanTags() {
