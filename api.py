@@ -454,24 +454,66 @@ def serve_legacy_image(filename):
 
     `_gen_image` writes frames into the per-session image directory
     (sessions/<id>/images/, 'default' for the standalone/web path) but returns
-    a flat '/images/<filename>' URL. Serve from the default session dir first,
-    then fall back to the legacy root images/ dir, so web playthroughs display
-    scene art instead of 404ing. Mirrors the path-traversal protection used by
-    the session/archive image routes."""
+    a flat '/images/<filename>' URL. Each session has its OWN images/ dir, so
+    the basename alone is ambiguous: `_to_web_image_url` therefore stamps a
+    '?session=<id>' query param whenever the frame belongs to a non-default
+    session (e.g. a shared '/play?session=<id>' link). Resolve that session's
+    dir first, then fall back to the default session dir and the legacy root
+    images/ dir so older/session-less URLs still resolve. As a last resort we
+    scan every session's images/ dir for the basename, so a stale URL that lost
+    its session param still finds its frame instead of 404ing (the reported
+    "game hangs on starting a session" — the intro image never loaded).
+    Mirrors the path-traversal protection used by the session/archive image
+    routes."""
     try:
         safe_filename = Path(filename).name
-        candidates = [
-            Path(engine._get_image_dir('default')) / safe_filename,  # standalone/web session
-            Path("images") / safe_filename,                          # legacy/global fallback
-        ]
+        session_id = request.args.get('session') or request.args.get('session_id')
+        candidates = []
+        if session_id:
+            # Sanitize to a bare directory name; _get_image_dir validates + mkdirs,
+            # so guard against traversal / empty / malformed ids: on rejection just
+            # fall through to the default/legacy/scan candidates instead of 500-ing.
+            safe_session = Path(str(session_id)).name
+            if safe_session:
+                try:
+                    candidates.append(Path(engine._get_image_dir(safe_session)) / safe_filename)
+                except ValueError:
+                    pass
+        candidates.append(Path(engine._get_image_dir('default')) / safe_filename)  # standalone/web session
+        candidates.append(Path("images") / safe_filename)                          # legacy/global fallback
         mimetype = 'image/gif' if safe_filename.lower().endswith('.gif') else 'image/png'
         for image_path in candidates:
             if image_path.exists():
                 return send_file(str(image_path), mimetype=mimetype)
+        # Final fallback: locate the frame in any session's images/ dir. Only
+        # reached when the direct candidates miss (e.g. a URL that lost its
+        # ?session= param), so the extra scan stays off the hot path.
+        fallback = _find_image_in_any_session(safe_filename)
+        if fallback is not None:
+            return send_file(str(fallback), mimetype=mimetype)
         return error_response("Image not found", code=404)
     except Exception as e:
         traceback.print_exc()
         return error_response("Failed to serve image", str(e))
+
+
+def _find_image_in_any_session(safe_filename):
+    """Scan every session's images/ dir for `safe_filename`, returning the first
+    match (or None). Used as a last-resort fallback in serve_legacy_image for
+    session-less URLs. `safe_filename` must already be sanitized to a basename."""
+    try:
+        sessions_root = engine._get_session_root('default').parent
+        if not sessions_root.exists():
+            return None
+        for session_dir in sessions_root.iterdir():
+            if not session_dir.is_dir():
+                continue
+            candidate = session_dir / "images" / safe_filename
+            if candidate.exists():
+                return candidate
+    except Exception:
+        traceback.print_exc()
+    return None
 
 
 @app.route('/api/scene_audio', methods=['POST'])

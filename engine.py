@@ -25,6 +25,7 @@ import threading
 import time # Added for sleep
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 from typing import Optional, List, Dict, Any
 import logging
 print("[ENGINE] stdlib imports complete", flush=True); sys.stdout.flush()
@@ -1096,7 +1097,7 @@ class _SkipImage(Exception):
     pass
 
 
-def _to_web_image_url(image_path) -> Optional[str]:
+def _to_web_image_url(image_path, session_id: str = 'default') -> Optional[str]:
     """Convert an image path from _gen_image into a browser-servable URL for
     the standalone feed.
 
@@ -1104,6 +1105,16 @@ def _to_web_image_url(image_path) -> Optional[str]:
     (sessions/<id>/images/<file>.png), which the Discord bot attaches directly
     but a web browser cannot load. The standalone /images/<filename> route
     serves those files by basename, so feed items must reference that URL form.
+
+    Because every session writes into its OWN images/ dir (and different
+    sessions can produce identically-named files — the basename is a
+    deterministic hash of the caption), the flat basename alone is ambiguous:
+    the /images route can only guess a directory and 404s whenever the active
+    session isn't 'default' (e.g. a shared '/play?session=<id>' link). We embed
+    the session as a '?session=<id>' query param so the route resolves the
+    exact per-session directory. Omitted for the 'default'/'legacy' dirs to keep
+    URLs stable for the standalone path.
+
     Returns None for falsy/failed inputs; passes through values already in
     '/images/..' form.
     """
@@ -1112,7 +1123,10 @@ def _to_web_image_url(image_path) -> Optional[str]:
     s = str(image_path)
     if s.startswith("/images/"):
         return s
-    return "/images/" + os.path.basename(s)
+    url = "/images/" + os.path.basename(s)
+    if session_id and session_id not in ('default', 'legacy'):
+        url += "?session=" + quote(str(session_id), safe='')
+    return url
 
 # ───────── prompt fragments ──────────────────────────────────────────────────
 choice_tmpl     = PROMPTS["player_choice_generation_instructions"]
@@ -5492,7 +5506,7 @@ def _generate_and_append_scene_image(caption: str, dispatch: str, choice: str, f
                       f"(turn resolves, realtime keeps steering)", flush=True)
                 return None
 
-            web = _to_web_image_url(img_path)
+            web = _to_web_image_url(img_path, session_id)
             item = create_feed_item(
                 type="scene_image",
                 content="",
@@ -6299,7 +6313,7 @@ def _ingest_realtime_frame(frame_b64: str, session_id: str = 'default'):
     fname = f"observed_{int(_time.time() * 1000)}.png"
     fpath = img_dir / fname
     fpath.write_bytes(img_bytes)
-    web = f"/images/{fname}"
+    web = _to_web_image_url(fname, session_id)
 
     # Bound the transient-frame footprint so a long session can't fill the disk
     # (which would make every subsequent image write fail — see the helper's
