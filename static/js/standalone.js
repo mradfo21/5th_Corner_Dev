@@ -625,6 +625,28 @@
       talkOpen() { tone([260, 620], 0.22, "sine", 0.045); tone(880, 0.14, "triangle", 0.035, 0.14); noise(0.05, 0.02); }, // channel opens — a warm carrier tone
       talkLine() { tone(560, 0.05, "triangle", 0.04); tone(760, 0.10, "sine", 0.03, 0.05); }, // a spoken reply arrives
       talkClose() { tone([620, 200], 0.2, "sine", 0.04); }, // channel closes
+      // ---- Conversation Moment (cinematic takeover) ----
+      // Rising swell into the letterboxed dialogue screen; resolving chord on
+      // exit; soft photographic flash when the portrait lands; UI ticks for
+      // dialogue choices; a quiet chime for in-Moment notifications.
+      convoEnter() {
+        tone([180, 420], 0.28, "sine", 0.05);
+        tone([420, 780], 0.22, "triangle", 0.04, 0.12);
+        tone(1180, 0.12, "sine", 0.03, 0.28);
+        noise(0.06, 0.018);
+      },
+      convoExit() {
+        tone([780, 360], 0.22, "triangle", 0.04);
+        tone([360, 180], 0.26, "sine", 0.035, 0.1);
+      },
+      portraitReveal() {
+        noise(0.04, 0.03);
+        tone([880, 1320], 0.1, "sine", 0.04);
+        tone(660, 0.08, "triangle", 0.03, 0.06);
+      },
+      choiceHover() { tone(1500, 0.018, "sine", 0.014); },
+      choiceSelect() { tone(720, 0.05, "triangle", 0.045); tone(1080, 0.09, "sine", 0.035, 0.04); },
+      notify() { tone(990, 0.06, "triangle", 0.04); tone(1320, 0.1, "sine", 0.03, 0.05); },
       grab() { tone(900, 0.03, "square", 0.045); tone([700, 340], 0.10, "triangle", 0.04, 0.02); }, // TOUCH specimen captured
       shutter() { tone(1500, 0.015, "square", 0.055); noise(0.05, 0.035); tone(760, 0.03, "square", 0.05, 0.03); }, // camera shutter
       // Raising / lowering the camera: a little servo whir that racks up and
@@ -658,6 +680,10 @@
   })();
 
   // ------------------------------------------------------------------
+  // Expose Sound so moments.js (and e2e) can fire conversation cues without
+  // reaching into this IIFE. Harmless if Moments isn't loaded.
+  try { window.Sound = Sound; } catch (_) {}
+
   // SceneAudio — generated ambient score for the current guide image.
   //
   // Each new scene carries a text descriptor (metadata.prompt). We POST it to
@@ -674,6 +700,9 @@
     let gain = null;            // its GainNode
     const bufferCache = new Map(); // url -> decoded AudioBuffer
     const FADE = 1.4;           // crossfade seconds between scene scores
+    let duckFactor = 1;         // 0..1 multiplier applied on top of musicVol (Conversation Moments)
+    let preConvoUrl = null;     // scene bed to restore after a conversation score
+    let preConvoKey = null;
 
     // Music bed volume — an ambient bed that should sit UNDER the UI SFX, not
     // compete with it. It's now adjustable live from the debug panel (WORLD
@@ -701,10 +730,11 @@
 
     // Push the current volume onto whatever is playing right now (clip gain
     // and/or streamed PCM gain) so debug-panel changes take effect instantly,
-    // without waiting for the next scene to re-score. Honors the global mute.
+    // without waiting for the next scene to re-score. Honors the global mute
+    // and the Conversation Moment duck factor.
     function applyLiveVolume() {
       const c = ctx();
-      const target = state.soundEnabled ? musicVol : 0;
+      const target = state.soundEnabled ? (musicVol * Math.max(0, Math.min(1, duckFactor))) : 0;
       if (gain && c) {
         try {
           const t = c.currentTime;
@@ -762,7 +792,7 @@
       const g = c.createGain();
       const t = c.currentTime;
       g.gain.setValueAtTime(0.0001, t);
-      g.gain.linearRampToValueAtTime(musicVol, t + FADE);
+      g.gain.linearRampToValueAtTime(musicVol * Math.max(0, Math.min(1, duckFactor)), t + FADE);
       s.connect(g); g.connect(c.destination);
       try { s.start(); } catch (_) { return; }
       src = s; gain = g;
@@ -900,6 +930,54 @@
         musicVol = Math.max(0, Math.min(1, v));
         try { localStorage.setItem(VOL_KEY, String(musicVol)); } catch (_) {}
         applyLiveVolume();
+      },
+      // Duck (not silence) the ambient bed under a Conversation Moment.
+      // factor 0.35 ≈ present but under dialogue; 1.0 = full bed.
+      duck(factor) {
+        duckFactor = (factor == null) ? 0.35 : Math.max(0, Math.min(1, Number(factor) || 0));
+        applyLiveVolume();
+      },
+      unduck() {
+        duckFactor = 1;
+        applyLiveVolume();
+      },
+      // Score an intimate conversation bed for the subject/scene, remembering
+      // the exploration bed so exit can restore it. Best-effort / fire-and-forget.
+      async scoreConversation(prompt) {
+        if (!state.soundEnabled) return;
+        const key = (prompt == null ? "" : String(prompt)).trim().slice(0, 240);
+        if (!key) return;
+        // Remember the exploration bed once; nested calls shouldn't overwrite.
+        if (preConvoUrl == null) {
+          preConvoUrl = currentUrl;
+          preConvoKey = requestedKey;
+        }
+        this.duck(0.35);
+        let res;
+        try {
+          res = await postJSON("/api/scene_audio", {
+            prompt: key,
+            session: (typeof SESSION_ID !== "undefined" && SESSION_ID) ? SESSION_ID : "default",
+            mode: "conversation",
+          });
+        } catch (_) { return; }
+        if (!res || !res.audio_url) return;
+        if (res.audio_url === currentUrl) return;
+        // Don't stamp requestedKey with the convo key — that would block the
+        // next exploration score() of the same scene after we restore.
+        crossfadeTo(res.audio_url);
+      },
+      // Restore the pre-conversation exploration bed (or just unduck).
+      async endConversation() {
+        this.unduck();
+        const restoreUrl = preConvoUrl;
+        const restoreKey = preConvoKey;
+        preConvoUrl = null;
+        preConvoKey = null;
+        if (restoreUrl && restoreUrl !== currentUrl) {
+          try { await crossfadeTo(restoreUrl); } catch (_) {}
+          if (restoreKey) requestedKey = restoreKey;
+        }
       },
     };
   })();
@@ -1444,6 +1522,8 @@
     _glitchTimer = setTimeout(() => g.classList.remove("burst"), ms || 640);
     try { Sound.glitch(); } catch (_) {}
   }
+  // Moments controller (moments.js) reuses the same VCR burst for enter/exit.
+  try { window.__MOMENT_GLITCH__ = glitchTransition; } catch (_) {}
 
   // Wipe BOTH still layers immediately (no crossfade) so the current scene image
   // vanishes the instant it's called — used on reset so the dead run's image
@@ -1797,6 +1877,62 @@
       return !!window.ReactorRenderer;
     },
 
+    // Pause the underlay world for a cinematic Moment WITHOUT tearing it down.
+    // Image mode: just dim the still layers (CSS via body.moment-active).
+    // Reactor mode: stop held movement/look, mute the live video element, and
+    // ask the model to pause if it supports it — the Happy Oyster / Reactor
+    // session stays connected so exit is instant (no rebuild).
+    _underlayPaused: false,
+    _underlayWasMuted: null,
+    pauseUnderlay() {
+      if (this._underlayPaused) return;
+      this._underlayPaused = true;
+      document.body.classList.add("moment-underlay-paused");
+      // Stop player locomotion so the world doesn't keep drifting under the
+      // letterbox while they talk.
+      try { if (typeof onMovementStop === "function") onMovementStop(); } catch (_) {}
+      try {
+        if (window.ReactorRenderer && typeof window.ReactorRenderer.stopMotion === "function") {
+          window.ReactorRenderer.stopMotion();
+        }
+      } catch (_) {}
+      try {
+        if (window.ReactorRenderer && typeof window.ReactorRenderer.setHeldVerb === "function") {
+          window.ReactorRenderer.setHeldVerb(null);
+        }
+      } catch (_) {}
+      try {
+        const v = document.getElementById("reactor-video");
+        if (v) {
+          this._underlayWasMuted = !!v.muted;
+          v.muted = true;
+        }
+      } catch (_) {}
+      try {
+        if (window.ReactorRenderer && typeof window.ReactorRenderer.pause === "function") {
+          window.ReactorRenderer.pause();
+        }
+      } catch (_) {}
+    },
+
+    resumeUnderlay() {
+      if (!this._underlayPaused) return;
+      this._underlayPaused = false;
+      document.body.classList.remove("moment-underlay-paused");
+      try {
+        const v = document.getElementById("reactor-video");
+        if (v && this._underlayWasMuted != null) {
+          v.muted = this._underlayWasMuted;
+        }
+      } catch (_) {}
+      this._underlayWasMuted = null;
+      try {
+        if (window.ReactorRenderer && typeof window.ReactorRenderer.resume === "function") {
+          window.ReactorRenderer.resume();
+        }
+      } catch (_) {}
+    },
+
     // Apply a scene coming off the feed. `prompt` is the engine's realtime
     // scene prompt (feed item metadata.prompt); `imageUrl` is the generated
     // still; `meta` carries flags like hard_transition (location change).
@@ -2032,7 +2168,8 @@
     },
   };
   // Expose for debugging + e2e (so tests can seed a scene base for movement).
-  try { window.__Renderer = Renderer; } catch (_) {}
+  // Moments.js also reads window.Renderer.pauseUnderlay / resumeUnderlay.
+  try { window.__Renderer = Renderer; window.Renderer = Renderer; } catch (_) {}
 
   // ═══════════════════════════════════════════════════════════════════════
   // DangerSystem — realtime vision-driven danger vignette + health.
@@ -6918,8 +7055,9 @@
     if (state.moving) return false;
     if (typeof tapeIsOpen === "function" && tapeIsOpen()) return false;
     // Don't surface hotspots behind an open conversation — they'd sit under the
-    // TALK panel. They're re-armed when the conversation closes.
+    // TALK panel (or behind a cinematic Moment). Re-armed when it closes.
     if (typeof Talk !== "undefined" && Talk.isOpen && Talk.isOpen()) return false;
+    if (typeof window !== "undefined" && window.Moments && window.Moments.isActive && window.Moments.isActive()) return false;
     return true;
   }
 
@@ -7118,7 +7256,7 @@
   const WORLD_TAP_IGNORE =
     "#action-wheel, #control-rail, #scan-layer, #verb-bar, #move-pad, " +
     "#menu-toggle, #tape-overlay, #death-overlay, #coinop-pause-overlay, " +
-    "#talk-overlay, #touch-layer, #rt-log, #story-log, " +
+    "#talk-overlay, #moment-overlay, #touch-layer, #rt-log, #story-log, " +
     "button, a, input, textarea, select, form, label";
   function onWorldTap(e) {
     // Only primary (left) button / touch taps scan the world.
@@ -7749,13 +7887,16 @@
     // cost-usage row for the conversational-agent minutes — otherwise
     // ElevenLabs TALK is invisible to the cost tracker (it's a client<->agent
     // websocket the server never proxies).
-    function releaseVoiceOnClose(voiceId, durationSeconds) {
-      if (!voiceId) return;
+    function releaseVoiceOnClose(voiceId, durationSeconds, subj) {
+      // Notify /api/talk/end to drop the voice refcount. Pass `subj` ONLY on
+      // final hang-up so character memory isn't incremented on mid-call voice
+      // hot-swaps (those call this with just a voice id).
       try {
         const body = JSON.stringify({
-          voice_id: voiceId,
+          voice_id: voiceId || "",
           session_id: SESSION_ID,
           duration_seconds: durationSeconds || 0,
+          subject: subj || undefined,
         });
         if (navigator.sendBeacon) {
           const blob = new Blob([body], { type: "application/json" });
@@ -7772,15 +7913,72 @@
     }
 
     let floatTimer = 0;
+    let inMoment = false; // true while a Conversation Moment chrome is up
 
     function isOpen() { return open; }
+    function isCinematic() { return !!(inMoment && open); }
 
     function setSub(text) {
       if (el.talkSub) el.talkSub.textContent = text || "";
+      try {
+        if (window.Moments && typeof window.Moments.setNameplate === "function" && subject) {
+          window.Moments.setNameplate(subject.label, text || "");
+        }
+      } catch (_) {}
     }
 
     function setOrbState(s) {
       if (el.talkOrb) el.talkOrb.dataset.state = s || "idle";
+      // Drive the living-portrait rim light via a body data attribute that
+      // the Moments CSS keys off (speaking / listening / idle).
+      try {
+        if (inMoment) document.body.setAttribute("data-talk-orb", s || "idle");
+        else document.body.removeAttribute("data-talk-orb");
+      } catch (_) {}
+    }
+
+    // Fetch the cinematic portrait in parallel with the talk session. Best-
+    // effort: a missing/failed portrait just leaves the developing shimmer.
+    async function fetchPortrait(subj) {
+      try {
+        const res = await postJSON("/api/talk/portrait", { subject: subj });
+        if (!open || !inMoment) return;
+        if (res && res.image_url && window.Moments) {
+          window.Moments.setPortrait(res.image_url);
+          // Phase-2 scaffold: if CONVERSATION_ANIMATE is enabled client-side
+          // (window.__CONVERSATION_ANIMATE__), try to attach a second Reactor
+          // idle stream. Falls back silently to the CSS living portrait.
+          try { maybeAnimatePortrait(res.image_url, subj); } catch (_) {}
+        } else if (window.Moments) {
+          const p = document.getElementById("moment-portrait");
+          if (p) { p.classList.remove("developing"); p.classList.add("ready"); }
+        }
+      } catch (err) {
+        console.warn("[talk] portrait failed:", err);
+        try {
+          const p = document.getElementById("moment-portrait");
+          if (p) { p.classList.remove("developing"); p.classList.add("ready"); }
+        } catch (_) {}
+      }
+    }
+
+    // Phase-2 scaffold for world-model-animated portraits. Opt-in via
+    // window.__CONVERSATION_ANIMATE__ = true (or ?convo_animate=1). When the
+    // second Reactor session path isn't available, the CSS living portrait
+    // remains the baseline — never blocks the conversation.
+    function maybeAnimatePortrait(imageUrl, subj) {
+      let enabled = false;
+      try {
+        enabled = !!(window.__CONVERSATION_ANIMATE__ ||
+          (typeof location !== "undefined" && /(?:\?|&)convo_animate=1\b/.test(location.search)));
+      } catch (_) {}
+      if (!enabled || !imageUrl) return;
+      // Scaffold only: log intent. A future pass can open a second
+      // ReactorRenderer session anchored on imageUrl with an idle-motion
+      // prompt and call Moments.setPortraitStream(mediaStream) on reveal.
+      try {
+        AgentLog.push("dim", "portrait animate scaffold", (subj && subj.label) || "");
+      } catch (_) {}
     }
 
     function ensureSdk() { return ElevenSDK.load(); }
@@ -7881,16 +8079,55 @@
       Sound.talkOpen();
       Haptics.select();
 
-      let session = null;
-      try {
-        session = await postJSON("/api/talk/session", { subject, voice_id: selectedVoiceId || undefined });
-      } catch (err) {
-        console.warn("[talk] session failed:", err);
+      // Push the Conversation Moment chrome (letterbox + portrait frame + HUD
+      // hide + underlay pause). Networking below is unchanged — Moments only
+      // owns presentation. Falls back to the slim overlay if Moments.js is
+      // missing so TALK never hard-depends on the cinematic layer.
+      inMoment = false;
+      if (window.Moments && typeof window.Moments.push === "function") {
+        try {
+          await window.Moments.push("conversation", { subject: subject });
+          inMoment = !!(window.Moments.isActive && window.Moments.isActive() &&
+            window.Moments.topType && window.Moments.topType() === "conversation");
+        } catch (e) {
+          console.warn("[talk] Moments.push failed:", e);
+          inMoment = false;
+        }
       }
+
+      // Fire session + portrait in parallel so time-to-content is the slower
+      // of the two, not their sum.
+      const sessionP = postJSON("/api/talk/session", {
+        subject, voice_id: selectedVoiceId || undefined,
+      }).catch((err) => { console.warn("[talk] session failed:", err); return null; });
+      if (inMoment) fetchPortrait(subject); // fire-and-forget alongside session
+
+      // Intimate conversation bed (ducked). Best-effort; silence is fine.
+      try {
+        const scoreKey = [
+          subject.label,
+          subject.kind || "",
+          (state && state.lastScenePrompt) || "",
+        ].filter(Boolean).join(" — ").slice(0, 240);
+        if (scoreKey && SceneAudio && SceneAudio.scoreConversation) {
+          SceneAudio.scoreConversation(scoreKey);
+        }
+      } catch (_) {}
+
+      let session = null;
+      try { session = await sessionP; } catch (_) { session = null; }
       if (!open) return; // closed while awaiting
 
       if (session && session.voices) voices = session.voices;
       const opening = (session && session.context && session.context.opening_line) || "";
+      if (inMoment && window.Moments) {
+        try {
+          window.Moments.notify({
+            icon: "✦",
+            text: "Speaking with " + (subject.label || "someone"),
+          });
+        } catch (_) {}
+      }
       if (session && session.mode === "voice" && (session.agent_id || session.signed_url)) {
         beginVoice(session, opening);
       } else {
@@ -8192,13 +8429,14 @@
       aiIsSpeaking = false;
       openingSpoken = false;
       // Notify the server so it drops the refcount on the voice we've been
-      // using. Once refcount hits zero, session cleanup + LRU eviction can
-      // reap the ElevenLabs slot. Capture-then-clear so this only fires once.
+      // using AND records a lightweight per-character memory entry. Capture
+      // subject before we null it out.
       const releasedVoice = voiceInUse;
       const releasedDuration = voiceConnectedAt ? (Date.now() - voiceConnectedAt) / 1000 : 0;
+      const closedSubject = subject;
       voiceInUse = "";
       voiceConnectedAt = 0;
-      if (releasedVoice) releaseVoiceOnClose(releasedVoice, releasedDuration);
+      releaseVoiceOnClose(releasedVoice, releasedDuration, closedSubject);
       Sound.talkClose();
       if (convo) { try { convo.endSession(); } catch (_) {} convo = null; }
       closeVoiceMenu();
@@ -8206,6 +8444,30 @@
       el.talkOverlay.classList.remove("talk-in");
       el.talkOverlay.setAttribute("aria-hidden", "true");
       document.body.classList.remove("talking");
+      document.body.removeAttribute("data-talk-orb");
+
+      // Pop the Conversation Moment (restores HUD + underlay). Guarded so a
+      // double-close or missing Moments.js never throws. End-of-call toast uses
+      // the world toast (Moment chrome is about to unmount).
+      if (inMoment && window.Moments && typeof window.Moments.pop === "function") {
+        try {
+          if (window.Moments.topType && window.Moments.topType() === "conversation") {
+            window.Moments.pop({ subject: closedSubject });
+          }
+        } catch (e) { console.warn("[talk] Moments.pop failed:", e); }
+      }
+      inMoment = false;
+      if (closedSubject && closedSubject.label) {
+        try {
+          showRendererToast("Left conversation with " + closedSubject.label);
+        } catch (_) {}
+      }
+      try {
+        if (SceneAudio && typeof SceneAudio.endConversation === "function") {
+          SceneAudio.endConversation();
+        }
+      } catch (_) {}
+
       setTimeout(() => {
         el.talkOverlay.classList.add("hidden");
         el.talkLog.innerHTML = "";
@@ -8231,9 +8493,39 @@
     }
 
     return {
-      start, close, isOpen, micToggle, send,
+      start, close, isOpen, isCinematic, micToggle, send,
       toggleVoiceMenu, closeVoiceMenu, onEscape,
     };
+  })();
+
+  // ------------------------------------------------------------------
+  // Conversation Moment type — presentation only. Talk owns networking.
+  // Registered against the Moments stack so future set-pieces (interrogation,
+  // flashback, trade) can reuse the same letterbox / pause / notify chrome.
+  // ------------------------------------------------------------------
+  (function registerConversationMoment() {
+    if (!window.Moments || typeof window.Moments.register !== "function") return;
+    window.Moments.register("conversation", {
+      // enter: chrome is already shown by Moments.push; Talk.start drives the
+      // session/portrait fetches. We only confirm the nameplate here.
+      async enter(payload) {
+        const subj = (payload && payload.subject) || {};
+        try {
+          window.Moments.setNameplate(subj.label || "—", "establishing…");
+        } catch (_) {}
+        return true;
+      },
+      async exit(/* result */) {
+        // Talk.close already restored SceneAudio / cleared portrait via pop's
+        // hideOverlayChrome. Nothing else to tear down for MVP.
+        return true;
+      },
+      onEsc() {
+        // Defer to Talk's Escape handler so voice-menu collapse still works.
+        try { if (Talk && Talk.onEscape) Talk.onEscape(); } catch (_) {}
+        return true;
+      },
+    });
   })();
 
   // QA hook: expose the real Talk controller ONLY when explicitly requested via
@@ -9002,17 +9294,26 @@
   // ------------------------------------------------------------------
 
   function onKeydown(e) {
-    // TALK is now a companion HUD, not a modal — the world stays playable
-    // while you converse. If focus is in the TALK input, let the field handle
-    // typing/Enter and only intercept Esc (which ends the conversation). If
-    // the strip is open but focus is elsewhere, global shortcuts (number
-    // choices, R, V, ACT, PHOTO…) still work, so the player can act
-    // mid-conversation.
+    // Conversation Moments are a cinematic takeover — Esc hangs up, typing
+    // goes to the composer, and world shortcuts (choices / ACT / PHOTO / SCAN)
+    // stay blocked until the Moment pops. The legacy non-cinematic TALK strip
+    // (Moments.js missing) still allows fall-through so the world stays
+    // playable under a companion HUD.
     if (Talk.isOpen()) {
       const typing = document.activeElement === el.talkInput;
+      const cinematic = !!(Talk.isCinematic && Talk.isCinematic());
       if (e.key === "Escape") { e.preventDefault(); Talk.onEscape(); return; }
       if (typing) return; // let the composer handle the rest
-      // Otherwise fall through so global shortcuts fire.
+      if (cinematic) return; // block world shortcuts during the Moment
+      // Non-cinematic companion HUD: fall through so global shortcuts fire.
+    }
+    if (window.Moments && window.Moments.isActive && window.Moments.isActive()) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        try { window.Moments.onEscape(); } catch (_) {}
+        return;
+      }
+      return; // any active Moment owns the keyboard
     }
     // Tape playback owns the keyboard while open.
     if (tapeIsOpen()) {

@@ -4132,6 +4132,347 @@ html.is-mobile #scan-tags .scan-tag.acting .scan-tag-label { display: inline; }
   #narrator-line { font-size: 17px; }
 }
 
+/* ============================================================
+   MOMENTS — cinematic full-screen set-piece chrome
+
+   Shared letterbox / portrait / nameplate / notify / choices frame used by
+   Conversation (and future Moment types). When body.moment-active is set,
+   the world HUD is hidden and #talk-overlay is restyled into a bottom-third
+   caption bar over the portrait. The underlay scene is paused, not destroyed.
+   ============================================================ */
+/* Dim the live world slightly while a Moment covers it (paused, not destroyed). */
+body.moment-underlay-paused .scene,
+body.moment-underlay-paused .reactor-video,
+body.moment-underlay-paused .reactor-freeze {
+  filter: brightness(0.55) saturate(0.85);
+  transition: filter 0.35s ease;
+}
+
+#moment-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 33;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.28s ease;
+}
+#moment-overlay.hidden { display: none; }
+#moment-overlay.moment-in { opacity: 1; }
+
+.moment-letterbox {
+  position: absolute;
+  left: 0; right: 0;
+  height: 11vh;
+  min-height: 48px;
+  max-height: 96px;
+  background: #050407;
+  z-index: 2;
+  transition: transform 0.38s cubic-bezier(0.2, 0.9, 0.25, 1);
+  pointer-events: none;
+}
+.moment-letterbox-top { top: 0; transform: translateY(-105%); }
+.moment-letterbox-bottom { bottom: 0; transform: translateY(105%); }
+#moment-overlay.moment-in .moment-letterbox-top,
+#moment-overlay.moment-in .moment-letterbox-bottom { transform: translateY(0); }
+
+/* Portrait frame — cinematic medium shot, fills the letterboxed stage. */
+#moment-portrait {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -52%);
+  width: min(920px, 92vw);
+  height: min(58vh, 520px);
+  z-index: 1;
+  border-radius: 4px;
+  overflow: hidden;
+  background:
+    radial-gradient(120% 80% at 50% 40%, rgba(40, 28, 22, 0.85), rgba(8, 6, 10, 0.95));
+  box-shadow:
+    0 0 0 1px rgba(255, 205, 140, 0.12),
+    0 24px 80px rgba(0, 0, 0, 0.65);
+  opacity: 0;
+  transition: opacity 0.4s ease, transform 0.5s cubic-bezier(0.2, 0.9, 0.25, 1);
+}
+#moment-overlay.moment-in #moment-portrait { opacity: 1; }
+#moment-portrait-img,
+#moment-portrait-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+#moment-portrait-img.hidden,
+#moment-portrait-video.hidden { display: none; }
+
+/* Developing-photograph shimmer while the portrait generates. */
+#moment-portrait-shimmer {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(110deg,
+      rgba(255, 210, 160, 0.02) 0%,
+      rgba(255, 210, 160, 0.14) 45%,
+      rgba(255, 210, 160, 0.02) 70%);
+  background-size: 220% 100%;
+  opacity: 0;
+  pointer-events: none;
+}
+#moment-portrait.developing #moment-portrait-shimmer {
+  opacity: 1;
+  animation: moment-shimmer 1.6s ease-in-out infinite;
+}
+@keyframes moment-shimmer {
+  0%   { background-position: 120% 0; }
+  100% { background-position: -120% 0; }
+}
+
+/* Film grain + rim light for the living portrait. */
+#moment-portrait-grain {
+  position: absolute;
+  inset: -10%;
+  pointer-events: none;
+  opacity: 0.18;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");
+  mix-blend-mode: overlay;
+}
+#moment-portrait-rim {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  box-shadow: inset 0 0 60px rgba(255, 180, 100, 0.08);
+  transition: box-shadow 0.3s ease;
+}
+/* Orb-linked rim: when the Talk orb is speaking/listening, brighten the frame. */
+body.moment-conversation #talk-orb[data-state="speaking"] ~ * ,
+body.moment-conversation #moment-portrait.living #moment-portrait-rim {
+  box-shadow: inset 0 0 80px rgba(255, 190, 110, 0.22);
+}
+body.moment-conversation #talk-orb[data-state="listening"] ~ * {
+  /* no-op placeholder — rim driven below via body attribute sync */
+}
+body.moment-conversation[data-talk-orb="listening"] #moment-portrait-rim {
+  box-shadow: inset 0 0 70px rgba(120, 190, 255, 0.2);
+}
+body.moment-conversation[data-talk-orb="speaking"] #moment-portrait-rim {
+  box-shadow: inset 0 0 90px rgba(255, 190, 110, 0.28);
+}
+
+/* Living portrait: slow breathing scale when a still is ready. */
+#moment-portrait.living #moment-portrait-img {
+  animation: moment-breathe 5.5s ease-in-out infinite;
+  transform-origin: 50% 42%;
+}
+@keyframes moment-breathe {
+  0%, 100% { transform: scale(1.02); }
+  50%      { transform: scale(1.055); }
+}
+
+#moment-nameplate {
+  position: absolute;
+  left: calc(env(safe-area-inset-left, 0px) + 28px);
+  top: calc(11vh + 18px);
+  z-index: 3;
+  font-family: 'Share Tech Mono', monospace;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(-6px);
+  transition: opacity 0.35s ease 0.12s, transform 0.35s ease 0.12s;
+}
+#moment-nameplate.moment-nameplate-in { opacity: 1; transform: translateY(0); }
+#moment-nameplate.hidden { display: none; }
+#moment-nameplate-name {
+  font-size: 18px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #ffe7bf;
+  text-shadow: 0 2px 10px rgba(0,0,0,0.85);
+}
+#moment-nameplate-sub {
+  margin-top: 4px;
+  font-size: 10px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: rgba(255, 210, 160, 0.55);
+  text-shadow: 0 1px 6px rgba(0,0,0,0.8);
+}
+
+#moment-notify {
+  position: absolute;
+  top: calc(11vh + 16px);
+  right: calc(env(safe-area-inset-right, 0px) + 22px);
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  pointer-events: none;
+  max-width: min(360px, 46vw);
+}
+.moment-notify-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 205, 140, 0.28);
+  background: rgba(12, 10, 16, 0.78);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  color: #ffe7bf;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  box-shadow: 0 10px 28px rgba(0,0,0,0.45);
+  opacity: 0;
+  transform: translateX(12px);
+  transition: opacity 0.28s ease, transform 0.28s cubic-bezier(0.2, 0.9, 0.25, 1);
+}
+.moment-notify-chip.in { opacity: 1; transform: translateX(0); }
+.moment-notify-chip.out { opacity: 0; transform: translateX(8px); }
+.moment-notify-icon { opacity: 0.85; }
+.moment-notify-text { line-height: 1.35; }
+
+#moment-choices {
+  position: absolute;
+  right: calc(env(safe-area-inset-right, 0px) + 28px);
+  bottom: calc(11vh + 110px);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: auto;
+  max-width: min(360px, 42vw);
+}
+#moment-choices.hidden { display: none; }
+.moment-choice {
+  pointer-events: auto;
+  text-align: left;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 205, 140, 0.32);
+  background: rgba(12, 10, 16, 0.72);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  color: #ffe7bf;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 12.5px;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+  transition: background 0.14s, border-color 0.14s, transform 0.12s;
+}
+.moment-choice:hover,
+.moment-choice:focus {
+  background: rgba(255, 196, 120, 0.16);
+  border-color: rgba(255, 216, 150, 0.7);
+  outline: none;
+  transform: translateX(-2px);
+}
+
+/* While a Conversation Moment is live, restyle the existing Talk strip into
+   a bottom-third cinematic caption bar and enable the scrim so the world
+   underneath can't be poked. */
+body.moment-conversation #talk-overlay {
+  z-index: 35;
+  pointer-events: none;
+}
+body.moment-conversation #talk-scrim {
+  display: block;
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(80% 70% at 50% 40%, rgba(0,0,0,0.18), rgba(0,0,0,0.55));
+  pointer-events: auto;
+}
+body.moment-conversation #talk-panel {
+  left: 50%;
+  right: auto;
+  bottom: calc(11vh + 18px);
+  transform: translateX(-50%) translateY(0) scale(1);
+  width: min(720px, calc(100vw - 48px));
+  max-width: none;
+  border-radius: 14px;
+  background:
+    linear-gradient(180deg, rgba(14, 10, 16, 0.78), rgba(8, 7, 12, 0.86));
+  box-shadow:
+    0 16px 48px rgba(0, 0, 0, 0.55),
+    0 0 40px rgba(255, 180, 100, 0.1),
+    inset 3px 0 0 rgba(255, 190, 110, 0.4);
+}
+body.moment-conversation #talk-overlay.talk-in #talk-panel {
+  transform: translateX(-50%) translateY(0) scale(1);
+}
+body.moment-conversation #talk-float {
+  left: 50%;
+  right: auto;
+  transform: translateX(-50%) translateY(6px) scale(0.98);
+  bottom: calc(11vh + 148px);
+  max-width: min(680px, calc(100vw - 64px));
+  text-align: center;
+  font-size: 15px;
+}
+body.moment-conversation #talk-float.talk-float-in {
+  transform: translateX(-50%) translateY(0) scale(1);
+}
+body.moment-conversation #talk-float-who {
+  font-size: 10px;
+  letter-spacing: 0.24em;
+}
+
+@media (max-width: 640px) {
+  #moment-portrait {
+    width: calc(100vw - 20px);
+    height: min(46vh, 360px);
+    transform: translate(-50%, -48%);
+  }
+  #moment-nameplate {
+    left: 14px;
+    top: calc(10vh + 10px);
+  }
+  #moment-nameplate-name { font-size: 14px; }
+  #moment-notify {
+    top: calc(10vh + 10px);
+    right: 12px;
+    max-width: 56vw;
+  }
+  #moment-choices {
+    right: 12px;
+    left: 12px;
+    max-width: none;
+    bottom: calc(10vh + 150px);
+  }
+  body.moment-conversation #talk-panel {
+    left: 8px;
+    right: 8px;
+    width: auto;
+    transform: none;
+    bottom: calc(10vh + 12px);
+  }
+  body.moment-conversation #talk-overlay.talk-in #talk-panel { transform: none; }
+  body.moment-conversation #talk-float {
+    left: 12px;
+    right: 12px;
+    width: auto;
+    max-width: none;
+    transform: none;
+    bottom: calc(10vh + 150px);
+    text-align: left;
+  }
+  body.moment-conversation #talk-float.talk-float-in { transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #moment-overlay, .moment-letterbox, #moment-portrait,
+  #moment-portrait.living #moment-portrait-img,
+  #moment-portrait-shimmer, #moment-nameplate, .moment-notify-chip {
+    animation: none !important;
+    transition: opacity 0.15s ease !important;
+  }
+  .moment-letterbox-top,
+  .moment-letterbox-bottom { transform: none !important; }
+}
+
 /* ---------- Menu toggle (top-right corner) ---------- */
 /* A single always-visible button. The control menu is collapsed by default and
    this opens/closes it, so the scene stays clean until you ask for controls. */
