@@ -380,6 +380,31 @@ def generate_choices(
         return _contextual_fallback()
 
     import time as _time
+    # Latency/cost instrumentation: choice generation is one of the two text
+    # LLM calls on the turn critical path, so record it (with the same
+    # operation/service labels engine._ask uses) into the admin Analytics tab.
+    # This closes the gap where only the dispatch call was measured, making the
+    # true text-vs-image time split visible per model.
+    _choices_t0 = _time.time()
+
+    def _record_choices_usage(success, response_data=None, error_message=None):
+        try:
+            import cost_tracker
+            in_tok = out_tok = None
+            if response_data:
+                um = response_data.get("usageMetadata", {}) or {}
+                in_tok = um.get("promptTokenCount")
+                out_tok = um.get("candidatesTokenCount")
+            cost_tracker.record_usage(
+                engine.get_active_session_id(), "text", "gemini", model_name,
+                operation="choices",
+                input_units=in_tok, output_units=out_tok, unit_type="tokens",
+                latency_ms=int((_time.time() - _choices_t0) * 1000),
+                success=success, error_message=error_message,
+            )
+        except Exception as _e_rec:
+            print(f"[COST TRACKER] choices usage record failed (non-fatal): {_e_rec}", flush=True)
+
     _choices_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
     _choices_headers = {"x-goog-api-key": gemini_api_key, "Content-Type": "application/json"}
     # CRITICAL: include BLOCK_NONE safety settings so a dark dispatch (e.g. with
@@ -407,26 +432,31 @@ def generate_choices(
             response.raise_for_status()
             response_data = response.json()
             print("[GEMINI TEXT] Choice generation complete", flush=True)
+            _record_choices_usage(True, response_data)
             break
         except requests.exceptions.Timeout:
             print(f"[CHOICES ERROR] Gemini API timeout after 20 seconds", flush=True)
             print(f"[CHOICES FALLBACK] timeout — using contextual fallback", flush=True)
+            _record_choices_usage(False, error_message="timeout")
             return _contextual_fallback()
         except requests.exceptions.HTTPError as e:
             print(f"[CHOICES ERROR] Gemini API HTTP error: {e}", flush=True)
             if hasattr(e, 'response') and e.response is not None:
                 print(f"[CHOICES ERROR] Response: {e.response.text}", flush=True)
             print(f"[CHOICES FALLBACK] http-error — using contextual fallback", flush=True)
+            _record_choices_usage(False, error_message=str(e))
             return _contextual_fallback()
         except Exception as e:
             print(f"[CHOICES ERROR] Unexpected error calling Gemini API: {e}", flush=True)
             import traceback
             traceback.print_exc()
             print(f"[CHOICES FALLBACK] unexpected — using contextual fallback", flush=True)
+            _record_choices_usage(False, error_message=str(e))
             return _contextual_fallback()
     if response_data is None:
         print("[CHOICES ERROR] Gemini API still rate-limited after retry — using fallback", flush=True)
         print(f"[CHOICES FALLBACK] 429-retry-exhausted — using contextual fallback", flush=True)
+        _record_choices_usage(False, error_message="429 rate-limited (retry exhausted)")
         return _contextual_fallback()
 
     # Create a mock OpenAI response object
