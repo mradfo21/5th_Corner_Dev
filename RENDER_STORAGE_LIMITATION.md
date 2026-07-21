@@ -1,6 +1,21 @@
-# ⚠️ Render Free Tier Storage Limitation
+# ⚠️ Render Storage — Persistent Disk Status
 
-## 🔥 **CRITICAL: Ephemeral Storage**
+## ✅ **UPDATE (2026-07-21): Persistent disk is now configured**
+
+`render.yaml` mounts a 1GB persistent disk at `sessions/` (see the `disk:`
+block on the `somewhere-game` service). Render provisions/attaches it
+automatically on the next deploy after this change lands — no manual
+dashboard steps needed. This means `sessions/_analytics/usage.db` (the cost
+tracker's SQLite ledger), game state, and session images/tapes all now
+survive deploys and restarts. Cost: ~$1/GB/month on top of the Starter plan
+already in use.
+
+The rest of this document describes the PRIOR ephemeral-storage state, kept
+for context on why this mattered.
+
+---
+
+## 🔥 **Previously: Ephemeral Storage**
 
 Render Free Tier uses **ephemeral storage** - ALL files are **deleted** on:
 - Every deploy/redeploy
