@@ -10414,7 +10414,17 @@
       el.talkForm.addEventListener("submit", (e) => { e.preventDefault(); Talk.send(el.talkInput.value); });
     }
     if (el.talkClose) el.talkClose.addEventListener("click", () => Talk.close());
-    if (el.talkScrim) el.talkScrim.addEventListener("click", () => Talk.close());
+    // The scrim closes the (non-cinematic) companion overlay when you click
+    // away from it. In a cinematic Moment the scrim's job is the OPPOSITE —
+    // it blocks the world underneath so a stray tap (e.g. on the portrait)
+    // can't poke the paused scene; hanging up is reserved for the explicit
+    // ✕ / Esc so you don't lose a conversation by clicking the character.
+    if (el.talkScrim) {
+      el.talkScrim.addEventListener("click", () => {
+        if (Talk.isCinematic && Talk.isCinematic()) return;
+        Talk.close();
+      });
+    }
     if (el.talkModeToggle) el.talkModeToggle.addEventListener("click", () => Talk.micToggle());
     if (el.talkVoiceBtn) el.talkVoiceBtn.addEventListener("click", (e) => { e.stopPropagation(); Talk.toggleVoiceMenu(); });
     // Click anywhere else in the panel closes the voice menu.

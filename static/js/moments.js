@@ -106,7 +106,7 @@
 
   function showOverlayChrome(payload) {
     const ov = overlay();
-    if (!ov) return;
+    if (!ov) return false;
     ov.classList.remove("hidden");
     ov.setAttribute("aria-hidden", "false");
     document.body.classList.add("moment-active");
@@ -137,6 +137,7 @@
       vid.removeAttribute("src");
       vid.classList.add("hidden");
     }
+    return true;
   }
 
   function hideOverlayChrome() {
@@ -179,11 +180,21 @@
     choreographyBusy = true;
     const entry = { type: String(type), payload: payload || {}, handlers };
     try {
+      // If the shared chrome markup is missing (e.g. a stale cached template),
+      // abort BEFORE touching the world so the caller can fall back to its own
+      // non-cinematic presentation instead of a broken half-state.
+      const chromeOk = showOverlayChrome({
+        type: entry.type,
+        subject: (payload && payload.subject) || payload,
+      });
+      if (!chromeOk) {
+        console.warn("[moments] overlay markup missing — skipping cinematic chrome");
+        return null;
+      }
       pauseUnderlay();
       setHudHidden(true);
       fireGlitch();
       playSound("convoEnter");
-      showOverlayChrome({ type: entry.type, subject: (payload && payload.subject) || payload });
       stack.push(entry);
       const result = await handlers.enter(payload || {}, entry);
       return result;

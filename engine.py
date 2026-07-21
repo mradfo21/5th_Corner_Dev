@@ -6770,7 +6770,8 @@ def _format_vision_for_persona(subject_label: str, snapshot: dict) -> str:
     )
 
 
-def build_talk_context(subject: dict, session_id: str = "default", opening_override: str = "") -> dict:
+def build_talk_context(subject: dict, session_id: str = "default", opening_override: str = "",
+                       include_vision: bool = True) -> dict:
     """Assemble a story-aware briefing for a conversation with ``subject``.
 
     ``subject`` is the SCAN object the player chose to talk to
@@ -6784,6 +6785,11 @@ def build_talk_context(subject: dict, session_id: str = "default", opening_overr
     The persona is grounded in the CURRENT visible frame (see
     ``_talk_vision_snapshot``) so the character isn't talking blind — they
     can reference what's actually on screen alongside the story situation.
+
+    ``include_vision=False`` skips the (two Gemini vision calls) perception
+    snapshot — used by the portrait endpoint, which only needs subject +
+    situation and runs CONCURRENTLY with the session's own build_talk_context,
+    so doing the vision work twice would just double the latency for nothing.
     """
     subject = subject or {}
     label = _clean_subject_text(subject.get("label"), "figure", 40)
@@ -6855,8 +6861,9 @@ def build_talk_context(subject: dict, session_id: str = "default", opening_overr
     # Direct-perception block: what the subject can actually SEE in the frame
     # the player is looking at, so the character can react to real objects on
     # screen instead of a text-only briefing. Empty string when vision is
-    # unavailable — the persona still works, just without the eyes.
-    vision_snapshot = _talk_vision_snapshot(session_id)
+    # unavailable or skipped — the persona still works, just without the eyes.
+    vision_snapshot = _talk_vision_snapshot(session_id) if include_vision else \
+        {"visible": [], "description": "", "time_of_day": "", "image_url": None}
     vision_block = _format_vision_for_persona(label, vision_snapshot)
 
     persona_prompt = (
@@ -7018,11 +7025,15 @@ def api_talk_portrait():
         if not IMAGE_ENABLED:
             return jsonify({"image_url": None, "reason": "image_disabled"})
 
-        # Reuse the same briefing Talk already built for the persona so the
-        # portrait and the spoken character share one grounding.
-        context = build_talk_context(subject, session_id, opening_override=".")
-        # opening_override="." skips the opening-line LLM call (we only need
-        # situation/subject/vision here). Clear the stub so it never leaks.
+        # Reuse the same briefing Talk built for the persona, but skip BOTH
+        # the opening-line LLM call (opening_override=".") AND the vision
+        # snapshot (include_vision=False): the portrait only needs the subject
+        # + scene, and it runs concurrently with the session's own
+        # build_talk_context, so repeating the two Gemini vision calls here
+        # would just double the time-to-portrait for no benefit.
+        context = build_talk_context(
+            subject, session_id, opening_override=".", include_vision=False,
+        )
         if context.get("opening_line") == ".":
             context["opening_line"] = ""
 

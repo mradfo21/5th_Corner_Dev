@@ -4261,14 +4261,10 @@ body.moment-underlay-paused .reactor-freeze {
   box-shadow: inset 0 0 60px rgba(255, 180, 100, 0.08);
   transition: box-shadow 0.3s ease;
 }
-/* Orb-linked rim: when the Talk orb is speaking/listening, brighten the frame. */
-body.moment-conversation #talk-orb[data-state="speaking"] ~ * ,
-body.moment-conversation #moment-portrait.living #moment-portrait-rim {
-  box-shadow: inset 0 0 80px rgba(255, 190, 110, 0.22);
-}
-body.moment-conversation #talk-orb[data-state="listening"] ~ * {
-  /* no-op placeholder — rim driven below via body attribute sync */
-}
+/* Orb-linked rim light: the portrait frame brightens/cools in step with the
+   character's speaking/listening state. Driven purely by the body
+   `data-talk-orb` attribute that Talk.setOrbState() syncs — no fragile
+   sibling selectors. Default (idle / attribute absent) keeps the base glow. */
 body.moment-conversation[data-talk-orb="listening"] #moment-portrait-rim {
   box-shadow: inset 0 0 70px rgba(120, 190, 255, 0.2);
 }
