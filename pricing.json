@@ -1,6 +1,6 @@
 {
-  "last_updated": "2026-07-20T20:31:00.000000+00:00",
-  "notes": "Rates are $ per unit as noted. Token rates are $ per 1,000 tokens. Editable live from the admin dashboard's Analytics > Pricing panel (no redeploy needed) via GET/PUT /api/admin/pricing. A null rate means 'unpriced' and shows as such in the dashboard instead of silently costing $0.",
+  "last_updated": "2026-07-21T18:15:00.000000+00:00",
+  "notes": "Rates are $ per unit as noted. Token rates are $ per 1,000 tokens. Editable live from the admin dashboard's Analytics > Pricing panel (no redeploy needed) via GET/PUT /api/admin/pricing. A null rate means 'unpriced' and shows as such in the dashboard instead of silently costing $0. Reactor per-second rates are converted from https://api.reactor.inc/pricing (public, no auth) at credits_per_dollar=10000 — re-check that endpoint if Reactor's pricing changes.",
   "rates": {
     "gemini:gemini-3.1-flash-lite": {
       "unit_type": "tokens",
@@ -97,9 +97,45 @@
       "unit_type": "characters",
       "per_1k": 0.18
     },
+    "reactor:happy-oyster": {
+      "unit_type": "seconds",
+      "per_unit": 0.0139
+    },
+    "reactor:happy-oyster-adventure": {
+      "unit_type": "seconds",
+      "per_unit": 0.0139
+    },
+    "reactor:happy-oyster-director": {
+      "unit_type": "seconds",
+      "per_unit": 0.0139
+    },
+    "reactor:lingbot": {
+      "unit_type": "seconds",
+      "per_unit": 0.0033
+    },
+    "reactor:lingbot-world-2": {
+      "unit_type": "seconds",
+      "per_unit": 0.0033
+    },
+    "reactor:helios": {
+      "unit_type": "seconds",
+      "per_unit": 0.0017
+    },
+    "reactor:longlive-v2": {
+      "unit_type": "seconds",
+      "per_unit": 0.0017
+    },
+    "reactor:sana-streaming": {
+      "unit_type": "seconds",
+      "per_unit": 0.0017
+    },
+    "reactor:x2": {
+      "unit_type": "seconds",
+      "per_unit": 0.0017
+    },
     "reactor:default": {
       "unit_type": "seconds",
-      "per_unit": null
+      "per_unit": 0.0017
     },
     "gemini_live:default": {
       "unit_type": "seconds",

@@ -7246,6 +7246,7 @@
     // `designPollTimer` polls /api/talk/voice/status for a still-designing
     // voice so we can hot-swap it into the live call when it lands.
     let voiceInUse = "";
+    let voiceConnectedAt = 0;   // Date.now() the live Convai channel actually went live (cost reporting)
     let designPollTimer = null;
     let designPollTries = 0;
     let designCacheKey = "";
@@ -7334,11 +7335,19 @@
 
     // Fire-and-forget notify so server can drop the voice refcount and
     // reclaim the ElevenLabs voice slot at session end. sendBeacon survives
-    // pagehide/close; fetch with keepalive is the fallback.
-    function releaseVoiceOnClose(voiceId) {
+    // pagehide/close; fetch with keepalive is the fallback. `durationSeconds`
+    // (how long the Convai channel was actually live) lets the server log a
+    // cost-usage row for the conversational-agent minutes — otherwise
+    // ElevenLabs TALK is invisible to the cost tracker (it's a client<->agent
+    // websocket the server never proxies).
+    function releaseVoiceOnClose(voiceId, durationSeconds) {
       if (!voiceId) return;
       try {
-        const body = JSON.stringify({ voice_id: voiceId });
+        const body = JSON.stringify({
+          voice_id: voiceId,
+          session_id: SESSION_ID,
+          duration_seconds: durationSeconds || 0,
+        });
         if (navigator.sendBeacon) {
           const blob = new Blob([body], { type: "application/json" });
           navigator.sendBeacon("/api/talk/end", blob);
@@ -7586,9 +7595,10 @@
           // otherwise its refcount would stay >0 across the whole session
           // and block reclaim.
           if (voiceInUse && voiceInUse !== session.voice_id) {
-            releaseVoiceOnClose(voiceInUse);
+            releaseVoiceOnClose(voiceInUse, voiceConnectedAt ? (Date.now() - voiceConnectedAt) / 1000 : 0);
           }
           voiceInUse = session.voice_id || "";
+          voiceConnectedAt = Date.now();
           // If a per-character voice is being designed in the background,
           // start polling so we can hot-swap it in once it lands.
           if (session.voice_status === "generating" && session.voice_cache_key) {
@@ -7825,8 +7835,10 @@
       // using. Once refcount hits zero, session cleanup + LRU eviction can
       // reap the ElevenLabs slot. Capture-then-clear so this only fires once.
       const releasedVoice = voiceInUse;
+      const releasedDuration = voiceConnectedAt ? (Date.now() - voiceConnectedAt) / 1000 : 0;
       voiceInUse = "";
-      if (releasedVoice) releaseVoiceOnClose(releasedVoice);
+      voiceConnectedAt = 0;
+      if (releasedVoice) releaseVoiceOnClose(releasedVoice, releasedDuration);
       Sound.talkClose();
       if (convo) { try { convo.endSession(); } catch (_) {} convo = null; }
       closeVoiceMenu();

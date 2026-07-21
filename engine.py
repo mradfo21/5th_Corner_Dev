@@ -6900,11 +6900,15 @@ def api_talk_voices():
 
 
 def api_talk_end():
-    """Client fires this when the TALK widget closes so we can drop the
-    refcount on the voice it was using. Voices with refcount == 0 become
-    eligible for session-end cleanup + LRU eviction.
+    """Client fires this when the TALK widget closes (or switches/hot-swaps
+    voice) so we can drop the refcount on the voice it was using AND log the
+    conversational-agent minutes to the cost ledger. Voices with refcount == 0
+    become eligible for session-end cleanup + LRU eviction.
 
-    Request JSON: ``{"voice_id": <str>}`` (session_id is optional, unused).
+    Request JSON: ``{"voice_id": <str>, "session_id"?: <str>,
+    "duration_seconds"?: <float>}``. `duration_seconds` is how long the
+    ElevenLabs Convai channel was actually connected — the server never
+    proxies that websocket, so the client is the only one who knows.
     Response JSON: ``{"ok": true, "refcount": <int>}``. Always 200 — this is
     fire-and-forget from the client; we never let an end-of-call cleanup
     error surface as a user-visible failure.
@@ -6912,6 +6916,15 @@ def api_talk_end():
     try:
         data = request.get_json(silent=True) or {}
         voice_id = str(data.get("voice_id") or "").strip()
+        try:
+            seconds = float(data.get("duration_seconds") or 0)
+        except (TypeError, ValueError):
+            seconds = 0.0
+        if seconds > 0:
+            cost_tracker.record_usage(
+                str(data.get("session_id") or "default"), "voice", "elevenlabs", "talk_agent",
+                output_units=seconds, unit_type="seconds", success=True,
+            )
         if not voice_id:
             return jsonify({"ok": True, "refcount": 0})
         try:
