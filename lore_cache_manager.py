@@ -344,37 +344,6 @@ def save_config(config: Dict[str, Any]) -> None:
         # Reset file mtimes to force refresh check
         _last_file_mtimes = {}
 
-def format_status_message() -> str:
-    """Format cache status as Discord-friendly message."""
-    status = get_cache_status()
-    
-    if not status["enabled"]:
-        return "**Lore Cache: Disabled**\nEnable in `lore/cache_config.json`"
-    
-    if not status["active"]:
-        return "**Lore Cache: Inactive**\n[X] No files found or cache creation failed"
-    
-    status_icon = "[OK]" if status["active"] else "[X]"
-    
-    msg = f"**Lore Cache Status**\n"
-    msg += f"{status_icon} **Active**\n"
-    msg += f"**Files:** {status['text_files']} text, {status['image_files']} images\n"
-    msg += f"**Tokens:** {status['token_count']:,}\n"
-    
-    if status["time_remaining"]:
-        msg += f"**Expires in:** {status['time_remaining']}\n"
-    
-    # Estimate cost
-    if status["token_count"] > 0:
-        cost_per_hour = (status["token_count"] / 1_000_000) * 1.00  # $1/M tokens/hour
-        msg += f"**Storage cost:** ${cost_per_hour:.4f}/hour\n"
-    
-    if status["cache_id"]:
-        cache_short = status["cache_id"].split("/")[-1][:16]
-        msg += f"**Cache ID:** `{cache_short}...`"
-    
-    return msg
-
 # Initialize on import (no cache created yet - LAZY LOADING)
 print("[LORE CACHE MANAGER] Initialized (lazy mode - cache only created when first AI call is made)")
 if load_config().get("enabled", False):

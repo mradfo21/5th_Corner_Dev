@@ -237,13 +237,13 @@ def generate_with_gemini(
             "Add it to config.json as GEMINI_API_KEY"
         )
     
-    # Override model based on HD mode
-    if hd_mode:
-        model = GEMINI_PRO_IMAGE
-        print(f"[GOOGLE GEMINI] HD MODE ON: Using {model} for high quality (slower)")
-    else:
-        model = GEMINI_FLASH_IMAGE
-        print(f"[GOOGLE GEMINI] HD MODE OFF: Using {model} for speed (lower quality)")
+    # Stills are standardized on Nano Banana 2 Lite (GEMINI_FLASH_IMAGE) for
+    # speed — it returns in ~seconds at 1K. The hd_mode arg is retained for
+    # call-site compatibility but no longer promotes to the heavier Pro model
+    # (that was slower and is what we're moving off of). Flip the model here if
+    # a future call genuinely needs 4K/high-fidelity output.
+    model = GEMINI_FLASH_IMAGE
+    print(f"[GOOGLE GEMINI] Using {model} (Nano Banana 2 Lite) for speed @ 1K")
     
     # Load prompt template from JSON (single source of truth!)
     structured_prompt = PROMPTS["gemini_text_to_image_instructions"].format(prompt=prompt)
@@ -348,10 +348,8 @@ def generate_with_gemini(
         "Content-Type": "application/json"
     }
     
-    # Build imageConfig based on model
-    image_config = {"aspectRatio": "4:3"}
-    if model == GEMINI_PRO_IMAGE:
-        image_config["imageSize"] = "1K"  # Pro supports high-res output (using 1K for speed)
+    # Lowest resolution the Lite model offers (1K) — fastest generation.
+    image_config = {"aspectRatio": "4:3", "imageSize": "1K"}
     
     payload = {
         "contents": [{
@@ -998,12 +996,12 @@ def generate_gemini_img2img(
     if len(full_prompt) > 5000:
         full_prompt = full_prompt[:5000]
     
-    # Select model based on HD mode
-    selected_model = GEMINI_PRO_IMAGE if hd_mode else GEMINI_FLASH_IMAGE
-    mode_name = "HD MODE" if hd_mode else "FAST MODE"
-    
+    # Stills standardized on Nano Banana 2 Lite for speed (see generate_with_gemini).
+    selected_model = GEMINI_FLASH_IMAGE
+    mode_name = "FAST MODE"
+
     print(f"[GOOGLE GEMINI {mode_name}] Editing image to show next moment...")
-    print(f"[GOOGLE GEMINI {mode_name}] Using model: {selected_model}")
+    print(f"[GOOGLE GEMINI {mode_name}] Using model: {selected_model} (Nano Banana 2 Lite) @ 1K")
     safe_prompt = prompt[:100].encode('ascii', 'replace').decode('ascii')
     print(f"[GOOGLE GEMINI {mode_name}] Edit instructions: {safe_prompt}...")
     
@@ -1025,8 +1023,8 @@ def generate_gemini_img2img(
         "generationConfig": {
             "responseModalities": ["IMAGE"],
             "imageConfig": {
-                "aspectRatio": "4:3",  # Nano Banana Pro standard for this project
-                "imageSize": "1K"  # 1K resolution for faster generation (1K, 2K, or 4K)
+                "aspectRatio": "4:3",
+                "imageSize": "1K"  # Lowest res Nano Banana 2 Lite offers — fastest generation
             }
         },
         "safetySettings": [

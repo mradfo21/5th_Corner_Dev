@@ -15,6 +15,18 @@ services:
     startCommand: bash start_production.sh
     healthCheckPath: /api/health
     autoDeploy: true
+    # Persistent disk for `sessions/` — without this, EVERYTHING under it
+    # (game state, images/tapes, and the cost_tracker SQLite ledger at
+    # sessions/_analytics/usage.db) is wiped on every deploy/restart, per
+    # RENDER_STORAGE_LIMITATION.md. The admin Cost Analytics tab is only
+    # trustworthy with this in place — otherwise "total spend" silently
+    # resets to whatever's happened since the last deploy. 1GB is generously
+    # sized for the SQLite ledger + a healthy number of session images/tapes;
+    # bump sizeGB in the Render dashboard (or here) if it fills up.
+    disk:
+      name: game-data
+      mountPath: /opt/render/project/src/sessions
+      sizeGB: 1
     envVars:
       - key: GEMINI_API_KEY
         sync: false
@@ -114,8 +126,6 @@ services:
       # unavailable, and can override per-session via ?renderer= / the toggle.
       - key: SCENE_RENDERER
         value: "reactor"
-      - key: RESUME_MODE
-        value: "1"
       - key: FLASK_DEBUG
         value: "0"
       - key: PYTHONUNBUFFERED

@@ -694,6 +694,37 @@ def api_reactor_token():
         traceback.print_exc()
         return error_response("Reactor token exchange error", str(e), code=502)
 
+
+@app.route('/api/reactor/usage', methods=['POST'])
+def api_reactor_usage():
+    """Client-reported connected-seconds for a realtime Reactor session.
+
+    Reactor's video stream runs browser<->Reactor directly over WebRTC — the
+    server never sees a per-frame call to bill from, unlike every other
+    provider in cost_tracker. `reactor_renderer.js` tracks how long a session
+    was actually connected and reports it here (via sendBeacon) whenever that
+    session ends: on model swap, disable, or page unload. Fire-and-forget:
+    always 200, never blocks or breaks the client on failure.
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        session_id = str(data.get("session_id") or "default").strip() or "default"
+        model = str(data.get("model") or "default").strip() or "default"
+        try:
+            seconds = float(data.get("duration_seconds") or 0)
+        except (TypeError, ValueError):
+            seconds = 0.0
+        if seconds > 0:
+            import cost_tracker
+            cost_tracker.record_usage(
+                session_id, "video", "reactor", model,
+                output_units=seconds, unit_type="seconds", success=True,
+            )
+        return jsonify({"ok": True})
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"ok": True, "error": str(e)})
+
 # ═══════════════════════════════════════════════════════════════════
 # HELPER FUNCTIONS
 # ═══════════════════════════════════════════════════════════════════
@@ -1612,8 +1643,8 @@ _PRESET_UI_META = {
              "blurb": "Default. Fast, strong quality, style-transfer continuity. Needs KREA_API_KEY."},
     "krea_large": {"label": "Krea 2 Large", "latency": "~24s", "speed": 2,
                    "blurb": "Higher quality / more textured. Needs KREA_API_KEY."},
-    "gemini": {"label": "Gemini (Nano Banana)", "latency": "~15-30s", "speed": 2,
-               "blurb": "High quality, multi-frame continuity. Needs GEMINI_API_KEY."},
+    "gemini": {"label": "Gemini (Nano Banana 2 Lite)", "latency": "~3-4s", "speed": 4,
+               "blurb": "Fast 1K stills, multi-frame continuity. DEFAULT. Needs GEMINI_API_KEY."},
     "openai": {"label": "OpenAI gpt-image-1", "latency": "~20-40s", "speed": 1,
                "blurb": "Highest fidelity, up to 16 reference images. Needs OPENAI_API_KEY."},
     "veo": {"label": "Veo video frames", "latency": "~30-60s", "speed": 1,
@@ -1642,6 +1673,14 @@ def _ai_config_payload():
         "image_model": config.get("image_model"),
         "last_updated": config.get("last_updated"),
     }
+    # Live $/image for each preset, pulled straight from pricing.json — so the
+    # picker shows real running cost right next to speed/quality instead of
+    # making someone cross-reference the Cost Analytics tab.
+    try:
+        import pricing as _pricing
+    except Exception:
+        _pricing = None
+
     presets = []
     active_name = None
     for name, cfg in ai_provider_manager.get_available_presets().items():
@@ -1649,6 +1688,16 @@ def _ai_config_payload():
         is_active = _preset_matches_current(cfg, current)
         if is_active:
             active_name = name
+        img_provider = cfg.get("image_provider")
+        img_model = cfg.get("image_model")
+        rate = _pricing.get_rate(img_provider, img_model) if (_pricing and img_provider) else None
+        cost_per_image = None
+        if rate:
+            if rate.get("unit_type") == "images" and rate.get("per_unit") is not None:
+                cost_per_image = rate["per_unit"]
+            elif rate.get("unit_type") == "seconds" and rate.get("per_unit") is not None:
+                # Veo bills by the ~8s clip _gen_image records as one unit.
+                cost_per_image = rate["per_unit"] * 8.0
         presets.append({
             "name": name,
             "label": meta.get("label", name.replace("_", " ").title()),
@@ -1657,8 +1706,9 @@ def _ai_config_payload():
             "blurb": meta.get("blurb", cfg.get("description", "")),
             "text_provider": cfg.get("text_provider"),
             "text_model": cfg.get("text_model"),
-            "image_provider": cfg.get("image_provider"),
-            "image_model": cfg.get("image_model"),
+            "image_provider": img_provider,
+            "image_model": img_model,
+            "cost_per_image": cost_per_image,
             "active": is_active,
         })
     return {

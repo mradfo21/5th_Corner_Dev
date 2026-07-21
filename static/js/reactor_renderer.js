@@ -210,6 +210,7 @@
     hoPerspective: null,       // resolved perspective ("first_person"|"third_person")
     cfg: { model_name: FALLBACK_MODEL, enabled: false },
     connecting: false,
+    connectedAt: 0,        // Date.now() a session actually went live (for cost-usage reporting)
     status: "off",
     frameWatch: false,
     frameWatchTimer: null,
@@ -1451,6 +1452,7 @@
       rstate.active = true;
       await reactor.connect(jwt);
       rstate.connecting = false;
+      rstate.connectedAt = Date.now();
       return true;
     } catch (err) {
       log("enable failed", err);
@@ -1461,10 +1463,33 @@
     }
   }
 
+  // Report connected seconds to the cost ledger (fire-and-forget) whenever a
+  // live session ends — model swap, disable, error cleanup, or page unload.
+  // Reads rstate.modelId/connectedAt BEFORE the caller clears them, so this
+  // must run first thing in any teardown path (see teardownSession/disable).
+  function reportUsage() {
+    const connectedAt = rstate.connectedAt;
+    rstate.connectedAt = 0;
+    if (!connectedAt) return;
+    const seconds = (Date.now() - connectedAt) / 1000;
+    if (seconds < 1) return; // not worth a row
+    const sessionId = window.__SOMEWHERE_SESSION__ || "default";
+    const model = rstate.modelId || "default";
+    try {
+      const body = JSON.stringify({ session_id: sessionId, model: model, duration_seconds: seconds });
+      if (navigator.sendBeacon) {
+        navigator.sendBeacon("/api/reactor/usage", new Blob([body], { type: "application/json" }));
+      } else {
+        fetch("/api/reactor/usage", { method: "POST", headers: { "Content-Type": "application/json" }, body: body, keepalive: true }).catch(() => {});
+      }
+    } catch (_) {}
+  }
+
   // Tear down the current Reactor session WITHOUT clearing the freeze cover or
   // the chosen model — used by a live model swap so the last frame stays on
   // screen while we reconnect to the other world model.
   async function teardownSession() {
+    reportUsage();
     rstate.ready = false;
     rstate.started = false;
     rstate.paused = false;
@@ -1513,7 +1538,9 @@
       // reconnect never flashes black or the underlying image.
       if (!captureVideoToFreeze() && scene && scene.imageUrl) paintSeedToFreeze(scene.imageUrl);
       const wasActive = rstate.active || rstate.connecting;
-      rstate.modelId = id;
+      // NOTE: rstate.modelId is intentionally NOT updated to `id` yet —
+      // teardownSession() below reports usage for the model that's actually
+      // been connected this whole time, so it must still see the OLD id.
       try { localStorage.setItem("world_model", id); } catch (_) {}
       log("switching world model ->", id, "(" + modelNameFor(id) + ")");
       emitEvent("model_switching", { model: id, label: modelLabel(id) });
@@ -1522,12 +1549,14 @@
       }
       if (wasActive) {
         await teardownSession();
+        rstate.modelId = id; // now safe to switch — enable() below reads it
         // Queue the current scene so the new session applies it once ready.
         if (scene) rstate.pending = scene;
         const ok = await enable(); // reconnects with the new modelId
         if (ok && rstate.ready) await flush();
         return ok;
       }
+      rstate.modelId = id; // not connected yet — just remember the choice
       return true;
     } finally {
       rstate.swapping = false;
@@ -1535,6 +1564,7 @@
   }
 
   async function disable() {
+    reportUsage();
     rstate.ready = false;
     rstate.started = false;
     rstate.paused = false;

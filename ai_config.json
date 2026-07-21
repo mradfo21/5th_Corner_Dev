@@ -2,15 +2,15 @@
   "text_provider": "gemini",
   "text_model": "gemini-3.1-flash-lite",
   "image_provider": "gemini",
-  "image_model": "gemini-3.1-flash-image",
-  "last_updated": "2026-07-19T01:03:00.000000+00:00",
+  "image_model": "gemini-3.1-flash-lite-image",
+  "last_updated": "2026-07-21T17:56:00.000000+00:00",
   "available_configs": {
     "gemini": {
       "text_provider": "gemini",
       "text_model": "gemini-3.1-flash-lite",
       "image_provider": "gemini",
-      "image_model": "gemini-3.1-flash-image",
-      "description": "Gemini (Nano Banana) images — high quality, multi-frame continuity. DEFAULT. Requires GEMINI_API_KEY."
+      "image_model": "gemini-3.1-flash-lite-image",
+      "description": "Gemini (Nano Banana 2 Lite) images — fast ~1K stills, multi-frame continuity. DEFAULT. Requires GEMINI_API_KEY."
     },
     "openai": {
       "text_provider": "openai",
