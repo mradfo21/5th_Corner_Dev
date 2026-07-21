@@ -607,20 +607,23 @@ img { display: block; max-width: 100%; }
 .boot-img {
   width: 100%; height: 100%;
   object-fit: cover;
-  filter: saturate(0.85) contrast(1.05) brightness(0.5);
+  filter: saturate(0.88) contrast(1.04) brightness(0.62);
   transform: scale(1.08);
   animation: hero-drift 26s ease-in-out infinite alternate;
 }
 .boot-media-scan {
   position: absolute; inset: 0;
   background: repeating-linear-gradient(to bottom, rgba(0,0,0,0) 0 2px, rgba(0,0,0,0.32) 3px);
-  opacity: 0.35; mix-blend-mode: multiply;
+  opacity: 0.28; mix-blend-mode: multiply;
 }
+/* Keep the imagery clearly readable behind the UI: soft, feathered gradients
+   rather than a hard wash — just enough to seat the wordmark and tips. */
 .boot-media-fade {
   position: absolute; inset: 0;
   background:
-    linear-gradient(180deg, rgba(5,7,8,0.55) 0%, rgba(5,7,8,0.35) 45%, rgba(5,7,8,0.8) 100%),
-    radial-gradient(ellipse at 50% 50%, transparent 32%, rgba(3,5,6,0.82) 100%);
+    linear-gradient(180deg, rgba(5,7,8,0.32) 0%, rgba(5,7,8,0.08) 40%, rgba(5,7,8,0.18) 62%, rgba(5,7,8,0.6) 100%),
+    radial-gradient(ellipse at 50% 48%, rgba(3,5,6,0.55) 0%, transparent 45%),
+    radial-gradient(ellipse at 50% 50%, transparent 55%, rgba(3,5,6,0.62) 100%);
 }
 .boot-hud {
   position: absolute;
@@ -657,6 +660,36 @@ img { display: block; max-width: 100%; }
   transition: width 0.4s var(--ease);
 }
 .boot-code { margin-top: 1rem; font-size: 0.68rem; letter-spacing: 0.3em; color: var(--accent); }
+
+/* Loading tip — a soft, world-flavoured hint pinned near the bottom. */
+.boot-tip {
+  position: absolute;
+  left: 50%; bottom: clamp(1.4rem, 6vh, 3.2rem);
+  transform: translateX(-50%);
+  z-index: 2;
+  display: inline-flex; align-items: center; gap: 0.6rem;
+  max-width: min(560px, 88vw);
+  padding: 0.55rem 1rem;
+  font-family: var(--font-mono);
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
+  background: linear-gradient(180deg, rgba(7,13,14,0.42), rgba(7,13,14,0.24));
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  box-shadow: 0 8px 30px rgba(0,0,0,0.35);
+}
+.boot-tip-label {
+  flex: none;
+  font-size: 0.58rem; letter-spacing: 0.32em; text-transform: uppercase;
+  color: var(--accent);
+  text-shadow: 0 0 10px rgba(0,255,204,0.35);
+}
+.boot-tip-text {
+  font-size: 0.74rem; letter-spacing: 0.06em; line-height: 1.4;
+  color: var(--ink-dim);
+  transition: opacity 0.4s var(--ease);
+}
+.boot-tip-text.is-swapping { opacity: 0; }
 
 /* ---------- Responsive ---------- */
 @media (max-width: 640px) {

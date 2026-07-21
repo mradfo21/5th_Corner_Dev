@@ -223,6 +223,13 @@
       <div class="boot-progress"><div class="boot-progress-fill" id="boot-progress-fill"></div></div>
       <div class="boot-code" id="boot-code" aria-live="polite"></div>
     </div>
+
+    <!-- Loading tips: soft, world-flavoured hints that rotate while the run
+         spins up (classic loading-screen tooltip). -->
+    <div class="boot-tip" aria-hidden="true">
+      <span class="boot-tip-label">tip</span>
+      <span class="boot-tip-text" id="boot-tip-text">The road never runs the same way twice.</span>
+    </div>
   </div>
 
   <script src="{{ url_for('static', filename='js/lobby.js') }}?v={{ asset_version }}"></script>

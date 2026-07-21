@@ -321,11 +321,25 @@
     "step forward…",
   ];
 
+  // World-flavoured loading tips (classic loading-screen tooltip). Kept about
+  // the world and staying alive, never about the tech behind it.
+  var BOOT_TIPS = [
+    "The road never runs the same way twice.",
+    "Fifteen seconds to decide — hesitation is a choice too.",
+    "The world remembers what you did.",
+    "No map out here. Trust your gut and keep moving.",
+    "Stuck? Type your own way out — the world will answer.",
+    "Every place you find is somewhere you've never been.",
+    "Something out here is watching. Don't linger.",
+    "One life. No way back. Make it count.",
+  ];
+
   function showBoot(code) {
     var overlay = el("boot-overlay");
     var codeNode = el("boot-code");
     var lineNode = el("boot-line");
     var fill = el("boot-progress-fill");
+    var tipNode = el("boot-tip-text");
     if (!overlay) return { advance: function () {}, done: function () {} };
     overlay.hidden = false;
     overlay.setAttribute("aria-hidden", "false");
@@ -334,6 +348,20 @@
     var pct = 5;
     if (lineNode) lineNode.textContent = BOOT_MESSAGES[0];
     if (fill) fill.style.width = pct + "%";
+
+    // Rotate a loading tip, starting from a random one so it feels fresh.
+    var tipIx = Math.floor(Math.random() * BOOT_TIPS.length);
+    if (tipNode) tipNode.textContent = BOOT_TIPS[tipIx];
+    var tipInterval = setInterval(function () {
+      if (!tipNode) return;
+      tipNode.classList.add("is-swapping");
+      setTimeout(function () {
+        tipIx = (tipIx + 1) % BOOT_TIPS.length;
+        tipNode.textContent = BOOT_TIPS[tipIx];
+        tipNode.classList.remove("is-swapping");
+      }, 400);
+    }, 3200);
+
     var interval = setInterval(function () {
       i = (i + 1) % BOOT_MESSAGES.length;
       if (lineNode) lineNode.textContent = BOOT_MESSAGES[i];
@@ -346,6 +374,7 @@
       },
       done: function () {
         clearInterval(interval);
+        clearInterval(tipInterval);
         if (fill) fill.style.width = "100%";
       },
     };
