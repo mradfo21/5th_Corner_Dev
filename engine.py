@@ -5427,6 +5427,11 @@ def _generate_and_append_scene_image(caption: str, dispatch: str, choice: str, f
     # only ever has one image generation in flight (see _process_turn_background).
     with TURN_LOCK:
         try:
+            # Before the (large) still write, make sure the persistent disk has
+            # room. If it's low, this sweeps stale/regenerable data across all
+            # sessions so the render — and the state save that follows — don't
+            # fail on a full disk. No-op when there's healthy headroom.
+            _ensure_disk_headroom()
             local_history = _load_history(session_id)
             result = _gen_image(
                 caption=caption or dispatch,
@@ -6122,6 +6127,143 @@ def _prune_observed_frames(img_dir, keep: int = 12):
         log_error(f"_prune_observed_frames failed: {_e}")
 
 
+# ── Persistent-disk headroom management ────────────────────────────────────
+# The sessions/ tree lives on a bounded persistent disk on Render (1GB by
+# default — see RENDER_STORAGE_LIMITATION.md / render.yaml). Per-session pruning
+# (_prune_observed_frames) bounds ONE session's scratch frames, but across many
+# sessions + generated stills + tapes/films the disk can still fill up, and once
+# it's full EVERY image/state write fails (the scene can't render, saves are
+# lost). When we detect the disk is low, sweep stale/regenerable data across ALL
+# sessions — oldest first — until a healthy margin is restored.
+_DISK_MIN_FREE_FRACTION = 0.12          # keep ≥12% of the disk free
+_DISK_MIN_FREE_BYTES = 150 * 1024 * 1024  # …and never below a 150MB floor
+_DISK_SWEEP_MIN_INTERVAL_S = 20         # throttle the (FS-walking) sweep
+_DISK_KEEP_IMAGES_PER_SESSION = 12      # protect the newest N images/session
+_last_disk_sweep_ts = 0.0
+_disk_sweep_lock = threading.Lock()
+
+
+def _disk_free_status(path):
+    """Return (ok, usage, need_bytes). ok=True when free space is healthy.
+    On any error, reports ok=True so disk checks can never break a turn."""
+    import shutil as _sh
+    try:
+        usage = _sh.disk_usage(str(path))
+        need = max(_DISK_MIN_FREE_BYTES, int(usage.total * _DISK_MIN_FREE_FRACTION))
+        return (usage.free >= need, usage, need)
+    except Exception:
+        return (True, None, 0)
+
+
+def _ensure_disk_headroom(force: bool = False):
+    """Free space on the persistent sessions disk when it's running low.
+
+    Deletes stale, REGENERABLE data across every session, oldest-first, until a
+    healthy free-space margin is recovered. Deliberately conservative about what
+    it will remove:
+
+      • NEVER deletes session state — state.json / history.json / meta.json — or
+        the analytics ledger (anything under sessions/_analytics, or any *.db).
+      • PROTECTS the newest _DISK_KEEP_IMAGES_PER_SESSION images in each
+        session so img2img continuity and the on-screen scene survive.
+      • Everything else under sessions/ (old stills, observed_*/photo/
+        investigation scratch frames, _small downsamples, tapes, films/videos)
+        is fair game, removed oldest-first.
+
+    Throttled (won't walk the tree more than once per _DISK_SWEEP_MIN_INTERVAL_S)
+    and fully best-effort: any failure is swallowed so it can never break a turn.
+    """
+    global _last_disk_sweep_ts
+    sessions_root = ROOT / "sessions"
+    ok, usage, need = _disk_free_status(sessions_root)
+    if ok and not force:
+        return
+    if not _disk_sweep_lock.acquire(blocking=False):
+        return  # another thread is already sweeping
+    try:
+        # Re-check under the lock — the other waiter may have already freed space.
+        ok, usage, need = _disk_free_status(sessions_root)
+        if usage is None:
+            return
+        now = time.time()
+        if ok and not force:
+            return
+        if not force and (now - _last_disk_sweep_ts) < _DISK_SWEEP_MIN_INTERVAL_S:
+            return
+        _last_disk_sweep_ts = now
+        if not sessions_root.exists():
+            return
+
+        # Protect the newest N images per session (continuity + current scene).
+        protected = set()
+        try:
+            for sess_dir in sessions_root.iterdir():
+                if not sess_dir.is_dir() or sess_dir.name == "_analytics":
+                    continue
+                img_dir = sess_dir / "images"
+                if not img_dir.exists():
+                    continue
+                imgs = sorted(
+                    (p for p in img_dir.glob("*") if p.is_file()),
+                    key=lambda p: p.stat().st_mtime, reverse=True,
+                )
+                for p in imgs[:_DISK_KEEP_IMAGES_PER_SESSION]:
+                    try:
+                        protected.add(p.resolve())
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
+        def _is_protected(p):
+            try:
+                if p.resolve() in protected:
+                    return True
+            except Exception:
+                pass
+            if p.name in ("state.json", "history.json", "meta.json"):
+                return True
+            if p.suffix == ".db" or "_analytics" in p.parts:
+                return True
+            return False
+
+        # How much to free (with a little extra so we don't immediately re-trip).
+        to_free = int(max(0, need - usage.free) * 1.25)
+
+        candidates = []
+        for p in sessions_root.rglob("*"):
+            try:
+                if not p.is_file() or _is_protected(p):
+                    continue
+                candidates.append((p.stat().st_mtime, p.stat().st_size, p))
+            except Exception:
+                continue
+        candidates.sort(key=lambda t: t[0])  # oldest first
+
+        freed = 0
+        deleted = 0
+        for _mtime, size, p in candidates:
+            if freed >= to_free:
+                break
+            try:
+                p.unlink()
+                freed += size
+                deleted += 1
+            except Exception:
+                continue
+        if deleted:
+            print(f"[DISK] headroom sweep freed ~{freed // (1024 * 1024)}MB "
+                  f"({deleted} stale files) to keep the sessions disk under "
+                  f"{int((1 - _DISK_MIN_FREE_FRACTION) * 100)}% full", flush=True)
+    except Exception as _e:
+        log_error(f"_ensure_disk_headroom failed: {_e}")
+    finally:
+        try:
+            _disk_sweep_lock.release()
+        except Exception:
+            pass
+
+
 def _ingest_realtime_frame(frame_b64: str, session_id: str = 'default'):
     """Ingest a frame captured from the live world-model video.
 
@@ -6163,6 +6305,10 @@ def _ingest_realtime_frame(frame_b64: str, session_id: str = 'default'):
     # (which would make every subsequent image write fail — see the helper's
     # docstring). Runs AFTER writing this frame so the newest one is retained.
     _prune_observed_frames(img_dir)
+    # And, if the shared persistent disk is genuinely low (many sessions / stale
+    # tapes+films), sweep old regenerable data across ALL sessions. Throttled and
+    # a no-op while there's healthy headroom, so this is cheap on the hot path.
+    _ensure_disk_headroom()
 
     with WORLD_STATE_LOCK:
         st = _load_state(session_id)
