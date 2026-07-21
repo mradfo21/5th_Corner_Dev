@@ -48,15 +48,13 @@
     </div>
 
     <div class="hero-inner">
-      <h1 class="hero-title glitch" data-text="SOMEWHERE">SOMEWHERE</h1>
-      <p class="hero-tagline reveal">A first-person survival story. Scenes are generated as you go. You get one life.</p>
-      <div class="hero-actions reveal">
+      <h1 class="hero-title">SOMEWHERE</h1>
+      <div class="hero-actions">
         <button class="btn btn-primary btn-lg" type="button" data-enter="new">
           <span class="btn-ico" aria-hidden="true">▶</span> PLAY
         </button>
         <button class="btn btn-ghost btn-lg" type="button" data-enter="continue">CONTINUE</button>
       </div>
-      <p class="hero-trust reveal">Runs in the browser. No account needed.</p>
     </div>
 
     <a class="hero-scrollcue" href="#reel" data-scroll aria-label="Scroll">
@@ -83,64 +81,31 @@
     <section class="frame" style="background-image:url('{{ url_for('static', filename='img/lobby/gal_motel.jpg') }}')">
       <div class="frame-caption reveal"><h2>FIND SOMEWHERE</h2></div>
     </section>
-
-    <section class="frame" style="background-image:url('{{ url_for('static', filename='img/lobby/gal_forest.jpg') }}')">
-      <div class="frame-caption reveal"><h2>Fifteen seconds to choose.</h2></div>
-    </section>
-
-    <section class="frame frame-final" style="background-image:url('{{ url_for('static', filename='img/lobby/gal_figure.jpg') }}')">
-      <div class="frame-caption reveal">
-        <span class="frame-kicker">permadeath</span>
-        <h2>One life. When it's over, it's over.</h2>
-      </div>
-    </section>
   </div>
 
-  <!-- ===================== MID-PAGE CTA BANNER ===================== -->
-  <section class="cta-banner">
-    <div class="cta-banner-inner reveal">
-      <p class="cta-banner-kicker">survival story · one life</p>
-      <h2 class="cta-banner-title">Wake up. Look around. Move.</h2>
-      <p class="cta-banner-sub">Each run builds a new place as you play. Choices stick. When you die, the run ends.</p>
-      <button class="btn btn-primary btn-lg" type="button" data-enter="new">
-        <span class="btn-ico" aria-hidden="true">▶</span> START A RUN
-      </button>
-    </div>
-  </section>
-
-  <!-- ===================== HOW IT PLAYS ===================== -->
+  <!-- ===================== GAMEPLAY ===================== -->
   <section class="features" id="features">
-    <div class="features-head reveal">
-      <p class="features-kicker">how it plays</p>
-      <h2>See a place. Pick a move. Live with it.</h2>
+    <div class="features-head">
+      <h2>Every run goes somewhere else.</h2>
     </div>
     <div class="features-grid">
-      <div class="feature-card reveal">
-        <span class="feature-num">01</span>
-        <h3>New scenes each turn</h3>
-        <p>Images and story are generated as you go. You don't walk a pre-written path — the place forms around what you do.</p>
+      <div class="feature-card">
+        <h3>Generated as you play</h3>
+        <p>Each choice creates the next scene.</p>
       </div>
-      <div class="feature-card reveal">
-        <span class="feature-num">02</span>
-        <h3>Fifteen seconds to decide</h3>
-        <p>Four options, or type something yourself. Wait too long and the game acts without you.</p>
+      <div class="feature-card">
+        <h3>Choose in 15 seconds</h3>
+        <p>Pick an option or write your own move.</p>
       </div>
-      <div class="feature-card reveal">
-        <span class="feature-num">03</span>
+      <div class="feature-card">
         <h3>One life</h3>
-        <p>No checkpoints. No continue from death. When a run ends, it's done — and you can watch the tape after.</p>
-      </div>
-      <div class="feature-card reveal">
-        <span class="feature-num">04</span>
-        <h3>State carries forward</h3>
-        <p>Injuries, inventory, people, and places you leave behind stay in the save. Coming back later picks up mid-run.</p>
+        <p>Your choices persist. Death ends the run.</p>
       </div>
     </div>
-    <div class="features-cta reveal">
+    <div class="features-cta">
       <button class="btn btn-primary btn-lg" type="button" data-enter="new">
         <span class="btn-ico" aria-hidden="true">▶</span> PLAY
       </button>
-      <button class="btn btn-ghost btn-lg" type="button" data-enter="continue">CONTINUE</button>
     </div>
   </section>
 
@@ -155,16 +120,9 @@
       <div class="enter-media-fade"></div>
     </div>
     <div class="enter-glow" aria-hidden="true"></div>
-    <div class="menu-card reveal">
+    <div class="menu-card">
       <div class="menu-brand">
-        <p class="menu-kicker">start or resume</p>
-        <h2 class="menu-title glitch" data-text="ENTER">ENTER</h2>
-        <p class="menu-tagline">New run, or open one you already have.</p>
-        <div class="menu-badges">
-          <span class="menu-badge">No signup</span>
-          <span class="menu-badge">No download</span>
-          <span class="menu-badge">Browser only</span>
-        </div>
+        <h2 class="menu-title">PLAY</h2>
       </div>
 
       <nav class="menu-actions" aria-label="Start a run">
@@ -230,25 +188,10 @@
         </div>
       </section>
 
-      <details class="menu-howto">
-        <summary>How does this work?</summary>
-        <ol class="howto-list">
-          <li>Start a run. You'll get a private link you can bookmark.</li>
-          <li>Look at the scene, read the dispatch, decide what to do.</li>
-          <li>Choose one of four options, or type your own. You have fifteen seconds.</li>
-          <li>Progress saves automatically. If you die, that run is over.</li>
-        </ol>
-      </details>
     </div>
   </section>
 
   <!-- ===================== FOOTER ===================== -->
-  <div class="footer-cta">
-    <p class="footer-cta-line reveal">Ready when you are.</p>
-    <button class="btn btn-primary btn-lg reveal" type="button" data-enter="new">
-      <span class="btn-ico" aria-hidden="true">▶</span> PLAY
-    </button>
-  </div>
   <footer class="site-footer">
     <div class="site-footer-brand">
       <span class="rec-dot" aria-hidden="true">●</span> SOMEWHERE <span class="dim">a survival story</span>
