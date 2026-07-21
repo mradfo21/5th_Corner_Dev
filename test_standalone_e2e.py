@@ -134,6 +134,11 @@ class TestStandaloneE2E(unittest.TestCase):
         self.page.click("#menu-toggle")
         self.page.wait_for_selector("#control-rail", state="visible", timeout=4000)
         self.assertTrue(self.page.is_visible("#control-rail"))
+        # The narrative lives in the STORY LOG panel, which is collapsed by
+        # default so it never obstructs the art. Open it from the rail (STORY)
+        # and the prose feed — with the run's beats — is revealed.
+        self.page.click("#btn-story")
+        self.page.wait_for_selector("#prose-feed", state="visible", timeout=4000)
         self.assertTrue(self.page.is_visible("#prose-feed"))
 
     def test_reset_populates_prose_and_choices(self):

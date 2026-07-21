@@ -713,7 +713,11 @@ def api_status():
             "time_of_day": s.get("time_of_day", ""),
             "inventory": inventory,
             "backend": ai_provider_manager.active_backend("chat"),
-            "image_provider": ai_provider_manager.get_image_provider(),
+            # Report the RESOLVED image provider (honors a backend override) so a
+            # fully-offline/mock run reads "mock" instead of advertising the
+            # configured live provider it isn't actually using. Identical to
+            # get_image_provider() whenever no override is active (production).
+            "image_provider": ai_provider_manager.active_backend("image"),
             "image_model": ai_provider_manager.get_image_model(),
             "image_enabled": engine.IMAGE_ENABLED,
             # Renderer selection + the latest scene prompt, so the standalone
