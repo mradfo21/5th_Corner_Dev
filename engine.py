@@ -5289,10 +5289,18 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                 session_id=SID,
             )
 
-            # ── PHASE 2: fast text-grounded choices so the turn resolves promptly. ──
+            # ── PHASE 2: resolve the turn's choices promptly. ──
+            # Prefer the provisional choices produced in the SAME LLM call as the
+            # consequence (Phase 1) — when present and usable this skips the
+            # situation-report + choice-generation round-trips entirely, so the
+            # turn's text pipeline is a single LLM call. The client's vision
+            # reground below still refines them against the rendered frame. When
+            # the consequence call didn't return usable options, this falls back
+            # to full choice generation automatically.
             p2 = advance_turn_choices_deferred(
                 None, dispatch_text, vision_dispatch_text, choice,
                 "", p1.get("hard_transition", False), SID, local_only=True,
+                pregenerated_choices=p1.get("provisional_choices") or [],
             )
             turn_state = _load_state(SID)
             _sync_ambient_state(turn_state, SID)
@@ -7687,8 +7695,13 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
     
     Args:
         fate: Luck modifier - "LUCKY", "NORMAL", or "UNLUCKY"
-    
-    Returns: (dispatch, vision_dispatch, player_alive)
+
+    Returns: (dispatch, vision_dispatch, player_alive, provisional_choices)
+
+    provisional_choices is a best-effort list of next-action options produced in
+    THIS same call (see the OUTPUT CONTRACT addendum below). The turn loop can
+    use them to skip the separate choice-generation LLM round-trip; it falls
+    back to the dedicated generator whenever the list is empty/unusable.
     """
     try:
         # Get previous vision analysis for spatial consistency.
@@ -7834,7 +7847,14 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
             f"{fate_modifier}"
             f"{spatial_context}"
             f"{prev_context}\n\n"
-            "Generate the consequence in valid JSON format."
+            "Generate the consequence in valid JSON format. In ADDITION to the "
+            "mandatory `dispatch`, `visual_scene`, and `player_alive` fields, also "
+            "include a fourth field `next_choices`: an array of EXACTLY 3 short "
+            "(3-6 word) FIRST-PERSON physical action options for what the player "
+            "does NEXT from this new position. Each MUST move the body through the "
+            "space or physically manipulate something (NEVER look/observe/wait/"
+            "photograph/listen). The three original fields stay mandatory and "
+            "their quality must not drop."
         )
         
         # Build parts list (text + optional image)
@@ -7870,7 +7890,7 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
             json_prompt,
             model="gemini",
             temp=1.0,
-            tokens=450,
+            tokens=560,  # room for the consequence + the added next_choices array
             image_path=current_image,  # Pass current image if available
             use_lore=False  # Dispatch is mechanical, lore only for world evolution
         )
@@ -7890,6 +7910,7 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
         dispatch = ""
         visual_scene = ""
         player_alive = True
+        provisional_choices: list = []
         
         try:
             import json as json_lib
@@ -7897,6 +7918,9 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
             dispatch = data.get("dispatch", "")
             visual_scene = data.get("visual_scene", "").strip()
             player_alive = data.get("player_alive", True)
+            _raw_choices = data.get("next_choices", []) or []
+            if isinstance(_raw_choices, list):
+                provisional_choices = [str(c).strip() for c in _raw_choices if str(c).strip()]
             # Safe print with Unicode handling
             try:
                 print(f"[DISPATCH] Parsed JSON: dispatch={dispatch[:50]}..., alive={player_alive}")
@@ -7927,7 +7951,7 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
         if len(vision_dispatch) > 400:
             vision_dispatch = vision_dispatch[:385] + "...(truncated)"
         
-        return dispatch, vision_dispatch, player_alive
+        return dispatch, vision_dispatch, player_alive, provisional_choices
         
     except Exception as e:
         try:
@@ -7937,7 +7961,7 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
         import traceback
         traceback.print_exc()
         # Fallback to safe defaults
-        return "You make a tense move in the chaos.", "The desert stretches ahead.", True
+        return "You make a tense move in the chaos.", "The desert stretches ahead.", True, []
 
 def summarize_world_state_diff(prev_state: dict, state: dict) -> str:
     """
@@ -8135,14 +8159,17 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             prev_image = history[-1].get("image_url", None)
         
         # TIMEOUT PENALTIES: Use penalty text AS dispatch (don't generate new one)
+        provisional_choices: list = []
         if is_timeout_penalty:
             dispatch = choice  # The penalty text IS the consequence
             vision_dispatch = choice
             player_alive = True  # timeout penalties never kill directly; the next turn's consequence LLM judges lethality
             print(f"[TIMEOUT PENALTY] Using penalty text as dispatch: {dispatch[:100]}")
         else:
-            # Generate dispatch using FULL StoryGen version (with fate modifier)
-            dispatch, vision_dispatch, player_alive = _generate_combined_dispatches(choice, state, prev_state, prev_vision, prev_image, fate, is_interaction=interaction)
+            # Generate dispatch using FULL StoryGen version (with fate modifier).
+            # provisional_choices are produced in the SAME call so the turn loop
+            # can skip the separate choice-generation round-trip.
+            dispatch, vision_dispatch, player_alive, provisional_choices = _generate_combined_dispatches(choice, state, prev_state, prev_vision, prev_image, fate, is_interaction=interaction)
         
         # SIMPLE DEATH SYSTEM: Just trust the LLM
         state['player_state']['alive'] = player_alive
@@ -8269,6 +8296,7 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             "consequence_video": consequence_video_url,  # Video path for HD mode playback
             "hard_transition": hard_transition,  # Track location changes for reference buffer
             "frame_idx": frame_idx,  # for async image generation on the feed path
+            "provisional_choices": provisional_choices,  # next-action options from the same LLM call (may be empty)
             "evolution_summary": state.get("evolution_summary", ""),  # Include world changes
             "phase": state["current_phase"],
             "chaos": state["chaos_level"],
@@ -8289,7 +8317,7 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             "mode": "camcorder"
         }
 
-def advance_turn_choices_deferred(consequence_img_url: str, dispatch: str, vision_dispatch: str, choice: str, consequence_img_prompt: str = "", hard_transition: bool = False, session_id: str = 'default', local_only: bool = False) -> dict:
+def advance_turn_choices_deferred(consequence_img_url: str, dispatch: str, vision_dispatch: str, choice: str, consequence_img_prompt: str = "", hard_transition: bool = False, session_id: str = 'default', local_only: bool = False, pregenerated_choices: Optional[List[str]] = None) -> dict:
     """
     PHASE 2 (DEFERRED): Generate choices after image is displayed.
     
@@ -8300,7 +8328,7 @@ def advance_turn_choices_deferred(consequence_img_url: str, dispatch: str, visio
             advance_turn_image_fast's docstring.
     """
     try:
-        return _advance_turn_choices_deferred_impl(consequence_img_url, dispatch, vision_dispatch, choice, consequence_img_prompt, hard_transition, session_id, local_only)
+        return _advance_turn_choices_deferred_impl(consequence_img_url, dispatch, vision_dispatch, choice, consequence_img_prompt, hard_transition, session_id, local_only, pregenerated_choices)
     except Exception as e:
         import traceback
         print(f"[PHASE 2] Fatal error in advance_turn_choices_deferred: {e}", flush=True)
@@ -8318,7 +8346,7 @@ def advance_turn_choices_deferred(consequence_img_url: str, dispatch: str, visio
         }
 
 
-def _advance_turn_choices_deferred_impl(consequence_img_url: str, dispatch: str, vision_dispatch: str, choice: str, consequence_img_prompt: str = "", hard_transition: bool = False, session_id: str = 'default', local_only: bool = False) -> dict:
+def _advance_turn_choices_deferred_impl(consequence_img_url: str, dispatch: str, vision_dispatch: str, choice: str, consequence_img_prompt: str = "", hard_transition: bool = False, session_id: str = 'default', local_only: bool = False, pregenerated_choices: Optional[List[str]] = None) -> dict:
     """Internal implementation of Phase 2 choice generation.
 
     `state` / `history` below are LOCAL variables (no `global` on purpose): the
@@ -8399,27 +8427,55 @@ def _advance_turn_choices_deferred_impl(consequence_img_url: str, dispatch: str,
                 print(f"[VISION] Analysis failed: {e}")
                 vision_analysis_text  = ""
 
-    # Generate situation summary with BOTH narrative and visual context
-    situation_summary = _generate_situation_report(
-        current_image=analysis_img_url, 
-        current_dispatch=dispatch,
-        vision_analysis=vision_analysis_text
-    )
-    
-    next_choices = generate_choices(
-        client, choice_tmpl,
-        dispatch,
-        n=3,
-        image_url=analysis_img_url,
-        seen_elements=', '.join(state.get('seen_elements', [])[-10:]),  # Last 10 discovered entities
-        recent_choices='',
-        caption=vision_dispatch,
-        image_description=vision_analysis_text, # Now correctly populated!
-        world_prompt=state.get('world_prompt', ''),
-        temperature=0.7,
-        situation_summary=situation_summary,
-        injury_state=', '.join(state.get('injuries', []) or []) or 'none',
-    )
+    # FAST PATH: if the consequence call already produced usable next-action
+    # options, reuse them and SKIP both the situation-report and choice-generation
+    # LLM calls (they exist only to feed choice generation, which we now already
+    # have). This collapses the turn's text critical path from ~3 sequential LLM
+    # round-trips (dispatch → situation report → choices) down to 1. All state /
+    # history bookkeeping below still runs, and the client's vision reground still
+    # refines these against the actual rendered frame. Falls back to the full
+    # generator whenever the pregenerated list doesn't yield >=2 clean, meaningful
+    # options.
+    _pregen = None
+    if pregenerated_choices:
+        try:
+            from choices import drop_meaningless_choices, enforce_diversity
+            _cleaned = enforce_diversity(drop_meaningless_choices(
+                [c for c in pregenerated_choices if c and c.strip()]
+            ))
+            if len(_cleaned) >= 2:
+                _pregen = _cleaned[:3]
+        except Exception as _e_pre:
+            print(f"[PHASE 2] pregenerated-choices cleaning failed, will generate: {_e_pre}", flush=True)
+            _pregen = None
+
+    if _pregen is not None:
+        situation_summary = ""
+        next_choices = list(_pregen)
+        print(f"[PHASE 2] Using {len(next_choices)} provisional choice(s) from the consequence call "
+              f"(skipped situation-report + choice LLM calls).", flush=True)
+    else:
+        # Generate situation summary with BOTH narrative and visual context
+        situation_summary = _generate_situation_report(
+            current_image=analysis_img_url,
+            current_dispatch=dispatch,
+            vision_analysis=vision_analysis_text
+        )
+
+        next_choices = generate_choices(
+            client, choice_tmpl,
+            dispatch,
+            n=3,
+            image_url=analysis_img_url,
+            seen_elements=', '.join(state.get('seen_elements', [])[-10:]),  # Last 10 discovered entities
+            recent_choices='',
+            caption=vision_dispatch,
+            image_description=vision_analysis_text, # Now correctly populated!
+            world_prompt=state.get('world_prompt', ''),
+            temperature=0.7,
+            situation_summary=situation_summary,
+            injury_state=', '.join(state.get('injuries', []) or []) or 'none',
+        )
     
     next_choices = [c for c in next_choices if c and c.strip() and c.strip() != '—']
     if not next_choices:
