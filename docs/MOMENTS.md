@@ -51,15 +51,11 @@ await window.Moments.push("interrogation", { subject, stakes: "…" });
 - `Moments.setChoices(items, onPick)` / `clearChoices()` — dialogue options list
 - `Moments.setNameplate(name, sub)`
 
-## Exit progression
+## Exit = instant resume
 
-Leaving a conversation does not rewind to the scene you started in. On close,
-the Conversation Moment commits a forward "press deeper" beat via the normal
-turn pipeline (`makeChoice(..., { source: "talk_exit" })`): it fades out like a
-MOVE TO and generates a BRAND-NEW scene, so ending a conversation feels like
-advancing deeper into the world. The character portrait is deliberately not
-used as the img2img anchor for that new scene. If a turn can't be taken (game
-over / mid-turn), it falls back to restoring the pre-conversation world.
+Leaving a conversation resumes the paused world (see above) rather than
+generating anything — the player lands back on the exact frame they left with
+the world moving again. This is the fast, seamless feel; no "load" on exit.
 
 ## Character memory hook
 
@@ -69,19 +65,23 @@ notes[], trust }`. This is additive metadata — it does **not** mutate
 `history` / `feed_log`. Future trust / relationship Moments can read and
 extend this record.
 
-## Portrait animation
+## Portrait animation & the pause/resume world
 
-Two layers, both shipped:
+The character is the cinematic img2img still with the **CSS living-portrait**
+treatment: a slow breathing scale, film grain, and a rim light that pulses with
+the speaking/listening orb state. It's alive without a second GPU session.
 
-1. **CSS living portrait (always-on baseline):** breathing scale, film grain,
-   and an orb-linked rim light on the still img2img portrait. Used in
-   still-image mode, under reduced-motion, or until the world feed goes live.
-2. **World-model animation (realtime mode):** the single Reactor session is
-   **re-anchored** onto the character render (`applyScene({prompt, imageUrl})`)
-   so the character moves/breathes with the world model. Its live MediaStream
-   is mirrored into `#moment-portrait-video` via `Moments.setPortraitStream`
-   and crossfaded over the still (reveal-when-ready via `isShowing()` polling).
-   On exit the session is re-anchored back to the pre-conversation scene, hidden
-   by the glitch + letterbox-retract + reactor freeze buffer — so the world is
-   always moving and the swap stays invisible. One session, swapped both ways
-   (no second GPU session). Opt out with `window.__CONVERSATION_ANIMATE__ = false`.
+Crucially, the world session is **not** re-anchored onto the character. An
+earlier version did that to animate the character with the world model, but it
+destroyed the environment world and forced a slow rebuild on exit (a jarring
+"load"). Instead:
+
+- **Enter:** `Renderer.pauseUnderlay()` (via `Moments.push`) pauses the world
+  session and freezes it on the exact frame the player was standing on.
+- **Exit:** `Renderer.resumeUnderlay()` (via `Moments.pop`) resumes it — an
+  instant, seamless return to where they stood, world moving again. No image
+  generation, no re-anchor, no rewind.
+
+Live world-model motion for the *character* would require a genuinely separate
+Reactor session (a larger renderer refactor); `Moments.setPortraitStream` is
+kept as the hook for that future path.

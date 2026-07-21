@@ -4663,10 +4663,6 @@
     // for deliberate meddling — see _process_turn_background (engine.py).
     const actionSource = (opts && opts.source) || null;
     const moveTarget = (opts && opts.moveTarget) || null;
-    // Leaving a conversation resolves as a forward beat: fade out like a MOVE TO
-    // (deliberate departure) and generate a NEW deeper scene, rather than
-    // capturing/steering the character portrait we were just talking to.
-    const isTalkExit = actionSource === "talk_exit";
     closeFreeWill(true); // picking any action closes the free-will gate
     clearScanTags();      // the scene is about to change — drop stale scan tags
     Narrator.stop();      // stop narration about the scene we're leaving
@@ -4678,12 +4674,7 @@
     // line NOW so a voice lands over the pause, and schedule a fade-to-black a
     // beat later so the departure reads as deliberate. The fresh scene's own
     // re-anchor path lifts the fade once the new frame is on screen.
-    // MOVE TO holds the world a beat before fading; leaving a conversation cuts
-    // straight to black (immediate) and lets narration cover it while the new
-    // deeper scene generates.
-    if (actionSource === "scan_move" || isTalkExit) {
-      beginMoveTransition(moveTarget, { immediate: isTalkExit });
-    }
+    if (actionSource === "scan_move") beginMoveTransition(moveTarget);
     el.choices.innerHTML = "";
     Ceremony.begin(); // light up the turn pipeline — starting with "action selected"
     state.awaitingResolution = true;
@@ -4710,7 +4701,6 @@
     let actFrame = null;
     try {
       if (
-        !isTalkExit && // don't anchor the new scene on the character portrait
         Renderer.mode === "reactor" &&
         Renderer.reactorAvailable() &&
         window.ReactorRenderer.isShowing &&
@@ -4743,7 +4733,7 @@
     // MOVE TO (scan_move) is a hard location change that fades to black and
     // re-anchors, so we let that path own the transition rather than steer the
     // world we're leaving.
-    if (Renderer.mode === "reactor" && Renderer.reactorAvailable() && actionSource !== "scan_move" && !isTalkExit) {
+    if (Renderer.mode === "reactor" && Renderer.reactorAvailable() && actionSource !== "scan_move") {
       const steerVerb = (choiceText || "").trim();
       if (steerVerb) {
         try {
@@ -4814,12 +4804,7 @@
   //              the normal window when it arrives.
   const MOVE_TRANSITION_FADE_DELAY_MS = 900;
   const MOVE_TRANSITION_FADE_SAFETY_MS = 60000;
-  // `opts.immediate` drops the fade to black NOW instead of after the departure
-  // beat — used when leaving a conversation, where the player has already been
-  // "away" from the world and we want to cut straight to black + narration
-  // while the new (deeper) scene generates.
-  function beginMoveTransition(destinationLabel, opts) {
-    const immediate = !!(opts && opts.immediate);
+  function beginMoveTransition(destinationLabel) {
     // Fire the narrator BEFORE the fade so a voice lands as fast as possible
     // over the black. Silent when audio isn't unlocked (transition() no-ops).
     let narrated = false;
@@ -4866,7 +4851,7 @@
       } catch (err) {
         console.warn("[standalone] beginSceneFade failed", err);
       }
-    }, immediate ? 0 : MOVE_TRANSITION_FADE_DELAY_MS);
+    }, MOVE_TRANSITION_FADE_DELAY_MS);
   }
   function cancelMoveTransition() {
     if (state.moveFadeTimer) { clearTimeout(state.moveFadeTimer); state.moveFadeTimer = null; }
@@ -7934,13 +7919,10 @@
 
     let floatTimer = 0;
     let inMoment = false; // true while a Conversation Moment chrome is up
-    // World-model portrait animation: we SWAP the single Reactor session onto
-    // the character render, mirror its live stream into the full-screen
-    // portrait, and swap the world back on exit. One session, re-anchored —
-    // so "things are always moving" without a second GPU session.
-    let worldSwapped = false;     // did we re-anchor the world onto the character?
-    let savedWorldScene = null;   // the scene to rebuild when the conversation ends
-    let portraitPollTimer = null; // waits for the character video to go live
+    // The world session is PAUSED (not destroyed) while a conversation is up
+    // and RESUMED on exit — see Renderer.pauseUnderlay/resumeUnderlay, driven
+    // by Moments.push/pop. No world re-anchor, so exit is an instant resume of
+    // exactly where the player stood.
 
     function isOpen() { return open; }
     function isCinematic() { return !!(inMoment && open); }
@@ -7977,11 +7959,9 @@
         });
         if (!open || !inMoment) return;
         if (res && res.image_url && window.Moments) {
+          // Cinematic still + CSS living-portrait motion. The world session
+          // stays paused underneath for an instant resume on exit.
           window.Moments.setPortrait(res.image_url);
-          // Animate the character with the world model when realtime is live:
-          // re-anchor the session onto the portrait and mirror the moving feed
-          // into the frame. Falls back to the CSS living portrait otherwise.
-          try { animatePortraitWithWorldModel(res.image_url, res.prompt, subj); } catch (_) {}
         } else if (window.Moments) {
           const p = document.getElementById("moment-portrait");
           if (p) { p.classList.remove("developing"); p.classList.add("ready"); }
@@ -7995,124 +7975,16 @@
       }
     }
 
-    // Is the realtime world model actually live right now?
-    function reactorLive() {
-      try {
-        return Renderer.mode === "reactor" && window.ReactorRenderer &&
-          window.ReactorRenderer.isActive && window.ReactorRenderer.isActive();
-      } catch (_) { return false; }
-    }
-
-    // Compose an idle-motion world prompt for the character. We send NO
-    // movement commands, so Happy Oyster just breathes the scene to life
-    // (blink, sway, ambient light) around the character it built from the
-    // portrait first-frame.
-    function buildPortraitWorldPrompt(worldPrompt, subj) {
-      const who = (subj && subj.label) ? subj.label : "the figure";
-      const base = (worldPrompt || "").toString().slice(0, 320);
-      return (base ? base + " " : "") +
-        "Cinematic medium shot of " + who + " facing the camera, standing and " +
-        "breathing with subtle idle motion \u2014 a slight sway, a blink, weight " +
-        "shifting \u2014 gentle ambient movement in the scene. Camera holds steady, minimal drift.";
-    }
-
-    // Animate the portrait by RE-ANCHORING the single world-model session onto
-    // the character render, then mirroring that live feed into the full-screen
-    // portrait video. The moment portrait covers the viewport, so the underlay
-    // swap is invisible; when the character feed goes live we crossfade the
-    // still into it. Default-on whenever realtime is live; opt out with
-    // window.__CONVERSATION_ANIMATE__ === false. Reduced-motion users keep the
-    // still CSS living portrait.
-    function animatePortraitWithWorldModel(imageUrl, worldPrompt, subj) {
-      if (typeof window !== "undefined" && window.__CONVERSATION_ANIMATE__ === false) return;
-      if (prefersReducedMotion && prefersReducedMotion()) return;
-      if (!imageUrl || !reactorLive()) return;
-      // Remember the world we're leaving so exit can rebuild it. Copy so a
-      // later feed update to lastScene can't mutate our restore target.
-      savedWorldScene = Renderer.lastScene ? Object.assign({}, Renderer.lastScene) : null;
-      worldSwapped = true;
-      // push() paused the session for the takeover; resume so frames flow for
-      // the character world (the world audio stays muted — the voice comes from
-      // ElevenLabs, not the stream).
-      try { window.ReactorRenderer.resume && window.ReactorRenderer.resume(); } catch (_) {}
-      // Re-anchor DIRECTLY via the reactor facade (NOT Renderer.applyScene) so
-      // Renderer.lastScene keeps pointing at the world we'll restore.
-      try {
-        window.ReactorRenderer.applyScene({
-          prompt: buildPortraitWorldPrompt(worldPrompt, subj),
-          imageUrl: imageUrl,
-          hardTransition: true,
-        });
-      } catch (e) { worldSwapped = false; return; }
-      try { AgentLog.push("talk", "portrait \u2192 world model", (subj && subj.label) || ""); } catch (_) {}
-      startPortraitPoll(subj);
-    }
-
-    // Wait for the re-anchored character feed to present real frames, then
-    // mirror its MediaStream into the portrait video and crossfade. Bounded so
-    // a stalled/failed world build silently leaves the still living portrait up.
-    function startPortraitPoll(subj) {
-      stopPortraitPoll();
-      let tries = 0;
-      portraitPollTimer = setInterval(() => {
-        tries++;
-        if (!open || !worldSwapped || tries > 45) { stopPortraitPoll(); return; } // ~9s cap
-        let showing = false;
-        try { showing = window.ReactorRenderer.isShowing && window.ReactorRenderer.isShowing(); } catch (_) {}
-        if (!showing) return;
-        const rv = document.getElementById("reactor-video");
-        if (rv && rv.srcObject && window.Moments && window.Moments.setPortraitStream) {
-          window.Moments.setPortraitStream(rv.srcObject);
-          try { AgentLog.push("ok", "portrait animated (world model)", (subj && subj.label) || ""); } catch (_) {}
-        }
-        stopPortraitPoll();
-      }, 200);
-    }
-    function stopPortraitPoll() {
-      if (portraitPollTimer) { clearInterval(portraitPollTimer); portraitPollTimer = null; }
-    }
-
-    // Exit progression: leaving a conversation should move the story FORWARD,
-    // not rewind to the scene you started in. We commit a "press deeper" beat
-    // that fades out (like a MOVE TO) and generates a brand-new scene, so
-    // ending a conversation feels like advancing deeper into the world. Returns
-    // true if a forward turn was committed. Falls back to a plain world restore
-    // when we can't take a turn (game over / mid-turn / no turn pipeline).
-    function progressOutOfConversation(label) {
-      stopPortraitPoll();
-      // We're progressing, not restoring — drop the saved world so nothing
-      // re-anchors us backward.
-      worldSwapped = false;
-      savedWorldScene = null;
-      if (state.gameOver || state.processing) return false;
-      if (typeof makeChoice !== "function") return false;
-      const who = (label || "them").toString();
-      const phrase =
-        "You break away from " + who + " and press on, deeper into this place \u2014 " +
-        "moving through to whatever waits further in.";
-      try {
-        makeChoice(phrase, null, { source: "talk_exit", moveTarget: "" });
-        return true;
-      } catch (e) {
-        console.warn("[talk] exit progression failed:", e);
-        return false;
-      }
-    }
-
-    // Fallback: rebuild the world we left (used only when we can't progress a
-    // turn). Hidden by the moment's glitch + letterbox retract + freeze buffer.
-    function restoreWorldAfterConversation() {
-      stopPortraitPoll();
-      if (!worldSwapped) return;
-      worldSwapped = false;
-      const scene = savedWorldScene;
-      savedWorldScene = null;
-      try {
-        if (scene && scene.prompt && window.ReactorRenderer && window.ReactorRenderer.applyScene) {
-          window.ReactorRenderer.applyScene(scene);
-        }
-      } catch (_) {}
-    }
+    // PORTRAIT ANIMATION NOTE — we deliberately do NOT re-anchor the world
+    // session onto the character. Re-anchoring animated the character but
+    // DESTROYED the environment world, forcing a slow rebuild on exit (the
+    // "loading a new image" that felt awful). Instead the world session is left
+    // PAUSED on the exact frame the player was standing on (Renderer.pauseUnderlay
+    // via Moments.push) and RESUMED on exit — an instant, seamless return. The
+    // character is the cinematic img2img still with the CSS "living portrait"
+    // treatment (breathing + grain + rim light pulsing with the speaking/
+    // listening orb), so it's alive without a second GPU session. Live
+    // world-model character motion would need a separate Reactor session.
 
     function ensureSdk() { return ElevenSDK.load(); }
 
@@ -8602,9 +8474,11 @@
       document.body.classList.remove("talking");
       document.body.removeAttribute("data-talk-orb");
 
-      // Pop the Conversation Moment FIRST (retract letterbox, restore HUD +
-      // underlay) so the forward turn below resolves in exploration view.
-      // Guarded so a double-close or missing Moments.js never throws.
+      // Pop the Conversation Moment: retract the letterbox, restore the HUD,
+      // and RESUME the paused world (Moments.pop -> Renderer.resumeUnderlay) so
+      // the player lands back on the exact frame they left, world moving again.
+      // No generation, no re-anchor — an instant, seamless resume. Guarded so a
+      // double-close or missing Moments.js never throws.
       if (inMoment && window.Moments && typeof window.Moments.pop === "function") {
         try {
           if (window.Moments.topType && window.Moments.topType() === "conversation") {
@@ -8618,19 +8492,6 @@
           SceneAudio.endConversation();
         }
       } catch (_) {}
-
-      // Progress the story OUT of the conversation: commit a forward "press
-      // deeper" beat that fades out and generates a NEW scene, so leaving feels
-      // like advancing deeper — not cutting back to the old frame. If we can't
-      // take a turn (game over / mid-turn), fall back to restoring the world we
-      // re-anchored away from so we're never stuck on the character.
-      const progressed = progressOutOfConversation(closedSubject && closedSubject.label);
-      if (!progressed) {
-        restoreWorldAfterConversation();
-        if (closedSubject && closedSubject.label) {
-          try { showRendererToast("Left conversation with " + closedSubject.label); } catch (_) {}
-        }
-      }
 
       setTimeout(() => {
         el.talkOverlay.classList.add("hidden");
