@@ -4663,6 +4663,10 @@
     // for deliberate meddling — see _process_turn_background (engine.py).
     const actionSource = (opts && opts.source) || null;
     const moveTarget = (opts && opts.moveTarget) || null;
+    // Leaving a conversation resolves as a forward beat: fade out like a MOVE TO
+    // (deliberate departure) and generate a NEW deeper scene, rather than
+    // capturing/steering the character portrait we were just talking to.
+    const isTalkExit = actionSource === "talk_exit";
     closeFreeWill(true); // picking any action closes the free-will gate
     clearScanTags();      // the scene is about to change — drop stale scan tags
     Narrator.stop();      // stop narration about the scene we're leaving
@@ -4674,7 +4678,7 @@
     // line NOW so a voice lands over the pause, and schedule a fade-to-black a
     // beat later so the departure reads as deliberate. The fresh scene's own
     // re-anchor path lifts the fade once the new frame is on screen.
-    if (actionSource === "scan_move") beginMoveTransition(moveTarget);
+    if (actionSource === "scan_move" || isTalkExit) beginMoveTransition(moveTarget);
     el.choices.innerHTML = "";
     Ceremony.begin(); // light up the turn pipeline — starting with "action selected"
     state.awaitingResolution = true;
@@ -4701,6 +4705,7 @@
     let actFrame = null;
     try {
       if (
+        !isTalkExit && // don't anchor the new scene on the character portrait
         Renderer.mode === "reactor" &&
         Renderer.reactorAvailable() &&
         window.ReactorRenderer.isShowing &&
@@ -4733,7 +4738,7 @@
     // MOVE TO (scan_move) is a hard location change that fades to black and
     // re-anchors, so we let that path own the transition rather than steer the
     // world we're leaving.
-    if (Renderer.mode === "reactor" && Renderer.reactorAvailable() && actionSource !== "scan_move") {
+    if (Renderer.mode === "reactor" && Renderer.reactorAvailable() && actionSource !== "scan_move" && !isTalkExit) {
       const steerVerb = (choiceText || "").trim();
       if (steerVerb) {
         try {
@@ -8057,10 +8062,35 @@
       if (portraitPollTimer) { clearInterval(portraitPollTimer); portraitPollTimer = null; }
     }
 
-    // On exit: rebuild the world we left so the game returns to where the
-    // player was. The moment's glitch + letterbox-retract + the reactor freeze
-    // buffer hide the rebuild. No-op if we never swapped (still mode / reduced
-    // motion / reactor down).
+    // Exit progression: leaving a conversation should move the story FORWARD,
+    // not rewind to the scene you started in. We commit a "press deeper" beat
+    // that fades out (like a MOVE TO) and generates a brand-new scene, so
+    // ending a conversation feels like advancing deeper into the world. Returns
+    // true if a forward turn was committed. Falls back to a plain world restore
+    // when we can't take a turn (game over / mid-turn / no turn pipeline).
+    function progressOutOfConversation(label) {
+      stopPortraitPoll();
+      // We're progressing, not restoring — drop the saved world so nothing
+      // re-anchors us backward.
+      worldSwapped = false;
+      savedWorldScene = null;
+      if (state.gameOver || state.processing) return false;
+      if (typeof makeChoice !== "function") return false;
+      const who = (label || "them").toString();
+      const phrase =
+        "You break away from " + who + " and press on, deeper into this place \u2014 " +
+        "moving through to whatever waits further in.";
+      try {
+        makeChoice(phrase, null, { source: "talk_exit", moveTarget: "" });
+        return true;
+      } catch (e) {
+        console.warn("[talk] exit progression failed:", e);
+        return false;
+      }
+    }
+
+    // Fallback: rebuild the world we left (used only when we can't progress a
+    // turn). Hidden by the moment's glitch + letterbox retract + freeze buffer.
     function restoreWorldAfterConversation() {
       stopPortraitPoll();
       if (!worldSwapped) return;
@@ -8562,14 +8592,9 @@
       document.body.classList.remove("talking");
       document.body.removeAttribute("data-talk-orb");
 
-      // If we re-anchored the world model onto the character, rebuild the world
-      // we left NOW — while the exit glitch + letterbox retract + reactor freeze
-      // buffer hide the swap — so the game returns to where the player was.
-      restoreWorldAfterConversation();
-
-      // Pop the Conversation Moment (restores HUD + underlay). Guarded so a
-      // double-close or missing Moments.js never throws. End-of-call toast uses
-      // the world toast (Moment chrome is about to unmount).
+      // Pop the Conversation Moment FIRST (retract letterbox, restore HUD +
+      // underlay) so the forward turn below resolves in exploration view.
+      // Guarded so a double-close or missing Moments.js never throws.
       if (inMoment && window.Moments && typeof window.Moments.pop === "function") {
         try {
           if (window.Moments.topType && window.Moments.topType() === "conversation") {
@@ -8578,16 +8603,24 @@
         } catch (e) { console.warn("[talk] Moments.pop failed:", e); }
       }
       inMoment = false;
-      if (closedSubject && closedSubject.label) {
-        try {
-          showRendererToast("Left conversation with " + closedSubject.label);
-        } catch (_) {}
-      }
       try {
         if (SceneAudio && typeof SceneAudio.endConversation === "function") {
           SceneAudio.endConversation();
         }
       } catch (_) {}
+
+      // Progress the story OUT of the conversation: commit a forward "press
+      // deeper" beat that fades out and generates a NEW scene, so leaving feels
+      // like advancing deeper — not cutting back to the old frame. If we can't
+      // take a turn (game over / mid-turn), fall back to restoring the world we
+      // re-anchored away from so we're never stuck on the character.
+      const progressed = progressOutOfConversation(closedSubject && closedSubject.label);
+      if (!progressed) {
+        restoreWorldAfterConversation();
+        if (closedSubject && closedSubject.label) {
+          try { showRendererToast("Left conversation with " + closedSubject.label); } catch (_) {}
+        }
+      }
 
       setTimeout(() => {
         el.talkOverlay.classList.add("hidden");

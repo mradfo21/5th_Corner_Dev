@@ -51,6 +51,16 @@ await window.Moments.push("interrogation", { subject, stakes: "…" });
 - `Moments.setChoices(items, onPick)` / `clearChoices()` — dialogue options list
 - `Moments.setNameplate(name, sub)`
 
+## Exit progression
+
+Leaving a conversation does not rewind to the scene you started in. On close,
+the Conversation Moment commits a forward "press deeper" beat via the normal
+turn pipeline (`makeChoice(..., { source: "talk_exit" })`): it fades out like a
+MOVE TO and generates a BRAND-NEW scene, so ending a conversation feels like
+advancing deeper into the world. The character portrait is deliberately not
+used as the img2img anchor for that new scene. If a turn can't be taken (game
+over / mid-turn), it falls back to restoring the pre-conversation world.
+
 ## Character memory hook
 
 `/api/talk/end` accepts an optional `subject` and upserts
