@@ -1,3 +1,28 @@
+# 🔧 CHANGELOG - July 21, 2026
+
+## 🌊 World Model: LingBot World 2 → Happy Oyster
+
+**Files:** `engine.py`, `api.py`, `render.yaml`, `static/js/reactor_renderer.js`,
+`static/js/standalone.js`, `templates/standalone.html`, e2e tests
+
+- Migrated the default realtime world model to Reactor's **Happy Oyster**
+  (https://www.reactor.inc/models/happy-oyster/api) — a prompt-to-world model
+  that BUILDS a navigable place from a text prompt (anchored by our generated
+  still as its first frame), then TRAVELS it in first person.
+- Added a new **`happy_oyster`** protocol driver: `create_world` → await
+  `world_state` ready → `start_travel`; a new scene rebuilds the world.
+- **Cameras/controls** optimized for the experience: held `move`
+  (Front/Back/Left/Right) + `look` (Mouse_Up/Down/Left/Right) with a global
+  `stop`, and real `interact({action})` verbs for INTERACT (world reacts in
+  place, no rebuild). The joystick/WSAD surface is unchanged for players.
+- **Prompting** retuned for prompt-to-world navigation (first-person world
+  description, well under the 2000-char world-prompt cap).
+- LingBot World 2, Helios, and the other models remain selectable from the
+  WORLD MODEL switcher; the default is configurable via `REACTOR_WORLD_MODEL` /
+  `REACTOR_MODEL` / `REACTOR_MODELS`.
+
+---
+
 # 🔧 CHANGELOG - December 11, 2025
 
 ## 🚀 Major Bug Fixes & Improvements
