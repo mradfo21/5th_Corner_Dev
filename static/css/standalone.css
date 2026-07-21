@@ -4195,7 +4195,6 @@ body.moment-underlay-paused .reactor-freeze {
   transition: opacity 0.4s ease, transform 0.5s cubic-bezier(0.2, 0.9, 0.25, 1);
 }
 #moment-overlay.moment-in #moment-portrait { opacity: 1; }
-#moment-portrait-img,
 #moment-portrait-video {
   position: absolute;
   inset: 0;
@@ -4204,10 +4203,26 @@ body.moment-underlay-paused .reactor-freeze {
   object-fit: cover;
   display: block;
 }
-#moment-portrait-img.hidden,
 #moment-portrait-video.hidden { display: none; }
 
-/* Developing-photograph shimmer while the portrait generates. */
+/* The still portrait is opacity-driven (NOT display-toggled) so the reveal
+   can crossfade out of the developing shimmer into the photo — a dissolve,
+   not a hard pop. `#moment-portrait.ready` is added the instant the image
+   finishes loading (see moments.js setPortrait). */
+#moment-portrait-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  opacity: 0;
+  transition: opacity 0.65s ease;
+}
+#moment-portrait.ready #moment-portrait-img { opacity: 1; }
+
+/* Developing-photograph shimmer while the portrait generates. Fades OUT
+   (rather than snapping off) so it dissolves into the photo underneath it. */
 #moment-portrait-shimmer {
   position: absolute;
   inset: 0;
@@ -4219,6 +4234,7 @@ body.moment-underlay-paused .reactor-freeze {
   background-size: 220% 100%;
   opacity: 0;
   pointer-events: none;
+  transition: opacity 0.55s ease;
 }
 #moment-portrait.developing #moment-portrait-shimmer {
   opacity: 1;
@@ -4464,7 +4480,7 @@ body.moment-conversation #talk-float-who {
 
 @media (prefers-reduced-motion: reduce) {
   #moment-overlay, .moment-letterbox, #moment-portrait,
-  #moment-portrait.living #moment-portrait-img,
+  #moment-portrait-img, #moment-portrait.living #moment-portrait-img,
   #moment-portrait-shimmer, #moment-nameplate, .moment-notify-chip {
     animation: none !important;
     transition: opacity 0.15s ease !important;

@@ -126,8 +126,11 @@
       p.classList.remove("ready", "living", "animated");
       p.classList.add("developing");
     }
+    // NOTE: the image is opacity-driven (see CSS), not display-toggled, so the
+    // eventual reveal in setPortrait() can crossfade smoothly out of this
+    // "developing" shimmer instead of popping in on a hard display:none swap.
     const img = portraitImg();
-    if (img) { img.removeAttribute("src"); img.classList.add("hidden"); }
+    if (img) img.removeAttribute("src");
     const vid = portraitVideo();
     if (vid) {
       try { vid.pause(); } catch (_) {}
@@ -242,7 +245,10 @@
     const img = portraitImg();
     if (!p || !img || !url) return;
     img.onload = () => {
-      img.classList.remove("hidden");
+      // Crossfade: the shimmer fades OUT (opacity transition on .developing
+      // removal) at the same time the photo fades IN (opacity transition on
+      // .ready) — a dissolve, not a hard pop. See the CSS transitions on
+      // #moment-portrait-shimmer / #moment-portrait-img.
       p.classList.remove("developing");
       p.classList.add("ready", "living");
       playSound("portraitReveal");
@@ -258,7 +264,7 @@
     const p = portraitEl();
     const img = portraitImg();
     const vid = portraitVideo();
-    if (img) { img.removeAttribute("src"); img.classList.add("hidden"); }
+    if (img) img.removeAttribute("src");
     if (vid) {
       try { vid.pause(); } catch (_) {}
       try { vid.srcObject = null; } catch (_) {}

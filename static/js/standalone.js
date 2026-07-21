@@ -634,6 +634,10 @@
         tone([420, 780], 0.22, "triangle", 0.04, 0.12);
         tone(1180, 0.12, "sine", 0.03, 0.28);
         noise(0.06, 0.018);
+        // A quiet sustained "channel open" drone bridges the gap between the
+        // entrance stinger and whatever lands next (portrait / voice connect /
+        // conversation music) — so the wait never reads as dead air.
+        tone(300, 1.7, "sine", 0.011, 0.16);
       },
       convoExit() {
         tone([780, 360], 0.22, "triangle", 0.04);
@@ -8076,15 +8080,20 @@
       el.talkOverlay.setAttribute("aria-hidden", "false");
       document.body.classList.add("talking");
       requestAnimationFrame(() => el.talkOverlay.classList.add("talk-in"));
-      Sound.talkOpen();
       Haptics.select();
 
       // Push the Conversation Moment chrome (letterbox + portrait frame + HUD
       // hide + underlay pause). Networking below is unchanged — Moments only
       // owns presentation. Falls back to the slim overlay if Moments.js is
       // missing so TALK never hard-depends on the cinematic layer.
+      //
+      // Sound sequencing: Moments.push() itself fires the glitch-cut +
+      // convoEnter swell as ONE entrance beat. Playing the legacy talkOpen
+      // carrier tone on TOP of that would stack three overlapping cues into a
+      // muddy instant, so it's reserved for the non-cinematic fallback below.
+      const cinematicAvailable = !!(window.Moments && typeof window.Moments.push === "function");
       inMoment = false;
-      if (window.Moments && typeof window.Moments.push === "function") {
+      if (cinematicAvailable) {
         try {
           await window.Moments.push("conversation", { subject: subject });
           inMoment = !!(window.Moments.isActive && window.Moments.isActive() &&
@@ -8094,6 +8103,7 @@
           inMoment = false;
         }
       }
+      if (!inMoment) Sound.talkOpen();
 
       // Fire session + portrait in parallel so time-to-content is the slower
       // of the two, not their sum.
@@ -8437,7 +8447,11 @@
       voiceInUse = "";
       voiceConnectedAt = 0;
       releaseVoiceOnClose(releasedVoice, releasedDuration, closedSubject);
-      Sound.talkClose();
+      // Sound sequencing: Moments.pop() below fires its own glitch-cut +
+      // convoExit chord as ONE exit beat. Only play the legacy talkClose tone
+      // when there's no cinematic chrome to hand off to, so exit doesn't stack
+      // two overlapping "hang up" cues.
+      if (!inMoment) Sound.talkClose();
       if (convo) { try { convo.endSession(); } catch (_) {} convo = null; }
       closeVoiceMenu();
       if (el.talkVoiceBtn) el.talkVoiceBtn.classList.add("hidden");
