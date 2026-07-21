@@ -4254,14 +4254,15 @@
     state.awaitingResolution = true;
     state.lastTurnTs = Date.now(); // pre-warm defers around the turn
     armTurnWatchdog(choiceText, contextItemId);
-    // NOTE: we deliberately do NOT steer the CURRENT live video with the action
-    // here. Injecting the action into the video the instant a choice is made
-    // meant the ORIGINAL scene's video started playing the action before its new
-    // guide image had formed — which looked wrong. The action is now applied
-    // only when the new guide image has been generated and its video is running:
-    // the re-anchor (see Renderer.applyScene / ReactorRenderer) starts the new
-    // guide-image stream with the render prompt, which already carries this
-    // action beat (build_realtime_prompt, server-side).
+    // IMMEDIATE WORLD STEER: the live world model starts reacting to the chosen
+    // action right away (see the steer block just below the act-frame capture),
+    // so the world "travels" without waiting on the consequence + choice LLM
+    // calls; the narrative and the guide-image re-anchor then catch up behind
+    // the already-moving video. (Historically we did NOT steer here — with the
+    // old seed-locked model, injecting the action before the new guide image
+    // formed looked wrong. The default is now Happy Oyster, whose interact() /
+    // travel controls are built to be driven directly, so immediate steering is
+    // the natural fit.)
     //
     // ACT-TIME FRAME CAPTURE: grab the frame the player is ACTUALLY looking at
     // in the live world model at the instant they commit an action, and hand it
@@ -4292,6 +4293,32 @@
       RtLog.push("img", "\u25C8 captured live frame \u2192 img2img");
     } else if (Renderer.mode === "reactor") {
       RtLog.push("img", "\u26A0 no live frame captured (still mode / not yet showing)");
+    }
+    // ── IMMEDIATE WORLD STEER (after the act-frame is captured, so img2img still
+    // sees the pre-action frame the player decided on) ──
+    // Start the live world reacting to the action NOW, so travel/interaction is
+    // felt instantly instead of after the text pipeline resolves.
+    //   • Happy Oyster (navigable world): interact({action}) drives the CURRENT
+    //     traveling world in place — the intended primitive. The turn's later
+    //     re-anchor rebuilds the world on the new guide image + full prompt.
+    //   • Prompt-steered models (LingBot/Helios): steerRealtime composes the
+    //     stable base + this action beat; the scene_image re-anchor arrives with
+    //     the same full prompt and de-dupes (see ReactorRenderer.flush).
+    // MOVE TO (scan_move) is a hard location change that fades to black and
+    // re-anchors, so we let that path own the transition rather than steer the
+    // world we're leaving.
+    if (Renderer.mode === "reactor" && Renderer.reactorAvailable() && actionSource !== "scan_move") {
+      const steerVerb = (choiceText || "").trim();
+      if (steerVerb) {
+        try {
+          if (window.ReactorRenderer.canInteract && window.ReactorRenderer.canInteract()) {
+            window.ReactorRenderer.interact(steerVerb);
+            try { RtLog.push("prompt", "\u25B8 interact", steerVerb); } catch (_) {}
+          } else {
+            Renderer.steerRealtime(steerVerb);
+          }
+        } catch (_) {}
+      }
     }
     // If a captured specimen is armed, ride its id along with the action so the
     // backend can (in future) ground the turn on what the player examined. The
