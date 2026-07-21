@@ -195,6 +195,18 @@ class AnalyticsApiTestCase(unittest.TestCase):
         events = cost_tracker.get_session_detail("s1")["events"]
         self.assertEqual(len([e for e in events if e["model"] == "talk_agent"]), 0)
 
+    def test_storage_health_requires_admin_token(self):
+        res = self.client.get("/api/admin/analytics/storage_health")
+        self.assertEqual(res.status_code, 401)
+
+    def test_storage_health_returns_diagnostic_fields(self):
+        res = self.client.get("/api/admin/analytics/storage_health", headers=self.auth_headers)
+        self.assertEqual(res.status_code, 200)
+        data = res.get_json()["data"]
+        self.assertIn("mount_detected", data)
+        self.assertIn("survived_restart", data)
+        self.assertIn("db_path", data)
+
 
 if __name__ == "__main__":
     unittest.main()

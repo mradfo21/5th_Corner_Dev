@@ -23,6 +23,16 @@ services:
     # resets to whatever's happened since the last deploy. 1GB is generously
     # sized for the SQLite ledger + a healthy number of session images/tapes;
     # bump sizeGB in the Render dashboard (or here) if it fills up.
+    #
+    # IMPORTANT: if this service was created via Render's "New -> Web
+    # Service" flow (not "New -> Blueprint"), Render will NOT pick this up
+    # from a plain git push — disks on an existing non-Blueprint service
+    # have to be added by hand once: Settings -> Disks -> Add Disk -> name
+    # `game-data`, mount path `/opt/render/project/src/sessions`, 1 GB. The
+    # admin dashboard's Cost Analytics tab shows a live green/yellow/red
+    # banner (backed by GET /api/admin/analytics/storage_health) telling you
+    # definitively whether this is actually attached — check that instead of
+    # assuming this block alone is sufficient. See RENDER_STORAGE_LIMITATION.md.
     disk:
       name: game-data
       mountPath: /opt/render/project/src/sessions

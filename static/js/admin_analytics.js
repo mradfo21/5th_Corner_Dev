@@ -82,6 +82,28 @@
             summary.error_count ? `${summary.error_count} failed call${summary.error_count === 1 ? '' : 's'}` : '';
     }
 
+    // ────────────────────── Storage health banner ──────────────────────
+    // There's no way to ask Render "is my disk actually attached" from the
+    // browser, so cost_tracker.get_storage_health() combines a mount-point
+    // check with "does the oldest ledger row predate this process's start"
+    // — the strongest available proof the ledger survived a restart. This
+    // turns "why did my totals reset again" from a mystery into an answer.
+    function renderStorageHealth(health) {
+        const el = document.getElementById('storage-health-banner');
+        if (!health) { el.style.display = 'none'; return; }
+        el.style.display = 'flex';
+        if (health.survived_restart === true) {
+            el.className = 'storage-health-banner is-good';
+            el.innerHTML = `<span class="shb-icon">✅</span><span><strong>Persistent storage confirmed</strong> — the cost ledger has already survived at least one restart. Numbers here are real running totals, not "since the last deploy."</span>`;
+        } else if (!health.mount_detected) {
+            el.className = 'storage-health-banner is-bad';
+            el.innerHTML = `<span class="shb-icon">⚠️</span><span><strong>Persistent disk NOT detected</strong> — <code>${escapeHtml(health.db_path)}</code> is on ephemeral storage. Everything below will be WIPED on the next deploy or restart. In the Render dashboard: Settings → Disks → Add Disk, mount path <code>/opt/render/project/src/sessions</code> (matches the <code>disk:</code> block already committed in render.yaml — Render may just need this approved/synced once).</span>`;
+        } else {
+            el.className = 'storage-health-banner is-pending';
+            el.innerHTML = `<span class="shb-icon">⏳</span><span><strong>Persistent disk detected</strong> — looks correctly mounted. Can't fully confirm it survives a restart until one actually happens; check back after the next deploy and this should flip to a green confirmation.</span>`;
+        }
+    }
+
     // ─────────────────────────── Charts ───────────────────────────
 
     function destroyChart(key) {
@@ -424,19 +446,21 @@
         clearError();
         try {
             const granularity = state.range === '24h' ? 'hour' : 'day';
-            const [summary, timeseries, providers, sessions, pricingData, errors] = await Promise.all([
+            const [summary, timeseries, providers, sessions, pricingData, errors, storageHealth] = await Promise.all([
                 fetchJson(`/admin/analytics/summary?range=${state.range}`),
                 fetchJson(`/admin/analytics/timeseries?range=${state.range}&granularity=${granularity}`),
                 fetchJson(`/admin/analytics/providers?range=${state.range}`),
                 fetchJson(`/admin/analytics/sessions?sort=${document.getElementById('analytics-session-sort').value}&limit=100`),
                 fetchJson('/admin/pricing'),
                 fetchJson(`/admin/analytics/errors?range=${state.range}`),
+                fetchJson('/admin/analytics/storage_health').catch(() => null),
             ]);
 
             state.knownProviderModelKeys = new Set(
                 (providers.providers || []).map(r => `${r.provider}:${r.model}`)
             );
 
+            renderStorageHealth(storageHealth);
             renderKpis(summary);
             renderTimeseriesChart(timeseries);
             renderProviderDonut(summary);
