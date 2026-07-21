@@ -204,7 +204,8 @@
     hoSentVerb: null,          // last held interaction verb actually asserted
     hoVerbs: [],               // interaction verbs the current world advertises
     hoWorldId: null,           // encrypted_world_id of the current world (attach_world)
-    hoWorldsByImage: Object.create(null), // scene guide-image URL -> encrypted_world_id (revisit cache)
+    hoWorldsByImage: Object.create(null), // scene guide-image URL -> { id, prompt } (revisit cache)
+    hoStagingPrompt: null,     // prompt of the world currently being built (for the cache key)
     hoExperience: null,        // resolved experience for this session ("adventure"|"director")
     hoPerspective: null,       // resolved perspective ("first_person"|"third_person")
     cfg: { model_name: FALLBACK_MODEL, enabled: false },
@@ -1150,18 +1151,21 @@
   // it. Adventure worlds are then driven by held movement/look + interaction
   // verbs; Directing worlds by `instruct` + playback (pause/resume/rewind).
   async function buildHappyOysterWorld(s) {
-    // Revisit: if we've already BUILT a world for this exact guide image in this
-    // session, reopen it with attach_world instead of regenerating — faster and
-    // identical (Happy Oyster worlds are permanent for the session).
-    const savedId = s.imageUrl ? rstate.hoWorldsByImage[s.imageUrl] : null;
-    if (savedId) {
+    // Revisit: reopen with attach_world instead of regenerating ONLY when we've
+    // already built a world for this EXACT scene (same guide image AND same
+    // prompt) this session — faster and identical (worlds are permanent). Keying
+    // on the prompt too is essential: the same image URL with a NEW prompt is a
+    // narrative update at the same spot and MUST rebuild, not reopen the old world.
+    const cached = s.imageUrl ? rstate.hoWorldsByImage[s.imageUrl] : null;
+    if (cached && cached.id && cached.prompt === s.prompt) {
       log("happy-oyster: revisiting a built world -> attach_world");
-      return attachHappyOysterWorld(savedId, s);
+      return attachHappyOysterWorld(cached.id, s);
     }
     // New stage boundary: invalidate any seed still decoding from a prior world.
     rstate.seedToken++;
     if (!rstate.freezeActive && s.imageUrl) paintSeedToFreeze(s.imageUrl);
     rstate.stagingGuideUrl = s.imageUrl || null;
+    rstate.hoStagingPrompt = s.prompt || null;
     rstate.hoTraveling = false;
     const experience = happyOysterExperience();
     const payload = { prompt: s.prompt };
@@ -1198,6 +1202,7 @@
     rstate.seedToken++;
     if (!rstate.freezeActive && s && s.imageUrl) paintSeedToFreeze(s.imageUrl);
     rstate.stagingGuideUrl = (s && s.imageUrl) || null;
+    rstate.hoStagingPrompt = (s && s.prompt) || null;
     rstate.hoTraveling = false;
     const worldReady = waitForEvent("world_ready", WORLD_BUILD_TIMEOUT_MS);
     await cmd("attach_world", { encrypted_world_id: worldId });
@@ -1342,7 +1347,10 @@
       if (d && d.encrypted_world_id && d.encrypted_world_id !== rstate.hoWorldId) {
         rstate.hoWorldId = d.encrypted_world_id;
         const img = rstate.stagingGuideUrl || rstate.lastImageUrl || null;
-        if (img) rstate.hoWorldsByImage[img] = d.encrypted_world_id;
+        if (img) rstate.hoWorldsByImage[img] = {
+          id: d.encrypted_world_id,
+          prompt: rstate.hoStagingPrompt || rstate.lastPrompt || "",
+        };
         try {
           if (typeof window.ReactorRenderer.onWorldId === "function")
             window.ReactorRenderer.onWorldId(d.encrypted_world_id, d);
@@ -1719,9 +1727,13 @@
       rstate.hoSentMove = null; rstate.hoSentLook = null; rstate.hoSentVerb = null;
       return;
     }
-    // A previously-held channel just went idle (but not everything): `stop`
-    // clears them all, then we re-assert the survivor(s) below.
-    if ((rstate.hoSentMove && !mv) || (rstate.hoSentLook && !lk) || (rstate.hoSentVerb && !vb)) {
+    // A previously-held channel just went idle OR a held verb SWITCHED to a
+    // different one (but not everything released): `stop` clears them all — the
+    // only way Happy Oyster releases a held control — then we re-assert the
+    // survivor(s) below. (Switching Sprint->Crouch without a stop would leave
+    // Sprint engaged server-side alongside Crouch.)
+    if ((rstate.hoSentMove && !mv) || (rstate.hoSentLook && !lk) ||
+        (rstate.hoSentVerb && rstate.hoSentVerb !== vb)) {
       cmd("stop", {});
       rstate.hoSentMove = null; rstate.hoSentLook = null; rstate.hoSentVerb = null;
     }
@@ -1748,6 +1760,10 @@
     if (!rstate.reactor || !rstate.ready || !rstate.started) return;
     if (isHappyOyster()) {
       rstate.hoSentMove = null; rstate.hoSentLook = null; rstate.hoSentVerb = null; // fresh world holds nothing
+      // Director worlds have no move/look/interact — never re-assert Adventure
+      // controls onto them (residual held keys/verbs would be sent as commands
+      // the world rejects). Steering there is text `instruct` + playback.
+      if (happyOysterExperience() === "director") { rstate.hoHeldVerb = null; return; }
       pushHappyOysterMotion();
       return;
     }
@@ -1776,6 +1792,24 @@
     const d = {}; d[a.param] = value;
     cmd(a.cmd, d);
     return true;
+  }
+
+  // Batch-set several movement/look axes and reconcile ONCE. For Happy Oyster
+  // this collapses a whole joystick tick into a single held-control reconcile
+  // (instead of one per axis), so a diagonal change never emits a transient
+  // stop→re-assert flurry — smoother, fewer commands. Legacy models keep their
+  // per-axis command behavior. `axes` = { longitudinal?, lateral?, lookH?, lookV? }.
+  function setAxes(axes) {
+    if (!axes) return;
+    if (isHappyOyster()) {
+      let changed = false;
+      Object.keys(AXIS_CMD).forEach((k) => {
+        if (typeof axes[k] === "string" && rstate.move[k] !== axes[k]) { rstate.move[k] = (axes[k] || "idle"); changed = true; }
+      });
+      if (changed) pushHappyOysterMotion();
+      return;
+    }
+    Object.keys(AXIS_CMD).forEach((k) => { if (typeof axes[k] === "string") setAxis(k, axes[k]); });
   }
 
   // Rotation speed (deg/latent-frame, 0..30) — how fast a held look axis turns.
@@ -1891,7 +1925,7 @@
     // early "start the fade now" hook.
     beginSceneFade, endSceneFade,
     // Live camera drive (see above): the navigable-video control surface.
-    motionSupported, setAxis, setRotationSpeed, stopMotion,
+    motionSupported, setAxis, setAxes, setRotationSpeed, stopMotion,
     // Interaction verbs (Happy Oyster): interact(action) fires a momentary verb
     // (Jump/Attack or a world-advertised verb); setHeldVerb(action|null) holds a
     // verb (Sprint/Crouch) that composes with movement. canInteract() tells the

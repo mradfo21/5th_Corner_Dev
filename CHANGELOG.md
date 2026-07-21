@@ -26,6 +26,21 @@ Engineered the UX around Happy Oyster so ALL of its abilities are utilized:
   **reopened with `attach_world` on revisit** instead of regenerating (faster,
   identical). World ids are tracked from `world_state`.
 
+### Bug fixes / polish (fun · pleasing · fast)
+- **Revisit cache correctness** — the attach cache is now keyed by guide image
+  AND prompt, so a narrative update at the same location correctly REBUILDS
+  instead of silently reopening the stale world.
+- **Director never gets Adventure commands** — `applyMoveState` no longer
+  re-asserts held movement/verbs onto a Directing world; residual held keys are
+  cleared on entry.
+- **Held-verb switch releases cleanly** — switching a held verb (e.g. Sprint →
+  Crouch) now issues `stop` first, so the old verb can't stay engaged.
+- **Verb bar releases on hide** — hiding the verb bar (Director mode / leaving
+  realtime) releases any held verb in the renderer instead of leaving it stuck.
+- **Smoother movement** — a joystick tick now reconciles all axes in ONE batched
+  update (`setAxes`), so diagonal input no longer emits a transient
+  stop→re-assert flurry.
+
 ## 🌊 World Model: LingBot World 2 → Happy Oyster
 
 **Files:** `engine.py`, `api.py`, `render.yaml`, `static/js/reactor_renderer.js`,

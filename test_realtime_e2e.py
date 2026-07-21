@@ -1848,13 +1848,23 @@ class TestRealtimeRenderer(unittest.TestCase):
             page.evaluate(apply, ["scene B", img_b])
             page.wait_for_function("(window.__MOCK_CMDS__||[]).filter(c=>c==='create_world').length >= 2", timeout=10000)
             page.wait_for_function("window.ReactorRenderer.isShowing() === true", timeout=15000)
-            # Revisit Scene A (same guide image) -> must ATTACH the saved world,
-            # not build a third one.
+            # Revisit Scene A (SAME prompt + guide image) -> must ATTACH the saved
+            # world, not build a third one. (A different prompt at the same image
+            # would correctly rebuild — that's a narrative update, tested below.)
             page.evaluate("window.__MOCK_ATTACHES__ = 0")
-            page.evaluate(apply, ["scene A again", img_a])
+            page.evaluate(apply, ["scene A", img_a])
             page.wait_for_function("(window.__MOCK_ATTACHES__||0) >= 1", timeout=10000)
+            page.wait_for_function("window.ReactorRenderer.isShowing() === true", timeout=15000)
             builds = page.evaluate("(window.__MOCK_CMDS__||[]).filter(c=>c==='create_world').length")
             self.assertEqual(builds, 2, "revisit must not build a new world (should attach)")
+
+            # A NEW prompt at the SAME image is a narrative update, not a revisit:
+            # it must REBUILD (create_world), never reopen the stale world.
+            page.evaluate("window.__MOCK_ATTACHES__ = 0")
+            page.evaluate(apply, ["scene A but the lights have gone out", img_a])
+            page.wait_for_function("(window.__MOCK_CMDS__||[]).filter(c=>c==='create_world').length >= 3", timeout=10000)
+            self.assertEqual(page.evaluate("(window.__MOCK_ATTACHES__||0)"), 0,
+                             "a changed prompt at the same image must rebuild, not attach the stale world")
         except Exception:
             print("\n=== REACTOR CONSOLE LOG (attach-revisit) ===\n" + self._dump_logs())
             raise

@@ -3351,17 +3351,17 @@
     // translates to the live model's native navigation (Happy Oyster / LingBot).
     function driveNative(st) {
       const R = window.ReactorRenderer;
-      let moved = false;
-      const push = (axis, val) => {
-        if (sent[axis] === val) return;
-        sent[axis] = val;
-        R.setAxis(axis, val); // logged authoritatively via the command_sent event
-        if (val !== "idle") moved = true;
-      };
-      push("longitudinal", st.longitudinal);
-      push("lateral", st.lateral);
-      push("lookH", st.lookH);
-      push("lookV", st.lookV);
+      const AXES = ["longitudinal", "lateral", "lookH", "lookV"];
+      // Diff the whole drive state and push it in ONE reconcile per tick (batched
+      // so a diagonal change never emits a transient stop→re-assert flurry).
+      const changed = AXES.some((k) => sent[k] !== st[k]);
+      if (changed) {
+        const axes = {};
+        AXES.forEach((k) => { sent[k] = st[k]; axes[k] = st[k]; });
+        if (R.setAxes) R.setAxes(axes);
+        else AXES.forEach((k) => R.setAxis(k, st[k])); // fallback for older renderer
+      }
+      const moved = AXES.some((k) => st[k] !== "idle");
       if (st.rot != null && Math.round(st.rot) !== Math.round(sent.rot == null ? -1 : sent.rot)) {
         sent.rot = st.rot;
         R.setRotationSpeed(st.rot);
@@ -3668,7 +3668,16 @@
       el.verbBar.classList.toggle("hidden", !on);
       el.verbBar.setAttribute("aria-hidden", on ? "false" : "true");
       if (on) render();
-      else { built = ""; el.verbBar.innerHTML = ""; if (heldBtn) { heldBtn = null; } }
+      else {
+        built = "";
+        el.verbBar.innerHTML = "";
+        heldBtn = null;
+        shiftHeld = false;
+        // Releasing the bar (Director mode, leaving realtime, etc.) must also
+        // release any verb still held in the renderer, or it stays engaged with
+        // no UI to clear it.
+        try { window.ReactorRenderer.setHeldVerb && window.ReactorRenderer.setHeldVerb(null); } catch (_) {}
+      }
     }
 
     // The live model reported a new verb set (travel_state) — rebuild.
