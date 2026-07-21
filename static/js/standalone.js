@@ -1436,9 +1436,10 @@
   // Renderer facade — swap between the classic still-image renderer and the
   // Reactor realtime world-model renderer without the rest of the game caring.
   // "image"   -> Gemini still per turn (default; existing behavior).
-  // "reactor" -> steer Reactor's LingBot World 2 video with the SAME per-turn
-  //              scene prompt the engine used to build the still. The still is
-  //              painted underneath as a graceful fallback if Reactor drops.
+  // "reactor" -> steer Reactor's Happy Oyster navigable world with the SAME
+  //              per-turn scene prompt the engine used to build the still (passed
+  //              as the world's first frame). The still is painted underneath as
+  //              a graceful fallback if Reactor drops.
   // Selection: ?renderer= query param > localStorage > "image".
   // ------------------------------------------------------------------
   const Renderer = {
@@ -1536,9 +1537,15 @@
           switch (name) {
             case "command_sent":
               if (d.command === "set_prompt" || d.command === "schedule_prompt" ||
-                  d.command === "set_shot" || d.command === "scene_cut")
-                RtLog.push("prompt", "\u2192 " + d.command, RtLog.clip(d.prompt, 160));
+                  d.command === "set_shot" || d.command === "scene_cut" || d.command === "create_world")
+                RtLog.push("prompt", "\u2192 " + d.command, RtLog.clip(d.prompt, 160) + (d.hasImage ? " [first frame]" : ""));
               else if (d.command === "set_image") RtLog.push("prompt", "\u2192 set_image", d.hasImage ? "[seed image]" : "");
+              else if (d.command === "start_travel") RtLog.push("status", "\u25B8 start travel");
+              else if (d.command === "move" || d.command === "look" ||
+                       d.command === "interact" || d.command === "stop") {
+                const nice = { move: "move", look: "look", interact: "interact", stop: "stop" }[d.command];
+                RtLog.push("prompt", "\u25B8 " + nice, d.value != null ? String(d.value) : "");
+              }
               else if (d.command === "set_move_longitudinal" || d.command === "set_move_lateral" ||
                        d.command === "set_look_horizontal" || d.command === "set_look_vertical" ||
                        d.command === "set_rotation_speed_deg") {
@@ -1551,6 +1558,7 @@
               }
               else RtLog.push(null, "\u2192 " + d.command);
               break;
+            case "world_state": RtLog.push("status", "\u25C6 world \u00B7 " + (d.phase || "?")); break;
             case "capabilities": RtLog.push("status", "\u25C6 model commands", RtLog.clip((d.commands || []).join(", "), 140)); break;
             case "tracks": {
               RtLog.push("status", "\u25C6 video out: " + ((d.outputs && d.outputs.length ? d.outputs.join(", ") : "?")) + " \u2192 " + (d.chosen || "main_video"));
@@ -1652,6 +1660,8 @@
                 set_shot: "\u25B8 Shot submitted",
                 scene_cut: "\u25B8 Cutting to new scene",
                 set_image: "\u25B8 Seed image sent",
+                create_world: "\u25B8 Building world",
+                start_travel: "\u25B8 Entering world",
                 start: "\u25B8 Starting stream",
                 reset: "\u25B8 Re-staging world",
                 pause: "\u25B8 Pausing stream",
@@ -1660,7 +1670,8 @@
               if (cmdNote) {
                 Ceremony.note(cmdNote);
                 if (d.command === "set_prompt" || d.command === "schedule_prompt" ||
-                    d.command === "set_shot" || d.command === "scene_cut" || d.command === "set_image")
+                    d.command === "set_shot" || d.command === "scene_cut" ||
+                    d.command === "set_image" || d.command === "create_world")
                   Ceremony.reach("world_update");
               }
               return;
@@ -1931,11 +1942,12 @@
       // the change lands where they aimed instead of across the whole frame.
       const anchor = (where && where.phrase) ? where.phrase : null;
       // Two framings for the injected beat:
-      //   • "event" (INTERACT): a world EVENT overlay, per the LingBot World 2
-      //     prompt guide (https://docs.reactor.inc/model-api-reference/lingbot/
-      //     prompt-guide). Firing an event on this model IS just a set_prompt with
-      //     the event described — but it only renders if it follows the guide's
-      //     rules, which the old beat broke and is why INTERACT looked dead:
+      //   • "event" (INTERACT): a world EVENT overlay for prompt-steered models
+      //     (LingBot/Helios). Happy Oyster instead takes a real interact({action})
+      //     verb (see commitScanAction), so this path is the fallback. Firing an
+      //     event via a prompt IS just a set_prompt with the event described — but
+      //     it only renders if it follows the model's prompt rules, which the old
+      //     beat broke and is why INTERACT looked dead:
       //       - Room-budget rule: "a two-word mention tucked into an otherwise
       //         dense prompt usually gets ignored." The event must be a FULL
       //         sentence-anchor with concrete physical detail (the caller's
@@ -3205,21 +3217,25 @@
   // ------------------------------------------------------------------
   // Drive joystick — the realtime "EXPLORE" instrument (drive + steer).
   //
-  // A classic first-person drive scheme over LingBot World 2's native axes:
+  // A classic first-person drive scheme over the live world model's NATIVE
+  // navigation. The renderer facade (setAxis/setRotationSpeed/stopMotion)
+  // presents one stable surface and translates to whichever model is live:
   //
-  //   • set_move_longitudinal  forward / back       (W / S · ↑ / ↓ · stick y)
-  //   • set_look_horizontal    yaw: look left/right  (A / D · ← → · stick x)
-  //   • set_rotation_speed_deg  how fast the look turns — a slow CONSTANT speed
-  //                             (proportional to stick push), never accelerating
+  //   • forward / back        (W / S · ↑ / ↓ · stick y)  -> Happy Oyster move
+  //                             Front/Back  (LingBot: set_move_longitudinal)
+  //   • yaw: look left/right   (A / D · ← → · stick x)    -> Happy Oyster look
+  //                             Mouse_Left/Right (LingBot: set_look_horizontal)
+  //   • turn speed             a slow CONSTANT rate proportional to stick push
+  //                             (LingBot set_rotation_speed_deg; Happy Oyster has
+  //                             no turn-rate knob, so it's ignored there)
   //
   // (No pitch / no strafe — up/down look felt disorienting, so the vertical axis
-  // is forward/back and the horizontal axis turns.) The axes are PERSISTENT: the
-  // model holds each value across chunks until changed, so we set on press /
-  // stick-push and idle on release (a matching keyup, or it keeps going). One
-  // stick (incl. touch) drives + steers. Models without these axes (Helios /
-  // blend-family) fall back to a prompt nudge. Only active in realtime video
-  // mode. Every command shows in the WORLD MODEL log (L) — the same reactor
-  // surface LingBot World 2 reads.
+  // is forward/back and the horizontal axis turns.) Movement is HELD state: the
+  // model keeps applying each direction until released, so we set on press /
+  // stick-push and release on let-go (a matching keyup, or it keeps going). One
+  // stick (incl. touch) drives + steers. Models without native navigation
+  // (Helios / blend-family) fall back to a prompt nudge. Only active in realtime
+  // video mode. Every command shows in the WORLD MODEL log (L).
   // ------------------------------------------------------------------
   const Movement = (function () {
     const RAMP_MS = 2600;            // (visual thrust ramp only; turn speed is constant)
@@ -3231,7 +3247,7 @@
     const ROT_MIN = 1.875;           // deg/latent-frame at a gentle push (2.5x the prior 0.75)
     const ROT_MAX = 5;               // deg/latent-frame at a full push (2.5x the prior 2; 0..30 allowed)
     const KEY_INTENSITY = 0.5;       // fixed push level for keyboard turning (no analog)
-    const FALLBACK_SEND_MS = 950;    // prompt-fallback (non-LingBot) re-steer cadence
+    const FALLBACK_SEND_MS = 950;    // prompt-fallback (non-native-nav) re-steer cadence
 
     // Keyboard → semantic drive tokens. W/S (and ↑/↓) move forward/back; A/D
     // (and ←/→) look left/right. null = not a drive key.
@@ -3301,7 +3317,8 @@
       return { longitudinal: lon, lookH: lh, rot: rot };
     }
 
-    // Push changed look axes to the world model (native LingBot control).
+    // Push changed drive axes to the world model via the renderer facade, which
+    // translates to the live model's native navigation (Happy Oyster / LingBot).
     function driveNative(st) {
       const R = window.ReactorRenderer;
       let moved = false;
@@ -6824,17 +6841,20 @@
     }
     // MOVE always RELOCATES you — a full change of scenery, not a camera drift
     // in place. "Cross over" is one of the engine's hard-transition triggers
-    // (is_hard_transition), so the turn cuts to a fresh scene composed around the
-    // object at your new vantage instead of merely advancing the camera.
-    return "Travel to the " + o + ", crossing over to it and arriving at a new vantage where the surroundings have completely changed.";
+    // (is_hard_transition matches the literal phrase), so the turn cuts to a
+    // fresh scene composed around the object at your new vantage instead of
+    // merely advancing the camera. The wording MUST contain "cross over"
+    // verbatim or the transition won't fire (that's why plain "move to the X"
+    // used to look static).
+    return "Travel to the " + o + ", cross over to it, and arrive at a new vantage where the surroundings have completely changed.";
   }
 
   // A short spatial anchor for a detected object, derived from its normalized
   // center — used to aim a realtime INTERACT event at the spot on screen where
   // the thing actually is (so the world reacts THERE, not across the whole frame).
   // Where the object sits, in PHYSICAL first-person space (not "upper-left of
-  // the frame" screen coordinates — LingBot renders a described world, not
-  // instructions about the picture). Feeds the realtime event overlay so the
+  // the frame" screen coordinates — the world model renders a described world,
+  // not instructions about the picture). Feeds the realtime event overlay so the
   // reaction reads as happening at a real place in the scene.
   function objectAnchorPhrase(obj) {
     const cx = typeof obj.cx === "number" ? obj.cx : 0.5;
@@ -6865,21 +6885,27 @@
       icon: '<svg class="scan-action-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2v20M2 12h20"/><path d="M9 5l3-3 3 3M9 19l3 3 3-3M5 9l-3 3 3 3M19 9l3 3-3 3"/></svg>',
     },
     {
-      // INTERACT injects a LIVE event into the running world model — a realtime
-      // prompt hot-swap on the current stream (no backend turn, no scene change)
-      // so the world reacts to the poke NOW, right where the object sits. Falls
-      // back to a full turn when realtime isn't live (still mode).
+      // INTERACT injects a LIVE interaction into the running world model — on
+      // Happy Oyster a real interact({action}) verb command (the world reacts in
+      // place, no rebuild); on prompt-steered models a realtime prompt-event
+      // hot-swap. Either way: no backend turn, no scene change, the world reacts
+      // to the poke NOW where the object sits. Falls back to a full turn when
+      // realtime isn't live (still mode).
       id: "interact", label: "INTERACT", title: "Interact with",
       realtime: true,
       phrase: (o) => "Interact with the " + o + ".",
-      // The LIVE world model needs a full, concrete PHYSICAL event, not "interact
-      // with the X" (too abstract to draw) and not a short tag (the LingBot prompt
-      // guide's room-budget rule: a brief mention gets drowned out by the dense
-      // scene base and never renders). This is a proper sentence-anchor: hands
-      // enter frame and physically work the object, and the object responds with
-      // detailed, additive motion — enough weight to actually show up. Used only
-      // for the realtime set_prompt steer; the plain `phrase` above is the clean
-      // intent handed to the consequence LLM on the full-turn fallback.
+      // Happy Oyster interaction verb — a concise action string handed to
+      // interact({action}). "Any verb string is accepted" (the built-ins are
+      // Jump/Attack/Crouch/Sprint), so we name the object being worked.
+      interactVerb: (o) => "interact with the " + o,
+      // Prompt-steered models (LingBot/Helios) instead need a full, concrete
+      // PHYSICAL event as a sentence-anchor, not "interact with the X" (too
+      // abstract to draw) and not a short tag (a brief mention gets drowned out
+      // by the dense scene base and never renders). Hands enter frame and
+      // physically work the object, and the object responds with detailed,
+      // additive motion — enough weight to actually show up. Used only for the
+      // realtime prompt-event steer; the plain `phrase` above is the clean intent
+      // handed to the consequence LLM on the full-turn fallback.
       realtimePhrase: (o) => "your hands reach into view and take hold of the " + o + ", and it responds with an unmistakable physical change \u2014 the " + o + " shifts and moves, swinging, opening, sliding, or activating, its surfaces catching the light as loose dust and small debris stir into the air around it",
       icon: '<svg class="scan-action-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 13V5a2 2 0 0 1 4 0v6"/><path d="M12 11V4a2 2 0 0 1 4 0v7"/><path d="M16 11V7a2 2 0 0 1 4 0v8a6 6 0 0 1-6 6h-2a6 6 0 0 1-5-2.7l-2.8-4a2 2 0 0 1 3.1-2.5L9 14"/></svg>',
     },
@@ -7056,12 +7082,21 @@
     // realtime isn't live (still mode), fall through to a full turn so INTERACT
     // still does something.
     if (action.realtime) {
-      // Steer with the CONCRETE, renderable reaction phrase (not the abstract
-      // "interact with the X"), framed as a world EVENT so the live model draws
-      // the object responding right where it sits — the fix for INTERACT looking
-      // dead even though it was pinging the model all along.
-      const rtText = action.realtimePhrase ? action.realtimePhrase(obj.label) : phrase;
-      const steered = Renderer.steerRealtime(rtText, { phrase: objectAnchorPhrase(obj), kind: "event" });
+      // Prefer a REAL interaction verb command when the live model takes them
+      // (Happy Oyster): the world reacts in place with no rebuild. Otherwise
+      // steer with the CONCRETE, renderable reaction phrase (not the abstract
+      // "interact with the X"), framed as a world EVENT so a prompt-steered model
+      // (LingBot/Helios) draws the object responding right where it sits.
+      let steered = false;
+      const canVerb = Renderer.reactorAvailable() &&
+        window.ReactorRenderer.canInteract && window.ReactorRenderer.canInteract();
+      if (canVerb && action.interactVerb) {
+        steered = window.ReactorRenderer.interact(action.interactVerb(obj.label));
+      }
+      if (!steered) {
+        const rtText = action.realtimePhrase ? action.realtimePhrase(obj.label) : phrase;
+        steered = Renderer.steerRealtime(rtText, { phrase: objectAnchorPhrase(obj), kind: "event" });
+      }
       if (steered) {
         // Prove the press INSTANTLY — a double-ring "event" pulse + tag pop —
         // regardless of when (or whether) the world model actually reacts.

@@ -1,30 +1,32 @@
 /* ============================================================
-   SOMEWHERE // Reactor realtime renderer (LingBot World 2)
+   SOMEWHERE // Reactor realtime renderer (Happy Oyster + legacy models)
 
-   Drives Reactor's LingBot World 2 real-time world model as an alternative
-   scene renderer. We steer the live video with a clean, video-model-appropriate
-   scene prompt (built server-side by build_realtime_prompt) and condition the
-   world model on the SAME still the game generated so the video matches our
-   intended composition.
+   Drives Reactor's real-time world models as an alternative scene renderer. The
+   DEFAULT model is Happy Oyster — a prompt-to-world model: a paragraph of text
+   (built server-side by build_realtime_prompt), optionally anchored by a
+   first-frame image (the SAME still the game generated), becomes a navigable
+   place you then TRAVEL through in first person. Older models (LingBot World 2,
+   Helios, …) remain selectable; each protocol family has its own driver.
 
-   Wire protocol (per the LingBot World 2 schema reference):
-     • establishing shot / new game:
-         uploadFile(still) -> set_image({image}) -> [await image_accepted]
-           -> set_prompt({prompt}) -> start
-       (start requires BOTH a prompt and a reference image; waiting for
-        image_accepted means chunk 0 renders from the seed still)
-     • NEW guide image (a fresh still — every turn that draws one, or a
-       location change / hard_transition):
-         reset  -> uploadFile(new still) -> set_image -> set_prompt -> start
-       LingBot World 2's reference image is LOCKED once a run starts — per the
-       schema, "changes during generation have no effect until reset is issued
-       and start is called again." So the ONLY way to force the live video onto
-       a new guide image at full strength (strength 1 — chunk 0 renders directly
-       from that frame) is a fresh stage. We re-anchor on EVERY new guide image,
-       not just location changes, so the video keeps blending from vignette to
-       vignette instead of drifting off the still the engine actually drew.
-     • same scene, prompt-only re-steer (e.g. instant action injection, no new
-       still): set_prompt({prompt})   (hot-swap; lands on the next chunk)
+   Wire protocol by family:
+     • "happy_oyster" (Happy Oyster — DEFAULT): two-phase, build then travel.
+         create_world({prompt, first_frame_image_url?, perspective}) ->
+           [await world_state ready] -> start_travel
+       The world is FIXED once built — you steer the live stream with held
+       movement (move: Front/Back/Left/Right), look (look: Mouse_Up/Down/Left/
+       Right) and interaction verbs (interact: {action}); `stop` releases every
+       held control. There is NO live prompt edit in the Adventure experience,
+       so a NEW scene (a fresh still, a location change / hard_transition, or a
+       materially new prompt) is a NEW WORLD: we rebuild via create_world +
+       start_travel, re-anchoring on the new first-frame image every turn.
+     • "seed_locked" (LingBot World 2 / LingBot): image-conditioned; the
+       reference image is LOCKED once a run starts, so a new guide image forces a
+       fresh stage. uploadFile(still) -> set_image -> [await image_accepted] ->
+       set_prompt -> start; a new guide image re-stages via reset. A same-scene
+       prompt-only re-steer hot-swaps with set_prompt.
+     • "blend" (Helios / LongLive / SANA, and the default for anything new):
+       text/image-to-video; a new guide image blends in-stream (set_image, no
+       reset) and prompts re-steer live (set_prompt / schedule_prompt).
 
    The Reactor API key never touches the browser: we mint a short-lived JWT via
    our own POST /api/reactor/token proxy. The SDK loads from an ESM CDN (pinned)
@@ -51,24 +53,37 @@
   // World models are DATA, not hard-wired code paths. Each model maps to a
   // DRIVER *family* (its wire protocol) — not a per-id driver — so ANY Reactor
   // model, including one that ships tomorrow, works with no code change:
+  //   • "happy_oyster" (Happy Oyster — DEFAULT): prompt-to-world; build a world
+  //     (create_world) then travel it (start_travel). Steered by held movement/
+  //     look + interaction verbs; a new scene rebuilds the world.
   //   • "seed_locked" (LingBot): reference image locked once a run starts, so a
   //     new guide image forces a fresh stage (reset + re-establish).
-  //   • "blend" (Helios, and the DEFAULT for anything new/unknown): text/image
-  //     to video; a new guide image blends in-stream with no reset, prompts
-  //     re-steer live.
+  //   • "blend" (Helios, and the flexible fallback for anything new/unknown):
+  //     text/image to video; a new guide image blends in-stream with no reset,
+  //     prompts re-steer live.
   // The model list + protocols come from /api/reactor/config (which itself is
   // env-driven and open to custom models); these are just pre-config defaults.
-  const FALLBACK_MODEL_ID = "lingbot-world-2";
-  const FALLBACK_MODEL = "reactor/lingbot-world-2";
+  const FALLBACK_MODEL_ID = "happy-oyster";
+  const FALLBACK_MODEL = "reactor/happy-oyster";
   const FALLBACK_FAMILY = "blend"; // the flexible family unknown models default to
   const SDK_PREFIX = "reactor/";   // how a bare model id becomes an SDK name
   const DEFAULT_MODELS = [
+    { id: "happy-oyster", label: "Happy Oyster", sdk_name: "reactor/happy-oyster", requiresSeedImage: false, protocol: "happy_oyster" },
     { id: "lingbot-world-2", label: "LingBot World 2", sdk_name: "reactor/lingbot-world-2", requiresSeedImage: true, protocol: "seed_locked" },
     { id: "helios", label: "Helios", sdk_name: "reactor/helios", requiresSeedImage: false, protocol: "blend" },
     { id: "lingbot", label: "LingBot", sdk_name: "reactor/lingbot", requiresSeedImage: true, protocol: "seed_locked" },
     { id: "longlive-v2", label: "LongLive V2", sdk_name: "reactor/longlive-v2", requiresSeedImage: false, protocol: "blend" },
     { id: "sana-streaming", label: "Sana Streaming", sdk_name: "reactor/sana-streaming", requiresSeedImage: false, protocol: "blend" },
   ];
+  // Happy Oyster session shape (fixed for a session's lifetime). Adventure =
+  // walk/look/interact (our first-person survival game); first_person keeps the
+  // camcorder POV the whole experience is built around. Overridable for
+  // experiments via window globals.
+  const HAPPY_OYSTER_MODE = (typeof window !== "undefined" && window.__HAPPY_OYSTER_MODE__) || "adventure";
+  const HAPPY_OYSTER_PERSPECTIVE = (typeof window !== "undefined" && window.__HAPPY_OYSTER_PERSPECTIVE__) || "first_person";
+  // How long to wait for create_world to report a ready world_state before we
+  // start travelling anyway (build is a short generation step).
+  const WORLD_BUILD_TIMEOUT_MS = (typeof window !== "undefined" && window.__HAPPY_OYSTER_BUILD_TIMEOUT_MS__) || 15000;
   // How long to wait for the seed image to decode before starting anyway.
   const IMAGE_ACCEPT_TIMEOUT_MS = 6000;
   // After we issue `start`, how long to wait for real decoded video frames
@@ -148,6 +163,13 @@
     // it after a (re)start (a re-anchor issues reset, which clears the model's
     // copy). See setAxis() / applyMoveState().
     move: { longitudinal: "idle", lateral: "idle", lookH: "idle", lookV: "idle", rotationDeg: null },
+    // Happy Oyster travel state. Its move/look are HELD single-direction
+    // commands (only `stop` releases them), so we track the last direction we
+    // actually sent per channel and diff against the desired axes.
+    hoTraveling: false,        // start_travel issued and the world is streaming
+    hoSentMove: null,          // last move {direction} sent (Front/Back/Left/Right)
+    hoSentLook: null,          // last look {direction} sent (Mouse_*)
+    hoVerbs: [],               // interaction verbs the current world advertises
     cfg: { model_name: FALLBACK_MODEL, enabled: false },
     connecting: false,
     status: "off",
@@ -854,14 +876,32 @@
     "set_look_horizontal", "set_look_vertical",
     "set_rotation_speed_deg", "set_camera_pose",
   ]);
-  function familyDrivesCamera() { return familyFor(rstate.modelId) === "seed_locked"; }
+  // Happy Oyster's typed command surface. These are always allowed for the
+  // happy_oyster family — a build/travel/steer command must never be suppressed
+  // by a short or omitted capabilities payload.
+  const HAPPY_OYSTER_COMMANDS = new Set([
+    "create_world", "attach_world", "start_travel", "disconnect",
+    "move", "look", "interact", "stop",
+    "instruct", "pause", "resume", "rewind",
+  ]);
+  function isHappyOyster() { return familyFor(rstate.modelId) === "happy_oyster"; }
+  // Families that navigate the camera natively (vs a prompt-nudge fallback):
+  // LingBot's movement axes and Happy Oyster's held move/look both qualify.
+  function familyDrivesCamera() {
+    const f = familyFor(rstate.modelId);
+    return f === "seed_locked" || f === "happy_oyster";
+  }
 
   async function cmd(name, data) {
     // Never send a command the model doesn't advertise — skip it cleanly (and
     // announce the skip) instead of triggering a command_error round-trip. But
-    // the LingBot movement axes are always allowed for the LingBot family even
-    // if capabilities didn't list them (the docs guarantee them).
-    if (!supportsCmd(name) && !(MOVE_COMMANDS.has(name) && familyDrivesCamera())) {
+    // a family's own native commands are always allowed even if capabilities
+    // didn't list them (the LingBot movement axes; Happy Oyster's build/travel/
+    // steer commands) — the docs guarantee them for those models.
+    const familyNative =
+      (MOVE_COMMANDS.has(name) && familyDrivesCamera()) ||
+      (HAPPY_OYSTER_COMMANDS.has(name) && isHappyOyster());
+    if (!supportsCmd(name) && !familyNative) {
       log("skip unsupported command:", name);
       emitEvent("command_skipped", { command: name });
       return;
@@ -876,11 +916,17 @@
       else if (typeof data.look_horizontal === "string") value = data.look_horizontal;
       else if (typeof data.look_vertical === "string") value = data.look_vertical;
       else if (typeof data.rotation_speed_deg === "number") value = data.rotation_speed_deg + "\u00B0/f";
+      // Happy Oyster held move/look carry a `direction`; interact carries an
+      // `action` verb. Surface those so the WORLD MODEL log reads cleanly.
+      else if (typeof data.direction === "string") value = data.direction;
+      else if (typeof data.action === "string") value = data.action;
     }
     emitEvent("command_sent", {
       command: name,
       prompt: (data && typeof data.prompt === "string") ? data.prompt : null,
-      hasImage: !!(data && data.image),
+      // Happy Oyster anchors on first_frame_image_url (a URL, not an uploaded
+      // FileRef); count either as "carries an image" for the inspector.
+      hasImage: !!(data && (data.image || data.first_frame_image_url)),
       value: value,
     });
     return rstate.reactor.sendCommand(name, data || {});
@@ -1040,11 +1086,79 @@
     return true;
   }
 
+  // Resolve a guide still to an absolute, publicly reachable URL for Happy
+  // Oyster's first_frame_image_url (the model fetches it server-side, so a
+  // relative path won't do). data: URLs (used by tests/mocks) pass through.
+  function absoluteImageUrl(url) {
+    if (!url) return "";
+    if (/^(https?:|data:)/i.test(url)) return url;
+    try { return new URL(url, location.href).href; } catch (_) { return url; }
+  }
+
+  // Happy Oyster: prompt-to-world. Build a world from the scene prompt (anchored
+  // by our still as first_frame_image_url), wait for it to be ready, then travel
+  // it. The live stream is then driven by held movement/look + interaction verbs
+  // (see the camera-drive section) — there is no live prompt edit in Adventure.
+  async function buildHappyOysterWorld(s) {
+    // New stage boundary: invalidate any seed still decoding from a prior world.
+    rstate.seedToken++;
+    if (!rstate.freezeActive && s.imageUrl) paintSeedToFreeze(s.imageUrl);
+    rstate.stagingGuideUrl = s.imageUrl || null;
+    rstate.hoTraveling = false;
+    const payload = { prompt: s.prompt, perspective: HAPPY_OYSTER_PERSPECTIVE };
+    const ff = absoluteImageUrl(s.imageUrl);
+    if (ff) payload.first_frame_image_url = ff;
+    // create_world resolves (per the docs) once the world is ready to enter,
+    // reported by a world_state message — wait for it so start_travel enters a
+    // built world instead of racing an empty one.
+    const worldReady = waitForEvent("world_ready", WORLD_BUILD_TIMEOUT_MS);
+    await cmd("create_world", payload);
+    await worldReady;
+    await cmd("start_travel", {});
+    rstate.started = true;
+    rstate.hoTraveling = true;
+    rstate.lastPrompt = s.prompt;
+    if (s.imageUrl) rstate.lastImageUrl = s.imageUrl;
+    emitEvent("stage_started", { prompt: s.prompt });
+    applyMoveState(); // re-assert any held camera drive onto the fresh world
+    armFreezeReveal();
+    armRevealWatchdog();
+    log("happy-oyster: world built + travelling (" + HAPPY_OYSTER_MODE + "/" + HAPPY_OYSTER_PERSPECTIVE + ")");
+    return true;
+  }
+
+  async function establishHappyOyster(s) { return buildHappyOysterWorld(s); }
+
+  async function applyRunningHappyOyster(s, ctx) {
+    // Happy Oyster worlds are FIXED once built (Adventure has no live prompt
+    // edit), so any new scene — a fresh guide image, a hard transition, or a
+    // materially changed prompt — is a NEW WORLD. Fade the scene down for the
+    // deliberate "moment of pause" beat, freeze the last live frame beneath as
+    // the safety floor, release held controls, and rebuild.
+    const rebuild = ctx.newGuideImage || s.hardTransition || (s.prompt !== rstate.lastPrompt);
+    if (!rebuild) return true; // nothing materially changed — keep travelling
+    beginSceneFade();
+    captureVideoToFreeze();
+    try { await cmd("stop", {}); } catch (_) {}
+    rstate.hoSentMove = null;
+    rstate.hoSentLook = null;
+    rstate.started = false;
+    rstate.hoTraveling = false;
+    rstate.lastPrompt = null;
+    const ok = await buildHappyOysterWorld(s);
+    if (ok) log(s.hardTransition ? "happy-oyster: hard transition -> new world" : "happy-oyster: rebuilt world on new scene");
+    // Couldn't rebuild — lift the fade so the frozen last frame stays visible.
+    else clearSceneFade();
+    return ok;
+  }
+
   // Drivers are keyed by PROTOCOL FAMILY, not by model id, so every current and
-  // future Reactor model maps onto one of these without a bespoke driver. The
-  // LingBot pair is the "seed_locked" family; the Helios pair is "blend" and is
-  // also the default any unknown/new model falls back to.
+  // future Reactor model maps onto one of these without a bespoke driver. Happy
+  // Oyster is its own build/travel family; the LingBot pair is "seed_locked";
+  // the Helios pair is "blend" and is also the default any unknown/new model
+  // falls back to.
   const DRIVERS = {
+    "happy_oyster": { establish: establishHappyOyster, applyRunning: applyRunningHappyOyster },
     "seed_locked": { establish: establishLingbot, applyRunning: applyRunningLingbot },
     "blend": { establish: establishHelios, applyRunning: applyRunningHelios },
   };
@@ -1125,6 +1239,32 @@
     // Track the model's chunk cursor so a look-ahead re-steer (schedule_prompt)
     // can target a FUTURE chunk on models that lack a live set_prompt.
     if (t === "state" && typeof d.current_chunk === "number") rstate.currentChunk = d.current_chunk;
+    // Happy Oyster: world_state is the authoritative snapshot. create_world
+    // resolves once the world is ready to enter — anything past the build phases
+    // ("no_world"/"creating"/"building") means we can start_travel. When ready,
+    // announce the anchoring first-frame image the same way seed models announce
+    // an accepted guide image.
+    if (t === "world_state") {
+      const phase = d && d.phase;
+      const stillBuilding = phase === "no_world" || phase === "creating" || phase === "building";
+      if (!stillBuilding) {
+        resolveWaiters("world_ready", d);
+        const url = rstate.stagingGuideUrl || rstate.lastImageUrl || null;
+        if (url) {
+          rstate.guideImageUrl = url;
+          rstate.stagingGuideUrl = null;
+          emitGuideImage(url, d);
+        }
+      }
+    }
+    // Happy Oyster: travel_state advertises this world's interaction verbs
+    // (character + environment actions) for interact({action}).
+    else if (t === "travel_state") {
+      const verbs = []
+        .concat(Array.isArray(d.character_actions) ? d.character_actions : [])
+        .concat(Array.isArray(d.environment_actions) ? d.environment_actions : []);
+      if (verbs.length) rstate.hoVerbs = verbs.map(String);
+    }
     // LingBot reports image_accepted/prompt_accepted; Helios reports
     // image_set/prompt_scheduled/prompt_switched. Map both onto the same
     // internal waiters so the command flows are model-agnostic.
@@ -1209,6 +1349,9 @@
     rstate.ready = false;
     rstate.started = false;
     rstate.paused = false;
+    rstate.hoTraveling = false;
+    rstate.hoSentMove = null;
+    rstate.hoSentLook = null;
     rstate.lastPrompt = null;
     rstate.lastImageUrl = null;
     rstate.lastRef = null;
@@ -1276,6 +1419,7 @@
     rstate.ready = false;
     rstate.started = false;
     rstate.paused = false;
+    rstate.hoTraveling = false;
     rstate.pending = null;
     rstate.lastPrompt = null;
     rstate.lastImageUrl = null;
@@ -1331,9 +1475,12 @@
     clearSceneFade(); // a fresh run wipes clean — no lingering fade veil
     const v = getVideo();
     if (v) v.classList.add("hidden");
+    rstate.hoTraveling = false;
     if (rstate.status === "live") setStatus("connecting");
     if (!rstate.reactor || !rstate.ready) return;
-    try { await cmd("reset", {}); } catch (err) { log("reset failed", err); }
+    // Happy Oyster has no `reset`; releasing held controls (`stop`) is the clean
+    // wipe — the fresh run builds a brand-new world. Other families reset.
+    try { await cmd(isHappyOyster() ? "stop" : "reset", {}); } catch (err) { log("reset failed", err); }
   }
 
   async function pause() {
@@ -1401,12 +1548,21 @@
     } catch (e) { log("captureRegion failed", e); return null; }
   }
 
-  // ── Live camera drive (LingBot World 2 native movement) ─────────────────────
-  // The world model is navigable in real time through persistent-state command
-  // axes — this is the channel that actually MOVES the camera (a set_prompt
-  // "camera moves" beat does not). Each axis holds its value across chunks until
-  // changed, so we drive it exactly like a game: set on keydown / stick push,
-  // idle on release. See the LingBot World 2 schema reference.
+  // ── Live camera drive (native world-model navigation) ───────────────────────
+  // The world model is navigable in real time — this is the channel that
+  // actually MOVES the camera (a prompt "camera moves" beat does not). Two
+  // native schemes exist, and setAxis()/stopMotion() present ONE stable surface
+  // over both so the standalone joystick/WSAD code never has to care which model
+  // is live:
+  //   • LingBot (seed_locked): persistent-state AXES. Each axis holds its value
+  //     across chunks until changed — set on press, "idle" on release.
+  //     set_move_longitudinal / set_move_lateral / set_look_horizontal /
+  //     set_look_vertical, plus set_rotation_speed_deg for turn rate.
+  //   • Happy Oyster (happy_oyster): HELD single-direction move + look commands
+  //     (move: Front/Back/Left/Right; look: Mouse_Up/Down/Left/Right). They keep
+  //     applying until released, and only a global `stop` releases them — so we
+  //     diff the desired axes into at-most-one move + one look direction and
+  //     re-issue `stop` when a held channel goes idle. (No turn-rate knob.)
   const AXIS_CMD = {
     longitudinal: { cmd: "set_move_longitudinal", param: "move_longitudinal" },
     lateral:      { cmd: "set_move_lateral",      param: "move_lateral" },
@@ -1414,22 +1570,68 @@
     lookV:        { cmd: "set_look_vertical",     param: "look_vertical" },
   };
 
-  // Does the active world model expose the navigable movement axes? LingBot /
-  // LingBot World 2 do; blend-family models (Helios, LongLive, SANA) generally
-  // don't, so callers fall back to a prompt nudge there. When capabilities
-  // haven't arrived yet we optimistically say yes (they load before the first
-  // command, and cmd() skips anything genuinely unsupported).
+  // Map the abstract axis values the standalone layer sends onto Happy Oyster's
+  // held move / look directions. Only one move and one look direction can be
+  // held at a time; longitudinal wins over strafe if both are somehow set.
+  function hoMoveDirection() {
+    const m = rstate.move;
+    if (m.longitudinal === "forward") return "Front";
+    if (m.longitudinal === "back") return "Back";
+    if (m.lateral === "left") return "Left";
+    if (m.lateral === "right") return "Right";
+    return null;
+  }
+  function hoLookDirection() {
+    const m = rstate.move;
+    if (m.lookH === "left") return "Mouse_Left";
+    if (m.lookH === "right") return "Mouse_Right";
+    if (m.lookV === "up") return "Mouse_Up";
+    if (m.lookV === "down") return "Mouse_Down";
+    return null;
+  }
+
+  // Reconcile the desired axes with what Happy Oyster is currently holding.
+  // Because `stop` releases EVERY held control, when any held channel drops we
+  // stop once and re-assert whatever is still held.
+  function pushHappyOysterMotion() {
+    if (!rstate.reactor || !rstate.ready || !rstate.started) return;
+    const mv = hoMoveDirection();
+    const lk = hoLookDirection();
+    if (mv === rstate.hoSentMove && lk === rstate.hoSentLook) return;
+    if (!mv && !lk) {
+      if (rstate.hoSentMove || rstate.hoSentLook) cmd("stop", {});
+      rstate.hoSentMove = null; rstate.hoSentLook = null;
+      return;
+    }
+    // A previously-held channel just went idle (but not everything): `stop`
+    // clears both, then we re-assert the survivor(s) below.
+    if ((rstate.hoSentMove && !mv) || (rstate.hoSentLook && !lk)) {
+      cmd("stop", {});
+      rstate.hoSentMove = null; rstate.hoSentLook = null;
+    }
+    if (mv && mv !== rstate.hoSentMove) { cmd("move", { direction: mv }); rstate.hoSentMove = mv; }
+    if (lk && lk !== rstate.hoSentLook) { cmd("look", { direction: lk }); rstate.hoSentLook = lk; }
+  }
+
+  // Does the active world model navigate the camera natively? Happy Oyster and
+  // LingBot / LingBot World 2 do; blend-family models (Helios, LongLive, SANA)
+  // generally don't, so callers fall back to a prompt nudge there. When
+  // capabilities haven't arrived yet we optimistically say yes (they load before
+  // the first command, and cmd() skips anything genuinely unsupported).
   function motionSupported() {
-    // LingBot (seed_locked) family always drives the camera natively; other
-    // families only if they actually advertise the axes.
     return familyDrivesCamera() || !knownCaps() || rstate.commandSet.has("set_move_longitudinal");
   }
 
-  // Re-assert the currently-held axes after a (re)start. A per-turn re-anchor
-  // issues `reset`, which clears the model's movement state, so if the player is
-  // still holding a direction we must send it again for the fresh stage.
+  // Re-assert the currently-held drive after a (re)start / world rebuild, which
+  // clears the model's movement state — so if the player is still holding a
+  // direction we send it again for the fresh stage/world.
   function applyMoveState() {
     if (!rstate.reactor || !rstate.ready || !rstate.started) return;
+    if (isHappyOyster()) {
+      rstate.hoSentMove = null; rstate.hoSentLook = null; // fresh world holds nothing
+      pushHappyOysterMotion();
+      return;
+    }
     const m = rstate.move;
     if (typeof m.rotationDeg === "number") cmd("set_rotation_speed_deg", { rotation_speed_deg: m.rotationDeg });
     Object.keys(AXIS_CMD).forEach((k) => {
@@ -1440,15 +1642,17 @@
     });
   }
 
-  // Set one movement/look axis. Deduped (persistent state — no point resending
-  // the same value) and deferred until generation is running (the value is
-  // remembered and re-applied by applyMoveState() once it starts).
+  // Set one movement/look axis. Deduped (no point resending the same value) and
+  // deferred until generation is running (the value is remembered and re-applied
+  // by applyMoveState() once it starts). Translates to the active model's native
+  // scheme — LingBot axes or Happy Oyster held move/look.
   function setAxis(axis, value) {
     const a = AXIS_CMD[axis];
     if (!a) return false;
     value = value || "idle";
     if (rstate.move[axis] === value) return true;
     rstate.move[axis] = value;
+    if (isHappyOyster()) { pushHappyOysterMotion(); return true; }
     if (!rstate.reactor || !rstate.ready || !rstate.started) return false;
     const d = {}; d[a.param] = value;
     cmd(a.cmd, d);
@@ -1456,7 +1660,10 @@
   }
 
   // Rotation speed (deg/latent-frame, 0..30) — how fast a held look axis turns.
+  // Happy Oyster has no turn-rate knob (its look is a plain held direction), so
+  // this is a no-op there.
   function setRotationSpeed(deg) {
+    if (isHappyOyster()) return;
     deg = Math.max(0, Math.min(30, Number(deg) || 0));
     // Quantize a little so tiny analog jitters don't spam identical commands.
     deg = Math.round(deg * 2) / 2;
@@ -1466,18 +1673,38 @@
     cmd("set_rotation_speed_deg", { rotation_speed_deg: deg });
   }
 
-  // Idle every axis — the camera comes to rest (persistent state means we MUST
-  // send idle or it keeps moving after the player lets go).
+  // Idle every axis — the camera comes to rest (held state means we MUST release
+  // or it keeps moving after the player lets go).
   function stopMotion() {
+    if (isHappyOyster()) {
+      rstate.move.longitudinal = "idle"; rstate.move.lateral = "idle";
+      rstate.move.lookH = "idle"; rstate.move.lookV = "idle";
+      pushHappyOysterMotion(); // no held direction remains -> emits a single stop
+      return;
+    }
     setAxis("longitudinal", "idle");
     setAxis("lateral", "idle");
     setAxis("lookH", "idle");
     setAxis("lookV", "idle");
   }
 
+  // Perform an interaction verb (Happy Oyster). The built-in verbs are Jump,
+  // Attack, Crouch and Sprint; a world may advertise more via travel_state (see
+  // getInteractVerbs). Any verb string is accepted. Returns true if sent.
+  function interact(action) {
+    action = (action == null ? "" : String(action)).trim();
+    if (!action) return false;
+    if (!isHappyOyster()) return false;
+    if (!rstate.reactor || !rstate.ready || !rstate.started) return false;
+    cmd("interact", { action: action });
+    return true;
+  }
+
   // Drop the tracked drive state (a fresh run / teardown starts from rest).
   function resetMoveState() {
     rstate.move = { longitudinal: "idle", lateral: "idle", lookH: "idle", lookV: "idle", rotationDeg: null };
+    rstate.hoSentMove = null;
+    rstate.hoSentLook = null;
   }
 
   window.ReactorRenderer = {
@@ -1495,6 +1722,14 @@
     beginSceneFade, endSceneFade,
     // Live camera drive (see above): the navigable-video control surface.
     motionSupported, setAxis, setRotationSpeed, stopMotion,
+    // Interaction verbs (Happy Oyster): interact(action) holds an interaction
+    // (Jump/Attack/Crouch/Sprint or a world-advertised verb). canInteract()
+    // tells the standalone layer whether the live model takes verbs (so it can
+    // route INTERACT to a real command instead of a prompt nudge), and
+    // getInteractVerbs() exposes the verbs the current world advertises.
+    interact,
+    canInteract: () => isHappyOyster() && rstate.started,
+    getInteractVerbs: () => (rstate.hoVerbs || []).slice(),
     // Register a custom / brand-new Reactor model at runtime (from the UI's
     // "add model" field), then it's selectable like any other. Returns the id.
     addModel: (id, label, opts) => {

@@ -1,20 +1,22 @@
 """
 test_movement_mode_e2e.py — Playwright end-to-end test for the WSAD / joystick
-MOVEMENT ("explore") mode that steers the realtime (Reactor / LingBot World 2)
-video like a first-person camera.
+MOVEMENT ("explore") mode that navigates the realtime (Reactor Happy Oyster)
+world like a first-person camera.
 
 It reuses the same harness as test_realtime_e2e.py — run the REAL client JS
 against a MOCK Reactor SDK — and proves the movement instrument end to end:
 
   * The joystick is the CENTER of the action cluster in realtime video mode,
     with the ACT hub pushed to the LEFT and the PHOTO hub to the RIGHT.
-  * Holding W (keyboard) re-steers the LIVE stream with a first-person camera
-    beat ("Camera: the camera pushes forward…") — a prompt hot-swap, no new
-    guide image — and releasing it brings the camera to a halt.
-  * A / S / D (and the arrow keys) drive the other headings.
+  * Holding W (keyboard) drives the LIVE world with Happy Oyster's held move
+    command (move {direction:"Front"}) — a native navigation command, no world
+    rebuild — and releasing it stops (releases held controls).
+  * A / S / D (and the arrow keys) drive the other headings — S=Back, A/D turn
+    the view (look Mouse_Left/Mouse_Right).
   * Dragging the stick with a pointer (mouse/touch) in a direction moves that
-    way (360°), and the steers land in the same reactor set_prompt log the world
-    model reads.
+    way, and the commands land in the same reactor command log the world reads.
+  * The legacy LingBot axes (set_move_*/set_rotation_speed_deg) are still driven
+    when that model is selected.
   * In still-image mode the joystick is hidden and the keys do not steer.
 
 Run with:
@@ -130,9 +132,15 @@ class TestMovementMode(unittest.TestCase):
     def _dump_logs(self):
         return "\n".join(self._logs[-60:])
 
-    def _boot_live(self, page):
-        """Load /realtime, connect the mock world model, and reveal live video."""
-        page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
+    def _boot_live(self, page, model=None):
+        """Load /realtime, connect the mock world model, and reveal live video.
+
+        `model` optionally forces a specific world model (via ?model=), e.g.
+        "lingbot-world-2" to exercise the legacy axis navigation."""
+        url = f"{self.base_url}/realtime"
+        if model:
+            url += f"?model={model}"
+        page.goto(url, wait_until="domcontentloaded")
         page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isReady() === true", timeout=15000)
         page.wait_for_function("window.__Renderer !== undefined", timeout=10000)
         page.evaluate(SEED_AND_SPY, TINY_PNG_DATA_URL)
@@ -157,32 +165,33 @@ class TestMovementMode(unittest.TestCase):
         )
 
     def test_wasd_keys_drive_forward_back_and_look(self):
-        """The drive scheme: W/S (and ↑/↓) move forward/back
-        (set_move_longitudinal), A/D (and ←/→) look left/right
-        (set_look_horizontal). Each fires the native command and idles on
-        release; nothing is faked with set_prompt."""
+        """The drive scheme on Happy Oyster: W/S (and ↑/↓) move forward/back
+        (move Front/Back), A/D (and ←/→) turn the view (look
+        Mouse_Left/Mouse_Right). Each fires the native held command and releases
+        (stop) on key-up; nothing is faked with set_prompt."""
         page = self._new_realtime_page()
         try:
             self._boot_live(page)
-            # key -> (command, param, held value)
+            # key -> (command, param, held direction)
             cases = [
-                ("w", "set_move_longitudinal", "move_longitudinal", "forward"),
-                ("s", "set_move_longitudinal", "move_longitudinal", "back"),
-                ("a", "set_look_horizontal", "look_horizontal", "left"),
-                ("d", "set_look_horizontal", "look_horizontal", "right"),
-                ("ArrowUp", "set_move_longitudinal", "move_longitudinal", "forward"),
-                ("ArrowDown", "set_move_longitudinal", "move_longitudinal", "back"),
-                ("ArrowLeft", "set_look_horizontal", "look_horizontal", "left"),
-                ("ArrowRight", "set_look_horizontal", "look_horizontal", "right"),
+                ("w", "move", "direction", "Front"),
+                ("s", "move", "direction", "Back"),
+                ("a", "look", "direction", "Mouse_Left"),
+                ("d", "look", "direction", "Mouse_Right"),
+                ("ArrowUp", "move", "direction", "Front"),
+                ("ArrowDown", "move", "direction", "Back"),
+                ("ArrowLeft", "look", "direction", "Mouse_Left"),
+                ("ArrowRight", "look", "direction", "Mouse_Right"),
             ]
             for key, cmd, param, value in cases:
                 self._reset_cmd_log(page)
                 page.keyboard.down(key)
                 self._wait_cmd(page, cmd, param, value)
                 page.keyboard.up(key)
-                # Persistent axis MUST be idled on release, or it keeps going.
-                self._wait_cmd(page, cmd, param, "idle")
-            # Movement uses native axes, never a set_prompt fake.
+                # Held control MUST be released on key-up (a single `stop`), or
+                # the camera keeps going.
+                self._wait_cmd(page, "stop")
+            # Movement uses native move/look verbs, never a set_prompt fake.
             log = page.evaluate("() => window.__MOCK_CMD_LOG__ || []")
             self.assertTrue(all(c["name"] != "set_prompt" for c in log),
                             f"drive should not use set_prompt. log:\n{log}")
@@ -193,12 +202,13 @@ class TestMovementMode(unittest.TestCase):
             page.close()
 
     def test_looking_sends_a_gentle_constant_rotation_speed(self):
-        """Holding a look key must set a GENTLE, CONSTANT rotation speed (no
-        hold-time acceleration — that was disorienting/hard to aim), well under
-        the model default of 5."""
+        """Legacy LingBot navigation: holding a look key must set a GENTLE,
+        CONSTANT rotation speed (no hold-time acceleration — that was
+        disorienting/hard to aim), well under the model default of 5. (Happy
+        Oyster has no turn-rate knob, so this is exercised on lingbot-world-2.)"""
         page = self._new_realtime_page()
         try:
-            self._boot_live(page)
+            self._boot_live(page, model="lingbot-world-2")
             self._reset_cmd_log(page)
             page.keyboard.down("a")
             self._wait_cmd(page, "set_rotation_speed_deg")
@@ -221,9 +231,8 @@ class TestMovementMode(unittest.TestCase):
             page.close()
 
     def test_pointer_drag_drives_and_looks(self):
-        """Dragging the stick drives + steers: up = forward (native
-        set_move_longitudinal), left = look left (native set_look_horizontal),
-        idling both on release."""
+        """Dragging the stick drives + steers on Happy Oyster: up = move Front,
+        left = look Mouse_Left, releasing (stop) on let-go."""
         page = self._new_realtime_page()
         try:
             self._boot_live(page)
@@ -236,14 +245,14 @@ class TestMovementMode(unittest.TestCase):
             page.mouse.move(box["cx"], box["cy"])
             page.mouse.down()
             page.mouse.move(box["cx"], box["cy"] - box["r"], steps=6)
-            self._wait_cmd(page, "set_move_longitudinal", "move_longitudinal", "forward")
+            self._wait_cmd(page, "move", "direction", "Front")
             self.assertTrue(page.evaluate("() => document.getElementById('move-pad').classList.contains('engaged')"))
             # Drag to the left -> look left.
             page.mouse.move(box["cx"] - box["r"], box["cy"], steps=6)
-            self._wait_cmd(page, "set_look_horizontal", "look_horizontal", "left")
+            self._wait_cmd(page, "look", "direction", "Mouse_Left")
             page.mouse.up()
-            # Release idles the axes.
-            self._wait_cmd(page, "set_move_longitudinal", "move_longitudinal", "idle")
+            # Release stops the held controls.
+            self._wait_cmd(page, "stop")
             page.wait_for_function("() => !document.getElementById('move-pad').classList.contains('engaged')", timeout=4000)
         except Exception:
             print("\n=== CONSOLE LOG (pointer) ===\n" + self._dump_logs())
@@ -253,8 +262,10 @@ class TestMovementMode(unittest.TestCase):
 
     def test_movement_fires_even_when_caps_omit_the_axes(self):
         """Production repro: the SDK advertises a capability list that does NOT
-        include the movement axes. The LingBot-family bypass must still send the
-        native command (this is the bug where 'I could never move')."""
+        include the movement commands. The family bypass must still send the
+        native command (this is the bug where 'I could never move'). Exercised on
+        Happy Oyster (the default) — its move/look/stop are always allowed for
+        the family even when caps omit them."""
         page = self._new_realtime_page()
         page.add_init_script(
             "window.__MOCK_CAPS__ = { commands: "
@@ -264,13 +275,13 @@ class TestMovementMode(unittest.TestCase):
         try:
             self._boot_live(page)
             # Capabilities are known and omit movement — yet motion is supported
-            # for the LingBot family, and the command must actually be sent.
+            # for the Happy Oyster family, and the command must actually be sent.
             self.assertTrue(page.evaluate("() => window.ReactorRenderer.motionSupported()"))
             self._reset_cmd_log(page)
             page.keyboard.down("w")
-            self._wait_cmd(page, "set_move_longitudinal", "move_longitudinal", "forward")
+            self._wait_cmd(page, "move", "direction", "Front")
             page.keyboard.up("w")
-            self._wait_cmd(page, "set_move_longitudinal", "move_longitudinal", "idle")
+            self._wait_cmd(page, "stop")
         except Exception:
             print("\n=== CONSOLE LOG (caps-omit) ===\n" + self._dump_logs())
             raise
@@ -380,7 +391,9 @@ class TestMovementMode(unittest.TestCase):
             page.wait_for_timeout(600)
             page.keyboard.up("w")
             move_cmds = page.evaluate(
-                """() => (window.__MOCK_CMD_LOG__||[]).filter(c => c.name.indexOf('set_move') === 0 || c.name.indexOf('set_look') === 0)"""
+                """() => (window.__MOCK_CMD_LOG__||[]).filter(c =>
+                       ['move','look','stop'].includes(c.name) ||
+                       c.name.indexOf('set_move') === 0 || c.name.indexOf('set_look') === 0)"""
             )
             self.assertEqual(move_cmds, [], f"keys must not drive in still mode, got: {move_cmds}")
         except Exception:

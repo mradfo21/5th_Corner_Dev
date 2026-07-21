@@ -1,5 +1,25 @@
 # 🔀 Mid-Game World-Model Switching — Integration Plan
 
+> **⚡ UPDATE — default model is now Happy Oyster.** The realtime renderer has
+> migrated from **LingBot World 2** to Reactor's **Happy Oyster**
+> (https://www.reactor.inc/models/happy-oyster/api) as the default world model.
+> Happy Oyster is a **prompt-to-world** model: a world is BUILT once from a text
+> prompt (optionally anchored by a first-frame image — our generated still) and
+> then TRAVELLED in first person, steered by **held movement/look** and
+> **interaction verbs** rather than live prompt edits. It is implemented as a
+> third protocol family, **`happy_oyster`**, in the driver registry:
+>
+> | Family | Models | Establish | Re-anchor (new scene) | Live steering |
+> |--------|--------|-----------|-----------------------|---------------|
+> | **`happy_oyster`** (default) | Happy Oyster | `create_world {prompt, first_frame_image_url, perspective}` → await `world_state` ready → `start_travel` | rebuild the world (new `create_world` + `start_travel`) | held `move`/`look` + `interact {action}`; `stop` releases all |
+> | `seed_locked` | LingBot World 2, LingBot | `uploadFile → set_image → set_prompt → start` | `reset` + re-establish | `set_prompt` hot-swap; native movement axes |
+> | `blend` | Helios, LongLive, SANA, + new/unknown | `schedule_prompt`/`set_prompt` → `start` | `set_image` blend/cut in-stream | `set_prompt` re-steer |
+>
+> LingBot World 2, Helios, and the rest remain **advertised and switchable** from
+> the WORLD MODEL log. The sections below describe the original base-pair plan
+> (LingBot World 2 ↔ Helios) that this architecture generalized; Happy Oyster
+> slots into the same driver/registry design as one more protocol family.
+
 **Goal:** let a player switch **live, mid-game** between the two Reactor world models
 we already build around — **LingBot World 2** (the model the realtime renderer targets
 today) and **Helios** (the model the original `REACTOR_INTEGRATION_PLAN.md` was written
