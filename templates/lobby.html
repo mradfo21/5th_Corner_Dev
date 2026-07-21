@@ -3,10 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>SOMEWHERE // an AI survival story, drawn live</title>
-<meta name="description" content="A first-person survival horror story generated live by AI. Every scene drawn as you play. One life. Runs in your browser.">
-<meta property="og:title" content="SOMEWHERE — an AI survival story, drawn live">
-<meta property="og:description" content="A first-person survival horror experience generated in real time. Start a run, or continue a saved one.">
+<title>SOMEWHERE // a survival story</title>
+<meta name="description" content="You wake somewhere you don't recognise. No map, no way back, one life. How far into the world can you get before it takes you?">
+<meta property="og:title" content="SOMEWHERE — a survival story">
+<meta property="og:description" content="You're somewhere you don't know. No map, no way back, one life. Start a run, or pick up where the road left you.">
 <meta property="og:type" content="website">
 <meta name="theme-color" content="#050708">
 <link rel="icon" href="{{ url_for('static', filename='Logo.jpg') }}">
@@ -48,8 +48,9 @@
     </div>
 
     <div class="hero-inner">
+      <p class="hero-kicker reveal">one life · no map · no way back</p>
       <h1 class="hero-title glitch" data-text="SOMEWHERE">SOMEWHERE</h1>
-      <p class="hero-tagline reveal">A survival story, drawn live by AI.</p>
+      <p class="hero-tagline reveal">You're somewhere you don't know. Stay alive.</p>
       <div class="hero-actions reveal">
         <button class="btn btn-primary" type="button" data-enter="new">
           <span class="btn-ico" aria-hidden="true">▶</span> ENTER
@@ -68,40 +69,49 @@
        each frame carries a single short line. -->
   <div class="reel" id="reel">
     <section class="frame" style="background-image:url('{{ url_for('static', filename='img/lobby/gal_crossroads.jpg') }}')">
-      <div class="frame-caption reveal"><h2>No two runs alike.</h2></div>
+      <div class="frame-caption reveal"><h2>The road never runs the same twice.</h2></div>
     </section>
 
     <section class="frame" style="background-image:url('{{ url_for('static', filename='img/lobby/gal_gasstation.jpg') }}')">
-      <div class="frame-caption reveal"><h2>Every frame, drawn live.</h2></div>
+      <div class="frame-caption reveal"><h2>Every place you find is somewhere new.</h2></div>
     </section>
 
     <section class="frame" style="background-image:url('{{ url_for('static', filename='img/lobby/gal_corridor.jpg') }}')">
-      <div class="frame-caption reveal"><h2>It reacts to you.</h2></div>
+      <div class="frame-caption reveal"><h2>Something out here is watching.</h2></div>
     </section>
 
     <section class="frame" style="background-image:url('{{ url_for('static', filename='img/lobby/gal_motel.jpg') }}')">
-      <div class="frame-caption reveal"><h2>The world remembers.</h2></div>
+      <div class="frame-caption reveal"><h2>The world remembers what you did.</h2></div>
     </section>
 
     <section class="frame" style="background-image:url('{{ url_for('static', filename='img/lobby/gal_forest.jpg') }}')">
-      <div class="frame-caption reveal"><h2>Fifteen seconds to decide.</h2></div>
+      <div class="frame-caption reveal"><h2>Fifteen seconds. The dark won't wait.</h2></div>
     </section>
 
     <section class="frame frame-final" style="background-image:url('{{ url_for('static', filename='img/lobby/gal_figure.jpg') }}')">
       <div class="frame-caption reveal">
-        <span class="frame-kicker">death is permanent</span>
-        <h2>One life.</h2>
+        <span class="frame-kicker">no second chances</span>
+        <h2>One life. No way back.</h2>
       </div>
     </section>
   </div>
 
-  <!-- ===================== ENTER (functional menu) ===================== -->
+  <!-- ===================== ENTER (functional menu) =====================
+       Bookends the page: the same cinematic "first page moment" as the hero,
+       reprised at the end — full-bleed highway backdrop, CRT dressing, and
+       the functional New Game / Continue menu floating on top. -->
   <section class="section-enter" id="enter">
+    <div class="enter-media" aria-hidden="true">
+      <img class="enter-img" src="{{ url_for('static', filename='img/lobby/hero_highway.jpg') }}" alt="">
+      <div class="enter-media-scan"></div>
+      <div class="enter-media-fade"></div>
+    </div>
     <div class="enter-glow" aria-hidden="true"></div>
     <div class="menu-card reveal">
       <div class="menu-brand">
+        <p class="menu-kicker">the road is still out there</p>
         <h2 class="menu-title glitch" data-text="ENTER">ENTER</h2>
-        <p class="menu-tagline">One tap and you're in.</p>
+        <p class="menu-tagline">Step back into it. One tap.</p>
       </div>
 
       <nav class="menu-actions" aria-label="Start a run">
@@ -109,14 +119,14 @@
           <span class="menu-btn-ico" aria-hidden="true">▶</span>
           <span class="menu-btn-text">
             <span class="menu-btn-label">NEW GAME</span>
-            <span class="menu-btn-hint">jump straight in — no setup</span>
+            <span class="menu-btn-hint">wake up somewhere new</span>
           </span>
         </button>
         <button id="cta-continue" class="menu-btn" type="button" aria-expanded="false" aria-controls="panel-resume">
           <span class="menu-btn-ico" aria-hidden="true">◧</span>
           <span class="menu-btn-text">
             <span class="menu-btn-label">CONTINUE</span>
-            <span class="menu-btn-hint" id="continue-hint">resume a saved run</span>
+            <span class="menu-btn-hint" id="continue-hint">pick up where you left off</span>
           </span>
           <span class="menu-btn-badge" id="continue-badge" hidden>0</span>
         </button>
@@ -170,9 +180,9 @@
       <details class="menu-howto">
         <summary>How does this work?</summary>
         <ol class="howto-list">
-          <li>Start a new game, or continue one — you get a private link you can bookmark.</li>
-          <li>Read the dispatch and look at the scene. It's drawn live from where you are right now.</li>
-          <li>Pick one of four choices, or type your own. You have 15 seconds — the world doesn't wait.</li>
+          <li>Start a new run, or continue one — you get a private link you can bookmark.</li>
+          <li>Read the dispatch and take in where you are. Every place is somewhere you've never been.</li>
+          <li>Pick one of four ways forward, or say your own. Fifteen seconds — the world won't wait.</li>
           <li>Survive as long as you can. Your run saves itself. Death is permanent, so make it count.</li>
         </ol>
       </details>
@@ -182,7 +192,7 @@
   <!-- ===================== FOOTER ===================== -->
   <footer class="site-footer">
     <div class="site-footer-brand">
-      <span class="rec-dot" aria-hidden="true">●</span> SOMEWHERE <span class="dim">STORYGEN</span>
+      <span class="rec-dot" aria-hidden="true">●</span> SOMEWHERE <span class="dim">a survival story</span>
     </div>
     <div class="site-footer-links">
       <a href="/standalone">/standalone</a>
@@ -191,14 +201,25 @@
       <span class="dot">·</span>
       <a href="/api/info">/api/info</a>
     </div>
-    <div class="site-footer-note">Imagery is placeholder — real captures coming.</div>
+    <div class="site-footer-note">Field imagery still coming in.</div>
   </footer>
 
-  <!-- Full-screen "booting" overlay shown between session mint and redirect. -->
+  <!-- Full-screen "booting" overlay shown between session mint and redirect.
+       Dressed as the hero start-frame so entering the world feels continuous:
+       highway backdrop, CRT scan + vignette, REC HUD, glitch wordmark. -->
   <div id="boot-overlay" class="boot-overlay" hidden aria-hidden="true">
+    <div class="boot-media" aria-hidden="true">
+      <img class="boot-img" src="{{ url_for('static', filename='img/lobby/hero_highway.jpg') }}" alt="">
+      <div class="boot-media-scan"></div>
+      <div class="boot-media-fade"></div>
+    </div>
+    <div class="boot-hud" aria-hidden="true">
+      <span class="boot-hud-rec"><span class="rec-dot">●</span> REC</span>
+      <span class="boot-hud-label">signal</span>
+    </div>
     <div class="boot-inner">
       <div class="boot-brand glitch" data-text="SOMEWHERE">SOMEWHERE</div>
-      <div class="boot-line" id="boot-line">requesting instance…</div>
+      <div class="boot-line" id="boot-line">finding the road…</div>
       <div class="boot-progress"><div class="boot-progress-fill" id="boot-progress-fill"></div></div>
       <div class="boot-code" id="boot-code" aria-live="polite"></div>
     </div>

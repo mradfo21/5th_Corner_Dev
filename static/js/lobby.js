@@ -284,8 +284,8 @@
     }
     if (hint) {
       hint.textContent = count > 0
-        ? (count === 1 ? "1 saved run" : count + " saved runs")
-        : "resume a saved run";
+        ? (count === 1 ? "1 run waiting" : count + " runs waiting")
+        : "pick up where you left off";
     }
   }
 
@@ -313,12 +313,12 @@
   // ---------- New game flow ----------
 
   var BOOT_MESSAGES = [
-    "requesting instance…",
-    "allocating world state…",
-    "priming the signal…",
-    "seeding first frame…",
-    "opening the channel…",
-    "handing off to /play…",
+    "finding the road…",
+    "waking the world…",
+    "letting your eyes adjust…",
+    "the horizon comes into focus…",
+    "you're somewhere now…",
+    "step forward…",
   ];
 
   function showBoot(code) {
@@ -382,7 +382,7 @@
         var data = r.json.data;
         var sid = data.session_id;
         rememberSession(sid, (payload && payload.name) || "");
-        boot.advance("handing off to /play…");
+        boot.advance("step forward…");
         setTimeout(function () {
           boot.done();
           window.location.href = data.play_url || ("/play?session=" + encodeURIComponent(sid));
