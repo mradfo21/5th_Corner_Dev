@@ -1955,6 +1955,129 @@ body.moving #scan-layer { opacity: 0 !important; pointer-events: none !important
   .move-nub { transition: border-color 0.18s, box-shadow 0.25s; }
 }
 
+/* ---------- Interaction verb bar (Happy Oyster Adventure) ----------
+   A vertical column of the live world's action verbs, pinned to the right edge.
+   The built-in survival set (Sprint / Crouch / Jump / Attack) plus any verbs the
+   world advertises via travel_state. Shown only in realtime video mode when the
+   model takes verbs (VerbBar toggles .hidden). */
+#verb-bar {
+  position: fixed;
+  right: calc(env(safe-area-inset-right, 0px) + 10px);
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  align-items: stretch;
+  max-height: 62vh;
+  overflow: hidden;
+}
+#verb-bar.hidden,
+body:not(.realtime-on) #verb-bar,
+body.ho-director #verb-bar { display: none; }
+/* The Director experience steers with text + playback, not walk/look — hide the
+   Adventure-only joystick so the control scheme matches the live experience. */
+body.ho-director #move-pad { display: none; }
+/* Recede while aiming the camera or with the free-will input open — attention
+   belongs to that instrument then. */
+body.touch-aiming #verb-bar,
+body.menu-open #verb-bar { opacity: 0; pointer-events: none; }
+
+.verb-btn {
+  -webkit-appearance: none;
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 78px;
+  padding: 7px 10px;
+  border-radius: 11px;
+  border: 1px solid rgba(142, 255, 193, 0.28);
+  background: linear-gradient(180deg, rgba(10, 18, 16, 0.82), rgba(6, 10, 9, 0.9));
+  color: #bfe8d4;
+  font: 700 10.5px/1 "Courier New", monospace;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  cursor: pointer;
+  box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.5), 0 1px 6px rgba(0, 0, 0, 0.5);
+  transition: transform 0.1s ease, border-color 0.15s ease, box-shadow 0.2s ease, background 0.2s ease;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: manipulation;
+}
+.verb-btn:hover { border-color: rgba(142, 255, 193, 0.6); transform: translateX(-2px); }
+.verb-btn:active { transform: scale(0.95); }
+.verb-btn .verb-ico { font-size: 13px; line-height: 1; opacity: 0.95; }
+.verb-btn .verb-label { white-space: nowrap; }
+/* Held verbs (Sprint / Crouch) read as toggles; amber while engaged. */
+.verb-btn.verb-held { border-style: dashed; }
+.verb-btn.active {
+  border-color: rgba(255, 186, 89, 0.95);
+  background: linear-gradient(180deg, rgba(46, 32, 12, 0.9), rgba(28, 18, 6, 0.94));
+  color: #ffd9a2;
+  box-shadow: inset 0 0 12px rgba(0, 0, 0, 0.5), 0 0 16px rgba(255, 186, 89, 0.5);
+}
+/* Momentary tap flash. */
+.verb-btn.poke { animation: verb-poke 0.32s ease; }
+@keyframes verb-poke {
+  0% { box-shadow: inset 0 0 12px rgba(0,0,0,0.5), 0 0 0 rgba(142,255,193,0); }
+  40% { box-shadow: inset 0 0 12px rgba(0,0,0,0.5), 0 0 16px rgba(142,255,193,0.6); border-color: rgba(142,255,193,0.9); }
+  100% { box-shadow: inset 0 0 12px rgba(0,0,0,0.5), 0 0 0 rgba(142,255,193,0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .verb-btn, .verb-btn.poke { transition: none; animation: none; }
+}
+@media (max-width: 560px) {
+  #verb-bar { gap: 6px; right: calc(env(safe-area-inset-right, 0px) + 6px); }
+  .verb-btn { min-width: 0; padding: 7px 8px; }
+  .verb-btn .verb-label { display: none; } /* icons only on small screens */
+  .verb-btn .verb-ico { font-size: 15px; }
+  /* verbs without an icon (advertised) keep a short label even on mobile */
+  .verb-btn:not(:has(.verb-ico)) .verb-label { display: inline; font-size: 9.5px; }
+}
+
+/* ---------- Happy Oyster session options (in the WORLD MODEL panel) ---------- */
+.rt-ho-opts {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0 2px;
+  padding: 8px;
+  border: 1px solid rgba(142, 255, 193, 0.16);
+  border-radius: 8px;
+  background: rgba(6, 12, 10, 0.4);
+}
+.rt-ho-opts.hidden { display: none; }
+.rt-ho-row { display: flex; align-items: center; gap: 8px; }
+.rt-ho-label {
+  flex: 0 0 40px;
+  font: 700 9px/1 "Courier New", monospace;
+  letter-spacing: 0.12em;
+  color: rgba(191, 232, 212, 0.65);
+}
+.rt-ho-seg { display: flex; gap: 4px; flex: 1 1 auto; }
+.rt-ho-btn {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: 1 1 auto;
+  padding: 5px 6px;
+  border-radius: 6px;
+  border: 1px solid rgba(142, 255, 193, 0.24);
+  background: rgba(10, 18, 16, 0.7);
+  color: rgba(191, 232, 212, 0.8);
+  font: 700 9px/1 "Courier New", monospace;
+  letter-spacing: 0.09em;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+.rt-ho-btn:hover { border-color: rgba(142, 255, 193, 0.5); }
+.rt-ho-btn.on {
+  border-color: rgba(255, 186, 89, 0.9);
+  background: rgba(46, 32, 12, 0.8);
+  color: #ffd9a2;
+}
+
 /* ---------- TOUCH tool: aiming reticle → location prompt ---------- */
 
 /* Full-screen aiming surface. Captures the cursor so only the reticle shows,

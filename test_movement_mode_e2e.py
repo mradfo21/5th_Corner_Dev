@@ -165,10 +165,11 @@ class TestMovementMode(unittest.TestCase):
         )
 
     def test_wasd_keys_drive_forward_back_and_look(self):
-        """The drive scheme on Happy Oyster: W/S (and ↑/↓) move forward/back
-        (move Front/Back), A/D (and ←/→) turn the view (look
-        Mouse_Left/Mouse_Right). Each fires the native held command and releases
-        (stop) on key-up; nothing is faked with set_prompt."""
+        """The FULL Happy Oyster navigation surface: W/S move forward/back (move
+        Front/Back), A/D turn (look Mouse_Left/Right), Q/E strafe (move
+        Left/Right), ←/→ turn (look Mouse_Left/Right), and ↑/↓ tilt the view (look
+        Mouse_Up/Down). Each fires the native held command and releases (stop) on
+        key-up; nothing is faked with set_prompt."""
         page = self._new_realtime_page()
         try:
             self._boot_live(page)
@@ -178,8 +179,10 @@ class TestMovementMode(unittest.TestCase):
                 ("s", "move", "direction", "Back"),
                 ("a", "look", "direction", "Mouse_Left"),
                 ("d", "look", "direction", "Mouse_Right"),
-                ("ArrowUp", "move", "direction", "Front"),
-                ("ArrowDown", "move", "direction", "Back"),
+                ("q", "move", "direction", "Left"),
+                ("e", "move", "direction", "Right"),
+                ("ArrowUp", "look", "direction", "Mouse_Up"),
+                ("ArrowDown", "look", "direction", "Mouse_Down"),
                 ("ArrowLeft", "look", "direction", "Mouse_Left"),
                 ("ArrowRight", "look", "direction", "Mouse_Right"),
             ]

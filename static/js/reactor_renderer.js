@@ -75,12 +75,43 @@
     { id: "longlive-v2", label: "LongLive V2", sdk_name: "reactor/longlive-v2", requiresSeedImage: false, protocol: "blend" },
     { id: "sana-streaming", label: "Sana Streaming", sdk_name: "reactor/sana-streaming", requiresSeedImage: false, protocol: "blend" },
   ];
-  // Happy Oyster session shape (fixed for a session's lifetime). Adventure =
-  // walk/look/interact (our first-person survival game); first_person keeps the
-  // camcorder POV the whole experience is built around. Overridable for
-  // experiments via window globals.
-  const HAPPY_OYSTER_MODE = (typeof window !== "undefined" && window.__HAPPY_OYSTER_MODE__) || "adventure";
-  const HAPPY_OYSTER_PERSPECTIVE = (typeof window !== "undefined" && window.__HAPPY_OYSTER_PERSPECTIVE__) || "first_person";
+  // Happy Oyster session shape (fixed for a session's lifetime). Two experiences
+  // — the FULL Happy Oyster surface — chosen at connect and honored by the
+  // driver:
+  //   • "adventure" (default) — walk/look/interact in first (or third) person.
+  //     Our survival game lives here. create_world takes `perspective`.
+  //   • "director" — steer the unfolding scene with text instructions and control
+  //     playback (pause/resume/rewind). create_world takes resolution/layout/
+  //     narrative. There are no movement/interact verbs; steering is `instruct`.
+  // Resolved from ?experience= / localStorage / window global so a session can be
+  // opened in either experience. Built-in interaction verbs the Adventure world
+  // always accepts (worlds advertise more via travel_state — see hoVerbs).
+  const HAPPY_OYSTER_BUILTIN_VERBS = ["Jump", "Attack", "Crouch", "Sprint"];
+  function readOpt(qsKey, lsKey, winKey) {
+    let v = null;
+    try { v = new URLSearchParams(location.search).get(qsKey); } catch (_) {}
+    if (!v) { try { v = localStorage.getItem(lsKey); } catch (_) {} }
+    if (!v && typeof window !== "undefined" && window[winKey]) v = window[winKey];
+    return v ? String(v).toLowerCase() : null;
+  }
+  function happyOysterExperience() {
+    const v = rstate.hoExperience || readOpt("experience", "happy_oyster_experience", "__HAPPY_OYSTER_MODE__") || "adventure";
+    return (v === "director" || v === "directing") ? "director" : "adventure";
+  }
+  function happyOysterPerspective() {
+    const v = rstate.hoPerspective || readOpt("perspective", "happy_oyster_perspective", "__HAPPY_OYSTER_PERSPECTIVE__") || "first_person";
+    return v === "third_person" ? "third_person" : "first_person";
+  }
+  // Director-experience create_world knobs (Directing worlds only). Overridable
+  // via window globals; sane Happy Oyster defaults otherwise.
+  function directorParams() {
+    const g = (k, d) => (typeof window !== "undefined" && window[k]) || d;
+    return {
+      resolution: String(g("__HAPPY_OYSTER_RESOLUTION__", "720p")),
+      layout: String(g("__HAPPY_OYSTER_LAYOUT__", "Stable")),
+      narrative: String(g("__HAPPY_OYSTER_NARRATIVE__", "Normal")),
+    };
+  }
   // How long to wait for create_world to report a ready world_state before we
   // start travelling anyway (build is a short generation step).
   const WORLD_BUILD_TIMEOUT_MS = (typeof window !== "undefined" && window.__HAPPY_OYSTER_BUILD_TIMEOUT_MS__) || 15000;
@@ -169,7 +200,13 @@
     hoTraveling: false,        // start_travel issued and the world is streaming
     hoSentMove: null,          // last move {direction} sent (Front/Back/Left/Right)
     hoSentLook: null,          // last look {direction} sent (Mouse_*)
+    hoHeldVerb: null,          // desired held interaction verb (Sprint/Crouch/…)
+    hoSentVerb: null,          // last held interaction verb actually asserted
     hoVerbs: [],               // interaction verbs the current world advertises
+    hoWorldId: null,           // encrypted_world_id of the current world (attach_world)
+    hoWorldsByImage: Object.create(null), // scene guide-image URL -> encrypted_world_id (revisit cache)
+    hoExperience: null,        // resolved experience for this session ("adventure"|"director")
+    hoPerspective: null,       // resolved perspective ("first_person"|"third_person")
     cfg: { model_name: FALLBACK_MODEL, enabled: false },
     connecting: false,
     status: "off",
@@ -1095,19 +1132,50 @@
     try { return new URL(url, location.href).href; } catch (_) { return url; }
   }
 
+  // Enter a world once it's built: wait for a ready world_state, start travelling,
+  // and hand off to the reveal machinery. Shared by create_world + attach_world.
+  async function enterHappyOysterWorld(s) {
+    rstate.started = true;
+    rstate.hoTraveling = true;
+    rstate.lastPrompt = s ? s.prompt : rstate.lastPrompt;
+    if (s && s.imageUrl) rstate.lastImageUrl = s.imageUrl;
+    emitEvent("stage_started", { prompt: rstate.lastPrompt });
+    applyMoveState(); // re-assert any held camera drive / verb onto the fresh world
+    armFreezeReveal();
+    armRevealWatchdog();
+  }
+
   // Happy Oyster: prompt-to-world. Build a world from the scene prompt (anchored
   // by our still as first_frame_image_url), wait for it to be ready, then travel
-  // it. The live stream is then driven by held movement/look + interaction verbs
-  // (see the camera-drive section) — there is no live prompt edit in Adventure.
+  // it. Adventure worlds are then driven by held movement/look + interaction
+  // verbs; Directing worlds by `instruct` + playback (pause/resume/rewind).
   async function buildHappyOysterWorld(s) {
+    // Revisit: if we've already BUILT a world for this exact guide image in this
+    // session, reopen it with attach_world instead of regenerating — faster and
+    // identical (Happy Oyster worlds are permanent for the session).
+    const savedId = s.imageUrl ? rstate.hoWorldsByImage[s.imageUrl] : null;
+    if (savedId) {
+      log("happy-oyster: revisiting a built world -> attach_world");
+      return attachHappyOysterWorld(savedId, s);
+    }
     // New stage boundary: invalidate any seed still decoding from a prior world.
     rstate.seedToken++;
     if (!rstate.freezeActive && s.imageUrl) paintSeedToFreeze(s.imageUrl);
     rstate.stagingGuideUrl = s.imageUrl || null;
     rstate.hoTraveling = false;
-    const payload = { prompt: s.prompt, perspective: HAPPY_OYSTER_PERSPECTIVE };
+    const experience = happyOysterExperience();
+    const payload = { prompt: s.prompt };
     const ff = absoluteImageUrl(s.imageUrl);
     if (ff) payload.first_frame_image_url = ff;
+    if (experience === "director") {
+      // Directing worlds: resolution / layout / narrative shape the scene.
+      const dp = directorParams();
+      payload.resolution = dp.resolution;
+      payload.layout = dp.layout;
+      payload.narrative = dp.narrative;
+    } else {
+      payload.perspective = happyOysterPerspective();
+    }
     // create_world resolves (per the docs) once the world is ready to enter,
     // reported by a world_state message — wait for it so start_travel enters a
     // built world instead of racing an empty one.
@@ -1115,26 +1183,48 @@
     await cmd("create_world", payload);
     await worldReady;
     await cmd("start_travel", {});
-    rstate.started = true;
-    rstate.hoTraveling = true;
-    rstate.lastPrompt = s.prompt;
-    if (s.imageUrl) rstate.lastImageUrl = s.imageUrl;
-    emitEvent("stage_started", { prompt: s.prompt });
-    applyMoveState(); // re-assert any held camera drive onto the fresh world
-    armFreezeReveal();
-    armRevealWatchdog();
-    log("happy-oyster: world built + travelling (" + HAPPY_OYSTER_MODE + "/" + HAPPY_OYSTER_PERSPECTIVE + ")");
+    await enterHappyOysterWorld(s);
+    log("happy-oyster: world built + travelling (" + experience + "/" +
+        (experience === "director" ? directorParams().narrative : happyOysterPerspective()) + ")");
     return true;
   }
 
   async function establishHappyOyster(s) { return buildHappyOysterWorld(s); }
 
+  // Reopen a previously-built world by its encrypted id (skips the build step).
+  // Used when we revisit a place we've already generated — continuity + speed.
+  async function attachHappyOysterWorld(worldId, s) {
+    if (!worldId) return false;
+    rstate.seedToken++;
+    if (!rstate.freezeActive && s && s.imageUrl) paintSeedToFreeze(s.imageUrl);
+    rstate.stagingGuideUrl = (s && s.imageUrl) || null;
+    rstate.hoTraveling = false;
+    const worldReady = waitForEvent("world_ready", WORLD_BUILD_TIMEOUT_MS);
+    await cmd("attach_world", { encrypted_world_id: worldId });
+    await worldReady;
+    await cmd("start_travel", {});
+    await enterHappyOysterWorld(s);
+    log("happy-oyster: attached saved world + travelling");
+    return true;
+  }
+
   async function applyRunningHappyOyster(s, ctx) {
-    // Happy Oyster worlds are FIXED once built (Adventure has no live prompt
-    // edit), so any new scene — a fresh guide image, a hard transition, or a
-    // materially changed prompt — is a NEW WORLD. Fade the scene down for the
-    // deliberate "moment of pause" beat, freeze the last live frame beneath as
-    // the safety floor, release held controls, and rebuild.
+    // Directing experience: the world stays live and text `instruct` steers the
+    // unfolding scene — a prompt-only change re-steers in place (NO rebuild),
+    // exactly like a live prompt edit. A new guide image / hard transition still
+    // rebuilds (it's a new place to compose the story around).
+    if (happyOysterExperience() === "director" && !ctx.newGuideImage && !s.hardTransition) {
+      if (s.prompt === rstate.lastPrompt) return true;
+      await cmd("instruct", { content: s.prompt });
+      rstate.lastPrompt = s.prompt;
+      log("happy-oyster/director: instructed", s.prompt.slice(0, 80));
+      return true;
+    }
+    // Adventure worlds are FIXED once built (no live prompt edit), so any new
+    // scene — a fresh guide image, a hard transition, or a materially changed
+    // prompt — is a NEW WORLD. Fade the scene down for the deliberate "moment of
+    // pause" beat, freeze the last live frame beneath as the safety floor,
+    // release held controls, and rebuild.
     const rebuild = ctx.newGuideImage || s.hardTransition || (s.prompt !== rstate.lastPrompt);
     if (!rebuild) return true; // nothing materially changed — keep travelling
     beginSceneFade();
@@ -1142,6 +1232,7 @@
     try { await cmd("stop", {}); } catch (_) {}
     rstate.hoSentMove = null;
     rstate.hoSentLook = null;
+    rstate.hoSentVerb = null; // the fresh world holds nothing (hoHeldVerb re-asserts)
     rstate.started = false;
     rstate.hoTraveling = false;
     rstate.lastPrompt = null;
@@ -1246,6 +1337,17 @@
     // an accepted guide image.
     if (t === "world_state") {
       const phase = d && d.phase;
+      // Save the world's id so we can reopen it later with attach_world — both as
+      // the current id and keyed by the scene image that built it (revisit cache).
+      if (d && d.encrypted_world_id && d.encrypted_world_id !== rstate.hoWorldId) {
+        rstate.hoWorldId = d.encrypted_world_id;
+        const img = rstate.stagingGuideUrl || rstate.lastImageUrl || null;
+        if (img) rstate.hoWorldsByImage[img] = d.encrypted_world_id;
+        try {
+          if (typeof window.ReactorRenderer.onWorldId === "function")
+            window.ReactorRenderer.onWorldId(d.encrypted_world_id, d);
+        } catch (_) {}
+      }
       const stillBuilding = phase === "no_world" || phase === "creating" || phase === "building";
       if (!stillBuilding) {
         resolveWaiters("world_ready", d);
@@ -1258,12 +1360,21 @@
       }
     }
     // Happy Oyster: travel_state advertises this world's interaction verbs
-    // (character + environment actions) for interact({action}).
+    // (character + environment actions) for interact({action}). Combine them with
+    // the built-in verbs and surface the set so the UI can offer real actions.
     else if (t === "travel_state") {
-      const verbs = []
+      const advertised = []
         .concat(Array.isArray(d.character_actions) ? d.character_actions : [])
         .concat(Array.isArray(d.environment_actions) ? d.environment_actions : []);
-      if (verbs.length) rstate.hoVerbs = verbs.map(String);
+      const verbs = advertised.map(String).filter(Boolean);
+      const changed = verbs.join("|") !== (rstate.hoVerbs || []).join("|");
+      rstate.hoVerbs = verbs;
+      if (changed) {
+        try {
+          if (typeof window.ReactorRenderer.onInteractVerbs === "function")
+            window.ReactorRenderer.onInteractVerbs(getAllInteractVerbs(), d);
+        } catch (_) {}
+      }
     }
     // LingBot reports image_accepted/prompt_accepted; Helios reports
     // image_set/prompt_scheduled/prompt_switched. Map both onto the same
@@ -1476,6 +1587,9 @@
     const v = getVideo();
     if (v) v.classList.add("hidden");
     rstate.hoTraveling = false;
+    // A fresh run builds brand-new worlds — drop the revisit cache + saved id.
+    rstate.hoWorldsByImage = Object.create(null);
+    rstate.hoWorldId = null;
     if (rstate.status === "live") setStatus("connecting");
     if (!rstate.reactor || !rstate.ready) return;
     // Happy Oyster has no `reset`; releasing held controls (`stop`) is the clean
@@ -1590,27 +1704,30 @@
     return null;
   }
 
-  // Reconcile the desired axes with what Happy Oyster is currently holding.
-  // Because `stop` releases EVERY held control, when any held channel drops we
-  // stop once and re-assert whatever is still held.
+  // Reconcile the desired held controls (move + look + one held interaction verb,
+  // e.g. Sprint/Crouch) with what Happy Oyster is currently holding. Because
+  // `stop` releases EVERY held control, when any held channel drops we stop once
+  // and re-assert whatever is still held.
   function pushHappyOysterMotion() {
     if (!rstate.reactor || !rstate.ready || !rstate.started) return;
     const mv = hoMoveDirection();
     const lk = hoLookDirection();
-    if (mv === rstate.hoSentMove && lk === rstate.hoSentLook) return;
-    if (!mv && !lk) {
-      if (rstate.hoSentMove || rstate.hoSentLook) cmd("stop", {});
-      rstate.hoSentMove = null; rstate.hoSentLook = null;
+    const vb = rstate.hoHeldVerb || null;
+    if (mv === rstate.hoSentMove && lk === rstate.hoSentLook && vb === rstate.hoSentVerb) return;
+    if (!mv && !lk && !vb) {
+      if (rstate.hoSentMove || rstate.hoSentLook || rstate.hoSentVerb) cmd("stop", {});
+      rstate.hoSentMove = null; rstate.hoSentLook = null; rstate.hoSentVerb = null;
       return;
     }
     // A previously-held channel just went idle (but not everything): `stop`
-    // clears both, then we re-assert the survivor(s) below.
-    if ((rstate.hoSentMove && !mv) || (rstate.hoSentLook && !lk)) {
+    // clears them all, then we re-assert the survivor(s) below.
+    if ((rstate.hoSentMove && !mv) || (rstate.hoSentLook && !lk) || (rstate.hoSentVerb && !vb)) {
       cmd("stop", {});
-      rstate.hoSentMove = null; rstate.hoSentLook = null;
+      rstate.hoSentMove = null; rstate.hoSentLook = null; rstate.hoSentVerb = null;
     }
     if (mv && mv !== rstate.hoSentMove) { cmd("move", { direction: mv }); rstate.hoSentMove = mv; }
     if (lk && lk !== rstate.hoSentLook) { cmd("look", { direction: lk }); rstate.hoSentLook = lk; }
+    if (vb && vb !== rstate.hoSentVerb) { cmd("interact", { action: vb }); rstate.hoSentVerb = vb; }
   }
 
   // Does the active world model navigate the camera natively? Happy Oyster and
@@ -1619,6 +1736,8 @@
   // capabilities haven't arrived yet we optimistically say yes (they load before
   // the first command, and cmd() skips anything genuinely unsupported).
   function motionSupported() {
+    // Directing worlds have no movement/look — steering is text `instruct`.
+    if (isHappyOyster() && happyOysterExperience() === "director") return false;
     return familyDrivesCamera() || !knownCaps() || rstate.commandSet.has("set_move_longitudinal");
   }
 
@@ -1628,7 +1747,7 @@
   function applyMoveState() {
     if (!rstate.reactor || !rstate.ready || !rstate.started) return;
     if (isHappyOyster()) {
-      rstate.hoSentMove = null; rstate.hoSentLook = null; // fresh world holds nothing
+      rstate.hoSentMove = null; rstate.hoSentLook = null; rstate.hoSentVerb = null; // fresh world holds nothing
       pushHappyOysterMotion();
       return;
     }
@@ -1688,9 +1807,10 @@
     setAxis("lookV", "idle");
   }
 
-  // Perform an interaction verb (Happy Oyster). The built-in verbs are Jump,
-  // Attack, Crouch and Sprint; a world may advertise more via travel_state (see
-  // getInteractVerbs). Any verb string is accepted. Returns true if sent.
+  // Perform a MOMENTARY interaction verb (Happy Oyster) — e.g. Jump, Attack, or a
+  // world-advertised verb. Any verb string is accepted. Fire-and-forget: it holds
+  // until the next `stop` (which the movement reconciliation issues on the next
+  // input change). Returns true if sent.
   function interact(action) {
     action = (action == null ? "" : String(action)).trim();
     if (!action) return false;
@@ -1700,11 +1820,61 @@
     return true;
   }
 
+  // Set (or clear, with null) the HELD interaction verb — e.g. Sprint or Crouch,
+  // which stay engaged while a key/button is held. It composes with move+look and
+  // is re-asserted after any `stop`/rebuild via the motion reconciliation.
+  function setHeldVerb(action) {
+    if (!isHappyOyster()) return false;
+    const v = action ? String(action).trim() : null;
+    if (rstate.hoHeldVerb === v) return true;
+    rstate.hoHeldVerb = v || null;
+    pushHappyOysterMotion();
+    return true;
+  }
+
+  // The full interaction-verb set for the current world: the built-ins Happy
+  // Oyster always accepts, plus whatever this world advertised via travel_state
+  // (deduped, built-ins first).
+  function getAllInteractVerbs() {
+    const seen = Object.create(null);
+    const out = [];
+    HAPPY_OYSTER_BUILTIN_VERBS.concat(rstate.hoVerbs || []).forEach((v) => {
+      const s = (v == null ? "" : String(v)).trim();
+      const key = s.toLowerCase();
+      if (s && !seen[key]) { seen[key] = 1; out.push(s); }
+    });
+    return out;
+  }
+
+  // ── Directing experience: text-steer + playback ─────────────────────────────
+  // Directing worlds have no movement/interact; you steer the unfolding scene
+  // with text and control playback. These are no-ops unless the live model is a
+  // Happy Oyster session opened in the "director" experience.
+  function instruct(content) {
+    content = (content == null ? "" : String(content)).trim();
+    if (!content || !isHappyOyster()) return false;
+    if (!rstate.reactor || !rstate.ready || !rstate.started) return false;
+    cmd("instruct", { content: content });
+    rstate.lastPrompt = content;
+    return true;
+  }
+  function rewind(seconds) {
+    if (!isHappyOyster()) return false;
+    if (!rstate.reactor || !rstate.ready) return false;
+    // Docs: rewind_to_sec is rounded down to a multiple of 4; playback resumes.
+    const sec = Math.max(0, Math.floor((Number(seconds) || 0) / 4) * 4);
+    cmd("rewind", { rewind_to_sec: sec });
+    rstate.paused = false;
+    return true;
+  }
+
   // Drop the tracked drive state (a fresh run / teardown starts from rest).
   function resetMoveState() {
     rstate.move = { longitudinal: "idle", lateral: "idle", lookH: "idle", lookV: "idle", rotationDeg: null };
     rstate.hoSentMove = null;
     rstate.hoSentLook = null;
+    rstate.hoSentVerb = null;
+    rstate.hoHeldVerb = null;
   }
 
   window.ReactorRenderer = {
@@ -1722,14 +1892,52 @@
     beginSceneFade, endSceneFade,
     // Live camera drive (see above): the navigable-video control surface.
     motionSupported, setAxis, setRotationSpeed, stopMotion,
-    // Interaction verbs (Happy Oyster): interact(action) holds an interaction
-    // (Jump/Attack/Crouch/Sprint or a world-advertised verb). canInteract()
-    // tells the standalone layer whether the live model takes verbs (so it can
-    // route INTERACT to a real command instead of a prompt nudge), and
-    // getInteractVerbs() exposes the verbs the current world advertises.
-    interact,
-    canInteract: () => isHappyOyster() && rstate.started,
-    getInteractVerbs: () => (rstate.hoVerbs || []).slice(),
+    // Interaction verbs (Happy Oyster): interact(action) fires a momentary verb
+    // (Jump/Attack or a world-advertised verb); setHeldVerb(action|null) holds a
+    // verb (Sprint/Crouch) that composes with movement. canInteract() tells the
+    // standalone layer whether the live model takes verbs (so it can route
+    // INTERACT to a real command instead of a prompt nudge). getInteractVerbs()
+    // returns the full verb set this world accepts (built-ins + advertised), and
+    // getAdvertisedVerbs() just the ones travel_state advertised.
+    interact, setHeldVerb,
+    canInteract: () => isHappyOyster() && rstate.started && happyOysterExperience() !== "director",
+    getInteractVerbs: () => getAllInteractVerbs(),
+    getAdvertisedVerbs: () => (rstate.hoVerbs || []).slice(),
+    // Directing experience: steer with text + control playback. No-ops unless the
+    // session was opened in the "director" experience.
+    instruct, rewind,
+    // Reopen a previously-built world by id (skips the build). Returns a promise.
+    attachWorld: (id, scene) => attachHappyOysterWorld(id, scene || rstate.lastSceneApplied || null),
+    getWorldId: () => rstate.hoWorldId || null,
+    // Force the current Happy Oyster world to rebuild — used after changing a
+    // session-fixed knob (perspective / experience) so the new setting takes
+    // effect. Drops the revisit cache for this scene so it genuinely regenerates.
+    rebuildWorld: () => {
+      if (!isHappyOyster() || !rstate.started) return false;
+      const s = rstate.lastSceneApplied;
+      if (!s || !s.prompt) return false;
+      if (s.imageUrl && rstate.hoWorldsByImage[s.imageUrl]) delete rstate.hoWorldsByImage[s.imageUrl];
+      rstate.lastImageUrl = null; // force a new-guide-image rebuild via applyRunning
+      rstate.pending = { prompt: s.prompt, imageUrl: s.imageUrl || null, hardTransition: true };
+      flush();
+      return true;
+    },
+    // Happy Oyster session shape (experience + perspective). Setting persists to
+    // localStorage and takes effect on the NEXT world build (fixed per session).
+    getExperience: () => (isHappyOyster() ? happyOysterExperience() : null),
+    getPerspective: () => (isHappyOyster() ? happyOysterPerspective() : null),
+    setExperience: (v) => {
+      v = (v === "director" || v === "directing") ? "director" : "adventure";
+      rstate.hoExperience = v;
+      try { localStorage.setItem("happy_oyster_experience", v); } catch (_) {}
+      return v;
+    },
+    setPerspective: (v) => {
+      v = (v === "third_person") ? "third_person" : "first_person";
+      rstate.hoPerspective = v;
+      try { localStorage.setItem("happy_oyster_perspective", v); } catch (_) {}
+      return v;
+    },
     // Register a custom / brand-new Reactor model at runtime (from the UI's
     // "add model" field), then it's selectable like any other. Returns the id.
     addModel: (id, label, opts) => {
@@ -1780,5 +1988,12 @@
     // fn() — fired when the available-model list changes (e.g. a custom model
     // was added), so the switcher UI can rebuild.
     onModelsChanged: null,
+    // fn(verbs, data) — fired when the current Happy Oyster world's interaction
+    // verbs change (built-ins + travel_state-advertised), so the UI can rebuild
+    // the verb bar with real, world-specific actions.
+    onInteractVerbs: null,
+    // fn(worldId, data) — fired when the current world's encrypted id is known,
+    // so the game can save it and reopen the world later with attachWorld.
+    onWorldId: null,
   };
 })();

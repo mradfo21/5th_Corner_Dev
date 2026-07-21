@@ -1,5 +1,31 @@
 # 🔧 CHANGELOG - July 21, 2026
 
+## 🐚 Happy Oyster: full ability surface wired into the UX
+
+**Files:** `static/js/reactor_renderer.js`, `static/js/standalone.js`,
+`templates/standalone.html`, `static/css/standalone.css`, e2e tests
+
+Engineered the UX around Happy Oyster so ALL of its abilities are utilized:
+
+- **Full navigation** — the joystick/keys now drive every move + look direction:
+  W/S forward-back, A/D turn, **Q/E strafe** (move Left/Right), ←/→ turn, and
+  **↑/↓ tilt** (look Mouse_Up/Down). Previously only forward/back + yaw were used.
+- **Interaction verbs** — a new on-screen **verb bar** surfaces the built-in
+  survival verbs (Sprint / Crouch / Jump / Attack) PLUS the verbs each world
+  advertises live via `travel_state`. Momentary verbs tap to fire
+  `interact({action})`; held verbs (Sprint / Crouch) engage while pressed and
+  compose with movement; **hold Shift to Sprint**.
+- **Perspective + Experience** — the two session-fixed knobs are exposed in the
+  WORLD MODEL panel: **VIEW** (first/third person) and **MODE** (Adventure vs
+  **Director**). Changing one rebuilds the world to apply it.
+- **Directing experience** — selectable; steer the scene with text (`instruct`,
+  via the ACT input) and control playback (`pause`/`resume`/`rewind`), with
+  Director create_world params (resolution/layout/narrative). The Adventure-only
+  joystick + verb bar recede in Director mode.
+- **attach_world** — worlds built this session are cached per scene and
+  **reopened with `attach_world` on revisit** instead of regenerating (faster,
+  identical). World ids are tracked from `world_state`.
+
 ## 🌊 World Model: LingBot World 2 → Happy Oyster
 
 **Files:** `engine.py`, `api.py`, `render.yaml`, `static/js/reactor_renderer.js`,

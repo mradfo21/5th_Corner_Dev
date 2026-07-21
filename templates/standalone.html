@@ -212,6 +212,21 @@
              aria-label="Custom world model id" spellcheck="false">
       <button id="rt-model-go" type="submit" title="Load this world model">USE</button>
     </form>
+    <!-- Happy Oyster session shape — the two knobs that are FIXED for a world's
+         lifetime, so changing one rebuilds the current world to apply it. Shown
+         only when the live model is Happy Oyster. Perspective = first/third
+         person (Adventure); Experience = Adventure (walk/look/interact) vs
+         Director (steer with text + pause/resume/rewind). Populated by HappyOysterOptions. -->
+    <div id="rt-ho-opts" class="rt-ho-opts hidden" role="group" aria-label="Happy Oyster options">
+      <div class="rt-ho-row">
+        <span class="rt-ho-label">VIEW</span>
+        <div id="rt-ho-perspective" class="rt-ho-seg" role="group" aria-label="Camera perspective"></div>
+      </div>
+      <div class="rt-ho-row">
+        <span class="rt-ho-label">MODE</span>
+        <div id="rt-ho-experience" class="rt-ho-seg" role="group" aria-label="Experience"></div>
+      </div>
+    </div>
     <!-- Music bed volume — the ambient score sits under the SFX. Tune or mute it
          here with preset options (persisted per browser); changes apply live. -->
     <div id="rt-music" class="rt-music" role="group" aria-label="Music volume">
@@ -296,9 +311,9 @@
       </div>
       <div class="move-thrust" aria-hidden="true"></div>
       <div id="move-nub" class="move-nub" role="slider" tabindex="0"
-           aria-label="Drive joystick — drag to move and look around the live world, or use W A S D"
+           aria-label="Drive joystick — drag to move and look around the live world, or use W A S D / Q E / arrow keys"
            aria-valuetext="centered"
-           title="Explore — W/S move forward-back · A/D look left-right · drag or use the keys">
+           title="Explore — W/S move · A/D turn · Q/E strafe · ←/→ turn · ↑/↓ look up-down · or drag">
         <span class="move-arrow" aria-hidden="true"></span>
         <span class="move-core" aria-hidden="true"></span>
       </div>
@@ -329,6 +344,14 @@
     <div id="scan-tags"></div>
     <div id="scan-hint" class="scan-hint"></div>
   </div>
+
+  <!-- Interaction verbs (Happy Oyster Adventure): the live world's action verbs
+       — the built-in survival set (Sprint / Crouch / Jump / Attack) PLUS any
+       verbs THIS world advertises via travel_state. Momentary verbs (Jump /
+       Attack / advertised) fire on tap; held verbs (Sprint / Crouch) stay
+       engaged while pressed and compose with movement. Realtime mode only, and
+       only when the live model takes interaction verbs. Populated by VerbBar. -->
+  <div id="verb-bar" class="verb-bar hidden" aria-label="World interaction verbs"></div>
 
   <!-- TALK overlay: opened from a SCAN tag's TALK action on a thing that can
        speak. A sleek, coffee-talk-inspired conversation window that docks to

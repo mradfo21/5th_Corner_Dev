@@ -154,6 +154,12 @@ export class Reactor {
         encrypted_world_id: "world_" + Math.random().toString(36).slice(2),
         prompt: p.prompt || "", first_frame: p.first_frame_image_url || "", mode: 1,
       } }), 14);
+    } else if (name === "attach_world") {
+      // Reopen a saved world: ready immediately (no build), echoing its id.
+      window.__MOCK_ATTACHES__ = (window.__MOCK_ATTACHES__ || 0) + 1;
+      const id = (data || {}).encrypted_world_id || "";
+      setTimeout(() => this._emit("message", { type: "world_state", data: {
+        phase: "ready", encrypted_world_id: id, mode: 1 } }), 8);
     } else if (name === "start_travel") {
       // Advertise this world's interaction verbs, then stream video (unless the
       // stall path is being exercised).
@@ -1725,6 +1731,132 @@ class TestRealtimeRenderer(unittest.TestCase):
             )
         except Exception:
             print("\n=== REACTOR CONSOLE LOG (burst_timing) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
+    def _seed_live_scene(self, page):
+        """Boot /realtime, apply a first scene, and wait for the live video."""
+        page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
+        page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isReady() === true", timeout=15000)
+        page.evaluate(
+            "(img) => window.ReactorRenderer.applyScene({prompt: 'A dim loading dock you can walk through', imageUrl: img, hardTransition: false})",
+            TINY_PNG_DATA_URL,
+        )
+        page.wait_for_function("window.ReactorRenderer.isShowing() === true", timeout=15000)
+
+    def test_interaction_verb_bar_fires_verbs(self):
+        """Happy Oyster's interaction verbs are a real UX: the verb bar shows the
+        built-in survival set PLUS the verbs THIS world advertises (travel_state),
+        a momentary verb (Jump) fires interact({action}), and a held verb (Sprint)
+        engages on press and releases (stop) on let-go."""
+        page = self._new_realtime_page()
+        try:
+            self._seed_live_scene(page)
+            # The verb bar appears with real verbs (built-ins + advertised "Open").
+            page.wait_for_function("document.querySelectorAll('#verb-bar .verb-btn').length >= 1", timeout=8000)
+            verbs = page.evaluate(
+                "Array.from(document.querySelectorAll('#verb-bar .verb-btn')).map(b => b.dataset.verb)")
+            for v in ["Jump", "Attack", "Crouch", "Sprint", "Open"]:
+                self.assertIn(v, verbs, f"verb bar missing {v}: {verbs}")
+
+            # Momentary verb: tapping Jump fires interact({action:'Jump'}).
+            page.evaluate("window.__MOCK_CMD_LOG__ = []")
+            page.evaluate("document.querySelector('#verb-bar .verb-btn[data-verb=\"Jump\"]').click()")
+            page.wait_for_function(
+                """() => (window.__MOCK_CMD_LOG__||[]).some(c => c.name==='interact' && c.data.action==='Jump')""",
+                timeout=5000)
+
+            # Held verb: pressing Sprint engages interact({action:'Sprint'});
+            # releasing it issues a stop (held controls released).
+            page.evaluate("window.__MOCK_CMD_LOG__ = []")
+            page.evaluate(
+                """() => { const b = document.querySelector('#verb-bar .verb-btn[data-verb=\"Sprint\"]');
+                    b.dispatchEvent(new PointerEvent('pointerdown', {pointerId: 21, cancelable:true, bubbles:true})); }""")
+            page.wait_for_function(
+                """() => (window.__MOCK_CMD_LOG__||[]).some(c => c.name==='interact' && c.data.action==='Sprint')""",
+                timeout=5000)
+            page.evaluate(
+                """() => { const b = document.querySelector('#verb-bar .verb-btn[data-verb=\"Sprint\"]');
+                    b.dispatchEvent(new PointerEvent('pointerup', {pointerId: 21, cancelable:true, bubbles:true})); }""")
+            page.wait_for_function(
+                """() => (window.__MOCK_CMD_LOG__||[]).some(c => c.name==='stop')""", timeout=5000)
+        except Exception:
+            print("\n=== REACTOR CONSOLE LOG (verb-bar) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
+    def test_happy_oyster_perspective_and_experience_options(self):
+        """The two session-fixed Happy Oyster knobs are exposed + functional:
+        switching VIEW to third-person rebuilds the world (create_world with
+        perspective:third_person), and switching MODE to Director rebuilds it as a
+        Directing world (create_world with resolution/layout/narrative, no
+        perspective)."""
+        page = self._new_realtime_page()
+        try:
+            self._seed_live_scene(page)
+            # Open the WORLD MODEL panel; the Happy Oyster options are shown.
+            page.click("#menu-toggle")
+            page.click("#btn-model")
+            page.wait_for_function("!document.getElementById('rt-ho-opts').classList.contains('hidden')", timeout=5000)
+
+            # Switch perspective -> third person: the world rebuilds with it.
+            page.evaluate("window.__MOCK_CMD_LOG__ = []")
+            page.evaluate("document.querySelector('#rt-ho-perspective .rt-ho-btn[data-value=\"third_person\"]').click()")
+            page.wait_for_function(
+                """() => (window.__MOCK_CMD_LOG__||[]).some(c => c.name==='create_world' && c.data.perspective==='third_person')""",
+                timeout=8000)
+            # Let the rebuilt world go fully live (travelling) before the next toggle.
+            page.wait_for_function("window.ReactorRenderer.isShowing() === true", timeout=15000)
+
+            # Switch experience -> Director: rebuilds as a Directing world (director
+            # params present, perspective absent).
+            page.evaluate("window.__MOCK_CMD_LOG__ = []")
+            page.evaluate("document.querySelector('#rt-ho-experience .rt-ho-btn[data-value=\"director\"]').click()")
+            page.wait_for_function(
+                """() => (window.__MOCK_CMD_LOG__||[]).some(c => c.name==='create_world' && c.data.resolution && c.data.layout && c.data.narrative && !c.data.perspective)""",
+                timeout=8000)
+            # Director hides the Adventure-only joystick.
+            page.wait_for_function("document.body.classList.contains('ho-director')", timeout=4000)
+            self.assertEqual(
+                page.evaluate("getComputedStyle(document.getElementById('move-pad')).display"), "none",
+                "the joystick must hide in the Director experience")
+        except Exception:
+            print("\n=== REACTOR CONSOLE LOG (ho-options) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
+    def test_attach_world_reused_on_revisit(self):
+        """attach_world is genuinely utilized: revisiting a scene whose world we
+        already built (same guide image) reopens it with attach_world instead of
+        regenerating with create_world."""
+        page = self._new_realtime_page()
+        try:
+            page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
+            page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isReady() === true", timeout=15000)
+            img_a = TINY_PNG_DATA_URL
+            img_b = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+            # (evaluate passes ONE arg — destructure [prompt, img] from it.)
+            apply = "(a) => window.ReactorRenderer.applyScene({prompt: a[0], imageUrl: a[1], hardTransition: false})"
+            # Scene A -> builds world #1.
+            page.evaluate(apply, ["scene A", img_a])
+            page.wait_for_function("window.ReactorRenderer.isShowing() === true", timeout=15000)
+            page.wait_for_function("(window.__MOCK_CMDS__||[]).filter(c=>c==='create_world').length >= 1", timeout=8000)
+            # Scene B -> builds world #2.
+            page.evaluate(apply, ["scene B", img_b])
+            page.wait_for_function("(window.__MOCK_CMDS__||[]).filter(c=>c==='create_world').length >= 2", timeout=10000)
+            page.wait_for_function("window.ReactorRenderer.isShowing() === true", timeout=15000)
+            # Revisit Scene A (same guide image) -> must ATTACH the saved world,
+            # not build a third one.
+            page.evaluate("window.__MOCK_ATTACHES__ = 0")
+            page.evaluate(apply, ["scene A again", img_a])
+            page.wait_for_function("(window.__MOCK_ATTACHES__||0) >= 1", timeout=10000)
+            builds = page.evaluate("(window.__MOCK_CMDS__||[]).filter(c=>c==='create_world').length")
+            self.assertEqual(builds, 2, "revisit must not build a new world (should attach)")
+        except Exception:
+            print("\n=== REACTOR CONSOLE LOG (attach-revisit) ===\n" + self._dump_logs())
             raise
         finally:
             page.close()

@@ -61,6 +61,7 @@
     realtimeBtn: document.getElementById("realtime-btn"),
     movePad: document.getElementById("move-pad"),
     moveNub: document.getElementById("move-nub"),
+    verbBar: document.getElementById("verb-bar"),
     moveArrow: document.querySelector("#move-nub .move-arrow"),
     moveReadout: document.querySelector("#move-pad .move-readout .move-head"),
     touchLayer: document.getElementById("touch-layer"),
@@ -1609,6 +1610,7 @@
               clearScanTags();
               schedulePrewarm(); // live scene on screen — detect its hotspots
               updateAmbientScan(); // surface ambient hotspots over the live video
+              try { VerbBar.update(); } catch (_) {} // world's interaction verbs
             }
             // The world model started streaming solid black (its safety refused
             // the scene). The renderer has already hidden the black video to
@@ -1739,6 +1741,12 @@
         // The available-model list changed (e.g. a custom model was added) —
         // rebuild the switcher so the new entry appears.
         window.ReactorRenderer.onModelsChanged = () => { buildModelSwitcher(); };
+        // Happy Oyster reported this world's interaction verbs (travel_state) —
+        // rebuild the verb bar with the world's real, live actions.
+        window.ReactorRenderer.onInteractVerbs = () => { try { VerbBar.onVerbs(); } catch (_) {} };
+        // The renderer caches world ids per scene and reopens them with
+        // attach_world on revisit; just surface it in the log for visibility.
+        window.ReactorRenderer.onWorldId = (id) => { RtLog.push("dim", "\u25C7 world id \u00B7 saved"); };
         // The log + switcher stay reachable whenever realtime is available so you
         // can flip world models even from still mode.
         document.body.classList.add("reactor-available");
@@ -2837,6 +2845,8 @@
           ? "Renderer: realtime — connecting…"
           : "Renderer: realtime — showing stills until it connects (G)";
     updateModelSwitcher();
+    try { VerbBar.update(); } catch (_) {}
+    try { HappyOysterOptions.update(); } catch (_) {}
   }
 
   // ------------------------------------------------------------------
@@ -3249,14 +3259,23 @@
     const KEY_INTENSITY = 0.5;       // fixed push level for keyboard turning (no analog)
     const FALLBACK_SEND_MS = 950;    // prompt-fallback (non-native-nav) re-steer cadence
 
-    // Keyboard → semantic drive tokens. W/S (and ↑/↓) move forward/back; A/D
-    // (and ←/→) look left/right. null = not a drive key.
+    // Keyboard → semantic drive tokens, covering the FULL navigation surface:
+    //   W/S            move forward / back        (move Front/Back)
+    //   A/D            turn left / right (yaw)     (look Mouse_Left/Right)
+    //   Q/E            strafe left / right         (move Left/Right)
+    //   ← / →          turn left / right (yaw)     (look Mouse_Left/Right)
+    //   ↑ / ↓          look up / down (pitch)      (look Mouse_Up/Down)
+    // null = not a drive key. (Arrows are the "look" cluster: ←/→ turn, ↑/↓ tilt.)
     function keyFor(key) {
       switch ((key || "").toLowerCase()) {
-        case "w": case "arrowup": return "fwd";
-        case "s": case "arrowdown": return "back";
+        case "w": return "fwd";
+        case "s": return "back";
         case "a": case "arrowleft": return "lookL";
         case "d": case "arrowright": return "lookR";
+        case "q": return "strafeL";
+        case "e": return "strafeR";
+        case "arrowup": return "pitchUp";
+        case "arrowdown": return "pitchDown";
         default: return null;
       }
     }
@@ -3272,12 +3291,18 @@
     let loopTimer = null;
     let warnedNotReady = false;
     // Last axis values pushed to the model, so we only send on change.
-    const sent = { longitudinal: "idle", lookH: "idle", rot: null };
+    const sent = { longitudinal: "idle", lateral: "idle", lookH: "idle", lookV: "idle", rot: null };
     let lastFallbackTs = 0;
     let lastFallbackKey = null;
 
     function enabled() {
-      return Renderer.mode === "reactor" && Renderer.reactorAvailable();
+      if (Renderer.mode !== "reactor" || !Renderer.reactorAvailable()) return false;
+      // The Director experience has no movement/look — steering is text only.
+      try {
+        if (window.ReactorRenderer.getExperience &&
+            window.ReactorRenderer.getExperience() === "director") return false;
+      } catch (_) {}
+      return true;
     }
     function nativeMotion() {
       return enabled() && window.ReactorRenderer.motionSupported &&
@@ -3290,11 +3315,15 @@
     // per-axis where non-idle; the pointer supplies drive + steer otherwise.
     // Vertical = forward/back translation, horizontal = yaw (look left/right).
     function compose() {
-      // Keyboard contribution.
+      // Keyboard contribution — the full navigation surface.
       let lon = keys.has("fwd") && !keys.has("back") ? "forward"
               : keys.has("back") && !keys.has("fwd") ? "back" : "idle";
+      let lat = keys.has("strafeL") && !keys.has("strafeR") ? "left"
+              : keys.has("strafeR") && !keys.has("strafeL") ? "right" : "idle";
       let lh  = keys.has("lookL") && !keys.has("lookR") ? "left"
               : keys.has("lookR") && !keys.has("lookL") ? "right" : "idle";
+      let lv  = keys.has("pitchUp") && !keys.has("pitchDown") ? "up"
+              : keys.has("pitchDown") && !keys.has("pitchUp") ? "down" : "idle";
       // Pointer contribution: stick y = forward/back, stick x = yaw.
       let ptrTurnMag = 0;
       if (pointerActive) {
@@ -3308,13 +3337,14 @@
       // acceleration (speed creeping up the longer you hold was the disorienting,
       // hard-to-aim part). The joystick gives fine proportional control by how far
       // you push sideways; keys use a fixed gentle speed. Forward/back is a
-      // discrete axis (its pace is fixed by the model).
+      // discrete axis (its pace is fixed by the model). (Turn speed applies to the
+      // legacy LingBot axes; Happy Oyster's look has no turn-rate knob.)
       let rot = null;
       if (lh !== "idle") {
         const intensity = pointerActive ? ptrTurnMag : KEY_INTENSITY;
         rot = ROT_MIN + (ROT_MAX - ROT_MIN) * intensity;
       }
-      return { longitudinal: lon, lookH: lh, rot: rot };
+      return { longitudinal: lon, lateral: lat, lookH: lh, lookV: lv, rot: rot };
     }
 
     // Push changed drive axes to the world model via the renderer facade, which
@@ -3329,7 +3359,9 @@
         if (val !== "idle") moved = true;
       };
       push("longitudinal", st.longitudinal);
+      push("lateral", st.lateral);
       push("lookH", st.lookH);
+      push("lookV", st.lookV);
       if (st.rot != null && Math.round(st.rot) !== Math.round(sent.rot == null ? -1 : sent.rot)) {
         sent.rot = st.rot;
         R.setRotationSpeed(st.rot);
@@ -3357,8 +3389,12 @@
       const p = [];
       if (st.longitudinal === "forward") p.push("the camera pushes forward, deeper into the scene");
       else if (st.longitudinal === "back") p.push("the camera pulls backward, retreating");
+      if (st.lateral === "left") p.push("strafing to the left");
+      else if (st.lateral === "right") p.push("strafing to the right");
       if (st.lookH === "left") p.push("turning to look to the left");
       else if (st.lookH === "right") p.push("turning to look to the right");
+      if (st.lookV === "up") p.push("tilting the view upward");
+      else if (st.lookV === "down") p.push("tilting the view downward");
       return p.join(", ");
     }
 
@@ -3367,8 +3403,12 @@
       const p = [];
       if (st.longitudinal === "forward") p.push("FWD");
       else if (st.longitudinal === "back") p.push("BACK");
+      if (st.lateral === "left") p.push("STRAFE L");
+      else if (st.lateral === "right") p.push("STRAFE R");
       if (st.lookH === "left") p.push("LOOK L");
       else if (st.lookH === "right") p.push("LOOK R");
+      if (st.lookV === "up") p.push("LOOK UP");
+      else if (st.lookV === "down") p.push("LOOK DN");
       return p.length ? p.join(" + ") : "still";
     }
 
@@ -3383,7 +3423,8 @@
       }
       setVar(el.moveNub, "--mx", (nx * radius).toFixed(1) + "px");
       setVar(el.moveNub, "--my", (ny * radius).toFixed(1) + "px");
-      const moving = st.longitudinal !== "idle" || st.lookH !== "idle";
+      const moving = st.longitudinal !== "idle" || st.lookH !== "idle" ||
+                     st.lateral !== "idle" || st.lookV !== "idle";
       const thrust = pointerActive ? mag : (moving ? Math.min(1, (Date.now() - rampStart) / RAMP_MS * 0.6 + 0.4) : 0);
       setVar(el.movePad, "--thrust", (engaged && moving ? thrust : 0).toFixed(3));
       let deg = 0;
@@ -3430,10 +3471,11 @@
       // Idle every axis so the camera comes to rest (persistent state!). We call
       // stopMotion (idles ALL axes incl. any translation) so nothing lingers.
       if (nativeMotion() && window.ReactorRenderer.stopMotion) window.ReactorRenderer.stopMotion();
-      else if (enabled() && (sent.longitudinal !== "idle" || sent.lookH !== "idle")) {
+      else if (enabled() && (sent.longitudinal !== "idle" || sent.lookH !== "idle" ||
+                             sent.lateral !== "idle" || sent.lookV !== "idle")) {
         Renderer.steerMovement("Camera: the viewpoint eases to a halt and holds steady, the scene settling into a calm, stable shot.");
       }
-      sent.longitudinal = "idle"; sent.lookH = "idle";
+      sent.longitudinal = "idle"; sent.lateral = "idle"; sent.lookH = "idle"; sent.lookV = "idle";
       lastFallbackKey = null;
     }
 
@@ -3447,7 +3489,7 @@
       stopLoop();
       if (el.movePad) el.movePad.classList.remove("engaged");
       if (el.moveNub) el.moveNub.classList.remove("dragging");
-      updateVisual({ longitudinal: "idle", lookH: "idle" });
+      updateVisual({ longitudinal: "idle", lateral: "idle", lookH: "idle", lookV: "idle" });
       stopAll();
       RtLog.push("dim", "\u25A0 camera \u00B7 rest");
       // Regenerate + reveal the OCR hotspots once the view settles.
@@ -3531,6 +3573,215 @@
   })();
   // Expose for debugging + e2e.
   try { window.__Movement = Movement; } catch (_) {}
+
+  // ------------------------------------------------------------------
+  // VerbBar — the interaction-verb instrument for Happy Oyster Adventure.
+  //
+  // Happy Oyster worlds accept interaction VERBS: a built-in survival set
+  // (Sprint / Crouch / Jump / Attack) plus verbs the specific world advertises
+  // live via travel_state (character_actions + environment_actions). This surfaces
+  // them as tappable buttons so the player can actually DO them, and the set
+  // updates itself as the world reports new verbs. Momentary verbs (Jump / Attack
+  // / advertised) fire a one-shot interact({action}); held verbs (Sprint /
+  // Crouch) stay engaged while pressed (press = setHeldVerb, release = clear) and
+  // compose with movement. Only visible in realtime video mode when the live
+  // model takes verbs (Happy Oyster). Keyboard: hold Shift to Sprint.
+  // ------------------------------------------------------------------
+  const VerbBar = (function () {
+    // Verbs that are HELD (engaged while pressed) vs momentary (fire once).
+    const HELD = { sprint: true, crouch: true };
+    // Small glyphs for the built-in verbs; advertised verbs render as text chips.
+    const ICON = {
+      sprint: "\u00BB", crouch: "\u02C5", jump: "\u2191", attack: "\u2694",
+    };
+    let built = "";           // signature of the verb set currently rendered
+    let heldBtn = null;       // the button whose held verb is currently engaged
+
+    function available() {
+      return Renderer.mode === "reactor" && Renderer.reactorAvailable() &&
+        window.ReactorRenderer && window.ReactorRenderer.canInteract &&
+        window.ReactorRenderer.canInteract();
+    }
+
+    function verbs() {
+      try {
+        const v = window.ReactorRenderer.getInteractVerbs && window.ReactorRenderer.getInteractVerbs();
+        if (v && v.length) return v;
+      } catch (_) {}
+      return ["Sprint", "Crouch", "Jump", "Attack"];
+    }
+
+    function fire(verb) {
+      try { window.ReactorRenderer.interact(verb); } catch (_) {}
+      try { Sound.submit(); } catch (_) {}
+      try { Haptics.soft(); } catch (_) {}
+    }
+    function hold(verb, on) {
+      try { window.ReactorRenderer.setHeldVerb(on ? verb : null); } catch (_) {}
+      if (on) { try { Haptics.soft(); } catch (_) {} }
+    }
+
+    function makeBtn(verb) {
+      const key = verb.toLowerCase();
+      const held = !!HELD[key];
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "verb-btn" + (held ? " verb-held" : "");
+      b.dataset.verb = verb;
+      b.title = (held ? "Hold to " : "") + verb;
+      const ico = ICON[key];
+      b.innerHTML = (ico ? '<span class="verb-ico" aria-hidden="true">' + ico + "</span>" : "") +
+        '<span class="verb-label">' + verb.toUpperCase() + "</span>";
+      if (held) {
+        const down = (e) => { e.preventDefault(); b.classList.add("active"); heldBtn = b; hold(verb, true); };
+        const up = (e) => { if (e) e.preventDefault(); if (!b.classList.contains("active")) return; b.classList.remove("active"); if (heldBtn === b) heldBtn = null; hold(verb, false); };
+        b.addEventListener("pointerdown", down);
+        b.addEventListener("pointerup", up);
+        b.addEventListener("pointerleave", up);
+        b.addEventListener("pointercancel", up);
+      } else {
+        b.addEventListener("click", (e) => {
+          e.preventDefault();
+          b.classList.remove("poke"); void b.offsetWidth; b.classList.add("poke");
+          fire(verb);
+        });
+      }
+      return b;
+    }
+
+    function render() {
+      if (!el.verbBar) return;
+      const list = verbs();
+      const sig = list.join("|");
+      if (sig === built) return; // nothing changed
+      built = sig;
+      // Releasing any engaged held verb before we rebuild the buttons.
+      if (heldBtn) { hold(heldBtn.dataset.verb, false); heldBtn = null; }
+      el.verbBar.innerHTML = "";
+      list.forEach((v) => el.verbBar.appendChild(makeBtn(v)));
+    }
+
+    // Show/hide with the realtime instrument set; rebuild when verbs change.
+    function update() {
+      if (!el.verbBar) return;
+      const on = available();
+      el.verbBar.classList.toggle("hidden", !on);
+      el.verbBar.setAttribute("aria-hidden", on ? "false" : "true");
+      if (on) render();
+      else { built = ""; el.verbBar.innerHTML = ""; if (heldBtn) { heldBtn = null; } }
+    }
+
+    // The live model reported a new verb set (travel_state) — rebuild.
+    function onVerbs() { built = ""; update(); }
+
+    // Keyboard Sprint (hold Shift while exploring the live world).
+    let shiftHeld = false;
+    function onShift(down) {
+      if (down === shiftHeld) return;
+      if (down && !available()) return;
+      shiftHeld = down;
+      hold("Sprint", down);
+      const sb = el.verbBar && el.verbBar.querySelector('.verb-btn[data-verb="Sprint"]');
+      if (sb) sb.classList.toggle("active", down);
+      if (!down && heldBtn && heldBtn.dataset.verb === "Sprint") heldBtn = null;
+    }
+
+    function init() {
+      update();
+    }
+
+    return { init, update, onVerbs, onShift };
+  })();
+  try { window.__VerbBar = VerbBar; } catch (_) {}
+
+  // ------------------------------------------------------------------
+  // HappyOysterOptions — the two session-fixed knobs Happy Oyster exposes at
+  // world creation, surfaced in the WORLD MODEL panel:
+  //   • VIEW — camera perspective: first-person (default) or third-person.
+  //   • MODE — the EXPERIENCE: Adventure (walk/look/interact — the game) or
+  //     Director (steer the scene with text + pause/resume/rewind).
+  // Both are fixed for a world's lifetime, so changing one persists the choice
+  // and rebuilds the current world to apply it. Only shown when the live model
+  // is Happy Oyster.
+  // ------------------------------------------------------------------
+  const HappyOysterOptions = (function () {
+    const wrap = () => document.getElementById("rt-ho-opts");
+    const SEGS = {
+      perspective: {
+        el: () => document.getElementById("rt-ho-perspective"),
+        opts: [["first_person", "1ST"], ["third_person", "3RD"]],
+        get: () => { try { return window.ReactorRenderer.getPerspective(); } catch (_) { return null; } },
+        set: (v) => { try { window.ReactorRenderer.setPerspective(v); } catch (_) {} },
+      },
+      experience: {
+        el: () => document.getElementById("rt-ho-experience"),
+        opts: [["adventure", "ADVENTURE"], ["director", "DIRECTOR"]],
+        get: () => { try { return window.ReactorRenderer.getExperience(); } catch (_) { return null; } },
+        set: (v) => { try { window.ReactorRenderer.setExperience(v); } catch (_) {} },
+      },
+    };
+
+    function isHappyOyster() {
+      try { return Renderer.mode === "reactor" && Renderer.reactorAvailable() &&
+        window.ReactorRenderer.getExperience && window.ReactorRenderer.getExperience() !== null; }
+      catch (_) { return false; }
+    }
+
+    function apply(seg, value) {
+      const cur = SEGS[seg].get();
+      if (value === cur) return;
+      SEGS[seg].set(value);
+      update(); // repaint + reflect the experience on <body> (ho-director) now
+      // Rebuild so the new session-fixed setting takes effect on the live world.
+      let rebuilt = false;
+      try { rebuilt = window.ReactorRenderer.rebuildWorld(); } catch (_) {}
+      showRendererToast((seg === "perspective" ? "View" : "Mode") + ": " +
+        (SEGS[seg].opts.find((o) => o[0] === value) || ["", value])[1].toLowerCase() +
+        (rebuilt ? " — rebuilding world…" : ""));
+    }
+
+    function buildSeg(seg) {
+      const host = SEGS[seg].el();
+      if (!host || host.childElementCount) return;
+      SEGS[seg].opts.forEach(([value, label]) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "rt-ho-btn";
+        b.dataset.value = value;
+        b.textContent = label;
+        b.addEventListener("click", () => apply(seg, value));
+        host.appendChild(b);
+      });
+    }
+
+    function paint() {
+      Object.keys(SEGS).forEach((seg) => {
+        const host = SEGS[seg].el();
+        if (!host) return;
+        const cur = SEGS[seg].get();
+        Array.from(host.children).forEach((b) =>
+          b.classList.toggle("on", b.dataset.value === cur));
+      });
+    }
+
+    function update() {
+      const w = wrap();
+      // The Director experience swaps the whole control scheme (text-steer +
+      // playback instead of walk/look/interact) — flag it on <body> so the
+      // Adventure-only instruments (joystick, verb bar) recede in CSS.
+      const director = isHappyOyster() && SEGS.experience.get() === "director";
+      document.body.classList.toggle("ho-director", director);
+      if (!w) return;
+      const on = isHappyOyster();
+      w.classList.toggle("hidden", !on);
+      if (on) { buildSeg("perspective"); buildSeg("experience"); paint(); }
+    }
+
+    function init() { update(); }
+
+    return { init, update };
+  })();
+  try { window.__HappyOysterOptions = HappyOysterOptions; } catch (_) {}
 
   // ------------------------------------------------------------------
   // Menu — the collapsible control rail (top-right). Starts COLLAPSED every
@@ -8299,6 +8550,21 @@
       showRendererToast(ok ? "Live nudge sent" : "Realtime not ready yet");
       return;
     }
+    // Director experience (Happy Oyster): typed text is a live `instruct` that
+    // steers the unfolding scene — the Directing steering verb — not a full turn.
+    try {
+      if (Renderer.mode === "reactor" && Renderer.reactorAvailable() &&
+          window.ReactorRenderer.getExperience &&
+          window.ReactorRenderer.getExperience() === "director") {
+        el.customInput.value = "";
+        const ok = window.ReactorRenderer.instruct(text);
+        Sound.submit();
+        closeFreeWill(true);
+        showRendererToast(ok ? "Directing: instruction sent" : "World not ready yet");
+        if (ok) RtLog.push("prompt", "\u25B8 instruct", RtLog.clip(text, 160));
+        return;
+      }
+    } catch (_) {}
     // ACT (full turn) stays gated on the pipeline being idle.
     if (state.processing) return;
     el.customInput.value = "";
@@ -8677,6 +8943,9 @@
         if (!e.repeat) Movement.pressKey(mk);
         return;
       }
+      // Hold Shift to Sprint (a held interaction verb) while exploring the live
+      // world — composes with movement. Released on keyup.
+      if (e.key === "Shift") { if (!e.repeat) { try { VerbBar.onShift(true); } catch (_) {} } return; }
     }
     if (e.key === "1" || e.key === "2" || e.key === "3") {
       const idx = Number(e.key) - 1;
@@ -9279,10 +9548,14 @@
     if (el.agentDebugBtn) el.agentDebugBtn.addEventListener("click", () => AgentLog.toggle());
     AgentLog.init();
     Movement.init();
+    VerbBar.init();
+    HappyOysterOptions.init();
     document.addEventListener("keydown", onKeydown);
-    // Release joystick directions on keyup so held W/A/S/D stop the moment the
-    // key lifts (movement is a "hold to travel" control).
+    // Release joystick directions on keyup so held W/A/S/D/Q/E/arrows stop the
+    // moment the key lifts (movement is a "hold to travel" control). Shift ends
+    // a held Sprint.
     document.addEventListener("keyup", (e) => {
+      if (e.key === "Shift") { try { VerbBar.onShift(false); } catch (_) {} }
       if (!Movement.enabled()) return;
       const mk = Movement.keyFor(e.key);
       if (mk) Movement.releaseKey(mk);
