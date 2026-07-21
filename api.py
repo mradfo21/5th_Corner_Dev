@@ -97,7 +97,55 @@ app.add_url_rule('/api/reset', 'standalone_api_reset', _session_scoped(engine.ap
 # mirror (see comment above). engine.api_feed resolves its own session id and
 # reads from disk.
 app.add_url_rule('/api/feed', 'standalone_api_feed', engine.api_feed, methods=['GET'])
-app.add_url_rule('/api/choose', 'standalone_api_choose', _session_scoped(engine.api_choose), methods=['POST'])
+
+
+def _credit_gated_choose():
+    """Wrap engine.api_choose with the arcade credit meter.
+
+    Flow (only active when COINOP_CREDIT_GATING=1 — otherwise a straight
+    pass-through so nothing changes for deploys that only want the paid
+    death-continue flow):
+
+    1. Look up the session's remaining credits before touching the engine.
+    2. If zero, return HTTP 402 with `{needs_coin: true, balance: 0}` and
+       do NOT process the turn. The client uses this to pop the "OUT OF
+       COINS" pause overlay — same coin-op button, different framing.
+    3. Otherwise let the engine handle the turn as normal, then debit one
+       credit AFTER a successful response (never charge for a 500). The
+       debit is atomic in coinop._GRANT_LOCK, so concurrent /api/choose
+       calls for the same session can't over-spend the balance.
+
+    We debit AFTER instead of BEFORE so a server-side failure doesn't eat
+    a credit the player never got any narrative for. Trade-off: a rapid
+    double-tap could burn 2 credits when the balance was 1 — but the
+    pre-check ("balance >= 1") is guarded by the same lock, so as long as
+    the second request arrives after the first debit lands it will 402
+    cleanly. The window is a few dozen ms.
+    """
+    sid = engine._resolve_request_session_id()
+    if coinop.is_credit_gating_enabled():
+        bal = coinop.get_balance(sid)
+        if bal.get("balance", 0) <= 0:
+            return jsonify({
+                "needs_coin": True,
+                "balance": 0,
+                "reason": "insufficient_credits",
+                "message": "Out of coins — insert more to keep playing.",
+            }), 402
+    response = engine.api_choose()
+    try:
+        status = response.status_code if hasattr(response, 'status_code') else 200
+    except Exception:
+        status = 200
+    if coinop.is_credit_gating_enabled() and 200 <= status < 300:
+        try:
+            coinop.spend_credit(sid, amount=1, reason="choose")
+        except Exception:
+            traceback.print_exc()
+    return response
+
+
+app.add_url_rule('/api/choose', 'standalone_api_choose', _session_scoped(_credit_gated_choose), methods=['POST'])
 app.add_url_rule('/api/regenerate_choices', 'standalone_api_regenerate_choices', _session_scoped(engine.api_regenerate_choices), methods=['POST'])
 
 # ─── COIN-OP (buy-a-continue) ────────────────────────────────────────────
@@ -119,6 +167,21 @@ def _coinop_config():
     # client asked about.
     comp = request.args.get('comp') or None
     return jsonify(coinop.public_config(comp))
+
+
+@app.route('/api/coinop/balance', methods=['GET'])
+@_session_scoped
+def _coinop_balance():
+    """Snapshot of the session's credit ledger.
+
+    Polled by the client to render the always-visible credit HUD chip
+    (top-right, next to the REC timecode) and to decide whether the
+    "OUT OF COINS" pause overlay should be dismissed after a successful
+    purchase. Idempotent — the first call to a fresh session's ledger
+    grants the one-shot free starter tier (see coinop._ensure_free_starter).
+    """
+    sid = engine._resolve_request_session_id()
+    return jsonify(coinop.get_balance(sid))
 
 
 @app.route('/api/coinop/checkout', methods=['POST'])
@@ -152,25 +215,51 @@ def _coinop_redeem():
         return jsonify(result), 402  # 402 Payment Required
     # Idempotent replay of the return URL (or a duplicate redeem call
     # from a racy retry): the FIRST successful redeem already invoked
-    # api_revive and the resulting continue_used + player_choice_prompt
-    # feed items are in the session's feed_log. Running api_revive again
-    # would double-append the narrative beat, which reads as a stutter
-    # on screen. The client already has everything it needs from the
-    # normal /api/feed polling, so just acknowledge the replay.
+    # api_revive (if applicable) and granted credits. Running either
+    # again would double-append the narrative beat / double-grant
+    # credits, which reads as a stutter on screen and a phantom refund.
     if result.get('already_redeemed'):
         return jsonify({
             "ok": True,
             "already_redeemed": True,
             "comp": result.get('comp', False),
             "revive_items": [],
+            "balance": coinop.get_balance(sid).get("balance", 0),
         })
-    # First-time redeem for this checkout id → mint the actual revive.
-    revive_response = engine.api_revive()
+
+    # First-time redeem for this checkout id. Two behaviours, decided by
+    # the actual player state — one payment endpoint serves both flows:
+    #
+    #   * DEAD player → mint the revive (calls api_revive to bring them
+    #     back and append the continue_used narrative beat), on top of
+    #     the credits that verify_and_redeem already granted.
+    #   * ALIVE player → don't revive (there's nothing to revive from),
+    #     just report the new balance. This is the "insert coin to keep
+    #     playing" pause overlay's happy path.
+    #
+    # This lets one Stripe SKU serve both the death-continue and the
+    # credit-topup flows — cheaper cognitively for the player, and we
+    # don't have to run two separate product/price ids on the Stripe
+    # side just to distinguish them.
+    revive_items = None
+    try:
+        st = engine.get_state(sid) or {}
+        alive = (st.get("player_state") or {}).get("alive", True)
+    except Exception:
+        alive = True
+
+    if not alive:
+        revive_response = engine.api_revive()
+        revive_items = revive_response.get_json() if hasattr(revive_response, 'get_json') else None
+
     return jsonify({
         "ok": True,
         "already_redeemed": False,
         "comp": result.get('comp', False),
-        "revive_items": revive_response.get_json() if hasattr(revive_response, 'get_json') else None,
+        "revived": (revive_items is not None),
+        "credits_added": result.get('credits_added', 0),
+        "balance": result.get('balance', coinop.get_balance(sid).get("balance", 0)),
+        "revive_items": revive_items,
     })
 
 

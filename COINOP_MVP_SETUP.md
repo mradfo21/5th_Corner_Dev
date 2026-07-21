@@ -49,6 +49,9 @@ or your local `.env` for dev).
 | `COINOP_CONTINUE_LABEL` | no | `Insert Coin — Continue` | Text on the button. |
 | `COINOP_PRODUCT_NAME` | no | `SOMEWHERE — Continue` | Line-item name shown to the buyer on the Stripe page + receipt. |
 | `PUBLIC_BASE_URL` | no | *(derived from request)* | Set if your server sits behind a proxy / load balancer that doesn't preserve `Host`. e.g. `https://somewhere.example.com`. |
+| `COINOP_CREDIT_GATING` | no | `0` | Set to `1` to enable the arcade credit meter (see §11). Off by default so the paid death-continue flow ships independently. |
+| `COINOP_FREE_STARTING_CREDITS` | no | `10` | Free credits granted the first time a session's balance is checked (only fires when gating is on). Enough to fall in love with the game before the first "insert coin" prompt. |
+| `COINOP_CREDITS_PER_COIN` | no | `20` | Credits granted per successful checkout — paid, comp, or test-mode. |
 
 **If any of `FEATURE_COINOP`, `STRIPE_SECRET_KEY`, or `STRIPE_PUBLISHABLE_KEY`
 is missing, the feature stays fully dark** — the client's `/api/coinop/config`
@@ -268,6 +271,90 @@ The `?comp=` param is honored by all three routes: `/play`, `/standalone`, and
 `/live` (a.k.a. `/realtime`). It's stripped from the URL on load and stored in
 `sessionStorage` for the tab's lifetime, so a revive → new run in the same tab
 keeps working without needing the code in the URL again.
+
+---
+
+## 11. Arcade credit economy (`COINOP_CREDIT_GATING=1`)
+
+The paid death-continue MVP is orthogonal to a second, richer mechanic —
+the **coin meter**. When gating is on:
+
+- Each session starts with `COINOP_FREE_STARTING_CREDITS` (default: 10) free
+  credits, granted on the first request that touches the ledger. The
+  starter is a one-shot flag — a returning player who ran their free tier
+  to zero can't refresh their way back into more free turns.
+- Every successful `/api/choose` (i.e. every player action / turn) spends 1
+  credit, atomically, server-side. The debit is guarded by the same lock
+  as the death-continue grants ledger, so concurrent turns for the same
+  session can't over-spend.
+- When the balance hits zero and the client tries another turn, the server
+  responds `HTTP 402` with `{"needs_coin": true, "balance": 0}` and does
+  NOT process the turn — the client pops the **INSERT COIN** pause overlay
+  and freezes the world visually until a top-up lands.
+- Every successful checkout (paid Stripe, comp code, or test-mode) grants
+  `COINOP_CREDITS_PER_COIN` (default: 20) credits — same pack size across
+  all three payment paths. Paid credits accrue toward the "SPENT $X.XX"
+  subtitle on the HUD; comp/starter credits do not.
+
+### What the player sees
+
+- **Always-visible HUD chip** in the top-right, just below the REC
+  timecode: `◉ 07 · $1.98` — remaining credits + total spent this run.
+  Pulses amber at ≤ 2, red at 0, and glows green briefly on any top-up.
+  Clickable — a click opens the pause overlay so a player can proactively
+  buy more before hitting zero.
+- **"INSERT COIN" pause overlay** when they run out mid-turn: same
+  coin-op button, same C-to-continue keyboard shortcut, same coin-drop
+  and phosphor return ceremony as the death overlay — just framed as
+  "keep playing" instead of "revive". The world dims / grayscales
+  behind it so the pause feels physical.
+
+### How the payment endpoint decides what to do
+
+One redeem endpoint serves both flows:
+
+- If the player is **dead** when the redeem lands → mint a revive (same
+  as before), *and* grant `COINOP_CREDITS_PER_COIN` credits on top so
+  they can immediately keep playing.
+- If the player is **alive** but the meter emptied → just grant the
+  credits, dismiss the pause overlay, and resume.
+
+The client doesn't have to know which of those two happened — the
+server figures it out from the actual player state on redeem. Same
+Stripe SKU covers both.
+
+### Testing the flow
+
+The fastest end-to-end test:
+
+```bash
+export FEATURE_COINOP=1
+export COINOP_CREDIT_GATING=1
+export COINOP_TEST_MODE=1             # every checkout is free — no Stripe hit
+export COINOP_FREE_STARTING_CREDITS=3 # small so you see the wall fast
+export COINOP_CREDITS_PER_COIN=5      # small so you can watch the meter refill
+export STRIPE_SECRET_KEY=sk_test_dummy
+export STRIPE_PUBLISHABLE_KEY=pk_test_dummy
+python api.py
+```
+
+Open `/lobby`, start a new run, make ~3 choices. On the 4th click the
+"INSERT COIN" overlay fires. Click **Insert Coin**, watch the coin-drop
++ ceremony, get 5 credits granted for free (test mode = comp), overlay
+dismisses, meter reads `◉ 05 · $0.00`, game resumes.
+
+### Deploy sequencing
+
+Turning on the meter is a **behavior change**, not just a UI reveal.
+Ship it separately from the paid death-continue MVP:
+
+1. Deploy with `FEATURE_COINOP=1` and `COINOP_CREDIT_GATING=0` (default).
+   You get the death-continue flow, no meter, no gating. Zero change to
+   the normal player experience.
+2. Once payments are proven and the arcade meter feels good in a preview
+   deploy, flip `COINOP_CREDIT_GATING=1` on the production env vars.
+   All active sessions get the free starter on their next turn; new
+   sessions get it on their first.
 
 ---
 

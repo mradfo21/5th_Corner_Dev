@@ -37,6 +37,23 @@ Free-play (dev / QA / influencer):
                                   (default: 100). A leaked link can't drain
                                   more than this before the button reverts to
                                   the normal paid flow.
+
+Arcade credit economy (the "insert coin to keep playing" loop):
+  COINOP_CREDIT_GATING            "1" turns on the meter: every /api/choose
+                                  turn spends 1 credit, and when the balance
+                                  hits zero the server blocks the next turn
+                                  (HTTP 402) so the client can pop the
+                                  "OUT OF COINS" pause overlay. Off by default
+                                  so the paid death-continue flow can ship
+                                  independently of the meter.
+  COINOP_FREE_STARTING_CREDITS    credits granted on the first look at a
+                                  brand new session (default: 10). Enough to
+                                  let a first-time visitor fall in love with
+                                  the world before the first insert-coin prompt.
+  COINOP_CREDITS_PER_COIN         credits granted per successful $0.99 (or
+                                  whatever price_cents is) Stripe checkout
+                                  (default: 20). Also the pack size a comp /
+                                  test-mode redemption grants.
 """
 
 from __future__ import annotations
@@ -85,6 +102,9 @@ def _cfg() -> Dict[str, Any]:
         "test_mode": os.environ.get("COINOP_TEST_MODE", "").strip() in ("1", "true", "on", "yes"),
         "free_play_codes": _parse_codes(os.environ.get("COINOP_FREE_PLAY_CODES", "")),
         "free_play_cap": _int_env("COINOP_FREE_PLAY_CAP", 100),
+        "credit_gating": os.environ.get("COINOP_CREDIT_GATING", "").strip() in ("1", "true", "on", "yes"),
+        "free_starting_credits": max(0, _int_env("COINOP_FREE_STARTING_CREDITS", 10)),
+        "credits_per_coin": max(1, _int_env("COINOP_CREDITS_PER_COIN", 20)),
     }
 
 
@@ -116,6 +136,19 @@ def is_enabled() -> bool:
     return True
 
 
+def is_credit_gating_enabled() -> bool:
+    """Should turns be metered against a per-session credit balance?
+
+    Separate from `is_enabled()` on purpose. The paid death-continue flow
+    can ship without the arcade meter (that's the original MVP). Turning
+    the meter on flips the game into "insert coin to keep playing" mode
+    on top of it, so the two features can be released independently.
+    """
+    if not is_enabled():
+        return False
+    return _cfg()["credit_gating"]
+
+
 def public_config(comp: Optional[str] = None) -> Dict[str, Any]:
     """Safe subset of config to expose to the browser.
 
@@ -134,6 +167,11 @@ def public_config(comp: Optional[str] = None) -> Dict[str, Any]:
         "currency": c["currency"],
         "label": c["label"],
         "display_price": _display_price(c["price_cents"], c["currency"]),
+        # Arcade credit economy (may be inactive; the client just needs
+        # the numbers to render the HUD chip and the pause overlay copy).
+        "credit_gating": _cfg()["credit_gating"] and is_enabled(),
+        "credits_per_coin": c["credits_per_coin"],
+        "free_starting_credits": c["free_starting_credits"],
     }
     # Test-mode: everything is free on this deploy, no code required.
     if c["test_mode"]:
@@ -207,11 +245,39 @@ def _grant_path(session_id: str) -> Path:
 def _load_grants(session_id: str) -> Dict[str, Any]:
     p = _grant_path(session_id)
     if not p.exists():
-        return {"redeemed": [], "seen_paid": [], "revives_granted": 0}
+        return {
+            "redeemed": [],
+            "seen_paid": [],
+            "revives_granted": 0,
+            # Arcade credit ledger. `credits_purchased` counts credits
+            # granted via paid checkouts, `credits_bonus` counts credits
+            # granted via comps/test-mode, `credits_used` counts credits
+            # spent on turns. `free_starter_granted` is a one-shot flag so
+            # we don't top a returning session back up to the free tier.
+            "credits_purchased": 0,
+            "credits_bonus": 0,
+            "credits_used": 0,
+            "free_starter_granted": False,
+            "free_starter_amount": 0,
+        }
     try:
-        return json.loads(p.read_text("utf-8"))
+        loaded = json.loads(p.read_text("utf-8"))
     except Exception:
-        return {"redeemed": [], "seen_paid": [], "revives_granted": 0}
+        loaded = {}
+    # Back-fill any missing keys so upgrades to the schema don't blow up
+    # on sessions that were created before the credit ledger existed.
+    for k, v in (
+        ("redeemed", []),
+        ("seen_paid", []),
+        ("revives_granted", 0),
+        ("credits_purchased", 0),
+        ("credits_bonus", 0),
+        ("credits_used", 0),
+        ("free_starter_granted", False),
+        ("free_starter_amount", 0),
+    ):
+        loaded.setdefault(k, v)
+    return loaded
 
 
 def _save_grants(session_id: str, data: Dict[str, Any]) -> None:
@@ -258,6 +324,147 @@ def _mark_redeemed(session_id: str, checkout_session_id: str, source: str = "str
             "ts": int(time.time()),
         })
         _save_grants(session_id, g)
+
+
+# ─── Credit ledger (arcade "insert coin to keep playing") ───────────────
+#
+# Sits on the SAME per-session grants file as the death-continue ledger,
+# under _GRANT_LOCK, so we don't need a second lock and every mutation is
+# atomic w.r.t. every other ledger mutation. Reads outside the lock are
+# fine (worst case: HUD shows a stale-by-one-turn balance for a fraction
+# of a second before the next poll).
+
+def _compute_balance(g: Dict[str, Any]) -> int:
+    return max(
+        0,
+        int(g.get("credits_purchased", 0))
+        + int(g.get("credits_bonus", 0))
+        + int(g.get("free_starter_amount", 0))
+        - int(g.get("credits_used", 0)),
+    )
+
+
+def _ensure_free_starter(g: Dict[str, Any]) -> Dict[str, Any]:
+    """Grant the free starter credits lazily, exactly once per session.
+
+    Called from get_balance() so a brand-new session that never talks to
+    a payment endpoint still gets its free tier. The `free_starter_granted`
+    flag makes this idempotent: a returning player who ran their free
+    tier to zero can't refresh their way back into more free turns.
+    Returns the (possibly-mutated) grants dict; caller decides whether
+    to persist.
+    """
+    if g.get("free_starter_granted"):
+        return g
+    if not is_credit_gating_enabled():
+        # If gating is off, there's nothing to hand out — leave the flag
+        # unset so if gating gets turned on later the starter still fires
+        # once for this session.
+        return g
+    amount = int(_cfg()["free_starting_credits"])
+    g["free_starter_granted"] = True
+    g["free_starter_amount"] = amount
+    g.setdefault("grants", []).append({
+        "cs": None,
+        "source": "free_starter",
+        "amount": amount,
+        "ts": int(time.time()),
+    })
+    return g
+
+
+def get_balance(session_id: str) -> Dict[str, Any]:
+    """Snapshot of the session's credit ledger for the HUD / gating.
+
+    Grants the one-shot free starter tier the first time this is called
+    on a session that hasn't seen it (see _ensure_free_starter). Safe to
+    call from anywhere — reads are cheap and the write only happens once
+    per session's lifetime.
+    """
+    c = _cfg()
+    with _GRANT_LOCK:
+        g = _load_grants(session_id)
+        before = (g.get("free_starter_granted"), int(g.get("free_starter_amount", 0)))
+        g = _ensure_free_starter(g)
+        after = (g.get("free_starter_granted"), int(g.get("free_starter_amount", 0)))
+        if before != after:
+            _save_grants(session_id, g)
+        balance = _compute_balance(g)
+    return {
+        "enabled": is_enabled(),
+        "gating_enabled": is_credit_gating_enabled(),
+        "balance": balance,
+        "used": int(g.get("credits_used", 0)),
+        "purchased": int(g.get("credits_purchased", 0)),
+        "bonus": int(g.get("credits_bonus", 0)),
+        "free_starter_amount": int(g.get("free_starter_amount", 0)),
+        "credits_per_coin": c["credits_per_coin"],
+        "price_cents": c["price_cents"],
+        "currency": c["currency"],
+        "display_price": _display_price(c["price_cents"], c["currency"]),
+        # Total dollars ever spent on this session (paid credits only —
+        # comps and the free starter aren't counted). Powers the "SPENT
+        # $X.XX" subtitle in the HUD chip so the player always knows how
+        # much this run has cost them.
+        "spent_cents": int(g.get("credits_purchased", 0)) // max(1, c["credits_per_coin"]) * c["price_cents"],
+    }
+
+
+def spend_credit(session_id: str, amount: int = 1, reason: str = "turn") -> Dict[str, Any]:
+    """Debit `amount` credits atomically. Returns the new balance snapshot.
+
+    Refuses (ok=False) if the balance would go negative. Callers should
+    treat that as "session is out of coins — pop the pause overlay" and
+    NOT proceed with the turn. Free starter is materialized here too so
+    a spend call is always well-defined even on a totally fresh session.
+    """
+    amount = max(1, int(amount))
+    with _GRANT_LOCK:
+        g = _load_grants(session_id)
+        g = _ensure_free_starter(g)
+        available = _compute_balance(g)
+        if available < amount:
+            _save_grants(session_id, g)  # persist any starter grant
+            return {"ok": False, "reason": "insufficient_credits", "balance": available}
+        g["credits_used"] = int(g.get("credits_used", 0)) + amount
+        g.setdefault("spends", []).append({
+            "amount": amount,
+            "reason": reason,
+            "ts": int(time.time()),
+        })
+        _save_grants(session_id, g)
+        new_balance = _compute_balance(g)
+    return {"ok": True, "balance": new_balance, "spent": amount}
+
+
+def grant_credits(session_id: str, amount: int, source: str = "stripe",
+                  checkout_session_id: Optional[str] = None) -> Dict[str, Any]:
+    """Credit `amount` credits to a session and return the new balance.
+
+    `source` is one of 'stripe' (paid), 'comp' (comp code / test mode),
+    'admin' (manual grant), 'free_starter' (used by _ensure_free_starter,
+    not by this public helper). Paid grants land in `credits_purchased`
+    so the "SPENT $X.XX" subtitle in the HUD is accurate; everything
+    else lands in `credits_bonus` so it doesn't inflate the spend total.
+    """
+    amount = max(0, int(amount))
+    if amount == 0:
+        return {"ok": True, "balance": get_balance(session_id)["balance"], "granted": 0}
+    with _GRANT_LOCK:
+        g = _load_grants(session_id)
+        if source == "stripe":
+            g["credits_purchased"] = int(g.get("credits_purchased", 0)) + amount
+        else:
+            g["credits_bonus"] = int(g.get("credits_bonus", 0)) + amount
+        g.setdefault("credit_grants", []).append({
+            "amount": amount,
+            "source": source,
+            "cs": checkout_session_id,
+            "ts": int(time.time()),
+        })
+        _save_grants(session_id, g)
+        new_balance = _compute_balance(g)
+    return {"ok": True, "balance": new_balance, "granted": amount, "source": source}
 
 
 # ─── Global comp counter (shared across all sessions) ───────────────────
@@ -489,8 +696,16 @@ def verify_and_redeem(session_id: str, checkout_session_id: str) -> Dict[str, An
         # care about which code was used, verify_and_redeem's grants entry
         # captures it via the source/code fields.)
         _mark_redeemed(session_id, checkout_session_id, source="comp", code=None)
-        log.info("coinop: redeemed COMP %s for game session %s", checkout_session_id, session_id)
-        return {"ok": True, "already_redeemed": False, "comp": True}
+        credits_added = _cfg()["credits_per_coin"]
+        grant_credits(session_id, credits_added, source="comp",
+                      checkout_session_id=checkout_session_id)
+        log.info("coinop: redeemed COMP %s for game session %s (+%d credits)",
+                 checkout_session_id, session_id, credits_added)
+        return {
+            "ok": True, "already_redeemed": False, "comp": True,
+            "credits_added": credits_added,
+            "balance": get_balance(session_id)["balance"],
+        }
 
     try:
         cs = _fetch_checkout(checkout_session_id)
@@ -519,8 +734,16 @@ def verify_and_redeem(session_id: str, checkout_session_id: str) -> Dict[str, An
         (getattr(cs, "currency", "") or "").lower(),
     )
     _mark_redeemed(session_id, checkout_session_id, source="stripe")
-    log.info("coinop: redeemed checkout %s for game session %s", checkout_session_id, session_id)
-    return {"ok": True, "already_redeemed": False, "comp": False}
+    credits_added = _cfg()["credits_per_coin"]
+    grant_credits(session_id, credits_added, source="stripe",
+                  checkout_session_id=checkout_session_id)
+    log.info("coinop: redeemed checkout %s for game session %s (+%d credits)",
+             checkout_session_id, session_id, credits_added)
+    return {
+        "ok": True, "already_redeemed": False, "comp": False,
+        "credits_added": credits_added,
+        "balance": get_balance(session_id)["balance"],
+    }
 
 
 # ─── Webhook (optional) ────────────────────────────────────────────────
