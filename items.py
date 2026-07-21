@@ -111,34 +111,6 @@ def remove_item_from_inventory(current_inventory: list, item_id: str) -> list:
         updated.remove(item_id)
     return updated
 
-def format_inventory_display(inventory: list) -> str:
-    """
-    Format inventory for Discord display.
-    
-    Returns formatted string like:
-    ⚒️  Crowbar
-    🔦 Flashlight
-    🔪 Combat Knife
-    """
-    if not inventory:
-        return "*Empty*"
-    
-    lines = []
-    for item_id in inventory:
-        item = ITEMS.get(item_id)
-        if item:
-            lines.append(f"{item['emoji']} {item['display']}")
-    
-    return "\n".join(lines)
-
-def get_inventory_summary(inventory: list) -> str:
-    """Get one-line summary like 'Crowbar, Flashlight, Knife'"""
-    if not inventory:
-        return "Empty"
-    
-    names = [ITEMS[item_id]["display"] for item_id in inventory if item_id in ITEMS]
-    return ", ".join(names)
-
 def should_consume_item(dispatch_text: str, item_id: str) -> bool:
     """
     Determine if item should be consumed based on how it was used in dispatch.

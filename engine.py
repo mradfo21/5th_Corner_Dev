@@ -1554,9 +1554,10 @@ def summarize_world_state(state: dict) -> str:
     """
     Return a single, actionable, dynamic sentence summarizing the most important, immediate world state or threat.
     Prioritize: player danger, pursuit, injury, chaos, visible threats, or urgent objectives.
-    
-    NOTE: This function is unused (dead code). Uses third-person "Jason" which breaks immersion.
-    Consider removing entirely.
+
+    NOTE: This IS live — it feeds situation_summary into the dispatch/choice
+    prompts (see call sites in the turn pipeline). An earlier comment wrongly
+    labelled it dead code; do not remove without checking those callers.
     """
     chaos = state.get('chaos_level', 0)
     if chaos > 7:

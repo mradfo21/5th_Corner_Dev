@@ -107,8 +107,6 @@ services:
       # unavailable, and can override per-session via ?renderer= / the toggle.
       - key: SCENE_RENDERER
         value: "reactor"
-      - key: RESUME_MODE
-        value: "1"
       - key: FLASK_DEBUG
         value: "0"
       - key: PYTHONUNBUFFERED

@@ -32,11 +32,6 @@ WORKSPACE = Path(__file__).parent.resolve()
 if str(WORKSPACE) not in sys.path:
     sys.path.insert(0, str(WORKSPACE))
 
-# ---------------------------------------------------------------------------
-# Keep RESUME_MODE on so importing engine does not reset real session state.
-# ---------------------------------------------------------------------------
-os.environ.setdefault("RESUME_MODE", "1")
-
 
 # ═══════════════════════════════════════════════════════════════════════════
 # HELPERS

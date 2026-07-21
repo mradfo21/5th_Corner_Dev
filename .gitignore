@@ -33,17 +33,14 @@ lore/images/*
 render.env
 RENDER_SETUP.txt
 test_*.py
-# Keep the curated pre-deploy and experience-mode test suites in version control
-!test_before_deploy.py
+# Keep the curated test suites in version control
 !test_experience_mode.py
 !test_providers.py
 !test_standalone_e2e.py
 !test_realtime_e2e.py
 !test_movement_mode_e2e.py
 !test_feed_engine.py
-!test_no_images_simulation.py
 !test_choices_robustness.py
-!test_with_images_intro_hardening.py
 !test_krea_provider.py
 !test_fal_provider.py
 !test_voice_design.py
@@ -51,3 +48,6 @@ test_*.py
 # Autoplay run artifacts
 autoplay_report.json
 voice_design_cache.json
+
+# Stale Discord-bot PID file (no longer used)
+.story_pids.json
