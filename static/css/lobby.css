@@ -696,6 +696,17 @@ img { display: block; max-width: 100%; }
   .hero-actions { flex-direction: column; align-items: stretch; width: min(320px, 100%); margin-inline: auto; }
   .btn { justify-content: center; }
   .frame { align-items: flex-end; }
+
+  /* Loading screen text at ~65% size (35% smaller) on mobile — the desktop
+     sizes read oversized on small, close-up screens. Letter-spacing is set
+     in em on these elements, so it scales down with the font-size too. */
+  .boot-brand { font-size: clamp(1.3rem, 5.2vw, 1.95rem); }
+  .boot-line { font-size: 0.48rem; }
+  .boot-hud { font-size: 0.44rem; }
+  .boot-code { font-size: 0.44rem; }
+  .boot-tip { padding: 0.42rem 0.75rem; }
+  .boot-tip-label { font-size: 0.38rem; }
+  .boot-tip-text { font-size: 0.48rem; }
 }
 
 /* background-attachment: fixed is unreliable / disabled on most touch
