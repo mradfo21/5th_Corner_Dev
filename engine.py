@@ -6089,6 +6089,39 @@ def api_choose():
         return jsonify([error_item]), 500
 
 
+def _prune_observed_frames(img_dir, keep: int = 12):
+    """Cap the number of transient realtime-capture frames on disk.
+
+    Every realtime turn writes one or more `observed_*.png` scratch frames
+    (act-time capture in /api/choose + the post-choice perception frame in
+    /api/observe). These are ONLY ever used as an img2img reference for the
+    immediately-following turn (reference collection in _gen_image reaches back
+    at most ~2 history entries), yet nothing pruned them mid-session — they only
+    got wiped on /api/reset. On the now-persistent 1GB disk (see
+    RENDER_STORAGE_LIMITATION.md) they pile up across a play session until the
+    disk fills, at which point new image writes start failing and the scene can
+    no longer render a fresh frame — i.e. "I can only play for a short time".
+
+    Keep the most-recent `keep` frames (generous margin over the ~2-turn
+    reference window) and delete the rest. Best-effort: any failure is ignored
+    so this can never break a turn.
+    """
+    try:
+        from pathlib import Path as _P
+        d = _P(img_dir)
+        if not d.exists():
+            return
+        frames = sorted(d.glob("observed_*.png"), key=lambda p: p.stat().st_mtime)
+        excess = len(frames) - max(0, int(keep))
+        for old in frames[:excess]:
+            try:
+                old.unlink()
+            except Exception:
+                pass
+    except Exception as _e:
+        log_error(f"_prune_observed_frames failed: {_e}")
+
+
 def _ingest_realtime_frame(frame_b64: str, session_id: str = 'default'):
     """Ingest a frame captured from the live world-model video.
 
@@ -6125,6 +6158,11 @@ def _ingest_realtime_frame(frame_b64: str, session_id: str = 'default'):
     fpath = img_dir / fname
     fpath.write_bytes(img_bytes)
     web = f"/images/{fname}"
+
+    # Bound the transient-frame footprint so a long session can't fill the disk
+    # (which would make every subsequent image write fail — see the helper's
+    # docstring). Runs AFTER writing this frame so the newest one is retained.
+    _prune_observed_frames(img_dir)
 
     with WORLD_STATE_LOCK:
         st = _load_state(session_id)
