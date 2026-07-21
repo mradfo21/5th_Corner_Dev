@@ -4334,7 +4334,7 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                     print(f"[FLIPBOOK] Parallel generation starting for TEXT-TO-IMAGE mode (Turn 0 or no references)")
                     
                     # For Turn 0 (intro), clear all flipbook data since there's no previous reference
-                    # NOTE: For subsequent turns, we do NOT clear current_flipbook_url (bot.py clears it after display)
+                    # NOTE: For subsequent turns, we do NOT clear current_flipbook_url (the client clears it after display)
                     try:
                         st_init = _load_state(session_id)
                         st_init['current_flipbook_url'] = None
@@ -8866,8 +8866,8 @@ def generate_intro_choices_deferred(image_url: str, prologue: str, vision_dispat
     # Robust against any failure inside generate_choices — that function now
     # has its own contextual fallback, but a *truly* unexpected exception
     # (e.g. requests library breaking under Render's network) must NOT bubble
-    # up to bot.py's Phase 2 guard and produce "Generating choices failed"
-    # filler. We catch it here and let the bot's intro fallback handle the
+    # up to the turn guard and produce "Generating choices failed"
+    # filler. We catch it here and let the intro fallback handle the
     # empty list with scene-aware choices.
     try:
         options = generate_choices(

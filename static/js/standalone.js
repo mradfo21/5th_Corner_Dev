@@ -1595,6 +1595,12 @@
             if (name === "video_showing") {
               glitchTransition();
               markSceneVisible(); // the realtime feed is now live on screen
+              // The live video for this turn is genuinely on screen now — this,
+              // not the async scene_image beat, is when the turn's guide-image
+              // step resolves and the interaction layer (veil/FORWARD/ACT/SCAN)
+              // is released. Keeps interaction options gated until the world is
+              // actually playing (see the scene_image handler's realtime note).
+              Ceremony.imageLoaded();
               // Drop the previous scene's hotspots/cache BEFORE re-arming — when
               // we travel to a new location the fresh video reveals here, and
               // without this the old location's detected objects linger over the
@@ -1616,6 +1622,10 @@
                 glitchTransition();
                 markSceneVisible();
               }
+              // A still fallback is now the on-screen frame for this turn, so
+              // resolve the ceremony over the still instead of leaving the
+              // interaction layer gated until the fallback timer fires.
+              Ceremony.imageLoaded();
               clearScanTags();
               schedulePrewarm();
               updateAmbientScan();
@@ -1625,6 +1635,9 @@
             if (name === "video_recovered") {
               glitchTransition();
               markSceneVisible();
+              // Live video is back on screen — resolve any pending turn so the
+              // interaction layer is released against the recovered stream.
+              Ceremony.imageLoaded();
               clearScanTags();
               schedulePrewarm();
               updateAmbientScan();
@@ -3957,7 +3970,21 @@
         }
         // The new frame is on screen — fade the progress bar back to the play
         // button (once the pipeline has also resolved).
-        Ceremony.imageLoaded();
+        //
+        // REALTIME (reactor) mode: the scene_image feed item is NOT the frame
+        // that's actually on screen — the live video re-anchor is still
+        // establishing, so the world can be black/frozen for several seconds
+        // after this beat. Resolving the ceremony here fades the turn veil and
+        // unlocks the interaction layer (FORWARD / ACT / SCAN / move pad), which
+        // made those options appear while no video was playing yet — very
+        // visible right after switching to a slow/failing image provider.
+        // Defer the resolve to the reactor's video events (video_showing /
+        // video_black / video_recovered) so input is released only once a frame
+        // is genuinely on screen. Ceremony's guide-image fallback timer still
+        // guarantees the UI can never spin forever if the stream stalls.
+        if (!(Renderer.mode === "reactor" && Renderer.reactorAvailable())) {
+          Ceremony.imageLoaded();
+        }
         // Auto-play (IMAGE mode only): the still just rendered — advance soon.
         // In REALTIME the scene_image feed item is NOT the on-screen frame (the
         // video re-anchor is still establishing), so realtime auto-advance is

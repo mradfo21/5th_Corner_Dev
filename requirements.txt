@@ -3,7 +3,6 @@ flask
 flask-cors
 gunicorn
 Pillow
-discord.py
 requests
 replicate
 imageio-ffmpeg

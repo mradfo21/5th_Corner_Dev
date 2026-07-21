@@ -6,9 +6,7 @@ Tests cover:
   1. Constants and metadata completeness (engine.EXPERIENCE_MODES)
   2. apply_experience_mode() — engine globals + state persistence
   3. api_client.GameEngineClient proxy methods
-  4. bot.py ExperienceModeSelect options match engine constants
-  5. IntroView default experience_mode
-  6. Edge cases (unknown mode, repeated application, session isolation)
+  4. Edge cases (unknown mode, repeated application, session isolation)
 
 Run with:
     python3 test_experience_mode.py
@@ -35,10 +33,8 @@ if str(WORKSPACE) not in sys.path:
     sys.path.insert(0, str(WORKSPACE))
 
 # ---------------------------------------------------------------------------
-# Disable Discord before importing bot so the test runner does not attempt a
-# real Discord connection.
+# Keep RESUME_MODE on so importing engine does not reset real session state.
 # ---------------------------------------------------------------------------
-os.environ.setdefault("DISCORD_ENABLED", "0")
 os.environ.setdefault("RESUME_MODE", "1")
 
 
@@ -403,141 +399,6 @@ class TestApiClientExperienceMode(unittest.TestCase):
             self.assertTrue(self.eng.WORLD_IMAGE_ENABLED)
 
 
-class TestBotIntroViewStructure(unittest.TestCase):
-    """Tests for the Discord bot intro UI structure (static analysis, no Discord connection)."""
-
-    def _read_bot_source(self) -> str:
-        bot_path = WORKSPACE / "bot.py"
-        return bot_path.read_text(encoding="utf-8")
-
-    def test_experience_mode_select_class_exists(self):
-        src = self._read_bot_source()
-        self.assertIn(
-            "class ExperienceModeSelect",
-            src,
-            "ExperienceModeSelect class must be defined in bot.py",
-        )
-
-    def test_intro_view_class_exists(self):
-        src = self._read_bot_source()
-        self.assertIn(
-            "class IntroView",
-            src,
-            "IntroView class must be defined inside send_intro_tutorial",
-        )
-
-    def test_intro_view_has_experience_mode_attribute(self):
-        src = self._read_bot_source()
-        self.assertIn(
-            "self.experience_mode",
-            src,
-            "IntroView must set self.experience_mode",
-        )
-
-    def test_intro_view_default_is_full_frame(self):
-        """
-        Demo-stability requirement: the IntroView's default mode is now
-        EXPERIENCE_MODE_FULL_FRAME, not Flipbook. Players can still pick
-        Flipbook from the row-0 dropdown, but the safer/most-photographic
-        path is what they get out of the box.
-        """
-        src = self._read_bot_source()
-        # We look for the IntroView class body and verify the default attribute
-        # references FULL_FRAME (not FLIPBOOK).
-        idx = src.find("class IntroView")
-        self.assertNotEqual(idx, -1, "IntroView class must exist")
-        introview_block = src[idx: idx + 800]
-        self.assertIn(
-            "EXPERIENCE_MODE_FULL_FRAME",
-            introview_block,
-            "IntroView default experience_mode should be EXPERIENCE_MODE_FULL_FRAME",
-        )
-        self.assertNotIn(
-            "self.experience_mode: str = engine.EXPERIENCE_MODE_FLIPBOOK",
-            introview_block,
-            "IntroView must NOT still default to flipbook",
-        )
-
-    def test_experience_mode_select_added_to_play_view(self):
-        src = self._read_bot_source()
-        self.assertIn(
-            "ExperienceModeSelect(play_view)",
-            src,
-            "ExperienceModeSelect must be added to play_view",
-        )
-
-    def test_experience_select_at_row_0(self):
-        src = self._read_bot_source()
-        # Row 0 is declared inside ExperienceModeSelect.__init__
-        self.assertIn("row=0", src, "ExperienceModeSelect must be at row=0")
-
-    def test_ai_provider_select_at_row_1(self):
-        src = self._read_bot_source()
-        # We look for both the placeholder and row=1 in close proximity
-        self.assertIn(
-            'placeholder="🎛️ Select AI Model"',
-            src,
-        )
-        # Find the block and verify row=1
-        idx = src.find('placeholder="🎛️ Select AI Model"')
-        surrounding = src[max(0, idx - 300): idx + 100]
-        self.assertIn("row=1", surrounding)
-
-    def test_play_button_at_row_2(self):
-        src = self._read_bot_source()
-        self.assertIn(
-            'style=discord.ButtonStyle.success, row=2',
-            src,
-            "PlayButton must be at row=2",
-        )
-
-    def test_play_no_images_button_removed_from_view(self):
-        src = self._read_bot_source()
-        self.assertNotIn(
-            "play_view.add_item(PlayNoImagesButton())",
-            src,
-            "PlayNoImagesButton must not be added to play_view — mode select handles it",
-        )
-
-    def test_no_images_branch_present_in_play_button(self):
-        src = self._read_bot_source()
-        self.assertIn(
-            "EXPERIENCE_MODE_NO_IMAGES",
-            src,
-            "PlayButton must branch on EXPERIENCE_MODE_NO_IMAGES",
-        )
-
-    def test_apply_experience_mode_called_in_play_button(self):
-        src = self._read_bot_source()
-        self.assertIn(
-            "engine.apply_experience_mode(",
-            src,
-            "PlayButton.callback must call engine.apply_experience_mode()",
-        )
-
-    def test_experience_mode_select_has_all_three_options(self):
-        src = self._read_bot_source()
-        import engine
-        for mode_const in (
-            engine.EXPERIENCE_MODE_NO_IMAGES,
-            engine.EXPERIENCE_MODE_FLIPBOOK,
-            engine.EXPERIENCE_MODE_FULL_FRAME,
-        ):
-            self.assertIn(
-                f'value=engine.EXPERIENCE_MODE_{mode_const.upper()}',
-                src,
-                f"ExperienceModeSelect must include option for {mode_const}",
-            )
-
-    def test_experience_modes_field_added_to_rules_embed(self):
-        src = self._read_bot_source()
-        self.assertIn(
-            "🎮 Visual Experience",
-            src,
-            "rules_embed must include a '🎮 Visual Experience' field describing the three modes",
-        )
-
-
 class TestModeConfigConsistency(unittest.TestCase):
     """Cross-checks that mode configs don't contradict each other."""
 
@@ -663,59 +524,6 @@ class TestClaudeOpusProvider(unittest.TestCase):
                 if original is not None:
                     os.environ["ANTHROPIC_API_KEY"] = original
 
-    def test_bot_ai_provider_select_includes_claude(self):
-        import ast
-        bot_src = Path(__file__).parent / "bot.py"
-        source = bot_src.read_text(encoding="utf-8")
-        self.assertIn("anthropic", source, "bot.py must reference anthropic provider")
-        self.assertIn("Claude Opus", source, "bot.py AIProviderSelect must list Claude Opus")
-        self.assertIn("ANTHROPIC_API_KEY", source, "bot.py must check for ANTHROPIC_API_KEY")
-
-
-class TestNoImagesGuard(unittest.TestCase):
-    """Verify the no-images PlayButton path has proper error handling."""
-
-    def test_no_images_path_has_try_except_guard(self):
-        """The no-images section in PlayButton.callback must have a top-level guard."""
-        from pathlib import Path
-        src = (Path(__file__).parent / "bot.py").read_text(encoding="utf-8")
-        # Guard comment is present
-        self.assertIn(
-            "TOP-LEVEL NO-IMAGES GUARD",
-            src,
-            "No-images PlayButton path must have a top-level exception guard",
-        )
-
-    def test_no_images_path_uses_safe_embed_desc(self):
-        """Embed descriptions in the no-images path must use safe_embed_desc."""
-        from pathlib import Path
-        src = (Path(__file__).parent / "bot.py").read_text(encoding="utf-8")
-        # Find the no-images section
-        start = src.find("TOP-LEVEL NO-IMAGES GUARD")
-        end = src.find("return  # No-images path complete", start)
-        section = src[start:end]
-        self.assertIn(
-            "safe_embed_desc",
-            section,
-            "No-images path must use safe_embed_desc to avoid empty-embed Discord errors",
-        )
-
-    def test_resume_restores_experience_mode(self):
-        """on_ready resume path must call apply_experience_mode from saved state."""
-        from pathlib import Path
-        src = (Path(__file__).parent / "bot.py").read_text(encoding="utf-8")
-        # Find the resume section
-        idx = src.find("Restored experience mode")
-        self.assertGreater(
-            idx, -1,
-            "on_ready resume path must restore experience mode from saved state",
-        )
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-# PACING / FAIRNESS / IMMERSION HARDENING
-# ═══════════════════════════════════════════════════════════════════════════
-
 class TestPacingFairnessHardening(unittest.TestCase):
     """
     Pacing, flow, balance, and fairness invariants added in the
@@ -734,7 +542,6 @@ class TestPacingFairnessHardening(unittest.TestCase):
         from pathlib import Path
         cls.WORKSPACE = Path(__file__).parent
         cls.engine_src = (cls.WORKSPACE / "engine.py").read_text(encoding="utf-8")
-        cls.bot_src = (cls.WORKSPACE / "bot.py").read_text(encoding="utf-8")
         cls.choices_src = (cls.WORKSPACE / "choices.py").read_text(encoding="utf-8")
         cls.prompts_src = (cls.WORKSPACE / "prompts" / "simulation_prompts.json").read_text(encoding="utf-8")
 
@@ -757,20 +564,6 @@ class TestPacingFairnessHardening(unittest.TestCase):
             self.engine_src,
             "engine.py vision URL must use the current gemini-3.1-flash-lite model",
         )
-
-    # -- Default mode --
-    def test_full_frame_is_default_in_dropdown(self):
-        """The visual experience dropdown defaults to Full Frame."""
-        # Find the ExperienceModeSelect block and verify FULL_FRAME has default=True
-        idx = self.bot_src.find("class ExperienceModeSelect")
-        self.assertNotEqual(idx, -1)
-        block = self.bot_src[idx: idx + 1500]
-        # The Full Frame option must have default=True
-        ff_idx = block.find("EXPERIENCE_MODE_FULL_FRAME")
-        self.assertNotEqual(ff_idx, -1)
-        ff_window = block[ff_idx: ff_idx + 250]
-        self.assertIn("default=True", ff_window,
-                      "Full Frame must be the default option in ExperienceModeSelect")
 
     # -- Fairness doctrine --
     def test_death_fairness_doctrine_present(self):
@@ -799,22 +592,9 @@ class TestPacingFairnessHardening(unittest.TestCase):
             "Mandatory escalation final-sentence rule must be replaced with wave-rhythm",
         )
 
-    # -- Phase-gated countdown --
-    def test_countdown_is_phase_gated(self):
-        self.assertIn("COUNTDOWN_BY_PHASE", self.bot_src)
-        self.assertIn("_phase_countdown_duration", self.bot_src)
-        # And the timer task uses the active_duration snapshot, not the constant.
-        self.assertIn(
-            "active_duration = _phase_countdown_duration()",
-            self.bot_src,
-            "countdown_timer_task must snapshot the phase-gated duration",
-        )
-
     # -- Tiered timeout penalty --
     def test_timeout_penalty_is_tiered(self):
-        self.assertIn("_timeout_count_this_run", self.bot_src)
-        self.assertIn("TIMEOUT_TIER", self.bot_src)
-        # And the prompt knows about tiered penalties.
+        # The prompt knows about tiered penalties.
         self.assertIn("Tier 1", self.prompts_src)
         self.assertIn("Tier 2", self.prompts_src)
         self.assertIn("Tier 3", self.prompts_src)
