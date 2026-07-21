@@ -44,6 +44,9 @@ test_*.py
 !test_krea_provider.py
 !test_fal_provider.py
 !test_voice_design.py
+!test_pricing.py
+!test_cost_tracker.py
+!test_analytics_api.py
 
 # Autoplay run artifacts
 autoplay_report.json
