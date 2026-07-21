@@ -377,6 +377,10 @@ app.add_url_rule('/api/investigations', 'standalone_api_investigations', engine.
 # See engine.api_talk_session / engine.api_talk_message.
 app.add_url_rule('/api/talk/session', 'standalone_api_talk_session', engine.api_talk_session, methods=['POST'])
 app.add_url_rule('/api/talk/message', 'standalone_api_talk_message', engine.api_talk_message, methods=['POST'])
+# Conversation Moment portrait: a fast cinematic medium-shot of the subject
+# (distinct lens language from the handheld world view). Cached per
+# (session, subject, scene); see engine.api_talk_portrait.
+app.add_url_rule('/api/talk/portrait', 'standalone_api_talk_portrait', engine.api_talk_portrait, methods=['POST'])
 # Refcount + status endpoints for the dynamic per-character voices designed
 # on the fly by voice_design.py. /talk/end lets the client drop the refcount
 # on the active voice when the TALK widget closes so session-cleanup can
@@ -531,9 +535,12 @@ def api_scene_audio():
         body = request.get_json(silent=True) or {}
         prompt = (body.get("prompt") or "").strip()
         session_id = body.get("session") or "default"
+        mode = (body.get("mode") or "scene").strip().lower()
+        if mode not in ("scene", "conversation"):
+            mode = "scene"
         if not prompt:
             return jsonify({"audio_url": None, "reason": "no_prompt"})
-        result = scene_audio.get_scene_audio(prompt, session_id=session_id)
+        result = scene_audio.get_scene_audio(prompt, session_id=session_id, mode=mode)
         if not result:
             return jsonify({"audio_url": None, "reason": "unavailable"})
         return jsonify(result)

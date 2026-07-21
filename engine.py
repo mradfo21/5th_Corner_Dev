@@ -16,6 +16,7 @@ sys.stdout.flush()
 sys.stderr.flush()
 import base64
 import concurrent.futures
+import hashlib
 import json
 import os
 import random
@@ -3576,6 +3577,27 @@ REALTIME_STYLE_ANCHOR = os.getenv(
     "Eye-level walking vantage with a medium-wide field of view",
 )
 
+# Conversation Moment portraits use a DIFFERENT lens language than the handheld
+# camcorder world view — a shallow-DoF cinematic medium shot — so the cut into
+# dialogue reads as a register change (Mass Effect / Persona style), not a
+# different game. Era/palette stay continuous with the 1993 analog-horror world.
+CONVERSATION_PORTRAIT_STYLE_ANCHOR = os.getenv(
+    "CONVERSATION_PORTRAIT_STYLE_ANCHOR",
+    "stylish cinematic medium shot, 35mm film still, shallow depth of field, "
+    "dramatic rim lighting, soft bokeh background, analog-horror 1993 muted palette, "
+    "subtle film grain, intimate character portrait from mid-torso up",
+)
+
+# Soft budget: how many conversation portraits a single session may mint.
+# Cached hits do not count. Prevents runaway cost if a player re-opens TALK a lot.
+CONVERSATION_PORTRAIT_BUDGET = int(os.getenv("CONVERSATION_PORTRAIT_BUDGET", "12"))
+
+# In-memory portrait cache: (session_id, subject_label, scene_hash) -> web url.
+# Cleared implicitly when the process restarts; disk files remain in session images/.
+_PORTRAIT_CACHE: dict = {}
+_PORTRAIT_CACHE_LOCK = threading.Lock()
+_PORTRAIT_SPEND: dict = {}  # session_id -> count of generations this session
+
 
 def realtime_action_beat(choice: str = "") -> str:
     """The single 'one new element per prompt' motion clause for an action.
@@ -6799,7 +6821,8 @@ def _format_vision_for_persona(subject_label: str, snapshot: dict) -> str:
     )
 
 
-def build_talk_context(subject: dict, session_id: str = "default", opening_override: str = "") -> dict:
+def build_talk_context(subject: dict, session_id: str = "default", opening_override: str = "",
+                       include_vision: bool = True) -> dict:
     """Assemble a story-aware briefing for a conversation with ``subject``.
 
     ``subject`` is the SCAN object the player chose to talk to
@@ -6813,6 +6836,11 @@ def build_talk_context(subject: dict, session_id: str = "default", opening_overr
     The persona is grounded in the CURRENT visible frame (see
     ``_talk_vision_snapshot``) so the character isn't talking blind — they
     can reference what's actually on screen alongside the story situation.
+
+    ``include_vision=False`` skips the (two Gemini vision calls) perception
+    snapshot — used by the portrait endpoint, which only needs subject +
+    situation and runs CONCURRENTLY with the session's own build_talk_context,
+    so doing the vision work twice would just double the latency for nothing.
     """
     subject = subject or {}
     label = _clean_subject_text(subject.get("label"), "figure", 40)
@@ -6884,8 +6912,9 @@ def build_talk_context(subject: dict, session_id: str = "default", opening_overr
     # Direct-perception block: what the subject can actually SEE in the frame
     # the player is looking at, so the character can react to real objects on
     # screen instead of a text-only briefing. Empty string when vision is
-    # unavailable — the persona still works, just without the eyes.
-    vision_snapshot = _talk_vision_snapshot(session_id)
+    # unavailable or skipped — the persona still works, just without the eyes.
+    vision_snapshot = _talk_vision_snapshot(session_id) if include_vision else \
+        {"visible": [], "description": "", "time_of_day": "", "image_url": None}
     vision_block = _format_vision_for_persona(label, vision_snapshot)
 
     persona_prompt = (
@@ -6973,6 +7002,221 @@ def _talk_opening_line(label: str, kind: str, situation: dict, persona_prompt: s
         return line
     except Exception:
         return fallback
+
+
+def build_portrait_prompt(context: dict) -> str:
+    """Compose a cinematic medium-shot portrait prompt for a Conversation Moment.
+
+    Reuses the same talk context (subject, scene, time of day) the persona was
+    built from, but applies ``CONVERSATION_PORTRAIT_STYLE_ANCHOR`` — a distinct
+    lens language from the handheld-camcorder world view — so the cut into
+    dialogue reads as a register change.
+    """
+    context = context or {}
+    subject = context.get("subject") or {}
+    situation = context.get("situation") or {}
+    label = _clean_subject_text(subject.get("label"), "figure", 40)
+    kind = _clean_subject_text(subject.get("kind"), "person", 20)
+    scene = (situation.get("scene") or "").strip()
+    if len(scene) > 220:
+        scene = scene[:217].rstrip() + "..."
+    tod = (situation.get("time_of_day") or "").strip()
+    loc = (situation.get("location") or "").replace("_", " ").strip()
+
+    kind_look = {
+        "person": "a wary human figure",
+        "character": "a named character from this world",
+        "creature": "a strange, possibly inhuman presence with a readable face or visage",
+        "animal": "an uncanny animal that meets the camera's gaze",
+        "machine": "a machine, radio, intercom, or terminal that somehow feels present / watched",
+    }.get(kind, "a figure the investigator has encountered")
+
+    bits = [
+        CONVERSATION_PORTRAIT_STYLE_ANCHOR.rstrip(". ") + ".",
+        f"Subject: the '{label}' — {kind_look}.",
+        "Hold a charged, intimate medium shot; the subject fills the frame.",
+    ]
+    if scene:
+        bits.append(f"Background suggests this place (softly, out of focus): {scene}")
+    setting = ", ".join([b for b in [loc, tod] if b])
+    if setting:
+        bits.append(f"Setting cues: {setting}.")
+    bits.append(
+        "No text, no UI, no letterbox bars inside the image. Photoreal cinematic still."
+    )
+    prompt = " ".join(bits)
+    return _sanitize_for_image_generation(prompt)
+
+
+def _portrait_cache_key(session_id: str, label: str, world_prompt: str) -> tuple:
+    scene_hash = hashlib.sha1((world_prompt or "").encode("utf-8")).hexdigest()[:16]
+    return (session_id or "default", (label or "").strip().lower(), scene_hash)
+
+
+def api_talk_portrait():
+    """Generate (or reuse) a cinematic medium-shot portrait for a TALK subject.
+
+    Request JSON: ``{"subject": {"label","kind","speaks"}, "session_id"?}``
+    Response JSON: ``{"image_url": "/images/...", "cached": bool, "prompt": str}``
+      or ``{"image_url": null, "reason": "..."}`` when generation is unavailable.
+
+    Fast path: calls ``generate_with_gemini(..., portrait_mode=True)`` directly —
+    NOT the heavy turn-coupled ``_gen_image_impl``. Cached per
+    ``(session, subject, scene)`` so re-opening the same conversation is free.
+    """
+    try:
+        if _rate_limited("talk_portrait", 1.2):
+            return jsonify({"image_url": None, "reason": "slow_down"}), 429
+        data = request.get_json(silent=True) or {}
+        subject = data.get("subject") or {}
+        session_id = data.get("session_id", "default")
+        if not isinstance(subject, dict) or not (subject.get("label") or "").strip():
+            return jsonify({"error": "missing subject", "image_url": None}), 400
+
+        if not IMAGE_ENABLED:
+            return jsonify({"image_url": None, "reason": "image_disabled"})
+
+        # Reuse the same briefing Talk built for the persona, but skip BOTH
+        # the opening-line LLM call (opening_override=".") AND the vision
+        # snapshot (include_vision=False): the portrait only needs the subject
+        # + scene, and it runs concurrently with the session's own
+        # build_talk_context, so repeating the two Gemini vision calls here
+        # would just double the time-to-portrait for no benefit.
+        context = build_talk_context(
+            subject, session_id, opening_override=".", include_vision=False,
+        )
+        if context.get("opening_line") == ".":
+            context["opening_line"] = ""
+
+        label = context["subject"]["label"]
+        try:
+            world_prompt = str((_load_state(session_id) or {}).get("world_prompt") or "")
+        except Exception:
+            world_prompt = ""
+        cache_key = _portrait_cache_key(session_id, label, world_prompt)
+
+        with _PORTRAIT_CACHE_LOCK:
+            cached = _PORTRAIT_CACHE.get(cache_key)
+        if cached:
+            return jsonify({"image_url": cached, "cached": True, "subject": context["subject"]})
+
+        spend = _PORTRAIT_SPEND.get(session_id, 0)
+        if spend >= CONVERSATION_PORTRAIT_BUDGET:
+            return jsonify({
+                "image_url": None,
+                "reason": "budget",
+                "subject": context["subject"],
+            })
+
+        prompt = build_portrait_prompt(context)
+        img_dir = _get_image_dir(session_id)
+        tod = (context.get("situation") or {}).get("time_of_day") or ""
+
+        t0 = time.time()
+        image_path = None
+        try:
+            from gemini_image_utils import generate_with_gemini
+            image_path = generate_with_gemini(
+                prompt=prompt,
+                caption=f"portrait_{label}",
+                world_prompt=world_prompt[:400] if world_prompt else None,
+                aspect_ratio="16:9",
+                time_of_day=tod,
+                hd_mode=False,
+                output_dir=Path(img_dir),
+                portrait_mode=True,
+            )
+        except Exception as gen_err:
+            log_error(f"[TALK PORTRAIT] generate failed: {gen_err}")
+            try:
+                cost_tracker.record_usage(
+                    session_id, "image", "gemini", "talk_portrait",
+                    operation="talk_portrait", output_units=0, unit_type="images",
+                    latency_ms=int((time.time() - t0) * 1000), success=False,
+                    error_message=str(gen_err)[:200],
+                )
+            except Exception:
+                pass
+            return jsonify({"image_url": None, "reason": "generate_failed",
+                            "subject": context["subject"]})
+
+        web = _to_web_image_url(image_path)
+        latency_ms = int((time.time() - t0) * 1000)
+        try:
+            cost_tracker.record_usage(
+                session_id, "image", "gemini", "talk_portrait",
+                operation="talk_portrait", output_units=1.0 if web else 0,
+                unit_type="images", latency_ms=latency_ms, success=bool(web),
+                error_message=None if web else "no_image_returned",
+            )
+        except Exception:
+            pass
+
+        if not web:
+            return jsonify({"image_url": None, "reason": "no_image",
+                            "subject": context["subject"]})
+
+        with _PORTRAIT_CACHE_LOCK:
+            _PORTRAIT_CACHE[cache_key] = web
+            _PORTRAIT_SPEND[session_id] = spend + 1
+
+        return jsonify({
+            "image_url": web,
+            "cached": False,
+            "prompt": prompt[:400],
+            "subject": context["subject"],
+        })
+    except Exception as e:
+        log_error(f"[TALK PORTRAIT] failed: {e}")
+        return jsonify({"image_url": None, "reason": "error", "error": str(e)}), 500
+
+
+def _record_character_memory(session_id: str, subject: dict, note: str = "") -> dict:
+    """Upsert a lightweight per-character memory record on session state.
+
+    Additive metadata only — does not mutate ``history`` / ``feed_log`` / the
+    sim turn. Powers future trust/relationship Moments without requiring a
+    full NPC database today.
+    """
+    subject = subject or {}
+    display_label = re.sub(r"\s+", " ", str(subject.get("label") or "")).strip()[:40]
+    label = _clean_subject_text(subject.get("label"), "", 40)
+    if not label:
+        return {}
+    try:
+        st = _load_state(session_id) or {}
+    except Exception:
+        return {}
+    chars = st.get("characters")
+    if not isinstance(chars, dict):
+        chars = {}
+    key = label.lower()
+    entry = chars.get(key) if isinstance(chars.get(key), dict) else {}
+    first_met = entry.get("first_met_turn")
+    if first_met is None:
+        first_met = st.get("turn_count", 0)
+    notes = list(entry.get("notes") or [])
+    clean_note = (note or "").strip()[:240]
+    if clean_note and (not notes or notes[-1] != clean_note):
+        notes.append(clean_note)
+        notes = notes[-8:]  # keep a short rolling window
+    entry = {
+        # Prefer the player's original casing for display; key stays lowercased.
+        "label": display_label or label,
+        "kind": _clean_subject_text(subject.get("kind"), entry.get("kind") or "person", 20),
+        "first_met_turn": first_met,
+        "last_talk_turn": st.get("turn_count", 0),
+        "talk_count": int(entry.get("talk_count") or 0) + 1,
+        "notes": notes,
+        "trust": int(entry.get("trust") or 0),
+    }
+    chars[key] = entry
+    st["characters"] = chars
+    try:
+        _save_state(st, session_id)
+    except Exception as e:
+        log_error(f"[TALK] character memory save failed: {e}")
+    return entry
 
 
 def api_talk_session():
@@ -7174,33 +7418,54 @@ def api_talk_end():
     become eligible for session-end cleanup + LRU eviction.
 
     Request JSON: ``{"voice_id": <str>, "session_id"?: <str>,
-    "duration_seconds"?: <float>}``. `duration_seconds` is how long the
-    ElevenLabs Convai channel was actually connected — the server never
-    proxies that websocket, so the client is the only one who knows.
-    Response JSON: ``{"ok": true, "refcount": <int>}``. Always 200 — this is
-    fire-and-forget from the client; we never let an end-of-call cleanup
-    error surface as a user-visible failure.
+    "duration_seconds"?: <float>, "subject"?: {...}, "memory_note"?: <str>}``.
+    `duration_seconds` is how long the ElevenLabs Convai channel was actually
+    connected — the server never proxies that websocket, so the client is the
+    only one who knows. When ``subject`` is present we also upsert a lightweight
+    per-character memory record (see ``_record_character_memory``) so future
+    Moments / trust systems have somewhere to plug in.
+    Response JSON: ``{"ok": true, "refcount": <int>, "character"?: {...}}``.
+    Always 200 — this is fire-and-forget from the client; we never let an
+    end-of-call cleanup error surface as a user-visible failure.
     """
     try:
         data = request.get_json(silent=True) or {}
         voice_id = str(data.get("voice_id") or "").strip()
+        session_id = str(data.get("session_id") or "default")
         try:
             seconds = float(data.get("duration_seconds") or 0)
         except (TypeError, ValueError):
             seconds = 0.0
         if seconds > 0:
             cost_tracker.record_usage(
-                str(data.get("session_id") or "default"), "voice", "elevenlabs", "talk_agent",
+                session_id, "voice", "elevenlabs", "talk_agent",
                 output_units=seconds, unit_type="seconds", success=True,
             )
-        if not voice_id:
-            return jsonify({"ok": True, "refcount": 0})
-        try:
-            import voice_design as _vd
-            remaining = _vd.release(voice_id)
-        except Exception:
-            remaining = 0
-        return jsonify({"ok": True, "refcount": remaining})
+        character = None
+        subject = data.get("subject")
+        if isinstance(subject, dict) and (subject.get("label") or "").strip():
+            try:
+                character = _record_character_memory(
+                    session_id, subject, note=str(data.get("memory_note") or ""),
+                )
+            except Exception as mem_err:
+                log_error(f"[TALK] character memory failed: {mem_err}")
+        remaining = 0
+        if voice_id:
+            try:
+                import voice_design as _vd
+                remaining = _vd.release(voice_id)
+            except Exception:
+                remaining = 0
+        out = {"ok": True, "refcount": remaining}
+        if character:
+            out["character"] = {
+                "label": character.get("label"),
+                "talk_count": character.get("talk_count"),
+                "trust": character.get("trust"),
+                "first_meeting": character.get("talk_count") == 1,
+            }
+        return jsonify(out)
     except Exception as e:
         log_error(f"[TALK] end failed: {e}")
         return jsonify({"ok": True, "refcount": 0})
