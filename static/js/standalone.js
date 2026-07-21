@@ -83,11 +83,6 @@
     talkInput: document.getElementById("talk-input"),
     talkSend: document.getElementById("talk-send"),
     talkClose: document.getElementById("talk-close"),
-    talkMin: document.getElementById("talk-min"),
-    talkChip: document.getElementById("talk-chip"),
-    talkChipName: document.getElementById("talk-chip-name"),
-    talkChipSub: document.getElementById("talk-chip-sub"),
-    talkChipOrb: document.getElementById("talk-chip-orb"),
     talkFloat: document.getElementById("talk-float"),
     talkFloatWho: document.getElementById("talk-float-who"),
     talkFloatBody: document.getElementById("talk-float-body"),
@@ -7746,34 +7741,28 @@
       } catch (_) {}
     }
 
-    // Collapsed "in-call" state: panel is folded away, but the chip stays on
-    // screen so the conversation is still felt. Persisted so it survives a
-    // voice-switch reconnect (which just reruns beginVoice, not start()).
-    let minimized = false;
     let floatTimer = 0;
 
     function isOpen() { return open; }
-    function isMinimized() { return minimized && open; }
 
     function setSub(text) {
       if (el.talkSub) el.talkSub.textContent = text || "";
-      if (el.talkChipSub) el.talkChipSub.textContent = text || "";
     }
 
     function setOrbState(s) {
       if (el.talkOrb) el.talkOrb.dataset.state = s || "idle";
-      if (el.talkChipOrb) el.talkChipOrb.dataset.state = s || "idle";
     }
 
     function ensureSdk() { return ElevenSDK.load(); }
 
-    // Mirror the latest incoming line as a soft speech bubble floating over the
-    // scene — Coffee-Talk-style dialog that "hangs in the air" so a
-    // conversation can happen in your peripheral vision while you keep
-    // playing. Auto-fades; the transcript panel is still the source of truth.
-    function showFloat(content) {
+    // Mirror the latest line (yours or theirs) as a soft speech caption
+    // floating over the scene — Coffee-Talk-style dialog that "hangs in the
+    // air" so a conversation can happen in your peripheral vision while you
+    // keep playing. This is the ONLY on-screen dialogue surface now (there is
+    // no separate "expanded" transcript card) — it auto-fades on its own.
+    function showFloat(content, who) {
       if (!el.talkFloat || !el.talkFloatBody || !content) return;
-      if (el.talkFloatWho) el.talkFloatWho.textContent = subject ? subject.label.toUpperCase() : "—";
+      if (el.talkFloatWho) el.talkFloatWho.textContent = who || (subject ? subject.label.toUpperCase() : "—");
       el.talkFloatBody.textContent = content;
       el.talkFloat.classList.remove("hidden");
       // Re-trigger the entrance animation even if it's already showing.
@@ -7793,38 +7782,6 @@
       setTimeout(() => { if (el.talkFloat && !el.talkFloat.classList.contains("talk-float-in")) el.talkFloat.classList.add("hidden"); }, 320);
     }
 
-    function setMinimized(next) {
-      if (!open) return;
-      next = !!next;
-      if (next === minimized) return;
-      minimized = next;
-      if (!el.talkOverlay) return;
-      el.talkOverlay.classList.toggle("talk-min", minimized);
-      // While minimized, the panel is folded so it's not modal — mirror that
-      // in ARIA so assistive tech tracks the state.
-      if (el.talkPanel) el.talkPanel.setAttribute("aria-hidden", minimized ? "true" : "false");
-      if (el.talkChip) {
-        el.talkChip.setAttribute("aria-hidden", minimized ? "false" : "true");
-        el.talkChip.classList.toggle("hidden", !minimized);
-        if (minimized && subject && el.talkChipName) el.talkChipName.textContent = subject.label;
-      }
-      if (minimized) {
-        // Nudge focus back to the world so the player can play right away.
-        try { document.activeElement && document.activeElement.blur && document.activeElement.blur(); } catch (_) {}
-        Haptics.select();
-      } else {
-        hideFloat();
-        setTimeout(() => { if (open && !minimized && el.talkInput && mode === "text") el.talkInput.focus(); }, 220);
-      }
-      // Subtle UI toggle sound (NOT the warm carrier tone that plays when a
-      // conversation OPENS/CLOSES). Folding is a HUD move, not a hang-up.
-      try {
-        if (minimized && Sound.menuClose) Sound.menuClose();
-        else if (!minimized && Sound.menuOpen) Sound.menuOpen();
-      } catch (_) {}
-    }
-    function toggleMinimize() { setMinimized(!minimized); }
-
     function addLine(role, content) {
       const line = document.createElement("div");
       line.className = "talk-line talk-" + (role === "user" ? "you" : "them");
@@ -7838,11 +7795,10 @@
       line.appendChild(body);
       el.talkLog.appendChild(line);
       el.talkLog.scrollTop = el.talkLog.scrollHeight;
-      // When the panel is folded, the subject's lines still float out as an
-      // ephemeral bubble over the scene — coffee-talk-style, so you can hear
-      // the conversation from the corner of your eye while you keep playing.
-      // With the panel expanded, the transcript IS the bubble, so we skip it.
-      if (role !== "user" && minimized) showFloat(content);
+      // Every line — yours or theirs — also floats out as an ephemeral
+      // caption over the scene, coffee-talk-style, since the floating
+      // caption is the only on-screen dialogue surface now.
+      showFloat(content, who.textContent);
       return line;
     }
 
@@ -7872,7 +7828,6 @@
       pendingDesignedVoiceId = "";
       aiIsSpeaking = false;
       openingSpoken = false;
-      minimized = false;
       lastFocus = document.activeElement;
       Narrator.stop(); // a two-way conversation takes over from ambient narration
       // Auto-play shouldn't advance the world mid-conversation (restore on close).
@@ -7885,13 +7840,9 @@
       el.talkInput.value = "";
       el.talkInput.setAttribute("placeholder", "say something…");
       el.talkName.textContent = subject.label;
-      if (el.talkChipName) el.talkChipName.textContent = subject.label;
       setSub("establishing channel…");
       setOrbState("connecting");
-      // Reset the folded / floating states from any prior conversation.
-      if (el.talkOverlay) el.talkOverlay.classList.remove("talk-min");
-      if (el.talkChip) el.talkChip.classList.add("hidden");
-      if (el.talkPanel) el.talkPanel.setAttribute("aria-hidden", "false");
+      // Clear any leftover floating caption from a prior conversation.
       hideFloat();
       el.talkOverlay.classList.remove("hidden");
       el.talkOverlay.setAttribute("aria-hidden", "false");
@@ -8194,21 +8145,16 @@
     }
 
     function pulseOrb() {
-      // Pulse BOTH the panel orb and the chip orb so a new line reads as a
-      // "presence beat" whether the panel is unfolded or folded to a chip.
-      const orbs = [el.talkOrb, el.talkChipOrb];
-      for (const o of orbs) {
-        if (!o) continue;
-        o.classList.remove("talk-orb-pulse");
-        void o.offsetWidth;
-        o.classList.add("talk-orb-pulse");
-      }
+      // Pulse the presence orb so a new line reads as a "presence beat".
+      if (!el.talkOrb) return;
+      el.talkOrb.classList.remove("talk-orb-pulse");
+      void el.talkOrb.offsetWidth;
+      el.talkOrb.classList.add("talk-orb-pulse");
     }
 
     function close() {
       if (!open) return;
       open = false;
-      minimized = false;
       switching = false;
       hideFloat();
       stopDesignPoll();
@@ -8227,9 +8173,7 @@
       if (convo) { try { convo.endSession(); } catch (_) {} convo = null; }
       closeVoiceMenu();
       if (el.talkVoiceBtn) el.talkVoiceBtn.classList.add("hidden");
-      if (el.talkChip) el.talkChip.classList.add("hidden");
       el.talkOverlay.classList.remove("talk-in");
-      el.talkOverlay.classList.remove("talk-min");
       el.talkOverlay.setAttribute("aria-hidden", "true");
       document.body.classList.remove("talking");
       setTimeout(() => {
@@ -8248,20 +8192,17 @@
       lastFocus = null;
     }
 
-    // Escape handler: collapse the voice menu first, else fold the panel
-    // (first Esc collapses to the chip so the player can play); a second Esc
-    // ends the conversation entirely. Feels closer to a phone-call HUD than a
-    // modal dialog.
+    // Escape handler: collapse the voice menu first if it's open, otherwise
+    // end the conversation. There's no "fold to a chip" step anymore — the
+    // control strip is already minimal — so a single Esc just hangs up.
     function onEscape() {
       if (el.talkVoiceMenu && !el.talkVoiceMenu.classList.contains("hidden")) { closeVoiceMenu(); return; }
-      if (!minimized) { setMinimized(true); return; }
       close();
     }
 
     return {
-      start, close, isOpen, isMinimized, micToggle, send,
+      start, close, isOpen, micToggle, send,
       toggleVoiceMenu, closeVoiceMenu, onEscape,
-      toggleMinimize, setMinimized,
     };
   })();
 
@@ -9033,14 +8974,13 @@
   function onKeydown(e) {
     // TALK is now a companion HUD, not a modal — the world stays playable
     // while you converse. If focus is in the TALK input, let the field handle
-    // typing/Enter and only intercept Esc (which folds → then closes). If the
-    // panel is open but focus is elsewhere, global shortcuts (number choices,
-    // R, V, ACT, PHOTO…) still work, so the player can act mid-conversation.
+    // typing/Enter and only intercept Esc (which ends the conversation). If
+    // the strip is open but focus is elsewhere, global shortcuts (number
+    // choices, R, V, ACT, PHOTO…) still work, so the player can act
+    // mid-conversation.
     if (Talk.isOpen()) {
       const typing = document.activeElement === el.talkInput;
       if (e.key === "Escape") { e.preventDefault(); Talk.onEscape(); return; }
-      // `\` toggles the fold-to-chip state without leaving the conversation.
-      if (!typing && e.key === "\\") { e.preventDefault(); Talk.toggleMinimize(); return; }
       if (typing) return; // let the composer handle the rest
       // Otherwise fall through so global shortcuts fire.
     }
@@ -10128,8 +10068,6 @@
     }
     if (el.talkClose) el.talkClose.addEventListener("click", () => Talk.close());
     if (el.talkScrim) el.talkScrim.addEventListener("click", () => Talk.close());
-    if (el.talkMin) el.talkMin.addEventListener("click", (e) => { e.preventDefault(); Talk.setMinimized(true); });
-    if (el.talkChip) el.talkChip.addEventListener("click", (e) => { e.preventDefault(); Talk.setMinimized(false); });
     if (el.talkModeToggle) el.talkModeToggle.addEventListener("click", () => Talk.micToggle());
     if (el.talkVoiceBtn) el.talkVoiceBtn.addEventListener("click", (e) => { e.stopPropagation(); Talk.toggleVoiceMenu(); });
     // Click anywhere else in the panel closes the voice menu.
