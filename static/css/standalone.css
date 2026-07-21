@@ -2509,6 +2509,23 @@ body.photo-pinching #touch-dof,
 body.photo-pinching #touch-capture-frame {
   transition: none !important;
 }
+/* ---------- Camera feel: the cinematic PUSH-IN ----------
+   Raising the camera opens on the full wide frame and then glides into the armed
+   FOV. For just that beat, swap the scene's snappy 0.16s zoom-chase for a long,
+   eased ramp so it reads as "snapping to a scope" — immediate but smooth, like
+   sighting down an FPS weapon. The letterbox mask (#touch-dof) rides the same
+   easing so the crop tightens in lock-step with the push. */
+body.photo-pushing #sceneA,
+body.photo-pushing #sceneB,
+body.photo-pushing #reactor-video,
+body.photo-pushing #reactor-freeze {
+  transition: opacity 1.5s ease-in-out, transform 0.62s cubic-bezier(0.16, 0.84, 0.28, 1) !important;
+}
+body.photo-pushing #touch-dof {
+  transition: opacity 0.3s ease,
+              width 0.62s cubic-bezier(0.16, 0.84, 0.28, 1),
+              height 0.62s cubic-bezier(0.16, 0.84, 0.28, 1) !important;
+}
 /* backdrop-filter on a moving element is a known jank source on mobile Safari;
    touch devices get a cheap solid reticle/hint instead so the drag stays smooth. */
 html.is-touch #touch-reticle {
