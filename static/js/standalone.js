@@ -6814,9 +6814,12 @@
     }
     // MOVE always RELOCATES you — a full change of scenery, not a camera drift
     // in place. "Cross over" is one of the engine's hard-transition triggers
-    // (is_hard_transition), so the turn cuts to a fresh scene composed around the
-    // object at your new vantage instead of merely advancing the camera.
-    return "Travel to the " + o + ", crossing over to it and arriving at a new vantage where the surroundings have completely changed.";
+    // (is_hard_transition matches the literal phrase), so the turn cuts to a
+    // fresh scene composed around the object at your new vantage instead of
+    // merely advancing the camera. The wording MUST contain "cross over"
+    // verbatim or the transition won't fire (that's why plain "move to the X"
+    // used to look static).
+    return "Travel to the " + o + ", cross over to it, and arrive at a new vantage where the surroundings have completely changed.";
   }
 
   // A short spatial anchor for a detected object, derived from its normalized

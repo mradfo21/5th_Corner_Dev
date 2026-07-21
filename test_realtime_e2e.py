@@ -562,12 +562,12 @@ class TestRealtimeRenderer(unittest.TestCase):
             page.close()
 
     def test_camera_zoom_scales_scene_and_suppresses_pinch_capture(self):
-        """Optical zoom: while the camera is armed, the mouse wheel magnifies the
-        scene (a CSS transform on the video layer) within bounds, the readout
-        tracks it, the magnification RE-ANCHORS to the reticle as it moves (so
-        the zoomed view follows the aim, FPS-scope style), and a two-finger
-        PINCH zooms WITHOUT firing a capture (no /api/investigate) — only a
-        clean single-finger tap shoots."""
+        """Optical zoom: the camera arms on the FULL frame (1.0x), the mouse wheel
+        then magnifies the scene (a CSS scale transform on the video layer) within
+        bounds, the readout tracks it, a big wheel-down clamps back to the wide
+        1.0x bound (transform cleared), and a two-finger PINCH zooms WITHOUT
+        firing a capture (no /api/investigate) — only a clean single-finger tap
+        shoots."""
         page = self._new_realtime_page()
         scene_items = [
             {"id": 1, "type": "narrative", "content": "Intro."},
@@ -579,35 +579,33 @@ class TestRealtimeRenderer(unittest.TestCase):
         page.route("**/api/reset", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(scene_items)))
         page.route("**/api/feed*", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
         page.route("**/api/photo", lambda r: r.fulfill(status=200, content_type="application/json", body='{"items":[]}'))
+        page.route("**/api/detect", lambda r: r.fulfill(status=200, content_type="application/json", body='{"objects":[]}'))
         page.route("**/api/investigate", lambda r: (investigates.append(r.request.post_data),
                    r.fulfill(status=200, content_type="application/json", body='{"ok":true,"id":1,"kind":"photo"}')))
         try:
             page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
             page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
-            # Arm the camera -> a gentle push-in scales the scene right away.
+            # Arm the camera -> opens on the full frame (1.0x): no scale transform.
             page.evaluate("document.getElementById('realtime-btn').click()")
-            page.wait_for_function("(document.getElementById('reactor-video').style.transform || '').includes('scale(')", timeout=4000)
+            page.wait_for_function("!document.getElementById('touch-layer').classList.contains('hidden')", timeout=4000)
             z_armed = page.evaluate("parseFloat(document.getElementById('touch-zoom').textContent)")
-            self.assertGreater(z_armed, 1.0, "arming should push gently into the scene")
+            self.assertAlmostEqual(z_armed, 1.0, places=1, msg="arming opens on the full 16:9 frame")
+            self.assertNotIn("scale(", page.evaluate("document.getElementById('reactor-video').style.transform || ''"),
+                             "the full-frame view is not magnified")
 
             # Wheel up (deltaY < 0) zooms IN: the readout climbs and the layer scales up.
             page.evaluate("""() => document.getElementById('touch-layer').dispatchEvent(
                 new WheelEvent('wheel', {deltaY: -600, cancelable: true, bubbles: true}))""")
+            page.wait_for_function(
+                "(document.getElementById('reactor-video').style.transform || '').includes('scale(')", timeout=4000)
             z_in = page.evaluate("parseFloat(document.getElementById('touch-zoom').textContent)")
             self.assertGreater(z_in, z_armed, "wheel up must zoom in")
-            transform_a = page.evaluate("document.getElementById('reactor-video').style.transform")
-            self.assertIn("scale(", transform_a)
-            # The zoom is anchored to the reticle (translate + scale), so moving the
-            # aim point re-anchors the magnified view (it follows the cursor).
-            page.evaluate("""() => document.getElementById('touch-layer').dispatchEvent(
-                new PointerEvent('pointermove', {pointerId: 5, clientX: 120, clientY: 130, cancelable:true, bubbles:true}))""")
-            transform_b = page.evaluate("document.getElementById('reactor-video').style.transform")
-            self.assertIn("translate(", transform_b)
-            self.assertNotEqual(transform_a, transform_b, "zoom must re-anchor to follow the reticle")
 
             # A big wheel-down clamps back to the wide bound (1.0x, transform cleared).
             page.evaluate("""() => document.getElementById('touch-layer').dispatchEvent(
                 new WheelEvent('wheel', {deltaY: 6000, cancelable: true, bubbles: true}))""")
+            page.wait_for_function(
+                "!(document.getElementById('reactor-video').style.transform || '').includes('scale(')", timeout=4000)
             z_min = page.evaluate("parseFloat(document.getElementById('touch-zoom').textContent)")
             self.assertAlmostEqual(z_min, 1.0, places=1)
 
@@ -642,12 +640,17 @@ class TestRealtimeRenderer(unittest.TestCase):
         page.route("**/api/reset", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(scene_items)))
         page.route("**/api/feed*", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
         page.route("**/api/investigate", lambda r: r.fulfill(status=200, content_type="application/json", body='{"ok":true,"id":1,"kind":"photo"}'))
-        # One shot that documents 8 distinct subjects — enough to close the case.
-        subjects = ["figure", "valve", "brush pile", "structure", "lantern",
-                    "crate", "wire", "boot print"]
-        page.route("**/api/photo", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps({
-            "items": [{"label": s, "interest": 4, "note": "clue"} for s in subjects],
-            "caption": "A dense, telling frame.", "mood": "ominous"})))
+        # One shot that documents enough distinct subjects to close the case. The
+        # exact goal is read from the live Evidence tracker (CASE_TARGET) so this
+        # test never drifts if the census target is retuned.
+        subject_pool = ["figure", "valve", "brush pile", "structure", "lantern",
+                        "crate", "wire", "boot print", "ladder", "tarp",
+                        "generator", "barrel", "sign", "toolbox", "gauge", "cable"]
+        photo_items = {"body": None}
+
+        def photo_handler(route):
+            route.fulfill(status=200, content_type="application/json", body=photo_items["body"])
+        page.route("**/api/photo", photo_handler)
         # A centered detected subject makes the shot worthy (gate).
         page.route("**/api/detect", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps({
             "objects": [{"label": "figure", "cx": 0.5, "cy": 0.5, "w": 0.25, "h": 0.4}]})))
@@ -657,7 +660,16 @@ class TestRealtimeRenderer(unittest.TestCase):
             # Arm the camera: the dossier HUD (with the case goal) is revealed.
             page.evaluate("document.getElementById('realtime-btn').click()")
             page.wait_for_function("!document.getElementById('evidence-hud').classList.contains('hidden')", timeout=5000)
-            self.assertIn("/8", page.evaluate("document.querySelector('#evidence-hud .ev-case-count').textContent"))
+            # The census goal is whatever the live tracker reports (CASE_TARGET).
+            goal = page.evaluate("window.Evidence.target()")
+            self.assertGreaterEqual(goal, 1)
+            self.assertIn("/" + str(goal), page.evaluate("document.querySelector('#evidence-hud .ev-case-count').textContent"))
+            # Document exactly `goal` distinct subjects in one dense frame.
+            subjects = subject_pool[:goal]
+            self.assertEqual(len(subjects), goal, "need enough distinct subjects to close the case")
+            photo_items["body"] = json.dumps({
+                "items": [{"label": s, "interest": 4, "note": "clue"} for s in subjects],
+                "caption": "A dense, telling frame.", "mood": "ominous"})
             page.wait_for_function("document.querySelectorAll('#touch-targets .photo-target').length >= 1", timeout=8000)
             # Take the shot at the centered subject (press + release).
             page.evaluate("""() => {
@@ -670,7 +682,7 @@ class TestRealtimeRenderer(unittest.TestCase):
             page.wait_for_function("!document.getElementById('case-overlay').classList.contains('hidden')", timeout=15000)
             rank = page.evaluate("document.getElementById('case-rank-letter').textContent")
             self.assertIn(rank, ["D", "C", "B", "A", "S"], f"a rank grade must be shown, got {rank!r}")
-            self.assertEqual(page.evaluate("document.getElementById('case-subjects').textContent"), "8")
+            self.assertEqual(page.evaluate("document.getElementById('case-subjects').textContent"), str(goal))
             # Starting a NEW CASE clears the win overlay and resets the census.
             page.evaluate("document.getElementById('case-restart').click()")
             page.wait_for_function("document.getElementById('case-overlay').classList.contains('hidden')", timeout=8000)
@@ -682,9 +694,10 @@ class TestRealtimeRenderer(unittest.TestCase):
 
     def test_photo_worthy_shot_requires_a_framed_subject(self):
         """A shot only gathers evidence when a DETECTED subject is framed. The
-        live detection floats a target over what you can photograph; shooting
-        empty space misses (no receipt, no /api/photo), while framing the target
-        is worthy (receipt shows). This uses genuine in-game perception data."""
+        viewfinder is a fixed, centered window, so every shot captures the center;
+        an EMPTY frame (nothing detected) misses (no receipt, no /api/photo),
+        while a centered detected subject is worthy (receipt shows). This uses
+        genuine in-game perception data."""
         page = self._new_realtime_page()
         scene_items = [
             {"id": 1, "type": "narrative", "content": "Intro."},
@@ -693,42 +706,58 @@ class TestRealtimeRenderer(unittest.TestCase):
             {"id": 3, "type": "player_choice_prompt", "content": "?", "choices": [{"text": "Go"}]},
         ]
         photos = []
+        detects = []
         page.route("**/api/reset", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(scene_items)))
         page.route("**/api/feed*", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
         page.route("**/api/investigate", lambda r: r.fulfill(status=200, content_type="application/json", body='{"ok":true,"id":1,"kind":"photo"}'))
-        page.route("**/api/detect", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps({
-            "objects": [{"label": "figure", "cx": 0.5, "cy": 0.5, "w": 0.25, "h": 0.4}]})))
+
+        # First detection returns NOTHING (empty frame -> a shot misses); after
+        # that, a centered subject appears (a shot becomes worthy).
+        def detect_handler(route):
+            detects.append(1)
+            objs = [] if len(detects) == 1 else [
+                {"label": "figure", "cx": 0.5, "cy": 0.5, "w": 0.25, "h": 0.4}]
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps({"objects": objs}))
+        page.route("**/api/detect", detect_handler)
 
         def photo_handler(route):
             photos.append(route.request.url)
             route.fulfill(status=200, content_type="application/json", body=json.dumps({
                 "items": [{"label": "figure", "interest": 4, "note": "a witness"}], "caption": "There.", "mood": "tense"}))
         page.route("**/api/photo", photo_handler)
+
+        def shoot_center(pointer_id):
+            page.evaluate(
+                """(pid) => {
+                    const L = document.getElementById('touch-layer');
+                    const o = {clientX: window.innerWidth/2, clientY: window.innerHeight/2, pointerId: pid, cancelable: true, bubbles: true};
+                    L.dispatchEvent(new PointerEvent('pointerdown', o));
+                    L.dispatchEvent(new PointerEvent('pointerup', o));
+                }""", pointer_id)
         try:
             page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
             page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
             page.evaluate("document.getElementById('realtime-btn').click()")
-            page.wait_for_function("document.querySelectorAll('#touch-targets .photo-target').length >= 1", timeout=8000)
+            # Wait for the first (empty) detection to return, so the worthy-shot
+            # gate is live (detection has run) but no subject is framed.
+            for _ in range(80):
+                if detects:
+                    break
+                page.wait_for_timeout(100)
+            self.assertGreaterEqual(len(detects), 1, "photo detection never ran")
+            page.wait_for_timeout(300)  # let the detect result mark detection live
 
-            # MISS: shoot a far corner with no subject -> no receipt, no appraisal.
-            page.evaluate("""() => {
-                const L = document.getElementById('touch-layer');
-                const o = {clientX: 60, clientY: 60, pointerId: 2, cancelable: true, bubbles: true};
-                L.dispatchEvent(new PointerEvent('pointerdown', o));
-                L.dispatchEvent(new PointerEvent('pointerup', o));
-            }""")
+            # MISS: shoot the centered (empty) frame -> no receipt, no appraisal.
+            shoot_center(2)
             page.wait_for_timeout(700)
-            self.assertEqual(len(photos), 0, "a miss must not appraise the shot")
+            self.assertEqual(len(photos), 0, "an empty frame must not appraise the shot")
             self.assertFalse(page.evaluate("document.getElementById('photo-receipt').classList.contains('show')"),
                              "a miss must not show the receipt")
 
-            # WORTHY: frame the centered subject -> receipt develops.
-            page.evaluate("""() => {
-                const L = document.getElementById('touch-layer');
-                const o = {clientX: window.innerWidth/2, clientY: window.innerHeight/2, pointerId: 3, cancelable: true, bubbles: true};
-                L.dispatchEvent(new PointerEvent('pointerdown', o));
-                L.dispatchEvent(new PointerEvent('pointerup', o));
-            }""")
+            # WORTHY: once the centered subject is detected, framing it develops a receipt.
+            page.wait_for_function("document.querySelectorAll('#touch-targets .photo-target').length >= 1", timeout=8000)
+            shoot_center(3)
             page.wait_for_function("document.getElementById('photo-receipt').classList.contains('show')", timeout=6000)
             self.assertGreaterEqual(len(photos), 1, "a worthy shot must appraise the frame")
         except Exception:
@@ -1275,10 +1304,12 @@ class TestRealtimeRenderer(unittest.TestCase):
             page.close()
 
     def test_scan_action_clears_tags_for_the_turn(self):
-        """Committing a hotspot action must clear the stale labels while the turn
-        plays out (they shouldn't hover over a scene that's about to change). The
-        ambient overlay itself stays live — it repopulates once the new scene
-        settles — but no tags linger during the turn."""
+        """Committing a TURN-resolving hotspot action (MOVE TO) must clear the
+        stale labels while the turn plays out (they shouldn't hover over a scene
+        that's about to change). The ambient overlay itself stays live — it
+        repopulates once the new scene settles — but no tags linger during the
+        turn. (INTERACT is a live in-place poke and deliberately keeps its tag;
+        it's MOVE that changes the scene and clears them.)"""
         page = self._new_realtime_page()
         scene_items = [
             {"id": 1, "type": "narrative", "content": "Intro."},
@@ -1295,10 +1326,11 @@ class TestRealtimeRenderer(unittest.TestCase):
             page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
             page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
             page.wait_for_function("document.querySelectorAll('#scan-tags .scan-tag').length >= 1", timeout=12000)
-            # Click a tag, tap an action icon -> tags must clear for the turn.
+            # Click a tag, tap MOVE TO (a turn-resolving action) -> tags must
+            # clear for the turn.
             page.evaluate("document.querySelector('.scan-tag').click()")
-            page.wait_for_function("!!document.querySelector('.scan-tag.acting .scan-action-interact')", timeout=5000)
-            page.evaluate("document.querySelector('.scan-tag.acting .scan-action-interact').click()")
+            page.wait_for_function("!!document.querySelector('.scan-tag.acting .scan-action-move')", timeout=5000)
+            page.evaluate("document.querySelector('.scan-tag.acting .scan-action-move').click()")
             # The stale labels are gone while the turn resolves...
             page.wait_for_function("document.querySelectorAll('#scan-tags .scan-tag').length === 0", timeout=6000)
             # ...but the ambient overlay itself stays live (not torn down).
