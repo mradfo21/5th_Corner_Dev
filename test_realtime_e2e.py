@@ -1,16 +1,19 @@
 """
-test_realtime_e2e.py — Playwright end-to-end test for the REALTIME (Reactor /
-LingBot World 2) renderer path, which the normal standalone e2e can't cover
+test_realtime_e2e.py — Playwright end-to-end test for the REALTIME (Reactor
+Happy Oyster) renderer path, which the normal standalone e2e can't cover
 (mock mode disables image generation, and the real renderer needs an external
 WebRTC world-model service).
 
 Strategy — run the REAL client JS against a MOCK Reactor SDK:
   * Boot `run_local.py --mock` with REACTOR_API_KEY set + SCENE_RENDERER=reactor
-    so /api/reactor/config advertises the realtime renderer as enabled.
+    so /api/reactor/config advertises the realtime renderer as enabled (Happy
+    Oyster is the default model).
   * Intercept the SDK CDN import (esm.sh) and serve a mock ES module that
-    simulates the world-model lifecycle (connect -> ready, set_image ->
-    image_accepted, start -> a real canvas.captureStream() video track so the
-    <video> gets decoded frames and videoWidth > 0).
+    simulates the world-model lifecycle (connect -> ready, create_world ->
+    world_state(ready), start_travel -> a real canvas.captureStream() video track
+    so the <video> gets decoded frames and videoWidth > 0). The legacy LingBot
+    protocol (set_image/set_prompt/start/reset) is also simulated for the models
+    still selectable from the switcher.
   * Intercept POST /api/reactor/token -> a fake jwt (no real network).
   * Load /realtime, drive a scene through window.ReactorRenderer.applyScene(),
     and assert the live video actually reveals (ReactorRenderer.isShowing()).
@@ -53,9 +56,17 @@ TINY_PNG_DATA_URL = (
 
 
 # Mock Reactor SDK, served in place of the pinned esm.sh module. Implements just
-# the surface reactor_renderer.js uses. On `start` it emits a REAL video track
-# (canvas.captureStream) so the <video> decodes frames and reveals exactly like
-# production — the single hand-off the renderer waits on.
+# the surface reactor_renderer.js uses, for BOTH protocol families the renderer
+# drives:
+#   • Happy Oyster (the DEFAULT): create_world -> world_state(ready) ->
+#     start_travel -> a REAL video track; held move/look/interact/stop are
+#     recorded so the movement tests can assert them.
+#   • LingBot / seed_locked (legacy, still selectable): set_image ->
+#     image_accepted, set_prompt -> prompt_accepted, start -> generation_started
+#     + a video track; persistent set_move_*/set_look_* axes echo `state`.
+# On start_travel / start it emits a canvas.captureStream() video track so the
+# <video> decodes frames and reveals exactly like production — the single
+# hand-off the renderer waits on.
 MOCK_SDK_JS = r"""
 export class Reactor {
   constructor(opts) {
@@ -131,6 +142,25 @@ export class Reactor {
     } else if (name === "reset") {
       if (this._timer) { clearInterval(this._timer); this._timer = null; }
       setTimeout(() => this._emit("message", { type: "generation_reset", data: {} }), 10);
+    } else if (name === "create_world") {
+      // Happy Oyster: a short build, then a ready world_state (create_world
+      // resolves on that). A prior world's stream keeps running until travel.
+      window.__MOCK_WORLDS__ = (window.__MOCK_WORLDS__ || 0) + 1;
+      const p = data || {};
+      setTimeout(() => this._emit("message", { type: "world_state", data: {
+        phase: "building", prompt: p.prompt || "", mode: 1 } }), 6);
+      setTimeout(() => this._emit("message", { type: "world_state", data: {
+        phase: "ready",
+        encrypted_world_id: "world_" + Math.random().toString(36).slice(2),
+        prompt: p.prompt || "", first_frame: p.first_frame_image_url || "", mode: 1,
+      } }), 14);
+    } else if (name === "start_travel") {
+      // Advertise this world's interaction verbs, then stream video (unless the
+      // stall path is being exercised).
+      setTimeout(() => this._emit("message", { type: "travel_state", data: {
+        status: "running", user_instructions: [], chapters: [],
+        character_actions: ["Jump", "Attack"], environment_actions: ["Open"] } }), 8);
+      if (!window.__MOCK_NO_VIDEO__) setTimeout(() => this._startVideo(), 30);
     }
     return true;
   }
@@ -251,8 +281,10 @@ class TestRealtimeRenderer(unittest.TestCase):
         return "\n".join(self._logs[-60:])
 
     def test_realtime_video_reveals_on_scene(self):
-        """The core contract: enable realtime, apply a scene (guide image +
-        prompt), and the live video must actually show (isShowing() -> true)."""
+        """The core contract: enable realtime, apply a scene (world prompt +
+        first-frame image), and the live video must actually show
+        (isShowing() -> true). Default model is Happy Oyster: build a world
+        (create_world) then travel it (start_travel)."""
         page = self._new_realtime_page()
         try:
             page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
@@ -263,10 +295,10 @@ class TestRealtimeRenderer(unittest.TestCase):
             page.wait_for_function("window.__MOCK_REACTOR_CONNECTED__ === true", timeout=10000)
             page.wait_for_function("window.ReactorRenderer.isReady() === true", timeout=10000)
 
-            # Drive a guide-image scene through the realtime facade.
+            # Drive a first-frame scene through the realtime facade.
             page.evaluate(
                 """(img) => window.ReactorRenderer.applyScene({
-                    prompt: 'First-person VHS. A dark drainage pipe interior. Motion: you crawl forward.',
+                    prompt: 'First-person VHS. A dark drainage pipe interior you can walk through.',
                     imageUrl: img,
                     hardTransition: false,
                 })""",
@@ -278,8 +310,8 @@ class TestRealtimeRenderer(unittest.TestCase):
             self.assertTrue(page.evaluate("window.ReactorRenderer.getStatus()") == "live")
 
             cmds = page.evaluate("window.__MOCK_CMDS__ || []")
-            self.assertIn("set_image", cmds, f"set_image never sent. logs:\n{self._dump_logs()}")
-            self.assertIn("start", cmds, f"start never sent. logs:\n{self._dump_logs()}")
+            self.assertIn("create_world", cmds, f"create_world never sent. logs:\n{self._dump_logs()}")
+            self.assertIn("start_travel", cmds, f"start_travel never sent. logs:\n{self._dump_logs()}")
         except Exception:
             print("\n=== REACTOR CONSOLE LOG (video_reveals) ===\n" + self._dump_logs())
             raise
@@ -287,9 +319,10 @@ class TestRealtimeRenderer(unittest.TestCase):
             page.close()
 
     def test_realtime_reanchor_on_new_guide_image(self):
-        """After the first scene is live, a NEW guide image must re-anchor
-        (reset -> re-establish) and reveal the video again — the flow the recent
-        transition fixes touch."""
+        """After the first scene is live, a NEW guide image must re-anchor and
+        reveal the video again. On Happy Oyster a new scene is a NEW WORLD, so
+        the re-anchor issues a SECOND create_world (+ start_travel) rather than a
+        reset-in-place."""
         page = self._new_realtime_page()
         try:
             page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
@@ -302,12 +335,12 @@ class TestRealtimeRenderer(unittest.TestCase):
             page.wait_for_function("window.ReactorRenderer.isShowing() === true", timeout=15000)
 
             # A second, DIFFERENT guide image (distinct data URL) -> re-anchor.
-            other_png = TINY_PNG_DATA_URL.replace("iVBOR", "iVBOR")  # same bytes; use a query-like suffix
             page.evaluate(
                 """() => window.ReactorRenderer.applyScene({prompt: 'scene two', imageUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', hardTransition: false})"""
             )
-            # Reset must be issued for the re-anchor, then the video reveals again.
-            page.wait_for_function("(window.__MOCK_CMDS__||[]).filter(c=>c==='reset').length >= 1", timeout=10000)
+            # A second world must be built for the re-anchor, then the video
+            # reveals again.
+            page.wait_for_function("(window.__MOCK_CMDS__||[]).filter(c=>c==='create_world').length >= 2", timeout=10000)
             page.wait_for_function("window.ReactorRenderer.isShowing() === true", timeout=15000)
         except Exception:
             print("\n=== REACTOR CONSOLE LOG (reanchor) ===\n" + self._dump_logs())
@@ -342,8 +375,8 @@ class TestRealtimeRenderer(unittest.TestCase):
                 "(img) => window.ReactorRenderer.applyScene({prompt: 'stalled scene', imageUrl: img, hardTransition: false})",
                 TINY_PNG_DATA_URL,
             )
-            # start is issued...
-            page.wait_for_function("(window.__MOCK_CMDS__||[]).includes('start')", timeout=10000)
+            # start_travel is issued...
+            page.wait_for_function("(window.__MOCK_CMDS__||[]).includes('start_travel')", timeout=10000)
             # ...but no frames, so the watchdog must declare it stalled.
             page.wait_for_function("window.ReactorRenderer.isShowing() === false", timeout=5000)
             page.wait_for_timeout(2500)  # let the 1.5s watchdog fire
@@ -402,8 +435,8 @@ class TestRealtimeRenderer(unittest.TestCase):
 
     def test_world_model_inspector_logs_prompts_and_events(self):
         """The right-side world-model inspector must sequentially log what we SEND
-        (set_prompt with the prompt text) and what the model REPORTS (accepted /
-        generation started / video live), so the black box is inspectable."""
+        (create_world with the world prompt) and what the model REPORTS (world
+        ready / travelling / video live), so the black box is inspectable."""
         page = self._new_realtime_page()
         try:
             page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
@@ -422,7 +455,7 @@ class TestRealtimeRenderer(unittest.TestCase):
             # Wait for log entries to accumulate.
             page.wait_for_function("document.querySelectorAll('#rt-log-list .rt-e').length >= 3", timeout=8000)
             text = page.evaluate("document.getElementById('rt-log-list').innerText")
-            self.assertIn("set_prompt", text, f"inspector didn't log the prompt we sent. log:\n{text}")
+            self.assertIn("create_world", text, f"inspector didn't log the world build we sent. log:\n{text}")
             # It logged the actual prompt text we injected.
             self.assertIn("drainage pipe", text, f"inspector didn't show the injected prompt text. log:\n{text}")
             # And a model lifecycle signal (accepted / generation / live).
@@ -760,11 +793,11 @@ class TestRealtimeRenderer(unittest.TestCase):
 
     def test_realtime_scan_tool_tags_and_interact(self):
         """The realtime SCAN tool must: be visible in /realtime, arm into a
-        non-modal scanning overlay, surface recognized objects as starfield tags
+        non-modal scanning overlay,         surface recognized objects as starfield tags
         (from a mocked /api/detect over the live video frame), and let a tag's
-        little + button steer the LIVE stream (a set_prompt hot-swap) anchored to
-        that object WITHOUT resolving a turn (no /api/choose) or re-anchoring
-        (no reset)."""
+        little + button steer the LIVE world anchored to that object WITHOUT
+        resolving a turn (no /api/choose) or rebuilding the world. On Happy Oyster
+        that steer is a real interact({action}) verb command."""
         page = self._new_realtime_page()
         scene_items = [
             {"id": 1, "type": "narrative", "content": "Intro."},
@@ -817,9 +850,10 @@ class TestRealtimeRenderer(unittest.TestCase):
             # INTERACT and MOVE TO action icons are offered (no typing).
             self.assertTrue(page.evaluate("!!document.querySelector('.scan-tag.acting .scan-action-interact')"))
             self.assertTrue(page.evaluate("!!document.querySelector('.scan-tag.acting .scan-action-move')"))
-            # Tap INTERACT in realtime -> a LIVE re-steer of the running stream (a
-            # set_prompt hot-swap), NOT a full turn: the world model injects the
-            # event in place, so /api/choose is never called and no reset fires.
+            # Tap INTERACT in realtime -> a LIVE interaction on the running world
+            # (Happy Oyster interact({action}) verb), NOT a full turn: the world
+            # reacts in place, so /api/choose is never called and no world rebuild
+            # (create_world) fires.
             page.evaluate("window.__MOCK_CMDS__ = []")
             page.evaluate("document.querySelector('.scan-tag.acting .scan-action-interact').click()")
             # INSTANT press-ceremony: a ring pulse blooms at the object the moment
@@ -828,10 +862,11 @@ class TestRealtimeRenderer(unittest.TestCase):
             self.assertGreaterEqual(
                 page.evaluate("document.querySelectorAll('#scan-layer .scan-pulse.scan-pulse-interact').length"), 1,
                 f"INTERACT must show an instant pulse at the object. logs:\n{self._dump_logs()}")
-            # The live steer is a synchronous set_prompt on the running stream.
-            page.wait_for_function("(window.__MOCK_CMDS__ || []).includes('set_prompt')", timeout=5000)
+            # The live steer is a synchronous interact verb on the running world.
+            page.wait_for_function("(window.__MOCK_CMDS__ || []).includes('interact')", timeout=5000)
             cmds = page.evaluate("window.__MOCK_CMDS__ || []")
-            self.assertIn("set_prompt", cmds, "realtime INTERACT must live-steer the stream (world-model event injection)")
+            self.assertIn("interact", cmds, "realtime INTERACT must fire a live interaction verb on the world")
+            self.assertNotIn("create_world", cmds, "realtime INTERACT must not rebuild the world")
             # Give any (erroneous) turn a moment to fire, then assert none did.
             page.wait_for_timeout(500)
             self.assertEqual(len(chooses), 0, f"realtime INTERACT must NOT resolve a full turn (/api/choose). logs:\n{self._dump_logs()}")
@@ -842,12 +877,12 @@ class TestRealtimeRenderer(unittest.TestCase):
             page.close()
 
     def test_realtime_interact_steers_without_a_cached_scene_base(self):
-        """Regression: INTERACT must inject a LIVE world-model event even when the
+        """Regression: INTERACT must inject a LIVE world interaction even when the
         standalone layer never cached a scene bible (Renderer.lastBase/lastScene
         are null) — the exact state native movement/exploration mode leaves the
-        renderer in. It must re-steer the RUNNING stream (set_prompt) via the
-        reactor's live prompt fallback, NOT silently drop to a full turn (which
-        would pop the progress bar for what should be an instant poke)."""
+        renderer in. On Happy Oyster it fires a real interact({action}) verb on
+        the running world, NOT silently drop to a full turn (which would pop the
+        progress bar for what should be an instant poke)."""
         page = self._new_realtime_page()
         scene_items = [
             {"id": 1, "type": "narrative", "content": "Intro."},
@@ -880,8 +915,8 @@ class TestRealtimeRenderer(unittest.TestCase):
             page.wait_for_function("!!document.querySelector('.scan-tag.acting .scan-action-interact')", timeout=5000)
             page.evaluate("window.__MOCK_CMDS__ = []")
             page.evaluate("document.querySelector('.scan-tag.acting .scan-action-interact').click()")
-            # Must live-steer the running stream, NOT resolve a full turn.
-            page.wait_for_function("(window.__MOCK_CMDS__ || []).includes('set_prompt')", timeout=5000)
+            # Must live-interact on the running world, NOT resolve a full turn.
+            page.wait_for_function("(window.__MOCK_CMDS__ || []).includes('interact')", timeout=5000)
             page.wait_for_timeout(500)
             self.assertEqual(len(chooses), 0,
                              f"INTERACT with no cached base must still steer live, not pop a turn. logs:\n{self._dump_logs()}")
@@ -1569,7 +1604,7 @@ class TestRealtimeRenderer(unittest.TestCase):
             # manual ReactorRenderer calls.
             page.wait_for_function("window.ReactorRenderer.isShowing() === true", timeout=15000)
             cmds = page.evaluate("window.__MOCK_CMDS__ || []")
-            self.assertIn("start", cmds, f"realtime never started from the feed. logs:\n{self._dump_logs()}")
+            self.assertIn("start_travel", cmds, f"realtime never started from the feed. logs:\n{self._dump_logs()}")
         except Exception:
             print("\n=== REACTOR CONSOLE LOG (feed_scene_image) ===\n" + self._dump_logs())
             raise
@@ -1579,10 +1614,10 @@ class TestRealtimeRenderer(unittest.TestCase):
     def test_static_burst_masks_reveal_not_teardown(self):
         """Staging/timing contract: the VCR static burst must be tied to the
         ACTUAL visible switch (freeze->video reveal / 'video_showing'), NOT to the
-        realtime teardown ('reset' command). Firing it at teardown put the static
-        seconds before the real switch — 'static, then a held still, then an
-        abrupt jump to video'. A re-anchor here must NOT flash static between the
-        reset and the reveal; the burst must land at (or after) the reveal."""
+        realtime teardown (the world rebuild). Firing it at teardown put the
+        static seconds before the real switch — 'static, then a held still, then
+        an abrupt jump to video'. A re-anchor here must NOT flash static between
+        the rebuild and the reveal; the burst must land at (or after) the reveal."""
         page = self._new_realtime_page()
         try:
             page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
@@ -1614,32 +1649,34 @@ class TestRealtimeRenderer(unittest.TestCase):
                     const prev = window.ReactorRenderer.onEvent;
                     window.ReactorRenderer.onEvent = (name, data) => {
                         const t = performance.now();
-                        if (name === 'command_sent' && data && data.command === 'reset') window.__EVT_TS__.reset = t;
+                        // Happy Oyster tears down by building a NEW world
+                        // (create_world), not a reset-in-place.
+                        if (name === 'command_sent' && data && data.command === 'create_world') window.__EVT_TS__.rebuild = t;
                         else if (name === 'video_showing') window.__EVT_TS__.video_showing = t;
                         if (typeof prev === 'function') prev(name, data);
                     };
                 }"""
             )
             # Clear any burst from scene one's own reveal, then re-anchor onto a
-            # DIFFERENT guide image (reset -> re-establish -> reveal).
+            # DIFFERENT guide image (rebuild -> re-travel -> reveal).
             page.evaluate("() => { window.__BURST_TS__ = []; }")
             page.evaluate(
                 "() => window.ReactorRenderer.applyScene({prompt: 'scene two', imageUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', hardTransition: false})"
             )
-            # Wait for the re-anchor's reset AND its subsequent reveal.
-            page.wait_for_function("window.__EVT_TS__ && window.__EVT_TS__.reset != null", timeout=10000)
+            # Wait for the re-anchor's world rebuild AND its subsequent reveal.
+            page.wait_for_function("window.__EVT_TS__ && window.__EVT_TS__.rebuild != null", timeout=10000)
             page.wait_for_function("window.__EVT_TS__ && window.__EVT_TS__.video_showing != null", timeout=15000)
             # Let any (erroneous) teardown-time burst register.
             page.wait_for_timeout(150)
 
             evt = page.evaluate("window.__EVT_TS__")
             bursts = page.evaluate("window.__BURST_TS__ || []")
-            reset_t = evt.get("reset")
+            rebuild_t = evt.get("rebuild")
             reveal_t = evt.get("video_showing")
-            self.assertIsNotNone(reset_t, "re-anchor never issued a reset")
+            self.assertIsNotNone(rebuild_t, "re-anchor never rebuilt the world")
             self.assertIsNotNone(reveal_t, "re-anchor never revealed the video")
             # The reveal must genuinely come AFTER teardown (there IS a warmup gap).
-            self.assertGreater(reveal_t, reset_t, "reveal did not follow the reset")
+            self.assertGreater(reveal_t, rebuild_t, "reveal did not follow the rebuild")
             # No static burst may fire in the teardown->reveal warmup window: the
             # burst must mask the reveal, so its first occurrence is at/after it
             # (small epsilon for the event/DOM-mutation ordering at reveal time).
@@ -1647,7 +1684,7 @@ class TestRealtimeRenderer(unittest.TestCase):
             self.assertEqual(
                 premature, [],
                 f"static burst fired before the reveal (masking nothing): "
-                f"reset@{reset_t:.0f} reveal@{reveal_t:.0f} bursts={bursts}\n{self._dump_logs()}",
+                f"rebuild@{rebuild_t:.0f} reveal@{reveal_t:.0f} bursts={bursts}\n{self._dump_logs()}",
             )
             # And the reveal itself IS masked by a burst.
             self.assertTrue(
