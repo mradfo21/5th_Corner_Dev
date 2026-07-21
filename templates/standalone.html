@@ -332,14 +332,25 @@
     <button id="realtime-btn" type="button" title="Camera — center a NEW subject in focus and tap to document it (each counts once). Click again, Esc, or right-click to exit (H)">
       <span class="rt-icon">📷</span><span class="rt-label">PHOTO</span>
     </button>
+    <!-- SCAN tool: a single, on-demand recognition pass. Tapping it fires ONE
+         image pass at the current scene and surfaces the interaction hotspots
+         ("starfield" tags). The tags then fade out on their own after a few
+         seconds so they never go stale — press SCAN again for a fresh read.
+         Gating detection behind a button (instead of scanning continuously)
+         keeps the image-recognition cost down. Works in BOTH renderers. -->
+    <button id="scan-btn" type="button" title="Scan — reveal what's interactable in the scene for a few seconds (S)">
+      <span class="scan-btn-ico">✦</span><span class="scan-btn-lbl">SCAN</span>
+    </button>
   </div>
 
-  <!-- Ambient interaction hotspots: no button — whenever a scene is on screen
-       (live video in realtime mode, or the current still in image mode) the
-       model quietly names what's interactable as "starfield" tags. Hovering
-       near one highlights it; clicking it opens its actions (which commit a full
-       turn: consequence + fresh scene). Non-modal, so the game's choices and
-       controls stay live underneath. -->
+  <!-- Interaction hotspots: surfaced on demand by the SCAN button. A scan fires
+       ONE recognition pass and the model names what's interactable as
+       "starfield" tags over the scene. Hovering near one highlights it;
+       clicking it opens its actions (which commit a full turn: consequence +
+       fresh scene). The tags fade out on their own after a few seconds so they
+       can't go stale (and to keep detection cost down); press SCAN again for a
+       fresh read. Non-modal, so the game's choices and controls stay live
+       underneath. -->
   <div id="scan-layer" class="hidden" aria-hidden="true">
     <div id="scan-tags"></div>
     <div id="scan-hint" class="scan-hint"></div>

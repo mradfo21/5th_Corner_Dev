@@ -59,6 +59,7 @@
     customInput: document.getElementById("custom-input"),
     freeWillBtn: document.getElementById("free-will-btn"),
     realtimeBtn: document.getElementById("realtime-btn"),
+    scanBtn: document.getElementById("scan-btn"),
     movePad: document.getElementById("move-pad"),
     moveNub: document.getElementById("move-nub"),
     verbBar: document.getElementById("verb-bar"),
@@ -234,14 +235,15 @@
     photoLockedLabel: null,     // label of the subject currently framed (locked)
     pendingInvestigation: null, // {screen, region, texture} captured at TOUCH lock, finalized on submit
     selectedInvestigation: null,// a specimen chosen from the tray to inform the next action
-    scanOn: false,              // ambient hotspot overlay live (object tags over the scene)
+    scanOn: false,              // hotspot overlay live (object tags over the scene)
     scanBusy: false,            // a detection request is in flight
     scanObjects: [],            // last detected objects (normalized coords + labels)
     scanTagActing: null,        // tag element with its inline action bar open
     scanMoveTimer: null,        // debounced re-detect after the cursor settles (realtime)
     scanSrcSize: null,          // {w,h} of the last scanned source (video or still), for cover-mapping tags
-    scanPrewarm: { objects: [], size: null, ts: 0 }, // last detection cached (renders hotspots instantly)
-    scanPrewarmTimer: null,     // debounce for detection passes
+    scanPrewarm: { objects: [], size: null, ts: 0 }, // last detection cached (for tag positioning / re-scan diffing)
+    scanFadeTimer: null,        // TTL timer: fade the hotspots out a few seconds after a manual scan
+    scanFadeOutTimer: null,     // the fade animation -> teardown timer (after tags start leaving)
     moving: false,              // camera is being driven (joystick / WASD) — OCR hotspots are hidden + detection paused while moving; they regenerate once you stop
     moveSettleTimer: null,      // after movement stops, wait for the view to settle before re-detecting hotspots
     moveFadeTimer: null,        // MOVE TO: delayed fade-to-black kickoff so the live world stops drifting during the trip
@@ -972,6 +974,7 @@
     // Safety net: never leave the prose + SNAP tool stuck hidden once the boot
     // veil is gone (covers text-only mode and any path where no frame lands).
     markSceneVisible();
+    try { updateScanButton(); } catch (_) {} // turn's over — SCAN is live again
     Ceremony.reset();
   }
 
@@ -994,6 +997,7 @@
     try { Objectives.reveal(); } catch (_) {}
     try { Objectives.syncCase(); } catch (_) {}
     try { refreshDirective(true); } catch (_) {}
+    try { updateScanButton(); } catch (_) {} // a scene is readable — SCAN is live
   }
 
   // ------------------------------------------------------------------
@@ -1332,8 +1336,11 @@
   function setScene(imageUrl, opts) {
     if (!imageUrl) return;
     state.currentStillUrl = imageUrl; // remember for stills-mode SCAN capture
-    schedulePrewarm(); // a new scene is on screen — detect its interaction hotspots
-    updateAmbientScan(); // keep the ambient hotspot overlay live for this scene
+    // A new scene is on screen: any hotspots from the previous shot are now
+    // stale, so drop them. Scanning is manual (behind the SCAN button) — we
+    // don't auto-detect the new scene; the player taps SCAN for a fresh read.
+    closeScan();
+    updateScanButton();
     const silent = !!(opts && opts.silent);
     const instant = !!(opts && opts.instant);
     const incoming = state.activeScene === "A" ? el.sceneB : el.sceneA;
@@ -1602,14 +1609,12 @@
               // is released. Keeps interaction options gated until the world is
               // actually playing (see the scene_image handler's realtime note).
               Ceremony.imageLoaded();
-              // Drop the previous scene's hotspots/cache BEFORE re-arming — when
-              // we travel to a new location the fresh video reveals here, and
-              // without this the old location's detected objects linger over the
-              // new scene (updateAmbientScan repaints them from the stale cache)
-              // until the next detection lands. Clearing first re-detects clean.
-              clearScanTags();
-              schedulePrewarm(); // live scene on screen — detect its hotspots
-              updateAmbientScan(); // surface ambient hotspots over the live video
+              // A fresh live scene is on screen — drop the previous location's
+              // hotspots so they can't linger. Scanning is manual now (behind
+              // the SCAN button), so we just re-enable the button; the player
+              // taps SCAN to read this scene.
+              closeScan();
+              updateScanButton();
               try { VerbBar.update(); } catch (_) {} // world's interaction verbs
             }
             // The world model started streaming solid black (its safety refused
@@ -1628,9 +1633,8 @@
               // resolve the ceremony over the still instead of leaving the
               // interaction layer gated until the fallback timer fires.
               Ceremony.imageLoaded();
-              clearScanTags();
-              schedulePrewarm();
-              updateAmbientScan();
+              closeScan();
+              updateScanButton();
               showRendererToast("Scene refused \u2014 showing still");
             }
             // Real frames returned — the live video is back on screen.
@@ -1640,9 +1644,8 @@
               // Live video is back on screen — resolve any pending turn so the
               // interaction layer is released against the recovered stream.
               Ceremony.imageLoaded();
-              clearScanTags();
-              schedulePrewarm();
-              updateAmbientScan();
+              closeScan();
+              updateScanButton();
               showRendererToast("Realtime video \u2014 recovered");
             }
             // Realtime auto-play advances off the LIVE video, not the scene_image
@@ -1849,12 +1852,13 @@
         // whenever we drop back to stills.
         try { DangerSystem.stop(); } catch (_) {}
       }
-      // Ambient hotspots work in BOTH renderers — drop the tags so they re-map
-      // to the new source (video vs still cover the viewport differently), then
-      // re-detect for the switched-in source.
+      // Hotspots work in BOTH renderers, but a scan reads one specific source
+      // (video vs still cover the viewport differently) — switching renderers
+      // invalidates them, so drop the overlay. The player re-scans the new
+      // source with the SCAN button.
       state.scanSrcSize = null;
-      clearScanTags();
-      updateAmbientScan();
+      closeScan();
+      updateScanButton();
       updateRendererButton();
     },
 
@@ -6600,7 +6604,7 @@
     document.body.classList.remove("touch-aiming", "photo-shake", "photo-kick", "photo-pinching");
     try { Sound.cameraOff(); } catch (_) {}
     try { Haptics.soft(); } catch (_) {}
-    updateAmbientScan(); // hotspots return once the camera is put away
+    updateScanButton(); // the SCAN button is available again once the camera is put away
   }
 
   // Turn a viewport position into a human region phrase (used to label evidence).
@@ -6705,26 +6709,28 @@
   }
 
   // ------------------------------------------------------------------
-  // Ambient interaction hotspots — object recognition with NO button. Whenever a
-  // scene is on screen, the objects the model recognizes surface as floating
-  // "starfield" tags anchored where they actually sit. Hovering near a tag
-  // highlights it; clicking it opens an inline action bar to ACT on THAT exact
-  // thing — a full turn (consequence + a freshly generated scene). Works in BOTH
-  // renderers: it reads the live video frame in realtime mode, or the current
-  // still in image mode.
+  // Interaction hotspots — object recognition GATED BEHIND THE SCAN BUTTON.
+  // Gemini image recognition is our biggest cost, so nothing scans on its own:
+  // the player taps SCAN to fire ONE detection pass and the objects the model
+  // recognizes surface as floating "starfield" tags anchored where they sit.
+  // Hovering near a tag highlights it; clicking it opens an inline action bar to
+  // ACT on THAT exact thing — a full turn (consequence + a freshly generated
+  // scene). The tags then FADE OUT on their own after SCAN_TTL_MS so they can
+  // never go stale (and so we don't need more calls to keep them fresh) — the
+  // player taps SCAN again for a new read. Works in BOTH renderers: it reads the
+  // live video frame in realtime mode, or the current still in image mode.
   //
   // Engineering notes:
-  //  • Detection is an LLM round-trip, so it's throttled (a floor between hits)
-  //    and always DEFERS around a turn (never competes with the turn's own LLM
-  //    calls). It runs once per scene and, in realtime, on hover-settle.
-  //  • Tags are RECONCILED by label between passes (kept + repositioned, added
-  //    with a twinkle, removed with a fade) so a refresh never churns the whole
+  //  • ONE detection round-trip per SCAN tap (triggerScan) — no continuous
+  //    polling, no per-scene auto-detect, no hover/move re-detect. This is the
+  //    whole point of the button (cost control). It won't fire during a turn.
+  //  • Tags are RECONCILED by label within a pass (kept + repositioned, added
+  //    with a twinkle, removed with a fade) so re-scanning never churns the whole
   //    field or yanks a tag out from under the cursor.
-  //  • A detection pass NEVER runs while a tag's action bar is open.
+  //  • The auto fade-out holds if a tag's action bar is open (mid-interaction).
   //  • Works with mouse (hover) and touch (tap the tag); the overlay is
   //    non-modal so the game's choices/controls stay live underneath.
   // ------------------------------------------------------------------
-  const SCAN_MOVE_SETTLE_MS = 600;    // re-detect this long after the cursor settles (realtime)
   const SCAN_NEAR_RADIUS = 150;       // px: how close the cursor "finds" a hotspot
 
   // SCAN works in BOTH renderers:
@@ -6808,119 +6814,100 @@
     return true;
   }
 
-  function ambientScanAllowed() {
-    return ambientContextAllowed() && scanAvailable();
-  }
+  // Interaction hotspots are gated behind the SCAN button. Gemini image
+  // recognition is our biggest cost, so instead of scanning continuously we
+  // fire ONE detection pass only when the player taps SCAN. The resulting tags
+  // then fade out on their own after a few seconds so they can never go stale;
+  // the player taps SCAN again for a fresh read. This is the single entry point
+  // for hitting /api/detect from the hotspot overlay — nothing scans on its own.
+  const SCAN_TTL_MS =
+    (typeof window !== "undefined" && window.__SCAN_TTL_MS__) || 5000;
 
-  // Ambient object hotspots: there's no SCAN button anymore. Whenever a scene is
-  // on screen we quietly surface what's interactable as starfield tags; hovering
-  // near one highlights it and a click opens its actions. This just ensures the
-  // overlay is live and shows whatever we've already detected for this scene
-  // (instantly, from cache) — detection itself runs via prewarmScan (per scene +
-  // on hover-settle in realtime), always deferring around turns.
-  // Retry timer for re-arming once a scene becomes readable again (e.g. after a
-  // conversation closes, the realtime video can take a beat to report "showing"
-  // again — without this the overlay would stay dead until the next scene/hover,
-  // which read as "OCR never reactivates after exiting speaking mode").
-  let ambientRearmTimer = null;
-  let ambientRearmTries = 0;
-  const AMBIENT_REARM_MAX = 16; // ~11s of 700ms polls — covers the resume window
-
-  function updateAmbientScan(isPoll) {
-    if (!isPoll) ambientRearmTries = 0; // a fresh external re-arm gets a full budget
-    // A blocking context (camera/tape/free-will/conversation/dead) — tear down
-    // and stop any pending re-arm poll.
-    if (!ambientContextAllowed()) {
-      clearTimeout(ambientRearmTimer); ambientRearmTimer = null; ambientRearmTries = 0;
-      closeScan();
-      return;
-    }
-    // Context is fine but the scene isn't readable yet (still decoding / realtime
-    // video not showing at this instant) — poll until it is, so the overlay
-    // reliably comes back on its own.
-    if (!scanAvailable()) {
-      closeScan();
-      clearTimeout(ambientRearmTimer);
-      if (ambientRearmTries < AMBIENT_REARM_MAX) {
-        ambientRearmTries += 1;
-        ambientRearmTimer = setTimeout(() => updateAmbientScan(true), 700);
-      }
-      return;
-    }
-    clearTimeout(ambientRearmTimer); ambientRearmTimer = null; ambientRearmTries = 0;
-    state.scanOn = true;
-    if (el.scanLayer) el.scanLayer.classList.remove("hidden");
-    const pw = state.scanPrewarm;
-    if (pw && pw.objects && pw.objects.length) {
-      if (pw.size) state.scanSrcSize = pw.size;
-      reconcileScanTags(pw.objects);
-      setScanHint("");
-    } else if (!el.scanTags || !el.scanTags.children.length) {
-      schedulePrewarm(150); // nothing detected yet — kick a detection now
-    }
-  }
-
-  // Detection pass: read the current scene and cache + render the hotspots.
-  // Runs per scene (via schedulePrewarm on scene settle) and on hover-settle in
-  // realtime (the live video drifts). Throttled, single-flight, and it always
-  // defers around a turn so it can't compete with the turn's own LLM calls.
-  const SCAN_PREWARM_MIN_MS = 4000;
-  // Stay off the wire around a turn (don't compete with the turn's own LLM calls).
-  // Test-overridable so e2e can verify post-turn hotspot refresh quickly.
-  const SCAN_PREWARM_TURN_COOLDOWN_MS =
-    (typeof window !== "undefined" && window.__SCAN_TURN_COOLDOWN_MS__) || 9000;
-  function prewarmScan() {
-    if (state.gameOver || state.scanBusy) return;
-    if (state.moving) return; // detection while the camera travels is inaccurate
-    if (state.scanTagActing) return; // don't reshuffle tags while a bar is open
-    const now = Date.now();
-    // Defer to gameplay: never add a background detection call while a turn is
-    // resolving (or just did) — that competes with the turn's own LLM calls and
-    // can rate-limit/slow them. Retry once the game is idle again.
-    if (state.processing || state.awaitingResolution ||
-        (now - (state.lastTurnTs || 0) < SCAN_PREWARM_TURN_COOLDOWN_MS)) {
-      schedulePrewarm(2500);
-      return;
-    }
-    if (!scanAvailable()) {
-      // A still may just not have decoded yet — retry shortly so hotspots still
-      // appear on their own. (Realtime is driven by the video_showing event.)
-      if (Renderer.mode !== "reactor" && state.currentStillUrl) schedulePrewarm(600);
-      return;
-    }
-    if (now - (state.scanPrewarm.ts || 0) < SCAN_PREWARM_MIN_MS) return;
+  function triggerScan() {
+    if (state.gameOver) return;
+    // A full-screen instrument (camera/tape/free-will/conversation) or a turn
+    // in flight owns the view — don't scan into it.
+    if (!ambientContextAllowed()) return;
+    if (state.processing || state.awaitingResolution) return;
+    if (state.scanBusy) return; // a pass is already in flight — ignore re-taps
+    if (!scanAvailable()) return; // nothing readable on screen yet
     const cap = captureScanFrame();
     if (!cap || !cap.frame) return;
+    // A fresh pass restarts the fade clock and cancels any pending teardown.
+    clearTimeout(state.scanFadeTimer); state.scanFadeTimer = null;
+    clearTimeout(state.scanFadeOutTimer); state.scanFadeOutTimer = null;
     state.scanBusy = true;
-    state.scanPrewarm.ts = now;
+    document.body.classList.add("scan-busy");
+    if (el.scanBtn) el.scanBtn.classList.add("scanning");
+    try { Sound.scan(); } catch (_) {} // radar sweep on the press
+    try { Haptics.soft && Haptics.soft(); } catch (_) {}
     postJSON("/api/detect", { frame: cap.frame })
       .then((res) => {
         const objs = (res && Array.isArray(res.objects)) ? res.objects : [];
-        state.scanPrewarm = { objects: objs, size: cap.size || null, ts: now };
-        // Render straight onto the ambient overlay so hotspots appear/refresh
-        // without any button press — turning the overlay on if needed.
-        if (ambientScanAllowed() && !state.scanTagActing) {
-          state.scanOn = true;
-          if (el.scanLayer) el.scanLayer.classList.remove("hidden");
-          if (cap.size) state.scanSrcSize = cap.size;
-          reconcileScanTags(objs);
-          setScanHint("");
-        }
+        // The view may have been claimed while the pass was in flight.
+        if (!ambientContextAllowed() || !scanAvailable()) return;
+        state.scanOn = true;
+        if (el.scanLayer) el.scanLayer.classList.remove("hidden");
+        if (cap.size) state.scanSrcSize = cap.size;
+        state.scanPrewarm = { objects: objs, size: cap.size || null, ts: Date.now() };
+        reconcileScanTags(objs);
+        setScanHint(objs.length ? "" : "nothing to interact with here");
+        if (objs.length) { try { Sound.ping(); } catch (_) {} } // starfield shimmer as tags land
+        scheduleScanFade();
       })
       .catch((err) => { console.warn("[standalone] scan detect failed:", err); })
-      .finally(() => { state.scanBusy = false; });
+      .finally(() => {
+        state.scanBusy = false;
+        document.body.classList.remove("scan-busy");
+        if (el.scanBtn) el.scanBtn.classList.remove("scanning");
+      });
   }
 
-  function schedulePrewarm(delay) {
-    clearTimeout(state.scanPrewarmTimer);
-    state.scanPrewarmTimer = setTimeout(prewarmScan, delay == null ? 1200 : delay);
+  // Start the "fade out" clock: a few seconds after a scan lands, the hotspots
+  // fade away so they can't linger and go stale (and so we're not tempted to
+  // keep them fresh with more detection calls). Re-armed on each scan.
+  function scheduleScanFade() {
+    clearTimeout(state.scanFadeTimer);
+    state.scanFadeTimer = setTimeout(fadeOutScan, SCAN_TTL_MS);
   }
 
-  // Suspend the ambient overlay: hide it and drop its tags. Used when a
-  // full-screen instrument (camera/tape/free-will) or an end state takes over;
-  // updateAmbientScan() brings it back (re-rendering from cache) when they close.
+  function fadeOutScan() {
+    clearTimeout(state.scanFadeTimer); state.scanFadeTimer = null;
+    // Don't yank a tag out from under an open action bar — the player is
+    // mid-interaction. Hold the fade and retry once it closes.
+    if (state.scanTagActing) { scheduleScanFade(); return; }
+    if (el.scanTags && el.scanTags.children.length) {
+      Array.from(el.scanTags.children).forEach((t) => t.classList.add("leaving"));
+      clearTimeout(state.scanFadeOutTimer);
+      state.scanFadeOutTimer = setTimeout(() => {
+        state.scanFadeOutTimer = null;
+        closeScan();
+      }, 460); // matches the .leaving transition (see .scan-tag.leaving)
+    } else {
+      closeScan();
+    }
+  }
+
+  // Enable/disable + label the SCAN button for the current context. It's inert
+  // whenever there's nothing readable to scan (still decoding / live video not
+  // up yet) or an instrument/turn owns the view.
+  function updateScanButton() {
+    if (!el.scanBtn) return;
+    const ok = !state.gameOver && ambientContextAllowed() &&
+      !state.processing && !state.awaitingResolution && scanAvailable();
+    el.scanBtn.disabled = !ok;
+  }
+
+  // Tear the hotspot overlay down: hide it, drop its tags, and cancel any
+  // pending fade timers. Used by the fade-out and whenever an instrument
+  // (camera/tape/free-will/conversation) or a scene change takes over.
   function closeScan() {
-    if (!state.scanOn && (!el.scanLayer || el.scanLayer.classList.contains("hidden"))) return;
+    clearTimeout(state.scanFadeTimer); state.scanFadeTimer = null;
+    clearTimeout(state.scanFadeOutTimer); state.scanFadeOutTimer = null;
+    if (!state.scanOn && (!el.scanLayer || el.scanLayer.classList.contains("hidden"))) {
+      updateScanButton();
+      return;
+    }
     state.scanOn = false;
     state.scanTagActing = null;
     clearTimeout(state.scanMoveTimer); state.scanMoveTimer = null;
@@ -6928,6 +6915,7 @@
     if (el.scanLayer) el.scanLayer.classList.add("hidden");
     if (el.scanTags) el.scanTags.innerHTML = "";
     state.scanObjects = [];
+    updateScanButton();
   }
 
   function setScanHint(text) {
@@ -6946,8 +6934,9 @@
   function onMovementStart() {
     if (state.moving) return;
     state.moving = true;
-    // Drop any pending detection / hover re-detect and hide the overlay now.
-    clearTimeout(state.scanPrewarmTimer); state.scanPrewarmTimer = null;
+    // Tear the hotspot overlay down the instant the camera starts travelling —
+    // the tags are pinned to the frame we're leaving. (closeScan cancels the
+    // fade timers too.) The player re-scans once movement settles.
     clearTimeout(state.scanMoveTimer); state.scanMoveTimer = null;
     clearTimeout(state.moveSettleTimer); state.moveSettleTimer = null;
     document.body.classList.add("moving");
@@ -6958,14 +6947,13 @@
     if (!state.moving) return;
     state.moving = false;
     document.body.classList.remove("moving");
-    // Let the camera actually settle on the new view, then re-detect from
-    // scratch (drop the stale cache) and bring the fresh hotspots back.
+    // Hotspots are gated behind SCAN now — we don't auto-re-detect after a move.
+    // Just re-enable the button once the view has settled so a fresh scan reads
+    // the new vantage rather than the frame we started travelling from.
     clearTimeout(state.moveSettleTimer);
     state.moveSettleTimer = setTimeout(() => {
-      if (state.moving) return; // started moving again — leave it hidden
-      state.scanPrewarm = { objects: [], size: null, ts: 0 }; // force a fresh detect
-      updateAmbientScan();  // re-arm the overlay (also polls until the view is readable)
-      schedulePrewarm(150); // kick a fresh detection promptly
+      if (state.moving) return; // started moving again
+      updateScanButton();
     }, MOVE_SETTLE_MS);
   }
 
@@ -6984,15 +6972,11 @@
   }
 
   // Hover: highlight the interaction possibility nearest the cursor so moving
-  // over the scene "finds" the things in it. In realtime the live video drifts,
-  // so a settle also refreshes detection (throttled + deferred around turns).
+  // over the scene "finds" the things in it. Purely visual — no detection fires
+  // on hover anymore (scanning is manual, behind the SCAN button).
   function onScanMove(e) {
     if (!state.scanOn) return;
     highlightNearestTag(e.clientX, e.clientY);
-    if (scanInRealtime() && !state.scanTagActing) {
-      clearTimeout(state.scanMoveTimer);
-      state.scanMoveTimer = setTimeout(() => { if (state.scanOn) prewarmScan(); }, SCAN_MOVE_SETTLE_MS);
-    }
   }
 
   // Tapping empty scene (not a tag/control) dismisses an open action bar. On
@@ -8138,10 +8122,9 @@
       setTimeout(() => {
         el.talkOverlay.classList.add("hidden");
         el.talkLog.innerHTML = "";
-        // Re-arm the ambient OCR overlay the conversation replaced, and refresh
-        // detection for the current scene (mirrors camera/tape/free-will close).
-        updateAmbientScan();
-        schedulePrewarm(250);
+        // The conversation replaced the hotspot overlay — the SCAN button is
+        // available again once it closes (mirrors camera/tape/free-will close).
+        updateScanButton();
       }, 260);
       subject = null;
       messages = [];
@@ -8190,9 +8173,11 @@
         on: () => state.scanOn,
         hidden: () => !!(el.scanLayer && el.scanLayer.classList.contains("hidden")),
         available: () => scanAvailable(),
-        // Prime a decoded still + force image mode, then arm the overlay (QA).
-        forceStill: (url) => _primeStill(url).then((ok) => { updateAmbientScan(); return ok; }),
-        // Prime a still WITHOUT arming — lets a running re-arm poll pick it up.
+        // Fire a manual scan pass (the SCAN button's action) for QA.
+        trigger: () => triggerScan(),
+        // Prime a decoded still + force image mode, then fire a scan pass (QA).
+        forceStill: (url) => _primeStill(url).then((ok) => { triggerScan(); return ok; }),
+        // Prime a still WITHOUT scanning — lets a test drive the scan itself.
         primeStill: _primeStill,
         // Make the scene un-scannable (simulates the realtime video not showing).
         dropStill: () => { state.currentStillUrl = null; state.scanStillImg = null; },
@@ -8520,7 +8505,7 @@
     if (clear) el.customInput.value = "";
     if (document.activeElement === el.customInput) el.customInput.blur();
     if (el.actionWheel) el.actionWheel.style.bottom = ""; // drop any keyboard offset
-    updateAmbientScan(); // hotspots return once the input closes
+    updateScanButton(); // the SCAN button is available again once the input closes
   }
 
   // "Move forward" — commit to one of the generated actions at random.
@@ -8849,7 +8834,7 @@
     tape.playing = false;
     el.tapeOverlay.classList.add("hidden");
     Sound.toggle();
-    updateAmbientScan(); // hotspots return once the tape deck closes
+    updateScanButton(); // the SCAN button is available again once the tape deck closes
   }
 
   function toggleSound() {
@@ -9022,6 +9007,8 @@
       openFreeWill();
     } else if (e.key.toLowerCase() === "h") {
       openTouch(); // camera (SNAP) tool — tap to capture evidence
+    } else if (e.key.toLowerCase() === "s") {
+      triggerScan(); // SCAN — one recognition pass; tags fade after a few seconds
     } else if (e.key.toLowerCase() === "c") {
       capturePhoto(); // journalist photograph — file a specimen to the case file
     } else if (e.key.toLowerCase() === "l") {
@@ -9540,6 +9527,7 @@
     if (el.caseContinue) el.caseContinue.addEventListener("click", hideCaseWin);
     el.freeWillBtn.addEventListener("click", openFreeWill);
     if (el.realtimeBtn) el.realtimeBtn.addEventListener("click", openTouch);
+    if (el.scanBtn) el.scanBtn.addEventListener("click", triggerScan);
     if (el.touchLayer) {
       // Pointer events cover mouse (hover to aim) AND touch (drag to aim, tap to
       // shoot) — so the camera works on iOS where mousemove never fires.
