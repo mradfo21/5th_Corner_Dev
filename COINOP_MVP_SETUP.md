@@ -1,17 +1,34 @@
 # COIN-OP MVP — go-to-market setup
 
-The single-charge "insert coin to continue" feature. Ships dark by default;
-turning it on takes ~10 minutes of Stripe dashboard + env vars.
+The arcade "insert coin" money loop. Ships dark by default; turning it on
+takes ~10 minutes of Stripe dashboard + env vars.
 
-**What it does:** on death, the player sees an "Insert Coin — Continue"
-button in green next to the red "RESTART SIMULATION" button. Click →
-redirected to Stripe Checkout → pay (default \$0.99) → redirected back →
-server verifies with Stripe → engine revives the player on the same run.
+**What it does today:** two payment loops on the same Stripe SKU.
+
+* **Death continue** — when the player dies, they see an "Insert Coin —
+  Continue" button in green next to the red "RESTART SIMULATION". Click →
+  redirected to Stripe Checkout → pay (default \$0.99) → redirected back →
+  server verifies with Stripe → engine revives them on the same run.
+* **Arcade credit meter** *(new — see §11)* — always-visible top-right
+  chip showing remaining credits + total spent. Every turn spends 1 credit.
+  When the meter hits zero the world freezes with an "INSERT COIN" pause
+  overlay. Same button, same one-click flow, same Stripe SKU — server
+  decides revive-vs-topup from actual player state. Deploy dark first,
+  then flip `COINOP_CREDIT_GATING=1` when you're ready.
+
+**Ship-it checklist for the first real dollar:**
+
+1. Complete §1 (Stripe account setup) once.
+2. Set the three required env vars in §2 with your **live** `sk_live_...`
+   / `pk_live_...` keys.
+3. Redeploy. That's it — the button appears on death and the game keeps
+   working exactly as before for anyone who doesn't click it.
+4. **(Optional, do next)** flip `COINOP_CREDIT_GATING=1` to turn on the
+   arcade meter for continuous monetization, not just deaths.
 
 **What it does NOT do (yet):** no credit packs, no saved cards, no Apple/Google
 Pay one-tap, no PayPal Micropayments, no crypto rails. Those are all in the
-plan (`COIN_OP_MONETIZATION_PLAN.md`); this MVP is *just* the plumbing that
-gets the first real dollar in.
+plan (`COIN_OP_MONETIZATION_PLAN.md`).
 
 ---
 

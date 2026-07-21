@@ -1742,17 +1742,18 @@ body.credit-meter-on .continues-hud {
 }
 
 /* Freeze the world behind the pause overlay: kill pointer events on
-   the game canvas + hide the action wheel/choices so the player can't
-   race the overlay. The overlay itself catches the input. */
+   the action wheel so the player can't race the overlay, and drop the
+   scene into a dim/grayscale state so the pause reads as physical
+   rather than just "a modal appeared over your game". The overlay
+   itself catches all clicks. */
 body.coinop-paused #action-wheel,
-body.coinop-paused #ambient-choices,
 body.coinop-paused #choices-container {
   pointer-events: none;
   filter: grayscale(0.4) brightness(0.55);
   transition: filter 0.35s;
 }
-body.coinop-paused #scene-container,
-body.coinop-paused #reactor-canvas,
+body.coinop-paused #sceneA,
+body.coinop-paused #sceneB,
 body.coinop-paused #reactor-video {
   filter: grayscale(0.6) brightness(0.42) blur(0.4px);
   transition: filter 0.4s;

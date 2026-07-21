@@ -9716,9 +9716,7 @@
         el.pauseContinue.classList.remove("dropping");
         void el.pauseContinue.offsetWidth;
         el.pauseContinue.classList.add("dropping");
-        try { Sound.coinInsert && Sound.coinInsert(); } catch (_) {
-          try { Sound.status(); } catch (_) {}
-        }
+        try { Sound.coin(); } catch (_) {}
         setTimeout(() => {
           el.pauseContinue.classList.remove("dropping");
           resolve();

@@ -106,40 +106,57 @@ def _credit_gated_choose():
     pass-through so nothing changes for deploys that only want the paid
     death-continue flow):
 
-    1. Look up the session's remaining credits before touching the engine.
-    2. If zero, return HTTP 402 with `{needs_coin: true, balance: 0}` and
-       do NOT process the turn. The client uses this to pop the "OUT OF
-       COINS" pause overlay — same coin-op button, different framing.
-    3. Otherwise let the engine handle the turn as normal, then debit one
-       credit AFTER a successful response (never charge for a 500). The
-       debit is atomic in coinop._GRANT_LOCK, so concurrent /api/choose
-       calls for the same session can't over-spend the balance.
+    1. Attempt a single atomic spend_credit(1) BEFORE touching the engine.
+       This is the check + debit in one lock-held operation, so two
+       concurrent /api/choose calls for the same session can never both
+       succeed off a balance of 1 (the second would see 0 and refuse).
+    2. If the spend refuses (balance was 0), return HTTP 402 with
+       {needs_coin: true, balance: 0} and do NOT process the turn. The
+       client pops the "OUT OF COINS" pause overlay.
+    3. Otherwise let the engine handle the turn. On any server error,
+       REFUND the credit so a Stripe-live player doesn't lose money to
+       a transient LLM outage. Refund is best-effort — if it fails,
+       we've cost the player one credit; better than double-charging.
 
-    We debit AFTER instead of BEFORE so a server-side failure doesn't eat
-    a credit the player never got any narrative for. Trade-off: a rapid
-    double-tap could burn 2 credits when the balance was 1 — but the
-    pre-check ("balance >= 1") is guarded by the same lock, so as long as
-    the second request arrives after the first debit lands it will 402
-    cleanly. The window is a few dozen ms.
+    Why spend-then-maybe-refund instead of check-then-maybe-debit: the
+    former composes atomically under a single lock hold, the latter
+    has a check-to-debit window where a concurrent turn can slip
+    through. The refund on error is cheap and safe (it can never grant
+    more credits than were spent).
     """
     sid = engine._resolve_request_session_id()
-    if coinop.is_credit_gating_enabled():
-        bal = coinop.get_balance(sid)
-        if bal.get("balance", 0) <= 0:
+    gated = coinop.is_credit_gating_enabled()
+    debited = False
+    if gated:
+        spend = coinop.spend_credit(sid, amount=1, reason="choose")
+        if not spend.get("ok"):
             return jsonify({
                 "needs_coin": True,
-                "balance": 0,
-                "reason": "insufficient_credits",
+                "balance": int(spend.get("balance", 0)),
+                "reason": spend.get("reason", "insufficient_credits"),
                 "message": "Out of coins — insert more to keep playing.",
             }), 402
-    response = engine.api_choose()
+        debited = True
+
+    try:
+        response = engine.api_choose()
+    except Exception:
+        if debited:
+            try:
+                coinop.grant_credits(sid, 1, source="refund")
+            except Exception:
+                traceback.print_exc()
+        raise
+
     try:
         status = response.status_code if hasattr(response, 'status_code') else 200
     except Exception:
         status = 200
-    if coinop.is_credit_gating_enabled() and 200 <= status < 300:
+    if debited and status >= 500:
+        # The engine returned a 5xx (server-side failure) — refund so we
+        # don't burn a coin on a turn the player never saw.
         try:
-            coinop.spend_credit(sid, amount=1, reason="choose")
+            coinop.grant_credits(sid, 1, source="refund")
         except Exception:
             traceback.print_exc()
     return response
