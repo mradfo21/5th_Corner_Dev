@@ -383,35 +383,23 @@
   <!-- TALK overlay: opened from a SCAN tag's TALK action on a thing that can
        speak. A sleek, coffee-talk-inspired conversation window that docks to
        the edge of the scene so the world stays visible AND playable underneath.
-       You can collapse it to a small "in-call" chip and keep playing; new
-       incoming lines float out as ephemeral speech bubbles so you never lose
-       the thread. Runs a live ElevenLabs voice agent when configured,
-       otherwise a text conversation — both grounded in the current scene. -->
+       There is only ONE presentation now — a slim, minimal control strip (no
+       "expanded" card, no minimize button to press) — plus incoming lines
+       float out as ephemeral speech bubbles so you never lose the thread.
+       Runs a live ElevenLabs voice agent when configured, otherwise a text
+       conversation — both grounded in the current scene. -->
   <div id="talk-overlay" class="hidden" aria-hidden="true">
     <div id="talk-scrim"></div>
-    <!-- Ephemeral "just said" bubble: mirrors the latest incoming line as a
-         soft speech-bubble over the scene. Fades on its own, so a conversation
-         can happen in your peripheral vision while you keep playing. -->
-    <div id="talk-float" class="hidden" aria-hidden="true">
+    <!-- Ephemeral "just said" bubble: mirrors the latest line (yours or
+         theirs) as a plain speech caption over the scene — no card behind
+         it, just text with enough shadow to stay legible. Fades on its own,
+         so a conversation can happen in your peripheral vision while you
+         keep playing. -->
+    <div id="talk-float" class="hidden" aria-live="polite" aria-hidden="true">
       <div id="talk-float-who"></div>
       <div id="talk-float-body"></div>
     </div>
-    <!-- Minimized "in-call" chip. Docks to the edge of the scene so a
-         conversation feels like a phone call you can hold in the corner while
-         you play. Click to re-expand the panel. -->
-    <button id="talk-chip" class="hidden" type="button" aria-label="Expand conversation">
-      <span id="talk-chip-orb" class="talk-chip-orb" aria-hidden="true"></span>
-      <span class="talk-chip-text">
-        <span id="talk-chip-name" class="talk-chip-name">—</span>
-        <span id="talk-chip-sub" class="talk-chip-sub">on the line</span>
-      </span>
-      <span class="talk-chip-caret" aria-hidden="true">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
-      </span>
-    </button>
     <div id="talk-panel" role="dialog" aria-modal="false" aria-labelledby="talk-name">
-      <!-- Grabber: a subtle handle so mobile users know the panel is a sheet. -->
-      <div class="talk-grabber" aria-hidden="true"></div>
       <div id="talk-head">
         <span id="talk-orb" aria-hidden="true"></span>
         <div id="talk-id">
@@ -426,15 +414,12 @@
           <span id="talk-voice-name">VOICE</span>
         </button>
         <button id="talk-mode-toggle" type="button" class="hidden" title="Mute / unmute your microphone">MUTE</button>
-        <!-- Collapse-to-chip: fold the panel away so you can play the scene
-             without losing the conversation. Click the chip to re-open. -->
-        <button id="talk-min" type="button" title="Collapse conversation — keep playing" aria-label="Collapse conversation">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        </button>
         <button id="talk-close" type="button" title="End the conversation (Esc)" aria-label="End conversation">✕</button>
       </div>
       <!-- Voice picker popover (populated from the registry). -->
       <div id="talk-voice-menu" class="hidden" role="listbox" aria-label="Choose a voice"></div>
+      <!-- Full transcript kept off-screen for assistive tech / scrollback;
+           on-screen dialogue is carried by #talk-float instead. -->
       <div id="talk-log" aria-live="polite"></div>
       <form id="talk-form" autocomplete="off">
         <input id="talk-input" type="text" maxlength="400" placeholder="say something…" aria-label="Your message" />

@@ -3576,21 +3576,21 @@ html.is-mobile #scan-tags .scan-tag.acting .scan-tag-label { display: inline; }
    TALK overlay — a Coffee-Talk-inspired conversation window.
 
    The scene is the game — a conversation is a LAYER on top, never a takeover.
-   So this overlay:
-     * Docks to the bottom-LEFT of the viewport (below the top HUD, clear of
-       the center image and the bottom action wheel). Sits like a chat window
-       in a café: quiet, present, but out of the way.
-     * Uses very transparent warm-glass so the world bleeds through — you can
-       still see what you're talking to.
-     * Collapses to a small "in-call" chip in the corner, so you can PLAY
-       (choices, ACT, PHOTO, SCAN, drive) with a conversation still live.
-     * Mirrors the latest incoming line as an ephemeral speech bubble that
-       floats over the scene and fades — dialogue happens in your peripheral
+   There is only ONE presentation (no button-press "minimize" and no
+   separate "expanded" mode to switch to):
+     * A slim control strip docks to the bottom-LEFT of the viewport (below
+       the top HUD, clear of the center image and the bottom action wheel),
+       carrying just the presence orb, name/status, and essential controls
+       (voice / mute / close) plus the message input — small enough to keep
+       playing (choices, ACT, PHOTO, SCAN, drive) with a conversation live.
+     * Mirrors the latest line (yours or theirs) as an ephemeral speech
+       caption that floats over the scene, with no card/glass behind it —
+       just text — and fades on its own. Dialogue happens in your peripheral
        vision, coffee-talk style.
    ============================================================ */
 /* The overlay is just a positioning frame. It NEVER darkens, blurs, or blocks
    the scene: pointer-events stay off so the world underneath is fully visible
-   and interactive — only the panel and the chip capture input. */
+   and interactive — only the control strip captures input. */
 #talk-overlay {
   position: fixed;
   inset: 0;
@@ -3605,7 +3605,11 @@ html.is-mobile #scan-tags .scan-tag.acting .scan-tag-label { display: inline; }
 /* No full-screen scrim — the conversation must not take over the view. */
 #talk-scrim { display: none; }
 
-/* ---------- The main panel: a slim, warm-glass chat window ---------- */
+/* ---------- The control strip: a slim, warm-glass HUD bar ---------- */
+/* This is the ONLY presentation — a compact pill-shaped bar (header row +
+   input row), always visible the moment a conversation opens. There is no
+   taller "expanded" card and nothing to fold away, so height is
+   content-driven rather than a fixed tall card. */
 #talk-panel {
   position: absolute;
   left: calc(env(safe-area-inset-left, 0px) + 20px);
@@ -3613,11 +3617,9 @@ html.is-mobile #scan-tags .scan-tag.acting .scan-tag-label { display: inline; }
   pointer-events: auto;
   width: 344px;
   max-width: calc(100vw - 40px);
-  min-height: 220px;
-  max-height: min(440px, 54vh);
   display: flex;
   flex-direction: column;
-  /* A café-lit glass card. More transparent than a modal — you can see the
+  /* A café-lit glass strip. More transparent than a modal — you can see the
      scene through it — with a warm inner glow along the left edge that
      doubles as the "presence" accent. */
   background:
@@ -3648,27 +3650,9 @@ html.is-mobile #scan-tags .scan-tag.acting .scan-tag-label { display: inline; }
   z-index: 0;
 }
 #talk-panel > * { position: relative; z-index: 1; }
-/* Grabber: a subtle handle. Only shown on mobile where the panel is a sheet. */
-.talk-grabber {
-  display: none;
-  align-self: center;
-  width: 34px;
-  height: 3px;
-  border-radius: 2px;
-  background: rgba(255, 210, 160, 0.35);
-  margin: 6px 0 -2px;
-}
-
-/* ---------- Minimized state: chip only, panel folded away ---------- */
-#talk-overlay.talk-min #talk-panel {
-  opacity: 0;
-  transform: translateY(20px) scale(0.96);
-  pointer-events: none;
-}
-#talk-overlay.talk-min #talk-chip { display: flex; }
 
 /* Header: pulsing orb "presence" indicator + who you're speaking with.
-   `flex-wrap` keeps things graceful if VOICE + MUTE + MIN + CLOSE all show up
+   `flex-wrap` keeps things graceful if VOICE + MUTE + CLOSE all show up
    at once on a narrow panel — the buttons drop to a second line rather than
    crushing the name into an ellipsis. */
 #talk-head {
@@ -3729,9 +3713,8 @@ html.is-mobile #scan-tags .scan-tag.acting .scan-tag-label { display: inline; }
   color: rgba(255, 210, 160, 0.55);
   margin-top: 2px;
 }
-/* Header pill buttons — tighter, quieter, sit together as an icon cluster. */
-#talk-mode-toggle,
-#talk-min {
+/* Header pill button — tighter, quieter. */
+#talk-mode-toggle {
   flex: 0 0 auto;
   font-family: inherit;
   font-size: 9.5px;
@@ -3744,23 +3727,11 @@ html.is-mobile #scan-tags .scan-tag.acting .scan-tag-label { display: inline; }
   cursor: pointer;
   transition: background 0.14s, border-color 0.14s, transform 0.12s;
 }
-#talk-min {
-  width: 26px;
-  height: 26px;
-  padding: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
-#talk-min svg { width: 14px; height: 14px; }
-#talk-mode-toggle:hover,
-#talk-min:hover {
+#talk-mode-toggle:hover {
   background: rgba(255, 196, 120, 0.2);
   border-color: rgba(255, 216, 150, 0.7);
 }
-#talk-min:active { transform: scale(0.92); }
-#talk-mode-toggle.hidden,
-#talk-min.hidden { display: none; }
+#talk-mode-toggle.hidden { display: none; }
 /* Muted mic state — reads as "off". */
 #talk-mode-toggle.muted {
   background: rgba(255, 90, 90, 0.16);
@@ -3836,125 +3807,32 @@ html.is-mobile #scan-tags .scan-tag.acting .scan-tag-label { display: inline; }
 .talk-voice-item .tv-tag { font-size: 10px; opacity: 0.6; }
 #talk-voice-btn.switching { opacity: 0.6; pointer-events: none; }
 
-/* ---------- Minimized "in-call" chip ---------- */
-/* Docks to the bottom-left, right where the expanded panel would be, so the
-   chip becomes the panel's shadow — click it and the window unfolds. */
-#talk-chip {
-  position: absolute;
-  left: calc(env(safe-area-inset-left, 0px) + 20px);
-  bottom: calc(env(safe-area-inset-bottom, 0px) + 24px);
-  display: none;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 12px 8px 10px;
-  max-width: 260px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 205, 140, 0.3);
-  background: linear-gradient(180deg, rgba(22, 18, 24, 0.75), rgba(12, 10, 16, 0.82));
-  backdrop-filter: blur(14px) saturate(1.2);
-  -webkit-backdrop-filter: blur(14px) saturate(1.2);
-  box-shadow:
-    0 8px 22px rgba(0, 0, 0, 0.45),
-    0 0 22px rgba(255, 180, 100, 0.14);
-  color: #ffe7bf;
-  font-family: 'Share Tech Mono', monospace;
-  cursor: pointer;
-  pointer-events: auto;
-  animation: talk-chip-in 0.24s cubic-bezier(0.2, 0.9, 0.25, 1.05);
-  transition: transform 0.14s ease, box-shadow 0.14s ease, background 0.14s ease;
-}
-#talk-chip.hidden { display: none; }
-#talk-chip:hover {
-  transform: translateY(-1px);
-  box-shadow:
-    0 10px 28px rgba(0, 0, 0, 0.5),
-    0 0 28px rgba(255, 190, 110, 0.22);
-}
-#talk-chip:active { transform: translateY(0) scale(0.98); }
-@keyframes talk-chip-in {
-  from { opacity: 0; transform: translateY(10px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-.talk-chip-orb {
-  flex: 0 0 auto;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: radial-gradient(circle at 35% 30%, #ffe4b0, #ff9d3c);
-  box-shadow: 0 0 10px rgba(255, 175, 90, 0.9);
-  animation: talk-orb-breathe 2.4s ease-in-out infinite;
-}
-.talk-chip-orb.talk-orb-pulse { animation: talk-orb-ping 0.6s ease-out, talk-orb-breathe 2.4s ease-in-out 0.6s infinite; }
-.talk-chip-orb[data-state="listening"] {
-  background: radial-gradient(circle at 35% 30%, #bfe9ff, #4aa3dc);
-  box-shadow: 0 0 10px rgba(120, 190, 255, 0.9);
-}
-.talk-chip-orb[data-state="speaking"] {
-  box-shadow: 0 0 14px rgba(255, 190, 110, 1);
-  animation-duration: 0.9s;
-}
-.talk-chip-orb[data-state="connecting"] { opacity: 0.6; animation-duration: 1.1s; }
-.talk-chip-text {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 1px;
-  min-width: 0;
-}
-.talk-chip-name {
-  font-size: 12px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: #ffe7bf;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 180px;
-}
-.talk-chip-sub {
-  font-size: 8.5px;
-  letter-spacing: 0.22em;
-  text-transform: uppercase;
-  color: rgba(255, 210, 160, 0.55);
-}
-.talk-chip-caret {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: rgba(255, 210, 160, 0.75);
-  transform: rotate(180deg);
-}
-.talk-chip-caret svg { width: 14px; height: 14px; }
-
 /* ---------- Ephemeral floating speech bubble ---------- */
-/* Mirrors the latest incoming line just above the chat window, so a
-   conversation "hangs in the air" over the scene like a coffee-talk speech
-   bubble. It auto-fades — the panel/log is still the source of truth. */
+/* Mirrors the latest line (yours or theirs) just above the control strip, so
+   a conversation "hangs in the air" over the scene like a coffee-talk speech
+   caption. Deliberately NO card/glass behind the text — just the words, with
+   enough text-shadow to stay legible over any scene — so nothing sits
+   between the player and the world. It auto-fades on its own. */
 #talk-float {
   position: absolute;
   left: calc(env(safe-area-inset-left, 0px) + 24px);
   bottom: calc(env(safe-area-inset-bottom, 0px) + 200px);
   z-index: 33;
   max-width: 340px;
-  padding: 10px 14px;
-  border-radius: 14px;
-  border: 1px solid rgba(255, 205, 140, 0.32);
-  background: linear-gradient(180deg, rgba(255, 196, 120, 0.14), rgba(255, 180, 100, 0.08));
-  backdrop-filter: blur(10px) saturate(1.2);
-  -webkit-backdrop-filter: blur(10px) saturate(1.2);
+  padding: 0 4px;
+  background: none;
+  border: none;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
   color: #ffeed7;
   font-family: 'Share Tech Mono', monospace;
   font-size: 13px;
   line-height: 1.45;
-  box-shadow:
-    0 10px 26px rgba(0, 0, 0, 0.45),
-    0 0 22px rgba(255, 180, 100, 0.14);
   opacity: 0;
   pointer-events: none;
   transform: translateY(6px) scale(0.98);
   transition: opacity 0.28s ease, transform 0.28s cubic-bezier(0.2, 0.9, 0.25, 1.05);
-  border-bottom-left-radius: 4px;
 }
 #talk-float.hidden { display: none; }
 #talk-float.talk-float-in { opacity: 1; transform: translateY(0) scale(1); }
@@ -3962,8 +3840,9 @@ html.is-mobile #scan-tags .scan-tag.acting .scan-tag-label { display: inline; }
   font-size: 8.5px;
   letter-spacing: 0.2em;
   text-transform: uppercase;
-  color: rgba(255, 210, 160, 0.75);
+  color: rgba(255, 210, 160, 0.85);
   margin-bottom: 3px;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.95), 0 0 10px rgba(0,0,0,0.85);
 }
 #talk-float-body {
   word-wrap: break-word;
@@ -3971,6 +3850,7 @@ html.is-mobile #scan-tags .scan-tag.acting .scan-tag-label { display: inline; }
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
   overflow: hidden;
+  text-shadow: 0 1px 4px rgba(0,0,0,1), 0 0 12px rgba(0,0,0,0.9), 0 0 3px rgba(0,0,0,1);
 }
 
 /* NOTE: the mobile @media block for TALK lives AT THE END of the TALK
@@ -4063,19 +3943,18 @@ html.is-mobile #scan-tags .scan-tag.acting .scan-tag-label { display: inline; }
 #talk-close:hover { background: rgba(255, 90, 90, 0.25); transform: scale(1.08); }
 #talk-close:active { transform: scale(0.92); }
 
-/* Transcript log. Softer, roomier, warm café-lit. */
+/* Full transcript is no longer rendered as a card — on-screen dialogue is
+   carried entirely by the floating caption (#talk-float) instead. Kept in
+   the DOM off-screen (not display:none) purely so aria-live updates still
+   reach assistive tech / scrollback tooling. */
 #talk-log {
-  flex: 1 1 auto;
-  overflow-y: auto;
-  padding: 14px 14px 6px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 196, 120, 0.4) transparent;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }
-#talk-log::-webkit-scrollbar { width: 6px; }
-#talk-log::-webkit-scrollbar-thumb { background: rgba(255, 196, 120, 0.35); border-radius: 3px; }
 
 .talk-line {
   display: flex;
@@ -4184,8 +4063,8 @@ html.is-mobile #scan-tags .scan-tag.acting .scan-tag-label { display: inline; }
 #talk-send:active { transform: scale(0.92); }
 
 @media (prefers-reduced-motion: reduce) {
-  #talk-overlay, #talk-panel, #talk-chip, #talk-float,
-  #talk-orb, .talk-chip-orb, .talk-line, .talk-typing .talk-body i {
+  #talk-overlay, #talk-panel, #talk-float,
+  #talk-orb, .talk-line, .talk-typing .talk-body i {
     animation: none !important;
     transition: opacity 0.15s ease !important;
   }
@@ -4199,21 +4078,17 @@ html.is-mobile #scan-tags .scan-tag.acting .scan-tag-label { display: inline; }
    defaults for `#talk-log`, `#talk-form`, `.talk-body`, etc. (which appear
    above). Moving it earlier will silently break the mobile layout. */
 @media (max-width: 640px) {
-  /* The panel is a compact, low-profile sheet — a strip of chat, not a
-     takeover. Height is CONTENT-driven so a short exchange stays short; a
-     tight ceiling keeps a long one from swallowing the scene. */
+  /* The control strip is compact and content-driven (header row + input
+     row only, no transcript card), so it naturally stays short. */
   #talk-panel {
     left: 8px;
     right: 8px;
     width: auto;
     max-width: none;
     /* Above the action wheel (~176-196px tall + safe area). */
-    bottom: calc(env(safe-area-inset-bottom, 0px) + 210px);
-    min-height: 0;
-    max-height: min(220px, 30vh);
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 190px);
     border-radius: 14px;
   }
-  .talk-grabber { display: block; margin: 4px 0 -4px; height: 3px; width: 30px; }
 
   /* Header: single tight strip. Sub-text is stripped since the character
      name + orb (with its state color) already communicates presence, and the
@@ -4227,14 +4102,7 @@ html.is-mobile #scan-tags .scan-tag.acting .scan-tag-label { display: inline; }
   }
   #talk-voice-btn { max-width: 84px; }
   #talk-voice-btn svg { width: 11px; height: 11px; }
-  #talk-min, #talk-close { width: 24px; height: 24px; }
-  #talk-min svg { width: 12px; height: 12px; }
-
-  /* Log: tighter, smaller lines so more of the room-tone gets through. */
-  #talk-log { padding: 10px 10px 4px; gap: 6px; }
-  .talk-body { font-size: 12.5px; padding: 7px 10px; line-height: 1.4; }
-  .talk-who  { display: none; }  /* the bubble color already tells you who */
-  .talk-line { max-width: 94%; }
+  #talk-close { width: 24px; height: 24px; }
 
   /* Composer: slim strip. */
   #talk-form  { padding: 8px 10px calc(env(safe-area-inset-bottom, 0px) + 8px); gap: 6px; }
@@ -4242,36 +4110,26 @@ html.is-mobile #scan-tags .scan-tag.acting .scan-tag-label { display: inline; }
   #talk-send  { width: 34px; height: 34px; }
   #talk-send svg { width: 14px; height: 14px; }
 
-  #talk-chip {
-    left: auto;
-    right: calc(env(safe-area-inset-right, 0px) + 12px);
-    bottom: calc(env(safe-area-inset-bottom, 0px) + 216px);
-    max-width: 200px;
-    padding: 6px 10px 6px 8px;
-  }
-  .talk-chip-name { font-size: 11px; max-width: 130px; }
-  .talk-chip-sub  { font-size: 8px; }
-  /* Bubble hangs above the chip in the bottom-right, so a folded
-     conversation feels like a speech bubble growing out of the pill. */
+  /* Speaker caption: sits above the control strip, spanning the width so
+     longer lines have room. 25% smaller than desktop (13px -> 9.75px,
+     8.5px -> 6.375px) so it reads like a subtitle, not a headline. */
   #talk-float {
-    left: 10px;
-    right: calc(env(safe-area-inset-right, 0px) + 10px);
-    max-width: 78vw;
-    bottom: calc(env(safe-area-inset-bottom, 0px) + 260px);
-    border-bottom-left-radius: 14px;
-    border-bottom-right-radius: 4px;
+    left: 12px;
+    right: calc(env(safe-area-inset-right, 0px) + 12px);
+    max-width: none;
+    /* Clear of the control strip above it (strip sits ~190px off the
+       bottom and is itself ~90-140px tall depending on whether the voice
+       button wraps to a second row). */
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 330px);
+    font-size: 9.75px;
   }
+  #talk-float-who { font-size: 6.375px; }
+
   /* Menu drops from the header of the (now bottom-anchored) panel. Cap it so
-     it never spills past the shorter mobile sheet. */
+     it never spills past the shorter mobile strip. */
   #talk-voice-menu { width: calc(100vw - 40px); right: 8px; max-height: min(220px, 30vh); top: 44px; }
   #narrator-bar { width: calc(100vw - 20px); }
   #narrator-line { font-size: 17px; }
-}
-
-/* Very short viewports: give the sheet a bit less headroom so it never sits
-   near the top-right objectives HUD. */
-@media (max-width: 640px) and (max-height: 640px) {
-  #talk-panel { max-height: min(180px, 26vh); }
 }
 
 /* ---------- Menu toggle (top-right corner) ---------- */
