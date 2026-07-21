@@ -7111,20 +7111,20 @@
 
   // Tapping the WORLD itself scans it — the same on-demand OCR the SCAN button
   // fires, but it makes you feel like you're reaching out and touching the
-  // scene. Only when no instrument/mode owns the view (a click on a control,
-  // overlay, joystick, or the camera layer is left to that element). A tap while
-  // an action bar is open just dismisses the bar (no re-scan). triggerScan gates
-  // on context (camera/tape/talk/turn/paused/…) and only ripples if it starts.
-  const WORLD_TAP_IGNORE =
-    "#action-wheel, #control-rail, #scan-layer, #verb-bar, #move-pad, " +
-    "#menu-toggle, #tape-overlay, #death-overlay, #coinop-pause-overlay, " +
-    "#talk-overlay, #touch-layer, #rt-log, #story-log, " +
-    "button, a, input, textarea, select, form, label";
+  // scene. We ALLOWLIST the scene surfaces (the live video, the still layers,
+  // the freeze buffer) rather than denylisting controls: a stray click on any
+  // HUD/control/overlay/tag must never burn a paid detection call. A tap while
+  // an action bar is open just dismisses the bar (no re-scan). triggerScan still
+  // gates on context (camera/tape/talk/turn/paused/…) and only ripples if it
+  // actually starts.
+  const WORLD_TAP_SURFACES = ".scene, #reactor-video, #reactor-freeze";
   function onWorldTap(e) {
     // Only primary (left) button / touch taps scan the world.
     if (typeof e.button === "number" && e.button !== 0) return;
     const t = e.target;
-    if (t && t.closest && t.closest(WORLD_TAP_IGNORE)) return;
+    const onWorld = t === document.body ||
+      !!(t && t.closest && t.closest(WORLD_TAP_SURFACES));
+    if (!onWorld) return; // a control/overlay/HUD/tag owns this click
     if (state.scanTagActing) { closeTagPrompt(state.scanTagActing); return; }
     triggerScan({ x: e.clientX, y: e.clientY });
   }
