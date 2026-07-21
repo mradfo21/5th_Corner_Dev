@@ -5600,6 +5600,43 @@ def _generate_and_append_scene_image(caption: str, dispatch: str, choice: str, f
                     "image_prompt": image_prompt, "render_prompt": render_prompt}
         except Exception as e:
             log_error(f"[SCENE IMG] failed: {e}")
+            # Do NOT swallow the turn's scene entirely. On the realtime (reactor)
+            # path the client only re-steers the live world when a scene_image
+            # feed item arrives with metadata.prompt; if an exception here emits
+            # nothing, the video never receives the new scene and appears to
+            # "just stop" (exactly the report: entered the dark hatch and the
+            # video never started). Emit a best-effort blocked beat so realtime
+            # keeps steering off the prompt and the turn's ceremony still
+            # resolves. Built from the always-available turn inputs since
+            # render_prompt/render_base may not have been reached before the
+            # throw. Guarded so a secondary failure can't mask the original.
+            try:
+                fb_base = build_realtime_base(visual_scene=caption, narrative=dispatch)
+                fb_prompt = build_realtime_prompt(
+                    visual_scene=caption, narrative=dispatch, choice=choice
+                )
+                fallback_item = create_feed_item(
+                    type="scene_image",
+                    content="",
+                    image_url=None,
+                    metadata={
+                        "prompt": fb_prompt,
+                        "base": fb_base,
+                        "hard_transition": bool(hard_transition),
+                        "blocked": True,
+                    },
+                )
+                with WORLD_STATE_LOCK:
+                    st = _load_state(session_id)
+                    st['current_render_prompt'] = fb_prompt
+                    st['current_render_base'] = fb_base
+                    _feed_append(st, fallback_item)
+                    _save_state(st, session_id)
+                    _sync_ambient_state(st, session_id)
+                print(f"[SCENE IMG] exception recovery for {session_id}: emitted signal-lost beat "
+                      f"so realtime keeps steering", flush=True)
+            except Exception as e2:
+                log_error(f"[SCENE IMG] failed to emit recovery beat: {e2}")
             return None
 
 
