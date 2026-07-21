@@ -8463,11 +8463,29 @@
       }
     }
 
-    // A cold open at the start of a run — only when audio is already unlocked
-    // (a prior gesture) so it actually speaks rather than silently failing.
+    // A cold open at the start of a run. Browser autoplay policy forbids audio
+    // before a user gesture, so if audio isn't unlocked yet we DEFER the cold
+    // open (arm a pending flag) instead of dropping it silently — otherwise the
+    // very first playthrough is mute and narration only ever appears on a second
+    // run (after a Reset click unlocks audio). onAudioUnlocked() fires the
+    // pending cold open on the first real gesture.
+    let pendingColdOpen = false;
     function coldOpen() {
-      if (!state.audioUnlocked || state.gameOver || Talk.isOpen() || isBusy()) return;
+      if (state.gameOver || Talk.isOpen() || isBusy()) return;
+      if (!state.audioUnlocked) { pendingColdOpen = true; return; }
+      pendingColdOpen = false;
       narrate({ multi: false, focus: "You have just woken up here. Say how uneasy you feel and that you need to find out what happened." });
+    }
+
+    // Called from the global audio-unlock gesture handler. If a cold open was
+    // deferred because audio wasn't unlocked at start, play it now that the
+    // user's first gesture has satisfied autoplay policy.
+    function onAudioUnlocked() {
+      if (!pendingColdOpen) return;
+      pendingColdOpen = false;
+      // Small delay so the unlock gesture (and any scene it triggered) settles
+      // before the narrator opens; still guards on gameOver/Talk/busy inside.
+      setTimeout(() => coldOpen(), 300);
     }
 
     // A final, funereal line over the death screen.
@@ -8553,7 +8571,7 @@
       }
     }
 
-    return { narrate, stop, isBusy, preflight, coldOpen, epitaph, transition };
+    return { narrate, stop, isBusy, preflight, coldOpen, onAudioUnlocked, epitaph, transition };
   })();
 
   function toggleNarrator() {
@@ -10129,7 +10147,13 @@
     // first interaction so feedback sounds work for the rest of the session.
     // We also remember that audio is now unlocked so the narrator can auto-play
     // (e.g. a cold open on a new run) without a broken/silent autoplay attempt.
-    const unlockAudio = () => { Sound.resume(); state.audioUnlocked = true; };
+    const unlockAudio = () => {
+      Sound.resume();
+      state.audioUnlocked = true;
+      // Fire a cold open that was deferred because audio wasn't unlocked yet,
+      // so the first playthrough gets narration rather than only the second run.
+      try { Narrator.onAudioUnlocked(); } catch (_) {}
+    };
     document.addEventListener("pointerdown", unlockAudio, { once: true });
     document.addEventListener("keydown", unlockAudio, { once: true });
     // Learn whether narrator VOICE is available so the control can say so.
