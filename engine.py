@@ -4314,6 +4314,31 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                         hd_mode=use_hq_for_this_frame,  # Frame 0 always HQ, others respect quality toggle
                         output_dir=img_dir  # Session-specific directory
                     )
+                    # SAFETY NET: img2img can come back empty (API timeout on the
+                    # slow lite model, a safety block triggered by the accumulated
+                    # live-frame references, or a transient API error — all of which
+                    # generate_gemini_img2img swallows into a None). When that
+                    # happens the turn used to emit NOTHING, so "interacting" left
+                    # the scene frozen on the last frame ("gemini fast can't render a
+                    # new image on interact"). Fall back to a plain text-to-image
+                    # render (no reference images → smaller payload, far less likely
+                    # to time out or trip the reference-driven safety filter) so a
+                    # FRESH frame still lands. We lose pixel-perfect img2img
+                    # continuity for that one turn, but the world keeps moving —
+                    # which mirrors the Krea/fal branches' existing Gemini safety net.
+                    if not result_path:
+                        print(f"[IMG GENERATION] img2img returned no image - falling back to text-to-image so the scene still advances", flush=True)
+                        result_path = generate_with_gemini(
+                            prompt=prompt_str,
+                            caption=caption,
+                            world_prompt=world_prompt,
+                            aspect_ratio="4:3",
+                            time_of_day=use_time_of_day,
+                            is_first_frame=(frame_idx == 0),
+                            action_context=choice,
+                            hd_mode=use_hq_for_this_frame,
+                            output_dir=img_dir,
+                        )
                 else:
                     print(f"[IMG GENERATION] Skipping static image - Flipbook mode is active.")
                     result_path = None
