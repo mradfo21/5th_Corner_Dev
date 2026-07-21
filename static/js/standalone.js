@@ -7919,6 +7919,13 @@
 
     let floatTimer = 0;
     let inMoment = false; // true while a Conversation Moment chrome is up
+    // World-model portrait animation: we SWAP the single Reactor session onto
+    // the character render, mirror its live stream into the full-screen
+    // portrait, and swap the world back on exit. One session, re-anchored —
+    // so "things are always moving" without a second GPU session.
+    let worldSwapped = false;     // did we re-anchor the world onto the character?
+    let savedWorldScene = null;   // the scene to rebuild when the conversation ends
+    let portraitPollTimer = null; // waits for the character video to go live
 
     function isOpen() { return open; }
     function isCinematic() { return !!(inMoment && open); }
@@ -7956,10 +7963,10 @@
         if (!open || !inMoment) return;
         if (res && res.image_url && window.Moments) {
           window.Moments.setPortrait(res.image_url);
-          // Phase-2 scaffold: if CONVERSATION_ANIMATE is enabled client-side
-          // (window.__CONVERSATION_ANIMATE__), try to attach a second Reactor
-          // idle stream. Falls back silently to the CSS living portrait.
-          try { maybeAnimatePortrait(res.image_url, subj); } catch (_) {}
+          // Animate the character with the world model when realtime is live:
+          // re-anchor the session onto the portrait and mirror the moving feed
+          // into the frame. Falls back to the CSS living portrait otherwise.
+          try { animatePortraitWithWorldModel(res.image_url, res.prompt, subj); } catch (_) {}
         } else if (window.Moments) {
           const p = document.getElementById("moment-portrait");
           if (p) { p.classList.remove("developing"); p.classList.add("ready"); }
@@ -7973,22 +7980,97 @@
       }
     }
 
-    // Phase-2 scaffold for world-model-animated portraits. Opt-in via
-    // window.__CONVERSATION_ANIMATE__ = true (or ?convo_animate=1). When the
-    // second Reactor session path isn't available, the CSS living portrait
-    // remains the baseline — never blocks the conversation.
-    function maybeAnimatePortrait(imageUrl, subj) {
-      let enabled = false;
+    // Is the realtime world model actually live right now?
+    function reactorLive() {
       try {
-        enabled = !!(window.__CONVERSATION_ANIMATE__ ||
-          (typeof location !== "undefined" && /(?:\?|&)convo_animate=1\b/.test(location.search)));
-      } catch (_) {}
-      if (!enabled || !imageUrl) return;
-      // Scaffold only: log intent. A future pass can open a second
-      // ReactorRenderer session anchored on imageUrl with an idle-motion
-      // prompt and call Moments.setPortraitStream(mediaStream) on reveal.
+        return Renderer.mode === "reactor" && window.ReactorRenderer &&
+          window.ReactorRenderer.isActive && window.ReactorRenderer.isActive();
+      } catch (_) { return false; }
+    }
+
+    // Compose an idle-motion world prompt for the character. We send NO
+    // movement commands, so Happy Oyster just breathes the scene to life
+    // (blink, sway, ambient light) around the character it built from the
+    // portrait first-frame.
+    function buildPortraitWorldPrompt(worldPrompt, subj) {
+      const who = (subj && subj.label) ? subj.label : "the figure";
+      const base = (worldPrompt || "").toString().slice(0, 320);
+      return (base ? base + " " : "") +
+        "Cinematic medium shot of " + who + " facing the camera, standing and " +
+        "breathing with subtle idle motion \u2014 a slight sway, a blink, weight " +
+        "shifting \u2014 gentle ambient movement in the scene. Camera holds steady, minimal drift.";
+    }
+
+    // Animate the portrait by RE-ANCHORING the single world-model session onto
+    // the character render, then mirroring that live feed into the full-screen
+    // portrait video. The moment portrait covers the viewport, so the underlay
+    // swap is invisible; when the character feed goes live we crossfade the
+    // still into it. Default-on whenever realtime is live; opt out with
+    // window.__CONVERSATION_ANIMATE__ === false. Reduced-motion users keep the
+    // still CSS living portrait.
+    function animatePortraitWithWorldModel(imageUrl, worldPrompt, subj) {
+      if (typeof window !== "undefined" && window.__CONVERSATION_ANIMATE__ === false) return;
+      if (prefersReducedMotion && prefersReducedMotion()) return;
+      if (!imageUrl || !reactorLive()) return;
+      // Remember the world we're leaving so exit can rebuild it. Copy so a
+      // later feed update to lastScene can't mutate our restore target.
+      savedWorldScene = Renderer.lastScene ? Object.assign({}, Renderer.lastScene) : null;
+      worldSwapped = true;
+      // push() paused the session for the takeover; resume so frames flow for
+      // the character world (the world audio stays muted — the voice comes from
+      // ElevenLabs, not the stream).
+      try { window.ReactorRenderer.resume && window.ReactorRenderer.resume(); } catch (_) {}
+      // Re-anchor DIRECTLY via the reactor facade (NOT Renderer.applyScene) so
+      // Renderer.lastScene keeps pointing at the world we'll restore.
       try {
-        AgentLog.push("dim", "portrait animate scaffold", (subj && subj.label) || "");
+        window.ReactorRenderer.applyScene({
+          prompt: buildPortraitWorldPrompt(worldPrompt, subj),
+          imageUrl: imageUrl,
+          hardTransition: true,
+        });
+      } catch (e) { worldSwapped = false; return; }
+      try { AgentLog.push("talk", "portrait \u2192 world model", (subj && subj.label) || ""); } catch (_) {}
+      startPortraitPoll(subj);
+    }
+
+    // Wait for the re-anchored character feed to present real frames, then
+    // mirror its MediaStream into the portrait video and crossfade. Bounded so
+    // a stalled/failed world build silently leaves the still living portrait up.
+    function startPortraitPoll(subj) {
+      stopPortraitPoll();
+      let tries = 0;
+      portraitPollTimer = setInterval(() => {
+        tries++;
+        if (!open || !worldSwapped || tries > 45) { stopPortraitPoll(); return; } // ~9s cap
+        let showing = false;
+        try { showing = window.ReactorRenderer.isShowing && window.ReactorRenderer.isShowing(); } catch (_) {}
+        if (!showing) return;
+        const rv = document.getElementById("reactor-video");
+        if (rv && rv.srcObject && window.Moments && window.Moments.setPortraitStream) {
+          window.Moments.setPortraitStream(rv.srcObject);
+          try { AgentLog.push("ok", "portrait animated (world model)", (subj && subj.label) || ""); } catch (_) {}
+        }
+        stopPortraitPoll();
+      }, 200);
+    }
+    function stopPortraitPoll() {
+      if (portraitPollTimer) { clearInterval(portraitPollTimer); portraitPollTimer = null; }
+    }
+
+    // On exit: rebuild the world we left so the game returns to where the
+    // player was. The moment's glitch + letterbox-retract + the reactor freeze
+    // buffer hide the rebuild. No-op if we never swapped (still mode / reduced
+    // motion / reactor down).
+    function restoreWorldAfterConversation() {
+      stopPortraitPoll();
+      if (!worldSwapped) return;
+      worldSwapped = false;
+      const scene = savedWorldScene;
+      savedWorldScene = null;
+      try {
+        if (scene && scene.prompt && window.ReactorRenderer && window.ReactorRenderer.applyScene) {
+          window.ReactorRenderer.applyScene(scene);
+        }
       } catch (_) {}
     }
 
@@ -8479,6 +8561,11 @@
       el.talkOverlay.setAttribute("aria-hidden", "true");
       document.body.classList.remove("talking");
       document.body.removeAttribute("data-talk-orb");
+
+      // If we re-anchored the world model onto the character, rebuild the world
+      // we left NOW — while the exit glitch + letterbox retract + reactor freeze
+      // buffer hide the swap — so the game returns to where the player was.
+      restoreWorldAfterConversation();
 
       // Pop the Conversation Moment (restores HUD + underlay). Guarded so a
       // double-close or missing Moments.js never throws. End-of-call toast uses

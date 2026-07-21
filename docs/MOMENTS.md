@@ -59,9 +59,19 @@ notes[], trust }`. This is additive metadata — it does **not** mutate
 `history` / `feed_log`. Future trust / relationship Moments can read and
 extend this record.
 
-## Phased portrait animation
+## Portrait animation
 
-1. **Shipped:** CSS living portrait (breathing scale, grain, orb-linked rim)
-2. **Scaffold:** `window.__CONVERSATION_ANIMATE__ = true` (or `?convo_animate=1`)
-   logs intent for a second Reactor idle session; `Moments.setPortraitStream`
-   is ready for the reveal-when-ready crossfade once that path is wired.
+Two layers, both shipped:
+
+1. **CSS living portrait (always-on baseline):** breathing scale, film grain,
+   and an orb-linked rim light on the still img2img portrait. Used in
+   still-image mode, under reduced-motion, or until the world feed goes live.
+2. **World-model animation (realtime mode):** the single Reactor session is
+   **re-anchored** onto the character render (`applyScene({prompt, imageUrl})`)
+   so the character moves/breathes with the world model. Its live MediaStream
+   is mirrored into `#moment-portrait-video` via `Moments.setPortraitStream`
+   and crossfaded over the still (reveal-when-ready via `isShowing()` polling).
+   On exit the session is re-anchored back to the pre-conversation scene, hidden
+   by the glitch + letterbox-retract + reactor freeze buffer — so the world is
+   always moving and the swap stays invisible. One session, swapped both ways
+   (no second GPU session). Opt out with `window.__CONVERSATION_ANIMATE__ = false`.

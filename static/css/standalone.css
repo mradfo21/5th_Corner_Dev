@@ -4189,6 +4189,9 @@ body.moment-underlay-paused .reactor-freeze {
   transition: opacity 0.4s ease;
 }
 #moment-overlay.moment-in #moment-portrait { opacity: 1; }
+/* The live world-model feed of the character. Sits ABOVE the still portrait
+   and crossfades in (opacity) once the re-anchored session presents frames, so
+   the swap from still → moving is a dissolve, not a pop. */
 #moment-portrait-video {
   position: absolute;
   inset: 0;
@@ -4196,7 +4199,11 @@ body.moment-underlay-paused .reactor-freeze {
   height: 100%;
   object-fit: cover;
   display: block;
+  opacity: 0;
+  transition: opacity 0.7s ease;
+  z-index: 1;
 }
+#moment-portrait.animated #moment-portrait-video { opacity: 1; }
 #moment-portrait-video.hidden { display: none; }
 
 /* The still portrait is opacity-driven (NOT display-toggled) so the reveal
@@ -4247,6 +4254,7 @@ body.moment-underlay-paused .reactor-freeze {
   opacity: 0.18;
   background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");
   mix-blend-mode: overlay;
+  z-index: 2; /* stay above the still img AND the live video feed */
 }
 #moment-portrait-rim {
   position: absolute;
@@ -4254,6 +4262,7 @@ body.moment-underlay-paused .reactor-freeze {
   pointer-events: none;
   box-shadow: inset 0 0 60px rgba(255, 180, 100, 0.08);
   transition: box-shadow 0.3s ease;
+  z-index: 2; /* stay above the still img AND the live video feed */
 }
 /* Orb-linked rim light: the portrait frame brightens/cools in step with the
    character's speaking/listening state. Driven purely by the body
