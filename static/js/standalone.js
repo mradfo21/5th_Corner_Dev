@@ -7944,9 +7944,15 @@
 
     // Fetch the cinematic portrait in parallel with the talk session. Best-
     // effort: a missing/failed portrait just leaves the developing shimmer.
-    async function fetchPortrait(subj) {
+    // `referenceFrame` (a data-URL grab of the CURRENT scene) lets the server
+    // img2img the character INTO the same environment so it reads as the next
+    // shot in the same place, not a brand-new location.
+    async function fetchPortrait(subj, referenceFrame) {
       try {
-        const res = await postJSON("/api/talk/portrait", { subject: subj });
+        const res = await postJSON("/api/talk/portrait", {
+          subject: subj,
+          reference_image: referenceFrame || undefined,
+        });
         if (!open || !inMoment) return;
         if (res && res.image_url && window.Moments) {
           window.Moments.setPortrait(res.image_url);
@@ -8083,6 +8089,17 @@
       requestAnimationFrame(() => el.talkOverlay.classList.add("talk-in"));
       Haptics.select();
 
+      // Grab the CURRENT scene frame NOW — before the letterbox/dim covers it —
+      // so the portrait can be img2img'd into this exact environment (the
+      // character as the next shot in the same place). Captured from whichever
+      // renderer is live; null in text-only mode (portrait falls back to
+      // text2img). captureScanFrame() returns { frame, size }.
+      let referenceFrame = null;
+      try {
+        const cap = (typeof captureScanFrame === "function") ? captureScanFrame() : null;
+        referenceFrame = cap && cap.frame ? cap.frame : null;
+      } catch (_) { referenceFrame = null; }
+
       // Push the Conversation Moment chrome (letterbox + portrait frame + HUD
       // hide + underlay pause). Networking below is unchanged — Moments only
       // owns presentation. Falls back to the slim overlay if Moments.js is
@@ -8111,7 +8128,9 @@
       const sessionP = postJSON("/api/talk/session", {
         subject, voice_id: selectedVoiceId || undefined,
       }).catch((err) => { console.warn("[talk] session failed:", err); return null; });
-      if (inMoment) fetchPortrait(subject); // fire-and-forget alongside session
+      // Fire-and-forget alongside session; img2img off the captured frame when
+      // we have one so the character lands in the same environment.
+      if (inMoment) fetchPortrait(subject, referenceFrame);
 
       // Intimate conversation bed (ducked). Best-effort; silence is fine.
       try {

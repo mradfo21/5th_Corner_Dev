@@ -784,7 +784,8 @@ def generate_gemini_img2img(
     action_context: str = "",
     hd_mode: bool = True,
     output_dir: Path = None,
-    is_flipbook: bool = False
+    is_flipbook: bool = False,
+    portrait_mode: bool = False,
 ) -> str:
     """
     Edit an image using Google Gemini (image-to-image).
@@ -868,7 +869,36 @@ def generate_gemini_img2img(
         structured_prompt = structured_prompt + time_injection
     
     # Add continuity instructions - DIFFERENT for flipbook vs single-frame img2img
-    if is_flipbook:
+    if portrait_mode:
+        # CONVERSATION PORTRAIT: the reference IS the environment the player is
+        # standing in. Keep that room/lighting/grain/palette, but re-frame it as
+        # the NEXT SHOT — a cinematic medium shot of the character being spoken
+        # to, standing IN that same place. This is the whole point: the portrait
+        # must read as the same continuous scene, not a new location.
+        continuity_instruction = (
+            "\n\n🎬 CRITICAL — SAME PLACE, NEXT SHOT (CONVERSATION PORTRAIT):\n"
+            "═══════════════════════════════════════════════════════════════════\n"
+            "The reference image is the EXACT environment the camera is in RIGHT NOW.\n"
+            "Generate the NEXT SHOT: a cinematic MEDIUM SHOT of the character being\n"
+            "spoken to, standing IN THAT SAME ROOM/PLACE — as if the camera simply\n"
+            "turned to face them. It must feel like the same continuous footage.\n"
+            "\n"
+            "COPY from the reference (non-negotiable continuity):\n"
+            "✅ ENVIRONMENT: same room/location, same walls, props, depth, background\n"
+            "✅ LIGHTING: same light sources, color temperature, shadow direction\n"
+            "✅ PALETTE + FILM LOOK: same VHS grain, color grade, analog degradation\n"
+            "✅ TIME OF DAY / ATMOSPHERE: identical to the reference\n"
+            "\n"
+            "CHANGE (the reframe):\n"
+            "→ FRAMING: a cinematic medium shot (mid-torso up) of the CHARACTER\n"
+            "→ FOCUS: the character is the subject, sharp; background soft (shallow DoF)\n"
+            "→ COMPOSITION: character centered/eye-line to camera, present and lit\n"
+            "\n"
+            "The character described in the instruction now OCCUPIES this environment.\n"
+            "Think: the operator lowered the camera and turned to face the person\n"
+            "they're talking to — same tape, same room, one shot later."
+        )
+    elif is_flipbook:
         # FLIPBOOK MODE: The FIRST reference image (panel 16 of previous sequence) is the
         # SPATIAL GROUND TRUTH — Frame 1 of the new grid must continue from that exact position.
         continuity_instruction = (
@@ -948,20 +978,33 @@ def generate_gemini_img2img(
         flipbook_grid_note = "\n\nCRITICAL - 4x4 GRID STRUCTURE:\nPreserve the 4x4 grid structure from the layout template. Each panel must show a slightly different moment in time. The output MUST be a 4x4 grid."
         structured_prompt = structured_prompt + flipbook_grid_note
     
-    # Add CRITICAL anti-person instructions WITH REMOVAL DIRECTIVE
-    anti_person = "\n\n🚨 CRITICAL - REMOVE ANY PEOPLE FROM REFERENCE IMAGE:\n\n" \
-                 "The REFERENCE IMAGE may contain a person/character - this is WRONG. Your job is to REMOVE THEM.\n\n" \
-                 "GENERATE THE EXACT SAME SCENE but with the person DELETED. Show ONLY the environment.\n\n" \
-                 "This is a SECURITY CAMERA view - no camera operator exists. PURE environmental shot.\n\n" \
-                 "NEVER INCLUDE:\n" \
-                 "- Person visible (standing, walking, crouching, any pose)\n" \
-                 "- Head, back of head, shoulders, silhouette\n" \
-                 "- Arms, hands, legs, feet, body parts\n" \
-                 "- Person from behind, person from side, person from any angle\n" \
-                 "- Character visible in any way\n\n" \
-                 "ONLY SHOW: Environment, objects, vehicles, structures, sky, ground, debris, fire, smoke - NO HUMANS."
-    
-    structured_prompt = structured_prompt + anti_person
+    # Anti-person REMOVAL directive — for environment stills only. A portrait
+    # deliberately ADDS the character to the scene, so skip it there and instead
+    # instruct the model to make the character the subject.
+    if portrait_mode:
+        add_person = (
+            "\n\n🎭 CRITICAL - THE CHARACTER IS THE SUBJECT:\n\n"
+            "Unlike the game's environment shots, THIS shot MUST feature the person.\n"
+            "Render the character described in the instruction as a real, present\n"
+            "human (or being) standing in the reference environment, framed as a\n"
+            "cinematic medium shot. Do NOT delete or hide them. Do NOT turn this\n"
+            "into an empty room. The character faces the camera, clearly lit and\n"
+            "in focus, with the reference environment softly behind them."
+        )
+        structured_prompt = structured_prompt + add_person
+    else:
+        anti_person = "\n\n🚨 CRITICAL - REMOVE ANY PEOPLE FROM REFERENCE IMAGE:\n\n" \
+                     "The REFERENCE IMAGE may contain a person/character - this is WRONG. Your job is to REMOVE THEM.\n\n" \
+                     "GENERATE THE EXACT SAME SCENE but with the person DELETED. Show ONLY the environment.\n\n" \
+                     "This is a SECURITY CAMERA view - no camera operator exists. PURE environmental shot.\n\n" \
+                     "NEVER INCLUDE:\n" \
+                     "- Person visible (standing, walking, crouching, any pose)\n" \
+                     "- Head, back of head, shoulders, silhouette\n" \
+                     "- Arms, hands, legs, feet, body parts\n" \
+                     "- Person from behind, person from side, person from any angle\n" \
+                     "- Character visible in any way\n\n" \
+                     "ONLY SHOW: Environment, objects, vehicles, structures, sky, ground, debris, fire, smoke - NO HUMANS."
+        structured_prompt = structured_prompt + anti_person
     
     # Add CRITICAL anti-timecode/text instructions (ULTRA-STRONG for img2img)
     anti_timecode = (
@@ -979,8 +1022,12 @@ def generate_gemini_img2img(
     
     structured_prompt = structured_prompt + anti_timecode
     
-    # Add negative prompt emphasis
-    negative_emphasis = "\n\nNEVER INCLUDE: Text overlays, timecode, date stamps, timestamps, time displays, numbers, letters, words, 'DEC 14 1993', '4:32 PM', 'PCC HISS', 'REC', battery indicators, recording icons, ANY TEXT. Borders, frames, black bars, white borders, photo edges, polaroid frames, picture frames, matting, letterbox bars, any kind of border or frame element. Person visible, human visible, man visible, character visible, head visible, back of head, shoulders visible, person's back, character's back, body parts, hands, arms, legs, feet, torso, silhouette, person from behind."
+    # Add negative prompt emphasis. Portrait mode keeps the text/border bans but
+    # drops the person bans (the character is the subject).
+    if portrait_mode:
+        negative_emphasis = "\n\nNEVER INCLUDE: Text overlays, timecode, date stamps, timestamps, time displays, numbers, letters, words, 'DEC 14 1993', '4:32 PM', 'PCC HISS', 'REC', battery indicators, recording icons, ANY TEXT. Borders, frames, black bars, white borders, photo edges, polaroid frames, picture frames, matting, letterbox bars, any kind of border or frame element. Empty room with no subject, wide establishing shot, a completely different location than the reference."
+    else:
+        negative_emphasis = "\n\nNEVER INCLUDE: Text overlays, timecode, date stamps, timestamps, time displays, numbers, letters, words, 'DEC 14 1993', '4:32 PM', 'PCC HISS', 'REC', battery indicators, recording icons, ANY TEXT. Borders, frames, black bars, white borders, photo edges, polaroid frames, picture frames, matting, letterbox bars, any kind of border or frame element. Person visible, human visible, man visible, character visible, head visible, back of head, shoulders visible, person's back, character's back, body parts, hands, arms, legs, feet, torso, silhouette, person from behind."
     
     # OPTICAL REALITY ANCHOR - Prevent video game aesthetic drift over time
     photographic_anchor = (
@@ -1059,7 +1106,9 @@ def generate_gemini_img2img(
         "generationConfig": {
             "responseModalities": ["IMAGE"],
             "imageConfig": {
-                "aspectRatio": "4:3",
+                # Conversation portraits use a wider cinematic frame; the game's
+                # environment stills stay 4:3.
+                "aspectRatio": "16:9" if portrait_mode else "4:3",
                 "imageSize": "1K"  # Lowest res Nano Banana 2 Lite offers — fastest generation
             }
         },

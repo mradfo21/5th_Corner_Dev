@@ -7004,13 +7004,18 @@ def _talk_opening_line(label: str, kind: str, situation: dict, persona_prompt: s
         return fallback
 
 
-def build_portrait_prompt(context: dict) -> str:
+def build_portrait_prompt(context: dict, img2img: bool = False) -> str:
     """Compose a cinematic medium-shot portrait prompt for a Conversation Moment.
 
     Reuses the same talk context (subject, scene, time of day) the persona was
     built from, but applies ``CONVERSATION_PORTRAIT_STYLE_ANCHOR`` — a distinct
     lens language from the handheld-camcorder world view — so the cut into
     dialogue reads as a register change.
+
+    ``img2img=True`` phrases it as a reframe of the CURRENT scene (a reference
+    frame is supplied): keep the environment/lighting, turn the camera to face
+    the character. This makes the portrait read as the next shot in the same
+    place instead of a brand-new location.
     """
     context = context or {}
     subject = context.get("subject") or {}
@@ -7031,6 +7036,21 @@ def build_portrait_prompt(context: dict) -> str:
         "machine": "a machine, radio, intercom, or terminal that somehow feels present / watched",
     }.get(kind, "a figure the investigator has encountered")
 
+    if img2img:
+        # A reference frame of the CURRENT environment is supplied — describe the
+        # reframe, not a fresh scene. The img2img continuity block in
+        # gemini_image_utils handles keeping the room; here we name the subject.
+        bits = [
+            f"Turn the camera to face the '{label}' — {kind_look} — standing in this same place.",
+            "Cinematic medium shot, mid-torso up, the character sharp and clearly lit,",
+            "the surrounding environment softly out of focus behind them (shallow depth of field).",
+            "Keep the room, lighting, palette, and film grain of the reference exactly.",
+        ]
+        setting = ", ".join([b for b in [loc, tod] if b])
+        if setting:
+            bits.append(f"Setting: {setting}.")
+        return _sanitize_for_image_generation(" ".join(bits))
+
     bits = [
         CONVERSATION_PORTRAIT_STYLE_ANCHOR.rstrip(". ") + ".",
         f"Subject: the '{label}' — {kind_look}.",
@@ -7048,6 +7068,37 @@ def build_portrait_prompt(context: dict) -> str:
     return _sanitize_for_image_generation(prompt)
 
 
+def _save_portrait_reference(frame_b64: str, session_id: str = "default") -> Optional[str]:
+    """Decode a client-captured scene frame (data URL) to a file for img2img.
+
+    Read-only w.r.t. sim state (unlike ``_ingest_realtime_frame``): it just
+    persists the frame so ``generate_gemini_img2img`` can anchor the portrait on
+    the exact environment the player is looking at. Returns the file path, or
+    None on a missing / malformed / too-small frame.
+    """
+    if not frame_b64:
+        return None
+    import base64 as _b64, re as _re
+    m = _re.match(r'^data:image/[^;]+;base64,(.*)$', frame_b64, _re.DOTALL)
+    raw = m.group(1) if m else frame_b64
+    try:
+        img_bytes = _b64.b64decode(raw)
+    except Exception:
+        return None
+    if len(img_bytes) < 512:
+        return None
+    try:
+        img_dir = Path(_get_image_dir(session_id))
+        img_dir.mkdir(parents=True, exist_ok=True)
+        fname = f"portrait_ref_{int(time.time() * 1000)}.png"
+        fpath = img_dir / fname
+        fpath.write_bytes(img_bytes)
+        return str(fpath)
+    except Exception as e:
+        log_error(f"[TALK PORTRAIT] reference save failed: {e}")
+        return None
+
+
 def _portrait_cache_key(session_id: str, label: str, world_prompt: str) -> tuple:
     scene_hash = hashlib.sha1((world_prompt or "").encode("utf-8")).hexdigest()[:16]
     return (session_id or "default", (label or "").strip().lower(), scene_hash)
@@ -7056,13 +7107,17 @@ def _portrait_cache_key(session_id: str, label: str, world_prompt: str) -> tuple
 def api_talk_portrait():
     """Generate (or reuse) a cinematic medium-shot portrait for a TALK subject.
 
-    Request JSON: ``{"subject": {"label","kind","speaks"}, "session_id"?}``
-    Response JSON: ``{"image_url": "/images/...", "cached": bool, "prompt": str}``
+    Request JSON: ``{"subject": {"label","kind","speaks"}, "session_id"?,
+                     "reference_image"?: <data-url of the current frame>}``
+    Response JSON: ``{"image_url": "/images/...", "cached": bool, "prompt": str,
+                      "mode": "img2img"|"text2img"}``
       or ``{"image_url": null, "reason": "..."}`` when generation is unavailable.
 
-    Fast path: calls ``generate_with_gemini(..., portrait_mode=True)`` directly —
-    NOT the heavy turn-coupled ``_gen_image_impl``. Cached per
-    ``(session, subject, scene)`` so re-opening the same conversation is free.
+    When a ``reference_image`` (the frame the player is looking at) is supplied
+    we img2img off it so the character reads as the NEXT shot in the SAME
+    environment; otherwise we text2img a standalone cinematic portrait. Either
+    way we use the fast single-image path — NOT the heavy turn-coupled
+    ``_gen_image_impl`` — and cache per ``(session, subject, scene)``.
     """
     try:
         if _rate_limited("talk_portrait", 1.2):
@@ -7070,6 +7125,7 @@ def api_talk_portrait():
         data = request.get_json(silent=True) or {}
         subject = data.get("subject") or {}
         session_id = data.get("session_id", "default")
+        reference_b64 = data.get("reference_image") or ""
         if not isinstance(subject, dict) or not (subject.get("label") or "").strip():
             return jsonify({"error": "missing subject", "image_url": None}), 400
 
@@ -7108,24 +7164,46 @@ def api_talk_portrait():
                 "subject": context["subject"],
             })
 
-        prompt = build_portrait_prompt(context)
         img_dir = _get_image_dir(session_id)
         tod = (context.get("situation") or {}).get("time_of_day") or ""
 
+        # Prefer img2img off the current frame so the portrait is the next shot
+        # in the SAME room. Fall back to text2img when no usable frame arrives.
+        ref_path = _save_portrait_reference(reference_b64, session_id) if reference_b64 else None
+        use_img2img = bool(ref_path)
+        prompt = build_portrait_prompt(context, img2img=use_img2img)
+
         t0 = time.time()
         image_path = None
+        gen_mode = "img2img" if use_img2img else "text2img"
         try:
-            from gemini_image_utils import generate_with_gemini
-            image_path = generate_with_gemini(
-                prompt=prompt,
-                caption=f"portrait_{label}",
-                world_prompt=world_prompt[:400] if world_prompt else None,
-                aspect_ratio="16:9",
-                time_of_day=tod,
-                hd_mode=False,
-                output_dir=Path(img_dir),
-                portrait_mode=True,
-            )
+            if use_img2img:
+                from gemini_image_utils import generate_gemini_img2img
+                image_path = generate_gemini_img2img(
+                    prompt=prompt,
+                    caption=f"portrait_{label}",
+                    reference_image_path=ref_path,
+                    # Bigger change than a normal turn: we're reframing the shot
+                    # onto a character, not nudging the scene forward.
+                    strength=0.6,
+                    world_prompt=world_prompt[:400] if world_prompt else None,
+                    time_of_day=tod,
+                    hd_mode=False,
+                    output_dir=Path(img_dir),
+                    portrait_mode=True,
+                )
+            else:
+                from gemini_image_utils import generate_with_gemini
+                image_path = generate_with_gemini(
+                    prompt=prompt,
+                    caption=f"portrait_{label}",
+                    world_prompt=world_prompt[:400] if world_prompt else None,
+                    aspect_ratio="16:9",
+                    time_of_day=tod,
+                    hd_mode=False,
+                    output_dir=Path(img_dir),
+                    portrait_mode=True,
+                )
         except Exception as gen_err:
             log_error(f"[TALK PORTRAIT] generate failed: {gen_err}")
             try:
@@ -7139,13 +7217,24 @@ def api_talk_portrait():
                 pass
             return jsonify({"image_url": None, "reason": "generate_failed",
                             "subject": context["subject"]})
+        finally:
+            # The reference frame is a throwaway — clean it up so it can't leak
+            # into the tape/feed or pile up on the session disk.
+            if ref_path:
+                try:
+                    Path(ref_path).unlink(missing_ok=True)
+                    _small = Path(ref_path).with_name(Path(ref_path).name.replace(".png", "_small.png"))
+                    if _small.exists():
+                        _small.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
-        web = _to_web_image_url(image_path)
+        web = _to_web_image_url(image_path, session_id)
         latency_ms = int((time.time() - t0) * 1000)
         try:
             cost_tracker.record_usage(
                 session_id, "image", "gemini", "talk_portrait",
-                operation="talk_portrait", output_units=1.0 if web else 0,
+                operation=f"talk_portrait_{gen_mode}", output_units=1.0 if web else 0,
                 unit_type="images", latency_ms=latency_ms, success=bool(web),
                 error_message=None if web else "no_image_returned",
             )
@@ -7163,6 +7252,7 @@ def api_talk_portrait():
         return jsonify({
             "image_url": web,
             "cached": False,
+            "mode": gen_mode,
             "prompt": prompt[:400],
             "subject": context["subject"],
         })
