@@ -4678,7 +4678,12 @@
     // line NOW so a voice lands over the pause, and schedule a fade-to-black a
     // beat later so the departure reads as deliberate. The fresh scene's own
     // re-anchor path lifts the fade once the new frame is on screen.
-    if (actionSource === "scan_move" || isTalkExit) beginMoveTransition(moveTarget);
+    // MOVE TO holds the world a beat before fading; leaving a conversation cuts
+    // straight to black (immediate) and lets narration cover it while the new
+    // deeper scene generates.
+    if (actionSource === "scan_move" || isTalkExit) {
+      beginMoveTransition(moveTarget, { immediate: isTalkExit });
+    }
     el.choices.innerHTML = "";
     Ceremony.begin(); // light up the turn pipeline — starting with "action selected"
     state.awaitingResolution = true;
@@ -4809,7 +4814,12 @@
   //              the normal window when it arrives.
   const MOVE_TRANSITION_FADE_DELAY_MS = 900;
   const MOVE_TRANSITION_FADE_SAFETY_MS = 60000;
-  function beginMoveTransition(destinationLabel) {
+  // `opts.immediate` drops the fade to black NOW instead of after the departure
+  // beat — used when leaving a conversation, where the player has already been
+  // "away" from the world and we want to cut straight to black + narration
+  // while the new (deeper) scene generates.
+  function beginMoveTransition(destinationLabel, opts) {
+    const immediate = !!(opts && opts.immediate);
     // Fire the narrator BEFORE the fade so a voice lands as fast as possible
     // over the black. Silent when audio isn't unlocked (transition() no-ops).
     let narrated = false;
@@ -4856,7 +4866,7 @@
       } catch (err) {
         console.warn("[standalone] beginSceneFade failed", err);
       }
-    }, MOVE_TRANSITION_FADE_DELAY_MS);
+    }, immediate ? 0 : MOVE_TRANSITION_FADE_DELAY_MS);
   }
   function cancelMoveTransition() {
     if (state.moveFadeTimer) { clearTimeout(state.moveFadeTimer); state.moveFadeTimer = null; }
