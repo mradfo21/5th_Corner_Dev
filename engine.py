@@ -710,7 +710,7 @@ VEO_MODE_ENABLED    = False # DISABLED by default - use video generation instead
 # per-turn scene prompt. The server still builds the prompt + still either way;
 # defaulting to "image" keeps the classic experience fully intact.
 #   "image"   -> Gemini still per turn (classic behavior)
-#   "reactor" -> Reactor LingBot World 2 realtime video, steered by the scene prompt (default)
+#   "reactor" -> Reactor Happy Oyster realtime navigable world, steered by the scene prompt (default)
 #   "hybrid"  -> still generated AND used to seed the realtime video (future)
 # Defaults to "reactor" so the realtime world model is the out-of-the-box
 # experience; the web client still auto-falls back to stills if Reactor is
@@ -734,16 +734,22 @@ SCENE_RENDERER = os.getenv("SCENE_RENDERER", "reactor")
 # Each entry advertises the SDK model name the browser passes to `new Reactor(...)`
 # and enough metadata for the client to pick the right per-model driver:
 #   • requires_seed_image — must a guide image be present before `start`?
-#   • protocol — how a scene is realized on the model. Two families cover every
+#   • protocol — how a scene is realized on the model. Three families cover every
 #     Reactor model today, and a new model defaults to the flexible "blend"
 #     family so it works out of the box:
+#       - "happy_oyster": prompt-to-world navigable model (Reactor Happy Oyster).
+#         A world is BUILT once from a prompt (+ optional first-frame image),
+#         then TRAVELLED — the live stream is driven by held movement/look and
+#         interaction verbs, not by live prompt edits. A new scene = a new world
+#         (rebuild: create_world -> start_travel). This is the DEFAULT model.
 #       - "seed_locked": reference image is locked once a run starts, so a new
 #         guide image forces a fresh stage (reset + re-establish). (LingBot)
 #       - "blend": text/image-to-video; a new guide image blends in-stream with
 #         no reset, prompts re-steer live. (Helios, and the default for anything
 #         new.)
-REACTOR_WORLD_MODEL = os.getenv("REACTOR_WORLD_MODEL", "lingbot-world-2")
-_DEFAULT_LINGBOT_SDK = os.getenv("REACTOR_MODEL", "reactor/lingbot-world-2")
+REACTOR_WORLD_MODEL = os.getenv("REACTOR_WORLD_MODEL", "happy-oyster")
+_DEFAULT_HAPPY_OYSTER_SDK = os.getenv("REACTOR_MODEL", "reactor/happy-oyster")
+_DEFAULT_LINGBOT_SDK = os.getenv("REACTOR_LINGBOT_MODEL", "reactor/lingbot-world-2")
 
 
 def _default_sdk_name(model_id: str) -> str:
@@ -753,10 +759,21 @@ def _default_sdk_name(model_id: str) -> str:
     return "reactor/{}".format(model_id)
 
 
-# Every Reactor world model we currently know of. Ones beyond the base pair are
-# advertised so they're selectable immediately; their protocol defaults to
+# Every Reactor world model we currently know of. Happy Oyster is the default
+# (prompt-to-world, navigable in real time); the older models remain advertised
+# so they're selectable live. Ones beyond these default their protocol to
 # "blend" (the flexible, modern family) until proven otherwise.
 _BUILTIN_WORLD_MODELS = [
+    {
+        "id": "happy-oyster",
+        "label": "Happy Oyster",
+        "sdk_name": _DEFAULT_HAPPY_OYSTER_SDK,
+        # first_frame_image_url is OPTIONAL for Happy Oyster (the prompt alone
+        # builds a world), but we always anchor with our generated still, so the
+        # composition matches. Not "required" in the create_world sense.
+        "requires_seed_image": False,
+        "protocol": "happy_oyster",
+    },
     {
         "id": "lingbot-world-2",
         "label": "LingBot World 2",
@@ -3528,17 +3545,20 @@ def build_image_prompt(
 
     return prompt
 
-# Stable "scene bible" anchor for the realtime world model (Reactor/LingBot World 2).
-# Per LingBot's prompt guide, every prompt must carry a consistent subject/style
-# and an explicit camera framing. We keep this constant across turns so the live
-# video maintains one look while the scene text evolves. Style-only (NO location)
-# so location comes from the per-turn scene description.
+# Stable "scene bible" anchor for the realtime world model (Reactor Happy Oyster).
+# Happy Oyster turns a PARAGRAPH OF TEXT into a navigable place you then travel
+# through in first person, so every prompt describes a coherent WORLD (space,
+# lighting, mood) in a consistent style. We keep this constant across turns so
+# the built world maintains one look while the scene text evolves. Style-only
+# (NO location) so location comes from the per-turn scene description. Because
+# the player navigates with held movement/look (not per-frame prompts), the
+# anchor commits to a first-person, walk-through vantage.
 REALTIME_STYLE_ANCHOR = os.getenv(
     "REALTIME_STYLE_ANCHOR",
-    "First-person handheld camcorder POV, 1993 analog VHS home-video footage, "
-    "heavy film grain and chromatic aberration, slightly desaturated, low-light "
-    "dread and horror atmosphere. Medium-wide shot, the camera drifting slightly "
-    "as if held while walking",
+    "A navigable first-person world you can walk through, shot as 1993 analog VHS "
+    "home-video footage from a handheld camcorder, heavy film grain and chromatic "
+    "aberration, slightly desaturated, low-light dread and horror atmosphere. "
+    "Eye-level walking vantage with a medium-wide field of view",
 )
 
 
@@ -3577,10 +3597,11 @@ def build_realtime_prompt(visual_scene: str = "", narrative: str = "", choice: s
     with model-specific control text — spatial anchors, camera-distance math,
     anti-border/anti-person rules, img2img continuity clauses, world-state dumps).
     Feeding that to a video world model produces incoherent output. Instead we
-    follow LingBot's prompt guide: a consistent style/camera anchor + a physical
-    scene description (which already covers near/mid/far + lighting) + one action
-    beat. Everything is sanitized the same way as the image prompt so we don't
-    regress on content filtering.
+    follow Happy Oyster's prompt-to-world guidance: a consistent style/vantage
+    anchor + a physical description of the PLACE (which already covers
+    near/mid/far + lighting) + one action beat. Everything is sanitized the same
+    way as the image prompt so we don't regress on content filtering, and the
+    whole prompt stays well under Happy Oyster's 2000-character world-prompt cap.
     """
     base = build_realtime_base(visual_scene, narrative)
     beat = realtime_action_beat(choice)

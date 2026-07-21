@@ -642,10 +642,10 @@ def api_reactor_config():
     live, mid-game; `world_model` is the server default. `model_name` is kept
     for back-compat (the SDK name of the default model).
     """
-    default_id = getattr(engine, "REACTOR_WORLD_MODEL", "lingbot-world-2")
+    default_id = getattr(engine, "REACTOR_WORLD_MODEL", "happy-oyster")
     models = getattr(engine, "AVAILABLE_WORLD_MODELS", [])
     default_sdk = engine.world_model_sdk_name(default_id) if hasattr(engine, "world_model_sdk_name") \
-        else os.getenv("REACTOR_MODEL", "reactor/lingbot-world-2")
+        else os.getenv("REACTOR_MODEL", "reactor/happy-oyster")
     return jsonify({
         "enabled": bool(os.getenv("REACTOR_API_KEY")),
         "renderer": getattr(engine, "SCENE_RENDERER", "image"),
