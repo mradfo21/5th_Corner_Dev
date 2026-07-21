@@ -46,7 +46,9 @@
             min-height: 100vh;
         }
 
-        /* VHS SCANLINES - REQUIRED */
+        /* VHS SCANLINES — keeps the brand's texture without fighting
+           legibility. Dialed back from the original 0.15 alpha, which made
+           dense tables/small badge text noticeably harder to read. */
         body::before {
             content: '';
             position: fixed;
@@ -56,8 +58,8 @@
             height: 100%;
             background: repeating-linear-gradient(
                 0deg,
-                rgba(0, 0, 0, 0.15),
-                rgba(0, 0, 0, 0.15) 1px,
+                rgba(0, 0, 0, 0.06),
+                rgba(0, 0, 0, 0.06) 1px,
                 transparent 1px,
                 transparent 2px
             );
@@ -324,27 +326,36 @@
         }
 
         .model-badges { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-        .latency-badge {
+        .model-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
             font-family: var(--font-ocr);
-            font-size: 0.62rem;
-            letter-spacing: 0.08em;
-            padding: 3px 9px;
+            font-size: 0.66rem;
+            letter-spacing: 0.06em;
+            padding: 4px 10px;
             border: 1px solid var(--color-border-red);
-            color: var(--color-warning);
+            color: var(--color-text-dim);
             text-transform: uppercase;
+            white-space: nowrap;
         }
+        .model-badge .badge-icon { font-size: 0.85em; opacity: 0.85; }
+        .latency-badge { color: var(--color-warning); border-color: rgba(255, 152, 0, 0.4); }
+        .cost-badge { color: var(--color-off-white); }
+        .cost-badge.is-free { color: var(--color-success); border-color: rgba(76, 175, 80, 0.4); }
+        .cost-badge.is-unpriced { color: var(--color-text-ghost); font-style: italic; }
         .active-flag {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
             font-family: var(--font-ocr);
             font-size: 0.62rem;
             letter-spacing: 0.12em;
-            padding: 3px 9px;
+            padding: 4px 10px;
             background: var(--color-success);
             color: var(--color-near-black);
             text-transform: uppercase;
         }
-        .speed-meter { display: inline-flex; gap: 3px; align-items: center; margin-left: auto; }
-        .speed-pip { width: 7px; height: 12px; background: rgba(224,224,224,0.15); }
-        .speed-pip.on { background: var(--color-blood-red); }
 
         .model-switch-btn {
             display: block;
@@ -2440,12 +2451,30 @@
             }
         }
 
-        function speedMeterHtml(speed) {
-            let pips = '';
-            for (let i = 1; i <= 5; i++) {
-                pips += `<span class="speed-pip ${i <= (speed || 0) ? 'on' : ''}"></span>`;
+        // Plain-language speed label instead of an unlabeled pip bar — the
+        // number alone (or a row of dots) doesn't mean anything at a glance.
+        const SPEED_LABELS = { 5: 'Fastest', 4: 'Fast', 3: 'Medium', 2: 'Slow', 1: 'Slowest' };
+        function speedBadgeHtml(speed) {
+            const label = SPEED_LABELS[speed] || 'Unknown';
+            return `<span class="model-badge"><span class="badge-icon">⚡</span>${label}</span>`;
+        }
+
+        function fmtImageCost(cost) {
+            if (cost === null || cost === undefined) return null;
+            const v = Number(cost);
+            if (Number.isNaN(v)) return null;
+            if (v === 0) return 'Free';
+            if (v < 0.01) return `$${v.toFixed(4)}/img`;
+            return `$${v.toFixed(2)}/img`;
+        }
+
+        function costBadgeHtml(cost) {
+            const label = fmtImageCost(cost);
+            if (label === null) {
+                return `<span class="model-badge cost-badge is-unpriced"><span class="badge-icon">$</span>unpriced</span>`;
             }
-            return `<span class="speed-meter" title="Relative speed">${pips}</span>`;
+            const cls = label === 'Free' ? 'is-free' : '';
+            return `<span class="model-badge cost-badge ${cls}"><span class="badge-icon">$</span>${label}</span>`;
         }
 
         function renderAiModels() {
@@ -2458,8 +2487,9 @@
                     <div class="model-sub">${escapeHtml(active.image_provider)} / ${escapeHtml(active.image_model)}</div>
                     <div class="model-blurb">${escapeHtml(active.blurb || '')}</div>
                     <div class="model-badges" style="margin-top:12px;">
-                        ${active.latency ? `<span class="latency-badge">${escapeHtml(active.latency)}</span>` : ''}
-                        ${speedMeterHtml(active.speed)}
+                        ${active.latency ? `<span class="model-badge latency-badge"><span class="badge-icon">⏱</span>${escapeHtml(active.latency)}</span>` : ''}
+                        ${speedBadgeHtml(active.speed)}
+                        ${costBadgeHtml(active.cost_per_image)}
                     </div>`;
             } else {
                 const cur = aiPresets.length ? '' : '';
@@ -2483,9 +2513,10 @@
                     <div class="model-sub">${escapeHtml(p.image_provider)} / ${escapeHtml(p.image_model)}</div>
                     <div class="model-blurb">${escapeHtml(p.blurb || '')}</div>
                     <div class="model-badges">
-                        ${p.latency ? `<span class="latency-badge">${escapeHtml(p.latency)}</span>` : ''}
                         ${isActive ? '<span class="active-flag">● Active</span>' : ''}
-                        ${speedMeterHtml(p.speed)}
+                        ${p.latency ? `<span class="model-badge latency-badge"><span class="badge-icon">⏱</span>${escapeHtml(p.latency)}</span>` : ''}
+                        ${speedBadgeHtml(p.speed)}
+                        ${costBadgeHtml(p.cost_per_image)}
                     </div>
                     <button class="model-switch-btn" ${isActive ? 'disabled' : ''}
                             onclick="switchPreset('${escapeAttr(p.name)}')">
