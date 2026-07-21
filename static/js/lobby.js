@@ -285,7 +285,7 @@
     if (hint) {
       hint.textContent = count > 0
         ? (count === 1 ? "1 run waiting" : count + " runs waiting")
-        : "pick up where you left off";
+        : "open a saved run";
     }
   }
 
