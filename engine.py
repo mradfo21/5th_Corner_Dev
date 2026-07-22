@@ -1936,42 +1936,85 @@ def _ask_claude(prompt: str, model_name: str, temp: float, tokens: int, image_pa
         return "Signal interrupted..."
 
 # ───────── path resolution helper ───────────────────────────────────────────
-def _resolve_image_path(image_path: str) -> Path:
+def _resolve_image_path(image_path: str, session_id: str = None) -> Path:
     """
     Resolve image path to actual filesystem location.
-    Handles both absolute (session-specific) and relative (legacy) paths.
-    
+
+    Handles absolute (session-specific) and web (``/images/<name>``) paths, and
+    is SESSION-AWARE: web URLs carry a ``?session=<id>`` hint (stamped by
+    ``_to_web_image_url``) because each session writes into its OWN
+    ``sessions/<id>/images`` dir. Mirrors the ``/images/<filename>`` serve
+    route's resolution order (session dir -> default -> legacy root -> scan) so
+    a per-session image (e.g. a companion portrait) actually resolves instead of
+    falling back to the legacy root dir and reporting "missing".
+
     Args:
-        image_path: Path like "/opt/.../sessions/default/images/file.png" 
-                    or "/images/file.png"
-                    or "images/file.png"
-    
+        image_path: e.g. ``/images/file.png``, ``/images/file.png?session=abc``,
+                    ``images/file.png``, or an absolute path.
+        session_id: explicit session hint (wins over any ``?session=`` query).
+
     Returns:
-        Path object pointing to actual file location
+        A Path to the file (existing when found); on a miss returns the legacy
+        ``ROOT/images/<name>`` guess so callers' ``.exists()`` checks still work.
     """
     if not image_path:
         return None
-    
-    path = Path(image_path)
-    
-    # If already absolute and exists, use it
-    if path.is_absolute():
-        if path.exists():
-            return path
-        # Absolute but doesn't exist - maybe it's a different session
-        # Try to find it in images directory
-        return ROOT / "images" / path.name
-    
-    # Relative path handling
-    if image_path.startswith("/images/"):
-        # Legacy format: "/images/filename.png"
-        return ROOT / "images" / path.name
-    elif image_path.startswith("images/"):
-        # Another legacy format: "images/filename.png"
-        return ROOT / image_path
-    else:
-        # Just a filename
-        return ROOT / "images" / path.name
+
+    s = str(image_path)
+    hint = session_id
+    # Strip a ?session=<id> hint (part of the URL, not the filename).
+    if "?" in s:
+        base, _, query = s.partition("?")
+        if not hint:
+            try:
+                from urllib.parse import parse_qs
+                q = parse_qs(query)
+                hint = (q.get("session") or q.get("session_id") or [None])[0]
+            except Exception:
+                hint = None
+        s = base
+
+    path = Path(s)
+    # Absolute path that exists — use it directly.
+    if path.is_absolute() and path.exists():
+        return path
+
+    name = path.name
+    candidates = []
+    if hint and hint not in ('default', 'legacy'):
+        try:
+            candidates.append(Path(_get_image_dir(hint)) / name)
+        except Exception:
+            pass
+    # 'images/<name>' legacy relative form maps under ROOT as-is.
+    if s.startswith("images/"):
+        candidates.append(ROOT / s)
+    try:
+        candidates.append(Path(_get_image_dir('default')) / name)
+    except Exception:
+        pass
+    candidates.append(ROOT / "images" / name)
+    for c in candidates:
+        try:
+            if c.exists():
+                return c
+        except Exception:
+            pass
+
+    # Last resort: scan session image dirs for the basename (covers URLs that
+    # lost their session hint). Only reached when the file wasn't found above,
+    # so it never runs in the common path.
+    try:
+        sessions_root = ROOT / "sessions"
+        if sessions_root.exists():
+            for sess in sessions_root.iterdir():
+                cand = sess / "images" / name
+                if cand.exists():
+                    return cand
+    except Exception:
+        pass
+
+    return ROOT / "images" / name
 
 # ───────── vision description helper ────────────────────────────────────────
 def _downscale_for_vision(image_path: str, size=(640, 426)) -> io.BytesIO:
@@ -7593,7 +7636,7 @@ def api_companion_place():
         comp = companions.get(label.lower())
         if not isinstance(comp, dict) or not comp.get("portrait_url"):
             return jsonify({"image_url": None, "reason": "unknown_companion"})
-        portrait_path = _resolve_image_path(comp["portrait_url"])
+        portrait_path = _resolve_image_path(comp["portrait_url"], session_id)
         if not portrait_path or not portrait_path.exists():
             return jsonify({"image_url": None, "reason": "portrait_missing"})
 
@@ -7917,7 +7960,7 @@ def api_camp_enter():
         for key, c in companions.items():
             if not isinstance(c, dict) or not c.get("portrait_url"):
                 continue
-            path = _resolve_image_path(c["portrait_url"])
+            path = _resolve_image_path(c["portrait_url"], session_id)
             if not path or not path.exists():
                 continue
             roster.append({
@@ -7934,7 +7977,7 @@ def api_camp_enter():
         jeep_url = (jeep or {}).get("portrait_url") or ""
         jeep_path = None
         if jeep_url:
-            jp = _resolve_image_path(jeep_url)
+            jp = _resolve_image_path(jeep_url, session_id)
             if jp and jp.exists():
                 jeep_path = str(jp)
         jeep_included = bool(jeep_path)
@@ -7960,7 +8003,7 @@ def api_camp_enter():
             # Validate the cached plate still exists on disk — establishing
             # shots are ordinary session images and can be swept; never serve
             # a 404 URL into the Moment chrome.
-            cached_path = _resolve_image_path(cached)
+            cached_path = _resolve_image_path(cached, session_id)
             if cached_path and cached_path.exists():
                 _camp_append_feed(session_id, cached)
                 return jsonify({

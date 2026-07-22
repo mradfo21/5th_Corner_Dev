@@ -145,6 +145,36 @@ def test_companion_voice_stored_and_preserved():
     assert "gravelly" in v2.get("description", "")  # regen description retained
 
 
+def test_resolve_image_path_is_session_aware():
+    # Regression: companion/camp images live in sessions/<id>/images, and their
+    # web URLs carry a ?session=<id> hint. _resolve_image_path must find them
+    # there (not only the legacy root dir) or the camp roster comes up empty.
+    import os
+    from pathlib import Path
+    sid = "test_resolve_session"
+    img_dir = Path(engine._get_image_dir(sid))
+    fpath = img_dir / "companion_zzz.png"
+    fpath.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 600)
+    try:
+        url = engine._to_web_image_url("companion_zzz.png", sid)
+        assert "?session=" + sid in url
+        # Resolve via the URL's own ?session= hint (no explicit id).
+        p1 = engine._resolve_image_path(url)
+        assert p1 and p1.exists() and str(p1).endswith("companion_zzz.png")
+        # And via an explicit session_id.
+        p2 = engine._resolve_image_path(url, sid)
+        assert p2 and p2.exists()
+        # A default-session web URL still resolves (no query).
+        d_dir = Path(engine._get_image_dir("default"))
+        dfile = d_dir / "companion_def.png"
+        dfile.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 600)
+        pd = engine._resolve_image_path("/images/companion_def.png")
+        assert pd and pd.exists()
+        dfile.unlink(missing_ok=True)
+    finally:
+        fpath.unlink(missing_ok=True)
+
+
 def test_companions_endpoint_lists_roster():
     import api
     c = api.app.test_client()
@@ -175,5 +205,6 @@ if __name__ == "__main__":
     test_record_companion_stores_portrait()
     test_companion_slug_is_filesystem_safe()
     test_companion_voice_stored_and_preserved()
+    test_resolve_image_path_is_session_aware()
     test_companions_endpoint_lists_roster()
     print("ok")
