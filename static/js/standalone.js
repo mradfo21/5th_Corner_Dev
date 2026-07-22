@@ -7325,11 +7325,22 @@
     return { x: ox + nx * dw, y: oy + ny * dh };
   }
 
+  // A fingertip on a phone is a lot less precise than a mouse cursor, and the
+  // beacon dots on mobile sit collapsed into a narrower letterboxed band (see
+  // the mobile scan-tag CSS), so tap-targeting gets a bit more forgiveness
+  // than the desktop hover radius (SCAN_NEAR_RADIUS) it's otherwise based on.
+  function scanTapRadius() {
+    let mobile = false;
+    try { mobile = !!(window.__DEVICE__ && window.__DEVICE__.isMobile()); } catch (_) {}
+    return mobile ? SCAN_NEAR_RADIUS * 1.35 : SCAN_NEAR_RADIUS;
+  }
+
   // Which detection (if any) sits under a tap point — this is what turns SCAN
   // into a targeted "investigate this thing" action instead of a background
-  // lucky-dip over whatever the detector ranks biggest. Uses the same
-  // "near enough" radius as the hover highlight (SCAN_NEAR_RADIUS) so touch
-  // and mouse agree on what counts as "you pointed at that".
+  // lucky-dip over whatever the detector ranks biggest. Works identically for
+  // a mouse click or a touch tap — both land here as the same synthetic
+  // "click" (see onWorldTap) with real clientX/clientY — but touch gets the
+  // wider scanTapRadius() tolerance above.
   function nearestDetectionToPoint(objects, point) {
     if (!point || typeof point.x !== "number" || !Array.isArray(objects) || !objects.length) return null;
     let best = null, bestD = Infinity;
@@ -7339,7 +7350,8 @@
       const d = dx * dx + dy * dy;
       if (d < bestD) { bestD = d; best = o; }
     });
-    if (!best || bestD > SCAN_NEAR_RADIUS * SCAN_NEAR_RADIUS) return null;
+    const r = scanTapRadius();
+    if (!best || bestD > r * r) return null;
     return best;
   }
 
@@ -7395,20 +7407,27 @@
   // never-clearing clump. Keep only the few most CENTRAL subjects on mobile so
   // the field stays clean; desktop (roomy canvas, hover labels) shows them all.
   const MOBILE_SCAN_TAG_CAP = 6;
-  function capScanObjectsForDevice(objects) {
+  // keepLabel (optional): a label the device cap must never drop even if it
+  // isn't among the most-central subjects — used so the exact thing the
+  // player just tapped on always gets a visible tag, even near a screen edge.
+  function capScanObjectsForDevice(objects, keepLabel) {
     if (!Array.isArray(objects) || objects.length <= MOBILE_SCAN_TAG_CAP) return objects;
     let mobile = false;
     try { mobile = !!(window.__DEVICE__ && window.__DEVICE__.isMobile()); } catch (_) {}
     if (!mobile) return objects;
-    return objects
+    const ranked = objects
       .map((o) => {
         const cx = typeof o.cx === "number" ? o.cx : 0.5;
         const cy = typeof o.cy === "number" ? o.cy : 0.5;
         return { o, d: (cx - 0.5) * (cx - 0.5) + (cy - 0.5) * (cy - 0.5) };
       })
-      .sort((a, b) => a.d - b.d)
-      .slice(0, MOBILE_SCAN_TAG_CAP)
-      .map((x) => x.o);
+      .sort((a, b) => a.d - b.d);
+    const kept = ranked.slice(0, MOBILE_SCAN_TAG_CAP).map((x) => x.o);
+    if (keepLabel && !kept.some((o) => o.label === keepLabel)) {
+      const extra = ranked.find((x) => x.o.label === keepLabel);
+      if (extra) kept[kept.length - 1] = extra.o;
+    }
+    return kept;
   }
 
   // tapped (optional): the detection object (from nearestDetectionToPoint)
@@ -7417,7 +7436,7 @@
   // opts.target, independent of the ambient MAX_FIELD-capped sweep.
   function reconcileScanTags(objects, tapped) {
     if (!el.scanTags) return;
-    objects = capScanObjectsForDevice(objects);
+    objects = capScanObjectsForDevice(objects, tapped && tapped.label);
     const existing = new Map();
     Array.from(el.scanTags.children).forEach((t) => {
       if (t._label) existing.set(t._label, t);

@@ -288,6 +288,32 @@ class TestRealtimeRenderer(unittest.TestCase):
         )
         return page
 
+    def _new_realtime_mobile_page(self, device_name="iPhone 13"):
+        """Like _new_realtime_page, but in a phone-emulated context (real
+        touch + a phone UA + a portrait phone viewport) so the mobile
+        `html.is-mobile` device path — small letterboxed "contain" media fit,
+        collapsed beacon-dot scan tags — is actually exercised, not just the
+        desktop layout at a smaller window size. Caller must close the
+        returned page's context too (self._mobile_context)."""
+        device = self.playwright.devices[device_name]
+        context = self.browser.new_context(**device)
+        self._mobile_context = context
+        page = context.new_page()
+        self._logs = []
+        page.on("console", lambda m: self._logs.append(f"{m.type}: {m.text}"))
+        page.on("pageerror", lambda e: self._logs.append(f"PAGEERROR: {e}"))
+        page.add_init_script("window.__SCAN_TTL_MS__ = 60000;")
+        page.route(
+            "https://esm.sh/**",
+            lambda route: route.fulfill(status=200, content_type="application/javascript", body=MOCK_SDK_JS),
+        )
+        page.route(
+            "**/api/reactor/token",
+            lambda route: route.fulfill(status=200, content_type="application/json",
+                                         body='{"jwt": "mock.jwt.token", "expires_at": 9999999999}'),
+        )
+        return page
+
     def _dump_logs(self):
         return "\n".join(self._logs[-60:])
 
@@ -1134,6 +1160,81 @@ class TestRealtimeRenderer(unittest.TestCase):
             raise
         finally:
             page.close()
+
+    def test_tapping_a_subject_works_on_mobile(self):
+        """The tap-targeting path must work on an actual phone-emulated
+        context too — not just a small desktop window. On mobile the scan
+        tags collapse into small round "beacon" dots (see the mobile scan-tag
+        CSS) and the scene uses the letterboxed "contain" media fit, both of
+        which are higher-specificity CSS paths that could silently swallow
+        the desktop-tuned `.targeted` look; assert the computed style (not
+        just the class) actually renders the amber lock-on treatment, and
+        that the underlying objective still fires."""
+        page = self._new_realtime_mobile_page()
+        scene_items = [
+            {"id": 1, "type": "narrative", "content": "Intro."},
+            {"id": 2, "type": "scene_image", "content": "", "image_url": TINY_PNG_DATA_URL,
+             "metadata": {"prompt": "scene one", "base": "An oil platform.", "hard_transition": False}},
+            {"id": 3, "type": "player_choice_prompt", "content": "?", "choices": [{"text": "Go"}]},
+        ]
+        page.route("**/api/reset", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(scene_items)))
+        page.route("**/api/feed*", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
+        page.route("**/api/choose", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
+        page.route("**/api/detect", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps({
+            "objects": [
+                {"label": "oil rig", "cx": 0.62, "cy": 0.45, "w": 0.15, "h": 0.2},
+                {"label": "shipping container", "cx": 0.15, "cy": 0.75, "w": 0.15, "h": 0.15},
+            ]})))
+        try:
+            page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
+            page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
+            # Confirm the device layer actually resolved this as mobile (the
+            # phone-only CSS paths this test cares about only apply then).
+            self.assertTrue(page.evaluate("document.documentElement.classList.contains('is-mobile')"),
+                             f"phone emulation must resolve to is-mobile. logs:\n{self._dump_logs()}")
+            self._scan_now(page)
+            page.wait_for_function("document.querySelectorAll('#scan-tags .scan-tag').length >= 2", timeout=12000)
+            rig_pos = page.evaluate("""() => {
+                const tag = Array.from(document.querySelectorAll('.scan-tag'))
+                    .find(t => t.querySelector('.scan-tag-label').textContent === 'oil rig');
+                return { x: parseFloat(tag.dataset.sx), y: parseFloat(tag.dataset.sy) };
+            }""")
+            self.assertIsNotNone(rig_pos)
+            # Tap near (not exactly on) the beacon, same as the desktop test.
+            tap_x, tap_y = rig_pos["x"], max(60, rig_pos["y"] - 55)
+            page.mouse.click(tap_x, tap_y)
+            page.wait_for_selector(".world-tap-ripple", timeout=1500)
+            page.wait_for_function(
+                "Array.from(document.querySelectorAll('#obj-list .obj-item.kind-field .obj-title'))"
+                ".some(e => e.textContent.toLowerCase().includes('oil rig'))",
+                timeout=10000,
+            )
+            page.wait_for_function("""() => {
+                const tag = Array.from(document.querySelectorAll('.scan-tag'))
+                    .find(t => t.querySelector('.scan-tag-label').textContent === 'oil rig');
+                return !!tag && tag.classList.contains('targeted');
+            }""", timeout=5000)
+            # The mobile beacon CSS (higher-specificity, ID-scoped) must not
+            # silently swallow the lock-on look back to the default green —
+            # check the RENDERED border color, not just the class name. (Let
+            # the tag's own border-color transition settle first so this
+            # doesn't catch it mid-fade from the base beacon color.)
+            page.wait_for_timeout(300)
+            border_color = page.evaluate("""() => {
+                const tag = Array.from(document.querySelectorAll('.scan-tag'))
+                    .find(t => t.querySelector('.scan-tag-label').textContent === 'oil rig');
+                return getComputedStyle(tag).borderColor;
+            }""")
+            self.assertTrue(border_color.startswith("rgb(255"),
+                             f"targeted beacon must render amber, not the default green. got {border_color}. logs:\n{self._dump_logs()}")
+        except Exception:
+            print("\n=== REACTOR CONSOLE LOG (tap-targeted-mobile) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+            if getattr(self, "_mobile_context", None):
+                self._mobile_context.close()
+                self._mobile_context = None
 
     def test_tapping_empty_ground_gives_an_explicit_miss_hint(self):
         """Tapping a spot with nothing detected nearby must say so explicitly
