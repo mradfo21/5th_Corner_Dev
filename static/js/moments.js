@@ -16,6 +16,7 @@
        push(type, payload) / pop(result?)
        isActive() / current() / topType()
        setPortrait(url) / clearPortrait()
+       setScene(url) / clearScene()   // full-bleed establishing shot (camp)
        notify({ text, icon? })
        setChoices(items) / clearChoices()
    ============================================================ */
@@ -45,6 +46,9 @@
   function portraitEl() { return $("moment-portrait"); }
   function portraitImg() { return $("moment-portrait-img"); }
   function portraitVideo() { return $("moment-portrait-video"); }
+  function sceneEl() { return $("moment-scene"); }
+  function sceneImg() { return $("moment-scene-img"); }
+  function sceneHotspots() { return $("moment-scene-hotspots"); }
   function notifyTray() { return $("moment-notify"); }
   function choicesEl() { return $("moment-choices"); }
   function nameplate() { return $("moment-nameplate"); }
@@ -115,27 +119,53 @@
     void ov.offsetWidth;
     ov.classList.add("moment-in");
     const subj = (payload && payload.subject) || {};
-    if (nameplateName()) nameplateName().textContent = (subj.label || "—").toString();
-    if (nameplateSub()) nameplateSub().textContent = "establishing…";
+    const type = (payload && payload.type) || "";
+    // Camp uses a nameplate of "CAMP"; conversation uses the subject label.
+    if (nameplateName()) {
+      nameplateName().textContent = type === "camp"
+        ? "CAMP"
+        : (subj.label || "—").toString();
+    }
+    if (nameplateSub()) nameplateSub().textContent = type === "camp" ? "making camp…" : "establishing…";
     if (nameplate()) {
       nameplate().classList.remove("hidden");
       nameplate().classList.add("moment-nameplate-in");
     }
-    const p = portraitEl();
-    if (p) {
-      p.classList.remove("ready", "living", "animated");
-      p.classList.add("developing");
-    }
-    // NOTE: the image is opacity-driven (see CSS), not display-toggled, so the
-    // eventual reveal in setPortrait() can crossfade smoothly out of this
-    // "developing" shimmer instead of popping in on a hard display:none swap.
-    const img = portraitImg();
-    if (img) img.removeAttribute("src");
-    const vid = portraitVideo();
-    if (vid) {
-      try { vid.pause(); } catch (_) {}
-      vid.removeAttribute("src");
-      vid.classList.add("hidden");
+    // Conversation Moments use the portrait chrome; camp uses the full-bleed
+    // scene chrome. When nesting conversation ON TOP of camp, leave the scene
+    // in place underneath — the portrait covers it while Talk is open.
+    if (type === "camp") {
+      const sc = sceneEl();
+      if (sc) {
+        sc.classList.remove("hidden", "ready");
+        sc.classList.add("developing");
+        sc.setAttribute("aria-hidden", "false");
+      }
+      const simg = sceneImg();
+      if (simg) simg.removeAttribute("src");
+      // Hide idle portrait chrome so it doesn't cover the establishing shot.
+      const p = portraitEl();
+      if (p) {
+        p.classList.remove("ready", "living", "animated", "developing");
+        p.classList.add("hidden");
+      }
+    } else {
+      const p = portraitEl();
+      if (p) {
+        p.classList.remove("hidden", "ready", "living", "animated");
+        p.classList.add("developing");
+      }
+      // NOTE: the image is opacity-driven (see CSS), not display-toggled, so the
+      // eventual reveal in setPortrait() can crossfade smoothly out of this
+      // "developing" shimmer instead of popping in on a hard display:none swap.
+      const img = portraitImg();
+      if (img) img.removeAttribute("src");
+      const vid = portraitVideo();
+      if (vid) {
+        try { vid.pause(); } catch (_) {}
+        vid.removeAttribute("src");
+        vid.classList.add("hidden");
+      }
     }
     return true;
   }
@@ -154,6 +184,7 @@
       nameplate().classList.add("hidden");
     }
     clearPortrait();
+    clearScene();
     clearChoices();
     const tray = notifyTray();
     if (tray) tray.innerHTML = "";
@@ -226,15 +257,41 @@
         }
       }
       stack.pop();
-      hideOverlayChrome();
       if (!stack.length) {
+        // Fully leaving the Moments stack — tear down shared chrome + resume.
+        hideOverlayChrome();
         setHudHidden(false);
         resumeUnderlay();
       } else {
-        // A Moment remains underneath — keep HUD hidden / underlay paused.
+        // Nested pop (e.g. conversation on top of camp): clear only the top
+        // Moment's portrait/choices, keep letterbox + scene chrome for the
+        // Moment underneath, then let it re-assert its nameplate/choices.
+        clearPortrait();
+        clearChoices();
+        const p = portraitEl();
+        if (p) {
+          p.classList.remove("ready", "living", "animated", "developing");
+          p.classList.add("hidden");
+        }
+        Array.from(document.body.classList).forEach((c) => {
+          if (c.indexOf("moment-") === 0 && c !== "moment-active") {
+            document.body.classList.remove(c);
+          }
+        });
         const below = stack[stack.length - 1];
         document.body.classList.add("moment-active");
         document.body.classList.add("moment-" + below.type);
+        const ov = overlay();
+        if (ov) {
+          ov.classList.remove("hidden");
+          ov.classList.add("moment-in");
+          ov.setAttribute("aria-hidden", "false");
+        }
+        if (below.handlers && typeof below.handlers.resume === "function") {
+          try { await below.handlers.resume(below); } catch (e) {
+            console.warn("[moments] resume handler failed:", e);
+          }
+        }
       }
       return result;
     } finally {
@@ -283,6 +340,39 @@
       vid.classList.add("hidden");
     }
     if (p) p.classList.remove("ready", "living", "developing", "animated");
+  }
+
+  // Full-bleed establishing shot (camp). Mirrors setPortrait's crossfade, but
+  // fills the viewport instead of a framed close-up.
+  function setScene(url) {
+    const sc = sceneEl();
+    const img = sceneImg();
+    if (!sc || !img || !url) return;
+    sc.classList.remove("hidden");
+    sc.setAttribute("aria-hidden", "false");
+    img.onload = () => {
+      sc.classList.remove("developing");
+      sc.classList.add("ready");
+      playSound("portraitReveal");
+    };
+    img.onerror = () => {
+      sc.classList.remove("developing");
+      sc.classList.add("ready");
+    };
+    img.src = url;
+  }
+
+  function clearScene() {
+    const sc = sceneEl();
+    const img = sceneImg();
+    const hs = sceneHotspots();
+    if (img) img.removeAttribute("src");
+    if (hs) hs.innerHTML = "";
+    if (sc) {
+      sc.classList.remove("ready", "developing");
+      sc.classList.add("hidden");
+      sc.setAttribute("aria-hidden", "true");
+    }
   }
 
   // Phase-2 scaffold: attach a live world-model video element over the still
@@ -384,6 +474,8 @@
     setNameplate,
     setPortrait,
     clearPortrait,
+    setScene,
+    clearScene,
     setPortraitStream,
     notify,
     setChoices,

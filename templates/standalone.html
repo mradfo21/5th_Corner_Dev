@@ -357,6 +357,12 @@
     <button id="scan-btn" type="button" title="Scan — reveal what's interactable in the scene for a few seconds (S)">
       <span class="scan-btn-ico">✦</span><span class="scan-btn-lbl">SCAN</span>
     </button>
+    <!-- CAMP: pause the world and step into a night campsite Moment with every
+         companion you've met seated around the fire. Side pocket — leaving
+         resumes the exact scene you left, no turn cost. -->
+    <button id="camp-btn" type="button" title="Camp — gather by the fire with companions you've met">
+      <span class="camp-btn-ico">🔥</span><span class="camp-btn-lbl">CAMP</span>
+    </button>
   </div>
 
   <!-- Interaction hotspots: surfaced on demand by the SCAN button. A scan fires
@@ -381,13 +387,21 @@
   <div id="verb-bar" class="verb-bar hidden" aria-label="World interaction verbs"></div>
 
   <!-- MOMENT overlay: shared cinematic chrome for full-screen set-pieces
-       (conversation is the first type). Letterbox bars, character portrait,
-       nameplate, notification tray, and optional dialogue choices. The live
-       world underneath is paused (not destroyed) so ending a Moment restores
-       it instantly. Driven by static/js/moments.js. -->
+       (conversation, camp, …). Letterbox bars, character portrait OR full-bleed
+       establishing scene, nameplate, notification tray, and optional dialogue
+       choices. The live world underneath is paused (not destroyed) so ending a
+       Moment restores it instantly. Driven by static/js/moments.js. -->
   <div id="moment-overlay" class="hidden" aria-hidden="true">
     <div class="moment-letterbox moment-letterbox-top" aria-hidden="true"></div>
     <div class="moment-letterbox moment-letterbox-bottom" aria-hidden="true"></div>
+    <!-- Full-bleed establishing shot (camp). Sibling to #moment-portrait —
+         conversation keeps using the portrait; camp uses this scene layer. -->
+    <div id="moment-scene" class="hidden" aria-hidden="true">
+      <div id="moment-scene-shimmer" aria-hidden="true"></div>
+      <img id="moment-scene-img" alt="" />
+      <div id="moment-scene-grain" aria-hidden="true"></div>
+      <div id="moment-scene-hotspots" aria-hidden="true"></div>
+    </div>
     <div id="moment-portrait" class="developing" aria-hidden="true">
       <div id="moment-portrait-shimmer" aria-hidden="true"></div>
       <img id="moment-portrait-img" class="hidden" alt="" />

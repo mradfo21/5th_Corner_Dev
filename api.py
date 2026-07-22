@@ -386,6 +386,9 @@ app.add_url_rule('/api/talk/portrait', 'standalone_api_talk_portrait', engine.ap
 # be listed and placed back into later scenes for a continuing story.
 app.add_url_rule('/api/companions', 'standalone_api_companions', engine.api_companions, methods=['GET'])
 app.add_url_rule('/api/companions/place', 'standalone_api_companion_place', engine.api_companion_place, methods=['POST'])
+# CAMP Moment: night campsite establishing shot compositing the jeep prop +
+# up to 5 companion portraits. Side pocket — does not advance the turn loop.
+app.add_url_rule('/api/camp/enter', 'standalone_api_camp_enter', engine.api_camp_enter, methods=['POST'])
 # Refcount + status endpoints for the dynamic per-character voices designed
 # on the fly by voice_design.py. /talk/end lets the client drop the refcount
 # on the active voice when the TALK widget closes so session-cleanup can

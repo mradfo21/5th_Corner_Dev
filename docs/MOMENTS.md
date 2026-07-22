@@ -4,17 +4,17 @@ A **Moment** is a full-screen cinematic interaction layered on top of the live
 world. The underlay scene is **paused, not destroyed**, so exiting a Moment
 restores the exact place the player left — instantly.
 
-Conversation (TALK → cinematic dialogue) is the first Moment type. This doc
-describes how to register more.
+Conversation (TALK → cinematic dialogue) and Camp (CAMP → night campsite with
+companions) are the shipped Moment types. This doc describes how to register more.
 
 ## Architecture
 
 | Piece | Role |
 |-------|------|
-| [`static/js/moments.js`](../static/js/moments.js) | Stack controller: `register` / `push` / `pop`, shared letterbox/HUD/glitch choreography, portrait + notify + choices chrome |
-| [`#moment-overlay`](../templates/standalone.html) | Shared markup (letterbox, portrait, nameplate, notify tray, choices) |
+| [`static/js/moments.js`](../static/js/moments.js) | Stack controller: `register` / `push` / `pop`, shared letterbox/HUD/glitch choreography, portrait + scene + notify + choices chrome |
+| [`#moment-overlay`](../templates/standalone.html) | Shared markup (letterbox, portrait, **scene**, nameplate, notify tray, choices) |
 | `Renderer.pauseUnderlay()` / `resumeUnderlay()` | Freeze the image/Reactor underlay without tearing down the world-model session |
-| Type handlers | Per-Moment `enter` / `exit` / optional `onEsc` |
+| Type handlers | Per-Moment `enter` / `exit` / optional `resume` / `onEsc` |
 
 Conversation networking (ElevenLabs / `/api/talk/*`) stays inside the existing
 `Talk` module in `standalone.js`. Moments only own **presentation**.
@@ -32,6 +32,10 @@ window.Moments.register("interrogation", {
   async exit(result, entry) {
     // Tear down type-specific resources. Shared chrome is cleared by pop().
   },
+  async resume(entry) {
+    // Optional: called when a nested Moment above this one pops, so you can
+    // re-assert nameplate / choices / hotspots (camp uses this).
+  },
   onEsc(entry) {
     // Return true if you handled Esc. Default pops the Moment.
     window.Moments.pop({ aborted: true });
@@ -47,15 +51,37 @@ await window.Moments.push("interrogation", { subject, stakes: "…" });
 
 - `Moments.setPortrait(url)` — still image + CSS living-portrait animation
 - `Moments.setPortraitStream(mediaStream)` — Phase-2 world-model animated portrait
+- `Moments.setScene(url)` / `Moments.clearScene()` — **full-bleed establishing shot**
+  (camp). Sibling to the portrait chrome: conversation keeps using `setPortrait`,
+  camp uses `setScene`. Nesting conversation on top of camp leaves the scene
+  underneath; popping conversation restores the camp layer via `resume`.
 - `Moments.notify({ text, icon? })` — RPG-style toast along the letterbox
 - `Moments.setChoices(items, onPick)` / `clearChoices()` — dialogue options list
 - `Moments.setNameplate(name, sub)`
 
 ## Exit = instant resume
 
-Leaving a conversation resumes the paused world (see above) rather than
+Leaving a conversation (or camp) resumes the paused world (see above) rather than
 generating anything — the player lands back on the exact frame they left with
 the world moving again. This is the fast, seamless feel; no "load" on exit.
+
+## Camp Moment
+
+Press **CAMP** on the action wheel (`#camp-btn`) to push a `"camp"` Moment:
+
+1. `POST /api/camp/enter` builds (or reuses a cached) night campsite establishing
+   shot from the durable **jeep prop** + up to **5** companion portraits
+   (ranked by `last_seen_turn`), via `generate_gemini_img2img(..., ensemble_mode=True)`.
+2. The client reveals the shot with `Moments.setScene`, places tap-target hotspots
+   from the server's fixed seat layout, and offers **LEAVE CAMP**.
+3. Tapping a companion calls `Talk.start({label, kind, speaks:true, reference_image})`
+   so a conversation nests on the camp stack; the camp frame is passed as the
+   portrait reference so close-ups stay firelit.
+4. Leaving camp is plain `Moments.pop()` — no turn mutation, underlay resumes.
+
+Empty roster still works (quiet fire + jeep). Camp appends one additive
+`feed_log` item (`type: "camp"`) for Story Log flavor only — it does **not**
+touch `turn_count` / `history` / choice generation.
 
 ## Companions (persistent roster)
 
@@ -93,6 +119,19 @@ switches to a preset voice. Surfaced in `GET /api/companions`.
 
 The client shows a "{label} added to your companions" notification the first
 time each character is met.
+
+## Props (persistent objects)
+
+Same pattern as companions, for durable recognizable **objects** (vehicles,
+set pieces) that must look identical across visits:
+
+- `_persist_prop_image` → `prop_<slug>.png` (sweep-protected)
+- `state.props[slug]` → `{label, slug, portrait_url, prompt, first_seen_turn, updated_at}`
+
+The **jeep** (`state.props["jeep"]`, file `prop_jeep.png`) is generated once on
+first CAMP visit and reused forever as an img2img reference. Camp always
+includes it at the edge of the firelight. Future mission-transition beats can
+reuse the same prop without regenerating it.
 
 ## Character memory hook
 

@@ -60,6 +60,7 @@
     freeWillBtn: document.getElementById("free-will-btn"),
     realtimeBtn: document.getElementById("realtime-btn"),
     scanBtn: document.getElementById("scan-btn"),
+    campBtn: document.getElementById("camp-btn"),
     movePad: document.getElementById("move-pad"),
     moveNub: document.getElementById("move-nub"),
     verbBar: document.getElementById("verb-bar"),
@@ -4190,6 +4191,7 @@
     game_over: "game-over",
     objective_new: "objective-event objective-new",
     objective_done: "objective-event objective-done",
+    camp: "narrative-event",
   };
 
   function classForType(type) {
@@ -4217,6 +4219,7 @@
     game_over: "END",
     objective_new: "OBJECTIVE",
     objective_done: "COMPLETE",
+    camp: "CAMP",
   };
 
   function labelForType(type) {
@@ -7154,6 +7157,29 @@
     const ok = !state.gameOver && ambientContextAllowed() && !turnActive &&
       !state.processing && !state.awaitingResolution && scanAvailable();
     el.scanBtn.disabled = !ok;
+    try { updateCampButton(); } catch (_) {}
+  }
+
+  // CAMP mirrors SCAN's agency gate: reachable when the player can act, never
+  // mid-turn / mid-conversation / inside another Moment / game over.
+  function updateCampButton() {
+    if (!el.campBtn) return;
+    const turnActive = !!(el.actionWheel && el.actionWheel.classList.contains("turn-active"));
+    const talkOpen = !!(Talk && typeof Talk.isOpen === "function" && Talk.isOpen());
+    const momentActive = !!(window.Moments && typeof window.Moments.isActive === "function" &&
+      window.Moments.isActive());
+    const ok = !state.gameOver && !turnActive && !state.processing &&
+      !state.awaitingResolution && !talkOpen && !momentActive;
+    el.campBtn.disabled = !ok;
+  }
+
+  function openCamp() {
+    if (!el.campBtn || el.campBtn.disabled) return;
+    if (!window.Moments || typeof window.Moments.push !== "function") return;
+    if (window.Moments.isActive && window.Moments.isActive()) return;
+    try { closeScan(); } catch (_) {}
+    try { closeFreeWill(true); } catch (_) {}
+    window.Moments.push("camp", {});
   }
 
   // Tear the hotspot overlay down: hide it, drop its tags, and cancel any
@@ -8099,11 +8125,15 @@
       // character as the next shot in the same place). Captured from whichever
       // renderer is live; null in text-only mode (portrait falls back to
       // text2img). captureScanFrame() returns { frame, size }.
-      let referenceFrame = null;
-      try {
-        const cap = (typeof captureScanFrame === "function") ? captureScanFrame() : null;
-        referenceFrame = cap && cap.frame ? cap.frame : null;
-      } catch (_) { referenceFrame = null; }
+      // Camp hotspots may pass a pre-captured firelit frame via
+      // subject.reference_image so the close-up stays lit by the campfire.
+      let referenceFrame = (subj && subj.reference_image) || null;
+      if (!referenceFrame) {
+        try {
+          const cap = (typeof captureScanFrame === "function") ? captureScanFrame() : null;
+          referenceFrame = cap && cap.frame ? cap.frame : null;
+        } catch (_) { referenceFrame = null; }
+      }
 
       // Push the Conversation Moment chrome (letterbox + portrait frame + HUD
       // hide + underlay pause). Networking below is unchanged — Moments only
@@ -8510,6 +8540,7 @@
         // The conversation replaced the hotspot overlay — the SCAN button is
         // available again once it closes (mirrors camera/tape/free-will close).
         updateScanButton();
+        try { updateCampButton(); } catch (_) {}
       }, 260);
       subject = null;
       messages = [];
@@ -8559,6 +8590,169 @@
       onEsc() {
         // Defer to Talk's Escape handler so voice-menu collapse still works.
         try { if (Talk && Talk.onEscape) Talk.onEscape(); } catch (_) {}
+        return true;
+      },
+    });
+  })();
+
+  // ------------------------------------------------------------------
+  // CAMP Moment — night campsite establishing shot + companion hotspots.
+  // Side pocket: leaving resumes the paused underlay (no turn mutation).
+  // Talking to a companion nests a conversation Moment on top of camp.
+  // ------------------------------------------------------------------
+  (function registerCampMoment() {
+    if (!window.Moments || typeof window.Moments.register !== "function") return;
+
+    let campSceneUrl = null;
+    let campAttendees = [];
+
+    function clearHotspots() {
+      const hs = document.getElementById("moment-scene-hotspots");
+      if (hs) hs.innerHTML = "";
+    }
+
+    function campSceneAsDataUrl() {
+      const img = document.getElementById("moment-scene-img");
+      if (!img || !img.src || !img.naturalWidth) return null;
+      try {
+        const c = document.createElement("canvas");
+        // Cap size so the POST stays light; portrait img2img downsamples anyway.
+        const maxW = 960;
+        const scale = Math.min(1, maxW / img.naturalWidth);
+        c.width = Math.max(1, Math.round(img.naturalWidth * scale));
+        c.height = Math.max(1, Math.round(img.naturalHeight * scale));
+        c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+        return c.toDataURL("image/jpeg", 0.82);
+      } catch (_) {
+        return null;
+      }
+    }
+
+    function placeHotspots(attendees) {
+      clearHotspots();
+      const hs = document.getElementById("moment-scene-hotspots");
+      if (!hs || !Array.isArray(attendees)) return;
+      attendees.forEach((a) => {
+        if (!a || !a.label) return;
+        const seat = a.seat || {};
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "moment-scene-hotspot";
+        btn.style.left = (seat.x_pct != null ? seat.x_pct : 50) + "%";
+        btn.style.top = (seat.y_pct != null ? seat.y_pct : 60) + "%";
+        btn.title = "Talk to " + a.label;
+        btn.setAttribute("aria-label", "Talk to " + a.label);
+        const lbl = document.createElement("span");
+        lbl.className = "moment-scene-hotspot-label";
+        lbl.textContent = a.label;
+        btn.appendChild(lbl);
+        btn.addEventListener("click", (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          const ref = campSceneAsDataUrl();
+          try {
+            Talk.start({
+              label: a.label,
+              kind: a.kind || "companion",
+              speaks: true,
+              reference_image: ref || undefined,
+            });
+          } catch (err) {
+            console.warn("[camp] Talk.start failed:", err);
+          }
+        });
+        hs.appendChild(btn);
+      });
+    }
+
+    function showLeaveChoice() {
+      window.Moments.setChoices(
+        [{ label: "LEAVE CAMP", id: "leave" }],
+        () => { window.Moments.pop({ left: true }); }
+      );
+    }
+
+    function restoreCampChrome() {
+      try {
+        window.Moments.setNameplate("CAMP", "around the fire");
+      } catch (_) {}
+      // Ensure scene chrome is visible again after a nested conversation.
+      const sc = document.getElementById("moment-scene");
+      if (sc && campSceneUrl) {
+        sc.classList.remove("hidden", "developing");
+        sc.classList.add("ready");
+        sc.setAttribute("aria-hidden", "false");
+      }
+      placeHotspots(campAttendees);
+      showLeaveChoice();
+      try { updateCampButton(); } catch (_) {}
+    }
+
+    window.Moments.register("camp", {
+      async enter(/* payload, entry */) {
+        campSceneUrl = null;
+        campAttendees = [];
+        clearHotspots();
+        try {
+          window.Moments.setNameplate("CAMP", "making camp…");
+        } catch (_) {}
+
+        let res = null;
+        try {
+          res = await postJSON("/api/camp/enter", {});
+        } catch (err) {
+          console.warn("[camp] enter failed:", err);
+          res = null;
+        }
+
+        if (!res || !res.image_url) {
+          try {
+            window.Moments.setNameplate("CAMP", "the fire won't catch");
+            window.Moments.notify({
+              icon: "🔥",
+              text: (res && res.reason === "slow_down")
+                ? "Give it a moment — camp is still settling"
+                : "Couldn't make camp right now",
+            });
+          } catch (_) {}
+          showLeaveChoice();
+          return false;
+        }
+
+        campSceneUrl = res.image_url;
+        campAttendees = Array.isArray(res.attendees) ? res.attendees : [];
+        window.Moments.setScene(campSceneUrl);
+        placeHotspots(campAttendees);
+
+        const n = campAttendees.length;
+        try {
+          window.Moments.setNameplate("CAMP", n
+            ? (n === 1 ? "one companion by the fire" : n + " companions by the fire")
+            : "quiet night — no one's here yet");
+          window.Moments.notify({
+            icon: "🔥",
+            text: n
+              ? ("Camp set. " + n + " companion" + (n === 1 ? "" : "s") + " around the fire.")
+              : "Camp set. You're alone by the fire for now.",
+          });
+        } catch (_) {}
+        showLeaveChoice();
+        return true;
+      },
+      async exit(/* result */) {
+        clearHotspots();
+        campSceneUrl = null;
+        campAttendees = [];
+        try { updateCampButton(); } catch (_) {}
+        return true;
+      },
+      async resume(/* entry */) {
+        // Returning from a nested conversation — re-show camp chrome.
+        restoreCampChrome();
+        return true;
+      },
+      onEsc() {
+        window.Moments.pop({ aborted: true });
         return true;
       },
     });
@@ -10411,6 +10605,7 @@
     el.freeWillBtn.addEventListener("click", openFreeWill);
     if (el.realtimeBtn) el.realtimeBtn.addEventListener("click", openTouch);
     if (el.scanBtn) el.scanBtn.addEventListener("click", () => triggerScan());
+    if (el.campBtn) el.campBtn.addEventListener("click", () => openCamp());
     if (el.touchLayer) {
       // Pointer events cover mouse (hover to aim) AND touch (drag to aim, tap to
       // shoot) — so the camera works on iOS where mousemove never fires.

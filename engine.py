@@ -3598,6 +3598,34 @@ _PORTRAIT_CACHE: dict = {}
 _PORTRAIT_CACHE_LOCK = threading.Lock()
 _PORTRAIT_SPEND: dict = {}  # session_id -> count of generations this session
 
+# Camp establishing-shot cache: (session_id, sorted_labels, jeep_hash) -> web url.
+# Revisiting camp with the same roster reuses the shot (no re-generation).
+_CAMP_CACHE: dict = {}
+_CAMP_CACHE_LOCK = threading.Lock()
+
+# Fixed seat slots around the fire, keyed by attendee count. Approximate
+# tap-target positions (x_pct / y_pct of the establishing shot) — no vision.
+_CAMP_SEATS = {
+    1: [{"x_pct": 50, "y_pct": 62}],
+    2: [{"x_pct": 32, "y_pct": 60}, {"x_pct": 68, "y_pct": 60}],
+    3: [{"x_pct": 28, "y_pct": 62}, {"x_pct": 50, "y_pct": 58}, {"x_pct": 72, "y_pct": 62}],
+    4: [
+        {"x_pct": 22, "y_pct": 64}, {"x_pct": 40, "y_pct": 58},
+        {"x_pct": 60, "y_pct": 58}, {"x_pct": 78, "y_pct": 64},
+    ],
+    5: [
+        {"x_pct": 18, "y_pct": 66}, {"x_pct": 34, "y_pct": 58},
+        {"x_pct": 50, "y_pct": 55}, {"x_pct": 66, "y_pct": 58},
+        {"x_pct": 82, "y_pct": 66},
+    ],
+}
+
+_JEEP_PROP_PROMPT = (
+    "A dusty red 1990s Jeep Cherokee parked alone in empty desert scrub at dusk, "
+    "three-quarter view from the front-left, weathered paint, mud-caked tires, "
+    "no people, no text, photoreal cinematic still, VHS analog grain, muted palette."
+)
+
 
 def realtime_action_beat(choice: str = "") -> str:
     """The single 'one new element per prompt' motion clause for an action.
@@ -6300,8 +6328,9 @@ def _ensure_disk_headroom(force: bool = False):
                 return True
             # Companion portraits are a persistent roster (see _record_companion)
             # meant to be reused across scenes for a continuing story — never
-            # sweep them.
-            if p.name.startswith("companion_"):
+            # sweep them. Prop images (e.g. prop_jeep.png) are the same idea
+            # for durable objects (see _record_prop).
+            if p.name.startswith("companion_") or p.name.startswith("prop_"):
                 return True
             return False
 
@@ -7630,6 +7659,399 @@ def api_companion_place():
     except Exception as e:
         log_error(f"[COMPANION] place failed: {e}")
         return jsonify({"image_url": None, "reason": "error", "error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Persistent props (jeep, etc.) — companion-shaped durable references
+# ---------------------------------------------------------------------------
+
+def _persist_prop_image(image_path: str, session_id: str, slug: str) -> Optional[str]:
+    """Copy a freshly-generated prop image to a STABLE, sweep-protected file
+    (``prop_<slug>.png``) so it survives and can be re-referenced forever.
+
+    Mirrors ``_persist_companion_image``. Returns the web URL of the durable
+    copy, or None on failure.
+    """
+    try:
+        src = _resolve_image_path(image_path)
+        if not src or not src.exists():
+            return None
+        img_dir = Path(_get_image_dir(session_id))
+        img_dir.mkdir(parents=True, exist_ok=True)
+        safe = re.sub(r"[^a-z0-9]+", "_", (slug or "").strip().lower()).strip("_") or "prop"
+        safe = safe[:40]
+        dst = img_dir / f"prop_{safe}.png"
+        import shutil as _shutil
+        _shutil.copyfile(str(src), str(dst))
+        try:
+            small_src = src.with_name(src.name.replace(".png", "_small.png"))
+            if small_src.exists():
+                _shutil.copyfile(str(small_src), str(img_dir / f"prop_{safe}_small.png"))
+        except Exception:
+            pass
+        return _to_web_image_url(f"prop_{safe}.png", session_id)
+    except Exception as e:
+        log_error(f"[PROP] persist image failed: {e}")
+        return None
+
+
+def _record_prop(session_id: str, slug: str, portrait_url: str,
+                 label: str = "", prompt: str = "") -> dict:
+    """Upsert a PROP into ``state.props`` — a companion-shaped sibling dict for
+    durable recognizable objects (the red jeep, etc.). Additive metadata; does
+    not touch turn_count/history. Returns the prop record (JSON-safe).
+    """
+    safe = re.sub(r"[^a-z0-9]+", "_", (slug or "").strip().lower()).strip("_")
+    if not safe or not portrait_url:
+        return {}
+    try:
+        st = _load_state(session_id) or {}
+    except Exception:
+        return {}
+    props = st.get("props")
+    if not isinstance(props, dict):
+        props = {}
+    prev = props.get(safe) if isinstance(props.get(safe), dict) else {}
+    turn = st.get("turn_count", 0)
+    entry = {
+        "label": (label or prev.get("label") or safe).strip()[:60],
+        "slug": safe,
+        "portrait_url": portrait_url,
+        "prompt": (prompt or prev.get("prompt") or "")[:400],
+        "first_seen_turn": prev.get("first_seen_turn", turn),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    props[safe] = entry
+    st["props"] = props
+    try:
+        _save_state(st, session_id)
+    except Exception as e:
+        log_error(f"[PROP] save failed: {e}")
+    return entry
+
+
+def _ensure_jeep_prop(session_id: str) -> dict:
+    """Return the durable jeep prop record, generating it once if missing.
+
+    Always prefers the persisted ``prop_jeep.png`` on disk so the vehicle stays
+    visually identical across every CAMP (and future mission-transition) visit.
+    """
+    try:
+        st = _load_state(session_id) or {}
+    except Exception:
+        st = {}
+    props = st.get("props") if isinstance(st.get("props"), dict) else {}
+    jeep = props.get("jeep") if isinstance(props.get("jeep"), dict) else {}
+    url = jeep.get("portrait_url") or ""
+    if url:
+        path = _resolve_image_path(url)
+        if path and path.exists():
+            return jeep
+
+    # Also accept a leftover durable file from a prior run whose state lost the
+    # props block (e.g. state reset but images kept).
+    durable = Path(_get_image_dir(session_id)) / "prop_jeep.png"
+    if durable.exists():
+        web = _to_web_image_url("prop_jeep.png", session_id)
+        return _record_prop(session_id, "jeep", web,
+                            label="your red jeep", prompt=_JEEP_PROP_PROMPT)
+
+    if not IMAGE_ENABLED:
+        return {}
+
+    t0 = time.time()
+    image_path = None
+    try:
+        from gemini_image_utils import generate_with_gemini
+        image_path = generate_with_gemini(
+            prompt=_sanitize_for_image_generation(_JEEP_PROP_PROMPT),
+            caption="prop_jeep",
+            world_prompt=None,
+            aspect_ratio="16:9",
+            time_of_day="dusk, desert evening light",
+            hd_mode=False,
+            output_dir=Path(_get_image_dir(session_id)),
+            portrait_mode=False,  # vehicle plate — anti-person is correct
+        )
+    except Exception as gen_err:
+        log_error(f"[PROP] jeep generate failed: {gen_err}")
+        try:
+            cost_tracker.record_usage(
+                session_id, "image", "gemini", "prop_jeep",
+                operation="prop_jeep", output_units=0, unit_type="images",
+                latency_ms=int((time.time() - t0) * 1000), success=False,
+                error_message=str(gen_err)[:200],
+            )
+        except Exception:
+            pass
+        return {}
+
+    web = _to_web_image_url(image_path, session_id) if image_path else None
+    try:
+        cost_tracker.record_usage(
+            session_id, "image", "gemini", "prop_jeep",
+            operation="prop_jeep", output_units=1.0 if web else 0,
+            unit_type="images", latency_ms=int((time.time() - t0) * 1000),
+            success=bool(web), error_message=None if web else "no_image_returned",
+        )
+    except Exception:
+        pass
+    if not web:
+        return {}
+    durable_url = _persist_prop_image(image_path, session_id, "jeep") or web
+    return _record_prop(session_id, "jeep", durable_url,
+                        label="your red jeep", prompt=_JEEP_PROP_PROMPT)
+
+
+def _camp_cache_key(session_id: str, labels: list, jeep_url: str) -> tuple:
+    labels_sig = ",".join(sorted((l or "").strip().lower() for l in labels))
+    jeep_hash = hashlib.sha1((jeep_url or "").encode("utf-8")).hexdigest()[:12]
+    return (session_id or "default", labels_sig, jeep_hash)
+
+
+def _camp_seat_layout(count: int) -> list:
+    n = max(0, min(int(count or 0), 5))
+    if n <= 0:
+        return []
+    return list(_CAMP_SEATS.get(n) or _CAMP_SEATS[5][:n])
+
+
+def _build_camp_prompt(attendee_labels: list, jeep_included: bool) -> str:
+    """Prompt for the camp establishing shot — night fire + optional cast + jeep."""
+    bits = [
+        "Wide establishing shot of a night campsite in remote desert scrub.",
+        "A small campfire burns at the center, warm orange firelight pooling on the ground,",
+        "embers drifting, deep blue-black night sky, VHS analog grain, 1990s found-footage mood.",
+        "Handheld documentary framing, not a security camera, not a collage.",
+    ]
+    if jeep_included:
+        bits.append(
+            "The red 1990s jeep from the reference is parked at the edge of the firelight, "
+            "clearly recognizable (same color, silhouette, dust and wear)."
+        )
+    if attendee_labels:
+        names = ", ".join(attendee_labels)
+        bits.append(
+            f"Seated around the flames are these companions, each matching their reference "
+            f"portrait face and clothing: {names}. Arrange them in a natural arc around the fire."
+        )
+    else:
+        bits.append(
+            "No people — a quiet empty camp. Only the fire"
+            + (" and the jeep" if jeep_included else "")
+            + "."
+        )
+    bits.append("No text, no UI, no letterbox bars inside the image. Photoreal cinematic still.")
+    return _sanitize_for_image_generation(" ".join(bits))
+
+
+def api_camp_enter():
+    """Build (or reuse) the CAMP Moment establishing shot.
+
+    Request JSON: ``{"session_id"?: str}``
+    Response JSON::
+
+        {
+          "image_url": "/images/...",
+          "attendees": [
+            {"label", "kind", "portrait_url", "seat": {"x_pct", "y_pct"}},
+            ...
+          ],
+          "jeep_included": true,
+          "cached": bool
+        }
+
+    Side pocket: does NOT mutate turn_count/history. Appends one additive
+    display-only ``feed_log`` camp item per visit (flavor for the Story Log).
+    """
+    try:
+        if _rate_limited("camp_enter", 1.2):
+            return jsonify({"error": "slow_down", "image_url": None}), 429
+        data = request.get_json(silent=True) or {}
+        session_id = data.get("session_id", "default")
+
+        try:
+            st = _load_state(session_id) or {}
+        except Exception:
+            st = {}
+
+        # Top 5 companions by last_seen_turn (most recent relationships first).
+        companions = st.get("companions") if isinstance(st.get("companions"), dict) else {}
+        roster = []
+        for key, c in companions.items():
+            if not isinstance(c, dict) or not c.get("portrait_url"):
+                continue
+            path = _resolve_image_path(c["portrait_url"])
+            if not path or not path.exists():
+                continue
+            roster.append({
+                "label": c.get("label") or key,
+                "kind": c.get("kind") or "person",
+                "portrait_url": c["portrait_url"],
+                "portrait_path": str(path),
+                "last_seen_turn": c.get("last_seen_turn") or 0,
+            })
+        roster.sort(key=lambda r: (r.get("last_seen_turn") or 0), reverse=True)
+        attendees_src = roster[:5]
+
+        jeep = _ensure_jeep_prop(session_id)
+        jeep_url = (jeep or {}).get("portrait_url") or ""
+        jeep_path = None
+        if jeep_url:
+            jp = _resolve_image_path(jeep_url)
+            if jp and jp.exists():
+                jeep_path = str(jp)
+        jeep_included = bool(jeep_path)
+
+        labels = [a["label"] for a in attendees_src]
+        cache_key = _camp_cache_key(session_id, labels, jeep_url)
+        with _CAMP_CACHE_LOCK:
+            cached = _CAMP_CACHE.get(cache_key)
+        seats = _camp_seat_layout(len(attendees_src))
+        attendees_out = []
+        for i, a in enumerate(attendees_src):
+            seat = seats[i] if i < len(seats) else {"x_pct": 50, "y_pct": 60}
+            attendees_out.append({
+                "label": a["label"],
+                "kind": a["kind"],
+                "portrait_url": a["portrait_url"],
+                "seat": seat,
+            })
+
+        if cached:
+            _camp_append_feed(session_id, cached)
+            return jsonify({
+                "image_url": cached,
+                "attendees": attendees_out,
+                "jeep_included": jeep_included,
+                "cached": True,
+            })
+
+        if not IMAGE_ENABLED:
+            return jsonify({
+                "image_url": None,
+                "attendees": attendees_out,
+                "jeep_included": jeep_included,
+                "reason": "image_disabled",
+            })
+
+        # Refs: jeep first (visual anchor), then up to 5 companion portraits.
+        refs = []
+        if jeep_path:
+            refs.append(jeep_path)
+        for a in attendees_src:
+            refs.append(a["portrait_path"])
+
+        prompt = _build_camp_prompt(labels, jeep_included)
+        world_prompt = str(st.get("world_prompt") or "")[:400] or None
+        img_dir = Path(_get_image_dir(session_id))
+        t0 = time.time()
+        image_path = None
+        gen_mode = "ensemble" if refs else "text2img"
+        try:
+            if refs:
+                from gemini_image_utils import generate_gemini_img2img
+                image_path = generate_gemini_img2img(
+                    prompt=prompt,
+                    caption="camp_establish",
+                    reference_image_path=refs,
+                    # Higher than companion_place (0.5): this is a brand-new
+                    # location anchored by people/prop likeness, not the live scene.
+                    strength=0.75,
+                    world_prompt=world_prompt,
+                    time_of_day="night, campfire glow, deep desert dark",
+                    hd_mode=False,
+                    output_dir=img_dir,
+                    ensemble_mode=True,
+                    portrait_mode=True,  # allow people (skip anti-person)
+                )
+            else:
+                # No jeep file and no companions — quiet fire via text2img.
+                from gemini_image_utils import generate_with_gemini
+                image_path = generate_with_gemini(
+                    prompt=prompt,
+                    caption="camp_establish",
+                    world_prompt=world_prompt,
+                    aspect_ratio="16:9",
+                    time_of_day="night, campfire glow, deep desert dark",
+                    hd_mode=False,
+                    output_dir=img_dir,
+                    portrait_mode=False,
+                )
+        except Exception as gen_err:
+            log_error(f"[CAMP] generate failed: {gen_err}")
+            try:
+                cost_tracker.record_usage(
+                    session_id, "image", "gemini", "camp_enter",
+                    operation="camp_enter", output_units=0, unit_type="images",
+                    latency_ms=int((time.time() - t0) * 1000), success=False,
+                    error_message=str(gen_err)[:200],
+                )
+            except Exception:
+                pass
+            return jsonify({
+                "image_url": None,
+                "attendees": attendees_out,
+                "jeep_included": jeep_included,
+                "reason": "generate_failed",
+            })
+
+        web = _to_web_image_url(image_path, session_id) if image_path else None
+        try:
+            cost_tracker.record_usage(
+                session_id, "image", "gemini", "camp_enter",
+                operation=f"camp_enter_{gen_mode}",
+                output_units=1.0 if web else 0, unit_type="images",
+                latency_ms=int((time.time() - t0) * 1000),
+                success=bool(web),
+                error_message=None if web else "no_image_returned",
+            )
+        except Exception:
+            pass
+        if not web:
+            return jsonify({
+                "image_url": None,
+                "attendees": attendees_out,
+                "jeep_included": jeep_included,
+                "reason": "no_image",
+            })
+
+        with _CAMP_CACHE_LOCK:
+            _CAMP_CACHE[cache_key] = web
+        print(f"[CAMP] establishing shot ready ({gen_mode}, "
+              f"{len(attendees_out)} attendees, jeep={jeep_included})", flush=True)
+
+        _camp_append_feed(session_id, web)
+        return jsonify({
+            "image_url": web,
+            "attendees": attendees_out,
+            "jeep_included": jeep_included,
+            "cached": False,
+        })
+    except Exception as e:
+        log_error(f"[CAMP] enter failed: {e}")
+        return jsonify({"image_url": None, "attendees": [], "error": str(e)}), 500
+
+
+def _camp_append_feed(session_id: str, image_url: str) -> None:
+    """One additive, display-only Story Log beat per camp visit.
+
+    Does not touch turn_count / history / choice generation — camp is a side
+    pocket, same as conversation.
+    """
+    try:
+        item = create_feed_item(
+            type="camp",
+            content="You made camp for the night.",
+            image_url=image_url,
+            metadata={"source": "camp"},
+        )
+        with WORLD_STATE_LOCK:
+            st = _load_state(session_id) or {}
+            _feed_append(st, item)
+            _save_state(st, session_id)
+    except Exception as e:
+        log_error(f"[CAMP] feed append failed: {e}")
 
 
 def api_talk_session():

@@ -1999,6 +1999,44 @@ body.awaiting-first-scene #scan-btn {
   50%      { transform: scale(1.25); opacity: 1; }
 }
 
+/* CAMP tool — deliberate full-stop above the wheel cluster (upper-right of the
+   ACT/PHOTO/SCAN family). Warm ember accent so it reads as a rest beat, not a
+   per-turn instrument. Same circular icon+label language as SCAN. */
+#camp-btn {
+  position: absolute;
+  left: 50%;
+  bottom: 68px;
+  transform: translateX(34px);
+  width: 51px;
+  height: 51px;
+  border-radius: 50%;
+  background: none;
+  border: 1px solid rgba(255, 170, 90, 0.6);
+  color: #ffcf94;
+  font-family: inherit;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-shadow: 0 1px 4px rgba(0,0,0,0.9);
+  box-shadow: inset 0 0 12px rgba(0,0,0,0.5);
+  transition: border-color 0.16s, box-shadow 0.16s, transform 0.1s, opacity 0.22s;
+}
+body.awaiting-first-scene #camp-btn {
+  opacity: 0;
+  pointer-events: none;
+}
+#camp-btn:hover {
+  border-color: rgba(255, 170, 90, 1);
+  box-shadow: inset 0 0 12px rgba(0,0,0,0.5), 0 0 22px rgba(255, 170, 90, 0.45);
+  transform: translateX(34px) scale(1.08);
+}
+#camp-btn:active { transform: translateX(34px) scale(0.94); }
+#camp-btn:disabled { opacity: 0.3; pointer-events: none; }
+.camp-btn-ico { font-size: 14px; line-height: 1; opacity: 0.98; transition: opacity 0.22s; }
+.camp-btn-lbl { font-size: 7px; letter-spacing: 0.12em; opacity: 0.85; transition: opacity 0.22s; }
+
 @keyframes fw-idle-glow {
   0%, 100% { box-shadow: inset 0 0 12px rgba(0,0,0,0.5), 0 0 0 rgba(142,255,193,0); }
   50%      { box-shadow: inset 0 0 12px rgba(0,0,0,0.5), 0 0 16px rgba(142,255,193,0.34); }
@@ -2022,6 +2060,7 @@ body.awaiting-first-scene #scan-btn {
    fade the play + ACT hubs (and choices) out — less UI, one thing at a time. */
 #action-wheel.turn-active #forward-btn,
 #action-wheel.turn-active #scan-btn,
+#action-wheel.turn-active #camp-btn,
 #action-wheel.turn-active #free-will-btn {
   opacity: 0;
   pointer-events: none;
@@ -2047,6 +2086,7 @@ body.awaiting-first-scene #scan-btn {
 #action-wheel.fw-open #free-will-btn,
 #action-wheel.fw-open #realtime-btn,
 #action-wheel.fw-open #scan-btn,
+#action-wheel.fw-open #camp-btn,
 #action-wheel.fw-open #forward-btn { opacity: 0; pointer-events: none; animation: none; }
 
 /* Steer (realtime SHAPE) input mode: amber tint so it's obvious you're nudging
@@ -2344,6 +2384,14 @@ body.realtime-on #scan-btn {
 body.realtime-on #scan-btn:hover { transform: translateX(calc(-50% - 100px)) scale(1.08); }
 body.realtime-on #scan-btn:active { transform: translateX(calc(-50% - 100px)) scale(0.94); }
 
+/* CAMP stacks above PHOTO on the right of the joystick cluster. */
+body.realtime-on #camp-btn {
+  bottom: 96px;
+  transform: translateX(calc(-50% + 100px));
+}
+body.realtime-on #camp-btn:hover { transform: translateX(calc(-50% + 100px)) scale(1.08); }
+body.realtime-on #camp-btn:active { transform: translateX(calc(-50% + 100px)) scale(0.94); }
+
 /* Lift the FORWARD (play) hub clear of the taller joystick in the center. */
 body.realtime-on #forward-btn { bottom: 126px; }
 
@@ -2505,6 +2553,7 @@ body.menu-open #verb-bar { opacity: 0; pointer-events: none; }
 /* While aiming, the other bottom hubs recede so attention stays on the scene. */
 body.touch-aiming #forward-btn,
 body.touch-aiming #scan-btn,
+body.touch-aiming #camp-btn,
 body.touch-aiming #free-will-btn { opacity: 0.2; pointer-events: none; }
 
 /* Keep the PHOTO/SCAN hubs and the control rail ABOVE the capture overlay while
@@ -4189,6 +4238,7 @@ body.moment-underlay-paused .reactor-freeze {
   transition: opacity 0.4s ease;
 }
 #moment-overlay.moment-in #moment-portrait { opacity: 1; }
+#moment-portrait.hidden { display: none; }
 /* The live world-model feed of the character. Sits ABOVE the still portrait
    and crossfades in (opacity) once the re-anchored session presents frames, so
    the swap from still → moving is a dissolve, not a pop. */
@@ -4283,6 +4333,111 @@ body.moment-conversation[data-talk-orb="speaking"] #moment-portrait-rim {
 @keyframes moment-breathe {
   0%, 100% { transform: scale(1.02); }
   50%      { transform: scale(1.055); }
+}
+
+/* Full-bleed establishing scene (camp). Sibling to #moment-portrait — same
+   crossfade grammar, but the whole viewport is the shot, with tap-target
+   hotspots over companion figures. */
+#moment-scene {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  overflow: hidden;
+  background:
+    radial-gradient(120% 90% at 50% 55%, rgba(48, 28, 14, 0.9), rgba(6, 5, 8, 0.98));
+  opacity: 0;
+  transition: opacity 0.4s ease;
+  pointer-events: none;
+}
+#moment-scene.hidden { display: none; }
+#moment-overlay.moment-in #moment-scene { opacity: 1; }
+#moment-scene-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  opacity: 0;
+  transition: opacity 0.65s ease;
+}
+#moment-scene.ready #moment-scene-img { opacity: 1; }
+#moment-scene-shimmer {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(110deg,
+      rgba(255, 180, 100, 0.02) 0%,
+      rgba(255, 180, 100, 0.16) 45%,
+      rgba(255, 180, 100, 0.02) 70%);
+  background-size: 220% 100%;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.55s ease;
+  z-index: 1;
+}
+#moment-scene.developing #moment-scene-shimmer {
+  opacity: 1;
+  animation: moment-shimmer 1.6s ease-in-out infinite;
+}
+#moment-scene-grain {
+  position: absolute;
+  inset: -10%;
+  pointer-events: none;
+  opacity: 0.2;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");
+  mix-blend-mode: overlay;
+  z-index: 2;
+}
+#moment-scene-hotspots {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+.moment-scene-hotspot {
+  position: absolute;
+  width: 72px;
+  height: 72px;
+  margin-left: -36px;
+  margin-top: -36px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 200, 140, 0.28);
+  background: radial-gradient(circle at 50% 45%,
+    rgba(255, 190, 120, 0.14),
+    rgba(255, 160, 80, 0.02) 70%);
+  box-shadow: 0 0 18px rgba(255, 160, 80, 0.12);
+  cursor: pointer;
+  pointer-events: auto;
+  transform: scale(1);
+  transition: border-color 0.18s, box-shadow 0.18s, transform 0.14s, background 0.18s;
+  padding: 0;
+  color: rgba(255, 230, 200, 0.85);
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.9);
+}
+.moment-scene-hotspot:hover,
+.moment-scene-hotspot:focus-visible {
+  border-color: rgba(255, 210, 150, 0.7);
+  box-shadow: 0 0 26px rgba(255, 170, 90, 0.35);
+  background: radial-gradient(circle at 50% 45%,
+    rgba(255, 200, 130, 0.28),
+    rgba(255, 160, 80, 0.04) 70%);
+  transform: scale(1.08);
+  outline: none;
+}
+.moment-scene-hotspot:active { transform: scale(0.96); }
+.moment-scene-hotspot-label {
+  position: absolute;
+  left: 50%;
+  bottom: -18px;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0.8;
 }
 
 #moment-nameplate {
@@ -4476,7 +4631,8 @@ body.moment-conversation #talk-float-who {
 @media (prefers-reduced-motion: reduce) {
   #moment-overlay, .moment-letterbox, #moment-portrait,
   #moment-portrait-img, #moment-portrait.living #moment-portrait-img,
-  #moment-portrait-shimmer, #moment-nameplate, .moment-notify-chip {
+  #moment-portrait-shimmer, #moment-nameplate, .moment-notify-chip,
+  #moment-scene, #moment-scene-img, #moment-scene-shimmer {
     animation: none !important;
     transition: opacity 0.15s ease !important;
   }
@@ -4614,6 +4770,8 @@ body.menu-open #control-rail {
 .choice-btn,
 #free-will-btn,
 #forward-btn,
+#scan-btn,
+#camp-btn,
 #custom-submit,
 #custom-input { touch-action: manipulation; }
 
@@ -5681,6 +5839,9 @@ body.agent-log-on #agent-log { display: flex; }
   #scan-btn { width: 48px; height: 48px; transform: translateX(calc(-100% - 32px)); }
   #scan-btn:hover { transform: translateX(calc(-100% - 32px)) scale(1.08); }
   #scan-btn:active { transform: translateX(calc(-100% - 32px)) scale(0.94); }
+  #camp-btn { width: 48px; height: 48px; bottom: 60px; transform: translateX(32px); }
+  #camp-btn:hover { transform: translateX(32px) scale(1.08); }
+  #camp-btn:active { transform: translateX(32px) scale(0.94); }
 
   /* Movement joystick: a touch-friendly stick, with the ACT/PHOTO hubs flanking
      it a little tighter to fit narrow screens. */
@@ -5695,6 +5856,9 @@ body.agent-log-on #agent-log { display: flex; }
   body.realtime-on #scan-btn { bottom: 82px; transform: translateX(calc(-50% - 86px)); }
   body.realtime-on #scan-btn:hover { transform: translateX(calc(-50% - 86px)) scale(1.08); }
   body.realtime-on #scan-btn:active { transform: translateX(calc(-50% - 86px)) scale(0.94); }
+  body.realtime-on #camp-btn { bottom: 82px; transform: translateX(calc(-50% + 86px)); }
+  body.realtime-on #camp-btn:hover { transform: translateX(calc(-50% + 86px)) scale(1.08); }
+  body.realtime-on #camp-btn:active { transform: translateX(calc(-50% + 86px)) scale(0.94); }
 
   /* Keep the scan hint clear of the (taller) mobile action wheel. */
   #scan-hint { bottom: calc(env(safe-area-inset-bottom, 0px) + 196px); font-size: 10px; }
@@ -5725,6 +5889,8 @@ body.agent-log-on #agent-log { display: flex; }
   #realtime-btn:hover { transform: translateX(30px) scale(1.08); }
   #scan-btn { width: 42px; height: 42px; transform: translateX(calc(-100% - 30px)); }
   #scan-btn:hover { transform: translateX(calc(-100% - 30px)) scale(1.08); }
+  #camp-btn { width: 42px; height: 42px; bottom: 52px; transform: translateX(30px); }
+  #camp-btn:hover { transform: translateX(30px) scale(1.08); }
   #scan-hint { bottom: calc(env(safe-area-inset-bottom, 0px) + 150px); }
 
   /* Compact joystick cluster for short landscape screens. */
@@ -5736,6 +5902,8 @@ body.agent-log-on #agent-log { display: flex; }
   body.realtime-on #realtime-btn:hover { transform: translateX(calc(-50% + 74px)) scale(1.08); }
   body.realtime-on #scan-btn { bottom: 68px; transform: translateX(calc(-50% - 74px)); }
   body.realtime-on #scan-btn:hover { transform: translateX(calc(-50% - 74px)) scale(1.08); }
+  body.realtime-on #camp-btn { bottom: 68px; transform: translateX(calc(-50% + 74px)); }
+  body.realtime-on #camp-btn:hover { transform: translateX(calc(-50% + 74px)) scale(1.08); }
   .move-nub { width: 38px; height: 38px; margin: -19px 0 0 -19px; }
 
   /* Compact the rail + toggle so the collapsed menu fits a short screen. */

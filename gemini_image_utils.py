@@ -877,8 +877,45 @@ def generate_gemini_img2img(
         time_injection = f"\n\n⏰ CRITICAL TIME/ATMOSPHERE CONSTRAINTS:\n{time_of_day}\nThe lighting, weather, and atmosphere MUST match these exact conditions. This is non-negotiable.\n"
         structured_prompt = structured_prompt + time_injection
     
-    # Add continuity instructions - DIFFERENT for flipbook vs single-frame img2img
-    if portrait_mode:
+    # Add continuity instructions - DIFFERENT for flipbook vs single-frame img2img.
+    # ensemble_mode takes precedence over portrait_mode when both are set: camp
+    # composites pass portrait_mode=True only to allow people (skip anti-person),
+    # while the continuity grammar must be the NEW-LOCATION ensemble path.
+    if ensemble_mode:
+        # ENSEMBLE COMPOSITE: each reference is a stand-alone character/prop
+        # portrait (companion portraits + the jeep prop), not the environment
+        # the player is currently standing in. The instruction describes a
+        # BRAND NEW location (e.g. a night campsite) — build it from scratch
+        # and populate it with everyone referenced.
+        continuity_instruction = (
+            "\n\n🔥 CRITICAL — ENSEMBLE COMPOSITE INTO A NEW LOCATION:\n"
+            "═══════════════════════════════════════════════════════════════════\n"
+            "Each reference image is an independent PORTRAIT of ONE specific\n"
+            "person, OR a reference photo of ONE specific prop/vehicle — captured\n"
+            "somewhere else, at some other time. They are NOT the current\n"
+            "environment and NOT the previous frame of any video.\n"
+            "\n"
+            "The instruction describes a NEW location. Build that location from\n"
+            "the instruction's own description — do NOT reuse the background,\n"
+            "room, or setting visible behind any reference subject.\n"
+            "\n"
+            "COPY from each PERSON reference (so they read as the SAME person):\n"
+            "✅ Face, build, approximate age, hair, and clothing/style\n"
+            "✅ Their general demeanor/expression\n"
+            "COPY from each PROP/VEHICLE reference (so it reads as the SAME object):\n"
+            "✅ Exact color, make/model silhouette, condition (dust, dents, wear)\n"
+            "\n"
+            "DO NOT COPY from any reference:\n"
+            "❌ Its background, lighting setup, or location — that belongs to a\n"
+            "  different place and time; the NEW scene has its own lighting\n"
+            "❌ Framing/composition — recompose everyone into ONE coherent wide\n"
+            "  shot appropriate to the instruction, not a collage of close-ups\n"
+            "\n"
+            "EVERY person and prop referenced MUST appear, clearly recognizable,\n"
+            "placed naturally within the new location described. This is a full\n"
+            "environment shot — a wide establishing shot is correct here."
+        )
+    elif portrait_mode:
         # CONVERSATION PORTRAIT: the reference IS the environment the player is
         # standing in. Keep that room/lighting/grain/palette, but re-frame it as
         # the NEXT SHOT — a cinematic medium shot of the character being spoken
@@ -952,40 +989,6 @@ def generate_gemini_img2img(
             "Your Frame 1 is the NEXT FRAME of that same continuous recording.\n"
             "A viewer watching both in sequence should see seamless, uncut footage.\n"
         )
-    elif ensemble_mode:
-        # ENSEMBLE COMPOSITE: each reference is a stand-alone character/prop
-        # portrait (companion portraits + the jeep prop), not the environment
-        # the player is currently standing in. The instruction describes a
-        # BRAND NEW location (e.g. a night campsite) — build it from scratch
-        # and populate it with everyone referenced.
-        continuity_instruction = (
-            "\n\n🔥 CRITICAL — ENSEMBLE COMPOSITE INTO A NEW LOCATION:\n"
-            "═══════════════════════════════════════════════════════════════════\n"
-            "Each reference image is an independent PORTRAIT of ONE specific\n"
-            "person, OR a reference photo of ONE specific prop/vehicle — captured\n"
-            "somewhere else, at some other time. They are NOT the current\n"
-            "environment and NOT the previous frame of any video.\n"
-            "\n"
-            "The instruction describes a NEW location. Build that location from\n"
-            "the instruction's own description — do NOT reuse the background,\n"
-            "room, or setting visible behind any reference subject.\n"
-            "\n"
-            "COPY from each PERSON reference (so they read as the SAME person):\n"
-            "✅ Face, build, approximate age, hair, and clothing/style\n"
-            "✅ Their general demeanor/expression\n"
-            "COPY from each PROP/VEHICLE reference (so it reads as the SAME object):\n"
-            "✅ Exact color, make/model silhouette, condition (dust, dents, wear)\n"
-            "\n"
-            "DO NOT COPY from any reference:\n"
-            "❌ Its background, lighting setup, or location — that belongs to a\n"
-            "  different place and time; the NEW scene has its own lighting\n"
-            "❌ Framing/composition — recompose everyone into ONE coherent wide\n"
-            "  shot appropriate to the instruction, not a collage of close-ups\n"
-            "\n"
-            "EVERY person and prop referenced MUST appear, clearly recognizable,\n"
-            "placed naturally within the new location described. This is a full\n"
-            "environment shot — a wide establishing shot is correct here."
-        )
     else:
         # SINGLE FRAME MODE: Previous frame is for SMOOTH CONTINUITY
         continuity_instruction = (
@@ -1021,10 +1024,23 @@ def generate_gemini_img2img(
         flipbook_grid_note = "\n\nCRITICAL - 4x4 GRID STRUCTURE:\nPreserve the 4x4 grid structure from the layout template. Each panel must show a slightly different moment in time. The output MUST be a 4x4 grid."
         structured_prompt = structured_prompt + flipbook_grid_note
     
-    # Anti-person REMOVAL directive — for environment stills only. A portrait
-    # deliberately ADDS the character to the scene, so skip it there and instead
-    # instruct the model to make the character the subject.
-    if portrait_mode:
+    # Anti-person REMOVAL directive — for environment stills only. Portrait and
+    # ensemble modes deliberately INCLUDE people (conversation close-up / camp
+    # cast reunion), so skip the removal and instead instruct inclusion.
+    if ensemble_mode:
+        add_ensemble = (
+            "\n\n🔥 CRITICAL - ENSEMBLE CAST MUST APPEAR:\n\n"
+            "Unlike the game's empty environment shots, THIS wide establishing\n"
+            "shot MUST feature every referenced person AND every referenced prop\n"
+            "or vehicle, seated/placed naturally in the NEW location described.\n"
+            "Do NOT delete or hide them. Do NOT turn this into an empty plate if\n"
+            "people were referenced. If ONLY a prop/vehicle was referenced (no\n"
+            "people), show that prop alone in the quiet campsite — no invented\n"
+            "extra cast. Firelight is the key light; faces and the vehicle must\n"
+            "be recognizable."
+        )
+        structured_prompt = structured_prompt + add_ensemble
+    elif portrait_mode:
         add_person = (
             "\n\n🎭 CRITICAL - THE CHARACTER IS THE SUBJECT:\n\n"
             "Unlike the game's environment shots, THIS shot MUST feature the person.\n"
@@ -1065,9 +1081,11 @@ def generate_gemini_img2img(
     
     structured_prompt = structured_prompt + anti_timecode
     
-    # Add negative prompt emphasis. Portrait mode keeps the text/border bans but
-    # drops the person bans (the character is the subject).
-    if portrait_mode:
+    # Add negative prompt emphasis. Portrait/ensemble keep the text/border bans
+    # but drop the person bans (characters are intentional subjects).
+    if ensemble_mode:
+        negative_emphasis = "\n\nNEVER INCLUDE: Text overlays, timecode, date stamps, timestamps, time displays, numbers, letters, words, 'DEC 14 1993', '4:32 PM', 'PCC HISS', 'REC', battery indicators, recording icons, ANY TEXT. Borders, frames, black bars, white borders, photo edges, polaroid frames, picture frames, matting, letterbox bars, any kind of border or frame element. Collage layout, split-screen of separate portraits, floating heads, mismatched lighting that ignores the campfire."
+    elif portrait_mode:
         negative_emphasis = "\n\nNEVER INCLUDE: Text overlays, timecode, date stamps, timestamps, time displays, numbers, letters, words, 'DEC 14 1993', '4:32 PM', 'PCC HISS', 'REC', battery indicators, recording icons, ANY TEXT. Borders, frames, black bars, white borders, photo edges, polaroid frames, picture frames, matting, letterbox bars, any kind of border or frame element. Empty room with no subject, wide establishing shot, a completely different location than the reference."
     else:
         negative_emphasis = "\n\nNEVER INCLUDE: Text overlays, timecode, date stamps, timestamps, time displays, numbers, letters, words, 'DEC 14 1993', '4:32 PM', 'PCC HISS', 'REC', battery indicators, recording icons, ANY TEXT. Borders, frames, black bars, white borders, photo edges, polaroid frames, picture frames, matting, letterbox bars, any kind of border or frame element. Person visible, human visible, man visible, character visible, head visible, back of head, shoulders visible, person's back, character's back, body parts, hands, arms, legs, feet, torso, silhouette, person from behind."
@@ -1149,9 +1167,9 @@ def generate_gemini_img2img(
         "generationConfig": {
             "responseModalities": ["IMAGE"],
             "imageConfig": {
-                # Conversation portraits use a wider cinematic frame; the game's
-                # environment stills stay 4:3.
-                "aspectRatio": "16:9" if portrait_mode else "4:3",
+                # Conversation portraits + ensemble camp composites use a wider
+                # cinematic frame; the game's environment stills stay 4:3.
+                "aspectRatio": "16:9" if (portrait_mode or ensemble_mode) else "4:3",
                 "imageSize": "1K"  # Lowest res Nano Banana 2 Lite offers — fastest generation
             }
         },
