@@ -2166,6 +2166,170 @@ def admin_pricing_put():
 
 
 # ═══════════════════════════════════════════════════════════════════
+# WORLD STUDIO — spatial editor for every story/narrative/choice/image
+# prompt the game runs on, plus the (currently unwired) character "story
+# bible". Same ADMIN_TOKEN guard and success/error response shape as the
+# rest of /api/admin/*. See prompts_store.py / cast_store.py for the
+# hot-reload + defaults/reset mechanics.
+# ═══════════════════════════════════════════════════════════════════
+
+@app.route('/studio', methods=['GET'])
+def serve_world_studio():
+    """Serve the World Studio prompt editor, gated the same way /admin is."""
+    if not _admin_token_ok():
+        return jsonify({
+            "error": "unauthorized",
+            "message": "Provide ADMIN_TOKEN via ?token=, X-Admin-Token header, or admin_token cookie."
+        }), 401
+    try:
+        response = make_response(send_file('world_studio.html'))
+        origin = request.headers.get('Origin')
+        if origin:
+            response.headers['Access-Control-Allow-Origin'] = origin
+            response.headers['Vary'] = 'Origin'
+            response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return response
+    except FileNotFoundError:
+        return jsonify({"error": "World Studio file not found"}), 404
+
+
+@app.route('/api/admin/studio/content', methods=['GET'])
+def admin_studio_content():
+    """Everything the World Studio UI needs in one shot: current + default
+    prompts, current + default cast, and the schema that drives grouping,
+    descriptions, and placeholder legends."""
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import prompts_store
+        import cast_store
+        return jsonify(success_response({
+            "prompts": dict(prompts_store.PROMPTS),
+            "prompts_defaults": prompts_store.load_defaults(),
+            "cast": cast_store.load_cast(force=True),
+            "cast_defaults": cast_store.load_defaults(),
+            "schema": prompts_store.PROMPT_SCHEMA,
+            "groups": prompts_store.GROUP_LABELS,
+        }))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to load World Studio content", str(e))
+
+
+@app.route('/api/admin/studio/prompts', methods=['PUT'])
+def admin_studio_prompts_put():
+    """
+    Update one prompt field (or several at once) and persist immediately —
+    same hot-swap pattern as /api/admin/pricing and /api/admin/ai_switch.
+
+    Body: either {"key": "...", "value": "..."} for a single field, or
+    {"data": {"key1": "...", "key2": [...]}} to update several at once.
+    Pass {"force": true} to save anyway despite placeholder-validation
+    warnings (only relevant for the small set of fields that are run
+    through Python's str.format() at request time).
+    """
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import prompts_store
+        body = request.get_json(silent=True) or {}
+        force = bool(body.get('force'))
+
+        if 'data' in body and isinstance(body['data'], dict):
+            fields = body['data']
+        elif 'key' in body:
+            fields = {body['key']: body.get('value')}
+        else:
+            return error_response(
+                "Body must include either {'key','value'} for a single field "
+                "or {'data': {...}} to update several at once.", code=400)
+
+        all_warnings = {}
+        for key, value in fields.items():
+            ok, warnings = prompts_store.validate_prompt_value(key, value)
+            if warnings:
+                all_warnings[key] = warnings
+            if not ok and not force:
+                return jsonify({
+                    "success": False,
+                    "error": f"'{key}' failed placeholder validation.",
+                    "warnings": all_warnings,
+                }), 400
+
+        data = prompts_store.save_prompts_bulk(fields)
+        return jsonify(success_response(
+            {"prompts": data, "warnings": all_warnings},
+            "Prompt(s) saved" + (" with warnings" if all_warnings else "")
+        ))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to save prompt(s)", str(e))
+
+
+@app.route('/api/admin/studio/prompts/reset', methods=['POST'])
+def admin_studio_prompts_reset():
+    """Restore one field (or every field) to its factory default.
+
+    Body: {"key": "..."} to reset a single field, or {"all": true} to
+    restore the entire prompts file.
+    """
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import prompts_store
+        body = request.get_json(silent=True) or {}
+        if body.get('all'):
+            data = prompts_store.reset_all_prompts()
+            return jsonify(success_response({"prompts": data}, "All prompts reset to defaults"))
+        key = body.get('key')
+        if not key:
+            return error_response("Body must include 'key' or {'all': true}.", code=400)
+        data = prompts_store.reset_prompt_field(key)
+        return jsonify(success_response({"prompts": data}, f"'{key}' reset to default"))
+    except KeyError as e:
+        return error_response(str(e), code=404)
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to reset prompt(s)", str(e))
+
+
+@app.route('/api/admin/studio/cast', methods=['PUT'])
+def admin_studio_cast_put():
+    """Replace the whole character roster (add/edit/remove cards) and
+    persist immediately. Body: {"cast": [ {name, role, affiliation,
+    description, important, notes}, ... ]}."""
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import cast_store
+        body = request.get_json(silent=True) or {}
+        cast = body.get('cast')
+        if not isinstance(cast, list):
+            return error_response("Body must include a 'cast' array.", code=400)
+        data = cast_store.save_cast(cast)
+        return jsonify(success_response({"cast": data}, "Cast saved"))
+    except ValueError as e:
+        return error_response(str(e), code=400)
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to save cast", str(e))
+
+
+@app.route('/api/admin/studio/cast/reset', methods=['POST'])
+def admin_studio_cast_reset():
+    """Restore the factory-default cast roster."""
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import cast_store
+        data = cast_store.reset_cast()
+        return jsonify(success_response({"cast": data}, "Cast reset to defaults"))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to reset cast", str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════
 # INFO & HEALTH ENDPOINTS
 # ═══════════════════════════════════════════════════════════════════
 
