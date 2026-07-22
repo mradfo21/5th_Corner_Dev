@@ -166,7 +166,13 @@ def _system_instruction(max_items: int) -> str:
         "Prefer specific, concrete labels over vague ones. Skip generic "
         "background like 'sky', 'ground', 'wall' unless notable. When an "
         "object persists across frames, REUSE the same label so tags stay "
-        "stable — do not rename 'figure' to 'person' on identical pixels."
+        "stable — do not rename 'figure' to 'person' on identical pixels. "
+        "Do NOT tag the viewer's own hands, gloves, arms, or the vehicle "
+        "they're inside (steering wheel, dashboard, gauges, mirrors, seat) — "
+        "that's just the player's own body/vehicle, not a point of interest. "
+        "Do NOT tag the camcorder recording this footage. Focus on what's OUT "
+        "in the world: structures, terrain, other vehicles, hazards, "
+        "creatures, and story props."
     )
 
 
@@ -447,14 +453,18 @@ def _parse_detection_payload(text: str) -> Optional[list]:
     if not isinstance(parsed, list):
         return None
 
-    # Re-use engine._classify_speaker so the TALK affordance behaves identically
-    # to the HTTP path. Imported lazily to avoid a module-level engine import
-    # (this module needs to be safe to import in isolation).
+    # Re-use engine._classify_speaker / _is_underwhelming_label so the TALK
+    # affordance and the underwhelming-label filter behave identically to the
+    # HTTP path. Imported lazily to avoid a module-level engine import (this
+    # module needs to be safe to import in isolation).
     try:
-        from engine import _classify_speaker
+        from engine import _classify_speaker, _is_underwhelming_label
     except Exception:
         def _classify_speaker(label, kind_raw, speaks_raw):  # type: ignore
             return (str(kind_raw or "object").lower(), bool(speaks_raw))
+
+        def _is_underwhelming_label(label):  # type: ignore
+            return False
 
     objects = []
     seen = set()
@@ -464,6 +474,8 @@ def _parse_detection_payload(text: str) -> Optional[list]:
         label = str(entry.get("label") or "").strip().lower()
         box = entry.get("box_2d") or entry.get("box") or entry.get("bbox")
         if not label or not isinstance(box, (list, tuple)) or len(box) < 4:
+            continue
+        if _is_underwhelming_label(label):
             continue
         try:
             ymin, xmin, ymax, xmax = (float(box[0]), float(box[1]),

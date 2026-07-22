@@ -2193,6 +2193,52 @@ _SPEAKER_LABEL_RE = re.compile(
 _SPEAKER_KINDS = {"person", "character", "creature"}
 
 
+# Detected labels that make underwhelming scan tags / "photograph the X"
+# objectives, filtered out entirely so they never reach the client. This is a
+# first-person driving POV shot on found-footage tape, so the model otherwise
+# keeps re-detecting the SAME boring things every single scan: the player's
+# own gloved hands on the wheel, the dashboard/mirrors/controls of the car
+# they're always sitting in, and the camcorder doing the recording. None of
+# that is ever a meaningful objective — the interesting stuff is what's OUT in
+# the world (structures, terrain, hazards, creatures, props). An exact-phrase
+# set covers the unambiguous vehicle/gear nouns; a small regex backstops the
+# hand/glove/arm family, whose labels vary ("gloved hand", "driving glove",
+# "hands") but — given labels are capped at 1-3 words by the detect prompt —
+# are overwhelmingly the player's own POV hands whenever they appear at all.
+_LEADING_ARTICLE_RE = re.compile(r"^(?:a|an|the)\s+")
+_UNDERWHELMING_LABELS = frozenset({
+    # Vehicle-interior fixtures the player is always sitting inside of.
+    "steering wheel", "dashboard", "dash", "gauge", "gauges", "speedometer",
+    "odometer", "rearview mirror", "rear view mirror", "side mirror",
+    "windshield", "wiper", "wipers", "gear shift", "gearshift", "gearstick",
+    "handbrake", "hand brake", "seatbelt", "seat belt", "sun visor",
+    "glove box", "glovebox", "car seat", "headrest",
+    # The player's OWN recording gear — always in frame in this found-footage
+    # conceit, never a story object.
+    "camcorder", "handheld camera", "viewfinder", "camera lens",
+    # Generic background the detect prompt already discourages; kept here as a
+    # backstop in case the model tags it anyway.
+    "shadow", "shadows", "reflection", "dust", "haze", "glare", "sunbeam",
+    "sunlight", "horizon",
+})
+_UNDERWHELMING_PART_RE = re.compile(
+    r"\b(glove|gloves|hand|hands|finger|fingers|thumb|thumbs|palm|palms|"
+    r"wrist|wrists|knuckle|knuckles|fist|fists|arm|arms|forearm|forearms|"
+    r"elbow|elbows)\b"
+)
+
+
+def _is_underwhelming_label(label: str) -> bool:
+    """True for a detected label that would make an underwhelming scan tag or
+    objective — see _UNDERWHELMING_LABELS / _UNDERWHELMING_PART_RE above."""
+    normalized = _LEADING_ARTICLE_RE.sub("", (label or "").strip().lower())
+    if not normalized:
+        return True
+    if normalized in _UNDERWHELMING_LABELS:
+        return True
+    return bool(_UNDERWHELMING_PART_RE.search(normalized))
+
+
 def _classify_speaker(label: str, kind_raw, speaks_raw) -> tuple:
     """Decide a detected thing's ``kind`` and whether it ``speaks``.
 
@@ -2359,7 +2405,13 @@ def _detect_objects(image_path: str = None,
             "intercom, robot, terminal with a voice). Set it false for inert "
             "objects, scenery, tools, and plain animals that would not speak. "
             "Prefer specific, concrete labels over vague ones. "
-            "Skip generic background like 'sky', 'ground', 'wall' unless notable."
+            "Skip generic background like 'sky', 'ground', 'wall' unless notable. "
+            "Do NOT tag the viewer's own hands, gloves, arms, or the vehicle "
+            "they're inside (steering wheel, dashboard, gauges, mirrors, seat) "
+            "— that's just the player's own body/vehicle, not a point of "
+            "interest. Do NOT tag the camcorder recording this footage. Focus "
+            "on what's OUT in the world: structures, terrain, other vehicles, "
+            "hazards, creatures, and story props."
         )
 
         # Story-grounded prior: the world model was steered by this exact
@@ -2472,6 +2524,10 @@ def _detect_objects(image_path: str = None,
             label = str(entry.get("label") or "").strip().lower()
             box = entry.get("box_2d") or entry.get("box") or entry.get("bbox")
             if not label or not isinstance(box, (list, tuple)) or len(box) < 4:
+                continue
+            # Drop underwhelming labels before they cost a max_items slot: the
+            # player's own hands/gear/vehicle-interior, never worth a tag.
+            if _is_underwhelming_label(label):
                 continue
             try:
                 ymin, xmin, ymax, xmax = (float(box[0]), float(box[1]), float(box[2]), float(box[3]))
