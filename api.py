@@ -2167,10 +2167,9 @@ def admin_pricing_put():
 
 # ═══════════════════════════════════════════════════════════════════
 # WORLD STUDIO — spatial editor for every story/narrative/choice/image
-# prompt the game runs on, plus the (currently unwired) character "story
-# bible". Same ADMIN_TOKEN guard and success/error response shape as the
-# rest of /api/admin/*. See prompts_store.py / cast_store.py for the
-# hot-reload + defaults/reset mechanics.
+# prompt the game actually runs on. Same ADMIN_TOKEN guard and
+# success/error response shape as the rest of /api/admin/*. See
+# prompts_store.py for the hot-reload + defaults/reset mechanics.
 # ═══════════════════════════════════════════════════════════════════
 
 @app.route('/studio', methods=['GET'])
@@ -2196,18 +2195,15 @@ def serve_world_studio():
 @app.route('/api/admin/studio/content', methods=['GET'])
 def admin_studio_content():
     """Everything the World Studio UI needs in one shot: current + default
-    prompts, current + default cast, and the schema that drives grouping,
-    descriptions, and placeholder legends."""
+    prompts, and the schema that drives grouping, descriptions, and
+    placeholder legends."""
     if not _admin_token_ok():
         return _admin_unauthorized()
     try:
         import prompts_store
-        import cast_store
         return jsonify(success_response({
             "prompts": dict(prompts_store.PROMPTS),
             "prompts_defaults": prompts_store.load_defaults(),
-            "cast": cast_store.load_cast(force=True),
-            "cast_defaults": cast_store.load_defaults(),
             "schema": prompts_store.PROMPT_SCHEMA,
             "groups": prompts_store.GROUP_LABELS,
         }))
@@ -2291,42 +2287,6 @@ def admin_studio_prompts_reset():
     except Exception as e:
         traceback.print_exc()
         return error_response("Failed to reset prompt(s)", str(e))
-
-
-@app.route('/api/admin/studio/cast', methods=['PUT'])
-def admin_studio_cast_put():
-    """Replace the whole character roster (add/edit/remove cards) and
-    persist immediately. Body: {"cast": [ {name, role, affiliation,
-    description, important, notes}, ... ]}."""
-    if not _admin_token_ok():
-        return _admin_unauthorized()
-    try:
-        import cast_store
-        body = request.get_json(silent=True) or {}
-        cast = body.get('cast')
-        if not isinstance(cast, list):
-            return error_response("Body must include a 'cast' array.", code=400)
-        data = cast_store.save_cast(cast)
-        return jsonify(success_response({"cast": data}, "Cast saved"))
-    except ValueError as e:
-        return error_response(str(e), code=400)
-    except Exception as e:
-        traceback.print_exc()
-        return error_response("Failed to save cast", str(e))
-
-
-@app.route('/api/admin/studio/cast/reset', methods=['POST'])
-def admin_studio_cast_reset():
-    """Restore the factory-default cast roster."""
-    if not _admin_token_ok():
-        return _admin_unauthorized()
-    try:
-        import cast_store
-        data = cast_store.reset_cast()
-        return jsonify(success_response({"cast": data}, "Cast reset to defaults"))
-    except Exception as e:
-        traceback.print_exc()
-        return error_response("Failed to reset cast", str(e))
 
 
 # ═══════════════════════════════════════════════════════════════════

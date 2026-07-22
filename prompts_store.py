@@ -266,8 +266,12 @@ def validate_prompt_value(key: str, value: Any) -> Tuple[bool, List[str]]:
 
 # ─────────────────────────────────────────────────────────────────────────
 # Schema — drives the World Studio UI (grouping, descriptions, placeholder
-# legends, "used by" tags, and whether a field is currently wired into any
-# live code path).
+# legends, and "used by" tags). Deliberately only lists fields that are
+# actually read by a live code path (see `code_refs`) — a handful of keys
+# still live in simulation_prompts.json for legacy/future reasons but are
+# not wired into any generation logic, so World Studio doesn't show them
+# at all (showing an editable field with zero effect on the game is worse
+# than not showing it).
 # ─────────────────────────────────────────────────────────────────────────
 
 PROMPT_SCHEMA: List[Dict[str, Any]] = [
@@ -279,15 +283,6 @@ PROMPT_SCHEMA: List[Dict[str, Any]] = [
         "description": "The full opening world-state brief — setting, tone, era, threats, and rules the whole story is grounded in. Re-used every turn as the base of the evolving world prompt.",
         "code_refs": ["engine.py"],
         "live": True,
-    },
-    {
-        "id": "story_progression_phases",
-        "label": "Story Phases",
-        "group": "world",
-        "type": "list",
-        "description": "The five-beat dramatic arc labels (Establish / Explore / Escalate / Climax / Aftermath).",
-        "code_refs": [],
-        "live": False,
     },
     {
         "id": "action_consequence_instructions",
@@ -308,25 +303,6 @@ PROMPT_SCHEMA: List[Dict[str, Any]] = [
         "live": True,
     },
     {
-        "id": "world_evolution_instructions",
-        "label": "World Evolution (ambient)",
-        "group": "narrative",
-        "type": "longtext",
-        "description": "Rules for small ambient/atmospheric world changes over time.",
-        "code_refs": [],
-        "live": False,
-    },
-    {
-        "id": "world_tick_micro_change_instructions",
-        "label": "World Tick (micro-change)",
-        "group": "narrative",
-        "type": "longtext",
-        "description": "Rules for the tiny per-tick world change line shown as time passes.",
-        "code_refs": [],
-        "live": False,
-        "format_vars": ["location_context", "environment_type"],
-    },
-    {
         "id": "field_notes_format",
         "label": "Field Notes Format",
         "group": "narrative",
@@ -334,24 +310,6 @@ PROMPT_SCHEMA: List[Dict[str, Any]] = [
         "description": "Format/voice rules for the player's in-universe field notes / journal entries.",
         "code_refs": ["engine.py"],
         "live": True,
-    },
-    {
-        "id": "loading_message_instructions",
-        "label": "Loading Message",
-        "group": "narrative",
-        "type": "longtext",
-        "description": "Rules for the short in-universe message shown between major events.",
-        "code_refs": [],
-        "live": False,
-    },
-    {
-        "id": "timeout_penalty_instructions",
-        "label": "Timeout / Hesitation Penalty",
-        "group": "narrative",
-        "type": "longtext",
-        "description": "What happens to the player when they hesitate too long on a choice.",
-        "code_refs": [],
-        "live": False,
     },
     {
         "id": "player_choice_generation_instructions",
