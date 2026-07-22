@@ -786,6 +786,7 @@ def generate_gemini_img2img(
     output_dir: Path = None,
     is_flipbook: bool = False,
     portrait_mode: bool = False,
+    ensemble_mode: bool = False,
 ) -> str:
     """
     Edit an image using Google Gemini (image-to-image).
@@ -800,6 +801,14 @@ def generate_gemini_img2img(
         time_of_day: Time of day for lighting consistency
         hd_mode: If True, use Pro model for higher quality (slower). If False, use Flash for speed.
         is_flipbook: If True, suppress single-image constraints (like NO BORDERS).
+        ensemble_mode: When True, treat EVERY reference image as an independent
+            character/prop portrait to be composited into a BRAND NEW location
+            described by `prompt` — NOT the current environment and NOT the
+            previous moment. Used by the CAMP moment to gather multiple
+            companions (+ the jeep prop) around a campfire that isn't the
+            scene the player is standing in. Mutually exclusive in spirit with
+            `portrait_mode` (which reframes ONE character INTO the current
+            environment) — pass only one of the two as True.
         
     Returns:
         Local path to the saved image
@@ -942,6 +951,40 @@ def generate_gemini_img2img(
             "The reference is the LAST FRAME of a video recording.\n"
             "Your Frame 1 is the NEXT FRAME of that same continuous recording.\n"
             "A viewer watching both in sequence should see seamless, uncut footage.\n"
+        )
+    elif ensemble_mode:
+        # ENSEMBLE COMPOSITE: each reference is a stand-alone character/prop
+        # portrait (companion portraits + the jeep prop), not the environment
+        # the player is currently standing in. The instruction describes a
+        # BRAND NEW location (e.g. a night campsite) — build it from scratch
+        # and populate it with everyone referenced.
+        continuity_instruction = (
+            "\n\n🔥 CRITICAL — ENSEMBLE COMPOSITE INTO A NEW LOCATION:\n"
+            "═══════════════════════════════════════════════════════════════════\n"
+            "Each reference image is an independent PORTRAIT of ONE specific\n"
+            "person, OR a reference photo of ONE specific prop/vehicle — captured\n"
+            "somewhere else, at some other time. They are NOT the current\n"
+            "environment and NOT the previous frame of any video.\n"
+            "\n"
+            "The instruction describes a NEW location. Build that location from\n"
+            "the instruction's own description — do NOT reuse the background,\n"
+            "room, or setting visible behind any reference subject.\n"
+            "\n"
+            "COPY from each PERSON reference (so they read as the SAME person):\n"
+            "✅ Face, build, approximate age, hair, and clothing/style\n"
+            "✅ Their general demeanor/expression\n"
+            "COPY from each PROP/VEHICLE reference (so it reads as the SAME object):\n"
+            "✅ Exact color, make/model silhouette, condition (dust, dents, wear)\n"
+            "\n"
+            "DO NOT COPY from any reference:\n"
+            "❌ Its background, lighting setup, or location — that belongs to a\n"
+            "  different place and time; the NEW scene has its own lighting\n"
+            "❌ Framing/composition — recompose everyone into ONE coherent wide\n"
+            "  shot appropriate to the instruction, not a collage of close-ups\n"
+            "\n"
+            "EVERY person and prop referenced MUST appear, clearly recognizable,\n"
+            "placed naturally within the new location described. This is a full\n"
+            "environment shot — a wide establishing shot is correct here."
         )
     else:
         # SINGLE FRAME MODE: Previous frame is for SMOOTH CONTINUITY
