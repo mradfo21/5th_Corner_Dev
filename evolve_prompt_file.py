@@ -36,13 +36,8 @@ def _get_api_key():
 
 GEMINI_API_KEY = _get_api_key()
 
-# Load prompts
-prompts_path = Path("prompts/simulation_prompts.json")
-if prompts_path.exists():
-    with open(prompts_path, 'r', encoding='utf-8') as f:
-        PROMPTS = json.load(f)
-else:
-    PROMPTS = {}
+# Load prompts — shared, hot-reloadable singleton (see prompts_store.py).
+from prompts_store import PROMPTS
 
 def evolve_world_state(
     dispatches: List[Dict],

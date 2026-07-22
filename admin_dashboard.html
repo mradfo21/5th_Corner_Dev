@@ -1256,6 +1256,9 @@
             <a href="/standalone" class="btn btn-primary" style="display:inline-block; margin-top:10px; text-decoration:none;">
                 ▶ Play Standalone
             </a>
+            <a href="#" id="studio-link" class="btn btn-primary" style="display:inline-block; margin-top:10px; margin-left:10px; text-decoration:none;">
+                🎨 World Studio
+            </a>
         </header>
 
         <div id="error-message"></div>
@@ -2413,6 +2416,12 @@
         // The admin API endpoints are token-guarded, so capture that token once
         // and forward it (header + query) on admin fetches.
         const ADMIN_TOKEN = new URLSearchParams(window.location.search).get('token') || '';
+
+        // Carry the admin token forward into World Studio's own token-gated route.
+        (function wireStudioLink() {
+            const link = document.getElementById('studio-link');
+            if (link) link.href = ADMIN_TOKEN ? `/studio?token=${encodeURIComponent(ADMIN_TOKEN)}` : '/studio';
+        })();
 
         function adminFetch(path, opts = {}) {
             const sep = path.includes('?') ? '&' : '?';

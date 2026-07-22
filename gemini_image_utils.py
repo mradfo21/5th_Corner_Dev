@@ -18,13 +18,9 @@ try:
 except FileNotFoundError:
     config = {}
 
-# Load prompts from JSON (single source of truth!)
-try:
-    with open(ROOT / "prompts" / "simulation_prompts.json", "r", encoding="utf-8") as f:
-        PROMPTS = json.load(f)
-except FileNotFoundError:
-    with open(ROOT / "prompts" / "1993_base.json", "r", encoding="utf-8") as f:
-        PROMPTS = json.load(f)
+# Load prompts — shared, hot-reloadable singleton (see prompts_store.py) so
+# edits made through the World Studio editor apply immediately, no restart.
+from prompts_store import PROMPTS
 
 # Read from environment variables first, fall back to config.json
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", config.get("GEMINI_API_KEY", ""))
@@ -200,7 +196,8 @@ def generate_with_gemini(
     is_first_frame: bool = False,
     action_context: str = "",
     hd_mode: bool = True,
-    output_dir: Path = None
+    output_dir: Path = None,
+    portrait_mode: bool = False,
 ) -> str:
     """
     Generate an image using Google Gemini (Nano Banana).
@@ -213,6 +210,9 @@ def generate_with_gemini(
         model: Gemini model to use (can be overridden by hd_mode)
         time_of_day: Time of day for lighting consistency
         hd_mode: If True, use Pro model for higher quality (slower). If False, use Flash for speed.
+        portrait_mode: When True, skip the anti-person / environment-only
+            constraints and emit a cinematic character medium-shot instead.
+            Used by Conversation Moments (/api/talk/portrait).
         
     Returns:
         Local path to the saved image (e.g., "/images/filename.png")
@@ -257,11 +257,22 @@ def generate_with_gemini(
     anti_border = "\n\nCRITICAL - ABSOLUTELY NO BORDERS OR FRAMES:\nThe image MUST fill the ENTIRE canvas edge-to-edge with ZERO borders, frames, or edges of any kind. NO black bars, NO white borders, NO photo frames, NO matting, NO letterboxing. The content fills 100% of the image area. This is RAW FOOTAGE, not a framed photograph."
     
     structured_prompt = structured_prompt + anti_border
-    
-    # Add CRITICAL anti-person instructions
-    anti_person = "\n\nCRITICAL - ABSOLUTELY NO PERSON/PLAYER VISIBLE:\nThis is a FIXED CAMERA VIEW mounted to a wall or tripod. The camera operator does NOT exist in this image. NEVER show ANY part of a human body - no head, no back of head, no shoulders, no arms, no hands, no legs, no feet, no torso, no silhouette. Show ONLY the environment - walls, floor, ceiling, objects, debris, sky, ground. Think: security camera footage, dashboard cam, surveillance view - PURE environmental shot with ZERO human presence in frame."
-    
-    structured_prompt = structured_prompt + anti_person
+
+    # Portrait mode intentionally INCLUDES a character (Conversation Moments).
+    # Environment stills keep the hard anti-person rule used everywhere else.
+    if not portrait_mode:
+        anti_person = "\n\nCRITICAL - ABSOLUTELY NO PERSON/PLAYER VISIBLE:\nThis is a FIXED CAMERA VIEW mounted to a wall or tripod. The camera operator does NOT exist in this image. NEVER show ANY part of a human body - no head, no back of head, no shoulders, no arms, no hands, no legs, no feet, no torso, no silhouette. Show ONLY the environment - walls, floor, ceiling, objects, debris, sky, ground. Think: security camera footage, dashboard cam, surveillance view - PURE environmental shot with ZERO human presence in frame."
+        structured_prompt = structured_prompt + anti_person
+    else:
+        portrait_anchor = (
+            "\n\nCINEMATIC PORTRAIT MODE:\n"
+            "This is a stylish cinematic MEDIUM SHOT of the character described in the prompt.\n"
+            "Frame from mid-torso up, shallow depth of field, 35mm film look, dramatic rim lighting.\n"
+            "The SUBJECT IS THE FOCUS — show their face/figure clearly. Soft bokeh background.\n"
+            "Keep 1993 analog-horror palette continuity (muted, slightly degraded film stock).\n"
+            "NOT a security camera POV. NOT a wide environment plate. NOT a selfie.\n"
+        )
+        structured_prompt = structured_prompt + portrait_anchor
     
     # Add CRITICAL anti-timecode/text instructions (ULTRA-STRONG)
     anti_timecode = (
@@ -279,46 +290,63 @@ def generate_with_gemini(
     structured_prompt = structured_prompt + anti_timecode
     
     # Add negative prompt emphasis
-    negative_emphasis = "\n\nNEVER INCLUDE: Text overlays, timecode, date stamps, timestamps, time displays, numbers, letters, words, 'DEC 14 1993', '4:32 PM', 'PCC HISS', 'REC', battery indicators, recording icons, ANY TEXT. Borders, frames, black bars, white borders, photo edges, polaroid frames, picture frames, matting, letterbox bars, any kind of border or frame element. Person visible, human visible, man visible, character visible, head visible, shoulders visible, back of head, person's back, body parts, hands, arms, legs, feet."
+    if portrait_mode:
+        negative_emphasis = (
+            "\n\nNEVER INCLUDE: Text overlays, timecode, date stamps, timestamps, time displays, "
+            "numbers, letters, words, 'DEC 14 1993', '4:32 PM', 'PCC HISS', 'REC', battery "
+            "indicators, recording icons, ANY TEXT. Borders, frames, black bars, white borders, "
+            "photo edges, polaroid frames, picture frames, matting, letterbox bars, any kind of "
+            "border or frame element. Wide establishing shot, full-body distant figure, empty room "
+            "with no subject, security-camera angle."
+        )
+        photographic_anchor = (
+            "\n\nOPTICAL REALITY - CINEMATIC STILL:\n"
+            "Photographed on 35mm film with a fast prime lens, shallow depth of field.\n"
+            "Real light, real skin/surface texture, natural film grain — NOT CGI, NOT a game render.\n"
+            "Analog-horror 1993 mood: muted palette, slight color fade, tactile grain.\n"
+            "Subject holds eye contact or a charged near-look; background soft and suggestive of the scene.\n"
+        )
+    else:
+        negative_emphasis = "\n\nNEVER INCLUDE: Text overlays, timecode, date stamps, timestamps, time displays, numbers, letters, words, 'DEC 14 1993', '4:32 PM', 'PCC HISS', 'REC', battery indicators, recording icons, ANY TEXT. Borders, frames, black bars, white borders, photo edges, polaroid frames, picture frames, matting, letterbox bars, any kind of border or frame element. Person visible, human visible, man visible, character visible, head visible, shoulders visible, back of head, person's back, body parts, hands, arms, legs, feet."
     
-    # OPTICAL REALITY ANCHOR - Critical for first frame to set the tone
-    photographic_anchor = (
-        "\n\n📹 OPTICAL REALITY - REAL FOOTAGE:\n"
-        "This is REAL LIGHT captured through REAL GLASS OPTICS onto PHYSICAL MAGNETIC TAPE.\n"
-        "This is PHOTOGRAPHIC REALITY - actual camera capturing actual physical world.\n"
-        "NOT: video game, 3D render, CGI, game engine, Unity, Unreal Engine, digital art\n"
-        "NOT: Game screenshot with filters, rendered graphics with effects added\n"
-        "NOT: Fake artifacts, fake glitches, digital effects overlaid on render\n\n"
-        "OPTICAL CAPTURE:\n"
-        "Real optical lens capturing real light bouncing off real physical surfaces\n"
-        "Natural lighting, natural shadows, natural reflections - PHYSICAL WORLD\n"
-        "Camera optics: real glass lens, real sensor, real photographic process\n"
-        "This is PHOTOGRAPHY - light captured by camera, not graphics rendered by computer\n\n"
-        "PHOTOGRAPHIC CHAOS - ANTI-POLYGON ENFORCEMENT:\n"
-        "NOTHING is clean, geometric, or modeled. This is MESSY REALITY:\n"
-        "Ground: IRREGULAR with dirt clumps, sand ripples, footprints, debris, vegetation patches\n"
-        "Surfaces: WEATHERED with rust streaks, stains, peeling paint, cracks, damage\n"
-        "Fences: BENT, sagging, irregular - NOT straight polygon lines\n"
-        "Buildings: ASYMMETRIC with broken windows, varying textures, organic decay\n"
-        "Sky: ATMOSPHERIC DEPTH with cloud detail, haze, gradient - NOT flat color plane\n"
-        "Shadows: SOFT and DIFFUSE from real sunlight through atmosphere\n"
-        "Textures: VARIED and COMPLEX - no repeated patterns, no tiling, organic randomness\n"
-        "FORBIDDEN: Flat textured planes, geometric shapes, polygon meshes, 3D models, game assets\n"
-        "FORBIDDEN: Clean edges, perfect lines, Unity terrain, repeated textures, tiled surfaces\n"
-        "REQUIRED: Optical chaos, irregular forms, messy natural detail, photographic complexity\n\n"
-        "TAPE MEDIUM:\n"
-        "Recorded onto VHS magnetic tape (consumer analog format, 1990s)\n"
-        "Tape introduces natural softness, slight color shifts, gentle noise\n"
-        "Tape characteristics are SUBTLE - natural consequence of analog storage medium\n"
-        "NOT fake digital artifacts - real physical tape properties\n\n"
-        "HISTORICAL REFERENCE - LOOKS EXACTLY LIKE:\n"
-        "1991 Gulf War CNN news footage (Bernard Shaw, Peter Arnett)\n"
-        "1992 Rodney King video (George Holliday's camcorder)\n"
-        "1993 Waco siege news coverage (live broadcast footage)\n"
-        "Alive in Joburg (2005) - Neill Blomkamp documentary-style handheld\n"
-        "Early 1990s amateur home video, news B-roll, surveillance footage\n"
-        "Real historical footage - NOT modern recreations or game graphics with filters"
-    )
+        # OPTICAL REALITY ANCHOR - Critical for first frame to set the tone
+        photographic_anchor = (
+            "\n\n📹 OPTICAL REALITY - REAL FOOTAGE:\n"
+            "This is REAL LIGHT captured through REAL GLASS OPTICS onto PHYSICAL MAGNETIC TAPE.\n"
+            "This is PHOTOGRAPHIC REALITY - actual camera capturing actual physical world.\n"
+            "NOT: video game, 3D render, CGI, game engine, Unity, Unreal Engine, digital art\n"
+            "NOT: Game screenshot with filters, rendered graphics with effects added\n"
+            "NOT: Fake artifacts, fake glitches, digital effects overlaid on render\n\n"
+            "OPTICAL CAPTURE:\n"
+            "Real optical lens capturing real light bouncing off real physical surfaces\n"
+            "Natural lighting, natural shadows, natural reflections - PHYSICAL WORLD\n"
+            "Camera optics: real glass lens, real sensor, real photographic process\n"
+            "This is PHOTOGRAPHY - light captured by camera, not graphics rendered by computer\n\n"
+            "PHOTOGRAPHIC CHAOS - ANTI-POLYGON ENFORCEMENT:\n"
+            "NOTHING is clean, geometric, or modeled. This is MESSY REALITY:\n"
+            "Ground: IRREGULAR with dirt clumps, sand ripples, footprints, debris, vegetation patches\n"
+            "Surfaces: WEATHERED with rust streaks, stains, peeling paint, cracks, damage\n"
+            "Fences: BENT, sagging, irregular - NOT straight polygon lines\n"
+            "Buildings: ASYMMETRIC with broken windows, varying textures, organic decay\n"
+            "Sky: ATMOSPHERIC DEPTH with cloud detail, haze, gradient - NOT flat color plane\n"
+            "Shadows: SOFT and DIFFUSE from real sunlight through atmosphere\n"
+            "Textures: VARIED and COMPLEX - no repeated patterns, no tiling, organic randomness\n"
+            "FORBIDDEN: Flat textured planes, geometric shapes, polygon meshes, 3D models, game assets\n"
+            "FORBIDDEN: Clean edges, perfect lines, Unity terrain, repeated textures, tiled surfaces\n"
+            "REQUIRED: Optical chaos, irregular forms, messy natural detail, photographic complexity\n\n"
+            "TAPE MEDIUM:\n"
+            "Recorded onto VHS magnetic tape (consumer analog format, 1990s)\n"
+            "Tape introduces natural softness, slight color shifts, gentle noise\n"
+            "Tape characteristics are SUBTLE - natural consequence of analog storage medium\n"
+            "NOT fake digital artifacts - real physical tape properties\n\n"
+            "HISTORICAL REFERENCE - LOOKS EXACTLY LIKE:\n"
+            "1991 Gulf War CNN news footage (Bernard Shaw, Peter Arnett)\n"
+            "1992 Rodney King video (George Holliday's camcorder)\n"
+            "1993 Waco siege news coverage (live broadcast footage)\n"
+            "Alive in Joburg (2005) - Neill Blomkamp documentary-style handheld\n"
+            "Early 1990s amateur home video, news B-roll, surveillance footage\n"
+            "Real historical footage - NOT modern recreations or game graphics with filters"
+        )
     
     # Put anti-timecode FIRST (highest attention), then the rest
     structured_prompt = anti_timecode + "\n\n" + structured_prompt + negative_emphasis + photographic_anchor
@@ -349,7 +377,11 @@ def generate_with_gemini(
     }
     
     # Lowest resolution the Lite model offers (1K) — fastest generation.
-    image_config = {"aspectRatio": "4:3", "imageSize": "1K"}
+    # Portrait Moments prefer a wider cinematic frame; environment stills stay 4:3.
+    _ar = aspect_ratio if aspect_ratio in ("16:9", "4:3", "3:4", "1:1", "9:16") else "4:3"
+    if portrait_mode and aspect_ratio == "4:3":
+        _ar = "16:9"
+    image_config = {"aspectRatio": _ar, "imageSize": "1K"}
     
     payload = {
         "contents": [{
@@ -748,7 +780,9 @@ def generate_gemini_img2img(
     action_context: str = "",
     hd_mode: bool = True,
     output_dir: Path = None,
-    is_flipbook: bool = False
+    is_flipbook: bool = False,
+    portrait_mode: bool = False,
+    ensemble_mode: bool = False,
 ) -> str:
     """
     Edit an image using Google Gemini (image-to-image).
@@ -763,6 +797,14 @@ def generate_gemini_img2img(
         time_of_day: Time of day for lighting consistency
         hd_mode: If True, use Pro model for higher quality (slower). If False, use Flash for speed.
         is_flipbook: If True, suppress single-image constraints (like NO BORDERS).
+        ensemble_mode: When True, treat EVERY reference image as an independent
+            character/prop portrait to be composited into a BRAND NEW location
+            described by `prompt` — NOT the current environment and NOT the
+            previous moment. Used by the CAMP moment to gather multiple
+            companions (+ the jeep prop) around a campfire that isn't the
+            scene the player is standing in. Mutually exclusive in spirit with
+            `portrait_mode` (which reframes ONE character INTO the current
+            environment) — pass only one of the two as True.
         
     Returns:
         Local path to the saved image
@@ -831,8 +873,74 @@ def generate_gemini_img2img(
         time_injection = f"\n\n⏰ CRITICAL TIME/ATMOSPHERE CONSTRAINTS:\n{time_of_day}\nThe lighting, weather, and atmosphere MUST match these exact conditions. This is non-negotiable.\n"
         structured_prompt = structured_prompt + time_injection
     
-    # Add continuity instructions - DIFFERENT for flipbook vs single-frame img2img
-    if is_flipbook:
+    # Add continuity instructions - DIFFERENT for flipbook vs single-frame img2img.
+    # ensemble_mode takes precedence over portrait_mode when both are set: camp
+    # composites pass portrait_mode=True only to allow people (skip anti-person),
+    # while the continuity grammar must be the NEW-LOCATION ensemble path.
+    if ensemble_mode:
+        # ENSEMBLE COMPOSITE: each reference is a stand-alone character/prop
+        # portrait (companion portraits + the jeep prop), not the environment
+        # the player is currently standing in. The instruction describes a
+        # BRAND NEW location (e.g. a night campsite) — build it from scratch
+        # and populate it with everyone referenced.
+        continuity_instruction = (
+            "\n\n🔥 CRITICAL — ENSEMBLE COMPOSITE INTO A NEW LOCATION:\n"
+            "═══════════════════════════════════════════════════════════════════\n"
+            "Each reference image is an independent PORTRAIT of ONE specific\n"
+            "person, OR a reference photo of ONE specific prop/vehicle — captured\n"
+            "somewhere else, at some other time. They are NOT the current\n"
+            "environment and NOT the previous frame of any video.\n"
+            "\n"
+            "The instruction describes a NEW location. Build that location from\n"
+            "the instruction's own description — do NOT reuse the background,\n"
+            "room, or setting visible behind any reference subject.\n"
+            "\n"
+            "COPY from each PERSON reference (so they read as the SAME person):\n"
+            "✅ Face, build, approximate age, hair, and clothing/style\n"
+            "✅ Their general demeanor/expression\n"
+            "COPY from each PROP/VEHICLE reference (so it reads as the SAME object):\n"
+            "✅ Exact color, make/model silhouette, condition (dust, dents, wear)\n"
+            "\n"
+            "DO NOT COPY from any reference:\n"
+            "❌ Its background, lighting setup, or location — that belongs to a\n"
+            "  different place and time; the NEW scene has its own lighting\n"
+            "❌ Framing/composition — recompose everyone into ONE coherent wide\n"
+            "  shot appropriate to the instruction, not a collage of close-ups\n"
+            "\n"
+            "EVERY person and prop referenced MUST appear, clearly recognizable,\n"
+            "placed naturally within the new location described. This is a full\n"
+            "environment shot — a wide establishing shot is correct here."
+        )
+    elif portrait_mode:
+        # CONVERSATION PORTRAIT: the reference IS the environment the player is
+        # standing in. Keep that room/lighting/grain/palette, but re-frame it as
+        # the NEXT SHOT — a cinematic medium shot of the character being spoken
+        # to, standing IN that same place. This is the whole point: the portrait
+        # must read as the same continuous scene, not a new location.
+        continuity_instruction = (
+            "\n\n🎬 CRITICAL — SAME PLACE, NEXT SHOT (CONVERSATION PORTRAIT):\n"
+            "═══════════════════════════════════════════════════════════════════\n"
+            "The reference image is the EXACT environment the camera is in RIGHT NOW.\n"
+            "Generate the NEXT SHOT: a cinematic MEDIUM SHOT of the character being\n"
+            "spoken to, standing IN THAT SAME ROOM/PLACE — as if the camera simply\n"
+            "turned to face them. It must feel like the same continuous footage.\n"
+            "\n"
+            "COPY from the reference (non-negotiable continuity):\n"
+            "✅ ENVIRONMENT: same room/location, same walls, props, depth, background\n"
+            "✅ LIGHTING: same light sources, color temperature, shadow direction\n"
+            "✅ PALETTE + FILM LOOK: same VHS grain, color grade, analog degradation\n"
+            "✅ TIME OF DAY / ATMOSPHERE: identical to the reference\n"
+            "\n"
+            "CHANGE (the reframe):\n"
+            "→ FRAMING: a cinematic medium shot (mid-torso up) of the CHARACTER\n"
+            "→ FOCUS: the character is the subject, sharp; background soft (shallow DoF)\n"
+            "→ COMPOSITION: character centered/eye-line to camera, present and lit\n"
+            "\n"
+            "The character described in the instruction now OCCUPIES this environment.\n"
+            "Think: the operator lowered the camera and turned to face the person\n"
+            "they're talking to — same tape, same room, one shot later."
+        )
+    elif is_flipbook:
         # FLIPBOOK MODE: The FIRST reference image (panel 16 of previous sequence) is the
         # SPATIAL GROUND TRUTH — Frame 1 of the new grid must continue from that exact position.
         continuity_instruction = (
@@ -912,20 +1020,46 @@ def generate_gemini_img2img(
         flipbook_grid_note = "\n\nCRITICAL - 4x4 GRID STRUCTURE:\nPreserve the 4x4 grid structure from the layout template. Each panel must show a slightly different moment in time. The output MUST be a 4x4 grid."
         structured_prompt = structured_prompt + flipbook_grid_note
     
-    # Add CRITICAL anti-person instructions WITH REMOVAL DIRECTIVE
-    anti_person = "\n\n🚨 CRITICAL - REMOVE ANY PEOPLE FROM REFERENCE IMAGE:\n\n" \
-                 "The REFERENCE IMAGE may contain a person/character - this is WRONG. Your job is to REMOVE THEM.\n\n" \
-                 "GENERATE THE EXACT SAME SCENE but with the person DELETED. Show ONLY the environment.\n\n" \
-                 "This is a SECURITY CAMERA view - no camera operator exists. PURE environmental shot.\n\n" \
-                 "NEVER INCLUDE:\n" \
-                 "- Person visible (standing, walking, crouching, any pose)\n" \
-                 "- Head, back of head, shoulders, silhouette\n" \
-                 "- Arms, hands, legs, feet, body parts\n" \
-                 "- Person from behind, person from side, person from any angle\n" \
-                 "- Character visible in any way\n\n" \
-                 "ONLY SHOW: Environment, objects, vehicles, structures, sky, ground, debris, fire, smoke - NO HUMANS."
-    
-    structured_prompt = structured_prompt + anti_person
+    # Anti-person REMOVAL directive — for environment stills only. Portrait and
+    # ensemble modes deliberately INCLUDE people (conversation close-up / camp
+    # cast reunion), so skip the removal and instead instruct inclusion.
+    if ensemble_mode:
+        add_ensemble = (
+            "\n\n🔥 CRITICAL - ENSEMBLE CAST MUST APPEAR:\n\n"
+            "Unlike the game's empty environment shots, THIS wide establishing\n"
+            "shot MUST feature every referenced person AND every referenced prop\n"
+            "or vehicle, seated/placed naturally in the NEW location described.\n"
+            "Do NOT delete or hide them. Do NOT turn this into an empty plate if\n"
+            "people were referenced. If ONLY a prop/vehicle was referenced (no\n"
+            "people), show that prop alone in the quiet campsite — no invented\n"
+            "extra cast. Firelight is the key light; faces and the vehicle must\n"
+            "be recognizable."
+        )
+        structured_prompt = structured_prompt + add_ensemble
+    elif portrait_mode:
+        add_person = (
+            "\n\n🎭 CRITICAL - THE CHARACTER IS THE SUBJECT:\n\n"
+            "Unlike the game's environment shots, THIS shot MUST feature the person.\n"
+            "Render the character described in the instruction as a real, present\n"
+            "human (or being) standing in the reference environment, framed as a\n"
+            "cinematic medium shot. Do NOT delete or hide them. Do NOT turn this\n"
+            "into an empty room. The character faces the camera, clearly lit and\n"
+            "in focus, with the reference environment softly behind them."
+        )
+        structured_prompt = structured_prompt + add_person
+    else:
+        anti_person = "\n\n🚨 CRITICAL - REMOVE ANY PEOPLE FROM REFERENCE IMAGE:\n\n" \
+                     "The REFERENCE IMAGE may contain a person/character - this is WRONG. Your job is to REMOVE THEM.\n\n" \
+                     "GENERATE THE EXACT SAME SCENE but with the person DELETED. Show ONLY the environment.\n\n" \
+                     "This is a SECURITY CAMERA view - no camera operator exists. PURE environmental shot.\n\n" \
+                     "NEVER INCLUDE:\n" \
+                     "- Person visible (standing, walking, crouching, any pose)\n" \
+                     "- Head, back of head, shoulders, silhouette\n" \
+                     "- Arms, hands, legs, feet, body parts\n" \
+                     "- Person from behind, person from side, person from any angle\n" \
+                     "- Character visible in any way\n\n" \
+                     "ONLY SHOW: Environment, objects, vehicles, structures, sky, ground, debris, fire, smoke - NO HUMANS."
+        structured_prompt = structured_prompt + anti_person
     
     # Add CRITICAL anti-timecode/text instructions (ULTRA-STRONG for img2img)
     anti_timecode = (
@@ -943,8 +1077,14 @@ def generate_gemini_img2img(
     
     structured_prompt = structured_prompt + anti_timecode
     
-    # Add negative prompt emphasis
-    negative_emphasis = "\n\nNEVER INCLUDE: Text overlays, timecode, date stamps, timestamps, time displays, numbers, letters, words, 'DEC 14 1993', '4:32 PM', 'PCC HISS', 'REC', battery indicators, recording icons, ANY TEXT. Borders, frames, black bars, white borders, photo edges, polaroid frames, picture frames, matting, letterbox bars, any kind of border or frame element. Person visible, human visible, man visible, character visible, head visible, back of head, shoulders visible, person's back, character's back, body parts, hands, arms, legs, feet, torso, silhouette, person from behind."
+    # Add negative prompt emphasis. Portrait/ensemble keep the text/border bans
+    # but drop the person bans (characters are intentional subjects).
+    if ensemble_mode:
+        negative_emphasis = "\n\nNEVER INCLUDE: Text overlays, timecode, date stamps, timestamps, time displays, numbers, letters, words, 'DEC 14 1993', '4:32 PM', 'PCC HISS', 'REC', battery indicators, recording icons, ANY TEXT. Borders, frames, black bars, white borders, photo edges, polaroid frames, picture frames, matting, letterbox bars, any kind of border or frame element. Collage layout, split-screen of separate portraits, floating heads, mismatched lighting that ignores the campfire."
+    elif portrait_mode:
+        negative_emphasis = "\n\nNEVER INCLUDE: Text overlays, timecode, date stamps, timestamps, time displays, numbers, letters, words, 'DEC 14 1993', '4:32 PM', 'PCC HISS', 'REC', battery indicators, recording icons, ANY TEXT. Borders, frames, black bars, white borders, photo edges, polaroid frames, picture frames, matting, letterbox bars, any kind of border or frame element. Empty room with no subject, wide establishing shot, a completely different location than the reference."
+    else:
+        negative_emphasis = "\n\nNEVER INCLUDE: Text overlays, timecode, date stamps, timestamps, time displays, numbers, letters, words, 'DEC 14 1993', '4:32 PM', 'PCC HISS', 'REC', battery indicators, recording icons, ANY TEXT. Borders, frames, black bars, white borders, photo edges, polaroid frames, picture frames, matting, letterbox bars, any kind of border or frame element. Person visible, human visible, man visible, character visible, head visible, back of head, shoulders visible, person's back, character's back, body parts, hands, arms, legs, feet, torso, silhouette, person from behind."
     
     # OPTICAL REALITY ANCHOR - Prevent video game aesthetic drift over time
     photographic_anchor = (
@@ -1023,7 +1163,9 @@ def generate_gemini_img2img(
         "generationConfig": {
             "responseModalities": ["IMAGE"],
             "imageConfig": {
-                "aspectRatio": "4:3",
+                # Conversation portraits stay wide; ensemble CAMP plates match
+                # the game's 4:3 stills so mobile contain-fit matches gameplay.
+                "aspectRatio": "4:3" if ensemble_mode else ("16:9" if portrait_mode else "4:3"),
                 "imageSize": "1K"  # Lowest res Nano Banana 2 Lite offers — fastest generation
             }
         },

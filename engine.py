@@ -16,6 +16,7 @@ sys.stdout.flush()
 sys.stderr.flush()
 import base64
 import concurrent.futures
+import hashlib
 import json
 import os
 import random
@@ -25,6 +26,7 @@ import threading
 import time # Added for sleep
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import quote
 from typing import Optional, List, Dict, Any
 import logging
 print("[ENGINE] stdlib imports complete", flush=True); sys.stdout.flush()
@@ -424,8 +426,11 @@ if GEMINI_API_KEY:
     print(f"[ENGINE INIT] Key: {GEMINI_API_KEY[:20]}...{GEMINI_API_KEY[-8:]} (len={len(GEMINI_API_KEY)})")
 print(f"[ENGINE INIT] Source: os.getenv={bool(os.getenv('GEMINI_API_KEY'))}, config={bool(CONFIG.get('GEMINI_API_KEY'))}")
 
-# Load prompts
-PROMPTS = json.load((ROOT/"prompts"/"simulation_prompts.json").open(encoding="utf-8"))
+# Load prompts — shared, hot-reloadable singleton (see prompts_store.py).
+# Every PROMPTS["key"] / PROMPTS.get("key") access below automatically picks
+# up edits made through the World Studio editor on the next request, with no
+# process restart required.
+from prompts_store import PROMPTS
 
 # Game constants - Structured time/atmosphere tracking
 INITIAL_TIME_OF_DAY = "6:30pm | weather: clear, warm light | mood: tense anticipation"  # Start time matching world_initial_state
@@ -1096,7 +1101,7 @@ class _SkipImage(Exception):
     pass
 
 
-def _to_web_image_url(image_path) -> Optional[str]:
+def _to_web_image_url(image_path, session_id: str = 'default') -> Optional[str]:
     """Convert an image path from _gen_image into a browser-servable URL for
     the standalone feed.
 
@@ -1104,6 +1109,16 @@ def _to_web_image_url(image_path) -> Optional[str]:
     (sessions/<id>/images/<file>.png), which the Discord bot attaches directly
     but a web browser cannot load. The standalone /images/<filename> route
     serves those files by basename, so feed items must reference that URL form.
+
+    Because every session writes into its OWN images/ dir (and different
+    sessions can produce identically-named files — the basename is a
+    deterministic hash of the caption), the flat basename alone is ambiguous:
+    the /images route can only guess a directory and 404s whenever the active
+    session isn't 'default' (e.g. a shared '/play?session=<id>' link). We embed
+    the session as a '?session=<id>' query param so the route resolves the
+    exact per-session directory. Omitted for the 'default'/'legacy' dirs to keep
+    URLs stable for the standalone path.
+
     Returns None for falsy/failed inputs; passes through values already in
     '/images/..' form.
     """
@@ -1112,13 +1127,17 @@ def _to_web_image_url(image_path) -> Optional[str]:
     s = str(image_path)
     if s.startswith("/images/"):
         return s
-    return "/images/" + os.path.basename(s)
+    url = "/images/" + os.path.basename(s)
+    if session_id and session_id not in ('default', 'legacy'):
+        url += "?session=" + quote(str(session_id), safe='')
+    return url
 
 # ───────── prompt fragments ──────────────────────────────────────────────────
-choice_tmpl     = PROMPTS["player_choice_generation_instructions"]
-dispatch_sys    = PROMPTS["action_consequence_instructions"]
-neg_prompt      = PROMPTS["image_negative_prompt"]
-narrative_tmpl  = PROMPTS["field_notes_format"]
+# NOTE: these used to be snapshotted into plain string constants at import
+# time (choice_tmpl / dispatch_sys / neg_prompt / narrative_tmpl), which meant
+# editing prompts/simulation_prompts.json on disk had no effect until the
+# process restarted. They're now looked up live via PROMPTS[...] at every
+# call site below so World Studio edits apply on the very next turn.
 
 RISKY_ACTION_KEYWORDS = [
     "risky", "dangerous", "reckless", "chance it", "gamble", "all or nothing", 
@@ -1917,42 +1936,85 @@ def _ask_claude(prompt: str, model_name: str, temp: float, tokens: int, image_pa
         return "Signal interrupted..."
 
 # ───────── path resolution helper ───────────────────────────────────────────
-def _resolve_image_path(image_path: str) -> Path:
+def _resolve_image_path(image_path: str, session_id: str = None) -> Path:
     """
     Resolve image path to actual filesystem location.
-    Handles both absolute (session-specific) and relative (legacy) paths.
-    
+
+    Handles absolute (session-specific) and web (``/images/<name>``) paths, and
+    is SESSION-AWARE: web URLs carry a ``?session=<id>`` hint (stamped by
+    ``_to_web_image_url``) because each session writes into its OWN
+    ``sessions/<id>/images`` dir. Mirrors the ``/images/<filename>`` serve
+    route's resolution order (session dir -> default -> legacy root -> scan) so
+    a per-session image (e.g. a companion portrait) actually resolves instead of
+    falling back to the legacy root dir and reporting "missing".
+
     Args:
-        image_path: Path like "/opt/.../sessions/default/images/file.png" 
-                    or "/images/file.png"
-                    or "images/file.png"
-    
+        image_path: e.g. ``/images/file.png``, ``/images/file.png?session=abc``,
+                    ``images/file.png``, or an absolute path.
+        session_id: explicit session hint (wins over any ``?session=`` query).
+
     Returns:
-        Path object pointing to actual file location
+        A Path to the file (existing when found); on a miss returns the legacy
+        ``ROOT/images/<name>`` guess so callers' ``.exists()`` checks still work.
     """
     if not image_path:
         return None
-    
-    path = Path(image_path)
-    
-    # If already absolute and exists, use it
-    if path.is_absolute():
-        if path.exists():
-            return path
-        # Absolute but doesn't exist - maybe it's a different session
-        # Try to find it in images directory
-        return ROOT / "images" / path.name
-    
-    # Relative path handling
-    if image_path.startswith("/images/"):
-        # Legacy format: "/images/filename.png"
-        return ROOT / "images" / path.name
-    elif image_path.startswith("images/"):
-        # Another legacy format: "images/filename.png"
-        return ROOT / image_path
-    else:
-        # Just a filename
-        return ROOT / "images" / path.name
+
+    s = str(image_path)
+    hint = session_id
+    # Strip a ?session=<id> hint (part of the URL, not the filename).
+    if "?" in s:
+        base, _, query = s.partition("?")
+        if not hint:
+            try:
+                from urllib.parse import parse_qs
+                q = parse_qs(query)
+                hint = (q.get("session") or q.get("session_id") or [None])[0]
+            except Exception:
+                hint = None
+        s = base
+
+    path = Path(s)
+    # Absolute path that exists — use it directly.
+    if path.is_absolute() and path.exists():
+        return path
+
+    name = path.name
+    candidates = []
+    if hint and hint not in ('default', 'legacy'):
+        try:
+            candidates.append(Path(_get_image_dir(hint)) / name)
+        except Exception:
+            pass
+    # 'images/<name>' legacy relative form maps under ROOT as-is.
+    if s.startswith("images/"):
+        candidates.append(ROOT / s)
+    try:
+        candidates.append(Path(_get_image_dir('default')) / name)
+    except Exception:
+        pass
+    candidates.append(ROOT / "images" / name)
+    for c in candidates:
+        try:
+            if c.exists():
+                return c
+        except Exception:
+            pass
+
+    # Last resort: scan session image dirs for the basename (covers URLs that
+    # lost their session hint). Only reached when the file wasn't found above,
+    # so it never runs in the common path.
+    try:
+        sessions_root = ROOT / "sessions"
+        if sessions_root.exists():
+            for sess in sessions_root.iterdir():
+                cand = sess / "images" / name
+                if cand.exists():
+                    return cand
+    except Exception:
+        pass
+
+    return ROOT / "images" / name
 
 # ───────── vision description helper ────────────────────────────────────────
 def _downscale_for_vision(image_path: str, size=(640, 426)) -> io.BytesIO:
@@ -3153,7 +3215,7 @@ def generate_directive(session_id: str = "default") -> dict:
 
 # ───────── world report (with vision‑desc) ─────────────────────────────────
 def _world_report() -> str:
-    base = narrative_tmpl.format(
+    base = PROMPTS["field_notes_format"].format(
         context=state["world_prompt"],
         last_choice=state["last_choice"]
     )
@@ -3208,7 +3270,7 @@ def _generate_dispatch(choice: str, state: dict, prev_state: dict = None) -> dic
         
         # System instructions + user prompt combined for Gemini
         prompt = (
-            f"{dispatch_sys}\n\n"
+            f"{PROMPTS['action_consequence_instructions']}\n\n"
             f"PLAYER CHOICE: '{choice}'\n"
             f"WORLD CONTEXT: {state['world_prompt']}\n"
             f"PREVIOUS: {prev_state['world_prompt'] if prev_state else ''}"
@@ -3568,6 +3630,14 @@ def build_image_prompt(
             f"Visible landmarks from this position MUST remain consistent.\n\n"
         ) + prompt
 
+    # LEAVE CAMP → new level: forbid vehicle-cabin POVs even if narrative drifts.
+    choice_l = (player_choice or "").lower()
+    if (
+        hard_transition
+        and ("leave camp" in choice_l or "not inside any vehicle" in choice_l)
+    ):
+        prompt = f"{prompt}\n\n{_CAMP_LEAVE_ON_FOOT_CONSTRAINT}"
+
     # ── Movement-type guidance ────────────────────────────────────────────────
     if prev_vision_analysis:
         if hard_transition:
@@ -3617,6 +3687,87 @@ REALTIME_STYLE_ANCHOR = os.getenv(
     "aberration, slightly desaturated, low-light dread and horror atmosphere. "
     "Eye-level walking vantage with a medium-wide field of view",
 )
+
+# Conversation Moment portraits use a DIFFERENT lens language than the handheld
+# camcorder world view — a shallow-DoF cinematic medium shot — so the cut into
+# dialogue reads as a register change (Mass Effect / Persona style), not a
+# different game. Era/palette stay continuous with the 1993 analog-horror world.
+CONVERSATION_PORTRAIT_STYLE_ANCHOR = os.getenv(
+    "CONVERSATION_PORTRAIT_STYLE_ANCHOR",
+    "stylish cinematic medium shot, 35mm film still, shallow depth of field, "
+    "dramatic rim lighting, soft bokeh background, analog-horror 1993 muted palette, "
+    "subtle film grain, intimate character portrait from mid-torso up",
+)
+
+# Soft budget: how many conversation portraits a single session may mint.
+# Cached hits do not count. Prevents runaway cost if a player re-opens TALK a lot.
+CONVERSATION_PORTRAIT_BUDGET = int(os.getenv("CONVERSATION_PORTRAIT_BUDGET", "12"))
+
+# In-memory portrait cache: (session_id, subject_label, scene_hash) -> web url.
+# Cleared implicitly when the process restarts; disk files remain in session images/.
+_PORTRAIT_CACHE: dict = {}
+_PORTRAIT_CACHE_LOCK = threading.Lock()
+_PORTRAIT_SPEND: dict = {}  # session_id -> count of generations this session
+
+# Camp establishing-shot cache: (session_id, sorted_labels, jeep_hash) -> web url.
+# Revisiting camp with the same roster reuses the shot (no re-generation).
+_CAMP_CACHE: dict = {}
+_CAMP_CACHE_LOCK = threading.Lock()
+
+# Fixed seat slots around the fire, keyed by attendee count. Approximate
+# tap-target positions (x_pct / y_pct of the establishing shot) — no vision.
+_CAMP_SEATS = {
+    1: [{"x_pct": 50, "y_pct": 62}],
+    2: [{"x_pct": 32, "y_pct": 60}, {"x_pct": 68, "y_pct": 60}],
+    3: [{"x_pct": 28, "y_pct": 62}, {"x_pct": 50, "y_pct": 58}, {"x_pct": 72, "y_pct": 62}],
+    4: [
+        {"x_pct": 22, "y_pct": 64}, {"x_pct": 40, "y_pct": 58},
+        {"x_pct": 60, "y_pct": 58}, {"x_pct": 78, "y_pct": 64},
+    ],
+    5: [
+        {"x_pct": 18, "y_pct": 66}, {"x_pct": 34, "y_pct": 58},
+        {"x_pct": 50, "y_pct": 55}, {"x_pct": 66, "y_pct": 58},
+        {"x_pct": 82, "y_pct": 66},
+    ],
+}
+
+_JEEP_PROP_PROMPT = (
+    "Hero plate of a dusty bright-red 1990s Jeep Cherokee / Wrangler, parked alone "
+    "in empty high-desert scrub at dusk. Three-quarter view from the front-left, "
+    "vehicle fills most of the frame, weathered paint, mud-caked tires, spare tire "
+    "on the back, chrome details dulled by dust. No people, no other vehicles, no "
+    "text, photoreal cinematic still, VHS analog grain, muted 1993 palette."
+)
+
+# Bump when camp plate grammar changes so stale jeep-/companion-less caches regenerate.
+_CAMP_CACHE_VERSION = "v4-all-companions"
+
+# Canonical LEAVE CAMP → new-level choice. Must keep hard-transition detectors
+# ("leave ", "new location") firing, but MUST NOT mention driving / the jeep —
+# cab/dashboard POVs break the walkable realtime world model after camp.
+_CAMP_LEAVE_CHOICE = (
+    "Leave camp and walk into a new outdoor location across the desert — "
+    "arrive on foot at eye level with open ground ahead, not inside any vehicle."
+)
+_CAMP_LEAVE_ON_FOOT_CONSTRAINT = (
+    "CRITICAL — ON-FOOT ARRIVAL (no vehicle cabin): first-person eye-level walking "
+    "vantage outdoors on open ground. Do NOT show a vehicle interior, dashboard, "
+    "steering wheel, windshield frame, seats, or hands on a wheel. Do NOT place the "
+    "camera inside any truck, jeep, or car. If a vehicle appears it is ONLY distant "
+    "or parked far behind — never the camera's location."
+)
+
+
+def _normalize_camp_leave_choice(choice: str, source: Optional[str] = None) -> str:
+    """Rewrite LEAVE CAMP turns onto the canonical on-foot arrival choice.
+
+    Older clients still send \"drive the red jeep…\"; that text makes Gemini and
+    the world model spawn a driving cab. Always normalize when ``source`` is
+    ``camp_leave``, regardless of the raw choice string.
+    """
+    if (source or "").strip() == "camp_leave":
+        return _CAMP_LEAVE_CHOICE
+    return choice or ""
 
 
 def realtime_action_beat(choice: str = "") -> str:
@@ -5120,7 +5271,7 @@ def begin_tick() -> dict:
     # Condense world state for choices
     situation_summary = summarize_world_state(state)
     options = generate_choices(
-        client, choice_tmpl,
+        client, PROMPTS["player_choice_generation_instructions"],
         situation_report,
         n=3,
         seen_elements=', '.join(state.get('seen_elements', [])[-10:]),  # Last 10 discovered entities
@@ -5548,7 +5699,7 @@ def _generate_and_append_scene_image(caption: str, dispatch: str, choice: str, f
                       f"(turn resolves, realtime keeps steering)", flush=True)
                 return None
 
-            web = _to_web_image_url(img_path)
+            web = _to_web_image_url(img_path, session_id)
             item = create_feed_item(
                 type="scene_image",
                 content="",
@@ -5642,6 +5793,43 @@ def _generate_and_append_scene_image(caption: str, dispatch: str, choice: str, f
                     "image_prompt": image_prompt, "render_prompt": render_prompt}
         except Exception as e:
             log_error(f"[SCENE IMG] failed: {e}")
+            # Do NOT swallow the turn's scene entirely. On the realtime (reactor)
+            # path the client only re-steers the live world when a scene_image
+            # feed item arrives with metadata.prompt; if an exception here emits
+            # nothing, the video never receives the new scene and appears to
+            # "just stop" (exactly the report: entered the dark hatch and the
+            # video never started). Emit a best-effort blocked beat so realtime
+            # keeps steering off the prompt and the turn's ceremony still
+            # resolves. Built from the always-available turn inputs since
+            # render_prompt/render_base may not have been reached before the
+            # throw. Guarded so a secondary failure can't mask the original.
+            try:
+                fb_base = build_realtime_base(visual_scene=caption, narrative=dispatch)
+                fb_prompt = build_realtime_prompt(
+                    visual_scene=caption, narrative=dispatch, choice=choice
+                )
+                fallback_item = create_feed_item(
+                    type="scene_image",
+                    content="",
+                    image_url=None,
+                    metadata={
+                        "prompt": fb_prompt,
+                        "base": fb_base,
+                        "hard_transition": bool(hard_transition),
+                        "blocked": True,
+                    },
+                )
+                with WORLD_STATE_LOCK:
+                    st = _load_state(session_id)
+                    st['current_render_prompt'] = fb_prompt
+                    st['current_render_base'] = fb_base
+                    _feed_append(st, fallback_item)
+                    _save_state(st, session_id)
+                    _sync_ambient_state(st, session_id)
+                print(f"[SCENE IMG] exception recovery for {session_id}: emitted signal-lost beat "
+                      f"so realtime keeps steering", flush=True)
+            except Exception as e2:
+                log_error(f"[SCENE IMG] failed to emit recovery beat: {e2}")
             return None
 
 
@@ -5728,7 +5916,7 @@ def generate_intro_turn_feed_items(session_id: str = 'default', new_state: Optio
     try:
         initial_choice_texts = generate_choices(
             client=client,
-            prompt_tmpl=choice_tmpl,
+            prompt_tmpl=PROMPTS["player_choice_generation_instructions"],
             last_dispatch=initial_narrative_content,
             world_prompt=new_state.get("world_prompt", "System Online."),
             image_description="Golden-hour desert at the perimeter fence of the Horizon facility; red mesas, chain-link fence, abandoned vehicles.",
@@ -6051,6 +6239,8 @@ def api_choose():
         # "scan_move") drive the story-escalation backend harder (see
         # _process_turn_background) so poking the world moves the plot + raises risk.
         action_source = data.get('source')
+        # LEAVE CAMP must arrive on foot — never in a cab/dashboard POV.
+        player_choice_text = _normalize_camp_leave_choice(player_choice_text, action_source)
 
         if DEBUG_MODE: print(f"[DEBUG] api_choose received choice: '{player_choice_text}', context_id: {context_item_id}. Current state ID: {id(state)}", flush=True)
 
@@ -6281,6 +6471,12 @@ def _ensure_disk_headroom(force: bool = False):
                 return True
             if p.suffix == ".db" or "_analytics" in p.parts:
                 return True
+            # Companion portraits are a persistent roster (see _record_companion)
+            # meant to be reused across scenes for a continuing story — never
+            # sweep them. Prop images (e.g. prop_jeep.png) are the same idea
+            # for durable objects (see _record_prop).
+            if p.name.startswith("companion_") or p.name.startswith("prop_"):
+                return True
             return False
 
         # How much to free (with a little extra so we don't immediately re-trip).
@@ -6355,7 +6551,7 @@ def _ingest_realtime_frame(frame_b64: str, session_id: str = 'default'):
     fname = f"observed_{int(_time.time() * 1000)}.png"
     fpath = img_dir / fname
     fpath.write_bytes(img_bytes)
-    web = f"/images/{fname}"
+    web = _to_web_image_url(fname, session_id)
 
     # Bound the transient-frame footprint so a long session can't fill the disk
     # (which would make every subsequent image write fail — see the helper's
@@ -6804,7 +7000,8 @@ def _format_vision_for_persona(subject_label: str, snapshot: dict) -> str:
     )
 
 
-def build_talk_context(subject: dict, session_id: str = "default", opening_override: str = "") -> dict:
+def build_talk_context(subject: dict, session_id: str = "default", opening_override: str = "",
+                       include_vision: bool = True) -> dict:
     """Assemble a story-aware briefing for a conversation with ``subject``.
 
     ``subject`` is the SCAN object the player chose to talk to
@@ -6818,6 +7015,11 @@ def build_talk_context(subject: dict, session_id: str = "default", opening_overr
     The persona is grounded in the CURRENT visible frame (see
     ``_talk_vision_snapshot``) so the character isn't talking blind — they
     can reference what's actually on screen alongside the story situation.
+
+    ``include_vision=False`` skips the (two Gemini vision calls) perception
+    snapshot — used by the portrait endpoint, which only needs subject +
+    situation and runs CONCURRENTLY with the session's own build_talk_context,
+    so doing the vision work twice would just double the latency for nothing.
     """
     subject = subject or {}
     label = _clean_subject_text(subject.get("label"), "figure", 40)
@@ -6889,8 +7091,9 @@ def build_talk_context(subject: dict, session_id: str = "default", opening_overr
     # Direct-perception block: what the subject can actually SEE in the frame
     # the player is looking at, so the character can react to real objects on
     # screen instead of a text-only briefing. Empty string when vision is
-    # unavailable — the persona still works, just without the eyes.
-    vision_snapshot = _talk_vision_snapshot(session_id)
+    # unavailable or skipped — the persona still works, just without the eyes.
+    vision_snapshot = _talk_vision_snapshot(session_id) if include_vision else \
+        {"visible": [], "description": "", "time_of_day": "", "image_url": None}
     vision_block = _format_vision_for_persona(label, vision_snapshot)
 
     persona_prompt = (
@@ -6980,6 +7183,1158 @@ def _talk_opening_line(label: str, kind: str, situation: dict, persona_prompt: s
         return fallback
 
 
+def build_portrait_prompt(context: dict, img2img: bool = False) -> str:
+    """Compose a cinematic medium-shot portrait prompt for a Conversation Moment.
+
+    Reuses the same talk context (subject, scene, time of day) the persona was
+    built from, but applies ``CONVERSATION_PORTRAIT_STYLE_ANCHOR`` — a distinct
+    lens language from the handheld-camcorder world view — so the cut into
+    dialogue reads as a register change.
+
+    ``img2img=True`` phrases it as a reframe of the CURRENT scene (a reference
+    frame is supplied): keep the environment/lighting, turn the camera to face
+    the character. This makes the portrait read as the next shot in the same
+    place instead of a brand-new location.
+    """
+    context = context or {}
+    subject = context.get("subject") or {}
+    situation = context.get("situation") or {}
+    label = _clean_subject_text(subject.get("label"), "figure", 40)
+    kind = _clean_subject_text(subject.get("kind"), "person", 20)
+    scene = (situation.get("scene") or "").strip()
+    if len(scene) > 220:
+        scene = scene[:217].rstrip() + "..."
+    tod = (situation.get("time_of_day") or "").strip()
+    loc = (situation.get("location") or "").replace("_", " ").strip()
+
+    kind_look = {
+        "person": "a wary human figure",
+        "character": "a named character from this world",
+        "creature": "a strange, possibly inhuman presence with a readable face or visage",
+        "animal": "an uncanny animal that meets the camera's gaze",
+        "machine": "a machine, radio, intercom, or terminal that somehow feels present / watched",
+    }.get(kind, "a figure the investigator has encountered")
+
+    if img2img:
+        # A reference frame of the CURRENT environment is supplied — describe the
+        # reframe, not a fresh scene. The img2img continuity block in
+        # gemini_image_utils handles keeping the room; here we name the subject.
+        bits = [
+            f"Turn the camera to face the '{label}' — {kind_look} — standing in this same place.",
+            "Cinematic medium shot, mid-torso up, the character sharp and clearly lit,",
+            "the surrounding environment softly out of focus behind them (shallow depth of field).",
+            "Keep the room, lighting, palette, and film grain of the reference exactly.",
+        ]
+        setting = ", ".join([b for b in [loc, tod] if b])
+        if setting:
+            bits.append(f"Setting: {setting}.")
+        return _sanitize_for_image_generation(" ".join(bits))
+
+    bits = [
+        CONVERSATION_PORTRAIT_STYLE_ANCHOR.rstrip(". ") + ".",
+        f"Subject: the '{label}' — {kind_look}.",
+        "Hold a charged, intimate medium shot; the subject fills the frame.",
+    ]
+    if scene:
+        bits.append(f"Background suggests this place (softly, out of focus): {scene}")
+    setting = ", ".join([b for b in [loc, tod] if b])
+    if setting:
+        bits.append(f"Setting cues: {setting}.")
+    bits.append(
+        "No text, no UI, no letterbox bars inside the image. Photoreal cinematic still."
+    )
+    prompt = " ".join(bits)
+    return _sanitize_for_image_generation(prompt)
+
+
+def _companion_slug(label: str) -> str:
+    """Filesystem-safe, stable slug for a companion label."""
+    s = re.sub(r"[^a-z0-9]+", "_", (label or "").strip().lower()).strip("_")
+    return (s or "figure")[:40]
+
+
+def _persist_companion_image(image_path: str, session_id: str, label: str) -> Optional[str]:
+    """Copy a freshly-generated portrait to a STABLE, sweep-protected companion
+    file (``companion_<slug>.png``) so it survives as part of the roster and can
+    be re-referenced when placing the character into future scenes.
+
+    Returns the web URL of the durable copy, or None on failure.
+    """
+    try:
+        src = _resolve_image_path(image_path)
+        if not src or not src.exists():
+            return None
+        img_dir = Path(_get_image_dir(session_id))
+        img_dir.mkdir(parents=True, exist_ok=True)
+        slug = _companion_slug(label)
+        dst = img_dir / f"companion_{slug}.png"
+        import shutil as _shutil
+        _shutil.copyfile(str(src), str(dst))
+        # Mirror the img2img downsample convention so companion images can be
+        # used as img2img references efficiently later.
+        try:
+            small_src = src.with_name(src.name.replace(".png", "_small.png"))
+            if small_src.exists():
+                _shutil.copyfile(str(small_src), str(img_dir / f"companion_{slug}_small.png"))
+        except Exception:
+            pass
+        return _to_web_image_url(f"companion_{slug}.png", session_id)
+    except Exception as e:
+        log_error(f"[COMPANION] persist image failed: {e}")
+        return None
+
+
+def _record_companion(session_id: str, subject: dict, portrait_url: str,
+                      prompt: str = "", scene: str = "") -> dict:
+    """Upsert a COMPANION into the session roster.
+
+    A companion is a character the player has spoken with, stored WITH their
+    cinematic portrait so they can be dropped back into later scenes to build a
+    continuing story. Additive metadata on session state (``state.companions``),
+    keyed by lowercased label; also links the portrait onto the lightweight
+    character-memory record. Returns the companion record (JSON-safe).
+    """
+    subject = subject or {}
+    display_label = re.sub(r"\s+", " ", str(subject.get("label") or "")).strip()[:40]
+    label = _clean_subject_text(subject.get("label"), "", 40)
+    if not label or not portrait_url:
+        return {}
+    try:
+        st = _load_state(session_id) or {}
+    except Exception:
+        return {}
+    companions = st.get("companions")
+    if not isinstance(companions, dict):
+        companions = {}
+    key = label.lower()
+    prev = companions.get(key) if isinstance(companions.get(key), dict) else {}
+    turn = st.get("turn_count", 0)
+    entry = {
+        "label": display_label or label,
+        "kind": _clean_subject_text(subject.get("kind"), prev.get("kind") or "person", 20),
+        "portrait_url": portrait_url,
+        "prompt": (prompt or prev.get("prompt") or "")[:400],
+        "scene": (scene or prev.get("scene") or "")[:300],
+        "first_seen_turn": prev.get("first_seen_turn", turn),
+        "last_seen_turn": turn,
+        "seen_count": int(prev.get("seen_count") or 0) + 1,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    # Preserve the ElevenLabs voice block if it was recorded first (voice +
+    # portrait are resolved in parallel from Talk.start).
+    if isinstance(prev.get("voice"), dict):
+        entry["voice"] = prev["voice"]
+    companions[key] = entry
+    st["companions"] = companions
+    # Link the portrait onto the character-memory record too, so the two views
+    # (relationship notes + roster art) stay in sync.
+    chars = st.get("characters")
+    if isinstance(chars, dict) and isinstance(chars.get(key), dict):
+        chars[key]["portrait_url"] = portrait_url
+        st["characters"] = chars
+    try:
+        _save_state(st, session_id)
+    except Exception as e:
+        log_error(f"[COMPANION] save failed: {e}")
+    return entry
+
+
+def _record_companion_voice(session_id: str, subject: dict, voice: dict) -> None:
+    """Store the ElevenLabs voice data for a companion so their voice can be
+    reused (by id) OR regenerated from scratch (by description) later.
+
+    ``voice`` is the resolver output plus a couple of fields the caller knows::
+
+        {
+          "voice_id":     <str>,   # reuse this exact ElevenLabs voice
+          "description":  <str>,   # the Voice Design brief — REGENERATION seed
+          "source":       <str>,   # designed / cache / fallback / override / ...
+          "status":       <str>,
+          "cache_key":    <str|None>,
+          "model":        <str>,   # ttv model to regenerate with
+          "settings":     <dict|None>,  # tts settings (stability/similarity/...)
+        }
+
+    Additive: creates a minimal companion stub if the portrait hasn't landed yet
+    (voice + portrait are resolved in parallel), WITHOUT bumping seen_count or
+    touching the portrait. Never raises.
+    """
+    subject = subject or {}
+    display_label = re.sub(r"\s+", " ", str(subject.get("label") or "")).strip()[:40]
+    label = _clean_subject_text(subject.get("label"), "", 40)
+    if not label or not isinstance(voice, dict) or not voice.get("voice_id"):
+        return
+    try:
+        st = _load_state(session_id) or {}
+    except Exception:
+        return
+    companions = st.get("companions")
+    if not isinstance(companions, dict):
+        companions = {}
+    key = label.lower()
+    entry = companions.get(key) if isinstance(companions.get(key), dict) else {}
+    # Don't downgrade a real designed-voice description to an empty one (e.g. a
+    # later preset override): only overwrite the description when we have one.
+    new_desc = (voice.get("description") or "").strip()
+    voice_block = {
+        "voice_id": voice.get("voice_id"),
+        "description": new_desc or (entry.get("voice") or {}).get("description", ""),
+        "source": voice.get("source") or "",
+        "status": voice.get("status") or "",
+        "cache_key": voice.get("cache_key"),
+        "model": voice.get("model") or "",
+        "settings": voice.get("settings") or (entry.get("voice") or {}).get("settings"),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    entry = dict(entry)
+    entry.setdefault("label", display_label or label)
+    entry.setdefault("kind", _clean_subject_text(subject.get("kind"), "person", 20))
+    entry["voice"] = voice_block
+    companions[key] = entry
+    st["companions"] = companions
+    try:
+        _save_state(st, session_id)
+    except Exception as e:
+        log_error(f"[COMPANION] voice save failed: {e}")
+
+
+def _save_portrait_reference(frame_b64: str, session_id: str = "default") -> Optional[str]:
+    """Decode a client-captured scene frame (data URL) to a file for img2img.
+
+    Read-only w.r.t. sim state (unlike ``_ingest_realtime_frame``): it just
+    persists the frame so ``generate_gemini_img2img`` can anchor the portrait on
+    the exact environment the player is looking at. Returns the file path, or
+    None on a missing / malformed / too-small frame.
+    """
+    if not frame_b64:
+        return None
+    import base64 as _b64, re as _re
+    m = _re.match(r'^data:image/[^;]+;base64,(.*)$', frame_b64, _re.DOTALL)
+    raw = m.group(1) if m else frame_b64
+    try:
+        img_bytes = _b64.b64decode(raw)
+    except Exception:
+        return None
+    if len(img_bytes) < 512:
+        return None
+    try:
+        img_dir = Path(_get_image_dir(session_id))
+        img_dir.mkdir(parents=True, exist_ok=True)
+        fname = f"portrait_ref_{int(time.time() * 1000)}.png"
+        fpath = img_dir / fname
+        fpath.write_bytes(img_bytes)
+        return str(fpath)
+    except Exception as e:
+        log_error(f"[TALK PORTRAIT] reference save failed: {e}")
+        return None
+
+
+def _portrait_cache_key(session_id: str, label: str, world_prompt: str) -> tuple:
+    scene_hash = hashlib.sha1((world_prompt or "").encode("utf-8")).hexdigest()[:16]
+    return (session_id or "default", (label or "").strip().lower(), scene_hash)
+
+
+def api_talk_portrait():
+    """Generate (or reuse) a cinematic medium-shot portrait for a TALK subject.
+
+    Request JSON: ``{"subject": {"label","kind","speaks"}, "session_id"?,
+                     "reference_image"?: <data-url of the current frame>}``
+    Response JSON: ``{"image_url": "/images/...", "cached": bool, "prompt": str,
+                      "mode": "img2img"|"text2img"}``
+      or ``{"image_url": null, "reason": "..."}`` when generation is unavailable.
+
+    When a ``reference_image`` (the frame the player is looking at) is supplied
+    we img2img off it so the character reads as the NEXT shot in the SAME
+    environment; otherwise we text2img a standalone cinematic portrait. Either
+    way we use the fast single-image path — NOT the heavy turn-coupled
+    ``_gen_image_impl`` — and cache per ``(session, subject, scene)``.
+    """
+    try:
+        if _rate_limited("talk_portrait", 1.2):
+            return jsonify({"image_url": None, "reason": "slow_down"}), 429
+        data = request.get_json(silent=True) or {}
+        subject = data.get("subject") or {}
+        session_id = data.get("session_id", "default")
+        reference_b64 = data.get("reference_image") or ""
+        if not isinstance(subject, dict) or not (subject.get("label") or "").strip():
+            return jsonify({"error": "missing subject", "image_url": None}), 400
+
+        if not IMAGE_ENABLED:
+            return jsonify({"image_url": None, "reason": "image_disabled"})
+
+        # Reuse the same briefing Talk built for the persona, but skip BOTH
+        # the opening-line LLM call (opening_override=".") AND the vision
+        # snapshot (include_vision=False): the portrait only needs the subject
+        # + scene, and it runs concurrently with the session's own
+        # build_talk_context, so repeating the two Gemini vision calls here
+        # would just double the time-to-portrait for no benefit.
+        context = build_talk_context(
+            subject, session_id, opening_override=".", include_vision=False,
+        )
+        if context.get("opening_line") == ".":
+            context["opening_line"] = ""
+
+        label = context["subject"]["label"]
+        try:
+            world_prompt = str((_load_state(session_id) or {}).get("world_prompt") or "")
+        except Exception:
+            world_prompt = ""
+        cache_key = _portrait_cache_key(session_id, label, world_prompt)
+
+        with _PORTRAIT_CACHE_LOCK:
+            cached = _PORTRAIT_CACHE.get(cache_key)
+        if cached:
+            return jsonify({"image_url": cached, "cached": True, "subject": context["subject"]})
+
+        spend = _PORTRAIT_SPEND.get(session_id, 0)
+        if spend >= CONVERSATION_PORTRAIT_BUDGET:
+            return jsonify({
+                "image_url": None,
+                "reason": "budget",
+                "subject": context["subject"],
+            })
+
+        img_dir = _get_image_dir(session_id)
+        tod = (context.get("situation") or {}).get("time_of_day") or ""
+
+        # Prefer img2img off the current frame so the portrait is the next shot
+        # in the SAME room. Fall back to text2img when no usable frame arrives.
+        ref_path = _save_portrait_reference(reference_b64, session_id) if reference_b64 else None
+        use_img2img = bool(ref_path)
+        prompt = build_portrait_prompt(context, img2img=use_img2img)
+
+        t0 = time.time()
+        image_path = None
+        gen_mode = "img2img" if use_img2img else "text2img"
+        try:
+            if use_img2img:
+                from gemini_image_utils import generate_gemini_img2img
+                image_path = generate_gemini_img2img(
+                    prompt=prompt,
+                    caption=f"portrait_{label}",
+                    reference_image_path=ref_path,
+                    # Bigger change than a normal turn: we're reframing the shot
+                    # onto a character, not nudging the scene forward.
+                    strength=0.6,
+                    world_prompt=world_prompt[:400] if world_prompt else None,
+                    time_of_day=tod,
+                    hd_mode=False,
+                    output_dir=Path(img_dir),
+                    portrait_mode=True,
+                )
+            else:
+                from gemini_image_utils import generate_with_gemini
+                image_path = generate_with_gemini(
+                    prompt=prompt,
+                    caption=f"portrait_{label}",
+                    world_prompt=world_prompt[:400] if world_prompt else None,
+                    aspect_ratio="16:9",
+                    time_of_day=tod,
+                    hd_mode=False,
+                    output_dir=Path(img_dir),
+                    portrait_mode=True,
+                )
+        except Exception as gen_err:
+            log_error(f"[TALK PORTRAIT] generate failed: {gen_err}")
+            try:
+                cost_tracker.record_usage(
+                    session_id, "image", "gemini", "talk_portrait",
+                    operation="talk_portrait", output_units=0, unit_type="images",
+                    latency_ms=int((time.time() - t0) * 1000), success=False,
+                    error_message=str(gen_err)[:200],
+                )
+            except Exception:
+                pass
+            return jsonify({"image_url": None, "reason": "generate_failed",
+                            "subject": context["subject"]})
+        finally:
+            # The reference frame is a throwaway — clean it up so it can't leak
+            # into the tape/feed or pile up on the session disk.
+            if ref_path:
+                try:
+                    Path(ref_path).unlink(missing_ok=True)
+                    _small = Path(ref_path).with_name(Path(ref_path).name.replace(".png", "_small.png"))
+                    if _small.exists():
+                        _small.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+        web = _to_web_image_url(image_path, session_id)
+        latency_ms = int((time.time() - t0) * 1000)
+        try:
+            cost_tracker.record_usage(
+                session_id, "image", "gemini", "talk_portrait",
+                operation=f"talk_portrait_{gen_mode}", output_units=1.0 if web else 0,
+                unit_type="images", latency_ms=latency_ms, success=bool(web),
+                error_message=None if web else "no_image_returned",
+            )
+        except Exception:
+            pass
+
+        if not web:
+            return jsonify({"image_url": None, "reason": "no_image",
+                            "subject": context["subject"]})
+
+        with _PORTRAIT_CACHE_LOCK:
+            _PORTRAIT_CACHE[cache_key] = web
+            _PORTRAIT_SPEND[session_id] = spend + 1
+
+        # Store this character as a COMPANION: a durable, sweep-protected copy of
+        # their portrait plus roster metadata, so they can be placed back into
+        # later scenes for a continuing story. Best-effort — never fail the
+        # portrait response over roster bookkeeping.
+        companion = None
+        try:
+            durable_url = _persist_companion_image(image_path, session_id, label) or web
+            companion = _record_companion(
+                session_id, context["subject"], durable_url,
+                prompt=prompt, scene=world_prompt,
+            )
+        except Exception as comp_err:
+            log_error(f"[COMPANION] record from portrait failed: {comp_err}")
+
+        return jsonify({
+            "image_url": web,
+            "cached": False,
+            "mode": gen_mode,
+            "prompt": prompt[:400],
+            "subject": context["subject"],
+            "companion": ({
+                "label": companion.get("label"),
+                "portrait_url": companion.get("portrait_url"),
+                "seen_count": companion.get("seen_count"),
+                "first_seen": companion.get("seen_count") == 1,
+            } if companion else None),
+        })
+    except Exception as e:
+        log_error(f"[TALK PORTRAIT] failed: {e}")
+        return jsonify({"image_url": None, "reason": "error", "error": str(e)}), 500
+
+
+def _record_character_memory(session_id: str, subject: dict, note: str = "") -> dict:
+    """Upsert a lightweight per-character memory record on session state.
+
+    Additive metadata only — does not mutate ``history`` / ``feed_log`` / the
+    sim turn. Powers future trust/relationship Moments without requiring a
+    full NPC database today.
+    """
+    subject = subject or {}
+    display_label = re.sub(r"\s+", " ", str(subject.get("label") or "")).strip()[:40]
+    label = _clean_subject_text(subject.get("label"), "", 40)
+    if not label:
+        return {}
+    try:
+        st = _load_state(session_id) or {}
+    except Exception:
+        return {}
+    chars = st.get("characters")
+    if not isinstance(chars, dict):
+        chars = {}
+    key = label.lower()
+    entry = chars.get(key) if isinstance(chars.get(key), dict) else {}
+    first_met = entry.get("first_met_turn")
+    if first_met is None:
+        first_met = st.get("turn_count", 0)
+    notes = list(entry.get("notes") or [])
+    clean_note = (note or "").strip()[:240]
+    if clean_note and (not notes or notes[-1] != clean_note):
+        notes.append(clean_note)
+        notes = notes[-8:]  # keep a short rolling window
+    entry = {
+        # Prefer the player's original casing for display; key stays lowercased.
+        "label": display_label or label,
+        "kind": _clean_subject_text(subject.get("kind"), entry.get("kind") or "person", 20),
+        "first_met_turn": first_met,
+        "last_talk_turn": st.get("turn_count", 0),
+        "talk_count": int(entry.get("talk_count") or 0) + 1,
+        "notes": notes,
+        "trust": int(entry.get("trust") or 0),
+    }
+    chars[key] = entry
+    st["characters"] = chars
+    try:
+        _save_state(st, session_id)
+    except Exception as e:
+        log_error(f"[TALK] character memory save failed: {e}")
+    return entry
+
+
+def api_companions():
+    """List the player's companion roster — characters they've spoken with,
+    stored with their cinematic portrait so they can be placed into later
+    scenes for a continuing story.
+
+    GET /api/companions?session_id=<id>
+    Response: ``{"companions": [{label, kind, portrait_url, seen_count,
+      first_seen_turn, last_seen_turn, trust, notes}, ...]}`` — most recently
+    seen first.
+    """
+    try:
+        session_id = request.args.get("session_id", "default")
+        try:
+            st = _load_state(session_id) or {}
+        except Exception:
+            st = {}
+        companions = st.get("companions") or {}
+        chars = st.get("characters") or {}
+        out = []
+        for key, c in companions.items():
+            if not isinstance(c, dict):
+                continue
+            mem = chars.get(key) if isinstance(chars.get(key), dict) else {}
+            out.append({
+                "label": c.get("label"),
+                "kind": c.get("kind"),
+                "portrait_url": c.get("portrait_url"),
+                "seen_count": c.get("seen_count"),
+                "first_seen_turn": c.get("first_seen_turn"),
+                "last_seen_turn": c.get("last_seen_turn"),
+                "trust": mem.get("trust", 0),
+                "notes": (mem.get("notes") or [])[-3:],
+                # ElevenLabs voice data: reuse by voice_id, or regenerate from
+                # the Voice Design description + model.
+                "voice": c.get("voice") or None,
+            })
+        out.sort(key=lambda r: (r.get("last_seen_turn") or 0), reverse=True)
+        return jsonify({"companions": out})
+    except Exception as e:
+        log_error(f"[COMPANION] list failed: {e}")
+        return jsonify({"companions": [], "error": str(e)}), 500
+
+
+def api_companion_place():
+    """Place a stored companion INTO a scene — the primitive for continuing-
+    story beats where a known character reappears in the world.
+
+    Request JSON: ``{"label": <str>, "session_id"?, "reference_image"?:
+      <data-url of the current frame>, "prompt"?: <what they're doing>}``
+    Response: ``{"image_url": "/images/...", "label": <str>}`` — a scene
+      featuring the companion, img2img'd from [current frame + companion
+      portrait] so they read as the same character standing in this place. On
+      any failure returns ``{"image_url": null, "reason": "..."}``.
+    """
+    try:
+        if _rate_limited("companion_place", 1.2):
+            return jsonify({"image_url": None, "reason": "slow_down"}), 429
+        data = request.get_json(silent=True) or {}
+        session_id = data.get("session_id", "default")
+        label = _clean_subject_text(data.get("label"), "", 40)
+        if not label:
+            return jsonify({"error": "missing label", "image_url": None}), 400
+        if not IMAGE_ENABLED:
+            return jsonify({"image_url": None, "reason": "image_disabled"})
+
+        st = _load_state(session_id) or {}
+        companions = st.get("companions") or {}
+        comp = companions.get(label.lower())
+        if not isinstance(comp, dict) or not comp.get("portrait_url"):
+            return jsonify({"image_url": None, "reason": "unknown_companion"})
+        portrait_path = _resolve_image_path(comp["portrait_url"], session_id)
+        if not portrait_path or not portrait_path.exists():
+            return jsonify({"image_url": None, "reason": "portrait_missing"})
+
+        who = comp.get("label") or label
+        action = _clean_subject_text(data.get("prompt"), "", 200) or \
+            (who + " is here in this place with you")
+        world_prompt = str(st.get("world_prompt") or "")
+        tod = str(st.get("time_of_day") or "")
+
+        # References: the current frame FIRST (environment ground truth), the
+        # companion portrait SECOND (who they are) — so the companion appears in
+        # this place, consistent with how they looked in conversation.
+        refs = []
+        ref_frame = _save_portrait_reference(data.get("reference_image") or "", session_id)
+        if ref_frame:
+            refs.append(ref_frame)
+        refs.append(str(portrait_path))
+
+        place_prompt = _sanitize_for_image_generation(
+            "In this environment, " + who + " is present: " + action + ". "
+            "Keep this location, lighting, palette, and film grain; show them "
+            "naturally within the scene."
+        )
+        t0 = time.time()
+        image_path = None
+        try:
+            from gemini_image_utils import generate_gemini_img2img
+            image_path = generate_gemini_img2img(
+                prompt=place_prompt,
+                caption=f"place_{_companion_slug(who)}",
+                reference_image_path=refs,
+                strength=0.5,
+                world_prompt=world_prompt[:400] if world_prompt else None,
+                time_of_day=tod,
+                hd_mode=False,
+                output_dir=Path(_get_image_dir(session_id)),
+                portrait_mode=True,  # person-allowed (skip the anti-person removal)
+            )
+        except Exception as gen_err:
+            log_error(f"[COMPANION] place generate failed: {gen_err}")
+            return jsonify({"image_url": None, "reason": "generate_failed"})
+        finally:
+            if ref_frame:
+                try:
+                    Path(ref_frame).unlink(missing_ok=True)
+                    _small = Path(ref_frame).with_name(
+                        Path(ref_frame).name.replace(".png", "_small.png"))
+                    if _small.exists():
+                        _small.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+        web = _to_web_image_url(image_path, session_id)
+        try:
+            cost_tracker.record_usage(
+                session_id, "image", "gemini", "companion_place",
+                operation="companion_place", output_units=1.0 if web else 0,
+                unit_type="images", latency_ms=int((time.time() - t0) * 1000),
+                success=bool(web), error_message=None if web else "no_image_returned",
+            )
+        except Exception:
+            pass
+        if not web:
+            return jsonify({"image_url": None, "reason": "no_image"})
+        # Bump the roster's last-seen so recency reflects the reappearance.
+        try:
+            _record_companion(session_id, {"label": who, "kind": comp.get("kind")},
+                              comp["portrait_url"])
+        except Exception:
+            pass
+        return jsonify({"image_url": web, "label": who})
+    except Exception as e:
+        log_error(f"[COMPANION] place failed: {e}")
+        return jsonify({"image_url": None, "reason": "error", "error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Persistent props (jeep, etc.) — companion-shaped durable references
+# ---------------------------------------------------------------------------
+
+def _persist_prop_image(image_path: str, session_id: str, slug: str) -> Optional[str]:
+    """Copy a freshly-generated prop image to a STABLE, sweep-protected file
+    (``prop_<slug>.png``) so it survives and can be re-referenced forever.
+
+    Mirrors ``_persist_companion_image``. Returns the web URL of the durable
+    copy, or None on failure.
+    """
+    try:
+        src = _resolve_image_path(image_path)
+        if not src or not src.exists():
+            return None
+        img_dir = Path(_get_image_dir(session_id))
+        img_dir.mkdir(parents=True, exist_ok=True)
+        safe = re.sub(r"[^a-z0-9]+", "_", (slug or "").strip().lower()).strip("_") or "prop"
+        safe = safe[:40]
+        dst = img_dir / f"prop_{safe}.png"
+        import shutil as _shutil
+        _shutil.copyfile(str(src), str(dst))
+        try:
+            small_src = src.with_name(src.name.replace(".png", "_small.png"))
+            if small_src.exists():
+                _shutil.copyfile(str(small_src), str(img_dir / f"prop_{safe}_small.png"))
+        except Exception:
+            pass
+        return _to_web_image_url(f"prop_{safe}.png", session_id)
+    except Exception as e:
+        log_error(f"[PROP] persist image failed: {e}")
+        return None
+
+
+def _record_prop(session_id: str, slug: str, portrait_url: str,
+                 label: str = "", prompt: str = "") -> dict:
+    """Upsert a PROP into ``state.props`` — a companion-shaped sibling dict for
+    durable recognizable objects (the red jeep, etc.). Additive metadata; does
+    not touch turn_count/history. Returns the prop record (JSON-safe).
+    """
+    safe = re.sub(r"[^a-z0-9]+", "_", (slug or "").strip().lower()).strip("_")
+    if not safe or not portrait_url:
+        return {}
+    try:
+        st = _load_state(session_id) or {}
+    except Exception:
+        return {}
+    props = st.get("props")
+    if not isinstance(props, dict):
+        props = {}
+    prev = props.get(safe) if isinstance(props.get(safe), dict) else {}
+    turn = st.get("turn_count", 0)
+    entry = {
+        "label": (label or prev.get("label") or safe).strip()[:60],
+        "slug": safe,
+        "portrait_url": portrait_url,
+        "prompt": (prompt or prev.get("prompt") or "")[:400],
+        "first_seen_turn": prev.get("first_seen_turn", turn),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    props[safe] = entry
+    st["props"] = props
+    try:
+        _save_state(st, session_id)
+    except Exception as e:
+        log_error(f"[PROP] save failed: {e}")
+    return entry
+
+
+def _ensure_jeep_prop(session_id: str) -> dict:
+    """Return the durable jeep prop record, generating it once if missing.
+
+    Always prefers the persisted ``prop_jeep.png`` on disk so the vehicle stays
+    visually identical across every CAMP (and future mission-transition) visit.
+    """
+    try:
+        st = _load_state(session_id) or {}
+    except Exception:
+        st = {}
+    props = st.get("props") if isinstance(st.get("props"), dict) else {}
+    jeep = props.get("jeep") if isinstance(props.get("jeep"), dict) else {}
+    url = jeep.get("portrait_url") or ""
+    if url:
+        path = _resolve_image_path(url)
+        if path and path.exists():
+            return jeep
+
+    # Also accept a leftover durable file from a prior run whose state lost the
+    # props block (e.g. state reset but images kept).
+    durable = Path(_get_image_dir(session_id)) / "prop_jeep.png"
+    if durable.exists():
+        web = _to_web_image_url("prop_jeep.png", session_id)
+        return _record_prop(session_id, "jeep", web,
+                            label="your red jeep", prompt=_JEEP_PROP_PROMPT)
+
+    if not IMAGE_ENABLED:
+        return {}
+
+    t0 = time.time()
+    image_path = None
+    try:
+        from gemini_image_utils import generate_with_gemini
+        image_path = generate_with_gemini(
+            prompt=_sanitize_for_image_generation(_JEEP_PROP_PROMPT),
+            caption="prop_jeep",
+            world_prompt=None,
+            aspect_ratio="4:3",  # match game stills / camp plates
+            time_of_day="dusk, desert evening light",
+            hd_mode=False,
+            output_dir=Path(_get_image_dir(session_id)),
+            portrait_mode=False,  # vehicle plate — anti-person is correct
+        )
+    except Exception as gen_err:
+        log_error(f"[PROP] jeep generate failed: {gen_err}")
+        try:
+            cost_tracker.record_usage(
+                session_id, "image", "gemini", "prop_jeep",
+                operation="prop_jeep", output_units=0, unit_type="images",
+                latency_ms=int((time.time() - t0) * 1000), success=False,
+                error_message=str(gen_err)[:200],
+            )
+        except Exception:
+            pass
+        return {}
+
+    web = _to_web_image_url(image_path, session_id) if image_path else None
+    try:
+        cost_tracker.record_usage(
+            session_id, "image", "gemini", "prop_jeep",
+            operation="prop_jeep", output_units=1.0 if web else 0,
+            unit_type="images", latency_ms=int((time.time() - t0) * 1000),
+            success=bool(web), error_message=None if web else "no_image_returned",
+        )
+    except Exception:
+        pass
+    if not web:
+        return {}
+    durable_url = _persist_prop_image(image_path, session_id, "jeep") or web
+    return _record_prop(session_id, "jeep", durable_url,
+                        label="your red jeep", prompt=_JEEP_PROP_PROMPT)
+
+
+def _camp_cache_key(session_id: str, labels: list, jeep_url: str) -> tuple:
+    labels_sig = ",".join(sorted((l or "").strip().lower() for l in labels))
+    jeep_hash = hashlib.sha1((jeep_url or "").encode("utf-8")).hexdigest()[:12]
+    return (session_id or "default", _CAMP_CACHE_VERSION, labels_sig, jeep_hash)
+
+
+def _camp_seat_layout(count: int) -> list:
+    n = max(0, min(int(count or 0), 5))
+    if n <= 0:
+        return []
+    return list(_CAMP_SEATS.get(n) or _CAMP_SEATS[5][:n])
+
+
+def _collect_camp_companions(session_id: str, st: dict) -> list:
+    """Every companion with a resolvable portrait file for CAMP img2img.
+
+    Reads ``state.companions`` and resolves each ``portrait_url`` against the
+    session images dir (the bug that dropped the whole cast was resolving
+    ``/images/companion_*.png`` against the legacy root images/ folder). Also
+    scans the session dir for any durable ``companion_*.png`` files missing
+    from state so on-disk roster art still makes it into the fire circle.
+    """
+    companions = st.get("companions") if isinstance(st.get("companions"), dict) else {}
+    roster = []
+    seen_paths = set()
+
+    def _add(label, kind, portrait_url, last_seen_turn=0):
+        path = _resolve_image_path(portrait_url, session_id) if portrait_url else None
+        if not path or not path.exists():
+            return
+        # Prefer full-res companion plate over the _small downsample for likeness.
+        key = str(path.resolve()) if path.exists() else str(path)
+        if key in seen_paths:
+            return
+        seen_paths.add(key)
+        roster.append({
+            "label": label or "figure",
+            "kind": kind or "person",
+            "portrait_url": portrait_url or _to_web_image_url(path.name, session_id),
+            "portrait_path": str(path),
+            "last_seen_turn": int(last_seen_turn or 0),
+        })
+
+    for key, c in companions.items():
+        if not isinstance(c, dict):
+            continue
+        _add(
+            c.get("label") or key,
+            c.get("kind") or "person",
+            c.get("portrait_url"),
+            c.get("last_seen_turn") or 0,
+        )
+
+    # Disk fallback: durable companion_*.png files not already in the roster.
+    try:
+        img_dir = Path(_get_image_dir(session_id))
+        if img_dir.exists():
+            for p in sorted(img_dir.glob("companion_*.png")):
+                if p.name.endswith("_small.png"):
+                    continue
+                try:
+                    key = str(p.resolve())
+                except Exception:
+                    key = str(p)
+                if key in seen_paths:
+                    continue
+                slug = p.name[len("companion_"):-len(".png")]
+                label = (slug or "figure").replace("_", " ").strip() or "figure"
+                _add(label, "person", _to_web_image_url(p.name, session_id), 0)
+    except Exception as scan_err:
+        log_error(f"[CAMP] companion disk scan failed: {scan_err}")
+
+    roster.sort(key=lambda r: (r.get("last_seen_turn") or 0), reverse=True)
+    return roster
+
+
+def _build_camp_prompt(attendees: list, jeep_included: bool,
+                       ref_map: list = None) -> str:
+    """Prompt for the camp establishing shot — night fire + jeep + cast.
+
+    ``ref_map`` is an ordered list of ``{"index", "role", "label"}`` describing
+    each img2img reference image (1-based), so Gemini knows reference #1 is the
+    jeep and #2..N are specific companion portraits — not anonymous faces.
+    """
+    attendee_labels = [a.get("label") for a in (attendees or []) if a.get("label")]
+    bits = [
+        "First-person handheld establishing shot of a night campsite in remote Four Corners high-desert scrub.",
+        "4:3 frame matching the rest of the game. A small campfire burns in the mid-ground,",
+        "warm orange firelight pooling on sand and scrub, embers drifting, deep blue-black night sky,",
+        "VHS analog grain, 1990s found-footage mood. Not a security camera, not a collage.",
+        "CRITICAL — THE RED JEEP MUST BE IN FRAME: a dusty bright-red 1990s Jeep "
+        "Cherokee/Wrangler parked at the RIGHT edge of the firelight, three-quarter "
+        "view, clearly readable silhouette and red paint, mud-caked tires. Do NOT "
+        "omit the jeep. Do NOT replace it with a truck or car. The jeep is as "
+        "important as the fire.",
+    ]
+    if jeep_included:
+        bits.append(
+            "Match the jeep reference image's exact color, body shape, and wear."
+        )
+    if ref_map:
+        bits.append("REFERENCE IMAGE MAP (use EVERY listed reference — do not drop any):")
+        for item in ref_map:
+            idx = item.get("index")
+            role = item.get("role")
+            label = item.get("label") or ""
+            if role == "jeep":
+                bits.append(
+                    f"Reference image {idx}: the RED JEEP prop plate — put this exact vehicle in the scene."
+                )
+            else:
+                bits.append(
+                    f"Reference image {idx}: companion portrait of '{label}' — "
+                    f"this person MUST be seated at the fire, matching face, hair, "
+                    f"build, and clothing from that portrait."
+                )
+    if attendee_labels:
+        names = ", ".join(attendee_labels)
+        bits.append(
+            f"ALL of these companions are present around the flames (no extras, none missing): {names}. "
+            f"Arrange them in a natural arc around the fire, faces firelit and readable, "
+            f"leaving the jeep clearly visible on the right. This is a cast reunion — "
+            f"every named companion must be visibly in frame."
+        )
+    else:
+        bits.append(
+            "No people — a quiet empty camp. Only the fire and the red jeep."
+        )
+    bits.append("No text, no UI, no letterbox bars inside the image. Photoreal cinematic still.")
+    return _sanitize_for_image_generation(" ".join(bits))
+
+
+def _build_camp_realtime_prompt(attendee_labels: list, jeep_included: bool = True) -> str:
+    """Realtime world-model prompt for a living campsite (fire flicker, night air)."""
+    who = ""
+    if attendee_labels:
+        who = " Companions seated around the fire: " + ", ".join(attendee_labels) + "."
+    # Jeep is always part of camp identity — mention even if the prop file failed.
+    jeep = " A dusty bright-red 1990s jeep is parked at the edge of the firelight."
+    visual = (
+        "Night campsite in remote high-desert scrub. A campfire burns in the mid-ground, "
+        "embers drifting, warm firelight on sand and brush, deep desert dark."
+        + jeep
+        + who
+        + " First-person handheld view. Firelight flickers. Quiet night wind in the scrub."
+    )
+    return build_realtime_prompt(visual_scene=visual, narrative=visual, choice="")
+
+
+def api_camp_enter():
+    """Build (or reuse) the CAMP Moment establishing shot.
+
+    Request JSON: ``{"session_id"?: str}``
+    Response JSON::
+
+        {
+          "image_url": "/images/...",
+          "attendees": [
+            {"label", "kind", "portrait_url", "seat": {"x_pct", "y_pct"}},
+            ...
+          ],
+          "jeep_included": true,
+          "cached": bool
+        }
+
+    Side pocket: does NOT mutate turn_count/history. Appends one additive
+    display-only ``feed_log`` camp item per visit (flavor for the Story Log).
+    """
+    try:
+        if _rate_limited("camp_enter", 1.2):
+            return jsonify({"error": "slow_down", "image_url": None}), 429
+        data = request.get_json(silent=True) or {}
+        session_id = data.get("session_id", "default")
+
+        try:
+            st = _load_state(session_id) or {}
+        except Exception:
+            st = {}
+
+        # ALL companions with resolvable portrait files (session-scoped paths).
+        # Gemini img2img accepts up to 6 refs: 1 jeep + up to 5 companion plates.
+        roster = _collect_camp_companions(session_id, st)
+        attendees_src = roster[:5]
+        if len(roster) > 5:
+            print(f"[CAMP] {len(roster)} companions on roster; "
+                  f"img2img using the 5 most recently seen (+ jeep)", flush=True)
+
+        jeep = _ensure_jeep_prop(session_id)
+        jeep_url = (jeep or {}).get("portrait_url") or ""
+        jeep_path = None
+        if jeep_url:
+            jp = _resolve_image_path(jeep_url, session_id)
+            if jp and jp.exists():
+                jeep_path = str(jp)
+        # Also accept a durable prop_jeep.png even if state lost the URL.
+        if not jeep_path:
+            durable_jeep = Path(_get_image_dir(session_id)) / "prop_jeep.png"
+            if durable_jeep.exists():
+                jeep_path = str(durable_jeep)
+                jeep_url = _to_web_image_url("prop_jeep.png", session_id) or jeep_url
+        jeep_included = bool(jeep_path)
+
+        labels = [a["label"] for a in attendees_src]
+        cache_key = _camp_cache_key(session_id, labels, jeep_url)
+        with _CAMP_CACHE_LOCK:
+            cached = _CAMP_CACHE.get(cache_key)
+        seats = _camp_seat_layout(len(attendees_src))
+        attendees_out = []
+        for i, a in enumerate(attendees_src):
+            seat = seats[i] if i < len(seats) else {"x_pct": 50, "y_pct": 60}
+            attendees_out.append({
+                "label": a["label"],
+                "kind": a["kind"],
+                "portrait_url": a["portrait_url"],
+                "seat": seat,
+            })
+
+        realtime_prompt = _build_camp_realtime_prompt(labels, jeep_included=True)
+
+        if cached:
+            # Validate the cached plate still exists on disk — establishing
+            # shots are ordinary session images and can be swept; never serve
+            # a 404 URL into the Moment chrome.
+            cached_path = _resolve_image_path(cached, session_id)
+            if cached_path and cached_path.exists():
+                _camp_append_feed(session_id, cached)
+                return jsonify({
+                    "image_url": cached,
+                    "attendees": attendees_out,
+                    "jeep_included": jeep_included,
+                    "realtime_prompt": realtime_prompt,
+                    "cached": True,
+                })
+            with _CAMP_CACHE_LOCK:
+                _CAMP_CACHE.pop(cache_key, None)
+
+        if not IMAGE_ENABLED:
+            return jsonify({
+                "image_url": None,
+                "attendees": attendees_out,
+                "jeep_included": jeep_included,
+                "reason": "image_disabled",
+            })
+
+        # Refs: jeep FIRST (visual anchor), then EVERY companion portrait we can
+        # fit (up to 5). Numbered ref_map tells the model which image is who.
+        refs = []
+        ref_map = []
+        if jeep_path:
+            refs.append(jeep_path)
+            ref_map.append({"index": 1, "role": "jeep", "label": "red jeep"})
+        for a in attendees_src:
+            refs.append(a["portrait_path"])
+            ref_map.append({
+                "index": len(refs),
+                "role": "companion",
+                "label": a["label"],
+            })
+
+        print(f"[CAMP] img2img refs={len(refs)} "
+              f"(jeep={jeep_included}, companions={len(attendees_src)}): "
+              f"{[m.get('label') for m in ref_map]}", flush=True)
+
+        prompt = _build_camp_prompt(attendees_src, jeep_included, ref_map=ref_map)
+        world_prompt = str(st.get("world_prompt") or "")[:400] or None
+        img_dir = Path(_get_image_dir(session_id))
+        t0 = time.time()
+        image_path = None
+        gen_mode = "ensemble" if refs else "text2img"
+        try:
+            if refs:
+                from gemini_image_utils import generate_gemini_img2img
+                image_path = generate_gemini_img2img(
+                    prompt=prompt,
+                    caption="camp_establish",
+                    reference_image_path=refs,
+                    # Higher than companion_place (0.5): this is a brand-new
+                    # location anchored by people/prop likeness, not the live scene.
+                    strength=0.78,
+                    world_prompt=world_prompt,
+                    time_of_day="night, campfire glow, deep desert dark",
+                    hd_mode=False,
+                    output_dir=img_dir,
+                    ensemble_mode=True,
+                    portrait_mode=True,  # allow people (skip anti-person)
+                )
+            else:
+                # No jeep file and no companions — still describe the jeep in
+                # text so the plate isn't fire-only scrub.
+                from gemini_image_utils import generate_with_gemini
+                image_path = generate_with_gemini(
+                    prompt=prompt,
+                    caption="camp_establish",
+                    world_prompt=world_prompt,
+                    aspect_ratio="4:3",
+                    time_of_day="night, campfire glow, deep desert dark",
+                    hd_mode=False,
+                    output_dir=img_dir,
+                    portrait_mode=False,
+                )
+        except Exception as gen_err:
+            log_error(f"[CAMP] generate failed: {gen_err}")
+            try:
+                cost_tracker.record_usage(
+                    session_id, "image", "gemini", "camp_enter",
+                    operation="camp_enter", output_units=0, unit_type="images",
+                    latency_ms=int((time.time() - t0) * 1000), success=False,
+                    error_message=str(gen_err)[:200],
+                )
+            except Exception:
+                pass
+            return jsonify({
+                "image_url": None,
+                "attendees": attendees_out,
+                "jeep_included": jeep_included,
+                "reason": "generate_failed",
+            })
+
+        web = _to_web_image_url(image_path, session_id) if image_path else None
+        try:
+            cost_tracker.record_usage(
+                session_id, "image", "gemini", "camp_enter",
+                operation=f"camp_enter_{gen_mode}",
+                output_units=1.0 if web else 0, unit_type="images",
+                latency_ms=int((time.time() - t0) * 1000),
+                success=bool(web),
+                error_message=None if web else "no_image_returned",
+            )
+        except Exception:
+            pass
+        if not web:
+            return jsonify({
+                "image_url": None,
+                "attendees": attendees_out,
+                "jeep_included": jeep_included,
+                "reason": "no_image",
+            })
+
+        # Persist a durable, sweep-protected camp plate (prop_camp_<sig>.png)
+        # so cache hits survive disk headroom sweeps the same way the jeep does.
+        durable_web = web
+        try:
+            sig = hashlib.sha1(str(cache_key).encode("utf-8")).hexdigest()[:12]
+            durable_web = _persist_prop_image(image_path, session_id, f"camp_{sig}") or web
+        except Exception as persist_err:
+            log_error(f"[CAMP] persist plate failed: {persist_err}")
+            durable_web = web
+
+        with _CAMP_CACHE_LOCK:
+            _CAMP_CACHE[cache_key] = durable_web
+        print(f"[CAMP] establishing shot ready ({gen_mode}, "
+              f"{len(attendees_out)} attendees, jeep={jeep_included})", flush=True)
+
+        _camp_append_feed(session_id, durable_web)
+        return jsonify({
+            "image_url": durable_web,
+            "attendees": attendees_out,
+            "jeep_included": jeep_included,
+            "realtime_prompt": realtime_prompt,
+            "cached": False,
+        })
+    except Exception as e:
+        log_error(f"[CAMP] enter failed: {e}")
+        return jsonify({"image_url": None, "attendees": [], "error": str(e)}), 500
+
+
+def _camp_append_feed(session_id: str, image_url: str) -> None:
+    """One additive, display-only Story Log beat per camp visit.
+
+    Does not touch turn_count / history / choice generation — camp is a side
+    pocket, same as conversation.
+    """
+    try:
+        item = create_feed_item(
+            type="camp",
+            content="You made camp for the night.",
+            image_url=image_url,
+            metadata={"source": "camp"},
+        )
+        with WORLD_STATE_LOCK:
+            st = _load_state(session_id) or {}
+            _feed_append(st, item)
+            _save_state(st, session_id)
+    except Exception as e:
+        log_error(f"[CAMP] feed append failed: {e}")
+
+
 def api_talk_session():
     """Open a story-aware conversation with a SCAN subject.
 
@@ -7055,6 +8410,29 @@ def api_talk_session():
             _vd.acquire(resolved_voice)
         except Exception:
             pass
+
+        # Persist the ElevenLabs voice data onto this character's companion
+        # record so their voice can be reused (by id) or REGENERATED (by the
+        # Voice Design description) later, for a continuing story. Best-effort.
+        try:
+            _ttv_model = ""
+            try:
+                import voice_design as _vd2
+                _ttv_model = getattr(_vd2, "TTV_MODEL", "") or ""
+            except Exception:
+                _ttv_model = ""
+            _record_companion_voice(session_id, context["subject"], {
+                "voice_id": resolved_voice,
+                "description": voice_description,
+                "source": ("override" if chosen_voice else voice_resolution.get("source", "")),
+                "status": voice_status,
+                "cache_key": voice_cache_key,
+                # Only designed voices carry a regeneration description; tag the
+                # model so a future regen knows which TTV model produced it.
+                "model": _ttv_model if voice_description else "",
+            })
+        except Exception as _ve:
+            log_error(f"[COMPANION] voice record failed: {_ve}")
 
         # Dynamic variables + prompt overrides an ElevenLabs agent can consume to
         # stay aware of the story (see ElevenLabs Conversational AI docs).
@@ -7179,33 +8557,54 @@ def api_talk_end():
     become eligible for session-end cleanup + LRU eviction.
 
     Request JSON: ``{"voice_id": <str>, "session_id"?: <str>,
-    "duration_seconds"?: <float>}``. `duration_seconds` is how long the
-    ElevenLabs Convai channel was actually connected — the server never
-    proxies that websocket, so the client is the only one who knows.
-    Response JSON: ``{"ok": true, "refcount": <int>}``. Always 200 — this is
-    fire-and-forget from the client; we never let an end-of-call cleanup
-    error surface as a user-visible failure.
+    "duration_seconds"?: <float>, "subject"?: {...}, "memory_note"?: <str>}``.
+    `duration_seconds` is how long the ElevenLabs Convai channel was actually
+    connected — the server never proxies that websocket, so the client is the
+    only one who knows. When ``subject`` is present we also upsert a lightweight
+    per-character memory record (see ``_record_character_memory``) so future
+    Moments / trust systems have somewhere to plug in.
+    Response JSON: ``{"ok": true, "refcount": <int>, "character"?: {...}}``.
+    Always 200 — this is fire-and-forget from the client; we never let an
+    end-of-call cleanup error surface as a user-visible failure.
     """
     try:
         data = request.get_json(silent=True) or {}
         voice_id = str(data.get("voice_id") or "").strip()
+        session_id = str(data.get("session_id") or "default")
         try:
             seconds = float(data.get("duration_seconds") or 0)
         except (TypeError, ValueError):
             seconds = 0.0
         if seconds > 0:
             cost_tracker.record_usage(
-                str(data.get("session_id") or "default"), "voice", "elevenlabs", "talk_agent",
+                session_id, "voice", "elevenlabs", "talk_agent",
                 output_units=seconds, unit_type="seconds", success=True,
             )
-        if not voice_id:
-            return jsonify({"ok": True, "refcount": 0})
-        try:
-            import voice_design as _vd
-            remaining = _vd.release(voice_id)
-        except Exception:
-            remaining = 0
-        return jsonify({"ok": True, "refcount": remaining})
+        character = None
+        subject = data.get("subject")
+        if isinstance(subject, dict) and (subject.get("label") or "").strip():
+            try:
+                character = _record_character_memory(
+                    session_id, subject, note=str(data.get("memory_note") or ""),
+                )
+            except Exception as mem_err:
+                log_error(f"[TALK] character memory failed: {mem_err}")
+        remaining = 0
+        if voice_id:
+            try:
+                import voice_design as _vd
+                remaining = _vd.release(voice_id)
+            except Exception:
+                remaining = 0
+        out = {"ok": True, "refcount": remaining}
+        if character:
+            out["character"] = {
+                "label": character.get("label"),
+                "talk_count": character.get("talk_count"),
+                "trust": character.get("trust"),
+                "first_meeting": character.get("talk_count") == 1,
+            }
+        return jsonify(out)
     except Exception as e:
         log_error(f"[TALK] end failed: {e}")
         return jsonify({"ok": True, "refcount": 0})
@@ -7831,7 +9230,7 @@ def _spawn_observe_reground(fpath: str, web: str, session_id: str, prompt_id):
                     break
             texts = generate_choices(
                 client=client,
-                prompt_tmpl=choice_tmpl,
+                prompt_tmpl=PROMPTS["player_choice_generation_instructions"],
                 last_dispatch=(last_dispatch or vision),
                 image_description=vision,
                 image_url=web,
@@ -7918,7 +9317,7 @@ def api_regenerate_choices():
         # tuple — do not unpack it as one (see note in _process_turn_background).
         regenerated_choice_texts = generate_choices(
             client=client,
-            prompt_tmpl=choice_tmpl,
+            prompt_tmpl=PROMPTS["player_choice_generation_instructions"],
             last_dispatch=last_dispatch_text,
             world_prompt=world_prompt_context,
             image_description=image_desc_context,
@@ -8115,9 +9514,9 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
             f"{interaction_directive}"
         )
 
-        # Use JUST the dispatch_sys instructions (which has JSON format)
+        # Use JUST the action_consequence_instructions (which has JSON format)
         json_prompt = (
-            f"{dispatch_sys}\n\n"
+            f"{PROMPTS['action_consequence_instructions']}\n\n"
             f"{free_will_header}"
             f"PLAYER CHOICE: '{choice}'\n"
             f"WORLD CONTEXT: {world_prompt}\n"
@@ -8741,7 +10140,7 @@ def _advance_turn_choices_deferred_impl(consequence_img_url: str, dispatch: str,
         )
 
         next_choices = generate_choices(
-            client, choice_tmpl,
+            client, PROMPTS["player_choice_generation_instructions"],
             dispatch,
             n=3,
             image_url=analysis_img_url,
@@ -9206,7 +10605,7 @@ def generate_intro_choices_deferred(image_url: str, prologue: str, vision_dispat
     # empty list with scene-aware choices.
     try:
         options = generate_choices(
-            client, choice_tmpl,
+            client, PROMPTS["player_choice_generation_instructions"],
             prologue,  # What's happening in intro
             n=3,
             image_url=analysis_img_url,  # Gemini sees the image directly!
@@ -9352,7 +10751,7 @@ def generate_intro_turn(session_id: str = 'default'):
     # raising a network error) must not propagate into the bot's intro flow.
     try:
         options = generate_choices(
-            client, choice_tmpl,
+            client, PROMPTS["player_choice_generation_instructions"],
             dispatch,  # What's happening now
             n=3,
             image_url=dispatch_img_url,  # Opening image - Gemini looks at THIS!

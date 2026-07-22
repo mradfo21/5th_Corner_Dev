@@ -377,6 +377,18 @@ app.add_url_rule('/api/investigations', 'standalone_api_investigations', engine.
 # See engine.api_talk_session / engine.api_talk_message.
 app.add_url_rule('/api/talk/session', 'standalone_api_talk_session', engine.api_talk_session, methods=['POST'])
 app.add_url_rule('/api/talk/message', 'standalone_api_talk_message', engine.api_talk_message, methods=['POST'])
+# Conversation Moment portrait: a fast cinematic medium-shot of the subject
+# (distinct lens language from the handheld world view). Cached per
+# (session, subject, scene); see engine.api_talk_portrait.
+app.add_url_rule('/api/talk/portrait', 'standalone_api_talk_portrait', engine.api_talk_portrait, methods=['POST'])
+# Companions: characters the player has spoken with are saved to a roster WITH
+# their cinematic portrait (engine.api_talk_portrait records them), so they can
+# be listed and placed back into later scenes for a continuing story.
+app.add_url_rule('/api/companions', 'standalone_api_companions', engine.api_companions, methods=['GET'])
+app.add_url_rule('/api/companions/place', 'standalone_api_companion_place', engine.api_companion_place, methods=['POST'])
+# CAMP Moment: night campsite establishing shot compositing the jeep prop +
+# up to 5 companion portraits. Side pocket — does not advance the turn loop.
+app.add_url_rule('/api/camp/enter', 'standalone_api_camp_enter', engine.api_camp_enter, methods=['POST'])
 # Refcount + status endpoints for the dynamic per-character voices designed
 # on the fly by voice_design.py. /talk/end lets the client drop the refcount
 # on the active voice when the TALK widget closes so session-cleanup can
@@ -454,24 +466,66 @@ def serve_legacy_image(filename):
 
     `_gen_image` writes frames into the per-session image directory
     (sessions/<id>/images/, 'default' for the standalone/web path) but returns
-    a flat '/images/<filename>' URL. Serve from the default session dir first,
-    then fall back to the legacy root images/ dir, so web playthroughs display
-    scene art instead of 404ing. Mirrors the path-traversal protection used by
-    the session/archive image routes."""
+    a flat '/images/<filename>' URL. Each session has its OWN images/ dir, so
+    the basename alone is ambiguous: `_to_web_image_url` therefore stamps a
+    '?session=<id>' query param whenever the frame belongs to a non-default
+    session (e.g. a shared '/play?session=<id>' link). Resolve that session's
+    dir first, then fall back to the default session dir and the legacy root
+    images/ dir so older/session-less URLs still resolve. As a last resort we
+    scan every session's images/ dir for the basename, so a stale URL that lost
+    its session param still finds its frame instead of 404ing (the reported
+    "game hangs on starting a session" — the intro image never loaded).
+    Mirrors the path-traversal protection used by the session/archive image
+    routes."""
     try:
         safe_filename = Path(filename).name
-        candidates = [
-            Path(engine._get_image_dir('default')) / safe_filename,  # standalone/web session
-            Path("images") / safe_filename,                          # legacy/global fallback
-        ]
+        session_id = request.args.get('session') or request.args.get('session_id')
+        candidates = []
+        if session_id:
+            # Sanitize to a bare directory name; _get_image_dir validates + mkdirs,
+            # so guard against traversal / empty / malformed ids: on rejection just
+            # fall through to the default/legacy/scan candidates instead of 500-ing.
+            safe_session = Path(str(session_id)).name
+            if safe_session:
+                try:
+                    candidates.append(Path(engine._get_image_dir(safe_session)) / safe_filename)
+                except ValueError:
+                    pass
+        candidates.append(Path(engine._get_image_dir('default')) / safe_filename)  # standalone/web session
+        candidates.append(Path("images") / safe_filename)                          # legacy/global fallback
         mimetype = 'image/gif' if safe_filename.lower().endswith('.gif') else 'image/png'
         for image_path in candidates:
             if image_path.exists():
                 return send_file(str(image_path), mimetype=mimetype)
+        # Final fallback: locate the frame in any session's images/ dir. Only
+        # reached when the direct candidates miss (e.g. a URL that lost its
+        # ?session= param), so the extra scan stays off the hot path.
+        fallback = _find_image_in_any_session(safe_filename)
+        if fallback is not None:
+            return send_file(str(fallback), mimetype=mimetype)
         return error_response("Image not found", code=404)
     except Exception as e:
         traceback.print_exc()
         return error_response("Failed to serve image", str(e))
+
+
+def _find_image_in_any_session(safe_filename):
+    """Scan every session's images/ dir for `safe_filename`, returning the first
+    match (or None). Used as a last-resort fallback in serve_legacy_image for
+    session-less URLs. `safe_filename` must already be sanitized to a basename."""
+    try:
+        sessions_root = engine._get_session_root('default').parent
+        if not sessions_root.exists():
+            return None
+        for session_dir in sessions_root.iterdir():
+            if not session_dir.is_dir():
+                continue
+            candidate = session_dir / "images" / safe_filename
+            if candidate.exists():
+                return candidate
+    except Exception:
+        traceback.print_exc()
+    return None
 
 
 @app.route('/api/scene_audio', methods=['POST'])
@@ -489,9 +543,12 @@ def api_scene_audio():
         body = request.get_json(silent=True) or {}
         prompt = (body.get("prompt") or "").strip()
         session_id = body.get("session") or "default"
+        mode = (body.get("mode") or "scene").strip().lower()
+        if mode not in ("scene", "conversation"):
+            mode = "scene"
         if not prompt:
             return jsonify({"audio_url": None, "reason": "no_prompt"})
-        result = scene_audio.get_scene_audio(prompt, session_id=session_id)
+        result = scene_audio.get_scene_audio(prompt, session_id=session_id, mode=mode)
         if not result:
             return jsonify({"audio_url": None, "reason": "unavailable"})
         return jsonify(result)
@@ -2106,6 +2163,130 @@ def admin_pricing_put():
     except Exception as e:
         traceback.print_exc()
         return error_response("Failed to update pricing", str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════
+# WORLD STUDIO — spatial editor for every story/narrative/choice/image
+# prompt the game actually runs on. Same ADMIN_TOKEN guard and
+# success/error response shape as the rest of /api/admin/*. See
+# prompts_store.py for the hot-reload + defaults/reset mechanics.
+# ═══════════════════════════════════════════════════════════════════
+
+@app.route('/studio', methods=['GET'])
+def serve_world_studio():
+    """Serve the World Studio prompt editor, gated the same way /admin is."""
+    if not _admin_token_ok():
+        return jsonify({
+            "error": "unauthorized",
+            "message": "Provide ADMIN_TOKEN via ?token=, X-Admin-Token header, or admin_token cookie."
+        }), 401
+    try:
+        response = make_response(send_file('world_studio.html'))
+        origin = request.headers.get('Origin')
+        if origin:
+            response.headers['Access-Control-Allow-Origin'] = origin
+            response.headers['Vary'] = 'Origin'
+            response.headers['Access-Control-Allow-Credentials'] = 'true'
+        return response
+    except FileNotFoundError:
+        return jsonify({"error": "World Studio file not found"}), 404
+
+
+@app.route('/api/admin/studio/content', methods=['GET'])
+def admin_studio_content():
+    """Everything the World Studio UI needs in one shot: current + default
+    prompts, and the schema that drives grouping, descriptions, and
+    placeholder legends."""
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import prompts_store
+        return jsonify(success_response({
+            "prompts": dict(prompts_store.PROMPTS),
+            "prompts_defaults": prompts_store.load_defaults(),
+            "schema": prompts_store.PROMPT_SCHEMA,
+            "groups": prompts_store.GROUP_LABELS,
+        }))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to load World Studio content", str(e))
+
+
+@app.route('/api/admin/studio/prompts', methods=['PUT'])
+def admin_studio_prompts_put():
+    """
+    Update one prompt field (or several at once) and persist immediately —
+    same hot-swap pattern as /api/admin/pricing and /api/admin/ai_switch.
+
+    Body: either {"key": "...", "value": "..."} for a single field, or
+    {"data": {"key1": "...", "key2": [...]}} to update several at once.
+    Pass {"force": true} to save anyway despite placeholder-validation
+    warnings (only relevant for the small set of fields that are run
+    through Python's str.format() at request time).
+    """
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import prompts_store
+        body = request.get_json(silent=True) or {}
+        force = bool(body.get('force'))
+
+        if 'data' in body and isinstance(body['data'], dict):
+            fields = body['data']
+        elif 'key' in body:
+            fields = {body['key']: body.get('value')}
+        else:
+            return error_response(
+                "Body must include either {'key','value'} for a single field "
+                "or {'data': {...}} to update several at once.", code=400)
+
+        all_warnings = {}
+        for key, value in fields.items():
+            ok, warnings = prompts_store.validate_prompt_value(key, value)
+            if warnings:
+                all_warnings[key] = warnings
+            if not ok and not force:
+                return jsonify({
+                    "success": False,
+                    "error": f"'{key}' failed placeholder validation.",
+                    "warnings": all_warnings,
+                }), 400
+
+        data = prompts_store.save_prompts_bulk(fields)
+        return jsonify(success_response(
+            {"prompts": data, "warnings": all_warnings},
+            "Prompt(s) saved" + (" with warnings" if all_warnings else "")
+        ))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to save prompt(s)", str(e))
+
+
+@app.route('/api/admin/studio/prompts/reset', methods=['POST'])
+def admin_studio_prompts_reset():
+    """Restore one field (or every field) to its factory default.
+
+    Body: {"key": "..."} to reset a single field, or {"all": true} to
+    restore the entire prompts file.
+    """
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import prompts_store
+        body = request.get_json(silent=True) or {}
+        if body.get('all'):
+            data = prompts_store.reset_all_prompts()
+            return jsonify(success_response({"prompts": data}, "All prompts reset to defaults"))
+        key = body.get('key')
+        if not key:
+            return error_response("Body must include 'key' or {'all': true}.", code=400)
+        data = prompts_store.reset_prompt_field(key)
+        return jsonify(success_response({"prompts": data}, f"'{key}' reset to default"))
+    except KeyError as e:
+        return error_response(str(e), code=404)
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to reset prompt(s)", str(e))
 
 
 # ═══════════════════════════════════════════════════════════════════

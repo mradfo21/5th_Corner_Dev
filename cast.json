@@ -20,7 +20,7 @@
     "role": "Editor, Associated Press",
     "affiliation": "AP, New York Bureau",
     "description": "Jason’s last known contact outside the zone. Receives encrypted updates and curates them for potential release.",
-    "important": moderate,
+    "important": true,
     "notes": "Struggling to verify Jason’s materials due to military interference and increasing media blackouts."
   },
   {

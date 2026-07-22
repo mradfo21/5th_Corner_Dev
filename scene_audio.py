@@ -106,15 +106,65 @@ def _clean_scene_text(scene_prompt: str) -> str:
     return text[:240]
 
 
-def _scene_to_music_prompt(scene_prompt: str):
+# Conversation Moment music: warmer, more intimate instrumentation so the
+# dialogue screen feels like a different register from the exploration bed.
+_CONVERSATION_STYLE_ANCHORS = (
+    "intimate cinematic underscore, warm low strings, soft piano, hushed pads, "
+    "no vocals, no drums lead, dialogue-friendly sparse arrangement"
+)
+_CONVERSATION_KIND_CUES = [
+    # (keywords in prompt, mood phrase, bpm, brightness)
+    (("machine", "radio", "intercom", "terminal", "static"),
+     "cold electronic hum, distant radio static beds, tense intimacy", 72, 0.35),
+    (("creature", "monster", "inhuman", "strange"),
+     "unsettling intimate drones, close mic texture, held breath", 66, 0.3),
+    (("animal", "dog", "cat", "bird"),
+     "gentle organic pads, soft flute-like tones, quiet wonder", 76, 0.5),
+    (("hostile", "threat", "afraid", "danger", "gun"),
+     "taut low strings, heartbeat pulse, whispered tension", 88, 0.4),
+]
+
+
+def _scene_to_music_prompt(scene_prompt: str, mode: str = "scene"):
     """Map a scene descriptor to (weighted_prompts, generation_config_kwargs).
 
     Returns plain data (list of {text, weight} dicts + a kwargs dict) so this is
     unit-testable without importing the SDK. The caller converts them to SDK
     types just before the network call.
+
+    ``mode="conversation"`` selects a warmer, dialogue-friendly profile used by
+    Conversation Moments (ducked under the character's voice on the client).
     """
     scene = _clean_scene_text(scene_prompt)
     low = scene.lower()
+    mode = (mode or "scene").strip().lower()
+
+    if mode == "conversation":
+        mood_phrase = "warm, intimate, hushed cinematic conversation underscore"
+        bpm = 74
+        brightness = 0.45
+        for keywords, phrase, cue_bpm, cue_bright in _CONVERSATION_KIND_CUES:
+            if any(k in low for k in keywords):
+                mood_phrase = phrase
+                bpm = cue_bpm
+                brightness = cue_bright
+                break
+        # Fall back to scene mood cues if the prompt is just a place description.
+        if mood_phrase.startswith("warm, intimate"):
+            for keywords, phrase, cue_bpm, cue_bright in _MOOD_CUES:
+                if any(k in low for k in keywords):
+                    # Soften scene-mood cues toward intimacy.
+                    mood_phrase = phrase + ", intimate and sparse"
+                    bpm = max(60, min(96, cue_bpm - 8))
+                    brightness = min(0.6, cue_bright)
+                    break
+        prompts = [
+            {"text": (scene or "a quiet conversation"), "weight": 1.0},
+            {"text": mood_phrase, "weight": 1.0},
+            {"text": _CONVERSATION_STYLE_ANCHORS, "weight": 0.8},
+        ]
+        config = {"bpm": bpm, "brightness": brightness, "temperature": 1.05}
+        return prompts, config
 
     mood_phrase = "calm, mysterious, exploratory ambient"
     bpm = 78
@@ -151,12 +201,12 @@ def _pcm_to_wav_bytes(pcm: bytes) -> bytes:
     return buf.getvalue()
 
 
-async def _stream_pcm(scene_prompt: str, seconds: int) -> bytes:
+async def _stream_pcm(scene_prompt: str, seconds: int, mode: str = "scene") -> bytes:
     """Open a Lyria RealTime session and collect ~`seconds` of PCM."""
     from google import genai
     from google.genai import types
 
-    prompts, cfg = _scene_to_music_prompt(scene_prompt)
+    prompts, cfg = _scene_to_music_prompt(scene_prompt, mode=mode)
 
     client = genai.Client(
         api_key=GEMINI_API_KEY,
@@ -194,7 +244,7 @@ async def _stream_pcm(scene_prompt: str, seconds: int) -> bytes:
     return bytes(collected[:bytes_needed])
 
 
-def _run_stream_blocking(scene_prompt: str, seconds: int) -> bytes:
+def _run_stream_blocking(scene_prompt: str, seconds: int, mode: str = "scene") -> bytes:
     """Run the async Lyria stream to completion from a sync (gunicorn) worker.
 
     Uses a dedicated thread + event loop so it is safe regardless of whether the
@@ -206,7 +256,10 @@ def _run_stream_blocking(scene_prompt: str, seconds: int) -> bytes:
     def _worker():
         try:
             result["pcm"] = asyncio.run(
-                asyncio.wait_for(_stream_pcm(scene_prompt, seconds), timeout=_STREAM_TIMEOUT_SECONDS)
+                asyncio.wait_for(
+                    _stream_pcm(scene_prompt, seconds, mode=mode),
+                    timeout=_STREAM_TIMEOUT_SECONDS,
+                )
             )
         except Exception as e:  # noqa: BLE001 — degrade gracefully, never crash the request
             result["error"] = e
@@ -246,13 +299,14 @@ def _get_audio_dir(session_id: str = "default") -> Path:
     return audio_dir
 
 
-def _cache_name(scene_prompt: str, seconds: int) -> str:
+def _cache_name(scene_prompt: str, seconds: int, mode: str = "scene") -> str:
     """Stable filename keyed on the derived music prompt so identical scenes
     reuse the same clip instead of re-billing Lyria."""
-    prompts, cfg = _scene_to_music_prompt(scene_prompt)
-    key = json.dumps({"p": prompts, "c": cfg, "s": seconds}, sort_keys=True)
+    prompts, cfg = _scene_to_music_prompt(scene_prompt, mode=mode)
+    key = json.dumps({"p": prompts, "c": cfg, "s": seconds, "m": mode}, sort_keys=True)
     digest = hashlib.sha1(key.encode("utf-8")).hexdigest()[:16]
-    return f"scene_{digest}.wav"
+    prefix = "convo" if mode == "conversation" else "scene"
+    return f"{prefix}_{digest}.wav"
 
 
 # Coalesce concurrent identical requests so two turns landing at once don't both
@@ -262,23 +316,31 @@ _INFLIGHT = {}
 
 
 def get_scene_audio(scene_prompt: str, session_id: str = "default",
-                    seconds: int = DEFAULT_CLIP_SECONDS) -> dict | None:
+                    seconds: int = DEFAULT_CLIP_SECONDS,
+                    mode: str = "scene") -> dict | None:
     """Return {"audio_url": "/audio/<file>.wav", "cached": bool} for a scene, or
-    ``None`` when audio can't be produced (no key / SDK / stream failure)."""
+    ``None`` when audio can't be produced (no key / SDK / stream failure).
+
+    ``mode="conversation"`` selects the intimate Conversation Moment profile.
+    """
     if not is_available():
         return None
+
+    mode = (mode or "scene").strip().lower()
+    if mode not in ("scene", "conversation"):
+        mode = "scene"
 
     scene_prompt = _clean_scene_text(scene_prompt)
     if not scene_prompt:
         return None
 
     audio_dir = _get_audio_dir(session_id)
-    fname = _cache_name(scene_prompt, seconds)
+    fname = _cache_name(scene_prompt, seconds, mode=mode)
     fpath = audio_dir / fname
     web_url = f"/audio/{fname}"
 
     if fpath.exists() and fpath.stat().st_size > 44:  # >WAV header
-        return {"audio_url": web_url, "cached": True}
+        return {"audio_url": web_url, "cached": True, "mode": mode}
 
     # Only one generation per (session, file) in flight at a time.
     ikey = (session_id, fname)
@@ -291,10 +353,11 @@ def get_scene_audio(scene_prompt: str, session_id: str = "default",
     with lock:
         # Another waiter may have finished while we blocked on the lock.
         if fpath.exists() and fpath.stat().st_size > 44:
-            return {"audio_url": web_url, "cached": True}
+            return {"audio_url": web_url, "cached": True, "mode": mode}
         gen_t0 = time.time()
         try:
-            pcm = _run_stream_blocking(scene_prompt, seconds)
+            # Conversation clips re-steer via cache key+mode (intimate profile).
+            pcm = _run_stream_blocking(scene_prompt, seconds, mode=mode)
             if not pcm:
                 cost_tracker.record_usage(
                     session_id, "voice", "gemini", LYRIA_MODEL, operation="lyria_music",
@@ -320,7 +383,7 @@ def get_scene_audio(scene_prompt: str, session_id: str = "default",
             with _INFLIGHT_LOCK:
                 _INFLIGHT.pop(ikey, None)
 
-    return {"audio_url": web_url, "cached": False}
+    return {"audio_url": web_url, "cached": False, "mode": mode}
 
 
 def resolve_audio_path(filename: str, session_id: str = "default") -> Path | None:

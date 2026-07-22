@@ -357,7 +357,20 @@
     <button id="scan-btn" type="button" title="Scan — reveal what's interactable in the scene for a few seconds (S)">
       <span class="scan-btn-ico">✦</span><span class="scan-btn-lbl">SCAN</span>
     </button>
+    <!-- CAMP: hard-cut to a playable night campsite level (companions + jeep),
+         with the full action wheel live — PHOTO / SCAN / ACT / explore pad.
+         LEAVE CAMP (sibling control) drives into a brand-new mission. -->
+    <button id="camp-btn" type="button" title="Camp — gather by the fire with companions you've met">
+      <span class="camp-btn-ico">🔥</span><span class="camp-btn-lbl">CAMP</span>
+    </button>
   </div>
+
+  <!-- LEAVE CAMP: shown only while the playable campsite level is live.
+       Same hard-transition exit as MOVE TO — drives the jeep into a new level. -->
+  <button id="leave-camp-btn" type="button" class="hidden" aria-hidden="true"
+          title="Leave camp — drive the jeep into a new location">
+    LEAVE CAMP
+  </button>
 
   <!-- Interaction hotspots: surfaced on demand by the SCAN button. A scan fires
        ONE recognition pass and the model names what's interactable as
@@ -380,12 +393,46 @@
        only when the live model takes interaction verbs. Populated by VerbBar. -->
   <div id="verb-bar" class="verb-bar hidden" aria-label="World interaction verbs"></div>
 
+  <!-- MOMENT overlay: shared cinematic chrome for full-screen set-pieces
+       (conversation, …). Letterbox bars, character portrait, nameplate,
+       notification tray, and optional dialogue choices. Camp is a playable
+       level (not a Moment) — see #leave-camp-btn + Renderer.applyScene.
+       The live world underneath is paused (not destroyed) so ending a Moment
+       restores it instantly. Driven by static/js/moments.js. -->
+  <div id="moment-overlay" class="hidden" aria-hidden="true">
+    <div class="moment-letterbox moment-letterbox-top" aria-hidden="true"></div>
+    <div class="moment-letterbox moment-letterbox-bottom" aria-hidden="true"></div>
+    <!-- Soft black fade veil (optional Moment types). Conversation uses the
+         VCR glitch; camp enter/leave uses Reactor beginSceneFade instead. -->
+    <div id="moment-fade" class="hidden" aria-hidden="true"></div>
+    <!-- Optional full-bleed scene shell (legacy Moment establishing shots).
+         Camp no longer mounts here — it uses the normal .scene / Reactor path. -->
+    <div id="moment-scene" class="hidden" aria-hidden="true">
+      <div id="moment-scene-shimmer" aria-hidden="true"></div>
+      <img id="moment-scene-img" alt="" />
+      <div id="moment-scene-grain" aria-hidden="true"></div>
+      <div id="moment-scene-hotspots" aria-hidden="true"></div>
+    </div>
+    <div id="moment-portrait" class="developing" aria-hidden="true">
+      <div id="moment-portrait-shimmer" aria-hidden="true"></div>
+      <img id="moment-portrait-img" class="hidden" alt="" />
+      <!-- Phase-2: optional world-model animated portrait stream. -->
+      <video id="moment-portrait-video" class="hidden" playsinline muted loop aria-hidden="true"></video>
+      <div id="moment-portrait-grain" aria-hidden="true"></div>
+      <div id="moment-portrait-rim" aria-hidden="true"></div>
+    </div>
+    <div id="moment-nameplate" class="hidden" aria-live="polite">
+      <div id="moment-nameplate-name">—</div>
+      <div id="moment-nameplate-sub">establishing…</div>
+    </div>
+    <div id="moment-notify" aria-live="polite"></div>
+    <div id="moment-choices" class="hidden" role="listbox" aria-label="Dialogue choices"></div>
+  </div>
+
   <!-- TALK overlay: opened from a SCAN tag's TALK action on a thing that can
-       speak. A sleek, coffee-talk-inspired conversation window that docks to
-       the edge of the scene so the world stays visible AND playable underneath.
-       There is only ONE presentation now — a slim, minimal control strip (no
-       "expanded" card, no minimize button to press) — plus incoming lines
-       float out as ephemeral speech bubbles so you never lose the thread.
+       speak. Default presentation is a slim control strip over the scene;
+       when a Conversation Moment is active, CSS restyles this into a
+       bottom-third cinematic caption bar over the Moment portrait.
        Runs a live ElevenLabs voice agent when configured, otherwise a text
        conversation — both grounded in the current scene. -->
   <div id="talk-overlay" class="hidden" aria-hidden="true">
@@ -705,6 +752,7 @@
 
   {% if forced_renderer %}<script>window.__FORCED_RENDERER__ = "{{ forced_renderer }}";</script>{% endif %}
   <script src="{{ url_for('static', filename='js/reactor_renderer.js') }}?v={{ asset_version }}"></script>
+  <script src="{{ url_for('static', filename='js/moments.js') }}?v={{ asset_version }}"></script>
   <script src="{{ url_for('static', filename='js/standalone.js') }}?v={{ asset_version }}"></script>
 </body>
 </html>

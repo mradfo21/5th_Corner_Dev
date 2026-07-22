@@ -48,11 +48,12 @@
     </div>
 
     <div class="hero-inner">
-      <div class="hero-actions reveal">
-        <button class="btn btn-primary" type="button" data-enter="new">
+      <h1 class="hero-title">SOMEWHERE</h1>
+      <div class="hero-actions">
+        <button class="btn btn-primary btn-lg" type="button" data-enter="new">
           <span class="btn-ico" aria-hidden="true">▶</span> PLAY
         </button>
-        <button class="btn btn-ghost" type="button" data-enter="continue">CONTINUE</button>
+        <button class="btn btn-ghost btn-lg" type="button" data-enter="continue">CONTINUE</button>
       </div>
     </div>
 
@@ -80,18 +81,33 @@
     <section class="frame" style="background-image:url('{{ url_for('static', filename='img/lobby/gal_motel.jpg') }}')">
       <div class="frame-caption reveal"><h2>FIND SOMEWHERE</h2></div>
     </section>
-
-    <section class="frame" style="background-image:url('{{ url_for('static', filename='img/lobby/gal_forest.jpg') }}')">
-      <div class="frame-caption reveal"><h2>Fifteen seconds. The dark won't wait.</h2></div>
-    </section>
-
-    <section class="frame frame-final" style="background-image:url('{{ url_for('static', filename='img/lobby/gal_figure.jpg') }}')">
-      <div class="frame-caption reveal">
-        <span class="frame-kicker">no second chances</span>
-        <h2>One life. No way back.</h2>
-      </div>
-    </section>
   </div>
+
+  <!-- ===================== GAMEPLAY ===================== -->
+  <section class="features" id="features">
+    <div class="features-head">
+      <h2>Every run goes somewhere else.</h2>
+    </div>
+    <div class="features-grid">
+      <div class="feature-card">
+        <h3>Generated as you play</h3>
+        <p>Each choice creates the next scene.</p>
+      </div>
+      <div class="feature-card">
+        <h3>Choose in 15 seconds</h3>
+        <p>Pick an option or write your own move.</p>
+      </div>
+      <div class="feature-card">
+        <h3>One life</h3>
+        <p>Your choices persist. Death ends the run.</p>
+      </div>
+    </div>
+    <div class="features-cta">
+      <button class="btn btn-primary btn-lg" type="button" data-enter="new">
+        <span class="btn-ico" aria-hidden="true">▶</span> PLAY
+      </button>
+    </div>
+  </section>
 
   <!-- ===================== ENTER (functional menu) =====================
        Bookends the page: the same cinematic "first page moment" as the hero,
@@ -104,11 +120,9 @@
       <div class="enter-media-fade"></div>
     </div>
     <div class="enter-glow" aria-hidden="true"></div>
-    <div class="menu-card reveal">
+    <div class="menu-card">
       <div class="menu-brand">
-        <p class="menu-kicker">the road is still out there</p>
-        <h2 class="menu-title glitch" data-text="ENTER">ENTER</h2>
-        <p class="menu-tagline">Step back into it. One tap.</p>
+        <h2 class="menu-title">PLAY</h2>
       </div>
 
       <nav class="menu-actions" aria-label="Start a run">
@@ -116,14 +130,14 @@
           <span class="menu-btn-ico" aria-hidden="true">▶</span>
           <span class="menu-btn-text">
             <span class="menu-btn-label">NEW GAME</span>
-            <span class="menu-btn-hint">wake up somewhere new</span>
+            <span class="menu-btn-hint">start a fresh run</span>
           </span>
         </button>
         <button id="cta-continue" class="menu-btn" type="button" aria-expanded="false" aria-controls="panel-resume">
           <span class="menu-btn-ico" aria-hidden="true">◧</span>
           <span class="menu-btn-text">
             <span class="menu-btn-label">CONTINUE</span>
-            <span class="menu-btn-hint" id="continue-hint">pick up where you left off</span>
+            <span class="menu-btn-hint" id="continue-hint">open a saved run</span>
           </span>
           <span class="menu-btn-badge" id="continue-badge" hidden>0</span>
         </button>
@@ -174,15 +188,6 @@
         </div>
       </section>
 
-      <details class="menu-howto">
-        <summary>How does this work?</summary>
-        <ol class="howto-list">
-          <li>Start a new run, or continue one — you get a private link you can bookmark.</li>
-          <li>Read the dispatch and take in where you are. Every place is somewhere you've never been.</li>
-          <li>Pick one of four ways forward, or say your own. Fifteen seconds — the world won't wait.</li>
-          <li>Survive as long as you can. Your run saves itself. Death is permanent, so make it count.</li>
-        </ol>
-      </details>
     </div>
   </section>
 
