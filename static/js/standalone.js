@@ -7161,15 +7161,18 @@
   }
 
   // CAMP mirrors SCAN's agency gate: reachable when the player can act, never
-  // mid-turn / mid-conversation / inside another Moment / game over.
+  // mid-turn / mid-conversation / inside another Moment / game over / paused.
   function updateCampButton() {
     if (!el.campBtn) return;
     const turnActive = !!(el.actionWheel && el.actionWheel.classList.contains("turn-active"));
     const talkOpen = !!(Talk && typeof Talk.isOpen === "function" && Talk.isOpen());
     const momentActive = !!(window.Moments && typeof window.Moments.isActive === "function" &&
       window.Moments.isActive());
+    const coinPaused = !!(typeof CoinOp !== "undefined" && CoinOp.isPaused && CoinOp.isPaused());
+    const tapeOpen = !!(typeof tapeIsOpen === "function" && tapeIsOpen());
     const ok = !state.gameOver && !turnActive && !state.processing &&
-      !state.awaitingResolution && !talkOpen && !momentActive;
+      !state.awaitingResolution && !talkOpen && !momentActive &&
+      !coinPaused && !tapeOpen && !state.touchMode && !state.freeWillOpen;
     el.campBtn.disabled = !ok;
   }
 
@@ -8649,6 +8652,10 @@
         btn.addEventListener("click", (ev) => {
           ev.preventDefault();
           ev.stopPropagation();
+          // Nest Talk on top of camp: clear camp chrome so LEAVE CAMP / hotspots
+          // can't steal clicks through the talk overlay (pointer-events:none).
+          clearHotspots();
+          try { window.Moments.clearChoices(); } catch (_) {}
           const ref = campSceneAsDataUrl();
           try {
             Talk.start({
@@ -8659,16 +8666,36 @@
             });
           } catch (err) {
             console.warn("[camp] Talk.start failed:", err);
+            // If Talk failed to open, put the camp chrome back.
+            placeHotspots(campAttendees);
+            showLeaveChoice();
           }
         });
         hs.appendChild(btn);
       });
     }
 
+    function leaveCamp() {
+      // If a conversation is nested on top, hang up first (pops conversation),
+      // then pop camp — never pop only the conversation via LEAVE CAMP.
+      const top = window.Moments.topType && window.Moments.topType();
+      if (top === "conversation") {
+        try { Talk.close(); } catch (_) {}
+        // Talk.close is async w.r.t. Moments.pop; wait a tick then leave camp.
+        setTimeout(() => {
+          if (window.Moments.topType && window.Moments.topType() === "camp") {
+            window.Moments.pop({ left: true });
+          }
+        }, 40);
+        return;
+      }
+      window.Moments.pop({ left: true });
+    }
+
     function showLeaveChoice() {
       window.Moments.setChoices(
         [{ label: "LEAVE CAMP", id: "leave" }],
-        () => { window.Moments.pop({ left: true }); }
+        () => { leaveCamp(); }
       );
     }
 
@@ -8689,21 +8716,29 @@
     }
 
     window.Moments.register("camp", {
-      async enter(/* payload, entry */) {
+      async enter(payload, entry) {
         campSceneUrl = null;
         campAttendees = [];
         clearHotspots();
         try {
           window.Moments.setNameplate("CAMP", "making camp…");
         } catch (_) {}
+        // Leave available immediately — generation can take a long time; Esc
+        // / LEAVE must work while the shimmer is up (entry.aborted on pop).
+        showLeaveChoice();
 
         let res = null;
         try {
           res = await postJSON("/api/camp/enter", {});
         } catch (err) {
           console.warn("[camp] enter failed:", err);
-          res = null;
+          if (err && err.status === 429) {
+            res = Object.assign({ image_url: null, reason: "slow_down" }, err.body || {});
+          } else {
+            res = null;
+          }
         }
+        if (entry && entry.aborted) return false;
 
         if (!res || !res.image_url) {
           try {
@@ -8721,8 +8756,12 @@
 
         campSceneUrl = res.image_url;
         campAttendees = Array.isArray(res.attendees) ? res.attendees : [];
-        window.Moments.setScene(campSceneUrl);
-        placeHotspots(campAttendees);
+        // Place hotspots only after the plate decodes so Talk can sample a
+        // firelit reference_image (campSceneAsDataUrl needs naturalWidth).
+        window.Moments.setScene(campSceneUrl, () => {
+          if (entry && entry.aborted) return;
+          placeHotspots(campAttendees);
+        });
 
         const n = campAttendees.length;
         try {

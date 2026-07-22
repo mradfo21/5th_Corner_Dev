@@ -4544,6 +4544,15 @@ body.moment-conversation[data-talk-orb="speaking"] #moment-portrait-rim {
 /* While a Conversation Moment is live, restyle the existing Talk strip into
    a bottom-third cinematic caption bar and enable the scrim so the world
    underneath can't be poked. */
+/* Nested Talk on top of CAMP: hide camp hotspots + LEAVE CAMP so they can't
+   steal taps through the talk overlay (which is pointer-events:none). */
+body.moment-conversation #moment-scene-hotspots,
+body.moment-conversation #moment-choices {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none !important;
+}
+
 body.moment-conversation #talk-overlay {
   z-index: 35;
   pointer-events: none;

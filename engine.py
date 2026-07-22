@@ -7919,13 +7919,20 @@ def api_camp_enter():
             })
 
         if cached:
-            _camp_append_feed(session_id, cached)
-            return jsonify({
-                "image_url": cached,
-                "attendees": attendees_out,
-                "jeep_included": jeep_included,
-                "cached": True,
-            })
+            # Validate the cached plate still exists on disk — establishing
+            # shots are ordinary session images and can be swept; never serve
+            # a 404 URL into the Moment chrome.
+            cached_path = _resolve_image_path(cached)
+            if cached_path and cached_path.exists():
+                _camp_append_feed(session_id, cached)
+                return jsonify({
+                    "image_url": cached,
+                    "attendees": attendees_out,
+                    "jeep_included": jeep_included,
+                    "cached": True,
+                })
+            with _CAMP_CACHE_LOCK:
+                _CAMP_CACHE.pop(cache_key, None)
 
         if not IMAGE_ENABLED:
             return jsonify({
@@ -8016,14 +8023,24 @@ def api_camp_enter():
                 "reason": "no_image",
             })
 
+        # Persist a durable, sweep-protected camp plate (prop_camp_<sig>.png)
+        # so cache hits survive disk headroom sweeps the same way the jeep does.
+        durable_web = web
+        try:
+            sig = hashlib.sha1(str(cache_key).encode("utf-8")).hexdigest()[:12]
+            durable_web = _persist_prop_image(image_path, session_id, f"camp_{sig}") or web
+        except Exception as persist_err:
+            log_error(f"[CAMP] persist plate failed: {persist_err}")
+            durable_web = web
+
         with _CAMP_CACHE_LOCK:
-            _CAMP_CACHE[cache_key] = web
+            _CAMP_CACHE[cache_key] = durable_web
         print(f"[CAMP] establishing shot ready ({gen_mode}, "
               f"{len(attendees_out)} attendees, jeep={jeep_included})", flush=True)
 
-        _camp_append_feed(session_id, web)
+        _camp_append_feed(session_id, durable_web)
         return jsonify({
-            "image_url": web,
+            "image_url": durable_web,
             "attendees": attendees_out,
             "jeep_included": jeep_included,
             "cached": False,

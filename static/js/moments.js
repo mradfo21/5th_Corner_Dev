@@ -209,7 +209,10 @@
     }
     if (choreographyBusy) return null;
     choreographyBusy = true;
-    const entry = { type: String(type), payload: payload || {}, handlers };
+    // `aborted` lets long-running enter() handlers (e.g. CAMP image gen) ignore
+    // late results after the player Esc / LEAVE mid-load. choreographyBusy only
+    // covers the sync chrome setup so pop() stays available during await.
+    const entry = { type: String(type), payload: payload || {}, handlers, aborted: false };
     try {
       // If the shared chrome markup is missing (e.g. a stale cached template),
       // abort BEFORE touching the world so the caller can fall back to its own
@@ -227,11 +230,8 @@
       fireGlitch();
       playSound("convoEnter");
       stack.push(entry);
-      const result = await handlers.enter(payload || {}, entry);
-      return result;
     } catch (err) {
-      console.warn("[moments] enter failed:", err);
-      // Roll back this push if enter blew up before the type settled.
+      console.warn("[moments] push chrome failed:", err);
       if (stack[stack.length - 1] === entry) stack.pop();
       if (!stack.length) {
         hideOverlayChrome();
@@ -242,12 +242,32 @@
     } finally {
       choreographyBusy = false;
     }
+
+    try {
+      const result = await handlers.enter(payload || {}, entry);
+      if (entry.aborted) return null;
+      return result;
+    } catch (err) {
+      console.warn("[moments] enter failed:", err);
+      // Roll back this push if enter blew up before the type settled.
+      if (!entry.aborted && stack[stack.length - 1] === entry) {
+        stack.pop();
+        if (!stack.length) {
+          hideOverlayChrome();
+          setHudHidden(false);
+          resumeUnderlay();
+        }
+      }
+      return null;
+    }
   }
 
   async function pop(result) {
     if (!stack.length || choreographyBusy) return null;
     choreographyBusy = true;
     const entry = stack[stack.length - 1];
+    // Signal any in-flight enter() to ignore its late network/image result.
+    entry.aborted = true;
     try {
       playSound("convoExit");
       fireGlitch();
@@ -343,22 +363,27 @@
   }
 
   // Full-bleed establishing shot (camp). Mirrors setPortrait's crossfade, but
-  // fills the viewport instead of a framed close-up.
-  function setScene(url) {
+  // fills the viewport instead of a framed close-up. Optional onReady fires
+  // after the image decodes (or errors) so callers can place hotspots once
+  // campSceneAsDataUrl() can actually sample pixels.
+  function setScene(url, onReady) {
     const sc = sceneEl();
     const img = sceneImg();
     if (!sc || !img || !url) return;
     sc.classList.remove("hidden");
     sc.setAttribute("aria-hidden", "false");
-    img.onload = () => {
+    const done = () => {
       sc.classList.remove("developing");
       sc.classList.add("ready");
+      if (typeof onReady === "function") {
+        try { onReady(); } catch (_) {}
+      }
+    };
+    img.onload = () => {
+      done();
       playSound("portraitReveal");
     };
-    img.onerror = () => {
-      sc.classList.remove("developing");
-      sc.classList.add("ready");
-    };
+    img.onerror = () => { done(); };
     img.src = url;
   }
 
