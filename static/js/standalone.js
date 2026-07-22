@@ -7962,6 +7962,17 @@
           // Cinematic still + CSS living-portrait motion. The world session
           // stays paused underneath for an instant resume on exit.
           window.Moments.setPortrait(res.image_url);
+          // The server stored this character (with their portrait) as a
+          // COMPANION for the roster — surface it the first time we meet them
+          // so the player feels the world remembering people.
+          try {
+            if (res.companion && res.companion.first_seen && window.Moments.notify) {
+              window.Moments.notify({
+                icon: "\u2726",
+                text: (res.companion.label || subj.label || "They") + " added to your companions",
+              });
+            }
+          } catch (_) {}
         } else if (window.Moments) {
           const p = document.getElementById("moment-portrait");
           if (p) { p.classList.remove("developing"); p.classList.add("ready"); }

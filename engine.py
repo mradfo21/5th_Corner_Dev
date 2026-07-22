@@ -6298,6 +6298,11 @@ def _ensure_disk_headroom(force: bool = False):
                 return True
             if p.suffix == ".db" or "_analytics" in p.parts:
                 return True
+            # Companion portraits are a persistent roster (see _record_companion)
+            # meant to be reused across scenes for a continuing story — never
+            # sweep them.
+            if p.name.startswith("companion_"):
+                return True
             return False
 
         # How much to free (with a little extra so we don't immediately re-trip).
@@ -7068,6 +7073,94 @@ def build_portrait_prompt(context: dict, img2img: bool = False) -> str:
     return _sanitize_for_image_generation(prompt)
 
 
+def _companion_slug(label: str) -> str:
+    """Filesystem-safe, stable slug for a companion label."""
+    s = re.sub(r"[^a-z0-9]+", "_", (label or "").strip().lower()).strip("_")
+    return (s or "figure")[:40]
+
+
+def _persist_companion_image(image_path: str, session_id: str, label: str) -> Optional[str]:
+    """Copy a freshly-generated portrait to a STABLE, sweep-protected companion
+    file (``companion_<slug>.png``) so it survives as part of the roster and can
+    be re-referenced when placing the character into future scenes.
+
+    Returns the web URL of the durable copy, or None on failure.
+    """
+    try:
+        src = _resolve_image_path(image_path)
+        if not src or not src.exists():
+            return None
+        img_dir = Path(_get_image_dir(session_id))
+        img_dir.mkdir(parents=True, exist_ok=True)
+        slug = _companion_slug(label)
+        dst = img_dir / f"companion_{slug}.png"
+        import shutil as _shutil
+        _shutil.copyfile(str(src), str(dst))
+        # Mirror the img2img downsample convention so companion images can be
+        # used as img2img references efficiently later.
+        try:
+            small_src = src.with_name(src.name.replace(".png", "_small.png"))
+            if small_src.exists():
+                _shutil.copyfile(str(small_src), str(img_dir / f"companion_{slug}_small.png"))
+        except Exception:
+            pass
+        return _to_web_image_url(f"companion_{slug}.png", session_id)
+    except Exception as e:
+        log_error(f"[COMPANION] persist image failed: {e}")
+        return None
+
+
+def _record_companion(session_id: str, subject: dict, portrait_url: str,
+                      prompt: str = "", scene: str = "") -> dict:
+    """Upsert a COMPANION into the session roster.
+
+    A companion is a character the player has spoken with, stored WITH their
+    cinematic portrait so they can be dropped back into later scenes to build a
+    continuing story. Additive metadata on session state (``state.companions``),
+    keyed by lowercased label; also links the portrait onto the lightweight
+    character-memory record. Returns the companion record (JSON-safe).
+    """
+    subject = subject or {}
+    display_label = re.sub(r"\s+", " ", str(subject.get("label") or "")).strip()[:40]
+    label = _clean_subject_text(subject.get("label"), "", 40)
+    if not label or not portrait_url:
+        return {}
+    try:
+        st = _load_state(session_id) or {}
+    except Exception:
+        return {}
+    companions = st.get("companions")
+    if not isinstance(companions, dict):
+        companions = {}
+    key = label.lower()
+    prev = companions.get(key) if isinstance(companions.get(key), dict) else {}
+    turn = st.get("turn_count", 0)
+    entry = {
+        "label": display_label or label,
+        "kind": _clean_subject_text(subject.get("kind"), prev.get("kind") or "person", 20),
+        "portrait_url": portrait_url,
+        "prompt": (prompt or prev.get("prompt") or "")[:400],
+        "scene": (scene or prev.get("scene") or "")[:300],
+        "first_seen_turn": prev.get("first_seen_turn", turn),
+        "last_seen_turn": turn,
+        "seen_count": int(prev.get("seen_count") or 0) + 1,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    companions[key] = entry
+    st["companions"] = companions
+    # Link the portrait onto the character-memory record too, so the two views
+    # (relationship notes + roster art) stay in sync.
+    chars = st.get("characters")
+    if isinstance(chars, dict) and isinstance(chars.get(key), dict):
+        chars[key]["portrait_url"] = portrait_url
+        st["characters"] = chars
+    try:
+        _save_state(st, session_id)
+    except Exception as e:
+        log_error(f"[COMPANION] save failed: {e}")
+    return entry
+
+
 def _save_portrait_reference(frame_b64: str, session_id: str = "default") -> Optional[str]:
     """Decode a client-captured scene frame (data URL) to a file for img2img.
 
@@ -7249,12 +7342,32 @@ def api_talk_portrait():
             _PORTRAIT_CACHE[cache_key] = web
             _PORTRAIT_SPEND[session_id] = spend + 1
 
+        # Store this character as a COMPANION: a durable, sweep-protected copy of
+        # their portrait plus roster metadata, so they can be placed back into
+        # later scenes for a continuing story. Best-effort — never fail the
+        # portrait response over roster bookkeeping.
+        companion = None
+        try:
+            durable_url = _persist_companion_image(image_path, session_id, label) or web
+            companion = _record_companion(
+                session_id, context["subject"], durable_url,
+                prompt=prompt, scene=world_prompt,
+            )
+        except Exception as comp_err:
+            log_error(f"[COMPANION] record from portrait failed: {comp_err}")
+
         return jsonify({
             "image_url": web,
             "cached": False,
             "mode": gen_mode,
             "prompt": prompt[:400],
             "subject": context["subject"],
+            "companion": ({
+                "label": companion.get("label"),
+                "portrait_url": companion.get("portrait_url"),
+                "seen_count": companion.get("seen_count"),
+                "first_seen": companion.get("seen_count") == 1,
+            } if companion else None),
         })
     except Exception as e:
         log_error(f"[TALK PORTRAIT] failed: {e}")
@@ -7307,6 +7420,150 @@ def _record_character_memory(session_id: str, subject: dict, note: str = "") -> 
     except Exception as e:
         log_error(f"[TALK] character memory save failed: {e}")
     return entry
+
+
+def api_companions():
+    """List the player's companion roster — characters they've spoken with,
+    stored with their cinematic portrait so they can be placed into later
+    scenes for a continuing story.
+
+    GET /api/companions?session_id=<id>
+    Response: ``{"companions": [{label, kind, portrait_url, seen_count,
+      first_seen_turn, last_seen_turn, trust, notes}, ...]}`` — most recently
+    seen first.
+    """
+    try:
+        session_id = request.args.get("session_id", "default")
+        try:
+            st = _load_state(session_id) or {}
+        except Exception:
+            st = {}
+        companions = st.get("companions") or {}
+        chars = st.get("characters") or {}
+        out = []
+        for key, c in companions.items():
+            if not isinstance(c, dict):
+                continue
+            mem = chars.get(key) if isinstance(chars.get(key), dict) else {}
+            out.append({
+                "label": c.get("label"),
+                "kind": c.get("kind"),
+                "portrait_url": c.get("portrait_url"),
+                "seen_count": c.get("seen_count"),
+                "first_seen_turn": c.get("first_seen_turn"),
+                "last_seen_turn": c.get("last_seen_turn"),
+                "trust": mem.get("trust", 0),
+                "notes": (mem.get("notes") or [])[-3:],
+            })
+        out.sort(key=lambda r: (r.get("last_seen_turn") or 0), reverse=True)
+        return jsonify({"companions": out})
+    except Exception as e:
+        log_error(f"[COMPANION] list failed: {e}")
+        return jsonify({"companions": [], "error": str(e)}), 500
+
+
+def api_companion_place():
+    """Place a stored companion INTO a scene — the primitive for continuing-
+    story beats where a known character reappears in the world.
+
+    Request JSON: ``{"label": <str>, "session_id"?, "reference_image"?:
+      <data-url of the current frame>, "prompt"?: <what they're doing>}``
+    Response: ``{"image_url": "/images/...", "label": <str>}`` — a scene
+      featuring the companion, img2img'd from [current frame + companion
+      portrait] so they read as the same character standing in this place. On
+      any failure returns ``{"image_url": null, "reason": "..."}``.
+    """
+    try:
+        if _rate_limited("companion_place", 1.2):
+            return jsonify({"image_url": None, "reason": "slow_down"}), 429
+        data = request.get_json(silent=True) or {}
+        session_id = data.get("session_id", "default")
+        label = _clean_subject_text(data.get("label"), "", 40)
+        if not label:
+            return jsonify({"error": "missing label", "image_url": None}), 400
+        if not IMAGE_ENABLED:
+            return jsonify({"image_url": None, "reason": "image_disabled"})
+
+        st = _load_state(session_id) or {}
+        companions = st.get("companions") or {}
+        comp = companions.get(label.lower())
+        if not isinstance(comp, dict) or not comp.get("portrait_url"):
+            return jsonify({"image_url": None, "reason": "unknown_companion"})
+        portrait_path = _resolve_image_path(comp["portrait_url"])
+        if not portrait_path or not portrait_path.exists():
+            return jsonify({"image_url": None, "reason": "portrait_missing"})
+
+        who = comp.get("label") or label
+        action = _clean_subject_text(data.get("prompt"), "", 200) or \
+            (who + " is here in this place with you")
+        world_prompt = str(st.get("world_prompt") or "")
+        tod = str(st.get("time_of_day") or "")
+
+        # References: the current frame FIRST (environment ground truth), the
+        # companion portrait SECOND (who they are) — so the companion appears in
+        # this place, consistent with how they looked in conversation.
+        refs = []
+        ref_frame = _save_portrait_reference(data.get("reference_image") or "", session_id)
+        if ref_frame:
+            refs.append(ref_frame)
+        refs.append(str(portrait_path))
+
+        place_prompt = _sanitize_for_image_generation(
+            "In this environment, " + who + " is present: " + action + ". "
+            "Keep this location, lighting, palette, and film grain; show them "
+            "naturally within the scene."
+        )
+        t0 = time.time()
+        image_path = None
+        try:
+            from gemini_image_utils import generate_gemini_img2img
+            image_path = generate_gemini_img2img(
+                prompt=place_prompt,
+                caption=f"place_{_companion_slug(who)}",
+                reference_image_path=refs,
+                strength=0.5,
+                world_prompt=world_prompt[:400] if world_prompt else None,
+                time_of_day=tod,
+                hd_mode=False,
+                output_dir=Path(_get_image_dir(session_id)),
+                portrait_mode=True,  # person-allowed (skip the anti-person removal)
+            )
+        except Exception as gen_err:
+            log_error(f"[COMPANION] place generate failed: {gen_err}")
+            return jsonify({"image_url": None, "reason": "generate_failed"})
+        finally:
+            if ref_frame:
+                try:
+                    Path(ref_frame).unlink(missing_ok=True)
+                    _small = Path(ref_frame).with_name(
+                        Path(ref_frame).name.replace(".png", "_small.png"))
+                    if _small.exists():
+                        _small.unlink(missing_ok=True)
+                except Exception:
+                    pass
+
+        web = _to_web_image_url(image_path, session_id)
+        try:
+            cost_tracker.record_usage(
+                session_id, "image", "gemini", "companion_place",
+                operation="companion_place", output_units=1.0 if web else 0,
+                unit_type="images", latency_ms=int((time.time() - t0) * 1000),
+                success=bool(web), error_message=None if web else "no_image_returned",
+            )
+        except Exception:
+            pass
+        if not web:
+            return jsonify({"image_url": None, "reason": "no_image"})
+        # Bump the roster's last-seen so recency reflects the reappearance.
+        try:
+            _record_companion(session_id, {"label": who, "kind": comp.get("kind")},
+                              comp["portrait_url"])
+        except Exception:
+            pass
+        return jsonify({"image_url": web, "label": who})
+    except Exception as e:
+        log_error(f"[COMPANION] place failed: {e}")
+        return jsonify({"image_url": None, "reason": "error", "error": str(e)}), 500
 
 
 def api_talk_session():

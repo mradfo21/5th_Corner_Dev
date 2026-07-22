@@ -57,6 +57,25 @@ Leaving a conversation resumes the paused world (see above) rather than
 generating anything — the player lands back on the exact frame they left with
 the world moving again. This is the fast, seamless feel; no "load" on exit.
 
+## Companions (persistent roster)
+
+Every character the player has a conversation with is saved as a **companion**:
+their generated cinematic portrait is copied to a stable, sweep-protected file
+(`companion_<slug>.png`) and a roster record is written to
+`state.companions[label]` (`{label, kind, portrait_url, first_seen_turn,
+last_seen_turn, seen_count, prompt, scene}`), recorded by `api_talk_portrait`.
+
+- `GET /api/companions` — list the roster (most recently seen first), joined
+  with the character-memory notes/trust.
+- `POST /api/companions/place` — the primitive for continuing-story beats:
+  given `{label, reference_image?, prompt?}`, it img2img's the companion INTO
+  the current scene using `[current frame + companion portrait]` as references,
+  so the same character reappears standing in the present place. Returns the
+  new scene `image_url`.
+
+The client shows a "{label} added to your companions" notification the first
+time each character is met.
+
 ## Character memory hook
 
 `/api/talk/end` accepts an optional `subject` and upserts
