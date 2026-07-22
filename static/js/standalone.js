@@ -5580,23 +5580,79 @@
       if (window.Evidence && Evidence.isSpent && Evidence.isSpent(l)) return; // already documented
       if (window.Evidence && Evidence.isNew && !Evidence.isNew(l)) return;    // already on file
       if (activeFieldCount() >= MAX_FIELD) return;           // keep the board tidy
-      // A little procedural variety in the phrasing so the board doesn't read
-      // as a wall of identical "Document the …" lines.
-      const verbs = ["Document", "Photograph", "Capture", "Get a shot of"];
-      const verb = verbs[Math.abs(hashStr(l)) % verbs.length];
-      add({ id, kind: "field", title: verb + " the " + label, detail: "Photograph it for the case file" });
+      add({ id, kind: "field", title: fieldTitle(l, label), detail: "Photograph it for the case file" });
     }
 
-    // Stable per-label hash so a subject always draws the same verb (no flicker
-    // if it's re-offered) while different subjects vary.
+    // A little procedural variety in the phrasing so the board doesn't read as
+    // a wall of identical "Document the …" lines. Stable per-label hash so a
+    // subject always draws the same verb (no flicker if it's re-offered) while
+    // different subjects vary.
+    const FIELD_VERBS = ["Document", "Photograph", "Capture", "Get a shot of"];
     function hashStr(s) {
       let h = 0;
       for (let i = 0; i < s.length; i++) { h = (h * 31 + s.charCodeAt(i)) | 0; }
       return h;
     }
+    function fieldTitle(normLabel, rawLabel) {
+      const verb = FIELD_VERBS[Math.abs(hashStr(normLabel)) % FIELD_VERBS.length];
+      return verb + " the " + rawLabel;
+    }
 
-    function onDetect(objects) {
-      if (!revealed || !Array.isArray(objects)) return;
+    // Drop the longest-standing active field bounty to make room for one the
+    // player just deliberately tapped on — a full board should never be the
+    // reason a targeted objective silently fails to appear.
+    function evictOldestField(excludeId) {
+      const candidates = items.filter((o) => o.kind === "field" && o.status === "active" && o.id !== excludeId);
+      if (!candidates.length) return false;
+      candidates.sort((a, b) => a.seq - b.seq);
+      remove(candidates[0].id);
+      return true;
+    }
+
+    // A subject the player TAPPED ON — the "investigation" path. Unlike
+    // offerField (a passive, ambient offer that can be silently skipped),
+    // this ALWAYS resolves to a clear outcome: a fresh/re-affirmed objective,
+    // or an explicit "already documented" signal the caller can surface as a
+    // scan hint. Never silently a no-op — that silence is what made tapping a
+    // subject feel like a coin flip.
+    function offerFieldTargeted(label) {
+      const l = norm(label);
+      if (!l) return "none";
+      if (window.Evidence && Evidence.isSpent && Evidence.isSpent(l)) return "documented";
+      const id = "field:" + l;
+      if (has(id)) {
+        const o = get(id);
+        if (o.status === "active") {
+          // Re-affirm rather than doing nothing: replay the item's entrance
+          // flourish + a whole-board pulse so re-tapping the same subject
+          // always reads as "yes, that's still the objective."
+          const node = nodes.get(id);
+          if (node && !prefersReducedMotion()) {
+            node.classList.remove("entering"); void node.offsetWidth; node.classList.add("entering");
+          }
+          pulseHud();
+          try { Sound.select(); } catch (_) {}
+          try { Haptics.soft && Haptics.soft(); } catch (_) {}
+        }
+        return "targeted";
+      }
+      if (activeFieldCount() >= MAX_FIELD) evictOldestField(id);
+      add({ id, kind: "field", title: fieldTitle(l, label), detail: "Photograph it for the case file" });
+      pulseHud();
+      return "targeted";
+    }
+
+    // objects: the latest /api/detect results. opts.target (optional): the
+    // raw label of whatever the player TAPPED ON this pass (resolved by the
+    // caller against the tap point) — it always gets offerFieldTargeted's
+    // guaranteed treatment instead of competing with everything else for a
+    // spot by box size. Returns offerFieldTargeted's result ("targeted" /
+    // "documented") when a target was given, else null.
+    function onDetect(objects, opts) {
+      if (!revealed || !Array.isArray(objects)) return null;
+      opts = opts || {};
+      const targetLabel = opts.target || null;
+      const targetNorm = targetLabel ? norm(targetLabel) : null;
       const present = new Set(objects.map((o) => norm(o.label)).filter(Boolean));
       // Retire field bounties whose subject has left the frame for several
       // passes, so the board tracks what's actually in view and never clogs its
@@ -5606,10 +5662,14 @@
         if (present.has(l)) { o.missPasses = 0; }
         else if ((o.missPasses = (o.missPasses || 0) + 1) >= STALE_MISSES) remove(o.id);
       });
-      // Offer the most prominent NEW subjects first (larger boxes read as closer).
+      // Offer the most prominent NEW subjects first (larger boxes read as
+      // closer) — this ambient sweep is unchanged; the tapped target (if any)
+      // is excluded here and handled explicitly below so it never has to
+      // compete for one of the MAX_FIELD slots.
       objects.slice()
         .sort((a, b) => ((b.w || 0) * (b.h || 0)) - ((a.w || 0) * (a.h || 0)))
-        .forEach((o) => offerField(o.label));
+        .forEach((o) => { if (!targetNorm || norm(o.label) !== targetNorm) offerField(o.label); });
+      return targetLabel ? offerFieldTargeted(targetLabel) : null;
     }
 
     // Called from the photo receipt as each subject is appraised.
@@ -7107,8 +7167,13 @@
         if (el.scanLayer) el.scanLayer.classList.remove("hidden");
         if (cap.size) state.scanSrcSize = cap.size;
         state.scanPrewarm = { objects: objs, size: cap.size || null, ts: Date.now() };
-        reconcileScanTags(objs);
-        setScanHint(objs.length ? "" : "nothing to interact with here");
+        // A world tap AIMS the scan: whatever detection sits under the tap
+        // point becomes the objective's target, so the board reacts to what
+        // you actually pointed at rather than whatever the detector ranks
+        // biggest. The SCAN button (no origin) keeps the old ambient sweep.
+        const tapped = origin ? nearestDetectionToPoint(objs, origin) : null;
+        reconcileScanTags(objs, tapped);
+        setScanHint(scanHintFor(objs, origin, tapped));
         if (objs.length) { try { Sound.ping(); } catch (_) {} } // starfield shimmer as tags land
         scheduleScanFade();
       })
@@ -7182,6 +7247,23 @@
     el.scanHint.classList.toggle("hidden", !text);
   }
 
+  // What the scan hint should say for this pass. A world tap always resolves
+  // to a legible outcome now — found something new (silence is fine, the
+  // objective banner already said it), found something already on file
+  // (say so), or found nothing near the tap at all (say so) — so tapping the
+  // world never again reads as a coin flip between "it worked" and nothing.
+  // The SCAN button (no tap origin) keeps its original ambient message.
+  function scanHintFor(objects, origin, tapped) {
+    if (tapped) {
+      if (window.Evidence && Evidence.isSpent && Evidence.isSpent(tapped.label)) {
+        return "already documented \u2014 " + tapped.label;
+      }
+      return ""; // the fresh/re-affirmed objective banner already said it
+    }
+    if (origin) return "nothing worth investigating here";
+    return objects.length ? "" : "nothing to interact with here";
+  }
+
   // A quick ripple at a world-tap point (viewport coords). Lives on <body> so it
   // shows even while the hotspot overlay is still hidden, and self-cleans. Purely
   // cosmetic feedback for "I tapped the world" — the scan/OCR runs separately.
@@ -7241,6 +7323,24 @@
     const dw = size.w * scale, dh = size.h * scale;
     const ox = (W - dw) / 2, oy = (H - dh) / 2;
     return { x: ox + nx * dw, y: oy + ny * dh };
+  }
+
+  // Which detection (if any) sits under a tap point — this is what turns SCAN
+  // into a targeted "investigate this thing" action instead of a background
+  // lucky-dip over whatever the detector ranks biggest. Uses the same
+  // "near enough" radius as the hover highlight (SCAN_NEAR_RADIUS) so touch
+  // and mouse agree on what counts as "you pointed at that".
+  function nearestDetectionToPoint(objects, point) {
+    if (!point || typeof point.x !== "number" || !Array.isArray(objects) || !objects.length) return null;
+    let best = null, bestD = Infinity;
+    objects.forEach((o) => {
+      const p = mapNormToScreen(o.cx, o.cy);
+      const dx = p.x - point.x, dy = p.y - point.y;
+      const d = dx * dx + dy * dy;
+      if (d < bestD) { bestD = d; best = o; }
+    });
+    if (!best || bestD > SCAN_NEAR_RADIUS * SCAN_NEAR_RADIUS) return null;
+    return best;
   }
 
   // Hover: highlight the interaction possibility nearest the cursor so moving
@@ -7311,7 +7411,11 @@
       .map((x) => x.o);
   }
 
-  function reconcileScanTags(objects) {
+  // tapped (optional): the detection object (from nearestDetectionToPoint)
+  // that sits under the player's tap this pass — gets a `.targeted` lock-on
+  // treatment and is guaranteed a field objective via Objectives.onDetect's
+  // opts.target, independent of the ambient MAX_FIELD-capped sweep.
+  function reconcileScanTags(objects, tapped) {
     if (!el.scanTags) return;
     objects = capScanObjectsForDevice(objects);
     const existing = new Map();
@@ -7336,6 +7440,7 @@
         // later scans the persistent tag then glides to its new position.
         requestAnimationFrame(() => tag.classList.add("scan-live"));
       }
+      tag.classList.toggle("targeted", !!tapped && obj.label === tapped.label);
     });
     // Retire tags no longer detected (but keep one being actively poked).
     existing.forEach((tag, label) => {
@@ -7347,7 +7452,9 @@
       }, 420);
     });
     state.scanObjects = objects.slice();
-    try { Objectives.onDetect(objects); } catch (_) {} // scanned subjects → field bounties
+    // Scanned subjects → field bounties. The tapped target (if any) is
+    // guaranteed an objective; everything else still runs the ambient sweep.
+    try { Objectives.onDetect(objects, tapped ? { target: tapped.label } : null); } catch (_) {}
   }
 
   function positionScanTag(tag) {

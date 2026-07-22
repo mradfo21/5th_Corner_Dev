@@ -1065,6 +1065,114 @@ class TestRealtimeRenderer(unittest.TestCase):
         finally:
             page.close()
 
+    def test_tapping_a_subject_creates_its_targeted_field_objective(self):
+        """Tapping ON a recognized subject must deterministically surface its
+        "Photograph the X" field objective — not sometimes, depending on
+        box-size ranking or how many bounties already exist — and lock the
+        on-screen tag with a `.targeted` treatment. Re-tapping the same
+        subject must re-affirm the objective rather than going silent."""
+        page = self._new_realtime_page()
+        scene_items = [
+            {"id": 1, "type": "narrative", "content": "Intro."},
+            {"id": 2, "type": "scene_image", "content": "", "image_url": TINY_PNG_DATA_URL,
+             "metadata": {"prompt": "scene one", "base": "An oil platform.", "hard_transition": False}},
+            {"id": 3, "type": "player_choice_prompt", "content": "?", "choices": [{"text": "Go"}]},
+        ]
+        page.route("**/api/reset", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(scene_items)))
+        page.route("**/api/feed*", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
+        page.route("**/api/choose", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
+        # Two subjects placed far apart on screen so a tap unambiguously aims
+        # at exactly one of them.
+        page.route("**/api/detect", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps({
+            "objects": [
+                {"label": "oil rig", "cx": 0.62, "cy": 0.45, "w": 0.15, "h": 0.2},
+                {"label": "shipping container", "cx": 0.2, "cy": 0.45, "w": 0.15, "h": 0.15},
+            ]})))
+        try:
+            page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
+            page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
+            # First, an ambient SCAN (the button — no tap point) just to learn
+            # where the detector places "oil rig" on screen this run.
+            self._scan_now(page)
+            page.wait_for_function("document.querySelectorAll('#scan-tags .scan-tag').length >= 2", timeout=12000)
+            rig_pos = page.evaluate("""() => {
+                const tag = Array.from(document.querySelectorAll('.scan-tag'))
+                    .find(t => t.querySelector('.scan-tag-label').textContent === 'oil rig');
+                return { x: parseFloat(tag.dataset.sx), y: parseFloat(tag.dataset.sy) };
+            }""")
+            self.assertIsNotNone(rig_pos)
+            # Tap just OFF the tag itself (so the click lands on the scene
+            # surface, not the tag's own click handler) but still comfortably
+            # inside its "near" radius and far from the other subject.
+            tap_x, tap_y = rig_pos["x"], max(60, rig_pos["y"] - 55)
+            page.mouse.click(tap_x, tap_y)
+            page.wait_for_selector(".world-tap-ripple", timeout=1500)
+            # The board must now carry a FIELD bounty naming the oil rig
+            # specifically — because that's what was tapped, not because of
+            # box-size ranking or how many bounties already existed.
+            page.wait_for_function(
+                "Array.from(document.querySelectorAll('#obj-list .obj-item.kind-field .obj-title'))"
+                ".some(e => e.textContent.toLowerCase().includes('oil rig'))",
+                timeout=10000,
+            )
+            # The tapped tag itself gets the lock-on treatment.
+            page.wait_for_function("""() => {
+                const tag = Array.from(document.querySelectorAll('.scan-tag'))
+                    .find(t => t.querySelector('.scan-tag-label').textContent === 'oil rig');
+                return !!tag && tag.classList.contains('targeted');
+            }""", timeout=5000)
+            # Re-tapping the SAME subject must re-affirm, not go silent — the
+            # objective stays on the board.
+            page.mouse.click(tap_x, tap_y)
+            page.wait_for_timeout(400)
+            self.assertTrue(page.evaluate(
+                "Array.from(document.querySelectorAll('#obj-list .obj-item.kind-field .obj-title'))"
+                ".some(e => e.textContent.toLowerCase().includes('oil rig'))"
+            ), f"re-tapping the same subject must keep its objective. logs:\n{self._dump_logs()}")
+        except Exception:
+            print("\n=== REACTOR CONSOLE LOG (tap-targeted-objective) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
+    def test_tapping_empty_ground_gives_an_explicit_miss_hint(self):
+        """Tapping a spot with nothing detected nearby must say so explicitly
+        via the scan hint instead of silently doing nothing — every world tap
+        should read as either a found objective or a clear, legible miss."""
+        page = self._new_realtime_page()
+        scene_items = [
+            {"id": 1, "type": "narrative", "content": "Intro."},
+            {"id": 2, "type": "scene_image", "content": "", "image_url": TINY_PNG_DATA_URL,
+             "metadata": {"prompt": "scene one", "base": "An empty field.", "hard_transition": False}},
+            {"id": 3, "type": "player_choice_prompt", "content": "?", "choices": [{"text": "Go"}]},
+        ]
+        page.route("**/api/reset", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(scene_items)))
+        page.route("**/api/feed*", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
+        page.route("**/api/choose", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
+        # A single subject tucked in the far corner, well clear of where we tap.
+        page.route("**/api/detect", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps({
+            "objects": [{"label": "distant beacon", "cx": 0.04, "cy": 0.04, "w": 0.06, "h": 0.06}]})))
+        try:
+            page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
+            page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
+            # Tap the same "clear of the wheel/objectives/rail" spot the other
+            # world-tap test uses — far from the corner subject.
+            page.mouse.click(430, 300)
+            page.wait_for_selector(".world-tap-ripple", timeout=1500)
+            page.wait_for_function(
+                "document.getElementById('scan-hint') &&"
+                " document.getElementById('scan-hint').textContent.includes('nothing worth investigating')",
+                timeout=10000,
+            )
+            self.assertFalse(page.evaluate(
+                "document.getElementById('scan-hint').classList.contains('hidden')"
+            ), f"the miss hint must actually be shown. logs:\n{self._dump_logs()}")
+        except Exception:
+            print("\n=== REACTOR CONSOLE LOG (tap-miss-hint) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
     def test_scanned_hotspots_fade_out_on_their_own(self):
         """After a scan lands, the hotspots FADE OUT on their own after
         SCAN_TTL_MS so they can never go stale — the overlay tears itself down

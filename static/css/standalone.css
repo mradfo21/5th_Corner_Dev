@@ -3277,6 +3277,37 @@ html.is-mobile .photo-target { transition: opacity 0.2s ease; }
 .scan-tag.near .scan-star,
 .scan-tag.shown:hover .scan-star { animation-duration: 1.2s; }
 
+/* TARGETED: this is the tag the player just tapped on — a deliberate amber
+   "lock-on" beat, distinct from the passive cyan .near hover-glow, that
+   confirms the tap found something and anchors the fresh field objective to
+   it. Plays once on arrival, then settles into a brighter static state for
+   as long as it's the tapped subject. */
+.scan-tag.targeted {
+  border-color: #ffd479;
+  background: rgba(38, 26, 8, 0.66);
+  box-shadow: 0 0 30px rgba(255, 200, 110, 0.75), inset 0 0 10px rgba(0, 0, 0, 0.4);
+  transform: translate(-50%, -50%) scale(1.16);
+  z-index: 5;
+  animation: scan-target-lock 0.9s cubic-bezier(0.16, 0.8, 0.3, 1) 1;
+}
+.scan-tag.targeted .scan-star {
+  color: #ffe3ad;
+  filter: drop-shadow(0 0 6px rgba(255, 210, 130, 0.95));
+  animation-duration: 1.2s;
+}
+.scan-tag.targeted .scan-tag-act {
+  opacity: 1;
+  transform: scale(1);
+}
+@keyframes scan-target-lock {
+  0%   { box-shadow: 0 0 0 rgba(255, 200, 110, 0); transform: translate(-50%, -50%) scale(0.85); }
+  35%  { box-shadow: 0 0 40px rgba(255, 210, 140, 0.95); transform: translate(-50%, -50%) scale(1.22); }
+  100% { box-shadow: 0 0 30px rgba(255, 200, 110, 0.75); transform: translate(-50%, -50%) scale(1.16); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .scan-tag.targeted { animation: none; }
+}
+
 /* Poked: a quick confirming flash when a live nudge fires. */
 .scan-tag.poked { animation: scan-poked 0.85s ease-out; }
 @keyframes scan-poked {
