@@ -2037,6 +2037,49 @@ body.awaiting-first-scene #camp-btn {
 .camp-btn-ico { font-size: 14px; line-height: 1; opacity: 0.98; transition: opacity 0.22s; }
 .camp-btn-lbl { font-size: 7px; letter-spacing: 0.12em; opacity: 0.85; transition: opacity 0.22s; }
 
+/* LEAVE CAMP — playable campsite level exit (not Moment chrome). Sits above the
+   action wheel so PHOTO/SCAN stay reachable; compact pill matching the old
+   camp leave control without letterbox framing. */
+#leave-camp-btn {
+  position: fixed;
+  right: calc(env(safe-area-inset-right, 0px) + 18px);
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 22px);
+  z-index: 28;
+  pointer-events: auto;
+  padding: 8px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 205, 140, 0.38);
+  background: rgba(12, 10, 16, 0.78);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  color: #ffe7bf;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  cursor: pointer;
+  white-space: nowrap;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.45);
+  transition: background 0.14s, border-color 0.14s, opacity 0.18s, transform 0.12s;
+}
+#leave-camp-btn.hidden { display: none; }
+#leave-camp-btn:hover,
+#leave-camp-btn:focus {
+  background: rgba(255, 196, 120, 0.16);
+  border-color: rgba(255, 216, 150, 0.7);
+  outline: none;
+  transform: translateX(-2px);
+}
+#leave-camp-btn:disabled {
+  opacity: 0.35;
+  pointer-events: none;
+}
+body.touch-aiming #leave-camp-btn,
+body.moment-active #leave-camp-btn {
+  opacity: 0;
+  pointer-events: none;
+}
+
 @keyframes fw-idle-glow {
   0%, 100% { box-shadow: inset 0 0 12px rgba(0,0,0,0.5), 0 0 0 rgba(142,255,193,0); }
   50%      { box-shadow: inset 0 0 12px rgba(0,0,0,0.5), 0 0 16px rgba(142,255,193,0.34); }

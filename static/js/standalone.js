@@ -61,6 +61,7 @@
     realtimeBtn: document.getElementById("realtime-btn"),
     scanBtn: document.getElementById("scan-btn"),
     campBtn: document.getElementById("camp-btn"),
+    leaveCampBtn: document.getElementById("leave-camp-btn"),
     movePad: document.getElementById("move-pad"),
     moveNub: document.getElementById("move-nub"),
     verbBar: document.getElementById("verb-bar"),
@@ -276,6 +277,9 @@
     sceneVisible: false,        // has the first realtime feed / still appeared this run? (gates the prose + SNAP tool on boot)
     objDirectiveTurn: null,     // turn number the objectives LEAD was last refreshed for (one refresh/turn)
     objDirectiveBusy: false,    // a /api/objectives directive fetch is in flight
+    inCamp: false,              // playable campsite level is live (full HUD; not a Moment)
+    campEntering: false,        // /api/camp/enter in flight
+    campLeaving: false,         // LEAVE CAMP → new-level choose in flight
   };
 
   // ------------------------------------------------------------------
@@ -7171,7 +7175,9 @@
   }
 
   // CAMP mirrors SCAN's agency gate: reachable when the player can act, never
-  // mid-turn / mid-conversation / inside another Moment / game over / paused.
+  // mid-turn / mid-conversation / inside another Moment / already camping /
+  // game over / paused. While at camp the wheel button stays disabled; LEAVE
+  // CAMP is the exit.
   function updateCampButton() {
     if (!el.campBtn) return;
     const turnActive = !!(el.actionWheel && el.actionWheel.classList.contains("turn-active"));
@@ -7182,17 +7188,178 @@
     const tapeOpen = !!(typeof tapeIsOpen === "function" && tapeIsOpen());
     const ok = !state.gameOver && !turnActive && !state.processing &&
       !state.awaitingResolution && !talkOpen && !momentActive &&
-      !coinPaused && !tapeOpen && !state.touchMode && !state.freeWillOpen;
+      !coinPaused && !tapeOpen && !state.touchMode && !state.freeWillOpen &&
+      !state.inCamp && !state.campEntering && !state.campLeaving;
     el.campBtn.disabled = !ok;
+    try { updateLeaveCampButton(); } catch (_) {}
   }
 
-  function openCamp() {
+  function updateLeaveCampButton() {
+    if (!el.leaveCampBtn) return;
+    const show = !!(state.inCamp && !state.campEntering);
+    el.leaveCampBtn.classList.toggle("hidden", !show);
+    el.leaveCampBtn.setAttribute("aria-hidden", show ? "false" : "true");
+    const talkOpen = !!(Talk && typeof Talk.isOpen === "function" && Talk.isOpen());
+    const momentActive = !!(window.Moments && typeof window.Moments.isActive === "function" &&
+      window.Moments.isActive());
+    const turnActive = !!(el.actionWheel && el.actionWheel.classList.contains("turn-active"));
+    el.leaveCampBtn.disabled = !show || state.campLeaving || state.processing ||
+      state.gameOver || talkOpen || momentActive || turnActive || !!state.touchMode;
+  }
+
+  // CAMP is a normal playable level: hard-cut to the ensemble campsite plate,
+  // re-anchor the live world model, keep the full action wheel (PHOTO / SCAN /
+  // ACT / pad). Not a Moments cinematic — letterbox / HUD-hide would block
+  // instruments. LEAVE CAMP fires a hard-transition choose into a new mission.
+  const CAMP_LEAVE_CHOICE =
+    "Leave camp and drive the red jeep into a new location across the desert.";
+
+  function clearCampFromRenderer() {
+    try {
+      if (Renderer) {
+        Renderer.lastScene = {
+          prompt: null,
+          imageUrl: null,
+          hardTransition: true,
+        };
+      }
+    } catch (_) {}
+  }
+
+  function activateCampAsLevel(imageUrl, prompt) {
+    if (!imageUrl || !Renderer || typeof Renderer.applyScene !== "function") return false;
+    const rtPrompt = prompt ||
+      "Night campsite in high-desert scrub. Campfire burns, embers drift, " +
+      "a dusty red 1990s jeep parked at the edge of the firelight. " +
+      "First-person handheld view. Firelight flickers.";
+    try {
+      Renderer.lastScene = {
+        prompt: rtPrompt,
+        imageUrl: imageUrl,
+        hardTransition: true,
+      };
+      if (Renderer.mode !== "reactor" && typeof Renderer.setMode === "function" &&
+          Renderer.reactorAvailable && Renderer.reactorAvailable()) {
+        // Prefer the live world-model at camp (same as any other level).
+        Renderer.setMode("reactor");
+      } else {
+        Renderer.applyScene(imageUrl, rtPrompt, { hard_transition: true });
+      }
+      if (typeof Renderer.resumeUnderlay === "function") Renderer.resumeUnderlay();
+      return true;
+    } catch (err) {
+      console.warn("[camp] activate as level failed:", err);
+      return false;
+    }
+  }
+
+  async function openCamp() {
     if (!el.campBtn || el.campBtn.disabled) return;
-    if (!window.Moments || typeof window.Moments.push !== "function") return;
-    if (window.Moments.isActive && window.Moments.isActive()) return;
+    if (state.inCamp || state.campEntering || state.campLeaving) return;
+    if (window.Moments && window.Moments.isActive && window.Moments.isActive()) return;
     try { closeScan(); } catch (_) {}
     try { closeFreeWill(true); } catch (_) {}
-    window.Moments.push("camp", {});
+
+    state.campEntering = true;
+    updateCampButton();
+
+    // Same fade contract as MOVE TO / hard location changes — hold black until
+    // the campsite re-anchors. No Moment letterbox, no HUD hide.
+    let faded = false;
+    try {
+      const RR = window.ReactorRenderer;
+      if (Renderer.mode === "reactor" && RR && typeof RR.beginSceneFade === "function") {
+        RR.beginSceneFade({
+          safetyMs: MOVE_TRANSITION_FADE_SAFETY_MS,
+          awaitReanchor: true,
+        });
+        faded = true;
+      }
+    } catch (err) {
+      console.warn("[camp] beginSceneFade failed:", err);
+    }
+
+    let res = null;
+    try {
+      res = await postJSON("/api/camp/enter", {});
+    } catch (err) {
+      console.warn("[camp] enter failed:", err);
+      if (err && err.status === 429) {
+        res = Object.assign({ image_url: null, reason: "slow_down" }, err.body || {});
+      } else {
+        res = null;
+      }
+    }
+
+    if (!res || !res.image_url) {
+      if (faded) {
+        try {
+          const RR = window.ReactorRenderer;
+          if (RR && typeof RR.endSceneFade === "function") RR.endSceneFade();
+        } catch (_) {}
+      }
+      try {
+        showRendererToast(
+          (res && res.reason === "slow_down")
+            ? "Camp is still settling — try again"
+            : "Couldn't make camp right now"
+        );
+      } catch (_) {}
+      state.campEntering = false;
+      updateCampButton();
+      return;
+    }
+
+    const ok = activateCampAsLevel(res.image_url, res.realtime_prompt || "");
+    if (!ok && faded) {
+      try {
+        const RR = window.ReactorRenderer;
+        if (RR && typeof RR.endSceneFade === "function") RR.endSceneFade();
+      } catch (_) {}
+    }
+
+    state.campEntering = false;
+    state.inCamp = true;
+    document.body.classList.add("in-camp");
+    updateCampButton();
+
+    const n = Array.isArray(res.attendees) ? res.attendees.length : 0;
+    try {
+      showRendererToast(
+        n
+          ? ("Camp — " + n + " companion" + (n === 1 ? "" : "s") + " by the fire")
+          : "Camp — jeep by the fire"
+      );
+      RtLog.push("status", "\u25CF CAMP \u00B7 playable level (" + n + " companions)");
+    } catch (_) {}
+  }
+
+  async function leaveCamp() {
+    if (!state.inCamp || state.campLeaving || state.processing || state.gameOver) return;
+    if (Talk && typeof Talk.isOpen === "function" && Talk.isOpen()) {
+      try { Talk.close(); } catch (_) {}
+    }
+    state.campLeaving = true;
+    state.inCamp = false;
+    document.body.classList.remove("in-camp");
+    updateCampButton();
+
+    // Drop camp from lastScene before the choose so a late reconnect can't
+    // resurrect the campsite over the new mission.
+    clearCampFromRenderer();
+
+    try {
+      await makeChoice(CAMP_LEAVE_CHOICE, null, {
+        source: "camp_leave",
+        moveTarget: "the next lead",
+      });
+    } catch (err) {
+      console.warn("[camp] leave → new level failed:", err);
+      try { cancelMoveTransition(); } catch (_) {}
+    } finally {
+      state.campLeaving = false;
+      updateCampButton();
+    }
   }
 
   // Tear the hotspot overlay down: hide it, drop its tags, and cancel any
@@ -8707,358 +8874,6 @@
     });
   })();
 
-  // ------------------------------------------------------------------
-  // CAMP Moment — night campsite establishing shot + companion hotspots.
-  // Entering is a side pocket (no turn mutation). LEAVE CAMP drives the red
-  // jeep into a brand-new level via a hard-transition /api/choose turn —
-  // it must NOT re-apply the camp world (that was the "leave resets camp" bug).
-  // Talking to a companion nests a conversation Moment on top of camp.
-  // ------------------------------------------------------------------
-  (function registerCampMoment() {
-    if (!window.Moments || typeof window.Moments.register !== "function") return;
-
-    // Hard-transition choice text — must match is_hard_transition() detectors
-    // ("leave ", "new location") so the engine builds a fresh level plate.
-    const CAMP_LEAVE_CHOICE =
-      "Leave camp and drive the red jeep into a new location across the desert.";
-
-    let campSceneUrl = null;
-    let campAttendees = [];
-    let campRealtimePrompt = "";
-    let campWorldLive = false;
-    let leavingForNewLevel = false;
-
-    function clearHotspots() {
-      const hs = document.getElementById("moment-scene-hotspots");
-      if (hs) hs.innerHTML = "";
-    }
-
-    function campSceneAsDataUrl() {
-      // Prefer a live Reactor frame when the camp world is up — that's the
-      // firelit view the player is actually seeing.
-      try {
-        if (campWorldLive && window.ReactorRenderer &&
-            typeof window.ReactorRenderer.captureFrame === "function") {
-          const frame = window.ReactorRenderer.captureFrame();
-          if (frame) return frame;
-        }
-      } catch (_) {}
-      const img = document.getElementById("moment-scene-img");
-      if (!img || !img.src || !img.naturalWidth) return null;
-      try {
-        const c = document.createElement("canvas");
-        const maxW = 960;
-        const scale = Math.min(1, maxW / img.naturalWidth);
-        c.width = Math.max(1, Math.round(img.naturalWidth * scale));
-        c.height = Math.max(1, Math.round(img.naturalHeight * scale));
-        c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
-        return c.toDataURL("image/jpeg", 0.82);
-      } catch (_) {
-        return null;
-      }
-    }
-
-    function placeHotspots(attendees) {
-      clearHotspots();
-      const hs = document.getElementById("moment-scene-hotspots");
-      if (!hs || !Array.isArray(attendees)) return;
-      attendees.forEach((a) => {
-        if (!a || !a.label) return;
-        const seat = a.seat || {};
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "moment-scene-hotspot";
-        btn.style.left = (seat.x_pct != null ? seat.x_pct : 50) + "%";
-        btn.style.top = (seat.y_pct != null ? seat.y_pct : 60) + "%";
-        btn.title = "Talk to " + a.label;
-        btn.setAttribute("aria-label", "Talk to " + a.label);
-        const lbl = document.createElement("span");
-        lbl.className = "moment-scene-hotspot-label";
-        lbl.textContent = a.label;
-        btn.appendChild(lbl);
-        btn.addEventListener("click", (ev) => {
-          ev.preventDefault();
-          ev.stopPropagation();
-          clearHotspots();
-          try { window.Moments.clearChoices(); } catch (_) {}
-          const ref = campSceneAsDataUrl();
-          try {
-            Talk.start({
-              label: a.label,
-              kind: a.kind || "companion",
-              speaks: true,
-              reference_image: ref || undefined,
-            });
-          } catch (err) {
-            console.warn("[camp] Talk.start failed:", err);
-            placeHotspots(campAttendees);
-            showLeaveChoice();
-          }
-        });
-        hs.appendChild(btn);
-      });
-    }
-
-    function holdBlackForNewLevel() {
-      // Pin the reactor veil down NOW so Moments.pop's fade-up can't flash the
-      // camp world, and so the jeep-drive turn stays dark until the new level
-      // re-anchors. Mirrors MOVE TO's awaitReanchor contract.
-      try {
-        const RR = window.ReactorRenderer;
-        if (Renderer.mode === "reactor" && RR && typeof RR.beginSceneFade === "function") {
-          RR.beginSceneFade({
-            safetyMs: MOVE_TRANSITION_FADE_SAFETY_MS,
-            awaitReanchor: true,
-          });
-        }
-      } catch (err) {
-        console.warn("[camp] beginSceneFade failed:", err);
-      }
-    }
-
-    function clearCampFromRenderer() {
-      // Drop camp from lastScene so a reconnect / late create_world can't
-      // resurrect the campsite after we've committed to a new level.
-      try {
-        if (Renderer) {
-          Renderer.lastScene = {
-            prompt: null,
-            imageUrl: null,
-            hardTransition: true,
-          };
-        }
-      } catch (_) {}
-    }
-
-    async function departForNewLevel() {
-      if (leavingForNewLevel || state.processing || state.gameOver) return;
-      leavingForNewLevel = true;
-      holdBlackForNewLevel();
-      try {
-        await window.Moments.pop({ left: true, newLevel: true });
-      } catch (err) {
-        console.warn("[camp] pop failed:", err);
-      }
-      // Fire the hard-transition turn that builds the next level. source:
-      // camp_leave skips live steering of the abandoned campsite and holds
-      // the MOVE TO fade until the new guide image lands.
-      try {
-        await makeChoice(CAMP_LEAVE_CHOICE, null, {
-          source: "camp_leave",
-          moveTarget: "the next lead",
-        });
-      } catch (err) {
-        console.warn("[camp] leave → new level failed:", err);
-        try { cancelMoveTransition(); } catch (_) {}
-      } finally {
-        leavingForNewLevel = false;
-      }
-    }
-
-    function leaveCamp() {
-      const top = window.Moments.topType && window.Moments.topType();
-      if (top === "conversation") {
-        try { Talk.close(); } catch (_) {}
-        // Talk.close pops conversation; then depart the camp underneath.
-        setTimeout(() => {
-          if (window.Moments.topType && window.Moments.topType() === "camp") {
-            departForNewLevel();
-          }
-        }, 40);
-        return;
-      }
-      departForNewLevel();
-    }
-
-    function showLeaveChoice() {
-      window.Moments.setChoices(
-        [{ label: "LEAVE CAMP", id: "leave" }],
-        () => { leaveCamp(); }
-      );
-    }
-
-    function showCampExplorePad() {
-      // Let the player look around the live campsite — only the move pad,
-      // not the full mission HUD.
-      try {
-        const pad = document.getElementById("move-pad");
-        if (pad) {
-          pad.classList.remove("hidden", "moment-hud-hidden");
-          delete pad.dataset.momentWasHidden;
-        }
-      } catch (_) {}
-    }
-
-    function activateCampWorld(imageUrl, prompt) {
-      if (!imageUrl) return false;
-      const rtPrompt = prompt || campRealtimePrompt ||
-        "Night campsite in high-desert scrub. Campfire burns, embers drift, " +
-        "a dusty red 1990s jeep parked at the edge of the firelight. " +
-        "First-person handheld view. Firelight flickers.";
-
-      // Live world-model campsite when realtime is already on (or available).
-      // Stills-only sessions keep the establishing plate.
-      if (!Renderer || typeof Renderer.applyScene !== "function" || !window.ReactorRenderer) {
-        return false;
-      }
-
-      try {
-        // Seed lastScene so a mode switch / reconnect re-applies CAMP while
-        // we're in the Moment. LEAVE clears this before the new-level turn.
-        Renderer.lastScene = {
-          prompt: rtPrompt,
-          imageUrl: imageUrl,
-          hardTransition: true,
-        };
-        if (Renderer.mode !== "reactor" && typeof Renderer.setMode === "function") {
-          // Switches on realtime; enable().then re-applies lastScene (camp).
-          Renderer.setMode("reactor");
-        } else {
-          Renderer.applyScene(imageUrl, rtPrompt, { hard_transition: true });
-        }
-        if (typeof Renderer.resumeUnderlay === "function") Renderer.resumeUnderlay();
-        window.Moments.setSceneLive(true);
-        campWorldLive = true;
-        showCampExplorePad();
-        return true;
-      } catch (err) {
-        console.warn("[camp] world-model activate failed:", err);
-        return false;
-      }
-    }
-
-    function restoreCampChrome() {
-      if (leavingForNewLevel) return;
-      try {
-        window.Moments.setNameplate("CAMP", "around the fire");
-      } catch (_) {}
-      const sc = document.getElementById("moment-scene");
-      if (sc && campSceneUrl) {
-        sc.classList.remove("hidden", "developing");
-        sc.classList.add("ready");
-        sc.setAttribute("aria-hidden", "false");
-        if (campWorldLive) sc.classList.add("live-world");
-      }
-      // Conversation pauseUnderlay'd the live camp — wake it back up.
-      try {
-        if (campWorldLive && Renderer && typeof Renderer.resumeUnderlay === "function") {
-          Renderer.resumeUnderlay();
-        }
-      } catch (_) {}
-      if (campWorldLive) showCampExplorePad();
-      placeHotspots(campAttendees);
-      showLeaveChoice();
-      try { updateCampButton(); } catch (_) {}
-    }
-
-    window.Moments.register("camp", {
-      // Fade to black (not the VCR glitch / yellow wash). Underlay pauses during
-      // generation, then enter() re-anchors it onto the live campsite world.
-      transition: "fade",
-
-      async enter(payload, entry) {
-        campSceneUrl = null;
-        campAttendees = [];
-        campRealtimePrompt = "";
-        campWorldLive = false;
-        leavingForNewLevel = false;
-        clearHotspots();
-        try { window.Moments.setSceneLive(false); } catch (_) {}
-        try {
-          window.Moments.setNameplate("CAMP", "making camp…");
-        } catch (_) {}
-        showLeaveChoice();
-
-        let res = null;
-        try {
-          res = await postJSON("/api/camp/enter", {});
-        } catch (err) {
-          console.warn("[camp] enter failed:", err);
-          if (err && err.status === 429) {
-            res = Object.assign({ image_url: null, reason: "slow_down" }, err.body || {});
-          } else {
-            res = null;
-          }
-        }
-        if (entry && entry.aborted) return false;
-
-        if (!res || !res.image_url) {
-          try {
-            window.Moments.setNameplate("CAMP", "the fire won't catch");
-            window.Moments.notify({
-              icon: "🔥",
-              text: (res && res.reason === "slow_down")
-                ? "Give it a moment — camp is still settling"
-                : "Couldn't make camp right now",
-            });
-          } catch (_) {}
-          showLeaveChoice();
-          // Lift the black veil so the player can read the failure + Leave.
-          try { await window.Moments.revealFromFade(entry); } catch (_) {}
-          return false;
-        }
-
-        campSceneUrl = res.image_url;
-        campAttendees = Array.isArray(res.attendees) ? res.attendees : [];
-        campRealtimePrompt = res.realtime_prompt || "";
-
-        // Stage the plate first (floor + hotspot sampling), then promote it to
-        // a live world-model campsite when Reactor is available.
-        await new Promise((resolve) => {
-          window.Moments.setScene(campSceneUrl, () => {
-            if (!(entry && entry.aborted)) placeHotspots(campAttendees);
-            resolve();
-          });
-        });
-        if (entry && entry.aborted) return false;
-
-        activateCampWorld(campSceneUrl, campRealtimePrompt);
-
-        const n = campAttendees.length;
-        try {
-          window.Moments.setNameplate("CAMP", n
-            ? (n === 1 ? "one companion by the fire" : n + " companions by the fire")
-            : "quiet night — jeep by the fire");
-          window.Moments.notify({
-            icon: "🔥",
-            text: n
-              ? ("Camp set. " + n + " companion" + (n === 1 ? "" : "s") + " around the fire.")
-              : "Camp set. Your jeep waits at the edge of the firelight.",
-          });
-        } catch (_) {}
-        showLeaveChoice();
-        // Reveal from black once the plate (and world, if any) is staged.
-        try { await window.Moments.revealFromFade(entry); } catch (_) {}
-        return true;
-      },
-      async exit(result) {
-        try { window.Moments.setSceneLive(false); } catch (_) {}
-        clearHotspots();
-        // LEAVE CAMP → brand-new level: wipe camp from the renderer so a late
-        // Happy Oyster create_world can't resurrect it, and do NOT re-apply
-        // the campsite (that was the bug — "leave" just reset camp).
-        if (result && result.newLevel) {
-          clearCampFromRenderer();
-        }
-        campSceneUrl = null;
-        campAttendees = [];
-        campRealtimePrompt = "";
-        campWorldLive = false;
-        try { updateCampButton(); } catch (_) {}
-        return true;
-      },
-      async resume(/* entry */) {
-        restoreCampChrome();
-        return true;
-      },
-      onEsc() {
-        // Esc = same as LEAVE CAMP: drive out into a new level.
-        leaveCamp();
-        return true;
-      },
-    });
-  })();
-
   // QA hook: expose the real Talk controller ONLY when explicitly requested via
   // ?talkdev in the URL, so automated/manual tests can open a conversation
   // without a live SCAN detection. No-op in normal play.
@@ -9863,6 +9678,13 @@
         return;
       }
       return; // any active Moment owns the keyboard
+    }
+    // Playable camp level: Esc drives out (same as LEAVE CAMP). Instruments
+    // above (Talk / Moments / tape / camera) already returned.
+    if (state.inCamp && e.key === "Escape") {
+      e.preventDefault();
+      leaveCamp();
+      return;
     }
     // Tape playback owns the keyboard while open.
     if (tapeIsOpen()) {
@@ -10907,6 +10729,7 @@
     if (el.realtimeBtn) el.realtimeBtn.addEventListener("click", openTouch);
     if (el.scanBtn) el.scanBtn.addEventListener("click", () => triggerScan());
     if (el.campBtn) el.campBtn.addEventListener("click", () => openCamp());
+    if (el.leaveCampBtn) el.leaveCampBtn.addEventListener("click", () => leaveCamp());
     if (el.touchLayer) {
       // Pointer events cover mouse (hover to aim) AND touch (drag to aim, tap to
       // shoot) — so the camera works on iOS where mousemove never fires.

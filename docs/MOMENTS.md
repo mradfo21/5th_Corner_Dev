@@ -4,8 +4,9 @@ A **Moment** is a full-screen cinematic interaction layered on top of the live
 world. The underlay scene is **paused, not destroyed**, so exiting a Moment
 restores the exact place the player left — instantly.
 
-Conversation (TALK → cinematic dialogue) and Camp (CAMP → night campsite with
-companions) are the shipped Moment types. This doc describes how to register more.
+Conversation (TALK → cinematic dialogue) is the shipped Moment type. Camp is a
+**playable level** (hard-cut via `/api/camp/enter` + `Renderer.applyScene`), not
+a Moment — so PHOTO / SCAN / ACT stay live around the fire.
 
 ## Architecture
 
@@ -34,7 +35,7 @@ window.Moments.register("interrogation", {
   },
   async resume(entry) {
     // Optional: called when a nested Moment above this one pops, so you can
-    // re-assert nameplate / choices / hotspots (camp uses this).
+    // re-assert nameplate / choices / chrome.
   },
   onEsc(entry) {
     // Return true if you handled Esc. Default pops the Moment.
@@ -51,49 +52,45 @@ await window.Moments.push("interrogation", { subject, stakes: "…" });
 
 - `Moments.setPortrait(url)` — still image + CSS living-portrait animation
 - `Moments.setPortraitStream(mediaStream)` — Phase-2 world-model animated portrait
-- `Moments.setScene(url)` / `Moments.clearScene()` — **full-bleed establishing shot**
-  (camp). Sibling to the portrait chrome: conversation keeps using `setPortrait`,
-  camp uses `setScene`. Nesting conversation on top of camp leaves the scene
-  underneath; popping conversation restores the camp layer via `resume`.
+- `Moments.setScene(url)` / `Moments.clearScene()` — optional full-bleed establishing
+  shot chrome (legacy / future Moment types). Conversation uses `setPortrait`.
+  Camp does **not** use this — it goes through `Renderer.applyScene`.
 - `Moments.notify({ text, icon? })` — RPG-style toast along the letterbox
 - `Moments.setChoices(items, onPick)` / `clearChoices()` — dialogue options list
 - `Moments.setNameplate(name, sub)`
 
 ## Exit = instant resume
 
-Leaving a conversation (or camp) resumes the paused world (see above) rather than
+Leaving a conversation resumes the paused world (see above) rather than
 generating anything — the player lands back on the exact frame they left with
 the world moving again. This is the fast, seamless feel; no "load" on exit.
 
-## Camp Moment
+## Camp (playable level)
 
-Press **CAMP** on the action wheel (`#camp-btn`) to push a `"camp"` Moment:
+Press **CAMP** on the action wheel (`#camp-btn`) to hard-cut into a **playable
+campsite level** — not a Moments cinematic. Full HUD stays live (PHOTO / SCAN /
+ACT / explore pad); there is no letterbox / nameplate chrome.
 
-1. Enter/exit use a **fade-to-black** veil (`#moment-fade`, `transition: "fade"`) —
-   not the VCR glitch cut conversation uses.
+1. Enter uses the same **fade-to-black** contract as MOVE TO
+   (`ReactorRenderer.beginSceneFade` + hard re-anchor), not the VCR glitch.
 2. `POST /api/camp/enter` builds (or reuses a cached) **4:3** night campsite plate
    via `generate_gemini_img2img(..., ensemble_mode=True)` with **every** available
    companion screenshot as an img2img reference **plus** the durable **jeep prop**
    (Gemini hard-cap: jeep + up to 5 companions; extras stay named in the prompt).
-   Portraits resolve from `sessions/<id>/images/companion_*.png` (not the legacy
-   root `images/` folder). A numbered REFERENCE IMAGE MAP tells the model which
-   ref is the jeep vs each person. Response includes `realtime_prompt` for the
-   live world-model.
-3. The client stages the plate with `Moments.setScene`, then **re-anchors the
-   Reactor underlay** onto that campsite (`hard_transition`) so the fire is a
-   living world-model. `Moments.setSceneLive(true)` makes the scene shell
-   transparent so the stream shows through; the explore pad stays available.
-4. Tap-target hotspots + a compact **LEAVE CAMP** pill. Tapping a companion
-   nests `Talk.start` (firelit `reference_image` from the live frame when possible).
-5. **LEAVE CAMP** (and Esc) does **not** restore the campsite. It fades to black
-   and fires a hard-transition turn — *"Leave camp and drive the red jeep into
-   a new location…"* — so the engine builds a **brand-new level**. The camp
-   world is cleared from `Renderer.lastScene` so a late world-model rebuild
-   can't resurrect it.
+   Portraits resolve from `sessions/<id>/images/companion_*.png`. A numbered
+   REFERENCE IMAGE MAP tells the model which ref is the jeep vs each person.
+   Response includes `realtime_prompt` for the live world-model.
+3. The client applies the plate through `Renderer.applyScene(..., { hard_transition: true })`
+   — the same path as any other level — so SCAN / PHOTO / Talk work normally.
+   Companions are reached via **SCAN → TALK**, not Moment hotspots.
+4. A compact `#leave-camp-btn` (and Esc) fires a hard-transition turn —
+   *"Leave camp and drive the red jeep into a new location…"* — so the engine
+   builds a **brand-new level**. Camp is cleared from `Renderer.lastScene` so a
+   late world-model rebuild can't resurrect it.
 
-Empty roster still works (quiet fire + jeep). Camp appends one additive
+Empty roster still works (quiet fire + jeep). Camp enter appends one additive
 `feed_log` item (`type: "camp"`) for Story Log flavor only — it does **not**
-touch `turn_count` / `history` / choice generation.
+touch `turn_count` / `history` / choice generation. Leave is a real choose.
 
 ## Companions (persistent roster)
 

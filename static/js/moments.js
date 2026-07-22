@@ -16,7 +16,7 @@
        push(type, payload) / pop(result?)
        isActive() / current() / topType()
        setPortrait(url) / clearPortrait()
-       setScene(url) / clearScene()   // full-bleed establishing shot (camp)
+       setScene(url) / clearScene()   // full-bleed establishing shot (optional)
        notify({ text, icon? })
        setChoices(items) / clearChoices()
    ============================================================ */
