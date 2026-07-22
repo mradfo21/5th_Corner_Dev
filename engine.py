@@ -426,8 +426,11 @@ if GEMINI_API_KEY:
     print(f"[ENGINE INIT] Key: {GEMINI_API_KEY[:20]}...{GEMINI_API_KEY[-8:]} (len={len(GEMINI_API_KEY)})")
 print(f"[ENGINE INIT] Source: os.getenv={bool(os.getenv('GEMINI_API_KEY'))}, config={bool(CONFIG.get('GEMINI_API_KEY'))}")
 
-# Load prompts
-PROMPTS = json.load((ROOT/"prompts"/"simulation_prompts.json").open(encoding="utf-8"))
+# Load prompts — shared, hot-reloadable singleton (see prompts_store.py).
+# Every PROMPTS["key"] / PROMPTS.get("key") access below automatically picks
+# up edits made through the World Studio editor on the next request, with no
+# process restart required.
+from prompts_store import PROMPTS
 
 # Game constants - Structured time/atmosphere tracking
 INITIAL_TIME_OF_DAY = "6:30pm | weather: clear, warm light | mood: tense anticipation"  # Start time matching world_initial_state
@@ -1130,10 +1133,11 @@ def _to_web_image_url(image_path, session_id: str = 'default') -> Optional[str]:
     return url
 
 # ───────── prompt fragments ──────────────────────────────────────────────────
-choice_tmpl     = PROMPTS["player_choice_generation_instructions"]
-dispatch_sys    = PROMPTS["action_consequence_instructions"]
-neg_prompt      = PROMPTS["image_negative_prompt"]
-narrative_tmpl  = PROMPTS["field_notes_format"]
+# NOTE: these used to be snapshotted into plain string constants at import
+# time (choice_tmpl / dispatch_sys / neg_prompt / narrative_tmpl), which meant
+# editing prompts/simulation_prompts.json on disk had no effect until the
+# process restarted. They're now looked up live via PROMPTS[...] at every
+# call site below so World Studio edits apply on the very next turn.
 
 RISKY_ACTION_KEYWORDS = [
     "risky", "dangerous", "reckless", "chance it", "gamble", "all or nothing", 
@@ -3112,7 +3116,7 @@ def generate_directive(session_id: str = "default") -> dict:
 
 # ───────── world report (with vision‑desc) ─────────────────────────────────
 def _world_report() -> str:
-    base = narrative_tmpl.format(
+    base = PROMPTS["field_notes_format"].format(
         context=state["world_prompt"],
         last_choice=state["last_choice"]
     )
@@ -3167,7 +3171,7 @@ def _generate_dispatch(choice: str, state: dict, prev_state: dict = None) -> dic
         
         # System instructions + user prompt combined for Gemini
         prompt = (
-            f"{dispatch_sys}\n\n"
+            f"{PROMPTS['action_consequence_instructions']}\n\n"
             f"PLAYER CHOICE: '{choice}'\n"
             f"WORLD CONTEXT: {state['world_prompt']}\n"
             f"PREVIOUS: {prev_state['world_prompt'] if prev_state else ''}"
@@ -5133,7 +5137,7 @@ def begin_tick() -> dict:
     # Condense world state for choices
     situation_summary = summarize_world_state(state)
     options = generate_choices(
-        client, choice_tmpl,
+        client, PROMPTS["player_choice_generation_instructions"],
         situation_report,
         n=3,
         seen_elements=', '.join(state.get('seen_elements', [])[-10:]),  # Last 10 discovered entities
@@ -5778,7 +5782,7 @@ def generate_intro_turn_feed_items(session_id: str = 'default', new_state: Optio
     try:
         initial_choice_texts = generate_choices(
             client=client,
-            prompt_tmpl=choice_tmpl,
+            prompt_tmpl=PROMPTS["player_choice_generation_instructions"],
             last_dispatch=initial_narrative_content,
             world_prompt=new_state.get("world_prompt", "System Online."),
             image_description="Golden-hour desert at the perimeter fence of the Horizon facility; red mesas, chain-link fence, abandoned vehicles.",
@@ -9003,7 +9007,7 @@ def _spawn_observe_reground(fpath: str, web: str, session_id: str, prompt_id):
                     break
             texts = generate_choices(
                 client=client,
-                prompt_tmpl=choice_tmpl,
+                prompt_tmpl=PROMPTS["player_choice_generation_instructions"],
                 last_dispatch=(last_dispatch or vision),
                 image_description=vision,
                 image_url=web,
@@ -9090,7 +9094,7 @@ def api_regenerate_choices():
         # tuple — do not unpack it as one (see note in _process_turn_background).
         regenerated_choice_texts = generate_choices(
             client=client,
-            prompt_tmpl=choice_tmpl,
+            prompt_tmpl=PROMPTS["player_choice_generation_instructions"],
             last_dispatch=last_dispatch_text,
             world_prompt=world_prompt_context,
             image_description=image_desc_context,
@@ -9287,9 +9291,9 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
             f"{interaction_directive}"
         )
 
-        # Use JUST the dispatch_sys instructions (which has JSON format)
+        # Use JUST the action_consequence_instructions (which has JSON format)
         json_prompt = (
-            f"{dispatch_sys}\n\n"
+            f"{PROMPTS['action_consequence_instructions']}\n\n"
             f"{free_will_header}"
             f"PLAYER CHOICE: '{choice}'\n"
             f"WORLD CONTEXT: {world_prompt}\n"
@@ -9913,7 +9917,7 @@ def _advance_turn_choices_deferred_impl(consequence_img_url: str, dispatch: str,
         )
 
         next_choices = generate_choices(
-            client, choice_tmpl,
+            client, PROMPTS["player_choice_generation_instructions"],
             dispatch,
             n=3,
             image_url=analysis_img_url,
@@ -10378,7 +10382,7 @@ def generate_intro_choices_deferred(image_url: str, prologue: str, vision_dispat
     # empty list with scene-aware choices.
     try:
         options = generate_choices(
-            client, choice_tmpl,
+            client, PROMPTS["player_choice_generation_instructions"],
             prologue,  # What's happening in intro
             n=3,
             image_url=analysis_img_url,  # Gemini sees the image directly!
@@ -10524,7 +10528,7 @@ def generate_intro_turn(session_id: str = 'default'):
     # raising a network error) must not propagate into the bot's intro flow.
     try:
         options = generate_choices(
-            client, choice_tmpl,
+            client, PROMPTS["player_choice_generation_instructions"],
             dispatch,  # What's happening now
             n=3,
             image_url=dispatch_img_url,  # Opening image - Gemini looks at THIS!

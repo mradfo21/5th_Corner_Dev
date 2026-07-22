@@ -18,13 +18,9 @@ try:
 except FileNotFoundError:
     config = {}
 
-# Load prompts from JSON (single source of truth!)
-try:
-    with open(ROOT / "prompts" / "simulation_prompts.json", "r", encoding="utf-8") as f:
-        PROMPTS = json.load(f)
-except FileNotFoundError:
-    with open(ROOT / "prompts" / "1993_base.json", "r", encoding="utf-8") as f:
-        PROMPTS = json.load(f)
+# Load prompts — shared, hot-reloadable singleton (see prompts_store.py) so
+# edits made through the World Studio editor apply immediately, no restart.
+from prompts_store import PROMPTS
 
 # Read from environment variables first, fall back to config.json
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", config.get("GEMINI_API_KEY", ""))
