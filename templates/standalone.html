@@ -357,13 +357,20 @@
     <button id="scan-btn" type="button" title="Scan — reveal what's interactable in the scene for a few seconds (S)">
       <span class="scan-btn-ico">✦</span><span class="scan-btn-lbl">SCAN</span>
     </button>
-    <!-- CAMP: pause the world and step into a night campsite Moment with every
-         companion you've met seated around the fire. Side pocket — leaving
-         resumes the exact scene you left, no turn cost. -->
+    <!-- CAMP: hard-cut to a playable night campsite level (companions + jeep),
+         with the full action wheel live — PHOTO / SCAN / ACT / explore pad.
+         LEAVE CAMP (sibling control) drives into a brand-new mission. -->
     <button id="camp-btn" type="button" title="Camp — gather by the fire with companions you've met">
       <span class="camp-btn-ico">🔥</span><span class="camp-btn-lbl">CAMP</span>
     </button>
   </div>
+
+  <!-- LEAVE CAMP: shown only while the playable campsite level is live.
+       Same hard-transition exit as MOVE TO — drives the jeep into a new level. -->
+  <button id="leave-camp-btn" type="button" class="hidden" aria-hidden="true"
+          title="Leave camp — drive the jeep into a new location">
+    LEAVE CAMP
+  </button>
 
   <!-- Interaction hotspots: surfaced on demand by the SCAN button. A scan fires
        ONE recognition pass and the model names what's interactable as
@@ -387,20 +394,19 @@
   <div id="verb-bar" class="verb-bar hidden" aria-label="World interaction verbs"></div>
 
   <!-- MOMENT overlay: shared cinematic chrome for full-screen set-pieces
-       (conversation, camp, …). Letterbox bars, character portrait OR full-bleed
-       establishing scene, nameplate, notification tray, and optional dialogue
-       choices. The live world underneath is paused (not destroyed) so ending a
-       Moment restores it instantly. Driven by static/js/moments.js. -->
+       (conversation, …). Letterbox bars, character portrait, nameplate,
+       notification tray, and optional dialogue choices. Camp is a playable
+       level (not a Moment) — see #leave-camp-btn + Renderer.applyScene.
+       The live world underneath is paused (not destroyed) so ending a Moment
+       restores it instantly. Driven by static/js/moments.js. -->
   <div id="moment-overlay" class="hidden" aria-hidden="true">
     <div class="moment-letterbox moment-letterbox-top" aria-hidden="true"></div>
     <div class="moment-letterbox moment-letterbox-bottom" aria-hidden="true"></div>
-    <!-- Soft black fade veil for CAMP enter/exit (conversation still uses the
-         VCR glitch). Sits above the scene plate, below nameplate/choices. -->
+    <!-- Soft black fade veil (optional Moment types). Conversation uses the
+         VCR glitch; camp enter/leave uses Reactor beginSceneFade instead. -->
     <div id="moment-fade" class="hidden" aria-hidden="true"></div>
-    <!-- Establishing shot / hotspot shell (camp). Sibling to #moment-portrait —
-         conversation keeps using the portrait; camp uses this scene layer.
-         When the camp world-model is live, .live-world makes this transparent
-         so the Reactor underlay shows through. -->
+    <!-- Optional full-bleed scene shell (legacy Moment establishing shots).
+         Camp no longer mounts here — it uses the normal .scene / Reactor path. -->
     <div id="moment-scene" class="hidden" aria-hidden="true">
       <div id="moment-scene-shimmer" aria-hidden="true"></div>
       <img id="moment-scene-img" alt="" />
