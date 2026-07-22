@@ -7958,10 +7958,16 @@
 
     let floatTimer = 0;
     let inMoment = false; // true while a Conversation Moment chrome is up
-    // The world session is PAUSED (not destroyed) while a conversation is up
-    // and RESUMED on exit — see Renderer.pauseUnderlay/resumeUnderlay, driven
-    // by Moments.push/pop. No world re-anchor, so exit is an instant resume of
-    // exactly where the player stood.
+    // Live character animation via the ONE world-model session: on enter we
+    // re-anchor the session onto the character portrait (so the world model
+    // animates them) and mirror that live feed into the full-screen portrait;
+    // on exit we reopen the ORIGINAL world by id (attach_world — skips the
+    // rebuild, paints the env still instantly via the freeze buffer, then
+    // reveals the live world) so returning still feels like a resume.
+    let worldSwapped = false;      // did we re-anchor the session onto the character?
+    let savedWorldScene = null;    // the env scene to return to (still + prompt)
+    let savedWorldId = null;       // the env world's encrypted id, for attach_world
+    let portraitPollTimer = null;  // waits for the character feed to go live
 
     function isOpen() { return open; }
     function isCinematic() { return !!(inMoment && open); }
@@ -7998,9 +8004,11 @@
         });
         if (!open || !inMoment) return;
         if (res && res.image_url && window.Moments) {
-          // Cinematic still + CSS living-portrait motion. The world session
-          // stays paused underneath for an instant resume on exit.
+          // Show the cinematic still immediately, then animate the character
+          // with the world model (re-anchor + mirror the live feed) so they
+          // move. The still is the instant content + graceful fallback.
           window.Moments.setPortrait(res.image_url);
+          try { animateCharacter(res.image_url, res.prompt, subj); } catch (_) {}
           // The server stored this character (with their portrait) as a
           // COMPANION for the roster — surface it the first time we meet them
           // so the player feels the world remembering people.
@@ -8025,16 +8033,102 @@
       }
     }
 
-    // PORTRAIT ANIMATION NOTE — we deliberately do NOT re-anchor the world
-    // session onto the character. Re-anchoring animated the character but
-    // DESTROYED the environment world, forcing a slow rebuild on exit (the
-    // "loading a new image" that felt awful). Instead the world session is left
-    // PAUSED on the exact frame the player was standing on (Renderer.pauseUnderlay
-    // via Moments.push) and RESUMED on exit — an instant, seamless return. The
-    // character is the cinematic img2img still with the CSS "living portrait"
-    // treatment (breathing + grain + rim light pulsing with the speaking/
-    // listening orb), so it's alive without a second GPU session. Live
-    // world-model character motion would need a separate Reactor session.
+    // Is the realtime world model actually live right now?
+    function reactorLive() {
+      try {
+        return Renderer.mode === "reactor" && window.ReactorRenderer &&
+          window.ReactorRenderer.isActive && window.ReactorRenderer.isActive();
+      } catch (_) { return false; }
+    }
+
+    // Idle-motion world prompt: no movement commands are sent, so Happy Oyster
+    // just breathes the character to life (blink, sway, ambient light) around
+    // the portrait first-frame.
+    function buildPortraitWorldPrompt(worldPrompt, subj) {
+      const who = (subj && subj.label) ? subj.label : "the figure";
+      const base = (worldPrompt || "").toString().slice(0, 320);
+      return (base ? base + " " : "") +
+        "Cinematic medium shot of " + who + " facing the camera, standing and " +
+        "breathing with subtle idle motion \u2014 a slight sway, a blink, weight " +
+        "shifting \u2014 gentle ambient movement. Camera holds steady, minimal drift.";
+    }
+
+    // Animate the character with the world model: re-anchor the single session
+    // onto the portrait and mirror its live feed into the full-screen portrait.
+    // The env world's id is saved first so exit can reopen it with attach_world
+    // (fast, no rebuild). Opt out with window.__CONVERSATION_ANIMATE__ === false;
+    // reduced-motion / still mode keep the CSS living portrait.
+    function animateCharacter(imageUrl, worldPrompt, subj) {
+      if (typeof window !== "undefined" && window.__CONVERSATION_ANIMATE__ === false) return;
+      if (prefersReducedMotion && prefersReducedMotion()) return;
+      if (!imageUrl || !reactorLive()) return;
+      const RR = window.ReactorRenderer;
+      // Save the world we're leaving BEFORE re-anchoring (getWorldId returns the
+      // CURRENT world, which becomes the character's after applyScene).
+      try { savedWorldId = (RR.getWorldId && RR.getWorldId()) || null; } catch (_) { savedWorldId = null; }
+      savedWorldScene = Renderer.lastScene ? Object.assign({}, Renderer.lastScene) : null;
+      worldSwapped = true;
+      // Moments.push paused the session for the takeover; resume so frames flow
+      // for the character world (audio stays muted — the voice is ElevenLabs).
+      try { RR.resume && RR.resume(); } catch (_) {}
+      // Re-anchor DIRECTLY via the facade (NOT Renderer.applyScene) so
+      // Renderer.lastScene keeps pointing at the env world we'll return to.
+      try {
+        RR.applyScene({
+          prompt: buildPortraitWorldPrompt(worldPrompt, subj),
+          imageUrl: imageUrl,
+          hardTransition: true,
+        });
+      } catch (e) { worldSwapped = false; return; }
+      try { AgentLog.push("talk", "portrait \u2192 world model", (subj && subj.label) || ""); } catch (_) {}
+      startPortraitPoll(subj);
+    }
+
+    // Wait for the re-anchored character feed to present frames, then mirror its
+    // MediaStream into the portrait video and crossfade. Bounded so a stalled
+    // build silently leaves the still CSS living portrait up.
+    function startPortraitPoll(subj) {
+      stopPortraitPoll();
+      let tries = 0;
+      portraitPollTimer = setInterval(() => {
+        tries++;
+        if (!open || !worldSwapped || tries > 50) { stopPortraitPoll(); return; } // ~10s cap
+        let showing = false;
+        try { showing = window.ReactorRenderer.isShowing && window.ReactorRenderer.isShowing(); } catch (_) {}
+        if (!showing) return;
+        const rv = document.getElementById("reactor-video");
+        if (rv && rv.srcObject && window.Moments && window.Moments.setPortraitStream) {
+          window.Moments.setPortraitStream(rv.srcObject);
+          try { AgentLog.push("ok", "character animated (world model)", (subj && subj.label) || ""); } catch (_) {}
+        }
+        stopPortraitPoll();
+      }, 200);
+    }
+    function stopPortraitPoll() {
+      if (portraitPollTimer) { clearInterval(portraitPollTimer); portraitPollTimer = null; }
+    }
+
+    // Return to the env world on exit. attach_world reopens the SAME world by id
+    // — it paints the env still into the freeze buffer instantly (feels like a
+    // resume) then reveals the live world without a rebuild. Falls back to a
+    // scene re-apply when the id is unknown. No-op if we never swapped.
+    function restoreWorldAfterConversation() {
+      stopPortraitPoll();
+      if (!worldSwapped) return;
+      worldSwapped = false;
+      const RR = window.ReactorRenderer;
+      const scene = savedWorldScene;
+      const wid = savedWorldId;
+      savedWorldScene = null;
+      savedWorldId = null;
+      try {
+        if (wid && RR && typeof RR.attachWorld === "function") {
+          RR.attachWorld(wid, scene || undefined);
+        } else if (scene && scene.prompt && RR && typeof RR.applyScene === "function") {
+          RR.applyScene(scene);
+        }
+      } catch (_) {}
+    }
 
     function ensureSdk() { return ElevenSDK.load(); }
 
@@ -8528,10 +8622,15 @@
       document.body.classList.remove("talking");
       document.body.removeAttribute("data-talk-orb");
 
-      // Pop the Conversation Moment: retract the letterbox, restore the HUD,
-      // and RESUME the paused world (Moments.pop -> Renderer.resumeUnderlay) so
-      // the player lands back on the exact frame they left, world moving again.
-      // No generation, no re-anchor — an instant, seamless resume. Guarded so a
+      // If we animated the character (re-anchored the session onto them), reopen
+      // the ORIGINAL world by id NOW — attach_world paints the env still
+      // instantly (freeze buffer) then reveals the live world, hidden by the
+      // exit glitch + letterbox retract. If we never swapped, this is a no-op
+      // and Moments.pop -> resumeUnderlay simply resumes the paused world.
+      restoreWorldAfterConversation();
+
+      // Pop the Conversation Moment: retract the letterbox, restore the HUD, and
+      // resume the world (Moments.pop -> Renderer.resumeUnderlay). Guarded so a
       // double-close or missing Moments.js never throws.
       if (inMoment && window.Moments && typeof window.Moments.pop === "function") {
         try {

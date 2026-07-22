@@ -150,23 +150,26 @@ notes[], trust }`. This is additive metadata — it does **not** mutate
 `history` / `feed_log`. Future trust / relationship Moments can read and
 extend this record.
 
-## Portrait animation & the pause/resume world
+## Portrait animation (world-model) + fast return
 
-The character is the cinematic img2img still with the **CSS living-portrait**
-treatment: a slow breathing scale, film grain, and a rim light that pulses with
-the speaking/listening orb state. It's alive without a second GPU session.
+The character is **animated by the world model** using the single Reactor
+session, with a fast, resume-like exit — best of both:
 
-Crucially, the world session is **not** re-anchored onto the character. An
-earlier version did that to animate the character with the world model, but it
-destroyed the environment world and forced a slow rebuild on exit (a jarring
-"load"). Instead:
+- **Enter:** show the cinematic img2img still immediately, then
+  `animateCharacter()` saves the current world's id (`getWorldId()`) and scene,
+  **re-anchors the session onto the portrait** (`applyScene({prompt, imageUrl})`
+  via the facade, so `Renderer.lastScene` is untouched), and mirrors the live
+  feed into `#moment-portrait-video` (`Moments.setPortraitStream`, revealed when
+  `isShowing()`), crossfading over the still. The character moves/breathes with
+  the world model.
+- **Exit:** `restoreWorldAfterConversation()` reopens the ORIGINAL world by id
+  with **`attach_world`** — which paints the env still into the freeze buffer
+  instantly (feels like a resume) then reveals the live world **without a
+  rebuild**. Falls back to a scene re-apply only when the id is unknown.
 
-- **Enter:** `Renderer.pauseUnderlay()` (via `Moments.push`) pauses the world
-  session and freezes it on the exact frame the player was standing on.
-- **Exit:** `Renderer.resumeUnderlay()` (via `Moments.pop`) resumes it — an
-  instant, seamless return to where they stood, world moving again. No image
-  generation, no re-anchor, no rewind.
-
-Live world-model motion for the *character* would require a genuinely separate
-Reactor session (a larger renderer refactor); `Moments.setPortraitStream` is
-kept as the hook for that future path.
+So the character animates live during the conversation, and returning to the
+world is a fast freeze-still-then-live reveal rather than a slow regeneration.
+The CSS **living-portrait** treatment (breathing + grain + orb-linked rim light)
+is the always-on baseline for the still and the fallback under reduced-motion /
+still-image mode / if the character feed never goes live. Opt out of world-model
+animation with `window.__CONVERSATION_ANIMATE__ = false`.
