@@ -386,6 +386,11 @@ app.add_url_rule('/api/talk/portrait', 'standalone_api_talk_portrait', engine.ap
 # be listed and placed back into later scenes for a continuing story.
 app.add_url_rule('/api/companions', 'standalone_api_companions', engine.api_companions, methods=['GET'])
 app.add_url_rule('/api/companions/place', 'standalone_api_companion_place', engine.api_companion_place, methods=['POST'])
+# Rebuild a companion's ElevenLabs voice from the stored Voice Design brief
+# (persisted by api_talk_session). Poll /api/talk/voice/status while generating.
+app.add_url_rule('/api/companions/regenerate_voice',
+                 'standalone_api_companion_regenerate_voice',
+                 engine.api_companion_regenerate_voice, methods=['POST'])
 # CAMP Moment: night campsite establishing shot compositing the jeep prop +
 # up to 5 companion portraits. Side pocket — does not advance the turn loop.
 app.add_url_rule('/api/camp/enter', 'standalone_api_camp_enter', engine.api_camp_enter, methods=['POST'])

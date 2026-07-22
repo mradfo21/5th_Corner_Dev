@@ -345,6 +345,39 @@ def resolve_fallback_voice_for_subject(subject: dict) -> str:
     return resolve_voice_for_kind(kind)
 
 
+def _companion_voice_for_subject(subject: dict, session_id: str = "default") -> Optional[dict]:
+    """Return a companion's stored ElevenLabs voice block when reusable.
+
+    Companions persist ``voice_id`` + the Voice Design ``description`` so a
+    later TALK (camp, place, new scene) can sound like the same person
+    without burning another design credit. Returns ``None`` when the roster
+    has no usable voice for this label.
+    """
+    if not isinstance(subject, dict):
+        return None
+    label = _clean_subject_text(subject.get("label"), "", 40)
+    if not label:
+        return None
+    try:
+        st = _load_state(session_id) or {}
+    except Exception:
+        return None
+    companions = st.get("companions") or {}
+    entry = companions.get(label.lower())
+    if not isinstance(entry, dict):
+        return None
+    voice = entry.get("voice")
+    if not isinstance(voice, dict):
+        return None
+    voice_id = (voice.get("voice_id") or "").strip()
+    if not voice_id:
+        return None
+    # Reject known-bad ids the same way the client override path does.
+    if not _valid_voice_id(voice_id):
+        return None
+    return voice
+
+
 def resolve_voice_for_subject(subject: dict, session_id: str = "default",
                               context: dict = None, world_prompt: str = "",
                               wait: float = 0.0) -> dict:
@@ -357,7 +390,7 @@ def resolve_voice_for_subject(subject: dict, session_id: str = "default",
         {
           "voice_id":       <str>,          # ALWAYS non-empty (fallback is ok)
           "cache_key":      <str|None>,     # non-null when a dyn voice exists / is generating
-          "source":         "cache" | "designed" | "generating" | "fallback" | "budget" | "failed" | "disabled",
+          "source":         "cache" | "designed" | "generating" | "fallback" | "budget" | "failed" | "disabled" | "companion",
           "status":         "ready" | "generating" | "failed" | "disabled",
           "description":    <str>,          # empty on the fallback path
         }
@@ -373,6 +406,41 @@ def resolve_voice_for_subject(subject: dict, session_id: str = "default",
     # by_kind default if the roster is empty or the subject is malformed.
     fallback = resolve_fallback_voice_for_subject(subject) \
         or resolve_voice_for_kind(subject.get("kind") if isinstance(subject, dict) else "")
+
+    # Continuing-story path: reuse the exact voice stored on the companion
+    # roster (same person at camp / after place) before designing a new one.
+    # The Voice Design description stays attached so regenerate_voice can
+    # rebuild the slot later if ElevenLabs evicted it.
+    try:
+        stored = _companion_voice_for_subject(subject, session_id)
+    except Exception:
+        stored = None
+    if stored:
+        return {
+            "voice_id": stored["voice_id"],
+            "cache_key": stored.get("cache_key"),
+            "source": "companion",
+            "status": "ready",
+            "description": (stored.get("description") or ""),
+        }
+
+    # Companion has a regen seed but no currently-valid voice_id (slot
+    # evicted / session cleaned). Redesign FROM the stored brief so they
+    # still sound like the same person rather than a fresh cast.
+    desc_override = ""
+    try:
+        st = _load_state(session_id) or {}
+        label = _clean_subject_text(
+            (subject or {}).get("label") if isinstance(subject, dict) else "",
+            "", 40,
+        )
+        comp = ((st.get("companions") or {}).get(label.lower())
+                if label else None)
+        if isinstance(comp, dict) and isinstance(comp.get("voice"), dict):
+            desc_override = (comp["voice"].get("description") or "").strip()
+    except Exception:
+        desc_override = ""
+
     try:
         import voice_design as _vd
     except Exception:
@@ -382,8 +450,11 @@ def resolve_voice_for_subject(subject: dict, session_id: str = "default",
         return {"voice_id": fallback, "cache_key": None, "source": "disabled",
                 "status": "disabled", "description": ""}
     try:
-        result = _vd.get_or_design_voice(subject or {}, session_id, context=context,
-                                          world_prompt=world_prompt, wait=wait)
+        result = _vd.get_or_design_voice(
+            subject or {}, session_id, context=context,
+            world_prompt=world_prompt, wait=wait,
+            description_override=desc_override,
+        )
     except Exception as _e:
         log_error(f"[VOICE DESIGN] resolver failed: {_e}")
         return {"voice_id": fallback, "cache_key": None, "source": "failed",
@@ -7748,6 +7819,134 @@ def api_companion_place():
     except Exception as e:
         log_error(f"[COMPANION] place failed: {e}")
         return jsonify({"image_url": None, "reason": "error", "error": str(e)}), 500
+
+
+def _watch_companion_voice_regen(session_id: str, subject: dict, cache_key: str,
+                                 description: str, model: str) -> None:
+    """Daemon: when a regen design lands, write the new voice_id onto the
+    companion roster so later TALK reuses it. Best-effort; never raises."""
+    def _run():
+        try:
+            import voice_design as _vd
+        except Exception:
+            return
+        for _ in range(90):
+            try:
+                time.sleep(1.0)
+                st = _vd.get_status(cache_key) or {}
+                status = st.get("status")
+                if status == "ready" and st.get("voice_id"):
+                    _record_companion_voice(session_id, subject, {
+                        "voice_id": st["voice_id"],
+                        "description": description,
+                        "source": "designed",
+                        "status": "ready",
+                        "cache_key": cache_key,
+                        "model": model,
+                    })
+                    return
+                if status in ("failed", "unknown"):
+                    return
+            except Exception:
+                return
+    try:
+        threading.Thread(
+            target=_run, name=f"companion-voice-regen-{cache_key}", daemon=True
+        ).start()
+    except Exception:
+        pass
+
+
+def api_companion_regenerate_voice():
+    """Regenerate a companion's ElevenLabs voice from their stored Voice
+    Design description — the seed persisted by ``api_talk_session``.
+
+    Request JSON: ``{"label": <str>, "session_id"?, "wait"?: <seconds>}``
+    Response: ``{"label", "voice": {voice_id, description, source, status,
+      cache_key, model}, "reason"?}``. Poll ``/api/talk/voice/status`` with
+    the returned ``cache_key`` when ``status == "generating"``.
+    """
+    try:
+        if _rate_limited("companion_regen_voice", 2.0):
+            return jsonify({"voice": None, "reason": "slow_down"}), 429
+        data = request.get_json(silent=True) or {}
+        session_id = data.get("session_id", "default")
+        label = _clean_subject_text(data.get("label"), "", 40)
+        if not label:
+            return jsonify({"error": "missing label", "voice": None}), 400
+        try:
+            wait = float(data.get("wait") or 0.0)
+        except (TypeError, ValueError):
+            wait = 0.0
+        wait = max(0.0, min(wait, 45.0))
+
+        st = _load_state(session_id) or {}
+        companions = st.get("companions") or {}
+        comp = companions.get(label.lower())
+        if not isinstance(comp, dict):
+            return jsonify({"voice": None, "reason": "unknown_companion",
+                            "label": label})
+        voice = comp.get("voice") if isinstance(comp.get("voice"), dict) else {}
+        description = (voice.get("description") or "").strip()
+        if len(description) < 20:
+            return jsonify({"voice": None, "reason": "no_description",
+                            "label": label})
+
+        try:
+            import voice_design as _vd
+        except Exception:
+            return jsonify({"voice": None, "reason": "voice_design_unavailable",
+                            "label": label})
+        if not _vd.is_available():
+            return jsonify({"voice": None, "reason": "voice_design_disabled",
+                            "label": label})
+
+        subject = {
+            "label": comp.get("label") or label,
+            "kind": comp.get("kind") or "person",
+        }
+        world_prompt = str(st.get("world_prompt") or "")
+        model = (voice.get("model") or getattr(_vd, "TTV_MODEL", "") or "").strip()
+        old_voice_id = (voice.get("voice_id") or "").strip() or None
+
+        result = _vd.regenerate_voice(
+            subject, session_id, description,
+            world_prompt=world_prompt,
+            old_voice_id=old_voice_id,
+            wait=wait,
+        )
+        if not result:
+            return jsonify({"voice": None, "reason": "regenerate_failed",
+                            "label": label})
+
+        out_voice = {
+            "voice_id": result.get("voice_id"),
+            "description": description,
+            "source": result.get("source") or "",
+            "status": result.get("status") or "",
+            "cache_key": result.get("cache_key"),
+            "model": model,
+        }
+        if result.get("status") == "ready" and result.get("voice_id"):
+            _record_companion_voice(session_id, subject, {
+                "voice_id": result["voice_id"],
+                "description": description,
+                "source": "designed",
+                "status": "ready",
+                "cache_key": result.get("cache_key"),
+                "model": model,
+            })
+            out_voice["source"] = "designed"
+            out_voice["status"] = "ready"
+        elif result.get("status") == "generating" and result.get("cache_key"):
+            _watch_companion_voice_regen(
+                session_id, subject, result["cache_key"], description, model
+            )
+
+        return jsonify({"label": subject["label"], "voice": out_voice})
+    except Exception as e:
+        log_error(f"[COMPANION] regenerate_voice failed: {e}")
+        return jsonify({"voice": None, "reason": "error", "error": str(e)}), 500
 
 
 # ---------------------------------------------------------------------------
