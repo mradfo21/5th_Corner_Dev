@@ -20,6 +20,16 @@
   const AUTOPLAY_REALTIME_WATCH_MS = (typeof window !== "undefined" && window.__AUTOPLAY_WATCH_MS__) || 7000;   // let the live video play this long before advancing
   const AUTOPLAY_REALTIME_MAX_WAIT_MS = 20000; // never wait longer than this for the video to appear
   const REALTIME_MAX_RETRIES = 3; // transient realtime errors retry before falling back to stills
+  // Reactor occasionally has no free server for the model ("no available
+  // capacity" 429s) — an upstream availability shortage, not a local WebRTC
+  // hiccup. Those can take longer to clear than an ICE renegotiation, so we
+  // give capacity errors a longer, more patient retry budget, then keep
+  // quietly checking in the background so the player doesn't have to
+  // remember to flip back to realtime once Reactor frees a slot.
+  const REALTIME_CAPACITY_MAX_RETRIES = 5;
+  const REALTIME_CAPACITY_RETRY_BASE_MS = 3000;
+  const REALTIME_BACKGROUND_RETRY_MS = 25000; // how often to quietly re-check after falling back
+  const REALTIME_BACKGROUND_RETRY_MAX_ATTEMPTS = 8; // ~3.5 min of quiet background checks, then give up
 
   // Show a small thumbnail preview of each guide image as it's integrated into
   // the realtime world model. Flip to false (or set localStorage
@@ -1611,10 +1621,20 @@
             // stills on the first failure — that left the player stuck on
             // "Realtime unavailable" forever. Retry a couple times before giving
             // up, so realtime self-heals.
+            //
+            // Reactor's OWN infra sometimes has no free server for the model at
+            // all ("Failed to create session: 429 no available capacity") — an
+            // upstream availability shortage, not a local hiccup. That needs a
+            // longer, more patient retry budget than an ICE renegotiation, and
+            // deserves an honest message instead of a generic "reconnecting".
+            const lastErr = (window.ReactorRenderer.getLastError && window.ReactorRenderer.getLastError()) || null;
+            const isCapacity = !!(lastErr && lastErr.capacity);
+            const maxRetries = isCapacity ? REALTIME_CAPACITY_MAX_RETRIES : REALTIME_MAX_RETRIES;
+            const retryBaseMs = isCapacity ? REALTIME_CAPACITY_RETRY_BASE_MS : 1600;
             Renderer._rtRetries = (Renderer._rtRetries || 0) + 1;
-            if (Renderer._rtRetries <= REALTIME_MAX_RETRIES) {
-              console.warn("[standalone] realtime error — retry", Renderer._rtRetries);
-              showRendererToast("Realtime reconnecting…");
+            if (Renderer._rtRetries <= maxRetries) {
+              console.warn("[standalone] realtime error — retry", Renderer._rtRetries, isCapacity ? "(capacity)" : "");
+              showRendererToast(isCapacity ? "Reactor is at capacity \u2014 retrying\u2026" : "Realtime reconnecting\u2026");
               try { window.ReactorRenderer.disable(); } catch (_) {}
               clearTimeout(Renderer._rtRetryTimer);
               Renderer._rtRetryTimer = setTimeout(() => {
@@ -1622,21 +1642,30 @@
                 window.ReactorRenderer.enable().then((ok) => {
                   if (ok && Renderer.lastScene) window.ReactorRenderer.applyScene(Renderer.lastScene);
                 });
-              }, 1600 * Renderer._rtRetries);
+              }, retryBaseMs * Renderer._rtRetries);
               updateRendererButton();
               return;
             }
-            console.warn("[standalone] realtime unavailable after retries — falling back to stills");
+            console.warn("[standalone] realtime unavailable after retries — falling back to stills", isCapacity ? "(capacity)" : "");
             Renderer.mode = "image"; // reflect reality; keep stored pref intact
-            showRendererToast("Realtime unavailable — showing stills");
+            showRendererToast(isCapacity
+              ? "Reactor is full right now \u2014 showing stills (retrying quietly)"
+              : "Realtime unavailable \u2014 showing stills");
             clearScanTags(); // re-map hotspots onto the still that replaces the video
             hideGuideThumbnail();
             // Tear down the realtime layers (video + freeze) and paint the last
             // known still so the fallback isn't a blank/black screen.
             try { window.ReactorRenderer.disable(); } catch (_) {}
             if (Renderer.lastScene && Renderer.lastScene.imageUrl) setScene(Renderer.lastScene.imageUrl);
+            // Capacity is Reactor's problem to resolve, not the player's — keep
+            // quietly checking in the background so realtime comes back on its
+            // own the moment a server frees up, instead of leaving the player
+            // stuck on stills until they remember to flip the toggle.
+            if (isCapacity) Renderer._armBackgroundResume();
+            else Renderer._cancelBackgroundResume();
           } else if (s === "live" && Renderer.mode === "reactor") {
             Renderer._rtRetries = 0; // healthy again — reset the retry budget
+            Renderer._cancelBackgroundResume();
             showRendererToast("Realtime video — live");
           } else if (s === "ready" || s === "connecting") {
             // Progress means the session is alive; don't hold a stale error count.
@@ -1984,7 +2013,53 @@
       if (imageUrl) setScene(imageUrl);
     },
 
+    // Quietly keep retrying realtime in the background after an automatic
+    // capacity fallback, so the player doesn't have to remember to flip back
+    // to "LIVE" once Reactor frees a server. Only fires while the player
+    // hasn't manually touched the renderer toggle since the fallback (see
+    // _cancelBackgroundResume, called from any explicit setMode) and gives up
+    // silently after REALTIME_BACKGROUND_RETRY_MAX_ATTEMPTS so a persistent
+    // outage doesn't retry forever.
+    _armBackgroundResume() {
+      this._cancelBackgroundResume();
+      this._bgResumeAttempts = 0;
+      const tick = () => {
+        this._bgResumeTimer = null;
+        // The player took over (manual toggle/model pick) or is already back
+        // on realtime — nothing left for the background loop to do.
+        if (this.mode !== "image" || !this.reactorAvailable()) return;
+        this._bgResumeAttempts++;
+        window.ReactorRenderer.enable().then((ok) => {
+          if (ok) {
+            if (this.mode !== "image") return; // player switched away while we connected
+            this.mode = "reactor";
+            if (this.lastScene) window.ReactorRenderer.applyScene(this.lastScene);
+            try { DangerSystem.start(); } catch (_) {}
+            showRendererToast("Realtime video is back \u2014 capacity freed up");
+            updateRendererButton();
+            return;
+          }
+          // Still no capacity (Renderer.mode is "image" here, so the onStatus
+          // "error" handler above is a no-op for this attempt — it only acts
+          // while mode === "reactor"). Reschedule ourselves until the attempt
+          // budget runs out, then stop trying quietly.
+          if (this._bgResumeAttempts < REALTIME_BACKGROUND_RETRY_MAX_ATTEMPTS) {
+            this._bgResumeTimer = setTimeout(tick, REALTIME_BACKGROUND_RETRY_MS);
+          }
+        });
+      };
+      this._bgResumeTimer = setTimeout(tick, REALTIME_BACKGROUND_RETRY_MS);
+    },
+
+    _cancelBackgroundResume() {
+      if (this._bgResumeTimer) { clearTimeout(this._bgResumeTimer); this._bgResumeTimer = null; }
+      this._bgResumeAttempts = 0;
+    },
+
     setMode(mode) {
+      // A manual toggle/model pick always wins over the quiet background
+      // capacity retry — the player is taking explicit control.
+      this._cancelBackgroundResume();
       if (mode === this.mode) return;
       // Enabling realtime just needs the renderer available. It connects now and
       // starts as soon as a scene is ready to steer from — we must NOT hard-block

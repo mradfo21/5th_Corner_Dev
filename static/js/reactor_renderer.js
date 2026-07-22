@@ -243,6 +243,7 @@
     blackSince: 0,         // ts the current run of black frames began (0 = none)
     lastBlackSampleTs: 0,  // throttle for the luma sample
     blackCanvas: null,     // tiny offscreen canvas reused for luma sampling
+    lastError: null,       // most recent connect failure: { message, capacity } (see classifyConnectError)
   };
 
   // Event waiters keyed by model message type, so command flows can await a
@@ -250,6 +251,21 @@
   const waiters = Object.create(null);
 
   function log() { try { console.log.apply(console, ["[reactor]", ...arguments]); } catch (_) {} }
+
+  // Reactor's own infra occasionally has no free GPU/session slot for a model
+  // ("Failed to create session: 429 {"error":"no available capacity: ..."}")
+  // — a transient upstream availability issue, distinct from a local WebRTC/
+  // ICE hiccup. Those self-heal in a couple seconds; capacity errors can take
+  // longer (Reactor needs to free or spin up a server), so callers use this
+  // flag to be more patient before giving up and to explain WHY to the player
+  // instead of a generic "reconnecting" message.
+  function classifyConnectError(err) {
+    const message = String((err && err.message) || err || "unknown error");
+    const capacity = /\b429\b/.test(message) ||
+      /no available (capacity|servers?)/i.test(message) ||
+      /at capacity|no capacity|no servers? available/i.test(message);
+    return { message: message, capacity: capacity };
+  }
 
   function setStatus(s) {
     if (rstate.status === s) return;
@@ -1453,9 +1469,13 @@
       await reactor.connect(jwt);
       rstate.connecting = false;
       rstate.connectedAt = Date.now();
+      rstate.lastError = null;
       return true;
     } catch (err) {
-      log("enable failed", err);
+      const classified = classifyConnectError(err);
+      log("enable failed", classified.capacity ? "(capacity)" : "", err);
+      rstate.lastError = classified;
+      emitEvent("connect_error", classified);
       rstate.connecting = false;
       setStatus("error");
       await disable();
@@ -2013,6 +2033,12 @@
     // Whether the server permits connecting to unadvertised model names.
     allowsCustom: () => !!rstate.allowCustom,
     getStatus: () => rstate.status,
+    // The reason the last connect attempt failed (see classifyConnectError),
+    // or null if the last attempt succeeded / none has happened yet. Lets the
+    // UI distinguish a transient upstream capacity shortage (Reactor has no
+    // free server for this model right now) from other failures so it can be
+    // more patient and explain what's happening instead of a generic error.
+    getLastError: () => rstate.lastError,
     isActive: () => rstate.active,
     isReady: () => rstate.ready,
     // World-model selection API (for the mid-game switcher UI).
