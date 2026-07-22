@@ -106,6 +106,45 @@ def test_companion_slug_is_filesystem_safe():
     assert engine._companion_slug("") == "figure"
 
 
+def test_companion_voice_stored_and_preserved():
+    sid = "test_companion_voice"
+    st = engine._load_state(sid) or {}
+    st["companions"] = {}
+    st["characters"] = {}
+    st["turn_count"] = 4
+    engine._save_state(st, sid)
+    # Voice resolved first (as in api_talk_session), before the portrait lands.
+    engine._record_companion_voice(sid, {"label": "Kane", "kind": "person"}, {
+        "voice_id": "vox_kane_123",
+        "description": "a low, gravelly wary male voice, mid-40s, tired",
+        "source": "designed",
+        "status": "ready",
+        "cache_key": "abc123",
+        "model": "eleven_ttv_v3",
+    })
+    st = engine._load_state(sid)
+    v = (st.get("companions") or {}).get("kane", {}).get("voice") or {}
+    assert v.get("voice_id") == "vox_kane_123"
+    assert "gravelly" in v.get("description", "")
+    assert v.get("model") == "eleven_ttv_v3"
+    # Portrait lands AFTER — must NOT drop the voice block.
+    engine._record_companion(sid, {"label": "Kane", "kind": "person"},
+                             "/images/companion_kane.png")
+    st = engine._load_state(sid)
+    comp = (st.get("companions") or {}).get("kane", {})
+    assert comp.get("portrait_url") == "/images/companion_kane.png"
+    assert (comp.get("voice") or {}).get("voice_id") == "vox_kane_123"  # preserved
+    # A later preset override (empty description) must NOT erase the regen seed.
+    engine._record_companion_voice(sid, {"label": "Kane", "kind": "person"}, {
+        "voice_id": "preset_xyz", "description": "", "source": "override",
+        "status": "override", "cache_key": None, "model": "",
+    })
+    st = engine._load_state(sid)
+    v2 = (st.get("companions") or {}).get("kane", {}).get("voice") or {}
+    assert v2.get("voice_id") == "preset_xyz"
+    assert "gravelly" in v2.get("description", "")  # regen description retained
+
+
 def test_companions_endpoint_lists_roster():
     import api
     c = api.app.test_client()
@@ -135,5 +174,6 @@ if __name__ == "__main__":
     test_record_character_memory_upserts()
     test_record_companion_stores_portrait()
     test_companion_slug_is_filesystem_safe()
+    test_companion_voice_stored_and_preserved()
     test_companions_endpoint_lists_roster()
     print("ok")

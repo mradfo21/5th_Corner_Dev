@@ -7146,6 +7146,10 @@ def _record_companion(session_id: str, subject: dict, portrait_url: str,
         "seen_count": int(prev.get("seen_count") or 0) + 1,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     }
+    # Preserve the ElevenLabs voice block if it was recorded first (voice +
+    # portrait are resolved in parallel from Talk.start).
+    if isinstance(prev.get("voice"), dict):
+        entry["voice"] = prev["voice"]
     companions[key] = entry
     st["companions"] = companions
     # Link the portrait onto the character-memory record too, so the two views
@@ -7159,6 +7163,65 @@ def _record_companion(session_id: str, subject: dict, portrait_url: str,
     except Exception as e:
         log_error(f"[COMPANION] save failed: {e}")
     return entry
+
+
+def _record_companion_voice(session_id: str, subject: dict, voice: dict) -> None:
+    """Store the ElevenLabs voice data for a companion so their voice can be
+    reused (by id) OR regenerated from scratch (by description) later.
+
+    ``voice`` is the resolver output plus a couple of fields the caller knows::
+
+        {
+          "voice_id":     <str>,   # reuse this exact ElevenLabs voice
+          "description":  <str>,   # the Voice Design brief — REGENERATION seed
+          "source":       <str>,   # designed / cache / fallback / override / ...
+          "status":       <str>,
+          "cache_key":    <str|None>,
+          "model":        <str>,   # ttv model to regenerate with
+          "settings":     <dict|None>,  # tts settings (stability/similarity/...)
+        }
+
+    Additive: creates a minimal companion stub if the portrait hasn't landed yet
+    (voice + portrait are resolved in parallel), WITHOUT bumping seen_count or
+    touching the portrait. Never raises.
+    """
+    subject = subject or {}
+    display_label = re.sub(r"\s+", " ", str(subject.get("label") or "")).strip()[:40]
+    label = _clean_subject_text(subject.get("label"), "", 40)
+    if not label or not isinstance(voice, dict) or not voice.get("voice_id"):
+        return
+    try:
+        st = _load_state(session_id) or {}
+    except Exception:
+        return
+    companions = st.get("companions")
+    if not isinstance(companions, dict):
+        companions = {}
+    key = label.lower()
+    entry = companions.get(key) if isinstance(companions.get(key), dict) else {}
+    # Don't downgrade a real designed-voice description to an empty one (e.g. a
+    # later preset override): only overwrite the description when we have one.
+    new_desc = (voice.get("description") or "").strip()
+    voice_block = {
+        "voice_id": voice.get("voice_id"),
+        "description": new_desc or (entry.get("voice") or {}).get("description", ""),
+        "source": voice.get("source") or "",
+        "status": voice.get("status") or "",
+        "cache_key": voice.get("cache_key"),
+        "model": voice.get("model") or "",
+        "settings": voice.get("settings") or (entry.get("voice") or {}).get("settings"),
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    entry = dict(entry)
+    entry.setdefault("label", display_label or label)
+    entry.setdefault("kind", _clean_subject_text(subject.get("kind"), "person", 20))
+    entry["voice"] = voice_block
+    companions[key] = entry
+    st["companions"] = companions
+    try:
+        _save_state(st, session_id)
+    except Exception as e:
+        log_error(f"[COMPANION] voice save failed: {e}")
 
 
 def _save_portrait_reference(frame_b64: str, session_id: str = "default") -> Optional[str]:
@@ -7454,6 +7517,9 @@ def api_companions():
                 "last_seen_turn": c.get("last_seen_turn"),
                 "trust": mem.get("trust", 0),
                 "notes": (mem.get("notes") or [])[-3:],
+                # ElevenLabs voice data: reuse by voice_id, or regenerate from
+                # the Voice Design description + model.
+                "voice": c.get("voice") or None,
             })
         out.sort(key=lambda r: (r.get("last_seen_turn") or 0), reverse=True)
         return jsonify({"companions": out})
@@ -7641,6 +7707,29 @@ def api_talk_session():
             _vd.acquire(resolved_voice)
         except Exception:
             pass
+
+        # Persist the ElevenLabs voice data onto this character's companion
+        # record so their voice can be reused (by id) or REGENERATED (by the
+        # Voice Design description) later, for a continuing story. Best-effort.
+        try:
+            _ttv_model = ""
+            try:
+                import voice_design as _vd2
+                _ttv_model = getattr(_vd2, "TTV_MODEL", "") or ""
+            except Exception:
+                _ttv_model = ""
+            _record_companion_voice(session_id, context["subject"], {
+                "voice_id": resolved_voice,
+                "description": voice_description,
+                "source": ("override" if chosen_voice else voice_resolution.get("source", "")),
+                "status": voice_status,
+                "cache_key": voice_cache_key,
+                # Only designed voices carry a regeneration description; tag the
+                # model so a future regen knows which TTV model produced it.
+                "model": _ttv_model if voice_description else "",
+            })
+        except Exception as _ve:
+            log_error(f"[COMPANION] voice record failed: {_ve}")
 
         # Dynamic variables + prompt overrides an ElevenLabs agent can consume to
         # stay aware of the story (see ElevenLabs Conversational AI docs).

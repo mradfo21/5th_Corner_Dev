@@ -73,6 +73,24 @@ last_seen_turn, seen_count, prompt, scene}`), recorded by `api_talk_portrait`.
   so the same character reappears standing in the present place. Returns the
   new scene `image_url`.
 
+Each companion also stores its **ElevenLabs voice data** (recorded by
+`api_talk_session`) under `companion.voice`:
+
+```
+voice: {
+  voice_id,      # reuse this exact ElevenLabs voice
+  description,   # the Voice Design brief — the seed to REGENERATE the voice
+  model,         # the TTV model that produced it (e.g. eleven_ttv_v3)
+  source,        # designed / cache / fallback / override
+  status, cache_key, settings, updated_at
+}
+```
+
+`voice_id` lets a later scene reuse the exact voice; `description` + `model`
+are everything Voice Design needs to regenerate it from scratch if the voice
+slot was evicted. The regen description is preserved even if the player later
+switches to a preset voice. Surfaced in `GET /api/companions`.
+
 The client shows a "{label} added to your companions" notification the first
 time each character is met.
 
