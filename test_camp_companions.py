@@ -81,6 +81,32 @@ def test_collect_camp_companions_uses_state_and_disk():
         assert not r["portrait_path"].endswith("_small.png")
 
 
+def test_normalize_camp_leave_choice_forces_on_foot():
+    raw_drive = "Leave camp and drive the red jeep into a new location across the desert."
+    normalized = engine._normalize_camp_leave_choice(raw_drive, "camp_leave")
+    low = normalized.lower()
+    assert "leave camp" in low
+    assert "new" in low and "location" in low
+    assert "walk" in low or "on foot" in low
+    assert "drive" not in low
+    assert "jeep" not in low
+    assert "truck" not in low
+    # Non-camp sources keep the caller's text.
+    assert engine._normalize_camp_leave_choice(raw_drive, "scan_move") == raw_drive
+
+
+def test_camp_leave_image_prompt_forbids_cabin_pov():
+    prompt = engine.build_image_prompt(
+        player_choice=engine._CAMP_LEAVE_CHOICE,
+        dispatch="Dusty desert track toward distant mesas under haze.",
+        narrative_dispatch="You leave the fire behind and set out.",
+        hard_transition=True,
+    )
+    low = prompt.lower()
+    assert "not inside a vehicle" in low or "no vehicle interior" in low or "dashboard" in low
+    assert "steering wheel" in low or "cabin" in low
+
+
 def test_build_camp_prompt_maps_every_reference():
     attendees = [
         {"label": "Kane"},
@@ -102,5 +128,7 @@ def test_build_camp_prompt_maps_every_reference():
 if __name__ == "__main__":
     test_resolve_image_path_finds_session_companion()
     test_collect_camp_companions_uses_state_and_disk()
+    test_normalize_camp_leave_choice_forces_on_foot()
+    test_camp_leave_image_prompt_forbids_cabin_pov()
     test_build_camp_prompt_maps_every_reference()
     print("ok")

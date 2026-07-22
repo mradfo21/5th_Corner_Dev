@@ -84,9 +84,11 @@ ACT / explore pad); there is no letterbox / nameplate chrome.
    — the same path as any other level — so SCAN / PHOTO / Talk work normally.
    Companions are reached via **SCAN → TALK**, not Moment hotspots.
 4. A compact `#leave-camp-btn` (and Esc) fires a hard-transition turn —
-   *"Leave camp and drive the red jeep into a new location…"* — so the engine
-   builds a **brand-new level**. Camp is cleared from `Renderer.lastScene` so a
-   late world-model rebuild can't resurrect it.
+   *"Leave camp and walk into a new outdoor location…"* (`source: "camp_leave"`)
+   so the engine builds a **brand-new on-foot level**. The choice is normalized
+   server-side to forbid cab/dashboard/driving POVs (those break the walkable
+   world model). Camp is cleared from `Renderer.lastScene` so a late rebuild
+   can't resurrect it.
 
 Empty roster still works (quiet fire + jeep). Camp enter appends one additive
 `feed_log` item (`type: "camp"`) for Story Log flavor only — it does **not**

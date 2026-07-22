@@ -4556,6 +4556,11 @@
       Narrator.stop(); // silence any narration from the prior run
       closeScan(); // drop any scan tags/overlay from the dead run
       closeTouch(); // drop any camera overlay
+      state.inCamp = false;
+      state.campEntering = false;
+      state.campLeaving = false;
+      document.body.classList.remove("in-camp");
+      try { updateLeaveCampButton(); } catch (_) {}
       try { Photo.hide(); Photo.clearTimers(); } catch (_) {} // kill any in-flight receipt
       try { hideCaseWin(); } catch (_) {}    // drop the win screen from the prior run
       state.caseWon = false;
@@ -7211,8 +7216,12 @@
   // re-anchor the live world model, keep the full action wheel (PHOTO / SCAN /
   // ACT / pad). Not a Moments cinematic — letterbox / HUD-hide would block
   // instruments. LEAVE CAMP fires a hard-transition choose into a new mission.
+  // Hard-transition keywords ("Leave ", "new location") must stay so the
+  // engine builds a fresh level — but NEVER say drive/jeep/truck. Cab / dashboard
+  // POVs break the walkable world model after camp.
   const CAMP_LEAVE_CHOICE =
-    "Leave camp and drive the red jeep into a new location across the desert.";
+    "Leave camp and walk into a new outdoor location across the desert — " +
+    "arrive on foot at eye level with open ground ahead, not inside any vehicle.";
 
   function clearCampFromRenderer() {
     try {

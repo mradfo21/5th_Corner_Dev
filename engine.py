@@ -3574,6 +3574,14 @@ def build_image_prompt(
             f"Visible landmarks from this position MUST remain consistent.\n\n"
         ) + prompt
 
+    # LEAVE CAMP → new level: forbid vehicle-cabin POVs even if narrative drifts.
+    choice_l = (player_choice or "").lower()
+    if (
+        hard_transition
+        and ("leave camp" in choice_l or "not inside any vehicle" in choice_l)
+    ):
+        prompt = f"{prompt}\n\n{_CAMP_LEAVE_ON_FOOT_CONSTRAINT}"
+
     # ── Movement-type guidance ────────────────────────────────────────────────
     if prev_vision_analysis:
         if hard_transition:
@@ -3677,6 +3685,33 @@ _JEEP_PROP_PROMPT = (
 
 # Bump when camp plate grammar changes so stale jeep-/companion-less caches regenerate.
 _CAMP_CACHE_VERSION = "v4-all-companions"
+
+# Canonical LEAVE CAMP → new-level choice. Must keep hard-transition detectors
+# ("leave ", "new location") firing, but MUST NOT mention driving / the jeep —
+# cab/dashboard POVs break the walkable realtime world model after camp.
+_CAMP_LEAVE_CHOICE = (
+    "Leave camp and walk into a new outdoor location across the desert — "
+    "arrive on foot at eye level with open ground ahead, not inside any vehicle."
+)
+_CAMP_LEAVE_ON_FOOT_CONSTRAINT = (
+    "CRITICAL — ON-FOOT ARRIVAL (no vehicle cabin): first-person eye-level walking "
+    "vantage outdoors on open ground. Do NOT show a vehicle interior, dashboard, "
+    "steering wheel, windshield frame, seats, or hands on a wheel. Do NOT place the "
+    "camera inside any truck, jeep, or car. If a vehicle appears it is ONLY distant "
+    "or parked far behind — never the camera's location."
+)
+
+
+def _normalize_camp_leave_choice(choice: str, source: Optional[str] = None) -> str:
+    """Rewrite LEAVE CAMP turns onto the canonical on-foot arrival choice.
+
+    Older clients still send \"drive the red jeep…\"; that text makes Gemini and
+    the world model spawn a driving cab. Always normalize when ``source`` is
+    ``camp_leave``, regardless of the raw choice string.
+    """
+    if (source or "").strip() == "camp_leave":
+        return _CAMP_LEAVE_CHOICE
+    return choice or ""
 
 
 def realtime_action_beat(choice: str = "") -> str:
@@ -6148,6 +6183,8 @@ def api_choose():
         # "scan_move") drive the story-escalation backend harder (see
         # _process_turn_background) so poking the world moves the plot + raises risk.
         action_source = data.get('source')
+        # LEAVE CAMP must arrive on foot — never in a cab/dashboard POV.
+        player_choice_text = _normalize_camp_leave_choice(player_choice_text, action_source)
 
         if DEBUG_MODE: print(f"[DEBUG] api_choose received choice: '{player_choice_text}', context_id: {context_item_id}. Current state ID: {id(state)}", flush=True)
 
