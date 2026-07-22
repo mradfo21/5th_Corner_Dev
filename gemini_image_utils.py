@@ -1167,9 +1167,9 @@ def generate_gemini_img2img(
         "generationConfig": {
             "responseModalities": ["IMAGE"],
             "imageConfig": {
-                # Conversation portraits + ensemble camp composites use a wider
-                # cinematic frame; the game's environment stills stay 4:3.
-                "aspectRatio": "16:9" if (portrait_mode or ensemble_mode) else "4:3",
+                # Conversation portraits stay wide; ensemble CAMP plates match
+                # the game's 4:3 stills so mobile contain-fit matches gameplay.
+                "aspectRatio": "4:3" if ensemble_mode else ("16:9" if portrait_mode else "4:3"),
                 "imageSize": "1K"  # Lowest res Nano Banana 2 Lite offers — fastest generation
             }
         },

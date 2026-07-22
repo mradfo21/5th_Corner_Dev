@@ -69,15 +69,21 @@ the world moving again. This is the fast, seamless feel; no "load" on exit.
 
 Press **CAMP** on the action wheel (`#camp-btn`) to push a `"camp"` Moment:
 
-1. `POST /api/camp/enter` builds (or reuses a cached) night campsite establishing
-   shot from the durable **jeep prop** + up to **5** companion portraits
+1. Enter/exit use a **fade-to-black** veil (`#moment-fade`, `transition: "fade"`) —
+   not the VCR glitch cut conversation uses.
+2. `POST /api/camp/enter` builds (or reuses a cached) **4:3** night campsite plate
+   from the durable **jeep prop** + up to **5** companion portraits
    (ranked by `last_seen_turn`), via `generate_gemini_img2img(..., ensemble_mode=True)`.
-2. The client reveals the shot with `Moments.setScene`, places tap-target hotspots
-   from the server's fixed seat layout, and offers **LEAVE CAMP**.
-3. Tapping a companion calls `Talk.start({label, kind, speaks:true, reference_image})`
-   so a conversation nests on the camp stack; the camp frame is passed as the
-   portrait reference so close-ups stay firelit.
-4. Leaving camp is plain `Moments.pop()` — no turn mutation, underlay resumes.
+   The red jeep is required in the composition (text + reference). Response includes
+   `realtime_prompt` for the live world-model.
+3. The client stages the plate with `Moments.setScene`, then **re-anchors the
+   Reactor underlay** onto that campsite (`hard_transition`) so the fire is a
+   living world-model. `Moments.setSceneLive(true)` makes the scene shell
+   transparent so the stream shows through; the explore pad stays available.
+4. Tap-target hotspots + a compact **LEAVE CAMP** pill. Tapping a companion
+   nests `Talk.start` (firelit `reference_image` from the live frame when possible).
+5. Leaving fades to black, hard-cuts the underlay back to the saved mission
+   scene, then fades up — no turn mutation.
 
 Empty roster still works (quiet fire + jeep). Camp appends one additive
 `feed_log` item (`type: "camp"`) for Story Log flavor only — it does **not**

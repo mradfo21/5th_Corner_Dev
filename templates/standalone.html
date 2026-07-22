@@ -394,8 +394,13 @@
   <div id="moment-overlay" class="hidden" aria-hidden="true">
     <div class="moment-letterbox moment-letterbox-top" aria-hidden="true"></div>
     <div class="moment-letterbox moment-letterbox-bottom" aria-hidden="true"></div>
-    <!-- Full-bleed establishing shot (camp). Sibling to #moment-portrait —
-         conversation keeps using the portrait; camp uses this scene layer. -->
+    <!-- Soft black fade veil for CAMP enter/exit (conversation still uses the
+         VCR glitch). Sits above the scene plate, below nameplate/choices. -->
+    <div id="moment-fade" class="hidden" aria-hidden="true"></div>
+    <!-- Establishing shot / hotspot shell (camp). Sibling to #moment-portrait —
+         conversation keeps using the portrait; camp uses this scene layer.
+         When the camp world-model is live, .live-world makes this transparent
+         so the Reactor underlay shows through. -->
     <div id="moment-scene" class="hidden" aria-hidden="true">
       <div id="moment-scene-shimmer" aria-hidden="true"></div>
       <img id="moment-scene-img" alt="" />

@@ -8608,6 +8608,9 @@
 
     let campSceneUrl = null;
     let campAttendees = [];
+    let campRealtimePrompt = "";
+    let campReturnScene = null;   // mission world to restore on leave
+    let campWorldLive = false;
 
     function clearHotspots() {
       const hs = document.getElementById("moment-scene-hotspots");
@@ -8615,11 +8618,19 @@
     }
 
     function campSceneAsDataUrl() {
+      // Prefer a live Reactor frame when the camp world is up — that's the
+      // firelit view the player is actually seeing.
+      try {
+        if (campWorldLive && window.ReactorRenderer &&
+            typeof window.ReactorRenderer.captureFrame === "function") {
+          const frame = window.ReactorRenderer.captureFrame();
+          if (frame) return frame;
+        }
+      } catch (_) {}
       const img = document.getElementById("moment-scene-img");
       if (!img || !img.src || !img.naturalWidth) return null;
       try {
         const c = document.createElement("canvas");
-        // Cap size so the POST stays light; portrait img2img downsamples anyway.
         const maxW = 960;
         const scale = Math.min(1, maxW / img.naturalWidth);
         c.width = Math.max(1, Math.round(img.naturalWidth * scale));
@@ -8652,8 +8663,6 @@
         btn.addEventListener("click", (ev) => {
           ev.preventDefault();
           ev.stopPropagation();
-          // Nest Talk on top of camp: clear camp chrome so LEAVE CAMP / hotspots
-          // can't steal clicks through the talk overlay (pointer-events:none).
           clearHotspots();
           try { window.Moments.clearChoices(); } catch (_) {}
           const ref = campSceneAsDataUrl();
@@ -8666,7 +8675,6 @@
             });
           } catch (err) {
             console.warn("[camp] Talk.start failed:", err);
-            // If Talk failed to open, put the camp chrome back.
             placeHotspots(campAttendees);
             showLeaveChoice();
           }
@@ -8676,12 +8684,9 @@
     }
 
     function leaveCamp() {
-      // If a conversation is nested on top, hang up first (pops conversation),
-      // then pop camp — never pop only the conversation via LEAVE CAMP.
       const top = window.Moments.topType && window.Moments.topType();
       if (top === "conversation") {
         try { Talk.close(); } catch (_) {}
-        // Talk.close is async w.r.t. Moments.pop; wait a tick then leave camp.
         setTimeout(() => {
           if (window.Moments.topType && window.Moments.topType() === "camp") {
             window.Moments.pop({ left: true });
@@ -8699,32 +8704,123 @@
       );
     }
 
+    function showCampExplorePad() {
+      // Let the player look around the live campsite — only the move pad,
+      // not the full mission HUD.
+      try {
+        const pad = document.getElementById("move-pad");
+        if (pad) {
+          pad.classList.remove("hidden", "moment-hud-hidden");
+          delete pad.dataset.momentWasHidden;
+        }
+      } catch (_) {}
+    }
+
+    function snapshotReturnScene() {
+      try {
+        if (!campReturnScene && Renderer && Renderer.lastScene) {
+          campReturnScene = {
+            prompt: Renderer.lastScene.prompt || null,
+            imageUrl: Renderer.lastScene.imageUrl || null,
+            hardTransition: true,
+          };
+        }
+      } catch (_) {}
+    }
+
+    function activateCampWorld(imageUrl, prompt) {
+      if (!imageUrl) return false;
+      const rtPrompt = prompt || campRealtimePrompt ||
+        "Night campsite in high-desert scrub. Campfire burns, embers drift, " +
+        "a dusty red 1990s jeep parked at the edge of the firelight. " +
+        "First-person handheld view. Firelight flickers.";
+      snapshotReturnScene();
+
+      // Live world-model campsite when realtime is already on (or available).
+      // Stills-only sessions keep the establishing plate.
+      if (!Renderer || typeof Renderer.applyScene !== "function" || !window.ReactorRenderer) {
+        return false;
+      }
+
+      try {
+        // Seed lastScene so a mode switch / reconnect re-applies CAMP, not the
+        // mission world we just left.
+        Renderer.lastScene = {
+          prompt: rtPrompt,
+          imageUrl: imageUrl,
+          hardTransition: true,
+        };
+        if (Renderer.mode !== "reactor" && typeof Renderer.setMode === "function") {
+          // Switches on realtime; enable().then re-applies lastScene (camp).
+          Renderer.setMode("reactor");
+        } else {
+          Renderer.applyScene(imageUrl, rtPrompt, { hard_transition: true });
+        }
+        if (typeof Renderer.resumeUnderlay === "function") Renderer.resumeUnderlay();
+        window.Moments.setSceneLive(true);
+        campWorldLive = true;
+        showCampExplorePad();
+        return true;
+      } catch (err) {
+        console.warn("[camp] world-model activate failed:", err);
+        return false;
+      }
+    }
+
+    function restoreMissionWorld() {
+      if (!campReturnScene) return;
+      try {
+        if (Renderer && typeof Renderer.applyScene === "function") {
+          Renderer.applyScene(
+            campReturnScene.imageUrl,
+            campReturnScene.prompt,
+            { hard_transition: true }
+          );
+        }
+      } catch (err) {
+        console.warn("[camp] restore mission world failed:", err);
+      }
+    }
+
     function restoreCampChrome() {
       try {
         window.Moments.setNameplate("CAMP", "around the fire");
       } catch (_) {}
-      // Ensure scene chrome is visible again after a nested conversation.
       const sc = document.getElementById("moment-scene");
       if (sc && campSceneUrl) {
         sc.classList.remove("hidden", "developing");
         sc.classList.add("ready");
         sc.setAttribute("aria-hidden", "false");
+        if (campWorldLive) sc.classList.add("live-world");
       }
+      // Conversation pauseUnderlay'd the live camp — wake it back up.
+      try {
+        if (campWorldLive && Renderer && typeof Renderer.resumeUnderlay === "function") {
+          Renderer.resumeUnderlay();
+        }
+      } catch (_) {}
+      if (campWorldLive) showCampExplorePad();
       placeHotspots(campAttendees);
       showLeaveChoice();
       try { updateCampButton(); } catch (_) {}
     }
 
     window.Moments.register("camp", {
+      // Fade to black (not the VCR glitch / yellow wash). Underlay pauses during
+      // generation, then enter() re-anchors it onto the live campsite world.
+      transition: "fade",
+
       async enter(payload, entry) {
         campSceneUrl = null;
         campAttendees = [];
+        campRealtimePrompt = "";
+        campWorldLive = false;
+        campReturnScene = null;
         clearHotspots();
+        try { window.Moments.setSceneLive(false); } catch (_) {}
         try {
           window.Moments.setNameplate("CAMP", "making camp…");
         } catch (_) {}
-        // Leave available immediately — generation can take a long time; Esc
-        // / LEAVE must work while the shimmer is up (entry.aborted on pop).
         showLeaveChoice();
 
         let res = null;
@@ -8751,42 +8847,59 @@
             });
           } catch (_) {}
           showLeaveChoice();
+          // Lift the black veil so the player can read the failure + Leave.
+          try { await window.Moments.revealFromFade(entry); } catch (_) {}
           return false;
         }
 
         campSceneUrl = res.image_url;
         campAttendees = Array.isArray(res.attendees) ? res.attendees : [];
-        // Place hotspots only after the plate decodes so Talk can sample a
-        // firelit reference_image (campSceneAsDataUrl needs naturalWidth).
-        window.Moments.setScene(campSceneUrl, () => {
-          if (entry && entry.aborted) return;
-          placeHotspots(campAttendees);
+        campRealtimePrompt = res.realtime_prompt || "";
+
+        // Stage the plate first (floor + hotspot sampling), then promote it to
+        // a live world-model campsite when Reactor is available.
+        await new Promise((resolve) => {
+          window.Moments.setScene(campSceneUrl, () => {
+            if (!(entry && entry.aborted)) placeHotspots(campAttendees);
+            resolve();
+          });
         });
+        if (entry && entry.aborted) return false;
+
+        activateCampWorld(campSceneUrl, campRealtimePrompt);
 
         const n = campAttendees.length;
         try {
           window.Moments.setNameplate("CAMP", n
             ? (n === 1 ? "one companion by the fire" : n + " companions by the fire")
-            : "quiet night — no one's here yet");
+            : "quiet night — jeep by the fire");
           window.Moments.notify({
             icon: "🔥",
             text: n
               ? ("Camp set. " + n + " companion" + (n === 1 ? "" : "s") + " around the fire.")
-              : "Camp set. You're alone by the fire for now.",
+              : "Camp set. Your jeep waits at the edge of the firelight.",
           });
         } catch (_) {}
         showLeaveChoice();
+        // Reveal from black once the plate (and world, if any) is staged.
+        try { await window.Moments.revealFromFade(entry); } catch (_) {}
         return true;
       },
       async exit(/* result */) {
+        // Still under the fade veil from pop()'s fadeDown — restore the
+        // mission world before chrome tears down / fade lifts.
+        try { window.Moments.setSceneLive(false); } catch (_) {}
+        restoreMissionWorld();
         clearHotspots();
         campSceneUrl = null;
         campAttendees = [];
+        campRealtimePrompt = "";
+        campWorldLive = false;
+        campReturnScene = null;
         try { updateCampButton(); } catch (_) {}
         return true;
       },
       async resume(/* entry */) {
-        // Returning from a nested conversation — re-show camp chrome.
         restoreCampChrome();
         return true;
       },

@@ -3621,10 +3621,15 @@ _CAMP_SEATS = {
 }
 
 _JEEP_PROP_PROMPT = (
-    "A dusty red 1990s Jeep Cherokee parked alone in empty desert scrub at dusk, "
-    "three-quarter view from the front-left, weathered paint, mud-caked tires, "
-    "no people, no text, photoreal cinematic still, VHS analog grain, muted palette."
+    "Hero plate of a dusty bright-red 1990s Jeep Cherokee / Wrangler, parked alone "
+    "in empty high-desert scrub at dusk. Three-quarter view from the front-left, "
+    "vehicle fills most of the frame, weathered paint, mud-caked tires, spare tire "
+    "on the back, chrome details dulled by dust. No people, no other vehicles, no "
+    "text, photoreal cinematic still, VHS analog grain, muted 1993 palette."
 )
+
+# Bump when camp plate grammar changes so stale jeep-less caches regenerate.
+_CAMP_CACHE_VERSION = "v3-jeep4x3"
 
 
 def realtime_action_beat(choice: str = "") -> str:
@@ -7767,7 +7772,7 @@ def _ensure_jeep_prop(session_id: str) -> dict:
             prompt=_sanitize_for_image_generation(_JEEP_PROP_PROMPT),
             caption="prop_jeep",
             world_prompt=None,
-            aspect_ratio="16:9",
+            aspect_ratio="4:3",  # match game stills / camp plates
             time_of_day="dusk, desert evening light",
             hd_mode=False,
             output_dir=Path(_get_image_dir(session_id)),
@@ -7806,7 +7811,7 @@ def _ensure_jeep_prop(session_id: str) -> dict:
 def _camp_cache_key(session_id: str, labels: list, jeep_url: str) -> tuple:
     labels_sig = ",".join(sorted((l or "").strip().lower() for l in labels))
     jeep_hash = hashlib.sha1((jeep_url or "").encode("utf-8")).hexdigest()[:12]
-    return (session_id or "default", labels_sig, jeep_hash)
+    return (session_id or "default", _CAMP_CACHE_VERSION, labels_sig, jeep_hash)
 
 
 def _camp_seat_layout(count: int) -> list:
@@ -7817,32 +7822,59 @@ def _camp_seat_layout(count: int) -> list:
 
 
 def _build_camp_prompt(attendee_labels: list, jeep_included: bool) -> str:
-    """Prompt for the camp establishing shot — night fire + optional cast + jeep."""
+    """Prompt for the camp establishing shot — night fire + jeep + optional cast.
+
+    The red jeep is a non-negotiable visual anchor (Chekhov's gun for leaving
+    camp later). Even when a jeep reference image is missing we still describe
+    it in text so the plate never comes back as fire-only scrub.
+    """
     bits = [
-        "Wide establishing shot of a night campsite in remote desert scrub.",
-        "A small campfire burns at the center, warm orange firelight pooling on the ground,",
-        "embers drifting, deep blue-black night sky, VHS analog grain, 1990s found-footage mood.",
-        "Handheld documentary framing, not a security camera, not a collage.",
+        "First-person handheld establishing shot of a night campsite in remote Four Corners high-desert scrub.",
+        "4:3 frame matching the rest of the game. A small campfire burns in the mid-ground,",
+        "warm orange firelight pooling on sand and scrub, embers drifting, deep blue-black night sky,",
+        "VHS analog grain, 1990s found-footage mood. Not a security camera, not a collage.",
+        # Jeep is ALWAYS required in the composition — reference image when we
+        # have one, otherwise a hard textual prescription.
+        "CRITICAL — THE RED JEEP MUST BE IN FRAME: a dusty bright-red 1990s Jeep "
+        "Cherokee/Wrangler parked at the RIGHT edge of the firelight, three-quarter "
+        "view, clearly readable silhouette and red paint, mud-caked tires. Do NOT "
+        "omit the jeep. Do NOT replace it with a truck or car. The jeep is as "
+        "important as the fire.",
     ]
     if jeep_included:
         bits.append(
-            "The red 1990s jeep from the reference is parked at the edge of the firelight, "
-            "clearly recognizable (same color, silhouette, dust and wear)."
+            "Match the jeep reference image's exact color, body shape, and wear."
         )
     if attendee_labels:
         names = ", ".join(attendee_labels)
         bits.append(
             f"Seated around the flames are these companions, each matching their reference "
-            f"portrait face and clothing: {names}. Arrange them in a natural arc around the fire."
+            f"portrait face and clothing: {names}. Arrange them in a natural arc around the fire, "
+            f"leaving the jeep clearly visible on the right."
         )
     else:
         bits.append(
-            "No people — a quiet empty camp. Only the fire"
-            + (" and the jeep" if jeep_included else "")
-            + "."
+            "No people — a quiet empty camp. Only the fire and the red jeep."
         )
     bits.append("No text, no UI, no letterbox bars inside the image. Photoreal cinematic still.")
     return _sanitize_for_image_generation(" ".join(bits))
+
+
+def _build_camp_realtime_prompt(attendee_labels: list, jeep_included: bool = True) -> str:
+    """Realtime world-model prompt for a living campsite (fire flicker, night air)."""
+    who = ""
+    if attendee_labels:
+        who = " Companions seated around the fire: " + ", ".join(attendee_labels) + "."
+    # Jeep is always part of camp identity — mention even if the prop file failed.
+    jeep = " A dusty bright-red 1990s jeep is parked at the edge of the firelight."
+    visual = (
+        "Night campsite in remote high-desert scrub. A campfire burns in the mid-ground, "
+        "embers drifting, warm firelight on sand and brush, deep desert dark."
+        + jeep
+        + who
+        + " First-person handheld view. Firelight flickers. Quiet night wind in the scrub."
+    )
+    return build_realtime_prompt(visual_scene=visual, narrative=visual, choice="")
 
 
 def api_camp_enter():
@@ -7918,6 +7950,8 @@ def api_camp_enter():
                 "seat": seat,
             })
 
+        realtime_prompt = _build_camp_realtime_prompt(labels, jeep_included=True)
+
         if cached:
             # Validate the cached plate still exists on disk — establishing
             # shots are ordinary session images and can be swept; never serve
@@ -7929,6 +7963,7 @@ def api_camp_enter():
                     "image_url": cached,
                     "attendees": attendees_out,
                     "jeep_included": jeep_included,
+                    "realtime_prompt": realtime_prompt,
                     "cached": True,
                 })
             with _CAMP_CACHE_LOCK:
@@ -7973,13 +8008,14 @@ def api_camp_enter():
                     portrait_mode=True,  # allow people (skip anti-person)
                 )
             else:
-                # No jeep file and no companions — quiet fire via text2img.
+                # No jeep file and no companions — still describe the jeep in
+                # text so the plate isn't fire-only scrub.
                 from gemini_image_utils import generate_with_gemini
                 image_path = generate_with_gemini(
                     prompt=prompt,
                     caption="camp_establish",
                     world_prompt=world_prompt,
-                    aspect_ratio="16:9",
+                    aspect_ratio="4:3",
                     time_of_day="night, campfire glow, deep desert dark",
                     hd_mode=False,
                     output_dir=img_dir,
@@ -8043,6 +8079,7 @@ def api_camp_enter():
             "image_url": durable_web,
             "attendees": attendees_out,
             "jeep_included": jeep_included,
+            "realtime_prompt": realtime_prompt,
             "cached": False,
         })
     except Exception as e:

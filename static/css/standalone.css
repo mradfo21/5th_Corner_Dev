@@ -4335,59 +4335,84 @@ body.moment-conversation[data-talk-orb="speaking"] #moment-portrait-rim {
   50%      { transform: scale(1.055); }
 }
 
-/* Full-bleed establishing scene (camp). Sibling to #moment-portrait — same
-   crossfade grammar, but the whole viewport is the shot, with tap-target
-   hotspots over companion figures. */
+/* Soft black fade veil for CAMP enter/exit — above the scene plate, below
+   nameplate / choices / notify. No yellow/orange “developing” graphic. */
+#moment-fade {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  background: #050505;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.42s ease-in-out;
+}
+#moment-fade.down { opacity: 1; }
+#moment-fade.hidden { display: none; }
+
+/* Establishing scene (camp). Sibling to #moment-portrait — same crossfade
+   grammar, with tap-target hotspots over companion figures. Authored plates
+   are 4:3 (matching the rest of the app); on mobile portrait we contain the
+   frame like .scene / .reactor-video so the crop matches gameplay. */
 #moment-scene {
   position: absolute;
   inset: 0;
   z-index: 1;
   overflow: hidden;
-  background:
-    radial-gradient(120% 90% at 50% 55%, rgba(48, 28, 14, 0.9), rgba(6, 5, 8, 0.98));
+  background: #050505;
   opacity: 0;
-  transition: opacity 0.4s ease;
+  transition: opacity 0.4s ease, background 0.35s ease;
   pointer-events: none;
 }
 #moment-scene.hidden { display: none; }
 #moment-overlay.moment-in #moment-scene { opacity: 1; }
+/* Live world-model camp: transparent shell so Reactor underlay shows through. */
+#moment-scene.live-world {
+  background: transparent;
+}
+#moment-scene.live-world #moment-scene-img,
+#moment-scene.live-world #moment-scene-shimmer,
+#moment-scene.live-world #moment-scene-grain {
+  opacity: 0 !important;
+  visibility: hidden;
+}
 #moment-scene-img {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
+  object-position: center;
   display: block;
   opacity: 0;
   transition: opacity 0.65s ease;
+  background: #050505;
 }
 #moment-scene.ready #moment-scene-img { opacity: 1; }
+/* Quiet dark hold while generating — never a warm/yellow wash. */
 #moment-scene-shimmer {
   position: absolute;
   inset: 0;
-  background:
-    linear-gradient(110deg,
-      rgba(255, 180, 100, 0.02) 0%,
-      rgba(255, 180, 100, 0.16) 45%,
-      rgba(255, 180, 100, 0.02) 70%);
-  background-size: 220% 100%;
+  background: #050505;
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.55s ease;
+  transition: opacity 0.35s ease;
   z-index: 1;
 }
 #moment-scene.developing #moment-scene-shimmer {
   opacity: 1;
-  animation: moment-shimmer 1.6s ease-in-out infinite;
 }
 #moment-scene-grain {
   position: absolute;
   inset: -10%;
   pointer-events: none;
-  opacity: 0.2;
+  opacity: 0.14;
   background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.55'/%3E%3C/svg%3E");
   mix-blend-mode: overlay;
   z-index: 2;
+}
+/* Match the app's mobile media fit (contain the 4:3 / 16:9 authored frame). */
+html.is-mobile.is-portrait #moment-scene-img {
+  object-fit: contain;
 }
 #moment-scene-hotspots {
   position: absolute;
@@ -4507,30 +4532,38 @@ body.moment-conversation[data-talk-orb="speaking"] #moment-portrait-rim {
 
 #moment-choices {
   position: absolute;
-  right: calc(env(safe-area-inset-right, 0px) + 28px);
-  bottom: calc(11vh + 110px);
+  right: calc(env(safe-area-inset-right, 0px) + 22px);
+  bottom: calc(11vh + 28px);
   z-index: 5;
   display: flex;
   flex-direction: column;
+  align-items: flex-end;
   gap: 8px;
   pointer-events: auto;
-  max-width: min(360px, 42vw);
+  max-width: none;
+  width: auto;
+  left: auto;
 }
 #moment-choices.hidden { display: none; }
 .moment-choice {
   pointer-events: auto;
-  text-align: left;
-  padding: 10px 14px;
-  border-radius: 10px;
-  border: 1px solid rgba(255, 205, 140, 0.32);
-  background: rgba(12, 10, 16, 0.72);
+  text-align: center;
+  padding: 8px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 205, 140, 0.38);
+  background: rgba(12, 10, 16, 0.78);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   color: #ffe7bf;
   font-family: 'Share Tech Mono', monospace;
-  font-size: 12.5px;
-  letter-spacing: 0.04em;
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
   cursor: pointer;
+  white-space: nowrap;
+  width: auto;
+  max-width: none;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.45);
   transition: background 0.14s, border-color 0.14s, transform 0.12s;
 }
 .moment-choice:hover,
@@ -4612,10 +4645,15 @@ body.moment-conversation #talk-float-who {
     max-width: 56vw;
   }
   #moment-choices {
-    right: 12px;
-    left: 12px;
+    right: 14px;
+    left: auto;
+    width: auto;
     max-width: none;
-    bottom: calc(10vh + 150px);
+    bottom: calc(10vh + 22px);
+  }
+  .moment-choice {
+    padding: 8px 12px;
+    font-size: 10px;
   }
   body.moment-conversation #talk-panel {
     left: 8px;
@@ -4641,7 +4679,7 @@ body.moment-conversation #talk-float-who {
   #moment-overlay, .moment-letterbox, #moment-portrait,
   #moment-portrait-img, #moment-portrait.living #moment-portrait-img,
   #moment-portrait-shimmer, #moment-nameplate, .moment-notify-chip,
-  #moment-scene, #moment-scene-img, #moment-scene-shimmer {
+  #moment-scene, #moment-scene-img, #moment-scene-shimmer, #moment-fade {
     animation: none !important;
     transition: opacity 0.15s ease !important;
   }

@@ -85,6 +85,32 @@
     } catch (_) {}
   }
 
+  // Soft cinematic fade (black veil). Used by CAMP — conversation keeps the
+  // VCR glitch cut. Resolves after the CSS opacity transition settles.
+  function fadeMs() { return prefersReducedMotion() ? 40 : 420; }
+  function fadeEl() { return $("moment-fade"); }
+
+  function fadeDown() {
+    const f = fadeEl();
+    if (!f) return Promise.resolve();
+    f.classList.remove("hidden");
+    void f.offsetWidth;
+    f.classList.add("down");
+    return new Promise((resolve) => setTimeout(resolve, fadeMs()));
+  }
+
+  function fadeUp() {
+    const f = fadeEl();
+    if (!f) return Promise.resolve();
+    f.classList.remove("down");
+    return new Promise((resolve) => {
+      setTimeout(() => {
+        if (!f.classList.contains("down")) f.classList.add("hidden");
+        resolve();
+      }, fadeMs());
+    });
+  }
+
   function playSound(name) {
     try {
       const S = window.Sound || (window.__SOMEWHERE_SOUND__);
@@ -225,9 +251,18 @@
         console.warn("[moments] overlay markup missing — skipping cinematic chrome");
         return null;
       }
-      pauseUnderlay();
+      // Camp keeps the underlay available so it can re-anchor onto a live
+      // world-model campsite; conversation still freezes the mission world.
+      const shouldPause = handlers.pauseUnderlay !== false;
+      if (shouldPause) pauseUnderlay();
       setHudHidden(true);
-      fireGlitch();
+      const transition = handlers.transition || "glitch";
+      if (transition === "fade") {
+        // Awaited below (after busy is released) so Esc still works mid-fade.
+        entry._fadeEnter = true;
+      } else {
+        fireGlitch();
+      }
       playSound("convoEnter");
       stack.push(entry);
     } catch (err) {
@@ -244,8 +279,13 @@
     }
 
     try {
+      if (entry._fadeEnter) await fadeDown();
+      if (entry.aborted) return null;
       const result = await handlers.enter(payload || {}, entry);
       if (entry.aborted) return null;
+      // Camp (fade) lifts the veil once the plate / world is ready; if enter
+      // already faded up itself, this is a no-op (veil already hidden).
+      if (entry._fadeEnter && !entry._fadedUp) await fadeUp();
       return result;
     } catch (err) {
       console.warn("[moments] enter failed:", err);
@@ -256,6 +296,7 @@
           hideOverlayChrome();
           setHudHidden(false);
           resumeUnderlay();
+          fadeUp();
         }
       }
       return null;
@@ -270,7 +311,15 @@
     entry.aborted = true;
     try {
       playSound("convoExit");
-      fireGlitch();
+      const transition = (entry.handlers && entry.handlers.transition) || "glitch";
+      if (transition === "fade") {
+        // Release busy before awaiting the fade so nested work can proceed.
+        choreographyBusy = false;
+        await fadeDown();
+        choreographyBusy = true;
+      } else {
+        fireGlitch();
+      }
       if (entry.handlers && typeof entry.handlers.exit === "function") {
         try { await entry.handlers.exit(result, entry); } catch (e) {
           console.warn("[moments] exit handler failed:", e);
@@ -282,6 +331,11 @@
         hideOverlayChrome();
         setHudHidden(false);
         resumeUnderlay();
+        if (transition === "fade") {
+          choreographyBusy = false;
+          await fadeUp();
+          choreographyBusy = true;
+        }
       } else {
         // Nested pop (e.g. conversation on top of camp): clear only the top
         // Moment's portrait/choices, keep letterbox + scene chrome for the
@@ -394,7 +448,7 @@
     if (img) img.removeAttribute("src");
     if (hs) hs.innerHTML = "";
     if (sc) {
-      sc.classList.remove("ready", "developing");
+      sc.classList.remove("ready", "developing", "live-world");
       sc.classList.add("hidden");
       sc.setAttribute("aria-hidden", "true");
     }
@@ -489,6 +543,21 @@
     return true;
   }
 
+  // Mark the scene layer as a transparent hotspot shell over a live underlay
+  // world-model (camp). The still is kept as a soft floor until the video is
+  // up, then callers can call setSceneLive(true) to let the stream show through.
+  function setSceneLive(live) {
+    const sc = sceneEl();
+    if (!sc) return;
+    if (live) sc.classList.add("live-world");
+    else sc.classList.remove("live-world");
+  }
+
+  async function revealFromFade(entry) {
+    if (entry) entry._fadedUp = true;
+    await fadeUp();
+  }
+
   window.Moments = {
     register,
     push,
@@ -501,11 +570,15 @@
     clearPortrait,
     setScene,
     clearScene,
+    setSceneLive,
     setPortraitStream,
     notify,
     setChoices,
     clearChoices,
     onEscape,
+    fadeDown,
+    fadeUp,
+    revealFromFade,
     // Exposed for tests / future Moment types that need shared chrome.
     _setHudHidden: setHudHidden,
   };
