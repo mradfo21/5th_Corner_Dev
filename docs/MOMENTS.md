@@ -82,8 +82,11 @@ Press **CAMP** on the action wheel (`#camp-btn`) to push a `"camp"` Moment:
    transparent so the stream shows through; the explore pad stays available.
 4. Tap-target hotspots + a compact **LEAVE CAMP** pill. Tapping a companion
    nests `Talk.start` (firelit `reference_image` from the live frame when possible).
-5. Leaving fades to black, hard-cuts the underlay back to the saved mission
-   scene, then fades up — no turn mutation.
+5. **LEAVE CAMP** (and Esc) does **not** restore the campsite. It fades to black
+   and fires a hard-transition turn — *"Leave camp and drive the red jeep into
+   a new location…"* — so the engine builds a **brand-new level**. The camp
+   world is cleared from `Renderer.lastScene` so a late world-model rebuild
+   can't resurrect it.
 
 Empty roster still works (quiet fire + jeep). Camp appends one additive
 `feed_log` item (`type: "camp"`) for Story Log flavor only — it does **not**

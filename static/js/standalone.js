@@ -4677,7 +4677,12 @@
     // line NOW so a voice lands over the pause, and schedule a fade-to-black a
     // beat later so the departure reads as deliberate. The fresh scene's own
     // re-anchor path lifts the fade once the new frame is on screen.
-    if (actionSource === "scan_move") beginMoveTransition(moveTarget);
+    // Hard location changes (MOVE TO from SCAN, or LEAVE CAMP → new level)
+    // hold a fade-to-black until the next guide image re-anchors — never steer
+    // the world we're abandoning.
+    if (actionSource === "scan_move" || actionSource === "camp_leave") {
+      beginMoveTransition(moveTarget);
+    }
     el.choices.innerHTML = "";
     Ceremony.begin(); // light up the turn pipeline — starting with "action selected"
     state.awaitingResolution = true;
@@ -4736,7 +4741,12 @@
     // MOVE TO (scan_move) is a hard location change that fades to black and
     // re-anchors, so we let that path own the transition rather than steer the
     // world we're leaving.
-    if (Renderer.mode === "reactor" && Renderer.reactorAvailable() && actionSource !== "scan_move") {
+    if (
+      Renderer.mode === "reactor" &&
+      Renderer.reactorAvailable() &&
+      actionSource !== "scan_move" &&
+      actionSource !== "camp_leave"
+    ) {
       const steerVerb = (choiceText || "").trim();
       if (steerVerb) {
         try {
@@ -8600,17 +8610,24 @@
 
   // ------------------------------------------------------------------
   // CAMP Moment — night campsite establishing shot + companion hotspots.
-  // Side pocket: leaving resumes the paused underlay (no turn mutation).
+  // Entering is a side pocket (no turn mutation). LEAVE CAMP drives the red
+  // jeep into a brand-new level via a hard-transition /api/choose turn —
+  // it must NOT re-apply the camp world (that was the "leave resets camp" bug).
   // Talking to a companion nests a conversation Moment on top of camp.
   // ------------------------------------------------------------------
   (function registerCampMoment() {
     if (!window.Moments || typeof window.Moments.register !== "function") return;
 
+    // Hard-transition choice text — must match is_hard_transition() detectors
+    // ("leave ", "new location") so the engine builds a fresh level plate.
+    const CAMP_LEAVE_CHOICE =
+      "Leave camp and drive the red jeep into a new location across the desert.";
+
     let campSceneUrl = null;
     let campAttendees = [];
     let campRealtimePrompt = "";
-    let campReturnScene = null;   // mission world to restore on leave
     let campWorldLive = false;
+    let leavingForNewLevel = false;
 
     function clearHotspots() {
       const hs = document.getElementById("moment-scene-hotspots");
@@ -8683,18 +8700,75 @@
       });
     }
 
+    function holdBlackForNewLevel() {
+      // Pin the reactor veil down NOW so Moments.pop's fade-up can't flash the
+      // camp world, and so the jeep-drive turn stays dark until the new level
+      // re-anchors. Mirrors MOVE TO's awaitReanchor contract.
+      try {
+        const RR = window.ReactorRenderer;
+        if (Renderer.mode === "reactor" && RR && typeof RR.beginSceneFade === "function") {
+          RR.beginSceneFade({
+            safetyMs: MOVE_TRANSITION_FADE_SAFETY_MS,
+            awaitReanchor: true,
+          });
+        }
+      } catch (err) {
+        console.warn("[camp] beginSceneFade failed:", err);
+      }
+    }
+
+    function clearCampFromRenderer() {
+      // Drop camp from lastScene so a reconnect / late create_world can't
+      // resurrect the campsite after we've committed to a new level.
+      try {
+        if (Renderer) {
+          Renderer.lastScene = {
+            prompt: null,
+            imageUrl: null,
+            hardTransition: true,
+          };
+        }
+      } catch (_) {}
+    }
+
+    async function departForNewLevel() {
+      if (leavingForNewLevel || state.processing || state.gameOver) return;
+      leavingForNewLevel = true;
+      holdBlackForNewLevel();
+      try {
+        await window.Moments.pop({ left: true, newLevel: true });
+      } catch (err) {
+        console.warn("[camp] pop failed:", err);
+      }
+      // Fire the hard-transition turn that builds the next level. source:
+      // camp_leave skips live steering of the abandoned campsite and holds
+      // the MOVE TO fade until the new guide image lands.
+      try {
+        await makeChoice(CAMP_LEAVE_CHOICE, null, {
+          source: "camp_leave",
+          moveTarget: "the next lead",
+        });
+      } catch (err) {
+        console.warn("[camp] leave → new level failed:", err);
+        try { cancelMoveTransition(); } catch (_) {}
+      } finally {
+        leavingForNewLevel = false;
+      }
+    }
+
     function leaveCamp() {
       const top = window.Moments.topType && window.Moments.topType();
       if (top === "conversation") {
         try { Talk.close(); } catch (_) {}
+        // Talk.close pops conversation; then depart the camp underneath.
         setTimeout(() => {
           if (window.Moments.topType && window.Moments.topType() === "camp") {
-            window.Moments.pop({ left: true });
+            departForNewLevel();
           }
         }, 40);
         return;
       }
-      window.Moments.pop({ left: true });
+      departForNewLevel();
     }
 
     function showLeaveChoice() {
@@ -8716,25 +8790,12 @@
       } catch (_) {}
     }
 
-    function snapshotReturnScene() {
-      try {
-        if (!campReturnScene && Renderer && Renderer.lastScene) {
-          campReturnScene = {
-            prompt: Renderer.lastScene.prompt || null,
-            imageUrl: Renderer.lastScene.imageUrl || null,
-            hardTransition: true,
-          };
-        }
-      } catch (_) {}
-    }
-
     function activateCampWorld(imageUrl, prompt) {
       if (!imageUrl) return false;
       const rtPrompt = prompt || campRealtimePrompt ||
         "Night campsite in high-desert scrub. Campfire burns, embers drift, " +
         "a dusty red 1990s jeep parked at the edge of the firelight. " +
         "First-person handheld view. Firelight flickers.";
-      snapshotReturnScene();
 
       // Live world-model campsite when realtime is already on (or available).
       // Stills-only sessions keep the establishing plate.
@@ -8743,8 +8804,8 @@
       }
 
       try {
-        // Seed lastScene so a mode switch / reconnect re-applies CAMP, not the
-        // mission world we just left.
+        // Seed lastScene so a mode switch / reconnect re-applies CAMP while
+        // we're in the Moment. LEAVE clears this before the new-level turn.
         Renderer.lastScene = {
           prompt: rtPrompt,
           imageUrl: imageUrl,
@@ -8767,22 +8828,8 @@
       }
     }
 
-    function restoreMissionWorld() {
-      if (!campReturnScene) return;
-      try {
-        if (Renderer && typeof Renderer.applyScene === "function") {
-          Renderer.applyScene(
-            campReturnScene.imageUrl,
-            campReturnScene.prompt,
-            { hard_transition: true }
-          );
-        }
-      } catch (err) {
-        console.warn("[camp] restore mission world failed:", err);
-      }
-    }
-
     function restoreCampChrome() {
+      if (leavingForNewLevel) return;
       try {
         window.Moments.setNameplate("CAMP", "around the fire");
       } catch (_) {}
@@ -8815,7 +8862,7 @@
         campAttendees = [];
         campRealtimePrompt = "";
         campWorldLive = false;
-        campReturnScene = null;
+        leavingForNewLevel = false;
         clearHotspots();
         try { window.Moments.setSceneLive(false); } catch (_) {}
         try {
@@ -8885,17 +8932,19 @@
         try { await window.Moments.revealFromFade(entry); } catch (_) {}
         return true;
       },
-      async exit(/* result */) {
-        // Still under the fade veil from pop()'s fadeDown — restore the
-        // mission world before chrome tears down / fade lifts.
+      async exit(result) {
         try { window.Moments.setSceneLive(false); } catch (_) {}
-        restoreMissionWorld();
         clearHotspots();
+        // LEAVE CAMP → brand-new level: wipe camp from the renderer so a late
+        // Happy Oyster create_world can't resurrect it, and do NOT re-apply
+        // the campsite (that was the bug — "leave" just reset camp).
+        if (result && result.newLevel) {
+          clearCampFromRenderer();
+        }
         campSceneUrl = null;
         campAttendees = [];
         campRealtimePrompt = "";
         campWorldLive = false;
-        campReturnScene = null;
         try { updateCampButton(); } catch (_) {}
         return true;
       },
@@ -8904,7 +8953,8 @@
         return true;
       },
       onEsc() {
-        window.Moments.pop({ aborted: true });
+        // Esc = same as LEAVE CAMP: drive out into a new level.
+        leaveCamp();
         return true;
       },
     });
