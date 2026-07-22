@@ -72,10 +72,13 @@ Press **CAMP** on the action wheel (`#camp-btn`) to push a `"camp"` Moment:
 1. Enter/exit use a **fade-to-black** veil (`#moment-fade`, `transition: "fade"`) —
    not the VCR glitch cut conversation uses.
 2. `POST /api/camp/enter` builds (or reuses a cached) **4:3** night campsite plate
-   from the durable **jeep prop** + up to **5** companion portraits
-   (ranked by `last_seen_turn`), via `generate_gemini_img2img(..., ensemble_mode=True)`.
-   The red jeep is required in the composition (text + reference). Response includes
-   `realtime_prompt` for the live world-model.
+   via `generate_gemini_img2img(..., ensemble_mode=True)` with **every** available
+   companion screenshot as an img2img reference **plus** the durable **jeep prop**
+   (Gemini hard-cap: jeep + up to 5 companions; extras stay named in the prompt).
+   Portraits resolve from `sessions/<id>/images/companion_*.png` (not the legacy
+   root `images/` folder). A numbered REFERENCE IMAGE MAP tells the model which
+   ref is the jeep vs each person. Response includes `realtime_prompt` for the
+   live world-model.
 3. The client stages the plate with `Moments.setScene`, then **re-anchors the
    Reactor underlay** onto that campsite (`hard_transition`) so the fire is a
    living world-model. `Moments.setSceneLive(true)` makes the scene shell
