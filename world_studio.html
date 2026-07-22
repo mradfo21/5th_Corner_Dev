@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
 <title>World Studio — SOMEWHERE</title>
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -22,7 +22,6 @@
     --accent-amber: #e0a84c;
     --accent-teal: #4cc6b8;
     --accent-violet: #9d8cf0;
-    --accent-rose: #e0708a;
     --text-bright: #eef0f4;
     --text-mid: rgba(238, 240, 244, 0.72);
     --text-dim: rgba(238, 240, 244, 0.46);
@@ -46,13 +45,15 @@ html, body {
 #topbar {
     position: fixed;
     top: 0; left: 0; right: 0;
-    height: 60px;
+    min-height: 60px;
     z-index: 50;
     display: flex;
     align-items: center;
-    gap: 16px;
-    padding: 0 18px;
-    background: rgba(20, 22, 26, 0.92);
+    flex-wrap: wrap;
+    gap: 12px;
+    row-gap: 8px;
+    padding: 10px 18px;
+    background: rgba(20, 22, 26, 0.94);
     border-bottom: 1px solid var(--border-soft);
     backdrop-filter: blur(6px);
 }
@@ -68,6 +69,7 @@ html, body {
     gap: 8px;
 }
 #topbar .brand .dot { opacity: 0.5; font-size: 0.8rem; }
+#topbar .brand .brand-sub { color: var(--text-dim); font-size: 0.8rem; }
 
 #search-input {
     flex: 0 0 260px;
@@ -126,18 +128,37 @@ html, body {
 #zoom-controls .btn { padding: 6px 10px; }
 #zoom-pct { font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-dim); width: 42px; text-align: center; }
 
-/* ─────────────────────────────  VIEWPORT / BOARD  ───────────────────────────── */
+/* Mobile: search wraps to its own full-width line, chrome that only
+   matters for the canvas view hides until the user opts back into Map
+   view (see body.view-map override further down). */
+@media (max-width: 760px) {
+    #topbar { padding: 10px 12px; gap: 8px; }
+    #topbar .brand .brand-sub { display: none; }
+    #search-input { flex: 1 1 100%; order: 2; }
+    .topbar-spacer { display: none; }
+    #zoom-controls { display: none; }
+    #topbar .btn, #topbar .pill { font-size: 0.7rem; padding: 6px 9px; }
+}
+body.view-map #zoom-controls { display: flex; }
+
+/* ─────────────────────────────  VIEW TOGGLE  ───────────────────────────── */
+
+#view-toggle-btn { }
+
+/* ─────────────────────────────  VIEWPORT / BOARD (map view)  ───────────────────────────── */
 
 #viewport {
     position: fixed;
-    top: 60px; left: 0; right: 0; bottom: 0;
+    top: var(--topbar-h, 60px); left: 0; right: 0; bottom: 0;
     overflow: hidden;
     cursor: grab;
     background-image:
         radial-gradient(circle at 1px 1px, rgba(255,255,255,0.055) 1px, transparent 1px);
     background-size: 34px 34px;
     background-color: var(--bg-void);
+    display: none;
 }
+body.view-map #viewport { display: block; }
 #viewport.panning { cursor: grabbing; }
 
 #board {
@@ -182,10 +203,53 @@ svg#connectors {
 }
 
 .zone-world .zone-label { color: var(--accent-amber); background: rgba(224, 168, 76, 0.1); }
-.zone-cast .zone-label { color: var(--accent-rose); background: rgba(224, 112, 138, 0.1); }
 .zone-narrative .zone-label { color: var(--accent-violet); background: rgba(157, 140, 240, 0.1); }
 .zone-submissions .zone-label { color: var(--accent-teal); background: rgba(76, 198, 184, 0.1); }
 .zone-image .zone-label { color: #f0d060; background: rgba(240, 208, 96, 0.1); }
+
+/* ─────────────────────────────  MOBILE / COMPACT LIST VIEW  ───────────────────────────── */
+
+#mobile-list {
+    position: fixed;
+    top: var(--topbar-h, 60px); left: 0; right: 0; bottom: 0;
+    overflow-y: auto;
+    padding: 16px 14px 80px;
+    display: none;
+}
+body.view-list #mobile-list { display: block; }
+
+.zone-section { margin-bottom: 14px; border: 1px solid var(--border-soft); border-radius: 12px; overflow: hidden; background: rgba(255,255,255,0.012); }
+.zone-section-header {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 14px 16px;
+    background: rgba(255,255,255,0.03);
+    border: none;
+    cursor: pointer;
+    text-align: left;
+    color: var(--text-bright);
+    font-family: var(--font-ui);
+}
+.zone-section-header .zone-heading { display: flex; flex-direction: column; gap: 2px; }
+.zone-section-title {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+.zone-section-desc { font-size: 0.72rem; color: var(--text-dim); }
+.zone-caret { font-size: 0.8rem; color: var(--text-dim); transition: transform 0.15s; flex-shrink: 0; }
+.zone-section.collapsed .zone-caret { transform: rotate(-90deg); }
+.zone-world .zone-section-title { color: var(--accent-amber); }
+.zone-narrative .zone-section-title { color: var(--accent-violet); }
+.zone-submissions .zone-section-title { color: var(--accent-teal); }
+.zone-image .zone-section-title { color: #f0d060; }
+
+.zone-section-body { padding: 12px; display: flex; flex-direction: column; gap: 12px; }
+.zone-section.collapsed .zone-section-body { display: none; }
 
 /* ─────────────────────────────  CARDS  ───────────────────────────── */
 
@@ -198,7 +262,8 @@ svg#connectors {
     cursor: pointer;
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 8px;
+    overflow: hidden;
     transition: border-color 0.15s, transform 0.1s, box-shadow 0.15s;
     box-shadow: 0 2px 10px rgba(0,0,0,0.25);
 }
@@ -209,7 +274,15 @@ svg#connectors {
 }
 .card.active { border-color: var(--accent-teal); box-shadow: 0 0 0 2px rgba(76,198,184,0.25); }
 .card.dimmed { opacity: 0.22; }
-.card.card-lg { }
+
+/* List-mode cards (mobile) sit in normal flow, full width, natural height. */
+.card.list-mode {
+    position: static;
+    width: 100% !important;
+    height: auto !important;
+    overflow: visible;
+    padding: 16px;
+}
 
 .card-title-row {
     display: flex;
@@ -218,12 +291,12 @@ svg#connectors {
     gap: 8px;
 }
 .card-title {
-    font-size: 0.86rem;
+    font-size: 0.88rem;
     font-weight: 600;
     color: var(--text-bright);
     line-height: 1.3;
 }
-.card-badges { display: flex; gap: 4px; flex-shrink: 0; }
+.card-badges { display: flex; gap: 4px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
 .badge {
     font-family: var(--font-mono);
     font-size: 0.58rem;
@@ -233,49 +306,49 @@ svg#connectors {
     letter-spacing: 0.02em;
 }
 .badge.edited { background: rgba(224, 168, 76, 0.18); color: var(--accent-amber); }
-.badge.unused { background: rgba(255,255,255,0.06); color: var(--text-dim); }
-.badge.important { background: rgba(224, 112, 138, 0.18); color: var(--accent-rose); }
+.badge.info { background: rgba(255,255,255,0.06); color: var(--text-dim); }
+.badge.live { background: rgba(89, 201, 138, 0.15); color: var(--success); }
 
-.card-desc { font-size: 0.72rem; color: var(--text-mid); line-height: 1.4; }
-.card-preview {
+/* Every card is split into two unmistakably distinct blocks: a muted
+   "note" block (this Studio's own explanation of what the field controls)
+   and a highlighted "prompt" block (the literal text the AI receives).
+   These must never look visually interchangeable — that ambiguity is
+   exactly what confused people about "what's the robot vs what's an
+   example". */
+.card-block { border-radius: 8px; padding: 8px 10px; }
+.block-label {
     font-family: var(--font-mono);
-    font-size: 0.66rem;
-    color: var(--text-dim);
-    line-height: 1.45;
-    overflow: hidden;
-    display: -webkit-box;
-    -webkit-line-clamp: 3;
-    -webkit-box-orient: vertical;
-    border-top: 1px solid var(--border-soft);
-    padding-top: 6px;
-    margin-top: 2px;
-}
-.card-preview.empty { font-style: italic; opacity: 0.6; }
-
-.card-mini { padding: 10px 12px; gap: 4px; }
-.card-mini .card-title { font-size: 0.74rem; }
-.card-mini .card-preview { -webkit-line-clamp: 2; font-size: 0.64rem; }
-
-.add-card {
-    position: absolute;
+    font-size: 0.6rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    margin-bottom: 5px;
     display: flex;
     align-items: center;
-    justify-content: center;
-    border: 1px dashed var(--border-strong);
-    border-radius: 12px;
-    color: var(--text-dim);
-    font-size: 0.78rem;
-    cursor: pointer;
-    background: transparent;
+    gap: 5px;
 }
-.add-card:hover { color: var(--accent-teal); border-color: var(--accent-teal); background: rgba(76,198,184,0.06); }
+.block-body { font-size: 0.73rem; line-height: 1.45; overflow: hidden; }
+.clamp-2 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.clamp-3 { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
+.clamp-6 { display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; }
+
+.card-block-note { background: rgba(255,255,255,0.03); border: 1px solid var(--border-soft); }
+.card-block-note .block-label { color: var(--text-dim); }
+.card-block-note .block-body { color: var(--text-mid); }
+
+.card-block-prompt { background: rgba(76, 198, 184, 0.05); border: 1px solid rgba(76, 198, 184, 0.2); flex: 1; }
+.card-block-prompt .block-label { color: var(--accent-teal); }
+.card-block-prompt .block-body { font-family: var(--font-mono); font-size: 0.67rem; color: var(--text-dim); line-height: 1.5; }
+.card-block-prompt.empty .block-body { font-style: italic; opacity: 0.6; }
+
+.card.card-mini .card-title { font-size: 0.76rem; }
+.card.card-mini .block-label { font-size: 0.56rem; }
 
 /* ─────────────────────────────  INSPECTOR  ───────────────────────────── */
 
 #inspector {
     position: fixed;
-    top: 60px; right: 0; bottom: 0;
-    width: 480px;
+    top: var(--topbar-h, 60px); right: 0; bottom: 0;
+    width: 520px;
     max-width: 92vw;
     background: var(--bg-panel);
     border-left: 1px solid var(--border-strong);
@@ -288,21 +361,50 @@ svg#connectors {
 }
 #inspector.open { transform: translateX(0); }
 
+@media (max-width: 760px) {
+    #inspector {
+        top: 0; left: 0; right: 0; bottom: 0;
+        width: 100vw;
+        max-width: 100vw;
+        border-left: none;
+        border-top: 1px solid var(--border-strong);
+        box-shadow: none;
+        transform: translateY(100%);
+    }
+    #inspector.open { transform: translateY(0); }
+}
+
 #inspector-header {
     padding: 18px 20px 14px;
     border-bottom: 1px solid var(--border-soft);
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 8px;
 }
 #inspector-title-row { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
-#inspector-title { font-size: 1rem; font-weight: 600; }
-#inspector-close { background: none; border: none; color: var(--text-dim); font-size: 1.1rem; cursor: pointer; line-height: 1; padding: 4px; }
+#inspector-title { font-size: 1.02rem; font-weight: 600; }
+#inspector-close { background: none; border: none; color: var(--text-dim); font-size: 1.3rem; cursor: pointer; line-height: 1; padding: 4px 6px; }
 #inspector-close:hover { color: var(--text-bright); }
-#inspector-desc { font-size: 0.76rem; color: var(--text-mid); line-height: 1.45; }
-#inspector-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+#inspector-meta { display: flex; flex-wrap: wrap; gap: 6px; }
 
-#inspector-body { flex: 1; overflow-y: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 14px; }
+#inspector-body { flex: 1; overflow-y: auto; padding: 18px 20px; display: flex; flex-direction: column; gap: 16px; }
+
+.section-block { border-radius: 10px; padding: 12px 14px; }
+.section-block.note { background: rgba(255,255,255,0.03); border: 1px solid var(--border-soft); }
+.section-block.note .section-heading { color: var(--text-dim); }
+.section-block.note p { font-size: 0.82rem; color: var(--text-mid); line-height: 1.55; }
+.section-block.prompt-zone { background: rgba(76, 198, 184, 0.05); border: 1px solid rgba(76, 198, 184, 0.22); display: flex; flex-direction: column; gap: 10px; }
+.section-block.prompt-zone .section-heading { color: var(--accent-teal); }
+.section-heading {
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.09em;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.section-sub { font-size: 0.72rem; color: var(--text-dim); margin-top: -4px; }
 
 .field-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-dim); }
 
@@ -376,22 +478,6 @@ svg#connectors {
     flex-wrap: wrap;
 }
 
-/* Structured cast form */
-.form-row { display: flex; flex-direction: column; gap: 4px; }
-.form-row input[type="text"], .form-row textarea.short {
-    background: var(--bg-card);
-    border: 1px solid var(--border-soft);
-    border-radius: 6px;
-    color: var(--text-bright);
-    font-family: var(--font-ui);
-    font-size: 0.82rem;
-    padding: 8px 10px;
-    outline: none;
-}
-.form-row textarea.short { font-family: var(--font-ui); min-height: 70px; resize: vertical; }
-.form-row input:focus, .form-row textarea:focus { border-color: var(--accent-teal); }
-.checkbox-row { display: flex; align-items: center; gap: 8px; font-size: 0.8rem; color: var(--text-mid); }
-
 /* ─────────────────────────────  TOAST  ───────────────────────────── */
 
 #toast-container {
@@ -401,6 +487,7 @@ svg#connectors {
     display: flex;
     flex-direction: column;
     gap: 8px;
+    max-width: calc(100vw - 40px);
 }
 .toast {
     font-size: 0.8rem;
@@ -426,6 +513,7 @@ svg#connectors {
     display: none;
     align-items: center;
     justify-content: center;
+    padding: 20px;
 }
 #modal-overlay.show { display: flex; }
 #modal-box {
@@ -434,11 +522,12 @@ svg#connectors {
     border-radius: 12px;
     padding: 24px;
     max-width: 420px;
+    width: 100%;
     box-shadow: 0 12px 40px rgba(0,0,0,0.5);
 }
 #modal-box h3 { font-size: 1rem; margin-bottom: 10px; }
 #modal-box p { font-size: 0.82rem; color: var(--text-mid); line-height: 1.5; margin-bottom: 18px; }
-#modal-box .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+#modal-box .modal-actions { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
 
 /* ─────────────────────────────  LOADING / EMPTY  ───────────────────────────── */
 
@@ -470,6 +559,7 @@ svg#connectors {
     display: none;
     align-items: center;
     justify-content: center;
+    padding: 20px;
 }
 #auth-screen.show { display: flex; }
 #auth-box {
@@ -478,6 +568,7 @@ svg#connectors {
     border-radius: 12px;
     padding: 30px;
     max-width: 380px;
+    width: 100%;
     text-align: center;
 }
 #auth-box h2 { font-family: var(--font-mono); color: var(--accent-amber); font-size: 1rem; margin-bottom: 12px; letter-spacing: 0.08em; }
@@ -498,6 +589,11 @@ svg#connectors {
     line-height: 1.6;
     pointer-events: none;
     z-index: 40;
+    display: none;
+}
+body.view-map #minimap-hint { display: block; }
+@media (max-width: 760px) {
+    body.view-map #minimap-hint { display: none; }
 }
 </style>
 </head>
@@ -518,10 +614,11 @@ svg#connectors {
 </div>
 
 <div id="topbar">
-    <div class="brand">🎨 WORLD STUDIO <span class="dot">●</span> <span style="color: var(--text-dim); font-size: 0.8rem;">the game's core, laid out</span></div>
-    <input type="text" id="search-input" placeholder="Search prompts, cast, keywords…" oninput="onSearch(this.value)">
+    <div class="brand">🎨 WORLD STUDIO <span class="dot">●</span> <span class="brand-sub">the game's core, laid out</span></div>
+    <input type="text" id="search-input" placeholder="Search prompts, keywords…" oninput="onSearch(this.value)">
     <div class="topbar-spacer"></div>
     <span class="pill clean" id="unsaved-pill">0 unsaved</span>
+    <button class="btn small" id="view-toggle-btn" onclick="toggleView()">📋 List View</button>
     <div id="zoom-controls">
         <button class="btn small" onclick="zoomBy(-0.15)">−</button>
         <span id="zoom-pct">100%</span>
@@ -529,7 +626,7 @@ svg#connectors {
         <button class="btn small" onclick="fitView()">Fit</button>
     </div>
     <button class="btn primary" id="save-all-btn" onclick="saveAllDrafts()" disabled>💾 Save All</button>
-    <button class="btn danger" onclick="confirmResetAll()">⟲ Reset All to Defaults</button>
+    <button class="btn danger" onclick="confirmResetAll()">⟲ Reset All</button>
     <a class="btn ghost" id="admin-link" href="/admin">⚙ Admin</a>
     <a class="btn ghost" id="play-link" href="/standalone" target="_blank">▶ Playtest</a>
 </div>
@@ -541,6 +638,10 @@ svg#connectors {
     </div>
 </div>
 
+<div id="mobile-list">
+    <!-- zone sections + cards injected by JS -->
+</div>
+
 <div id="minimap-hint">drag to pan · scroll to zoom · click a card to dive in</div>
 
 <div id="inspector">
@@ -549,7 +650,6 @@ svg#connectors {
             <div id="inspector-title">—</div>
             <button id="inspector-close" onclick="closeInspector()">✕</button>
         </div>
-        <div id="inspector-desc"></div>
         <div id="inspector-meta"></div>
     </div>
     <div id="inspector-body"></div>
@@ -603,16 +703,48 @@ function submitAuthToken() {
 const STATE = {
     prompts: {},
     promptsDefaults: {},
-    cast: [],
-    castDefaults: [],
     schema: [],
     schemaById: {},
-    groups: {},
     drafts: {},        // key -> draft string value, only for keys that differ from STATE.prompts[key]
-    castDraft: null,    // working copy of cast array while editing; null when clean
-    activeKey: null,     // currently open prompt key, or null
-    activeCastIndex: null, // currently open cast index, or null
+    activeKey: null,    // currently open prompt key, or null
 };
+
+// ═══════════════════════════════════════════════════════════════════
+// VIEW MODE — Map (spatial canvas) vs List (stacked accordion). The
+// canvas is genuinely hard to read/drag on a phone, so narrow screens
+// default to List; either view is reachable from either screen size via
+// the topbar toggle.
+// ═══════════════════════════════════════════════════════════════════
+
+function defaultView() {
+    return window.matchMedia('(max-width: 760px)').matches ? 'view-list' : 'view-map';
+}
+
+function setView(view) {
+    document.body.classList.remove('view-map', 'view-list');
+    document.body.classList.add(view);
+    document.getElementById('view-toggle-btn').textContent = view === 'view-map' ? '📋 List View' : '🗺 Map View';
+    if (view === 'view-map') {
+        requestAnimationFrame(fitView);
+    }
+}
+
+function toggleView() {
+    setView(document.body.classList.contains('view-map') ? 'view-list' : 'view-map');
+}
+
+document.body.classList.add(defaultView());
+
+// The topbar wraps onto extra rows on narrow screens (and again when
+// zoom controls reappear in Map view), so its real height isn't a fixed
+// 60px — keep #viewport/#mobile-list/#inspector's top offset in sync via
+// a CSS var so the canvas never ends up hidden underneath the chrome.
+(function syncTopbarHeight() {
+    const topbarEl = document.getElementById('topbar');
+    const sync = () => document.documentElement.style.setProperty('--topbar-h', topbarEl.offsetHeight + 'px');
+    sync();
+    new ResizeObserver(sync).observe(topbarEl);
+})();
 
 // ═══════════════════════════════════════════════════════════════════
 // BOOT
@@ -631,15 +763,14 @@ async function loadContent() {
         const data = json.data;
         STATE.prompts = data.prompts || {};
         STATE.promptsDefaults = data.prompts_defaults || {};
-        STATE.cast = data.cast || [];
-        STATE.castDefaults = data.cast_defaults || [];
         STATE.schema = data.schema || [];
-        STATE.groups = data.groups || {};
         STATE.schemaById = {};
         STATE.schema.forEach(f => STATE.schemaById[f.id] = f);
 
         wireTopLinks();
+        setView(document.body.classList.contains('view-map') ? 'view-map' : 'view-list');
         buildBoard();
+        buildMobileList();
         document.getElementById('loading-screen').classList.add('hidden');
         fitView();
     } catch (e) {
@@ -662,51 +793,46 @@ document.addEventListener('DOMContentLoaded', loadContent);
 // LAYOUT — fixed "world space" coordinates for zones + cards. This is a
 // hand-authored spatial map of the turn pipeline, not a dynamic graph
 // layout algorithm — the point is a stable, memorable "map" of the game.
+// Only fields that are actually wired into a live code path appear here
+// at all (see prompts_store.PROMPT_SCHEMA) — nothing "not used in code"
+// is shown, so every card on this map genuinely affects the game.
 // ═══════════════════════════════════════════════════════════════════
 
 const ZONES = {
-    world:        { x: 40,   y: 40, w: 600,  h: 900,  label: 'World & Setting',     desc: 'What the story is grounded in' },
-    cast:         { x: 720,  y: 40, w: 520,  h: 900,  label: 'Cast / Story Bible',   desc: 'Reference — not yet wired into generation' },
-    narrative:    { x: 1320, y: 40, w: 900,  h: 900,  label: 'Narrative Engine',     desc: 'Turns an action into what you read & see' },
-    submissions:  { x: 2300, y: 40, w: 520,  h: 900,  label: 'Player Submissions',   desc: 'What actions you can even submit' },
-    image:        { x: 2900, y: 40, w: 620,  h: 900,  label: 'Image Generation',     desc: 'What the camera actually renders' },
+    world:        { x: 40,   y: 40, w: 600,  h: 640, label: 'World & Setting',     desc: 'What the story is grounded in' },
+    narrative:    { x: 700,  y: 40, w: 920,  h: 640, label: 'Narrative Engine',     desc: 'Turns an action into what you read & see' },
+    submissions:  { x: 1680, y: 40, w: 520,  h: 640, label: 'Player Submissions',   desc: 'What actions you can even submit' },
+    image:        { x: 2260, y: 40, w: 640,  h: 900, label: 'Image Generation',     desc: 'What the camera actually renders' },
 };
-
-const CARD_W = 250, CARD_H_LG = 260, CARD_H_MD = 190;
 
 // Explicit per-field position within its zone (relative to zone x/y).
 const CARD_POSITIONS = {
-    world_initial_state:                     { x: 30,  y: 30,  w: 540, h: 460, size: 'lg' },
-    story_progression_phases:                { x: 30,  y: 520, w: 540, h: 150, size: 'md', list: true },
+    world_initial_state:                     { x: 30,  y: 30,  w: 540, h: 560, size: 'lg' },
 
-    action_consequence_instructions:         { x: 30,  y: 30,  w: 420, h: 210, size: 'md' },
-    situation_summary_instructions:          { x: 470, y: 30,  w: 400, h: 210, size: 'md' },
-    world_evolution_instructions:            { x: 30,  y: 260, w: 420, h: 190, size: 'md' },
-    world_tick_micro_change_instructions:    { x: 470, y: 260, w: 400, h: 190, size: 'md' },
-    field_notes_format:                      { x: 30,  y: 470, w: 420, h: 190, size: 'md' },
-    loading_message_instructions:            { x: 470, y: 470, w: 400, h: 190, size: 'md' },
-    timeout_penalty_instructions:            { x: 30,  y: 680, w: 840, h: 190, size: 'md' },
+    action_consequence_instructions:         { x: 30,  y: 30,  w: 420, h: 260, size: 'md' },
+    situation_summary_instructions:          { x: 470, y: 30,  w: 420, h: 260, size: 'md' },
+    field_notes_format:                      { x: 30,  y: 320, w: 860, h: 260, size: 'md' },
 
-    player_choice_generation_instructions:   { x: 30,  y: 30,  w: 460, h: 820, size: 'lg' },
+    player_choice_generation_instructions:   { x: 30,  y: 30,  w: 460, h: 560, size: 'lg' },
 
-    gemini_text_to_image_instructions:       { x: 30,  y: 30,  w: 560, h: 260, size: 'md' },
-    gemini_image_to_image_instructions:      { x: 30,  y: 310, w: 560, h: 260, size: 'md' },
-    image_negative_prompt:                   { x: 30,  y: 590, w: 270, h: 190, size: 'md' },
-    gemini_flipbook_4panel_prefix:           { x: 320, y: 590, w: 270, h: 190, size: 'md' },
+    gemini_text_to_image_instructions:       { x: 30,  y: 30,  w: 580, h: 260, size: 'md' },
+    gemini_image_to_image_instructions:      { x: 30,  y: 320, w: 580, h: 260, size: 'md' },
+    image_negative_prompt:                   { x: 30,  y: 610, w: 280, h: 230, size: 'md' },
+    gemini_flipbook_4panel_prefix:           { x: 330, y: 610, w: 280, h: 230, size: 'md' },
 };
 
-function zoneOf(fieldId) {
-    const field = STATE.schemaById[fieldId];
-    return field ? field.group : 'narrative';
+function boardExtent() {
+    let maxX = 0, maxH = 0;
+    Object.values(ZONES).forEach(z => { maxX = Math.max(maxX, z.x + z.w); maxH = Math.max(maxH, z.h); });
+    return { w: maxX + 40, h: maxH + 80 };
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// BOARD CONSTRUCTION
+// BOARD CONSTRUCTION — Map view (desktop-oriented spatial canvas)
 // ═══════════════════════════════════════════════════════════════════
 
 function buildBoard() {
     const board = document.getElementById('board');
-    // Clear everything except the SVG connector layer.
     Array.from(board.children).forEach(el => { if (el.id !== 'connectors') el.remove(); });
 
     Object.entries(ZONES).forEach(([key, z]) => {
@@ -716,130 +842,118 @@ function buildBoard() {
         zoneEl.style.top = z.y + 'px';
         zoneEl.style.width = z.w + 'px';
         zoneEl.style.height = z.h + 'px';
-        zoneEl.innerHTML = `<div class="zone-label">${z.label}<span class="zone-desc">${z.desc}</span></div>`;
+        zoneEl.innerHTML = `<div class="zone-label">${escapeHtml(z.label)}<span class="zone-desc">${escapeHtml(z.desc)}</span></div>`;
         board.appendChild(zoneEl);
     });
 
     STATE.schema.forEach(field => {
-        if (field.id === 'story_progression_phases') { buildPhasesCard(field); return; }
         const pos = CARD_POSITIONS[field.id];
-        if (!pos) return;
         const zone = ZONES[field.group];
-        const card = makeCard(field, zone.x + pos.x, zone.y + pos.y, pos.w, pos.h, pos.size);
-        document.getElementById('board').appendChild(card);
+        if (!pos || !zone) return;
+        const card = makeCard(field, pos.size);
+        card.style.left = (zone.x + pos.x) + 'px';
+        card.style.top = (zone.y + pos.y) + 'px';
+        card.style.width = pos.w + 'px';
+        card.style.height = pos.h + 'px';
+        board.appendChild(card);
     });
 
-    buildCastCards();
     drawConnectors();
 }
 
-function makeCard(field, x, y, w, h, size) {
+// ═══════════════════════════════════════════════════════════════════
+// BOARD CONSTRUCTION — List view (mobile-first stacked accordion)
+// ═══════════════════════════════════════════════════════════════════
+
+function buildMobileList() {
+    const root = document.getElementById('mobile-list');
+    root.innerHTML = '';
+    Object.entries(ZONES).forEach(([key, z]) => {
+        const fields = STATE.schema.filter(f => f.group === key);
+        if (!fields.length) return;
+
+        const section = document.createElement('div');
+        section.className = `zone-section zone-${key}`;
+        section.dataset.zone = key;
+
+        const header = document.createElement('button');
+        header.className = 'zone-section-header';
+        header.innerHTML = `
+            <span class="zone-heading">
+                <span class="zone-section-title">${escapeHtml(z.label)}</span>
+                <span class="zone-section-desc">${escapeHtml(z.desc)}</span>
+            </span>
+            <span class="zone-caret">▾</span>
+        `;
+        header.onclick = () => section.classList.toggle('collapsed');
+        section.appendChild(header);
+
+        const body = document.createElement('div');
+        body.className = 'zone-section-body';
+        fields.forEach(field => {
+            const card = makeCard(field, 'lg', true);
+            body.appendChild(card);
+        });
+        section.appendChild(body);
+
+        root.appendChild(section);
+    });
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// CARD RENDERING — shared between Map and List views
+// ═══════════════════════════════════════════════════════════════════
+
+function makeCard(field, size, listMode) {
     const card = document.createElement('div');
-    card.className = 'card' + (size === 'lg' ? ' card-lg' : ' card-mini');
-    card.style.left = x + 'px';
-    card.style.top = y + 'px';
-    card.style.width = w + 'px';
-    card.style.height = h + 'px';
+    card.className = 'card' + (size === 'lg' ? '' : ' card-mini') + (listMode ? ' list-mode' : '');
     card.dataset.key = field.id;
-    card.dataset.searchText = (field.label + ' ' + field.description + ' ' + (STATE.prompts[field.id] || '')).toLowerCase();
+    card.dataset.size = size;
     card.onclick = () => openPromptInspector(field.id);
     renderCardInner(card, field);
     return card;
 }
 
 function renderCardInner(card, field) {
-    const value = valueForKey(field.id);
+    const value = valueForKey(field.id) || '';
     const isEdited = field.id in STATE.drafts
         ? STATE.drafts[field.id] !== STATE.prompts[field.id]
         : false;
     const badges = [];
     if (isEdited) badges.push('<span class="badge edited">● unsaved</span>');
     else if (!isSameAsDefault(field.id)) badges.push('<span class="badge edited">≠ default</span>');
-    if (field.live === false) badges.push('<span class="badge unused">not referenced in code</span>');
 
     const preview = (typeof value === 'string' ? value : '').trim();
+    const isLarge = card.dataset.size === 'lg';
+    const clampNote = isLarge ? 'clamp-3' : 'clamp-2';
+    const clampPrompt = isLarge ? 'clamp-6' : 'clamp-3';
+    const isListMode = card.classList.contains('list-mode');
+
     card.innerHTML = `
         <div class="card-title-row">
             <div class="card-title">${escapeHtml(field.label)}</div>
             <div class="card-badges">${badges.join('')}</div>
         </div>
-        <div class="card-desc">${escapeHtml(field.description)}</div>
-        <div class="card-preview ${preview ? '' : 'empty'}">${escapeHtml(preview ? preview.slice(0, 220) : '(empty)')}</div>
-    `;
-}
-
-function buildPhasesCard(field) {
-    const zone = ZONES[field.group];
-    const pos = CARD_POSITIONS[field.id];
-    const card = document.createElement('div');
-    card.className = 'card';
-    card.style.left = (zone.x + pos.x) + 'px';
-    card.style.top = (zone.y + pos.y) + 'px';
-    card.style.width = pos.w + 'px';
-    card.style.height = pos.h + 'px';
-    card.dataset.key = field.id;
-    const phases = STATE.prompts[field.id] || [];
-    card.dataset.searchText = (field.label + ' ' + phases.join(' ')).toLowerCase();
-    card.onclick = () => openPromptInspector(field.id);
-    const isEdited = field.id in STATE.drafts;
-    card.innerHTML = `
-        <div class="card-title-row">
-            <div class="card-title">${escapeHtml(field.label)}</div>
-            <div class="card-badges">${isEdited ? '<span class="badge edited">● unsaved</span>' : (!isSameAsDefault(field.id) ? '<span class="badge edited">≠ default</span>' : '')}${field.live === false ? '<span class="badge unused">not referenced in code</span>' : ''}</div>
+        <div class="card-block card-block-note">
+            <div class="block-label">🧭 What this does</div>
+            <div class="block-body ${isListMode ? '' : clampNote}">${escapeHtml(field.description)}</div>
         </div>
-        <div style="display:flex; flex-wrap:wrap; gap:6px; margin-top:4px;">
-            ${phases.map(p => `<span class="chip" style="cursor:default;">${escapeHtml(p)}</span>`).join('')}
+        <div class="card-block card-block-prompt ${preview ? '' : 'empty'}">
+            <div class="block-label">🤖 Prompt sent to the AI</div>
+            <div class="block-body ${isListMode ? '' : clampPrompt}">${escapeHtml(preview ? preview.slice(0, 600) : '(empty — nothing will be sent here)')}</div>
         </div>
     `;
-    document.getElementById('board').appendChild(card);
+    card.dataset.searchText = (field.label + ' ' + field.description + ' ' + preview).toLowerCase();
 }
 
-function buildCastCards() {
-    const zone = ZONES.cast;
-    const cast = STATE.castDraft || STATE.cast;
-    const cardW = zone.w - 60;
-    const cardH = 150;
-    const gap = 16;
-    cast.forEach((member, i) => {
-        const card = document.createElement('div');
-        card.className = 'card card-mini';
-        card.style.left = (zone.x + 30) + 'px';
-        card.style.top = (zone.y + 30 + i * (cardH + gap)) + 'px';
-        card.style.width = cardW + 'px';
-        card.style.height = cardH + 'px';
-        card.dataset.castIndex = i;
-        card.dataset.searchText = JSON.stringify(member).toLowerCase();
-        card.onclick = () => openCastInspector(i);
-        card.innerHTML = `
-            <div class="card-title-row">
-                <div class="card-title">${escapeHtml(member.name || '(unnamed)')}</div>
-                <div class="card-badges">${member.important ? '<span class="badge important">key character</span>' : ''}</div>
-            </div>
-            <div class="card-desc">${escapeHtml(member.role || '')}${member.affiliation ? ' · ' + escapeHtml(member.affiliation) : ''}</div>
-            <div class="card-preview">${escapeHtml((member.description || '').slice(0, 160))}</div>
-        `;
-        document.getElementById('board').appendChild(card);
-    });
-
-    const addBtn = document.createElement('div');
-    addBtn.className = 'add-card';
-    addBtn.style.left = (zone.x + 30) + 'px';
-    addBtn.style.top = (zone.y + 30 + cast.length * (cardH + gap)) + 'px';
-    addBtn.style.width = cardW + 'px';
-    addBtn.style.height = '70px';
-    addBtn.textContent = '+ Add Character';
-    addBtn.onclick = (e) => { e.stopPropagation(); addCastMember(); };
-    document.getElementById('board').appendChild(addBtn);
-}
-
-// ─────────────────────────────  CONNECTOR ARROWS  ─────────────────────────────
+// ─────────────────────────────  CONNECTOR ARROWS (map view)  ─────────────────────────────
 
 function drawConnectors() {
     const svg = document.getElementById('connectors');
-    const totalW = 3900, totalH = 1000;
-    svg.setAttribute('width', totalW);
-    svg.setAttribute('height', totalH);
-    svg.setAttribute('viewBox', `0 0 ${totalW} ${totalH}`);
+    const extent = boardExtent();
+    svg.setAttribute('width', extent.w);
+    svg.setAttribute('height', extent.h);
+    svg.setAttribute('viewBox', `0 0 ${extent.w} ${extent.h}`);
 
     const anchor = (zoneKey, side) => {
         const z = ZONES[zoneKey];
@@ -854,8 +968,8 @@ function drawConnectors() {
             </marker>
         </defs>`;
 
-    const straight = (a, b, dashed) => {
-        return `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="rgba(255,255,255,0.22)" stroke-width="1.5" marker-end="url(#arrow)" ${dashed ? 'stroke-dasharray="6,6"' : ''}/>`;
+    const straight = (a, b) => {
+        return `<line x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" stroke="rgba(255,255,255,0.22)" stroke-width="1.5" marker-end="url(#arrow)"/>`;
     };
 
     const curve = (a, b, bend) => {
@@ -866,17 +980,10 @@ function drawConnectors() {
     };
 
     let html = defs;
-    // World -> Narrative
-    html += straight(anchor('world', 'right'), anchor('narrative', 'left'), false);
-    // Cast -.-> Narrative (dashed, reference only)
-    html += straight(anchor('cast', 'right'), anchor('narrative', 'left'), true);
-    // Narrative -> Submissions
-    html += straight(anchor('narrative', 'right'), anchor('submissions', 'left'), false);
-    // Submissions -> Narrative (loop back, curved above)
+    html += straight(anchor('world', 'right'), anchor('narrative', 'left'));
+    html += straight(anchor('narrative', 'right'), anchor('submissions', 'left'));
     html += curve({ x: ZONES.submissions.x, y: ZONES.submissions.y + 40 }, { x: ZONES.narrative.x + ZONES.narrative.w, y: ZONES.narrative.y + 40 }, -70);
-    // Narrative -> Image
-    html += straight(anchor('narrative', 'right'), anchor('image', 'left'), false);
-    // Image -> Narrative (loop back, curved below)
+    html += straight(anchor('narrative', 'right'), anchor('image', 'left'));
     html += curve({ x: ZONES.image.x, y: ZONES.image.y + ZONES.image.h - 40 }, { x: ZONES.narrative.x + ZONES.narrative.w, y: ZONES.narrative.y + ZONES.narrative.h - 40 }, 70);
 
     svg.innerHTML = html;
@@ -894,7 +1001,6 @@ function valueForKey(key) {
 function isSameAsDefault(key) {
     const a = STATE.prompts[key];
     const b = STATE.promptsDefaults[key];
-    if (Array.isArray(a) && Array.isArray(b)) return JSON.stringify(a) === JSON.stringify(b);
     return a === b;
 }
 
@@ -903,14 +1009,13 @@ function refreshAllCards() {
         const key = card.dataset.key;
         const field = STATE.schemaById[key];
         if (!field) return;
-        if (key === 'story_progression_phases') return; // list card, not re-rendered live for simplicity
         renderCardInner(card, field);
     });
     updateUnsavedPill();
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// PAN / ZOOM
+// PAN / ZOOM (map view)
 // ═══════════════════════════════════════════════════════════════════
 
 const VIEW = { x: 0, y: 0, scale: 1 };
@@ -926,11 +1031,12 @@ function zoomBy(delta) {
 }
 
 function fitView() {
+    if (!document.body.classList.contains('view-map')) return;
     const vp = document.getElementById('viewport');
-    const totalW = 3560, totalH = 1000;
-    const scale = Math.min(vp.clientWidth / (totalW + 120), vp.clientHeight / (totalH + 160), 1);
-    VIEW.scale = Math.max(0.25, scale);
-    VIEW.x = (vp.clientWidth - totalW * VIEW.scale) / 2 - 40 * VIEW.scale;
+    const extent = boardExtent();
+    const scale = Math.min(vp.clientWidth / (extent.w + 120), vp.clientHeight / (extent.h + 200), 1);
+    VIEW.scale = Math.max(0.2, scale);
+    VIEW.x = (vp.clientWidth - extent.w * VIEW.scale) / 2 - 40 * VIEW.scale;
     VIEW.y = 40;
     applyTransform();
 }
@@ -940,7 +1046,7 @@ function fitView() {
     let dragging = false, lastX = 0, lastY = 0;
 
     vp.addEventListener('mousedown', (e) => {
-        if (e.target.closest('.card') || e.target.closest('.add-card')) return;
+        if (e.target.closest('.card')) return;
         dragging = true;
         lastX = e.clientX; lastY = e.clientY;
         vp.classList.add('panning');
@@ -960,12 +1066,42 @@ function fitView() {
         const rect = vp.getBoundingClientRect();
         const mx = e.clientX - rect.left, my = e.clientY - rect.top;
         const newScale = Math.min(1.6, Math.max(0.25, VIEW.scale + delta));
-        // zoom around cursor
         VIEW.x = mx - ((mx - VIEW.x) / VIEW.scale) * newScale;
         VIEW.y = my - ((my - VIEW.y) / VIEW.scale) * newScale;
         VIEW.scale = newScale;
         applyTransform();
     }, { passive: false });
+
+    // Touch support: one-finger pan, two-finger pinch to zoom. Still
+    // available for tablets/landscape phones that opt into Map view.
+    let touchLastX = 0, touchLastY = 0, pinchStartDist = 0, pinchStartScale = 1;
+    const dist = (t0, t1) => Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
+
+    vp.addEventListener('touchstart', (e) => {
+        if (e.target.closest('.card')) return;
+        if (e.touches.length === 1) {
+            touchLastX = e.touches[0].clientX;
+            touchLastY = e.touches[0].clientY;
+        } else if (e.touches.length === 2) {
+            pinchStartDist = dist(e.touches[0], e.touches[1]);
+            pinchStartScale = VIEW.scale;
+        }
+    }, { passive: true });
+
+    vp.addEventListener('touchmove', (e) => {
+        if (e.touches.length === 1) {
+            const dx = e.touches[0].clientX - touchLastX;
+            const dy = e.touches[0].clientY - touchLastY;
+            VIEW.x += dx; VIEW.y += dy;
+            touchLastX = e.touches[0].clientX;
+            touchLastY = e.touches[0].clientY;
+            applyTransform();
+        } else if (e.touches.length === 2 && pinchStartDist > 0) {
+            const newDist = dist(e.touches[0], e.touches[1]);
+            VIEW.scale = Math.min(1.6, Math.max(0.25, pinchStartScale * (newDist / pinchStartDist)));
+            applyTransform();
+        }
+    }, { passive: true });
 })();
 
 // ═══════════════════════════════════════════════════════════════════
@@ -982,36 +1118,24 @@ function onSearch(query) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// INSPECTOR — PROMPT FIELDS
+// INSPECTOR — full editor for one prompt field
 // ═══════════════════════════════════════════════════════════════════
 
 function openPromptInspector(key) {
-    closeCastEditingIfClean();
     STATE.activeKey = key;
-    STATE.activeCastIndex = null;
     document.querySelectorAll('.card').forEach(c => c.classList.toggle('active', c.dataset.key === key));
 
     const field = STATE.schemaById[key];
     document.getElementById('inspector-title').textContent = field.label;
-    document.getElementById('inspector-desc').textContent = field.description;
 
     const meta = [];
-    if (field.live === false) {
-        meta.push('<span class="badge unused">not referenced in code — saved but has no live effect yet</span>');
-    } else {
-        meta.push('<span class="badge" style="background:rgba(89,201,138,0.15); color:#59c98a;">live — applies next turn</span>');
-    }
-    (field.code_refs || []).forEach(f => meta.push(`<span class="badge unused">used by ${escapeHtml(f)}</span>`));
+    meta.push('<span class="badge live">🟢 live — applies next turn</span>');
+    (field.code_refs || []).forEach(f => meta.push(`<span class="badge info">used by ${escapeHtml(f)}</span>`));
     document.getElementById('inspector-meta').innerHTML = meta.join(' ');
 
     const body = document.getElementById('inspector-body');
     const footer = document.getElementById('inspector-footer');
-
-    if (field.id === 'story_progression_phases') {
-        renderListEditor(field, body, footer);
-    } else {
-        renderTextEditor(field, body, footer);
-    }
+    renderTextEditor(field, body, footer);
 
     document.getElementById('inspector').classList.add('open');
 }
@@ -1021,21 +1145,28 @@ function renderTextEditor(field, body, footer) {
     const formatVars = field.format_vars || [];
 
     body.innerHTML = `
-        ${formatVars.length ? `
+        <div class="section-block note">
+            <div class="section-heading">🧭 What this does</div>
+            <p>${escapeHtml(field.description)}</p>
+        </div>
+        <div class="section-block prompt-zone">
             <div>
-                <div class="field-label" style="margin-bottom:6px;">Insert placeholder</div>
-                <div class="chip-row" id="chip-row"></div>
+                <div class="section-heading">🤖 Exact prompt sent to the AI</div>
+                <div class="section-sub">This is the literal text the model receives — edits here change how "SOMEWHERE" actually behaves.</div>
             </div>
-        ` : ''}
-        <div>
-            <div class="field-label" style="margin-bottom:6px;">Prompt text</div>
+            ${formatVars.length ? `
+                <div>
+                    <div class="field-label" style="margin-bottom:6px;">Insert placeholder</div>
+                    <div class="chip-row" id="chip-row"></div>
+                </div>
+            ` : ''}
             <textarea id="field-textarea" spellcheck="false">${escapeHtml(currentValue)}</textarea>
+            <div class="counter-row">
+                <span id="char-count"></span>
+                <span id="word-count"></span>
+            </div>
+            <div class="validation-banner" id="validation-banner"></div>
         </div>
-        <div class="counter-row">
-            <span id="char-count"></span>
-            <span id="word-count"></span>
-        </div>
-        <div class="validation-banner" id="validation-banner"></div>
         <div>
             <button class="btn ghost small" onclick="toggleDiff()" id="diff-toggle-btn">📄 Compare to Default</button>
             <div class="diff-pane" id="diff-pane"></div>
@@ -1062,34 +1193,11 @@ function renderTextEditor(field, body, footer) {
     `;
 }
 
-function renderListEditor(field, body, footer) {
-    const phases = valueForKey(field.id) || [];
-    body.innerHTML = `
-        <div class="field-label" style="margin-bottom:6px;">Story phases (one per line, in order)</div>
-        <textarea id="field-textarea" spellcheck="false" style="min-height:220px;">${escapeHtml(phases.join('\n'))}</textarea>
-        <div class="counter-row"><span>${phases.length} phase(s)</span><span></span></div>
-    `;
-    const textarea = document.getElementById('field-textarea');
-    textarea.addEventListener('input', () => {
-        const lines = textarea.value.split('\n').map(l => l.trim()).filter(Boolean);
-        onTextEdit(field, lines, true);
-    });
-    footer.innerHTML = `
-        <button class="btn danger" onclick="resetField('${field.id}')">⟲ Reset to Default</button>
-        <button class="btn primary" onclick="saveField('${field.id}')">💾 Save</button>
-        <button class="btn ghost" onclick="discardField('${field.id}')">Discard changes</button>
-    `;
-}
-
-function onTextEdit(field, value, isList) {
-    if (isList) {
-        STATE.drafts[field.id] = value;
-    } else {
-        STATE.drafts[field.id] = value;
-        updateCounters(value);
-        runValidation(field, value);
-    }
-    if (JSON.stringify(STATE.drafts[field.id]) === JSON.stringify(STATE.prompts[field.id])) {
+function onTextEdit(field, value) {
+    STATE.drafts[field.id] = value;
+    updateCounters(value);
+    runValidation(field, value);
+    if (STATE.drafts[field.id] === STATE.prompts[field.id]) {
         delete STATE.drafts[field.id];
     }
     refreshAllCards();
@@ -1180,12 +1288,11 @@ function renderLineDiff(a, b) {
 function closeInspector() {
     document.getElementById('inspector').classList.remove('open');
     STATE.activeKey = null;
-    STATE.activeCastIndex = null;
     document.querySelectorAll('.card').forEach(c => c.classList.remove('active'));
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// SAVE / RESET / DISCARD — PROMPTS
+// SAVE / RESET / DISCARD
 // ═══════════════════════════════════════════════════════════════════
 
 async function saveField(key, force) {
@@ -1244,23 +1351,18 @@ function discardField(key) {
 
 async function saveAllDrafts() {
     const keys = Object.keys(STATE.drafts);
-    if (!keys.length && !STATE.castDraft) return;
+    if (!keys.length) return;
     try {
-        if (keys.length) {
-            const data = {};
-            keys.forEach(k => data[k] = STATE.drafts[k]);
-            const res = await studioFetch('/api/admin/studio/prompts', {
-                method: 'PUT',
-                body: JSON.stringify({ data, force: true }),
-            });
-            const json = await res.json();
-            if (!json.success) throw new Error(json.error || 'Save all failed');
-            STATE.prompts = json.data.prompts;
-            STATE.drafts = {};
-        }
-        if (STATE.castDraft) {
-            await persistCastDraft();
-        }
+        const data = {};
+        keys.forEach(k => data[k] = STATE.drafts[k]);
+        const res = await studioFetch('/api/admin/studio/prompts', {
+            method: 'PUT',
+            body: JSON.stringify({ data, force: true }),
+        });
+        const json = await res.json();
+        if (!json.success) throw new Error(json.error || 'Save all failed');
+        STATE.prompts = json.data.prompts;
+        STATE.drafts = {};
         refreshAllCards();
         toast('success', 'All changes saved');
     } catch (e) {
@@ -1269,7 +1371,7 @@ async function saveAllDrafts() {
 }
 
 function updateUnsavedPill() {
-    const count = Object.keys(STATE.drafts).length + (STATE.castDraft ? 1 : 0);
+    const count = Object.keys(STATE.drafts).length;
     const pill = document.getElementById('unsaved-pill');
     const saveBtn = document.getElementById('save-all-btn');
     pill.textContent = `${count} unsaved`;
@@ -1279,160 +1381,24 @@ function updateUnsavedPill() {
 
 async function confirmResetAll() {
     openModal(
-        'Reset EVERYTHING to defaults?',
-        'This restores the entire prompts file and the cast roster to what shipped with the app. Any custom edits you\'ve made will be lost immediately — this cannot be undone.',
+        'Reset every prompt to defaults?',
+        'This restores the entire prompts file to what shipped with the app. Any custom edits you\'ve made will be lost immediately — this cannot be undone.',
         async () => {
             try {
-                const r1 = await studioFetch('/api/admin/studio/prompts/reset', { method: 'POST', body: JSON.stringify({ all: true }) });
-                const j1 = await r1.json();
-                if (!j1.success) throw new Error(j1.error);
-                const r2 = await studioFetch('/api/admin/studio/cast/reset', { method: 'POST' });
-                const j2 = await r2.json();
-                if (!j2.success) throw new Error(j2.error);
-                STATE.prompts = j1.data.prompts;
-                STATE.cast = j2.data.cast;
+                const res = await studioFetch('/api/admin/studio/prompts/reset', { method: 'POST', body: JSON.stringify({ all: true }) });
+                const json = await res.json();
+                if (!json.success) throw new Error(json.error);
+                STATE.prompts = json.data.prompts;
                 STATE.drafts = {};
-                STATE.castDraft = null;
                 closeInspector();
                 buildBoard();
+                buildMobileList();
                 toast('success', 'Everything reset to factory defaults');
             } catch (e) {
                 toast('error', 'Reset all failed: ' + e.message);
             }
         }
     );
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// CAST — structured editor
-// ═══════════════════════════════════════════════════════════════════
-
-function ensureCastDraft() {
-    if (!STATE.castDraft) STATE.castDraft = STATE.cast.map(c => Object.assign({}, c));
-    return STATE.castDraft;
-}
-
-function closeCastEditingIfClean() {
-    // no-op placeholder for symmetry / future guard rails
-}
-
-function addCastMember() {
-    const draft = ensureCastDraft();
-    draft.push({ name: 'New Character', role: '', affiliation: '', description: '', important: false, notes: '' });
-    rebuildCastArea();
-    openCastInspector(draft.length - 1);
-}
-
-function openCastInspector(index) {
-    STATE.activeCastIndex = index;
-    STATE.activeKey = null;
-    document.querySelectorAll('.card').forEach(c => c.classList.toggle('active', Number(c.dataset.castIndex) === index));
-
-    const draft = ensureCastDraft();
-    const member = draft[index];
-
-    document.getElementById('inspector-title').textContent = member.name || '(unnamed character)';
-    document.getElementById('inspector-desc').textContent = 'Story bible entry — reference only, not yet wired into live prompt generation.';
-    document.getElementById('inspector-meta').innerHTML = '<span class="badge unused">not referenced in code</span>';
-
-    const body = document.getElementById('inspector-body');
-    body.innerHTML = `
-        <div class="form-row"><div class="field-label">Name</div><input type="text" id="cf-name" value="${escapeAttr(member.name)}"></div>
-        <div class="form-row"><div class="field-label">Role</div><input type="text" id="cf-role" value="${escapeAttr(member.role || '')}"></div>
-        <div class="form-row"><div class="field-label">Affiliation</div><input type="text" id="cf-affiliation" value="${escapeAttr(member.affiliation || '')}"></div>
-        <div class="form-row"><div class="field-label">Description</div><textarea class="short" id="cf-description">${escapeHtml(member.description || '')}</textarea></div>
-        <div class="form-row"><div class="field-label">Notes</div><textarea class="short" id="cf-notes">${escapeHtml(member.notes || '')}</textarea></div>
-        <div class="checkbox-row"><input type="checkbox" id="cf-important" ${member.important ? 'checked' : ''}><label for="cf-important">Key character</label></div>
-    `;
-
-    ['cf-name', 'cf-role', 'cf-affiliation', 'cf-description', 'cf-notes'].forEach(id => {
-        document.getElementById(id).addEventListener('input', () => syncCastForm(index));
-    });
-    document.getElementById('cf-important').addEventListener('change', () => syncCastForm(index));
-
-    document.getElementById('inspector-footer').innerHTML = `
-        <button class="btn danger" onclick="deleteCastMember(${index})">🗑 Delete Character</button>
-        <button class="btn primary" onclick="saveCastNow()">💾 Save Cast</button>
-        <button class="btn ghost" onclick="discardCastDraft()">Discard all cast changes</button>
-    `;
-
-    document.getElementById('inspector').classList.add('open');
-}
-
-function syncCastForm(index) {
-    const draft = ensureCastDraft();
-    draft[index] = {
-        name: document.getElementById('cf-name').value,
-        role: document.getElementById('cf-role').value,
-        affiliation: document.getElementById('cf-affiliation').value,
-        description: document.getElementById('cf-description').value,
-        notes: document.getElementById('cf-notes').value,
-        important: document.getElementById('cf-important').checked,
-    };
-    if (JSON.stringify(draft) === JSON.stringify(STATE.cast)) STATE.castDraft = null; else STATE.castDraft = draft;
-    rebuildCastArea();
-    updateUnsavedPill();
-}
-
-function deleteCastMember(index) {
-    if (!confirm('Remove this character from the cast?')) return;
-    const draft = ensureCastDraft();
-    draft.splice(index, 1);
-    STATE.castDraft = (JSON.stringify(draft) === JSON.stringify(STATE.cast)) ? null : draft;
-    closeInspector();
-    rebuildCastArea();
-    updateUnsavedPill();
-}
-
-async function persistCastDraft() {
-    if (!STATE.castDraft) return;
-    const res = await studioFetch('/api/admin/studio/cast', {
-        method: 'PUT',
-        body: JSON.stringify({ cast: STATE.castDraft }),
-    });
-    const json = await res.json();
-    if (!json.success) throw new Error(json.error || 'Cast save failed');
-    STATE.cast = json.data.cast;
-    STATE.castDraft = null;
-}
-
-async function saveCastNow() {
-    try {
-        await persistCastDraft();
-        rebuildCastArea();
-        updateUnsavedPill();
-        toast('success', 'Cast saved');
-    } catch (e) {
-        toast('error', 'Cast save failed: ' + e.message);
-    }
-}
-
-function discardCastDraft() {
-    STATE.castDraft = null;
-    closeInspector();
-    rebuildCastArea();
-    updateUnsavedPill();
-    toast('info', 'Discarded cast changes');
-}
-
-async function resetCastToDefault() {
-    try {
-        const res = await studioFetch('/api/admin/studio/cast/reset', { method: 'POST' });
-        const json = await res.json();
-        if (!json.success) throw new Error(json.error);
-        STATE.cast = json.data.cast;
-        STATE.castDraft = null;
-        rebuildCastArea();
-        toast('success', 'Cast reset to default');
-    } catch (e) {
-        toast('error', 'Cast reset failed: ' + e.message);
-    }
-}
-
-function rebuildCastArea() {
-    document.querySelectorAll('.card[data-cast-index], .add-card').forEach(el => el.remove());
-    buildCastCards();
-    drawConnectors();
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1471,16 +1437,16 @@ function escapeHtml(text) {
     return String(text == null ? '' : text)
         .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
-function escapeAttr(text) {
-    return escapeHtml(text).replace(/"/g, '&quot;');
-}
 
 window.addEventListener('beforeunload', (e) => {
-    const count = Object.keys(STATE.drafts).length + (STATE.castDraft ? 1 : 0);
-    if (count > 0) {
+    if (Object.keys(STATE.drafts).length > 0) {
         e.preventDefault();
         e.returnValue = '';
     }
+});
+
+window.addEventListener('resize', () => {
+    if (document.body.classList.contains('view-map')) fitView();
 });
 </script>
 </body>
