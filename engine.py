@@ -1936,42 +1936,83 @@ def _ask_claude(prompt: str, model_name: str, temp: float, tokens: int, image_pa
         return "Signal interrupted..."
 
 # ───────── path resolution helper ───────────────────────────────────────────
-def _resolve_image_path(image_path: str) -> Path:
-    """
-    Resolve image path to actual filesystem location.
-    Handles both absolute (session-specific) and relative (legacy) paths.
-    
-    Args:
-        image_path: Path like "/opt/.../sessions/default/images/file.png" 
-                    or "/images/file.png"
-                    or "images/file.png"
-    
-    Returns:
-        Path object pointing to actual file location
+def _resolve_image_path(image_path: str, session_id: str = None) -> Path:
+    """Resolve an image path/URL to a real filesystem location.
+
+    Handles absolute session paths, web URLs (``/images/<file>`` with optional
+    ``?session=``), and bare filenames. Companion portraits and props live in
+    ``sessions/<id>/images/`` — NOT the legacy root ``images/`` dir — so a
+    session id (argument or query param) is required to find them. Without a
+    session hint we still try the default session, then scan durable
+    ``companion_*`` / ``prop_*`` files across all sessions as a last resort.
+
+    Returns a Path (may not exist — callers check ``.exists()``).
     """
     if not image_path:
         return None
-    
-    path = Path(image_path)
-    
-    # If already absolute and exists, use it
-    if path.is_absolute():
-        if path.exists():
-            return path
-        # Absolute but doesn't exist - maybe it's a different session
-        # Try to find it in images directory
-        return ROOT / "images" / path.name
-    
-    # Relative path handling
-    if image_path.startswith("/images/"):
-        # Legacy format: "/images/filename.png"
-        return ROOT / "images" / path.name
-    elif image_path.startswith("images/"):
-        # Another legacy format: "images/filename.png"
-        return ROOT / image_path
-    else:
-        # Just a filename
-        return ROOT / "images" / path.name
+
+    raw = str(image_path).strip()
+    qs_session = None
+    if "?" in raw:
+        path_part, _, query = raw.partition("?")
+        raw = path_part
+        try:
+            from urllib.parse import parse_qs
+            qs = parse_qs(query)
+            qs_session = (qs.get("session") or qs.get("session_id") or [None])[0]
+        except Exception:
+            qs_session = None
+
+    sid = (session_id or qs_session or "").strip() or None
+    path = Path(raw)
+    basename = path.name
+    if not basename or basename in (".", ".."):
+        return None
+
+    # Absolute path that already exists (fresh Gemini output, etc.)
+    if path.is_absolute() and path.exists():
+        return path
+
+    candidates = []
+    if sid:
+        try:
+            candidates.append(Path(_get_image_dir(str(sid))) / basename)
+        except Exception:
+            pass
+    try:
+        candidates.append(Path(_get_image_dir("default")) / basename)
+    except Exception:
+        pass
+    # Legacy / global fallback
+    if raw.startswith("images/"):
+        candidates.append(ROOT / raw)
+    candidates.append(ROOT / "images" / basename)
+
+    for cand in candidates:
+        try:
+            if cand.exists():
+                return cand
+        except Exception:
+            continue
+
+    # Last resort for durable roster/prop files: scan every session images dir.
+    # Keeps CAMP / companion_place working even when a URL lost its ?session=.
+    if basename.startswith("companion_") or basename.startswith("prop_"):
+        try:
+            sessions_root = Path(_get_session_root("default")).parent
+            if sessions_root.exists():
+                for session_dir in sessions_root.iterdir():
+                    if not session_dir.is_dir():
+                        continue
+                    cand = session_dir / "images" / basename
+                    if cand.exists():
+                        return cand
+        except Exception:
+            pass
+
+    # Preserve prior contract: return a Path even when missing so callers that
+    # check .exists() keep working.
+    return ROOT / "images" / basename
 
 # ───────── vision description helper ────────────────────────────────────────
 def _downscale_for_vision(image_path: str, size=(640, 426)) -> io.BytesIO:
@@ -3632,8 +3673,8 @@ _JEEP_PROP_PROMPT = (
     "text, photoreal cinematic still, VHS analog grain, muted 1993 palette."
 )
 
-# Bump when camp plate grammar changes so stale jeep-less caches regenerate.
-_CAMP_CACHE_VERSION = "v3-jeep4x3"
+# Bump when camp plate grammar changes so stale jeep-/companion-less caches regenerate.
+_CAMP_CACHE_VERSION = "v4-all-companions"
 
 
 def realtime_action_beat(choice: str = "") -> str:
@@ -7593,7 +7634,7 @@ def api_companion_place():
         comp = companions.get(label.lower())
         if not isinstance(comp, dict) or not comp.get("portrait_url"):
             return jsonify({"image_url": None, "reason": "unknown_companion"})
-        portrait_path = _resolve_image_path(comp["portrait_url"])
+        portrait_path = _resolve_image_path(comp["portrait_url"], session_id)
         if not portrait_path or not portrait_path.exists():
             return jsonify({"image_url": None, "reason": "portrait_missing"})
 
@@ -7825,20 +7866,83 @@ def _camp_seat_layout(count: int) -> list:
     return list(_CAMP_SEATS.get(n) or _CAMP_SEATS[5][:n])
 
 
-def _build_camp_prompt(attendee_labels: list, jeep_included: bool) -> str:
-    """Prompt for the camp establishing shot — night fire + jeep + optional cast.
+def _collect_camp_companions(session_id: str, st: dict) -> list:
+    """Every companion with a resolvable portrait file for CAMP img2img.
 
-    The red jeep is a non-negotiable visual anchor (Chekhov's gun for leaving
-    camp later). Even when a jeep reference image is missing we still describe
-    it in text so the plate never comes back as fire-only scrub.
+    Reads ``state.companions`` and resolves each ``portrait_url`` against the
+    session images dir (the bug that dropped the whole cast was resolving
+    ``/images/companion_*.png`` against the legacy root images/ folder). Also
+    scans the session dir for any durable ``companion_*.png`` files missing
+    from state so on-disk roster art still makes it into the fire circle.
     """
+    companions = st.get("companions") if isinstance(st.get("companions"), dict) else {}
+    roster = []
+    seen_paths = set()
+
+    def _add(label, kind, portrait_url, last_seen_turn=0):
+        path = _resolve_image_path(portrait_url, session_id) if portrait_url else None
+        if not path or not path.exists():
+            return
+        # Prefer full-res companion plate over the _small downsample for likeness.
+        key = str(path.resolve()) if path.exists() else str(path)
+        if key in seen_paths:
+            return
+        seen_paths.add(key)
+        roster.append({
+            "label": label or "figure",
+            "kind": kind or "person",
+            "portrait_url": portrait_url or _to_web_image_url(path.name, session_id),
+            "portrait_path": str(path),
+            "last_seen_turn": int(last_seen_turn or 0),
+        })
+
+    for key, c in companions.items():
+        if not isinstance(c, dict):
+            continue
+        _add(
+            c.get("label") or key,
+            c.get("kind") or "person",
+            c.get("portrait_url"),
+            c.get("last_seen_turn") or 0,
+        )
+
+    # Disk fallback: durable companion_*.png files not already in the roster.
+    try:
+        img_dir = Path(_get_image_dir(session_id))
+        if img_dir.exists():
+            for p in sorted(img_dir.glob("companion_*.png")):
+                if p.name.endswith("_small.png"):
+                    continue
+                try:
+                    key = str(p.resolve())
+                except Exception:
+                    key = str(p)
+                if key in seen_paths:
+                    continue
+                slug = p.name[len("companion_"):-len(".png")]
+                label = (slug or "figure").replace("_", " ").strip() or "figure"
+                _add(label, "person", _to_web_image_url(p.name, session_id), 0)
+    except Exception as scan_err:
+        log_error(f"[CAMP] companion disk scan failed: {scan_err}")
+
+    roster.sort(key=lambda r: (r.get("last_seen_turn") or 0), reverse=True)
+    return roster
+
+
+def _build_camp_prompt(attendees: list, jeep_included: bool,
+                       ref_map: list = None) -> str:
+    """Prompt for the camp establishing shot — night fire + jeep + cast.
+
+    ``ref_map`` is an ordered list of ``{"index", "role", "label"}`` describing
+    each img2img reference image (1-based), so Gemini knows reference #1 is the
+    jeep and #2..N are specific companion portraits — not anonymous faces.
+    """
+    attendee_labels = [a.get("label") for a in (attendees or []) if a.get("label")]
     bits = [
         "First-person handheld establishing shot of a night campsite in remote Four Corners high-desert scrub.",
         "4:3 frame matching the rest of the game. A small campfire burns in the mid-ground,",
         "warm orange firelight pooling on sand and scrub, embers drifting, deep blue-black night sky,",
         "VHS analog grain, 1990s found-footage mood. Not a security camera, not a collage.",
-        # Jeep is ALWAYS required in the composition — reference image when we
-        # have one, otherwise a hard textual prescription.
         "CRITICAL — THE RED JEEP MUST BE IN FRAME: a dusty bright-red 1990s Jeep "
         "Cherokee/Wrangler parked at the RIGHT edge of the firelight, three-quarter "
         "view, clearly readable silhouette and red paint, mud-caked tires. Do NOT "
@@ -7849,12 +7953,29 @@ def _build_camp_prompt(attendee_labels: list, jeep_included: bool) -> str:
         bits.append(
             "Match the jeep reference image's exact color, body shape, and wear."
         )
+    if ref_map:
+        bits.append("REFERENCE IMAGE MAP (use EVERY listed reference — do not drop any):")
+        for item in ref_map:
+            idx = item.get("index")
+            role = item.get("role")
+            label = item.get("label") or ""
+            if role == "jeep":
+                bits.append(
+                    f"Reference image {idx}: the RED JEEP prop plate — put this exact vehicle in the scene."
+                )
+            else:
+                bits.append(
+                    f"Reference image {idx}: companion portrait of '{label}' — "
+                    f"this person MUST be seated at the fire, matching face, hair, "
+                    f"build, and clothing from that portrait."
+                )
     if attendee_labels:
         names = ", ".join(attendee_labels)
         bits.append(
-            f"Seated around the flames are these companions, each matching their reference "
-            f"portrait face and clothing: {names}. Arrange them in a natural arc around the fire, "
-            f"leaving the jeep clearly visible on the right."
+            f"ALL of these companions are present around the flames (no extras, none missing): {names}. "
+            f"Arrange them in a natural arc around the fire, faces firelit and readable, "
+            f"leaving the jeep clearly visible on the right. This is a cast reunion — "
+            f"every named companion must be visibly in frame."
         )
     else:
         bits.append(
@@ -7911,32 +8032,27 @@ def api_camp_enter():
         except Exception:
             st = {}
 
-        # Top 5 companions by last_seen_turn (most recent relationships first).
-        companions = st.get("companions") if isinstance(st.get("companions"), dict) else {}
-        roster = []
-        for key, c in companions.items():
-            if not isinstance(c, dict) or not c.get("portrait_url"):
-                continue
-            path = _resolve_image_path(c["portrait_url"])
-            if not path or not path.exists():
-                continue
-            roster.append({
-                "label": c.get("label") or key,
-                "kind": c.get("kind") or "person",
-                "portrait_url": c["portrait_url"],
-                "portrait_path": str(path),
-                "last_seen_turn": c.get("last_seen_turn") or 0,
-            })
-        roster.sort(key=lambda r: (r.get("last_seen_turn") or 0), reverse=True)
+        # ALL companions with resolvable portrait files (session-scoped paths).
+        # Gemini img2img accepts up to 6 refs: 1 jeep + up to 5 companion plates.
+        roster = _collect_camp_companions(session_id, st)
         attendees_src = roster[:5]
+        if len(roster) > 5:
+            print(f"[CAMP] {len(roster)} companions on roster; "
+                  f"img2img using the 5 most recently seen (+ jeep)", flush=True)
 
         jeep = _ensure_jeep_prop(session_id)
         jeep_url = (jeep or {}).get("portrait_url") or ""
         jeep_path = None
         if jeep_url:
-            jp = _resolve_image_path(jeep_url)
+            jp = _resolve_image_path(jeep_url, session_id)
             if jp and jp.exists():
                 jeep_path = str(jp)
+        # Also accept a durable prop_jeep.png even if state lost the URL.
+        if not jeep_path:
+            durable_jeep = Path(_get_image_dir(session_id)) / "prop_jeep.png"
+            if durable_jeep.exists():
+                jeep_path = str(durable_jeep)
+                jeep_url = _to_web_image_url("prop_jeep.png", session_id) or jeep_url
         jeep_included = bool(jeep_path)
 
         labels = [a["label"] for a in attendees_src]
@@ -7960,7 +8076,7 @@ def api_camp_enter():
             # Validate the cached plate still exists on disk — establishing
             # shots are ordinary session images and can be swept; never serve
             # a 404 URL into the Moment chrome.
-            cached_path = _resolve_image_path(cached)
+            cached_path = _resolve_image_path(cached, session_id)
             if cached_path and cached_path.exists():
                 _camp_append_feed(session_id, cached)
                 return jsonify({
@@ -7981,14 +8097,26 @@ def api_camp_enter():
                 "reason": "image_disabled",
             })
 
-        # Refs: jeep first (visual anchor), then up to 5 companion portraits.
+        # Refs: jeep FIRST (visual anchor), then EVERY companion portrait we can
+        # fit (up to 5). Numbered ref_map tells the model which image is who.
         refs = []
+        ref_map = []
         if jeep_path:
             refs.append(jeep_path)
+            ref_map.append({"index": 1, "role": "jeep", "label": "red jeep"})
         for a in attendees_src:
             refs.append(a["portrait_path"])
+            ref_map.append({
+                "index": len(refs),
+                "role": "companion",
+                "label": a["label"],
+            })
 
-        prompt = _build_camp_prompt(labels, jeep_included)
+        print(f"[CAMP] img2img refs={len(refs)} "
+              f"(jeep={jeep_included}, companions={len(attendees_src)}): "
+              f"{[m.get('label') for m in ref_map]}", flush=True)
+
+        prompt = _build_camp_prompt(attendees_src, jeep_included, ref_map=ref_map)
         world_prompt = str(st.get("world_prompt") or "")[:400] or None
         img_dir = Path(_get_image_dir(session_id))
         t0 = time.time()
@@ -8003,7 +8131,7 @@ def api_camp_enter():
                     reference_image_path=refs,
                     # Higher than companion_place (0.5): this is a brand-new
                     # location anchored by people/prop likeness, not the live scene.
-                    strength=0.75,
+                    strength=0.78,
                     world_prompt=world_prompt,
                     time_of_day="night, campfire glow, deep desert dark",
                     hd_mode=False,
