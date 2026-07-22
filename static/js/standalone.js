@@ -8218,7 +8218,9 @@
     let worldSwapped = false;      // did we re-anchor the session onto the character?
     let savedWorldScene = null;    // the env scene to return to (still + prompt)
     let savedWorldId = null;       // the env world's encrypted id, for attach_world
+    let savedEnvFrameDataUrl = null; // live env frame grabbed BEFORE character re-anchor
     let portraitPollTimer = null;  // waits for the character feed to go live
+    let restoreInFlight = null;    // promise for the async exit restore
 
     function isOpen() { return open; }
     function isCinematic() { return !!(inMoment && open); }
@@ -8306,9 +8308,10 @@
 
     // Animate the character with the world model: re-anchor the single session
     // onto the portrait and mirror its live feed into the full-screen portrait.
-    // The env world's id is saved first so exit can reopen it with attach_world
-    // (fast, no rebuild). Opt out with window.__CONVERSATION_ANIMATE__ === false;
-    // reduced-motion / still mode keep the CSS living portrait.
+    // The env world's id (+ a live frame grab) is saved first so exit can reopen
+    // it with attach_world even when the original guide PNG was swept (404).
+    // Opt out with window.__CONVERSATION_ANIMATE__ === false; reduced-motion /
+    // still mode keep the CSS living portrait.
     function animateCharacter(imageUrl, worldPrompt, subj) {
       if (typeof window !== "undefined" && window.__CONVERSATION_ANIMATE__ === false) return;
       if (prefersReducedMotion && prefersReducedMotion()) return;
@@ -8318,6 +8321,14 @@
       // CURRENT world, which becomes the character's after applyScene).
       try { savedWorldId = (RR.getWorldId && RR.getWorldId()) || null; } catch (_) { savedWorldId = null; }
       savedWorldScene = Renderer.lastScene ? Object.assign({}, Renderer.lastScene) : null;
+      // Guide PNGs get swept from disk; a captured live frame survives so exit
+      // can freeze/rebuild without hammering a 404 URL.
+      savedEnvFrameDataUrl = null;
+      try {
+        if (typeof RR.captureFrame === "function") {
+          savedEnvFrameDataUrl = RR.captureFrame(960) || null;
+        }
+      } catch (_) { savedEnvFrameDataUrl = null; }
       worldSwapped = true;
       // Moments.push paused the session for the takeover; resume so frames flow
       // for the character world (audio stays muted — the voice is ElevenLabs).
@@ -8330,9 +8341,26 @@
           imageUrl: imageUrl,
           hardTransition: true,
         });
-      } catch (e) { worldSwapped = false; return; }
+      } catch (e) {
+        worldSwapped = false;
+        savedEnvFrameDataUrl = null;
+        return;
+      }
       try { AgentLog.push("talk", "portrait \u2192 world model", (subj && subj.label) || ""); } catch (_) {}
       startPortraitPoll(subj);
+    }
+
+    // Probe whether a guide URL still resolves (swept session images 404).
+    function probeImageUrl(url, timeoutMs) {
+      return new Promise((resolve) => {
+        if (!url) { resolve(false); return; }
+        if (/^data:/i.test(url)) { resolve(true); return; }
+        const img = new Image();
+        const t = setTimeout(() => { try { img.src = ""; } catch (_) {} resolve(false); }, timeoutMs || 1800);
+        img.onload = () => { clearTimeout(t); resolve(true); };
+        img.onerror = () => { clearTimeout(t); resolve(false); };
+        img.src = url;
+      });
     }
 
     // Wait for the re-anchored character feed to present frames, then mirror its
@@ -8359,10 +8387,10 @@
       if (portraitPollTimer) { clearInterval(portraitPollTimer); portraitPollTimer = null; }
     }
 
-    // Return to the env world on exit. attach_world reopens the SAME world by id
-    // — it paints the env still into the freeze buffer instantly (feels like a
-    // resume) then reveals the live world without a rebuild. Falls back to a
-    // scene re-apply when the id is unknown. No-op if we never swapped.
+    // Return to the env world on exit. Prefer attach_world (same world by id);
+    // if that fails or the guide PNG 404s, rebuild from the prompt using a
+    // captured env frame so we never leave the player frozen on the character
+    // with the HUD restored. No-op if we never swapped.
     function restoreWorldAfterConversation() {
       stopPortraitPoll();
       if (!worldSwapped) return;
@@ -8370,15 +8398,58 @@
       const RR = window.ReactorRenderer;
       const scene = savedWorldScene;
       const wid = savedWorldId;
+      const envFrame = savedEnvFrameDataUrl;
       savedWorldScene = null;
       savedWorldId = null;
+      savedEnvFrameDataUrl = null;
+      if (!RR) return;
+
+      // Cover the character feed immediately so Moments.pop (HUD back) doesn't
+      // read as "stuck talking to them" while attach/rebuild runs.
       try {
-        if (wid && RR && typeof RR.attachWorld === "function") {
-          RR.attachWorld(wid, scene || undefined);
-        } else if (scene && scene.prompt && RR && typeof RR.applyScene === "function") {
-          RR.applyScene(scene);
-        }
+        if (typeof RR.beginSceneFade === "function") RR.beginSceneFade();
       } catch (_) {}
+
+      const restorePromise = (async () => {
+        let guideUrl = (scene && scene.imageUrl) || null;
+        // Prefer a live-captured env frame over a possibly-swept guide PNG.
+        if (envFrame) guideUrl = envFrame;
+        else if (guideUrl) {
+          const ok = await probeImageUrl(guideUrl, 1600);
+          if (!ok) guideUrl = null;
+        }
+        const restoreScene = scene && scene.prompt ? {
+          prompt: scene.prompt,
+          imageUrl: guideUrl,
+          hardTransition: true,
+        } : (guideUrl ? { prompt: (Renderer.lastScene && Renderer.lastScene.prompt) || "", imageUrl: guideUrl, hardTransition: true } : null);
+
+        let restored = false;
+        if (wid && typeof RR.attachWorld === "function") {
+          try {
+            restored = (await RR.attachWorld(wid, restoreScene || scene || undefined)) === true;
+          } catch (e) {
+            console.warn("[talk] attachWorld restore failed:", e);
+            restored = false;
+          }
+        }
+        if (!restored && restoreScene && restoreScene.prompt && typeof RR.applyScene === "function") {
+          try {
+            RR.applyScene(restoreScene);
+            restored = true;
+            try { AgentLog.push("talk", "exit restore via rebuild", restoreScene.imageUrl ? "with frame" : "prompt-only"); } catch (_) {}
+          } catch (e) {
+            console.warn("[talk] applyScene restore failed:", e);
+          }
+        }
+        if (!restored) {
+          try { if (typeof RR.endSceneFade === "function") RR.endSceneFade(); } catch (_) {}
+          try { AgentLog.push("img", "conversation exit restore failed — left character world"); } catch (_) {}
+        }
+        return restored;
+      })();
+      restoreInFlight = restorePromise;
+      restorePromise.finally(() => { if (restoreInFlight === restorePromise) restoreInFlight = null; });
     }
 
     function ensureSdk() { return ElevenSDK.load(); }
