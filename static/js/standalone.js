@@ -4668,6 +4668,7 @@
       try { Photo.hide(); Photo.clearTimers(); } catch (_) {} // kill any in-flight receipt
       try { hideCaseWin(); } catch (_) {}    // drop the win screen from the prior run
       state.caseWon = false;
+      state._introGoalShown = false; // re-show the one-line goal on a fresh case
       try { Evidence.reset(); } catch (_) {} // the EVIDENCE score + case file are per-run
       try { Objectives.reset(); } catch (_) {} // objectives are per-run; reseed the spine + challenges
       state.objDirectiveTurn = null;
@@ -5947,7 +5948,15 @@
       // and turns "close the case before you run out" into genuine pressure.
       if (window.Evidence && Evidence.hasFilm && !Evidence.hasFilm()) {
         try { Sound.miss && Sound.miss(); } catch (_) {}
-        try { showRendererToast("Out of film \u2014 close the case with what you've got.", 3200); } catch (_) {}
+        // Accurate copy: the case only closes at the full census, so if you're
+        // out of film you can't finish THIS roll — press R for a fresh case.
+        const closed = (window.Evidence && Evidence.uniqueCount && Evidence.target)
+          ? Evidence.uniqueCount() >= Evidence.target() : false;
+        try {
+          showRendererToast(closed
+            ? "Out of film \u2014 the case is already closed."
+            : "Out of film \u2014 no shots left this roll. Press R for a new case.", 3600);
+        } catch (_) {}
         return;
       }
       // File the specimen exactly as before (case file + server mirror).
