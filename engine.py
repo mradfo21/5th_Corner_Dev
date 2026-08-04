@@ -752,7 +752,12 @@ SCENE_RENDERER = os.getenv("SCENE_RENDERER", "reactor")
 #       - "blend": text/image-to-video; a new guide image blends in-stream with
 #         no reset, prompts re-steer live. (Helios, and the default for anything
 #         new.)
-REACTOR_WORLD_MODEL = os.getenv("REACTOR_WORLD_MODEL", "happy-oyster")
+# Default world model. LingBot World 2 (seed_locked, image-conditioned) is the
+# out-of-the-box choice because it reliably connects + streams on our Reactor
+# account today, whereas Happy Oyster is frequently rejected with HTTP 429
+# ("no available capacity") right now. Both remain selectable live from the UI,
+# and REACTOR_WORLD_MODEL still overrides this per-deploy.
+REACTOR_WORLD_MODEL = os.getenv("REACTOR_WORLD_MODEL", "lingbot-world-2")
 _DEFAULT_HAPPY_OYSTER_SDK = os.getenv("REACTOR_MODEL", "reactor/happy-oyster")
 _DEFAULT_LINGBOT_SDK = os.getenv("REACTOR_LINGBOT_MODEL", "reactor/lingbot-world-2")
 
