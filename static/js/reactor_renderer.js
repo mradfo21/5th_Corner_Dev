@@ -868,14 +868,24 @@
   function captureCaps(caps) {
     if (!caps) return;
     rstate.caps = caps;
+    // The SDK re-emits "capabilitiesReceived" repeatedly (once per state
+    // message on some models), so everything here is CHANGE-AWARE: we only
+    // reassign, log, and emit when the command set / track selection actually
+    // changes. Otherwise a live session floods the console (the observed
+    // "model video output tracks ..." x26) and churns the ceremony UI with
+    // identical events every ~chunk.
     // Commands the model accepts (so the driver only sends supported ones).
     const cmds = Array.isArray(caps.commands) ? caps.commands : null;
     if (cmds) {
       const names = cmds.map((c) => (typeof c === "string" ? c : (c && c.name))).filter(Boolean);
       if (names.length) {
-        rstate.commandSet = new Set(names);
-        log("model commands:", names.join(", "));
-        emitEvent("capabilities", { commands: names });
+        const key = names.join(",");
+        if (key !== rstate._capsCmdKey) {
+          rstate._capsCmdKey = key;
+          rstate.commandSet = new Set(names);
+          log("model commands:", names.join(", "));
+          emitEvent("capabilities", { commands: names });
+        }
       }
     }
     // Tracks the model exposes. Models don't all stream video on "main_video";
@@ -887,17 +897,24 @@
       const outs = tracks.filter((t) => isVid(t) && (t.direction === "recvonly" || !t.direction)).map((t) => t.name).filter(Boolean);
       const ins = tracks.filter((t) => isVid(t) && t.direction === "sendonly").map((t) => t.name).filter(Boolean);
       if (outs.length) {
-        rstate.videoTrackName = outs.indexOf("main_video") >= 0 ? "main_video" : outs[0];
-        log("model video output tracks:", outs.join(", "), "-> using", rstate.videoTrackName);
+        const chosen = outs.indexOf("main_video") >= 0 ? "main_video" : outs[0];
+        const key = outs.join(",") + "|" + ins.join(",") + "|" + chosen;
+        if (key !== rstate._capsTrackKey) {
+          rstate._capsTrackKey = key;
+          rstate.videoTrackName = chosen;
+          log("model video output tracks:", outs.join(", "), "-> using", rstate.videoTrackName);
+          // Surface tracks (esp. any REQUIRED input track) so a model that
+          // needs a fed-in video to produce output is diagnosable instead of
+          // silently stalling.
+          emitEvent("tracks", { outputs: outs, inputs: ins, chosen: rstate.videoTrackName || "main_video" });
+        }
       }
-      // Surface tracks (esp. any REQUIRED input track) so a model that needs a
-      // fed-in video to produce output is diagnosable instead of silently stalling.
-      emitEvent("tracks", { outputs: outs, inputs: ins, chosen: rstate.videoTrackName || "main_video" });
     }
   }
   function clearCaps() {
     rstate.caps = null; rstate.commandSet = null; rstate.currentChunk = 0;
     rstate.videoTrackName = null; rstate.videoAttached = false;
+    rstate._capsCmdKey = null; rstate._capsTrackKey = null;
   }
   // Wait (briefly) for the model's command schema before the OPENING command, so
   // the driver sends the right prompt command (set_shot vs schedule_prompt vs
