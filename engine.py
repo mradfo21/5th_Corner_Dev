@@ -2653,7 +2653,13 @@ _DANGER_RESPONSE_SCHEMA = {
     "properties": {
         # 0 = safe, 1 = threatened (hostile in frame, not committing),
         # 2 = attacking (aimed/lunging at camera, or camera is IN a hazard).
-        "level": {"type": "INTEGER", "enum": [0, 1, 2]},
+        # NOTE: the Gemini structured-output API requires enum values to be
+        # STRINGS even for an INTEGER field — passing raw ints (0,1,2) makes
+        # generateContent reject the whole request with 400 INVALID_ARGUMENT
+        # ("Invalid value ... (TYPE_STRING)"), which silently broke the entire
+        # danger-vignette loop (every ~1 Hz call 400'd). The model still
+        # returns an integer; the caller also clamps to 0..2 defensively.
+        "level": {"type": "INTEGER", "enum": ["0", "1", "2"]},
         # A terse, human-readable reason (<=8 words). Shown in the client
         # log for tuning and debugging; never rendered to the player.
         "reason": {"type": "STRING"},
