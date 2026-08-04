@@ -5208,7 +5208,10 @@
   // appraised; new/rare/well-framed subjects pay more and fill the dossier.
   // Persistent per-run + exposed as window.Evidence for future engine hooks.
   // ------------------------------------------------------------------
-  const CASE_TARGET = 12;  // distinct subjects to document to CLOSE THE CASE (win)
+  const CASE_TARGET = 8;   // distinct subjects to document to CLOSE THE CASE (win)
+                           // Kept intentionally attainable: a tight, satisfying
+                           // dossier you can actually finish in a session beats a
+                           // 12-slot grind the regenerating world made a slog.
   const FILM_START = 36;   // exposures per run — a real, depleting resource
   const Evidence = (function () {
     const KEY = "evidence_v1";

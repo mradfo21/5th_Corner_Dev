@@ -2291,7 +2291,12 @@ _UNDERWHELMING_LABELS = frozenset({
 _UNDERWHELMING_PART_RE = re.compile(
     r"\b(glove|gloves|hand|hands|finger|fingers|thumb|thumbs|palm|palms|"
     r"wrist|wrists|knuckle|knuckles|fist|fists|arm|arms|forearm|forearms|"
-    r"elbow|elbows)\b"
+    r"elbow|elbows|"
+    # More of the camera operator's own body / clothing that reads as a
+    # meaningless FPS-foreground tag ("photograph the leg/boot").
+    r"leg|legs|thigh|thighs|knee|knees|shin|shins|foot|feet|boot|boots|"
+    r"shoe|shoes|shoulder|shoulders|torso|chest|lap|sleeve|sleeves|"
+    r"strap|jacket cuff|cuff)\b"
 )
 
 
@@ -2609,6 +2614,17 @@ def _detect_objects(image_path: str = None,
             h = max(0.0, min(1.0, ymax - ymin))
             # Drop degenerate or full-frame boxes (not useful as a tag point).
             if w <= 0.001 or h <= 0.001 or (w >= 0.98 and h >= 0.98):
+                continue
+            # GEOMETRY BACKSTOP for the camera operator's own body/gear. In this
+            # first-person, camera-in-hand conceit the player's arm / hand / held
+            # camcorder juts up from the very bottom of the frame in EVERY shot,
+            # and the model sometimes labels it something the word filter misses
+            # ("grip", "device", "object"). Such a blob is unmistakable by shape:
+            # it runs off the bottom edge and is tall. Reject it so it can never
+            # become a "photograph the hand" tag/objective. Conservative bounds
+            # (must touch the very bottom AND be tall) so a real low foreground
+            # subject — a body on the ground, a creature lunging — still tags.
+            if ymax >= 0.9 and h >= 0.5:
                 continue
             key = label[:24]
             if key in seen:
@@ -3099,24 +3115,20 @@ def _fallback_directive(st: dict) -> dict:
     even with no network / no key.
     """
     phase = str((st or {}).get("current_phase", "normal") or "normal").lower()
-    recent = (st or {}).get("recent_events") or []
-    seen = (st or {}).get("seen_elements") or []
-    subject = ""
-    if seen:
-        subject = str(seen[-1]).strip()
+    # DURABLE, CATEGORY leads only. The world regenerates each scene, so a lead
+    # naming a specific seen element ("Document the blue container") points at
+    # something that has already vanished and reads as impossible. Instead point
+    # at a recurring KIND of evidence the world keeps producing, so any matching
+    # subject the player photographs satisfies it — always achievable.
     templates = {
-        "normal": ("Survey the area",
-                   "Read the scene and document your first real subject."),
-        "escalating": ("Keep the camera close",
-                       "Something is shifting — capture it before it turns."),
-        "critical": ("Get what you can and move",
-                     "It's turning against you — shoot the evidence and stay alive."),
+        "normal": ("Document A Specimen",
+                   "Find biological evidence of what they did here and get it on film."),
+        "escalating": ("Photograph The Machinery",
+                       "The facility's equipment is the story — capture it before it fails."),
+        "critical": ("Capture A Victim",
+                     "It's turning deadly — document the aftermath and stay alive."),
     }
     lead, detail = templates.get(phase, templates["normal"])
-    # If the world has surfaced a named element, make the lead concrete.
-    if subject and phase != "critical":
-        lead = f"Document the {subject}"[:48]
-        detail = "It matters to the case — get it on the record."
     return {"lead": lead, "detail": detail, "generated": False}
 
 
@@ -3160,24 +3172,30 @@ def generate_directive(session_id: str = "default") -> dict:
 
         prompt = (
             "You are the objective director for a first-person investigative "
-            "documentary game. The WIN CONDITION is photography: the player must "
-            "DOCUMENT distinct subjects with their camera to close the case. Your "
-            "job is to keep them pointed at the NEXT THING WORTH PHOTOGRAPHING.\n\n"
-            "Given the CURRENT world state, write the player's single most "
-            "pressing CURRENT LEAD. It should name a CONCRETE subject or place "
-            "that is (or plausibly is) on screen right now and is worth "
-            "documenting, and imply the action to reach/expose it (get closer, "
-            "round the corner, force the door — THEN shoot it). It must fit the "
-            "fiction. Prefer a specific noun from KNOWN ELEMENTS when one fits.\n\n"
+            "photography game. The WIN CONDITION is documenting distinct evidence "
+            "to build a case file. Your job is to give the player a DURABLE "
+            "current lead that stays achievable.\n\n"
+            "CRITICAL RULE: the world REGENERATES every scene, so a specific "
+            "one-off prop ('the blue container', 'that severed hand') VANISHES "
+            "and can never be found again — an objective naming one feels broken "
+            "and impossible. So the LEAD must name a recurring KIND / CATEGORY of "
+            "evidence the world keeps producing (a specimen, a victim/body, the "
+            "machinery, a containment vessel, a mutation/creature, a document or "
+            "sign, a bloodstain/aftermath), NOT one unique object. Any matching "
+            "thing the player photographs satisfies it, so it's always doable.\n\n"
+            "Choose the category that best fits the CURRENT world + phase and "
+            "reads as the most compelling next thing to hunt for and shoot.\n\n"
             f"PREMISE / WORLD: {world_prompt}\n"
             f"RECENT BEATS: {recent_txt}\n"
             f"KNOWN ELEMENTS: {seen_txt}\n"
             f"PHASE: {phase} (threat {threat}); TIME: {tod}\n\n"
-            "The LEAD names the SUBJECT/GOAL (e.g. 'Document The Sealed Specimen "
-            "Bay', 'Reach The Collapsed Reactor'); the DETAIL says why it matters "
-            "or what to watch for. Do NOT tell them to 'wait' or 'observe'.\n\n"
+            "Phrase the LEAD as a durable directive to document that category, "
+            "e.g. 'Document A Specimen', 'Photograph The Machinery', 'Capture A "
+            "Victim', 'Document A Mutation'. Use the article 'a/the' — never a "
+            "unique proper-noun object. The DETAIL is one grounded sentence of "
+            "why it matters. Do NOT tell them to 'wait' or 'observe'.\n\n"
             "Respond with ONLY a JSON object, no prose, no code fences:\n"
-            '{"lead": "<imperative objective, 2-7 words, Title Case, no period>", '
+            '{"lead": "<durable imperative, 2-6 words, Title Case, no period>", '
             '"detail": "<one grounded sentence of context, <= 16 words>"}'
         )
 
