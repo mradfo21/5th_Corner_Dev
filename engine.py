@@ -2293,9 +2293,12 @@ _UNDERWHELMING_PART_RE = re.compile(
     r"wrist|wrists|knuckle|knuckles|fist|fists|arm|arms|forearm|forearms|"
     r"elbow|elbows|"
     # More of the camera operator's own body / clothing that reads as a
-    # meaningless FPS-foreground tag ("photograph the leg/boot").
+    # meaningless FPS-foreground tag ("photograph the leg/boot"). Deliberately
+    # EXCLUDES words that double as real evidence in this world — "chest"
+    # (a supply/medical chest = a container) and "torso" (a victim's remains) —
+    # so genuine case subjects still tag.
     r"leg|legs|thigh|thighs|knee|knees|shin|shins|foot|feet|boot|boots|"
-    r"shoe|shoes|shoulder|shoulders|torso|chest|lap|sleeve|sleeves|"
+    r"shoe|shoes|shoulder|shoulders|sleeve|sleeves|"
     r"strap|jacket cuff|cuff)\b"
 )
 
@@ -2624,7 +2627,11 @@ def _detect_objects(image_path: str = None,
             # become a "photograph the hand" tag/objective. Conservative bounds
             # (must touch the very bottom AND be tall) so a real low foreground
             # subject — a body on the ground, a creature lunging — still tags.
-            if ymax >= 0.9 and h >= 0.5:
+            # The held-camera/arm blob is a TALL, NARROW column rising from the
+            # bottom; requiring h > w (taller than wide) keeps WIDE foreground
+            # subjects (a sprawled victim, a hulking creature) taggable — which
+            # matters because "Capture A Victim" is a real objective.
+            if ymax >= 0.9 and h >= 0.5 and h > w:
                 continue
             key = label[:24]
             if key in seen:
