@@ -9018,8 +9018,73 @@
     let convo = null;            // the active per-segment SDK session
     let agentCfg = null;         // {agent_id, signed_url} — the narrator's agent
     let agentAvailable = null;   // did the server advertise a usable agent?
+    let silentInput = null;      // synthetic silent mic (see startSessionNoMic)
 
     function isBusy() { return busy || playing; }
+
+    // The narrator is ONE-WAY (a voice OVER the scene, never listening), but the
+    // ElevenLabs VoiceConversation SDK always grabs a microphone on connect —
+    // so on any device with no mic, no mic permission, or a locked-down browser,
+    // startSession() throws "Requested device not found" and narration silently
+    // dies. Since we never actually listen, we hand the SDK a SYNTHETIC SILENT
+    // audio track instead of a real mic: voice OUT still plays, and there is zero
+    // microphone dependency. makeSilentMicStream() builds that track from a muted
+    // WebAudio graph; closeSilentInput() tears it down.
+    function makeSilentMicStream() {
+      try {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        if (!Ctx) return null;
+        const ctx = new Ctx();
+        const dest = ctx.createMediaStreamDestination();
+        // A gain-0 oscillator keeps the output track "live" (unended) without
+        // ever emitting audible sound.
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        gain.gain.value = 0;
+        osc.connect(gain).connect(dest);
+        osc.start();
+        return { stream: dest.stream, ctx, osc };
+      } catch (_) { return null; }
+    }
+
+    function closeSilentInput() {
+      if (!silentInput) return;
+      const s = silentInput; silentInput = null;
+      try { s.osc && s.osc.stop(); } catch (_) {}
+      try { s.stream && s.stream.getTracks().forEach((t) => t.stop()); } catch (_) {}
+      try { s.ctx && s.ctx.close(); } catch (_) {}
+    }
+
+    // Start a narrator SDK session WITHOUT requiring a real microphone. We
+    // briefly shim navigator.mediaDevices.getUserMedia so the SDK's connect-time
+    // audio-capture request resolves to a clone of our silent track, then restore
+    // the original immediately (the narrator never switches input devices, so
+    // getUserMedia is only called once, during startSession). Any failure falls
+    // back to the real getUserMedia — and the caller still degrades to timed
+    // subtitles if that throws too.
+    async function startSessionNoMic(Conversation, opts) {
+      const md = (navigator && navigator.mediaDevices) || null;
+      const orig = md && md.getUserMedia ? md.getUserMedia.bind(md) : null;
+      closeSilentInput();
+      silentInput = orig ? makeSilentMicStream() : null;
+      if (orig && silentInput && silentInput.stream) {
+        md.getUserMedia = (constraints) => {
+          try {
+            if (constraints && constraints.audio && silentInput && silentInput.stream) {
+              // Hand back a fresh clone so the SDK can stop "its" tracks at
+              // endSession without ending our keep-alive source.
+              return Promise.resolve(silentInput.stream.clone());
+            }
+          } catch (_) {}
+          return orig(constraints);
+        };
+      }
+      try {
+        return await Conversation.startSession(opts);
+      } finally {
+        if (orig) { try { md.getUserMedia = orig; } catch (_) {} }
+      }
+    }
 
     function show(speaker, text) {
       if (el.narratorSpeaker) el.narratorSpeaker.textContent = speaker ? speaker.toUpperCase() : "";
@@ -9042,6 +9107,7 @@
 
     async function endConvo() {
       if (convo) { const c = convo; convo = null; try { await c.endSession(); } catch (_) {} }
+      closeSilentInput();
     }
 
     // Speak ONE segment through the generative agent: a short SDK session whose
@@ -9093,7 +9159,9 @@
         };
         if (agentCfg.signed_url) opts.signedUrl = agentCfg.signed_url; else opts.agentId = agentCfg.agent_id;
         try {
-          convo = await Conversation.startSession(opts);
+          // One-way: feed a synthetic silent mic so no real microphone (or mic
+          // permission) is ever required just to HEAR the narration.
+          convo = await startSessionNoMic(Conversation, opts);
           try { convo.setMicMuted(true); } catch (_) {} // one-way — never listen
         } catch (e) {
           AgentLog.push("error", "narrator start failed \u2014 subtitle", AgentLog.clip(e && (e.message || e), 100));
