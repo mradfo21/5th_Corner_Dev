@@ -17,8 +17,16 @@
   // let it PLAY for this watch window so the world visibly evolves. Advancing off
   // the scene_image feed item (before the re-anchor established) stacked resets
   // faster than the model could re-stage and blacked out the stream.
-  const AUTOPLAY_REALTIME_WATCH_MS = (typeof window !== "undefined" && window.__AUTOPLAY_WATCH_MS__) || 7000;   // let the live video play this long before advancing
-  const AUTOPLAY_REALTIME_MAX_WAIT_MS = 20000; // never wait longer than this for the video to appear
+  //
+  // The watch window is deliberately LONG for the seed-locked models (LingBot):
+  // measured, the live world takes ~14s just to START streaming after a
+  // re-anchor, and needs several more seconds before it has visibly evolved.
+  // A short window (the old 7s) advanced — i.e. hard-reset the world — before it
+  // ever settled, which read as constant "flashing"/black re-staging and meant
+  // the player never actually got to SEE the live world. Give it real time to
+  // render and breathe before the next turn resets it.
+  const AUTOPLAY_REALTIME_WATCH_MS = (typeof window !== "undefined" && window.__AUTOPLAY_WATCH_MS__) || 22000;  // let the live video play this long before advancing
+  const AUTOPLAY_REALTIME_MAX_WAIT_MS = 30000; // never wait longer than this for the video to appear
   const REALTIME_MAX_RETRIES = 3; // transient realtime errors retry before falling back to stills
   // Reactor occasionally has no free server for the model ("no available
   // capacity" 429s) — an upstream availability shortage, not a local WebRTC
