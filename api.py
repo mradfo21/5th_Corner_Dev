@@ -711,7 +711,14 @@ def api_objectives():
         session_id = engine._resolve_request_session_id()
         s = engine.get_state(session_id) or {}
         # Cache is keyed by session too, so two players' leads never collide.
-        key = (session_id, s.get("turn_count", 0), s.get("current_phase", "normal"), len(s.get("seen_elements") or []))
+        # NOTE: deliberately NOT keyed on turn_count. Re-deriving the lead every
+        # single turn made the objective "drift" — it rewrote itself constantly
+        # so the player never had a stable goal to pursue (the "directionless"
+        # complaint). Instead the lead is STICKY: it only refreshes when the
+        # world meaningfully changes — the phase escalates or a NEW element is
+        # discovered — so a lead persists across turns until it's plausibly
+        # resolved or the situation shifts.
+        key = (session_id, s.get("current_phase", "normal"), len(s.get("seen_elements") or []))
         if _OBJECTIVES_CACHE.get("key") == key and _OBJECTIVES_CACHE.get("value"):
             return jsonify(_OBJECTIVES_CACHE["value"])
         directive = engine.generate_directive(session_id)
@@ -766,6 +773,10 @@ def api_status():
             "chaos": s.get("chaos_level", 0),
             "turn": s.get("turn_count", 0),
             "alive": s.get("player_state", {}).get("alive", True),
+            # Surface HEALTH so the client can show a real stakes meter (0-100).
+            # The danger vignette loop drains it; without it on the HUD the
+            # player had no visible sense of jeopardy.
+            "health": s.get("player_state", {}).get("health", 100),
             "in_combat": s.get("in_combat", False),
             "time_of_day": s.get("time_of_day", ""),
             "inventory": inventory,

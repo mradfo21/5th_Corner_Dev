@@ -1110,8 +1110,29 @@
     // floats over the black boot / "rendering" void.
     try { Objectives.reveal(); } catch (_) {}
     try { Objectives.syncCase(); } catch (_) {}
+    // Surface the CASE FILE goal (EVIDENCE + census + stakes) the moment the
+    // first scene is readable — not only when the camera is first raised — so
+    // the player knows what the game is FOR from turn one (the "directionless"
+    // complaint: the win condition was effectively hidden until you happened to
+    // pick up the camera).
+    try { Evidence.reveal(); } catch (_) {}
+    try { showIntroGoalOnce(); } catch (_) {}
     try { refreshDirective(true); } catch (_) {}
     try { updateScanButton(); } catch (_) {} // a scene is readable — SCAN is live
+  }
+
+  // A single, once-per-run nudge that states the whole game in one line the
+  // first time a scene is up: you are here to DOCUMENT, and documenting N
+  // distinct subjects closes the case. Uses the existing renderer toast so it's
+  // non-intrusive and self-dismisses.
+  function showIntroGoalOnce() {
+    if (state._introGoalShown) return;
+    state._introGoalShown = true;
+    const target = (window.Evidence && Evidence.target && Evidence.target()) || 12;
+    try {
+      showRendererToast("Raise your camera and DOCUMENT the evidence \u2014 photograph " +
+        target + " distinct subjects to close the case.", 6000);
+    } catch (_) {}
   }
 
   // ------------------------------------------------------------------
@@ -3464,7 +3485,7 @@
   // Small transient on-screen note so it's obvious which renderer is active
   // (useful while testing / toggling with the G key).
   let _rendererToastTimer = null;
-  function showRendererToast(text) {
+  function showRendererToast(text, dur) {
     let toast = document.getElementById("renderer-toast");
     if (!toast) {
       toast = document.createElement("div");
@@ -3475,7 +3496,7 @@
     toast.textContent = text;
     toast.classList.add("show");
     clearTimeout(_rendererToastTimer);
-    _rendererToastTimer = setTimeout(() => toast.classList.remove("show"), 2200);
+    _rendererToastTimer = setTimeout(() => toast.classList.remove("show"), dur || 2200);
   }
 
   // ------------------------------------------------------------------
@@ -5187,9 +5208,11 @@
   // Persistent per-run + exposed as window.Evidence for future engine hooks.
   // ------------------------------------------------------------------
   const CASE_TARGET = 12;  // distinct subjects to document to CLOSE THE CASE (win)
+  const FILM_START = 36;   // exposures per run — a real, depleting resource
   const Evidence = (function () {
     const KEY = "evidence_v1";
     let total = 0, shots = 0;
+    let film = FILM_START;      // exposures remaining this run (0 => out of film)
     let seen = new Set();       // appraised item labels — drives scoring dedup + the census
     let spent = new Set();      // detected POIs already photographed — drives the "document once" gate
     try {
@@ -5197,6 +5220,7 @@
       if (raw && typeof raw === "object") {
         total = Number(raw.total) || 0;
         shots = Number(raw.shots) || 0;
+        film = (typeof raw.film === "number") ? raw.film : FILM_START;
         seen = new Set(Array.isArray(raw.seen) ? raw.seen : []);
         // Migrate saves from before "document once": if there's no spent set yet,
         // treat everything already in the dossier as spent so old subjects don't
@@ -5207,7 +5231,21 @@
     } catch (_) {}
 
     function persist() {
-      try { localStorage.setItem(KEY, JSON.stringify({ total, shots, seen: [...seen], spent: [...spent] })); } catch (_) {}
+      try { localStorage.setItem(KEY, JSON.stringify({ total, shots, film, seen: [...seen], spent: [...spent] })); } catch (_) {}
+    }
+
+    // Paint the FILM counter (exposures remaining) + flag low / empty.
+    function renderFilm() {
+      if (!el.evidenceHud) return;
+      const v = el.evidenceHud.querySelector(".ev-film-val");
+      const cap = el.evidenceHud.querySelector(".ev-film-cap");
+      const wrap = el.evidenceHud.querySelector(".ev-film");
+      if (v) v.textContent = String(Math.max(0, film));
+      if (cap) cap.textContent = "/" + FILM_START;
+      if (wrap) {
+        wrap.classList.toggle("low", film <= 8 && film > 0);
+        wrap.classList.toggle("out", film <= 0);
+      }
     }
 
     function fmt(n) { return Math.round(n).toLocaleString("en-US"); }
@@ -5285,7 +5323,15 @@
       // "Document once": a photographed POI is spent and can't be re-farmed.
       isSpent: (label) => !!label && spent.has(String(label).toLowerCase()),
       spend: (label) => { if (label) { spent.add(String(label).toLowerCase()); persist(); } },
-      addShot: () => { shots += 1; },
+      // FILM — a real depleting resource. addShot spends one exposure.
+      film: () => film,
+      filmCap: () => FILM_START,
+      hasFilm: () => film > 0,
+      addShot: () => {
+        shots += 1; film = Math.max(0, film - 1); persist(); renderFilm();
+        if (film === 8) { try { showRendererToast("8 exposures left \u2014 make them count.", 3000); } catch (_) {} }
+        else if (film === 0) { try { showRendererToast("That was your last frame.", 3000); } catch (_) {} }
+      },
       add(points) { total = Math.max(0, total + (Number(points) || 0)); persist(); renderHud(true); },
       // Flash the HUD when a brand-new subject joins the case file.
       pulseSubject() {
@@ -5295,16 +5341,18 @@
         el.evidenceHud.classList.add("subject");
       },
       // Show the dossier HUD even before the first point (so the goal is known).
-      reveal() { if (el.evidenceHud) { el.evidenceHud.classList.remove("hidden"); renderCase(); } },
+      reveal() { if (el.evidenceHud) { el.evidenceHud.classList.remove("hidden"); renderCase(); renderFilm(); } },
       renderHud,
+      renderFilm,
       reset() {
-        total = 0; shots = 0; seen = new Set(); spent = new Set(); persist();
+        total = 0; shots = 0; film = FILM_START; seen = new Set(); spent = new Set(); persist();
         if (el.evidenceHud) {
           el.evidenceHud.classList.add("hidden");
           el.evidenceHud.classList.remove("case-complete");
           const t = el.evidenceHud.querySelector(".ev-total");
           if (t) { t.textContent = "0"; t.setAttribute("data-val", "0"); }
           renderCase();
+          renderFilm();
         }
       },
     };
@@ -5894,6 +5942,14 @@
     // `spec` = {texture, region, kind, label, zoom, focus, focusGrade}.
     function capture(spec) {
       if (!spec || !spec.texture) return;
+      // OUT OF FILM: exposures are a finite resource. When the roll is spent you
+      // can't shoot — a hard stop that makes every earlier shot a real decision
+      // and turns "close the case before you run out" into genuine pressure.
+      if (window.Evidence && Evidence.hasFilm && !Evidence.hasFilm()) {
+        try { Sound.miss && Sound.miss(); } catch (_) {}
+        try { showRendererToast("Out of film \u2014 close the case with what you've got.", 3200); } catch (_) {}
+        return;
+      }
       // File the specimen exactly as before (case file + server mirror).
       try { Investigations.store(spec); } catch (_) {}
       reveal(spec.texture, { zoom: spec.zoom || 1, focus: spec.focus, grade: spec.focusGrade, subject: spec.subject });
@@ -9596,6 +9652,18 @@
         el.backendName.textContent = label;
       }
       if (typeof s.image_enabled === "boolean") state.imagesEnabled = s.image_enabled;
+      // HEALTH stakes meter (top-center dossier HUD). Server-authoritative;
+      // the danger vignette loop drains it. Colour-flags as it drops.
+      if (el.evidenceHud && typeof s.health === "number") {
+        const hv = el.evidenceHud.querySelector(".ev-health-val");
+        const hp = Math.max(0, Math.min(100, Math.round(s.health)));
+        if (hv) hv.textContent = String(hp);
+        const hEl = el.evidenceHud.querySelector(".ev-health");
+        if (hEl) {
+          hEl.classList.toggle("low", hp <= 50 && hp > 25);
+          hEl.classList.toggle("critical", hp <= 25);
+        }
+      }
       renderInventory(s.inventory);
       if (el.hudTimeWrap && el.hudTime) {
         if (s.time_of_day) {

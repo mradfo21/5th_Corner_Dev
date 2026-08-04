@@ -3160,15 +3160,22 @@ def generate_directive(session_id: str = "default") -> dict:
 
         prompt = (
             "You are the objective director for a first-person investigative "
-            "documentary game. The player explores a strange, evolving world and "
-            "photographs subjects to build a case file. Given the CURRENT world "
-            "state, write the player's single most pressing CURRENT OBJECTIVE — "
-            "the 'lead' they should pursue right now. It must fit the fiction and "
-            "point toward action (explore, reach, document, escape, confront).\n\n"
+            "documentary game. The WIN CONDITION is photography: the player must "
+            "DOCUMENT distinct subjects with their camera to close the case. Your "
+            "job is to keep them pointed at the NEXT THING WORTH PHOTOGRAPHING.\n\n"
+            "Given the CURRENT world state, write the player's single most "
+            "pressing CURRENT LEAD. It should name a CONCRETE subject or place "
+            "that is (or plausibly is) on screen right now and is worth "
+            "documenting, and imply the action to reach/expose it (get closer, "
+            "round the corner, force the door — THEN shoot it). It must fit the "
+            "fiction. Prefer a specific noun from KNOWN ELEMENTS when one fits.\n\n"
             f"PREMISE / WORLD: {world_prompt}\n"
             f"RECENT BEATS: {recent_txt}\n"
             f"KNOWN ELEMENTS: {seen_txt}\n"
             f"PHASE: {phase} (threat {threat}); TIME: {tod}\n\n"
+            "The LEAD names the SUBJECT/GOAL (e.g. 'Document The Sealed Specimen "
+            "Bay', 'Reach The Collapsed Reactor'); the DETAIL says why it matters "
+            "or what to watch for. Do NOT tell them to 'wait' or 'observe'.\n\n"
             "Respond with ONLY a JSON object, no prose, no code fences:\n"
             '{"lead": "<imperative objective, 2-7 words, Title Case, no period>", '
             '"detail": "<one grounded sentence of context, <= 16 words>"}'

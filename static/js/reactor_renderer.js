@@ -915,6 +915,7 @@
     rstate.caps = null; rstate.commandSet = null; rstate.currentChunk = 0;
     rstate.videoTrackName = null; rstate.videoAttached = false;
     rstate._capsCmdKey = null; rstate._capsTrackKey = null;
+    rstate._appliedPrompt = null; rstate._appliedImageUrl = null;
   }
   // Wait (briefly) for the model's command schema before the OPENING command, so
   // the driver sends the right prompt command (set_shot vs schedule_prompt vs
@@ -1345,10 +1346,29 @@
 
   function applyScene(scene) {
     if (!scene || !scene.prompt) return;
+    const imageUrl = scene.imageUrl || null;
+    const hard = !!scene.hardTransition;
+    // DEDUPE redundant re-applies. The standalone layer re-applies the CURRENT
+    // scene on assorted polls/updates, and on a seed-locked model (LingBot)
+    // every apply carrying a "new" guide image is a full world RESET. Re-applying
+    // an UNCHANGED scene while the world is already live therefore caused endless
+    // re-staging — the flashing / "never settles" / black re-anchor loop. So if
+    // the incoming scene is identical to the one already applied AND the live
+    // video is genuinely on screen, do nothing. This is gated on isShowing() so a
+    // reconnect / model-swap re-apply (which runs while NOT showing) still
+    // re-establishes the world.
+    const v = rstate.video || document.getElementById("reactor-video");
+    const showing = !!(v && v.videoWidth > 0 && !rstate.freezeActive && !rstate.blackout);
+    if (!hard && rstate.started && showing &&
+        rstate._appliedPrompt === scene.prompt && rstate._appliedImageUrl === imageUrl) {
+      return;
+    }
+    rstate._appliedPrompt = scene.prompt;
+    rstate._appliedImageUrl = imageUrl;
     rstate.pending = {
       prompt: scene.prompt,
-      imageUrl: scene.imageUrl || null,
-      hardTransition: !!scene.hardTransition,
+      imageUrl: imageUrl,
+      hardTransition: hard,
     };
     // Remember the latest complete scene so a mid-game model swap can re-apply it
     // on the new model without waiting for the next turn.
