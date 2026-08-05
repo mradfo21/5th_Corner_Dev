@@ -2589,8 +2589,16 @@ def index():
 
     Legacy behavior: /standalone still serves the immersive UI directly
     (defaulting to the shared 'default' session when no ?session=<id> is
-    supplied), so bookmarks and embed links continue to work."""
-    return redirect('/lobby')
+    supplied), so bookmarks and embed links continue to work.
+
+    Query string forwarding: any query params on `/` (e.g. `?comp=<code>`
+    handed to an influencer, or utm tags) are carried through to `/lobby`
+    so downstream code (the coin-op comp mechanism, analytics) can see
+    them. Without this a shared root URL would silently drop the comp
+    code and drop the influencer into the paid flow on first play."""
+    qs = request.query_string.decode("utf-8") if request.query_string else ""
+    target = "/lobby" + (f"?{qs}" if qs else "")
+    return redirect(target)
 
 
 # ═══════════════════════════════════════════════════════════════════
