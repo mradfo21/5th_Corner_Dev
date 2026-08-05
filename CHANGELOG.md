@@ -53,6 +53,13 @@ redirect the game meant reading twelve paragraphs of description first.
 - **The World Studio map shows the ranking too.** Four zones, `start here` /
   `advanced` badges, and the rulebook cards recede. Hiding cards would have
   broken the map metaphor, so they dim instead.
+- **Fixed the prompt column leaking into the Cast tab.** `.we-fields` has always
+  been given a `.hidden` class when Cast or Worlds is active and never a CSS
+  rule to go with it. It only looked correct because the column happened to be
+  empty on first load — visit a prompt tab and come back and every prompt was
+  still on screen underneath the cast form. Its DOM is now dropped when it isn't
+  the active tab too; unsaved drafts live in the edit buffer, so they survive the
+  round-trip.
 
 ---
 

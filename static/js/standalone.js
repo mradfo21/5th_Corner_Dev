@@ -3677,6 +3677,10 @@
       if (el.weFields) el.weFields.classList.toggle("hidden", showWorlds || showCast);
       if (el.weCast) el.weCast.classList.toggle("hidden", !showCast);
       if (el.weWorlds) el.weWorlds.classList.toggle("hidden", !showWorlds);
+      // Drop the prompt column's DOM when it isn't the active tab: dozens of
+      // textareas holding tens of thousands of characters have no business
+      // sitting behind the cast form.
+      if ((showWorlds || showCast) && el.weFields) el.weFields.innerHTML = "";
       if (showWorlds) { renderWorlds(); refreshDirtyBadge(); return; }
       if (showCast) { renderCast(); refreshDirtyBadge(); return; }
       if (!el.weFields) return;

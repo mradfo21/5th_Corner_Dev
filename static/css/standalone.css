@@ -6638,6 +6638,12 @@ body.we-resizing #scene-frame, body.we-resizing iframe { pointer-events: none; }
 }
 #world-editor .we-warn.hidden { display: none; }
 
+/* The prompt-field column. It has always been given a `.hidden` class when the
+   Cast or Worlds tab is active, but never a rule to go with it — which only
+   stayed invisible because it happened to be empty on first load. Switch to a
+   prompt tab and back and the prompts stayed on screen under the cast form. */
+#world-editor .we-fields.hidden { display: none; }
+
 /* One line of framing above a tab's fields. */
 #world-editor .we-blurb {
   font-size: 11.5px; line-height: 1.5; color: rgba(232, 224, 200, 0.55);
