@@ -650,7 +650,8 @@
        the world change: edits Apply Live (next turn) or Save & Restart into a
        fresh instance. The Worlds tab saves/loads named prompt-sets. Populated
        + wired by the WorldEditor module in standalone.js from the existing
-       /api/admin/studio/* endpoints. Toggle with E or the EDIT rail button.
+       /api/admin/studio/* endpoints. Toggle with ` or the EDIT rail button
+       (not E — that's strafe-right in movement mode).
        ═══════════════════════════════════════════════════════════════════ -->
   <aside id="world-editor" class="hidden" aria-label="World Editor" aria-hidden="true">
     <header class="we-head">
@@ -665,7 +666,7 @@
           <button id="we-font-up" class="we-tool" type="button" title="Larger editor text (double-click either to reset)">A+</button>
         </span>
         <button id="we-wide" class="we-tool" type="button" title="Toggle near-full-width editing">Wide</button>
-        <button id="we-close" class="we-close" type="button" title="Close (E)" aria-label="Close editor">&#10005;</button>
+        <button id="we-close" class="we-close" type="button" title="Close (`)" aria-label="Close editor">&#10005;</button>
       </div>
     </header>
 

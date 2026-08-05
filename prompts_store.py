@@ -359,6 +359,15 @@ PROMPT_SCHEMA: List[Dict[str, Any]] = [
         "live": True,
     },
     {
+        "id": "world_evolution_instructions",
+        "label": "World Evolution Rules",
+        "group": "world",
+        "type": "longtext",
+        "description": "House rules for the per-turn pass that REWRITES the whole world state. This runs after every action and its output becomes the world every other prompt reads next turn — so anything it drifts away from is gone. Use it to say what must stay fixed and what is allowed to change.",
+        "code_refs": ["evolve_prompt_file.py"],
+        "live": True,
+    },
+    {
         "id": "situation_summary_instructions",
         "label": "Situation Summary",
         "group": "narrative",

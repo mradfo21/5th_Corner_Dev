@@ -1,5 +1,79 @@
 # 🔧 CHANGELOG - August 5, 2026
 
+## 🌍 The authored world now reaches every generative surface
+
+**Files:** `game_identity.py`, `engine.py`, `evolve_prompt_file.py`,
+`veo_video_utils.py`, `prompts_store.py`, `static/js/standalone.js`,
+`world_studio.html`, `templates/standalone.html`, `test_world_authoring.py`,
+`CAST_AND_CAMERA.md`
+
+The Cast & Camera sheet was wired into the still-image pipeline and the main
+narrative prompts, and nowhere else. Everything around them built its own text
+from hardcoded Four Corners / first-person prose, so authoring a character, a
+level, and a camera changed the stills while the rest of the game carried on
+describing the shipped world — which is exactly what "I can't truly edit the
+world, it's inconsistent" feels like from the inside.
+
+**Surfaces the sheet never reached:**
+
+- **The live world model.** `build_realtime_base` steered from a hardcoded
+  first-person 1993 VHS anchor. That path has no negative prompt, no directive
+  block, and no reference plates, so the anchor is the entire contract and
+  nothing downstream could correct it — selecting third person changed every
+  still frame and none of the live world.
+- **The flipbook.** Its wrapper blocks stacked `FIRST-PERSON ONLY - NO 3RD
+  PERSON ALLOWED` and `'Camera following a character' shots will invalidate the
+  entire grid` *in front of* the already-reconciled prompt, forbidding exactly
+  what a third-person mode asks for. A grid is one image, so every panel
+  inherited it.
+- **Veo.** `NEVER show the player character`, hardcoded, in a prompt format that
+  accepts no negatives.
+- **The vision loop.** Its worked example was a Horizon truck on sandy desert —
+  and its output is the spatial anchor the *next* image is built from, so it
+  dragged an authored level back toward the shipped one one turn at a time.
+  SCAN also tagged your own character as an anonymous figure you could walk up
+  to and talk to.
+- **The per-turn world rewrite.** It was handed a section skeleton reading
+  `ENVIRONMENT: Four Corners desert`, and its output *is* the world state every
+  other prompt reads next turn — a few turns of that and the authored world was
+  gone. Worse, its house rules (`world_evolution_instructions`) sat in the
+  prompt file read by nothing, making the one prompt that rewrites the world
+  every turn the one prompt no editor could touch. It is now used, and exposed.
+- **Reset and intro.** `/api/reset` — what the in-game editor's **Save &
+  Restart** calls — seeded the raw `world_initial_state` without the cast sheet
+  (only the admin-page reset did it properly), and both intro paths then
+  replaced the entire world document with a one-sentence Horizon prologue. So
+  restarting after authoring a world produced a run that had never heard of it.
+- **Camp, conversation portraits, talk personas, narrator lines, objectives,
+  field notes, and the starting weather**, all fixed to the shipped premise.
+
+**What made it fixable:** a compact half of the cast sheet (`place_line`,
+`protagonist_line`, `scene_grounding`, `world_anchor`, `structure_lines`) for
+the dozen prompts too small to carry the full directive — a realtime prompt is
+capped at 2000 characters and a vision prompt stops answering in the requested
+format if you bury it. Each returns `""` at defaults, so every path stays
+byte-identical to the shipped text until something is authored;
+`test_world_authoring.py` asserts that surface by surface alongside the wiring.
+
+**Also fixed a silent total failure in the pipeline:** stage 3 (`reconcile`)
+deletes whole *lines*, so a caller handing it a single-line prompt could have
+the whole thing deleted by one anti-person clause and render an empty prompt.
+It now declines to apply when it would remove everything.
+
+**And made the editor honest about it.** Both editors showed one shared blob per
+card, so appearance, wardrobe, era, palette, and landmarks — which compile into
+the *image* blocks and appear nowhere in the director's sheet — looked like dead
+controls. Each card now shows the text it is individually responsible for, split
+by destination (image model / negative prompt / writer), plus a **Where else
+this reaches** panel with the compact forms, and warnings for the sheet's real
+internal dependencies (a character's appearance genuinely does nothing to the
+picture in first person with hands hidden — the editor says so now instead of
+going quiet). Adds a Reset Cast & Camera button in-game, and corrects the docs
+that promised `E` opens the editor: `E` is strafe-right in movement mode, so it
+never could.
+
+---
+
 ## 🐛 Two long-standing prompt bugs
 
 **Files:** `engine.py`, `prompts_store.py`, `krea_image_utils.py`
