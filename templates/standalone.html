@@ -625,6 +625,22 @@
     <div id="investigations-strip"></div>
   </aside>
 
+  <!-- First-run tutorial: the one thing a new player must know to start
+       playing — TAP THE SCENE TO SCAN. Shown once (localStorage-gated) the
+       first time a scene is readable; dismiss with the button, a tap, or Esc. -->
+  <div id="scan-tutorial" class="hidden" role="dialog" aria-modal="true" aria-label="How to play">
+    <div class="tut-card">
+      <div class="tut-kicker">◈ FIELD BRIEFING</div>
+      <div class="tut-body">
+        <p class="tut-lead"><b>Tap the scene</b> to <b>SCAN</b> for evidence.</p>
+        <p class="tut-sub">Then raise your <b>camera</b> and photograph what you find —
+           document <b><span id="tut-target">8</span> subjects</b> to close the case.</p>
+      </div>
+      <button id="tut-dismiss" type="button">GOT IT</button>
+      <div class="tut-hint">tap anywhere to begin</div>
+    </div>
+  </div>
+
   <!-- (Session controls now live in #control-rail, top-right.) -->
 
   <!-- Processing veil shown while waiting on the backend. Hosts the gamified
