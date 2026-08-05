@@ -2172,6 +2172,121 @@ class TestRealtimeRenderer(unittest.TestCase):
         finally:
             page.close()
 
+    def test_world_drift_resteers_without_restaging(self):
+        """Ambient world drift must keep the live stream EVOLVING between turns
+        without tearing the world down.
+
+        The turn loop used to be the only thing that spoke to the world model, so
+        a long deliberation sat on one frozen prompt. Drift is a prompt-only
+        hot-swap (set_prompt) on models that support live steering — never a
+        reset/create_world, which is what made an atmospheric beat look like a
+        black re-anchor. Happy Oyster Adventure is fixed once built, so drift
+        must refuse there rather than rebuild on a timer.
+        """
+        page = self._new_realtime_page()
+        try:
+            # Speed the ask loop up for the test; the SERVER still owns pacing.
+            page.add_init_script("window.__WORLD_DRIFT_ASK_MS__ = 250;")
+            self._seed_live_scene(page)
+
+            # WorldDrift is wired at boot.
+            self.assertTrue(page.evaluate("!!window.__WorldDrift"),
+                            "WorldDrift module must be exposed for the idle ask loop")
+            # Happy Oyster Adventure: a new prompt rebuilds the world — drift
+            # must refuse rather than rebuild on a timer.
+            self.assertFalse(
+                page.evaluate("window.ReactorRenderer.supportsLiveSteer()"),
+                "Happy Oyster Adventure must report supportsLiveSteer=false")
+            self.assertFalse(
+                page.evaluate("window.__WorldDrift.idle()"),
+                "WorldDrift.idle() must be false on a non-steerable adventure world")
+            applied = page.evaluate(
+                """() => window.Renderer.applyDrift({
+                    prompt: 'A dim loading dock. Dust settles on the floor.',
+                    base: 'A dim loading dock you can walk through',
+                    drift: true, hard_transition: false,
+                })""")
+            self.assertFalse(applied, "applyDrift must refuse on Happy Oyster Adventure")
+
+            # Switch to LingBot (seed_locked): live set_prompt is the contract.
+            page.evaluate("window.Renderer.setWorldModel('lingbot-world-2')")
+            page.wait_for_function(
+                "window.ReactorRenderer.getModel() === 'lingbot-world-2'", timeout=8000)
+            page.wait_for_function("window.ReactorRenderer.isReady() === true", timeout=15000)
+            page.evaluate(
+                "(img) => window.ReactorRenderer.applyScene({prompt: 'First-person VHS corridor', imageUrl: img, hardTransition: false})",
+                TINY_PNG_DATA_URL,
+            )
+            page.wait_for_function("window.ReactorRenderer.isShowing() === true", timeout=15000)
+            self.assertTrue(
+                page.evaluate("window.ReactorRenderer.supportsLiveSteer()"),
+                "LingBot must support live prompt steering")
+
+            # Seed the standalone scene bible so applyDrift has a base to build on.
+            page.evaluate(
+                """() => {
+                    window.Renderer.lastBase = 'First-person VHS corridor';
+                    window.Renderer.lastScene = {
+                        prompt: 'First-person VHS corridor',
+                        imageUrl: null, hardTransition: false,
+                    };
+                }""")
+            page.evaluate("window.__MOCK_CMD_LOG__ = []; window.__MOCK_CMDS__ = []")
+            page.evaluate(
+                """() => window.Renderer.applyDrift({
+                    prompt: 'First-person VHS corridor Dust settles across the floor.',
+                    base: 'First-person VHS corridor',
+                    drift: true, hard_transition: false,
+                })""")
+            page.wait_for_function(
+                """() => (window.__MOCK_CMD_LOG__||[]).some(
+                    c => c.name === 'set_prompt'
+                      && (c.data.prompt||'').indexOf('Dust settles') >= 0)""",
+                timeout=8000)
+            cmds = page.evaluate("window.__MOCK_CMDS__ || []")
+            self.assertIn("set_prompt", cmds)
+            self.assertNotIn("reset", cmds,
+                             "a drift must NOT reset/re-stage a seed-locked world")
+            self.assertNotIn("create_world", cmds,
+                             "a drift must NOT rebuild a Happy Oyster world")
+
+            # The feed path must take the same applyDrift shortcut — a world_drift
+            # item routed through the normal scene path would re-stage.
+            page.evaluate("window.__MOCK_CMD_LOG__ = []; window.__MOCK_CMDS__ = []")
+            page.evaluate(
+                """() => {
+                    // Reach the feed renderer the same way pollOnce does.
+                    const item = {
+                        id: 900001,
+                        type: 'world_drift',
+                        content: 'A door slams deeper in the facility.',
+                        metadata: {
+                            prompt: 'First-person VHS corridor A door slams deeper in the facility.',
+                            base: 'First-person VHS corridor',
+                            drift: true, hard_transition: false,
+                        },
+                    };
+                    // renderItem is closed over; drive through the public path the
+                    // poller uses by appending via the same applyDrift the case
+                    // above already proved, then assert the feed handler wires it.
+                    // Source-level: WorldDrift + renderItem world_drift branch are
+                    // covered by test_world_drift.TestClientWiring; here we just
+                    // confirm the live apply stays prompt-only.
+                    window.Renderer.applyDrift(item.metadata);
+                }""")
+            page.wait_for_function(
+                """() => (window.__MOCK_CMD_LOG__||[]).some(
+                    c => c.name === 'set_prompt'
+                      && (c.data.prompt||'').indexOf('door slams') >= 0)""",
+                timeout=8000)
+            cmds = page.evaluate("window.__MOCK_CMDS__ || []")
+            self.assertNotIn("reset", cmds)
+        except Exception:
+            print("\n=== REACTOR CONSOLE LOG (world-drift) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
     def test_attach_world_reused_on_revisit(self):
         """attach_world is genuinely utilized: revisiting a scene whose world we
         already built (same guide image) reopens it with attach_world instead of
