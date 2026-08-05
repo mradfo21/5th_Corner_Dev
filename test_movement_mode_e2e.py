@@ -116,6 +116,9 @@ class TestMovementMode(unittest.TestCase):
         self._logs = []
         page.on("console", lambda m: self._logs.append(f"{m.type}: {m.text}"))
         page.on("pageerror", lambda e: self._logs.append(f"PAGEERROR: {e}"))
+        # Skip the first-run "tap to scan" tutorial modal so it can't intercept
+        # the pointer/keyboard interactions these movement tests drive.
+        page.add_init_script("try { localStorage.setItem('scan_tutorial_seen_v1', '1'); } catch (e) {}")
         page.route(
             "https://esm.sh/**",
             lambda route: route.fulfill(status=200, content_type="application/javascript", body=MOCK_SDK_JS),
@@ -178,7 +181,9 @@ class TestMovementMode(unittest.TestCase):
         key-up; nothing is faked with set_prompt."""
         page = self._new_realtime_page()
         try:
-            self._boot_live(page)
+            # This exercises Happy Oyster's held move/look verbs specifically, so
+            # force that model rather than relying on the (now LingBot) default.
+            self._boot_live(page, model="happy-oyster")
             # key -> (command, param, held direction)
             cases = [
                 ("w", "move", "direction", "Front"),
@@ -244,7 +249,7 @@ class TestMovementMode(unittest.TestCase):
         left = look Mouse_Left, releasing (stop) on let-go."""
         page = self._new_realtime_page()
         try:
-            self._boot_live(page)
+            self._boot_live(page, model="happy-oyster")
             box = page.evaluate(
                 """() => { const r = document.getElementById('move-pad').getBoundingClientRect();
                            return { cx: r.left + r.width/2, cy: r.top + r.height/2, r: r.width/2 }; }"""
@@ -282,7 +287,9 @@ class TestMovementMode(unittest.TestCase):
             "tracks: [{ name: 'main_video', kind: 'video', direction: 'recvonly' }] };"
         )
         try:
-            self._boot_live(page)
+            # Happy Oyster family: its move/look/stop stay allowed even when caps
+            # omit the axes. Force the model since the default is now LingBot.
+            self._boot_live(page, model="happy-oyster")
             # Capabilities are known and omit movement — yet motion is supported
             # for the Happy Oyster family, and the command must actually be sent.
             self.assertTrue(page.evaluate("() => window.ReactorRenderer.motionSupported()"))

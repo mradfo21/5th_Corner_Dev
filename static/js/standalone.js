@@ -181,6 +181,20 @@
     imgModelList: document.getElementById("img-model-list"),
     imgModelHide: document.getElementById("img-model-hide"),
     btnStory: document.getElementById("btn-story"),
+    btnEditor: document.getElementById("btn-editor"),
+    worldEditor: document.getElementById("world-editor"),
+    weClose: document.getElementById("we-close"),
+    weTabs: document.getElementById("we-tabs"),
+    weFields: document.getElementById("we-fields"),
+    weWorlds: document.getElementById("we-worlds"),
+    weWorldsList: document.getElementById("we-worlds-list"),
+    weWorldName: document.getElementById("we-world-name"),
+    weWorldSave: document.getElementById("we-world-save"),
+    weApply: document.getElementById("we-apply"),
+    weRestart: document.getElementById("we-restart"),
+    weRevert: document.getElementById("we-revert"),
+    weDirty: document.getElementById("we-dirty"),
+    weToast: document.getElementById("we-toast"),
     rtModelAdd: document.getElementById("rt-model-add"),
     rtModelInput: document.getElementById("rt-model-input"),
     vhsOverlay: document.getElementById("vhs-overlay"),
@@ -3402,6 +3416,393 @@
       });
     }
     return { visible, toggle, init };
+  })();
+
+  // ------------------------------------------------------------------
+  // WORLD EDITOR — tweak the prompts that drive the simulation, live, without
+  // leaving the game. Prompts hot-reload server-side (prompts_store), so an
+  // edit either takes effect on the NEXT TURN (Apply Live) or seeds a fresh
+  // run (Save & Restart). The Worlds tab saves/loads named prompt-sets. Reads
+  // the existing /api/admin/studio/* endpoints (open in local dev).
+  // ------------------------------------------------------------------
+  const WorldEditor = (function () {
+    // Fields whose effect only really shows on a FRESH run (they seed the
+    // world/intro); everything else re-steers live on the next turn.
+    const RESTART_KEYS = new Set(["world_initial_state", "gemini_text_to_image_instructions"]);
+    let content = null;            // {prompts, prompts_defaults, schema, groups}
+    let sessionSnapshot = null;    // editable values captured on first load (Revert target)
+    let edits = {};                // key -> current textarea value (unsaved)
+    let tabs = [];                 // [{id,label}] incl. a trailing "worlds"
+    let activeTab = null;
+    let loaded = false;
+    let loading = false;
+
+    async function weFetch(method, path, body) {
+      const opts = { method, headers: {} };
+      if (body !== undefined) {
+        opts.headers["Content-Type"] = "application/json";
+        opts.body = JSON.stringify(body);
+      }
+      const r = await fetch(path, opts);
+      let data = null;
+      try { data = await r.json(); } catch (_) {}
+      return { ok: r.ok, status: r.status, data };
+    }
+
+    function toast(msg, kind) {
+      if (!el.weToast) return;
+      el.weToast.textContent = msg;
+      el.weToast.style.borderColor = kind === "warn"
+        ? "rgba(255, 180, 120, 0.6)" : "rgba(134, 200, 255, 0.4)";
+      el.weToast.classList.add("show");
+      clearTimeout(toast._t);
+      toast._t = setTimeout(() => el.weToast.classList.remove("show"), 2600);
+    }
+
+    function schemaFields() { return (content && content.schema) || []; }
+    function groupLabels() { return (content && content.groups) || {}; }
+    function valOf(key) {
+      if (key in edits) return edits[key];
+      return (content && content.prompts && content.prompts[key] != null) ? content.prompts[key] : "";
+    }
+    function defOf(key) {
+      const d = content && content.prompts_defaults;
+      return d && d[key] != null ? d[key] : "";
+    }
+    function anyDirty() { return Object.keys(edits).length > 0; }
+
+    function refreshDirtyBadge() {
+      if (el.weDirty) el.weDirty.classList.toggle("hidden", !anyDirty());
+    }
+
+    function buildTabs() {
+      const seen = [];
+      for (const f of schemaFields()) {
+        if (f.group && !seen.includes(f.group)) seen.push(f.group);
+      }
+      const labels = groupLabels();
+      tabs = seen.map((g) => ({ id: g, label: labels[g] || g }));
+      tabs.push({ id: "worlds", label: "Worlds" });
+      if (!activeTab || !tabs.find((t) => t.id === activeTab)) activeTab = tabs[0] && tabs[0].id;
+    }
+
+    function renderTabs() {
+      if (!el.weTabs) return;
+      el.weTabs.innerHTML = "";
+      tabs.forEach((t) => {
+        const b = document.createElement("button");
+        b.className = "we-tab" + (t.id === activeTab ? " active" : "");
+        b.type = "button";
+        b.textContent = t.label;
+        b.dataset.tab = t.id;
+        b.addEventListener("click", () => { activeTab = t.id; render(); });
+        el.weTabs.appendChild(b);
+      });
+    }
+
+    function makeField(f) {
+      const key = f.id;
+      const wrap = document.createElement("div");
+      const modified = valOf(key) !== defOf(key);
+      wrap.className = "we-field" + (modified ? " modified" : "");
+      wrap.dataset.key = key;
+
+      const top = document.createElement("div");
+      top.className = "we-field-top";
+      const label = document.createElement("span");
+      label.className = "we-field-label";
+      label.textContent = f.label || key;
+      const chips = document.createElement("span");
+      chips.className = "we-chips";
+      const dot = document.createElement("span");
+      dot.className = "we-mod-dot"; dot.textContent = "●"; dot.title = "Changed from default";
+      const chip = document.createElement("span");
+      const isRestart = RESTART_KEYS.has(key);
+      chip.className = "we-chip " + (isRestart ? "we-chip-restart" : "we-chip-live");
+      chip.textContent = isRestart ? "restart" : "live";
+      chip.title = isRestart
+        ? "Seeds the world — start a fresh run (Save & Restart) to see it"
+        : "Re-steers the sim on the next turn (Apply Live)";
+      chips.appendChild(dot); chips.appendChild(chip);
+      top.appendChild(label); top.appendChild(chips);
+
+      const desc = document.createElement("div");
+      desc.className = "we-field-desc";
+      desc.textContent = f.description || "";
+
+      const ta = document.createElement("textarea");
+      ta.value = valOf(key);
+      ta.spellcheck = false;
+      ta.addEventListener("input", () => {
+        const base = (content.prompts && content.prompts[key] != null) ? content.prompts[key] : "";
+        if (ta.value === base) delete edits[key]; else edits[key] = ta.value;
+        wrap.classList.toggle("modified", ta.value !== defOf(key));
+        refreshDirtyBadge();
+      });
+
+      const foot = document.createElement("div");
+      foot.className = "we-field-foot";
+      const legend = document.createElement("span");
+      legend.className = "we-legend";
+      if (Array.isArray(f.format_vars) && f.format_vars.length) {
+        legend.innerHTML = "vars: " + f.format_vars.map((v) => "<b>{" + v + "}</b>").join(" ");
+      }
+      const reset = document.createElement("button");
+      reset.className = "we-field-reset"; reset.type = "button"; reset.textContent = "reset";
+      reset.title = "Reset this field to its factory default";
+      reset.addEventListener("click", () => resetField(key));
+      foot.appendChild(legend); foot.appendChild(reset);
+
+      const warn = document.createElement("div");
+      warn.className = "we-warn hidden";
+
+      wrap.appendChild(top); wrap.appendChild(desc); wrap.appendChild(ta);
+      wrap.appendChild(foot); wrap.appendChild(warn);
+      return wrap;
+    }
+
+    function render() {
+      renderTabs();
+      const showWorlds = activeTab === "worlds";
+      if (el.weFields) el.weFields.classList.toggle("hidden", showWorlds);
+      if (el.weWorlds) el.weWorlds.classList.toggle("hidden", !showWorlds);
+      if (showWorlds) { renderWorlds(); refreshDirtyBadge(); return; }
+      if (!el.weFields) return;
+      el.weFields.innerHTML = "";
+      schemaFields().filter((f) => f.group === activeTab).forEach((f) => {
+        el.weFields.appendChild(makeField(f));
+      });
+      refreshDirtyBadge();
+    }
+
+    async function loadContent(force) {
+      if (loaded && !force) return true;
+      if (loading) return false;
+      loading = true;
+      try {
+        const { ok, data } = await weFetch("GET", "/api/admin/studio/content");
+        const payload = data && (data.data || data);
+        if (!ok || !payload || !payload.schema) {
+          toast("Couldn't load prompts (is this a local/admin session?)", "warn");
+          return false;
+        }
+        content = {
+          prompts: payload.prompts || {},
+          prompts_defaults: payload.prompts_defaults || {},
+          schema: payload.schema || [],
+          groups: payload.groups || {},
+        };
+        // Capture the run's starting prompts ONCE, as the Revert target.
+        if (!sessionSnapshot) {
+          sessionSnapshot = {};
+          for (const f of content.schema) sessionSnapshot[f.id] = content.prompts[f.id];
+        }
+        loaded = true;
+        buildTabs();
+        return true;
+      } finally {
+        loading = false;
+      }
+    }
+
+    // Persist the given fields; returns {ok, warnings}. Surfaces per-field
+    // placeholder warnings inline (never force — protects the running turn).
+    async function saveFields(fields) {
+      clearWarns();
+      if (!Object.keys(fields).length) return { ok: true, warnings: {} };
+      const { ok, data } = await weFetch("PUT", "/api/admin/studio/prompts", { data: fields });
+      const warnings = (data && data.warnings) || (data && data.data && data.data.warnings) || {};
+      if (!ok) {
+        showWarns(warnings);
+        toast("Fix the highlighted placeholder issue to save.", "warn");
+        return { ok: false, warnings };
+      }
+      // Commit locally: saved values become the new baseline.
+      for (const k of Object.keys(fields)) {
+        content.prompts[k] = fields[k];
+        delete edits[k];
+      }
+      if (warnings && Object.keys(warnings).length) showWarns(warnings);
+      return { ok: true, warnings };
+    }
+
+    function dirtyFields() {
+      const out = {};
+      for (const k of Object.keys(edits)) out[k] = edits[k];
+      return out;
+    }
+
+    async function applyLive() {
+      const fields = dirtyFields();
+      if (!Object.keys(fields).length) { toast("No edits to apply."); return; }
+      const { ok } = await saveFields(fields);
+      if (!ok) return;
+      render();
+      try { refreshDirective(true); } catch (_) {}
+      toast("Applied — live on your next turn.");
+    }
+
+    async function saveAndRestart() {
+      const fields = dirtyFields();
+      const { ok } = await saveFields(fields); // ok even if nothing dirty
+      if (!ok) return;
+      toast("Saved — restarting the world…");
+      close();
+      setTimeout(() => { try { resetGame(); } catch (_) {} }, 260);
+    }
+
+    async function revertToStart() {
+      if (!sessionSnapshot) return;
+      const { ok } = await saveFields(Object.assign({}, sessionSnapshot));
+      if (!ok) return;
+      edits = {};
+      toast("Reverted to how this run started.");
+      render();
+    }
+
+    async function resetField(key) {
+      const { ok, data } = await weFetch("POST", "/api/admin/studio/prompts/reset", { key });
+      const payload = data && (data.data || data);
+      if (!ok || !payload || !payload.prompts) { toast("Reset failed.", "warn"); return; }
+      content.prompts = payload.prompts;
+      delete edits[key];
+      render();
+      toast("Reset to default.");
+    }
+
+    // ── Worlds tab ────────────────────────────────────────────────────
+    let worlds = [];
+    async function loadWorlds() {
+      const { ok, data } = await weFetch("GET", "/api/admin/studio/worlds");
+      const payload = data && (data.data || data);
+      worlds = (ok && payload && payload.worlds) ? payload.worlds : [];
+    }
+    function renderWorlds() {
+      if (!el.weWorldsList) return;
+      el.weWorldsList.innerHTML = "";
+      if (!worlds.length) {
+        const li = document.createElement("li");
+        li.className = "we-empty";
+        li.textContent = "No saved worlds yet. Tweak the prompts, then save this one.";
+        el.weWorldsList.appendChild(li);
+        return;
+      }
+      worlds.forEach((w) => {
+        const li = document.createElement("li");
+        li.className = "we-world";
+        const info = document.createElement("div");
+        info.className = "we-world-info";
+        const nm = document.createElement("div");
+        nm.className = "we-world-name"; nm.textContent = w.name || w.slug;
+        const meta = document.createElement("div");
+        meta.className = "we-world-meta";
+        meta.textContent = (w.field_count || 0) + " prompts" + (w.note ? " · " + w.note : "");
+        info.appendChild(nm); info.appendChild(meta);
+        const actions = document.createElement("div");
+        actions.className = "we-world-actions";
+        const load = document.createElement("button");
+        load.className = "we-btn we-btn-sm we-btn-primary"; load.type = "button"; load.textContent = "Load";
+        load.title = "Apply this world's prompts (live, next turn)";
+        load.addEventListener("click", () => loadWorld(w.slug, false));
+        const play = document.createElement("button");
+        play.className = "we-btn we-btn-sm we-btn-accent"; play.type = "button"; play.textContent = "Play";
+        play.title = "Load this world and start a fresh run";
+        play.addEventListener("click", () => loadWorld(w.slug, true));
+        const del = document.createElement("button");
+        del.className = "we-btn we-btn-sm we-btn-ghost"; del.type = "button"; del.textContent = "✕";
+        del.title = "Delete this world";
+        del.addEventListener("click", () => deleteWorld(w.slug, w.name));
+        actions.appendChild(load); actions.appendChild(play); actions.appendChild(del);
+        li.appendChild(info); li.appendChild(actions);
+        el.weWorldsList.appendChild(li);
+      });
+    }
+    async function saveWorld() {
+      const name = (el.weWorldName && el.weWorldName.value || "").trim();
+      if (!name) { toast("Name your world first.", "warn"); return; }
+      // Persist any unsaved edits first so the snapshot reflects what's on screen.
+      if (anyDirty()) { const { ok } = await saveFields(dirtyFields()); if (!ok) return; }
+      const { ok } = await weFetch("POST", "/api/admin/studio/worlds", { name });
+      if (!ok) { toast("Couldn't save world.", "warn"); return; }
+      if (el.weWorldName) el.weWorldName.value = "";
+      await loadWorlds(); renderWorlds();
+      toast("World saved: " + name);
+    }
+    async function loadWorld(slug, restart) {
+      const { ok, data } = await weFetch("POST", "/api/admin/studio/worlds/load", { slug });
+      const payload = data && (data.data || data);
+      if (!ok || !payload) { toast("Couldn't load world.", "warn"); return; }
+      if (payload.prompts) content.prompts = payload.prompts;
+      edits = {};
+      render();
+      if (restart) {
+        toast("Loaded — launching…");
+        close();
+        setTimeout(() => { try { resetGame(); } catch (_) {} }, 260);
+      } else {
+        toast("Loaded — live on your next turn.");
+        try { refreshDirective(true); } catch (_) {}
+      }
+    }
+    async function deleteWorld(slug, name) {
+      const { ok } = await weFetch("DELETE", "/api/admin/studio/worlds", { slug });
+      if (!ok) { toast("Delete failed.", "warn"); return; }
+      await loadWorlds(); renderWorlds();
+      toast("Deleted " + (name || slug));
+    }
+
+    // ── Inline validation warnings ────────────────────────────────────
+    function clearWarns() {
+      if (!el.weFields) return;
+      el.weFields.querySelectorAll(".we-warn").forEach((w) => { w.classList.add("hidden"); w.textContent = ""; });
+      el.weFields.querySelectorAll(".we-field").forEach((f) => f.classList.remove("has-warn"));
+    }
+    function showWarns(warnings) {
+      if (!warnings || !el.weFields) return;
+      Object.keys(warnings).forEach((key) => {
+        const card = el.weFields.querySelector('.we-field[data-key="' + key + '"]');
+        if (!card) return;
+        const w = card.querySelector(".we-warn");
+        if (w) { w.textContent = (warnings[key] || []).join(" "); w.classList.remove("hidden"); }
+      });
+    }
+
+    // ── Open / close / toggle ─────────────────────────────────────────
+    let open_ = false;
+    async function open() {
+      if (open_) return;
+      open_ = true;
+      document.body.classList.add("world-editor-on");
+      if (el.worldEditor) { el.worldEditor.classList.remove("hidden"); el.worldEditor.setAttribute("aria-hidden", "false"); }
+      if (el.btnEditor) el.btnEditor.classList.add("active");
+      const ok = await loadContent(false);
+      if (ok) { await loadWorlds(); render(); }
+    }
+    function close() {
+      if (!open_) return;
+      open_ = false;
+      document.body.classList.remove("world-editor-on");
+      if (el.btnEditor) el.btnEditor.classList.remove("active");
+      if (el.worldEditor) {
+        el.worldEditor.setAttribute("aria-hidden", "true");
+        setTimeout(() => { if (!open_) el.worldEditor.classList.add("hidden"); }, 360);
+      }
+    }
+    function toggle() { open_ ? close() : open(); }
+    function isOpen() { return open_; }
+
+    function init() {
+      if (el.weClose) el.weClose.addEventListener("click", close);
+      if (el.weApply) el.weApply.addEventListener("click", applyLive);
+      if (el.weRestart) el.weRestart.addEventListener("click", saveAndRestart);
+      if (el.weRevert) el.weRevert.addEventListener("click", revertToStart);
+      if (el.weWorldSave) el.weWorldSave.addEventListener("click", saveWorld);
+      if (el.weWorldName) el.weWorldName.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); saveWorld(); }
+      });
+    }
+
+    return { init, open, close, toggle, isOpen };
   })();
 
   // ------------------------------------------------------------------
@@ -9961,6 +10362,19 @@
       dismissScanTutorial();
       return;
     }
+    // WORLD EDITOR — backtick (`) toggles it from anywhere; Esc closes it.
+    // While it's open, keystrokes stay inside its text fields (so typing a
+    // prompt never fires a world/movement shortcut behind the panel).
+    {
+      const _ae = document.activeElement;
+      const _typing = _ae && (_ae.tagName === "TEXTAREA" || _ae.tagName === "INPUT");
+      if (WorldEditor.isOpen()) {
+        if (e.key === "Escape" || (e.key === "`" && !_typing)) { e.preventDefault(); WorldEditor.close(); return; }
+        return; // typing passes through; all other shortcuts are blocked behind the editor
+      } else if (e.key === "`" && !_typing) {
+        e.preventDefault(); WorldEditor.open(); return;
+      }
+    }
     // Conversation Moments are a cinematic takeover — Esc hangs up, typing
     // goes to the composer, and world shortcuts (choices / ACT / PHOTO / SCAN)
     // stay blocked until the Moment pops. The legacy non-cinematic TALK strip
@@ -11013,6 +11427,7 @@
     if (el.btnImgModel) el.btnImgModel.addEventListener("click", () => { ImageModel.toggle(); });
     if (el.btnStory) el.btnStory.addEventListener("click", () => { StoryLog.toggle(); });
     if (el.btnObjectives) el.btnObjectives.addEventListener("click", () => { Objectives.toggle(); });
+    if (el.btnEditor) el.btnEditor.addEventListener("click", () => { WorldEditor.toggle(); });
     if (el.objHead) el.objHead.addEventListener("click", (ev) => {
       // The header is the collapse handle, but let the ✕/▾ button own its click.
       if (el.objCollapse && el.objCollapse.contains(ev.target)) return;
@@ -11021,6 +11436,7 @@
     if (el.objCollapse) el.objCollapse.addEventListener("click", (ev) => { ev.stopPropagation(); Objectives.toggle(); });
     if (el.rtModelAdd) el.rtModelAdd.addEventListener("submit", addCustomModel);
     StoryLog.init();
+    WorldEditor.init();
     ImageModel.init();
     Menu.init();
     Tactile.init();

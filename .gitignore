@@ -16,6 +16,9 @@ sessions/*
 !sessions/.gitkeep
 archives/*
 !archives/.gitkeep
+# Saved "worlds" (named prompt-set snapshots) — runtime user data
+worlds/*
+!worlds/.gitkeep
 autotest/*.json
 autotest/*.txt
 test_sessions/

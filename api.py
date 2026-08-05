@@ -2301,6 +2301,86 @@ def admin_studio_prompts_reset():
 
 
 # ═══════════════════════════════════════════════════════════════════
+# WORLDS — named, saveable prompt-sets ("save our world"). Snapshot the
+# current live prompts as a named world, list them, load one back (which
+# hot-reloads into the running engine), or delete. Backs the in-game WORLD
+# EDITOR's Worlds tab. Same ADMIN_TOKEN guard as the rest of /api/admin/*.
+# See worlds_store.py.
+# ═══════════════════════════════════════════════════════════════════
+
+@app.route('/api/admin/studio/worlds', methods=['GET'])
+def admin_studio_worlds_list():
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import worlds_store
+        return jsonify(success_response({"worlds": worlds_store.list_worlds()}))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to list worlds", str(e))
+
+
+@app.route('/api/admin/studio/worlds', methods=['POST'])
+def admin_studio_worlds_save():
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import worlds_store
+        body = request.get_json(silent=True) or {}
+        name = body.get('name')
+        if not name:
+            return error_response("Body must include 'name'.", code=400)
+        info = worlds_store.save_world(name, body.get('note', ''))
+        return jsonify(success_response(
+            {"world": info, "worlds": worlds_store.list_worlds()},
+            f"Saved world '{info['name']}'"))
+    except ValueError as e:
+        return error_response(str(e), code=400)
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to save world", str(e))
+
+
+@app.route('/api/admin/studio/worlds/load', methods=['POST'])
+def admin_studio_worlds_load():
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import worlds_store
+        import prompts_store
+        body = request.get_json(silent=True) or {}
+        slug = body.get('slug') or body.get('name')
+        if not slug:
+            return error_response("Body must include 'slug'.", code=400)
+        info = worlds_store.load_world(slug)
+        return jsonify(success_response(
+            {"world": info, "prompts": dict(prompts_store.PROMPTS)},
+            f"Loaded world '{info['name']}'"))
+    except KeyError as e:
+        return error_response(str(e), code=404)
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to load world", str(e))
+
+
+@app.route('/api/admin/studio/worlds', methods=['DELETE'])
+def admin_studio_worlds_delete():
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import worlds_store
+        body = request.get_json(silent=True) or {}
+        slug = body.get('slug') or body.get('name')
+        if not slug:
+            return error_response("Body must include 'slug'.", code=400)
+        ok = worlds_store.delete_world(slug)
+        return jsonify(success_response({"deleted": ok, "worlds": worlds_store.list_worlds()}))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to delete world", str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════
 # INFO & HEALTH ENDPOINTS
 # ═══════════════════════════════════════════════════════════════════
 
