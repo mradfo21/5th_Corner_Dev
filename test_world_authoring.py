@@ -36,9 +36,23 @@ SAMPLE_PROMPTS = {
     "world_evolution_instructions": "Never invent a new biome.",
     "action_consequence_instructions": "Return JSON with dispatch and visual_scene.",
     "situation_summary_instructions": "Describe what is happening NOW.",
-    "gemini_text_to_image_instructions": "SCENE: {prompt}",
-    "gemini_image_to_image_instructions": "SHOW: {prompt}",
-    "image_negative_prompt": "CGI, third person perspective, over shoulder view",
+    # First-person-saturated, like the shipped templates — reconciling that
+    # language is what the pipeline is for.
+    "gemini_text_to_image_instructions": (
+        "SCENE: {prompt}\n"
+        "CRITICAL POV RULE: This is FIRST-PERSON perspective.\n"
+        "NEVER show any part of a human body.\n"
+        "{art_direction}\n{camera_rules}"
+    ),
+    "gemini_image_to_image_instructions": (
+        "SHOW: {prompt}\nThe camera IS your eyes.\n{art_direction}\n{camera_rules}"
+    ),
+    "image_art_direction": "1993 analog VHS, heavy grain, desaturated.",
+    "image_camera_rules": "Eye level. ABSOLUTELY NO PERSON VISIBLE in frame.",
+    "image_negative_prompt": (
+        "CGI, third person perspective, over shoulder view, behind character, "
+        "borders, text overlays"
+    ),
     "gemini_flipbook_4panel_prefix": "Sixteen panels, left to right.",
 }
 
@@ -202,6 +216,52 @@ class RealtimeWorldModelTestCase(_AuthoredWorldFixture):
             engine.realtime_action_beat("Vault the railing"),
             "Motion: the view shifts as you vault the railing.",
         )
+
+
+class StillImagePromptTestCase(_AuthoredWorldFixture):
+    """The full still-image prompt, composed the way a turn composes it:
+    build_image_prompt() then the VHS wrapper."""
+
+    def _full_prompt(self):
+        scene = engine.build_image_prompt(
+            dispatch="Water sluices off the deck plating.",
+            player_choice="Climb the gantry ladder",
+            narrative_dispatch="Your boots find the rung.",
+        )
+        return engine._build_vhs_prompt(scene, use_img2img=False)
+
+    def test_authored_world_leads_the_prompt(self):
+        self._author_world()
+        prompt = self._full_prompt()
+        # The directive leads, where image models weight hardest — ahead of the
+        # scene description and ahead of the shared art direction.
+        self.assertLess(prompt.index("CAMERA DIRECTIVE"), 40)
+        self.assertLess(prompt.index("CAMERA DIRECTIVE"), prompt.index("1993 analog VHS"))
+        self.assertIn("OVER-THE-SHOULDER THIRD-PERSON VIEW", prompt)
+        self.assertIn("Wren Alvarez", prompt)
+        self.assertIn("patched orange dive suit", prompt)
+        self.assertIn("The Kettle Yard", prompt)
+        self.assertIn("crane gantry", prompt)
+
+    def test_nothing_left_in_the_prompt_argues_against_the_camera(self):
+        self._author_world()
+        prompt = self._full_prompt()
+        self.assertNotIn("ABSOLUTELY NO PERSON/PLAYER VISIBLE", prompt)
+        self.assertNotIn("ABSOLUTELY NO PERSON VISIBLE", prompt)
+        self.assertNotIn("NEVER show any part of a human body", prompt)
+        self.assertNotIn("FIRST-PERSON perspective", prompt)
+        negative = prompt.split("NEGATIVE PROMPT")[-1].lower()
+        self.assertNotIn("third person perspective", negative)
+        self.assertNotIn("over shoulder view", negative)
+        # …while unrelated bans survive the strip.
+        self.assertIn("borders", negative)
+
+    def test_prompt_is_first_person_at_defaults(self):
+        prompt = self._full_prompt()
+        self.assertNotIn("CAMERA DIRECTIVE", prompt)
+        self.assertIn("ABSOLUTELY NO PERSON/PLAYER VISIBLE", prompt)
+        self.assertIn("FIRST-PERSON perspective", prompt)
+        self.assertIn("third person perspective", prompt.split("NEGATIVE PROMPT")[-1].lower())
 
 
 class FlipbookTestCase(_AuthoredWorldFixture):
