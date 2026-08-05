@@ -329,11 +329,41 @@ def _build_veo_cinematic_prompt(base_prompt: str, action: str) -> str:
     
     Both are included to give Veo full context of what happened and what to show.
     """
+    # Every block below is written for a first-person camera. Veo takes ONE
+    # text prompt and no negative prompt, so a hardcoded "NEVER show the player
+    # character" here is unarguable — the camera switch in the editor could
+    # never reach the video path at all. See game_identity.py.
+    import game_identity
+
+    if game_identity.shows_character():
+        cfg = game_identity.mode_config()
+        who = game_identity.display_name()
+        pov_block = f"""{cfg['camera_header']} (CRITICAL):
+The camera is {cfg['rig']}. {who} is the SUBJECT and stays visible in every frame of the clip. The camera follows them; it never becomes their eyes and never cuts to an empty environment. Handheld VHS camcorder."""
+        motion_block = f"""VIDEO MOTION (Action: {action}):
+The camera trails {who} as they move — walking = gentle follow with a soft bob, running = aggressive shake as it chases them, turning = smooth pan around them. Found footage style: amateur, reactive. Smooth 4-second continuous shot from first frame to final frame. {who} remains on screen throughout."""
+        perspective_block = f"""PERSPECTIVE RULES:
+When {who} acts: show THEM performing it with their whole body — stance, reach, weight, momentum.
+When threats act on them: show the threat and {who} together in frame, reacting.
+Their face, build, hair, and outfit must not change across the clip."""
+        camera_block = f"""PHYSICAL CAMERA CONSTRAINTS:
+{cfg['rig'].capitalize()}. Always show environmental CONTEXT around the character - WHERE they are, not just isolated objects. Wide field of view maintaining spatial awareness."""
+    else:
+        pov_block = """FIRST-PERSON POV (CRITICAL):
+Camera IS your eyes. NEVER show the player character. Pure environmental view from eye-level (4-5 feet). Handheld VHS camcorder. You cannot see your own body - only what's in front of you."""
+        motion_block = f"""VIDEO MOTION (Action: {action}):
+FIRST-PERSON handheld movement. Camera physically moves with your body: walking = gentle bob, running = aggressive shake, turning = smooth pan. Natural head movements looking around. Found footage style - amateur, shaky, reactive. Camera reacts to environment (stumbling, recoiling). Smooth 4-second continuous shot from first frame to final frame. NEVER third-person - camera IS your eyes."""
+        perspective_block = """PERSPECTIVE RULES:
+When YOU act: Show the OUTCOME ("raises binoculars" = view THROUGH lenses, "opens door" = what's BEYOND door).
+When threats act ON YOU: Show from VICTIM perspective ("guard grabs you" = hands REACHING TOWARD camera, "sniper aims" = rifle barrel POINTED AT camera).
+Camera IS your eyes - show world as YOU experience it."""
+        camera_block = """PHYSICAL CAMERA CONSTRAINTS:
+Camera held by human. Height: 4-5 feet (lower if crouching ~2-3 feet). Minimum distance to objects: 1.5-3 feet (human body has depth - cannot press flush against walls). Always show environmental CONTEXT - WHERE you are, not just isolated objects. Wide field of view maintaining spatial awareness."""
+
     # Condensed prompt optimized for Veo (keeps critical rules, removes verbose explanations)
     condensed_prompt = f"""SCENE: {base_prompt}
 
-FIRST-PERSON POV (CRITICAL):
-Camera IS your eyes. NEVER show the player character. Pure environmental view from eye-level (4-5 feet). Handheld VHS camcorder. You cannot see your own body - only what's in front of you.
+{pov_block}
 
 VHS FOUND FOOTAGE AESTHETIC (CRITICAL):
 Consumer-grade 1990s VHS camcorder on DEGRADED magnetic tape. Heavy analog artifacts: prominent grain, color bleeding, chromatic aberration, severe desaturation, overexposed highlights blown to white, crushed blacks, motion blur, interlacing, lo-fi NTSC (480i). Think Blair Witch Project - raw, degraded, 30-year-old tape quality. NOT clean digital video.
@@ -344,21 +374,19 @@ NO timecodes, NO "DEC 14 1993", NO timestamps, NO battery indicators, NO REC sym
 1993 GROUNDED REALISM (CRITICAL):
 ONLY 1993 technology and threats. Human guards (black tactical gear, rifles), biological creatures (mutated flesh/bone - NOT robots), environmental hazards. NO sci-fi: NO robots, mechs, cyborgs, energy weapons, holograms, lasers, futuristic vehicles. ONLY 1993 tech: VHS cameras, CRT monitors, chain-link fences, concrete bunkers, 1990s trucks/Humvees. X-Files aesthetic - grounded and gritty.
 
-VIDEO MOTION (Action: {action}):
-FIRST-PERSON handheld movement. Camera physically moves with your body: walking = gentle bob, running = aggressive shake, turning = smooth pan. Natural head movements looking around. Found footage style - amateur, shaky, reactive. Camera reacts to environment (stumbling, recoiling). Smooth 4-second continuous shot from first frame to final frame. NEVER third-person - camera IS your eyes.
+{motion_block}
 
 CONTINUITY:
 Reference images show CURRENT location. Stay in SAME environment unless action explicitly moves you (e.g., "enter door", "climb ladder"). Same lighting, structures, spatial arrangement. Show PROGRESSION of action - dramatic forward movement, consequences, changes. Not stasis.
 
-PERSPECTIVE RULES:
-When YOU act: Show the OUTCOME ("raises binoculars" = view THROUGH lenses, "opens door" = what's BEYOND door).
-When threats act ON YOU: Show from VICTIM perspective ("guard grabs you" = hands REACHING TOWARD camera, "sniper aims" = rifle barrel POINTED AT camera).
-Camera IS your eyes - show world as YOU experience it.
+{perspective_block}
 
-PHYSICAL CAMERA CONSTRAINTS:
-Camera held by human. Height: 4-5 feet (lower if crouching ~2-3 feet). Minimum distance to objects: 1.5-3 feet (human body has depth - cannot press flush against walls). Always show environmental CONTEXT - WHERE you are, not just isolated objects. Wide field of view maintaining spatial awareness."""
-    
-    return condensed_prompt.strip()
+{camera_block}"""
+
+    # One "raw" pass so the level plate and any remaining first-person wording
+    # in `base_prompt` agree with the blocks above. No directive is prepended:
+    # the pov/motion blocks already are the directive for this surface.
+    return game_identity.apply(condensed_prompt.strip(), "raw")
 
 
 def _generate_video_and_extract_frame(

@@ -2099,13 +2099,23 @@ def _vision_analyze_all(image_path: str) -> dict:
         # Use Gemini vision API - ONE call for everything
         print(f"[VISION] Analyzing {os.path.basename(image_path)} (all-in-one)...")
         
-        vision_prompt = """Analyze this image and respond in this EXACT format:
+        # This analysis becomes the SPATIAL ANCHOR for the next frame's image
+        # prompt, so it is a continuity loop: whatever vocabulary it answers in
+        # is what the next image is built from. The worked example used to be a
+        # Horizon truck on sandy desert, which quietly dragged an authored level
+        # back toward the shipped one one turn at a time. Ground it in the
+        # player's actual level and camera instead.
+        grounding = game_identity.scene_grounding()
+        grounding_block = f"{grounding}\n\n" if grounding else ""
+        vision_prompt = grounding_block + """Analyze this image and respond in this EXACT format:
 
 TIME: <time of day - use ONLY: dawn, morning, afternoon, golden hour, dusk, or night>
 COLOR: <dominant color palette in 5-10 words>
 DESCRIPTION: <detailed description of what is visible, focusing on objects, threats, exits, and anything you could interact with. Be direct and literal. If there are hands, weapons, tools, figures, silhouettes, or creatures visible, mention them explicitly.>
-SPATIAL: <spatial compass — describe: (a) what is DIRECTLY AHEAD at what distance, (b) what is visible to the LEFT, (c) what is visible to the RIGHT, (d) what is underfoot/ground type, (e) camera height estimate (standing/crouching/elevated). Keep under 50 words. Example: "Ahead: chain-link fence ~20m with facility gate. Left: red mesa cliff face ~100m. Right: abandoned Horizon truck ~15m. Ground: sandy desert with scrub. Standing height.">
-SETTING: <ONE of: outdoor-desert, outdoor-cliff, outdoor-road, indoor-corridor, indoor-lab, indoor-warehouse, indoor-other, transitional>"""
+SPATIAL: <spatial compass — describe: (a) what is DIRECTLY AHEAD at what distance, (b) what is visible to the LEFT, (c) what is visible to the RIGHT, (d) what is underfoot/ground type, (e) camera height estimate (standing/crouching/elevated). Keep under 50 words. Format: "Ahead: <thing> ~<distance>. Left: <thing> ~<distance>. Right: <thing> ~<distance>. Ground: <surface>. <Camera height>.">
+SETTING: <ONE of: outdoor-desert, outdoor-cliff, outdoor-road, outdoor-other, indoor-corridor, indoor-lab, indoor-warehouse, indoor-other, transitional>
+
+Describe ONLY what is actually in this image. Do not assume a desert, a facility, or any location the image does not show."""
         
         # Model note: gemini-2.0-flash-exp and later gemini-2.0-flash were retired
         # on the current API/key (text calls 404'd while gemini-3.1-flash-lite-image still
@@ -2425,6 +2435,29 @@ def _read_detect_image_bytes(image_path: str) -> tuple:
     return image_bytes, mime_type
 
 
+def _detect_self_rule() -> str:
+    """What SCAN should ignore because it's the player, not the world.
+
+    In first person that's the hands and the vehicle cabin around the camera.
+    In any third-person mode the player's whole body is legitimately in frame,
+    and without this it gets tagged as an anonymous "figure" the player can
+    walk up to and talk to.
+    """
+    if not game_identity.shows_character():
+        return (
+            "Do NOT tag the viewer's own hands, gloves, arms, or the vehicle "
+            "they're inside (steering wheel, dashboard, gauges, mirrors, seat) "
+            "— that's just the player's own body/vehicle, not a point of "
+            "interest."
+        )
+    who = game_identity.display_name()
+    return (
+        f"The person in the foreground being followed by the camera is {who}, "
+        "the player's own character — do NOT tag them as a point of interest, "
+        "and do NOT tag the vehicle they are inside."
+    )
+
+
 def _detect_objects(image_path: str = None,
                     max_items: int = 8,
                     image_bytes: bytes = None,
@@ -2490,10 +2523,8 @@ def _detect_objects(image_path: str = None,
             "objects, scenery, tools, and plain animals that would not speak. "
             "Prefer specific, concrete labels over vague ones. "
             "Skip generic background like 'sky', 'ground', 'wall' unless notable. "
-            "Do NOT tag the viewer's own hands, gloves, arms, or the vehicle "
-            "they're inside (steering wheel, dashboard, gauges, mirrors, seat) "
-            "— that's just the player's own body/vehicle, not a point of "
-            "interest. Do NOT tag the camcorder recording this footage. Focus "
+            + _detect_self_rule() +
+            " Do NOT tag the camcorder recording this footage. Focus "
             "on what's OUT in the world: structures, terrain, other vehicles, "
             "hazards, creatures, and story props."
         )
@@ -2760,11 +2791,24 @@ def _perceive_danger(image_bytes: bytes = None,
         # anything a person would reasonably flinch at: visible weapons,
         # aggressive creatures, active hazards in-frame, high edges,
         # aggressive approach — even when not committed AT camera yet.
+        # Who the danger is being graded FOR changes with the camera: in first
+        # person it's whoever is behind the lens, in third person it's the
+        # character standing in the middle of the frame.
+        if game_identity.shows_character():
+            _danger_subject = (
+                f"survival exploration game. Look at this single frame and grade its "
+                f"immediate danger to {game_identity.display_name()}, the player's own "
+                f"character visible in the shot"
+            )
+        else:
+            _danger_subject = (
+                "first-person survival exploration game. Look at this single frame from "
+                "the player's point-of-view camera and grade its immediate danger to the "
+                "person BEHIND the camera"
+            )
         danger_instructions = (
-            "You are a threat detector for a first-person survival exploration "
-            "game. Look at this single frame from the player's point-of-view "
-            "camera and grade its immediate danger to the person BEHIND the "
-            "camera. Return ONE JSON object with fields: level (integer 0, 1, "
+            f"You are a threat detector for a {_danger_subject}"
+            ". Return ONE JSON object with fields: level (integer 0, 1, "
             "or 2), reason (<= 8 words, lowercase), and optionally threat_box "
             "[ymin, xmin, ymax, xmax] integers 0-1000 (y top-to-bottom, "
             "x left-to-right) around the single most dangerous thing in view.\n\n"
@@ -3186,11 +3230,12 @@ def generate_directive(session_id: str = "default") -> dict:
         threat = (st or {}).get("threat_level", 0)
         tod = str((st or {}).get("time_of_day", "") or "")[:80]
 
-        prompt = (
+        prompt = game_identity.apply(
             "You are the objective director for a first-person investigative "
             "photography game. The WIN CONDITION is documenting distinct evidence "
             "to build a case file. Your job is to give the player a DURABLE "
-            "current lead that stays achievable.\n\n"
+            "current lead that stays achievable.\n\n", "narrative"
+        ) + (
             "CRITICAL RULE: the world REGENERATES every scene, so a specific "
             "one-off prop ('the blue container', 'that severed hand') VANISHES "
             "and can never be found again — an objective naming one feels broken "
@@ -3304,7 +3349,7 @@ def _world_report() -> str:
         "situation_summary_instructions",
         "Describe what is happening NOW in 1-2 sentences.",
     )
-    prompt = f"{base}\n\n[{tone.upper()} TONE] {bulletin}"
+    prompt = game_identity.apply(f"{base}\n\n[{tone.upper()} TONE] {bulletin}", "narrative")
     # Don't use lore - this is just a summary of current state
     return _ask(prompt, tokens=60, use_lore=False)
 
@@ -3834,6 +3879,8 @@ _CAMP_LEAVE_CHOICE = (
     "Leave camp and walk into a new outdoor location across the desert — "
     "arrive on foot at eye level with open ground ahead, not inside any vehicle."
 )
+# Retuned by game_identity.apply() at use (build_image_prompt runs every branch
+# through it), so the "first-person eye-level" opener follows the camera switch.
 _CAMP_LEAVE_ON_FOOT_CONSTRAINT = (
     "CRITICAL — ON-FOOT ARRIVAL (no vehicle cabin): first-person eye-level walking "
     "vantage outdoors on open ground. Do NOT show a vehicle interior, dashboard, "
@@ -3865,21 +3912,38 @@ def realtime_action_beat(choice: str = "") -> str:
     c = (choice or "").strip().rstrip(".")
     if not c or c.lower() in ("intro", "initialize simulation"):
         return ""
-    return f"Motion: the view shifts as you {c[0].lower() + c[1:]}."
+    action = c[0].lower() + c[1:]
+    if game_identity.shows_character():
+        who = game_identity.display_name()
+        return f"Motion: the camera follows as {who} {action}."
+    return f"Motion: the view shifts as you {action}."
 
 
 def build_realtime_base(visual_scene: str = "", narrative: str = "") -> str:
     """The stable part of a realtime prompt: style/camera anchor + physical scene
     description (no action beat). The client recombines this with the live action
-    for instant, seamless steering."""
+    for instant, seamless steering.
+
+    The anchor goes through ``game_identity.world_anchor``, which is the only
+    thing making the cast sheet reach this path at all. The world model builds
+    a navigable place from this paragraph and nothing else — no negative
+    prompt, no directive block, no reference plates — so a hardcoded
+    "first-person 1993 VHS desert" anchor meant that selecting third person or
+    authoring a level changed every still frame and none of the live world.
+    """
     scene = (visual_scene or narrative or "").strip().replace("\n", " ")
     scene = _sanitize_for_image_generation(scene)
     # Keep it focused; overly long prompts dilute the signal for the video model.
     if len(scene) > 600:
         scene = scene[:597].rstrip() + "..."
-    parts = [REALTIME_STYLE_ANCHOR.rstrip(". ") + "."]
+    parts = [game_identity.world_anchor(REALTIME_STYLE_ANCHOR).rstrip(". ") + "."]
     if scene:
         parts.append(scene)
+    # The level's own geography, so the walkable world keeps returning to the
+    # landmarks the player authored instead of inventing fresh ones each turn.
+    place = game_identity.place_line()
+    if place:
+        parts.append(f"The place is {place}")
     return " ".join(parts)
 
 
@@ -3963,6 +4027,150 @@ def _build_vhs_prompt(base_prompt: str, use_img2img: bool = False) -> str:
         full_prompt += f"\n\nNEGATIVE PROMPT (avoid these): {negative_prompt_text}"
     
     return full_prompt
+
+
+# ───────── flipbook prompt blocks ───────────────────────────────────────────
+# A 16-panel flipbook is ONE image, so whatever these blocks say is inherited
+# by every panel — and they shipped hard-wired to a chest-mounted first-person
+# body cam that explicitly invalidated "camera following a character" shots.
+# That is the exact shot the third-person modes ask for, so a flipbook run used
+# to ignore the camera switch no matter what the rest of the prompt said. The
+# first-person text below is preserved verbatim (it is the shipped default and
+# heavily tuned); the hero variants are the new branch.
+
+def _flipbook_camera_block() -> str:
+    """The flipbook grid's camera contract, written for the active perspective."""
+    cfg = game_identity.mode_config()
+    rule = "═" * 63
+    head = f"{rule}\n🎥 CAMERA: {cfg['camera_header']} — 1993 VHS CAMCORDER, WIDE ANGLE\n{rule}\n\n"
+
+    if not cfg["shows_body"]:
+        body = (
+            "• First-person POV, camera strapped to player's chest/head\n"
+            "• 28-35mm equivalent field of view (WIDE — show MORE environment)\n"
+        )
+        if game_identity.hands_visible():
+            body += "• Hands may appear at frame bottom when reaching/interacting\n"
+        body += (
+            "\nFORBIDDEN (third-person shots will invalidate the entire grid):\n"
+            "❌ Showing player from behind, side, or above\n"
+            "❌ 'Camera following a character' shots\n"
+            "❌ Any frame showing the player's body as a separate entity\n"
+        )
+    else:
+        who = game_identity.display_name()
+        body = f"• {cfg['rig'][:1].upper()}{cfg['rig'][1:]}\n"
+        body += "• 28-35mm equivalent field of view (WIDE — show MORE environment)\n"
+        for image_rule in cfg["image_rules"]:
+            body += f"• {image_rule}\n"
+        body += (
+            f"\nFORBIDDEN (these will invalidate the entire grid):\n"
+            f"❌ Any panel where {who} is not visible\n"
+            f"❌ Cutting to what {who} sees instead of showing {who}\n"
+            f"❌ {who} changing face, build, hair, or outfit between panels\n"
+        )
+    return head + body + f"\n{rule}\n\n"
+
+
+def _flipbook_action_block(choice: str, dispatch_preview: str, is_free_will: bool) -> str:
+    """The 'animate exactly this action' header, in the active perspective."""
+    if game_identity.shows_character():
+        cfg = game_identity.mode_config()
+        who = game_identity.display_name()
+        header = (
+            f"🎬🎬🎬 {cfg['camera_header']} — THE CHARACTER IS ON SCREEN 🎬🎬🎬\n\n"
+            f"This is {cfg['label'].lower()} game footage. The camera is {cfg['rig']}.\n"
+            f"{who} is visible in EVERY panel, performing the action with their whole body.\n"
+            f"Do NOT cut to what {who} sees — show {who} doing it.\n\n"
+        )
+        if is_free_will:
+            command = (
+                "ABSOLUTE COMMAND - FREE WILL ACTION\n\n"
+                "The player used FREE WILL to command this EXACT action:\n"
+                f">>> \"{choice}\" <<<\n\n"
+                "YOU MUST OBEY THIS COMMAND AT ALL COSTS.\n\n"
+            )
+            tail = f"Context (what happens as result): {dispatch_preview}\n\n"
+        else:
+            command = (
+                "CRITICAL INSTRUCTION - READ THIS FIRST\n\n"
+                "YOU MUST ANIMATE THIS SPECIFIC ACTION:\n"
+                f">>> {dispatch_preview} <<<\n\n"
+                f"Player's choice was: \"{choice}\"\n\n"
+            )
+            tail = ""
+        rules = (
+            "ABSOLUTE RULES:\n"
+            f"1. {who} is the subject of every panel — never an empty environment shot\n"
+            f"2. The camera trails {who}; it never becomes their eyes\n"
+            "3. Face, build, hair, and outfit are identical across all 16 panels\n"
+            "4. Show stance, reach, weight, and momentum — the body doing the work\n"
+            f"5. The 16 panels are 4 seconds of {who} performing this one action\n\n"
+        )
+        return header + command + rules + tail + "=" * 70 + "\n\n"
+
+    if is_free_will:
+        return (
+            "🚫🚫🚫 FIRST-PERSON ONLY - NO 3RD PERSON ALLOWED 🚫🚫🚫\n\n"
+            "THIS IS BODY CAM FOOTAGE. The camera IS the player's eyes.\n"
+            "DO NOT show 'a man walking' or 'a person' from outside.\n"
+            "Show ONLY what the player's eyes see while performing the action.\n\n"
+            "ABSOLUTE COMMAND - FREE WILL ACTION\n\n"
+            "The player used FREE WILL to command this EXACT action:\n"
+            f">>> \"{choice}\" <<<\n\n"
+            "YOU MUST OBEY THIS COMMAND AT ALL COSTS.\n\n"
+            "ABSOLUTE RULES:\n"
+            "1. Show FIRST-PERSON perspective - you ARE the player, camera = your eyes\n"
+            "2. DO NOT show 'a man' or 'a person' - that's 3rd person (FORBIDDEN)\n"
+            "3. Show what YOUR EYES see while performing the action\n"
+            "4. If 'head towards vehicles' -> show vehicles getting closer in YOUR view\n"
+            "5. If 'climb fence' -> show YOUR hands grabbing fence from YOUR POV\n"
+            "6. If 'run to tower' -> show ground/tower from running POV\n"
+            "7. The flipbook shows 4 seconds of this action from YOUR eyes\n"
+            "8. NEVER show the player as a separate person/character\n\n"
+            f"Context (what happens as result): {dispatch_preview}\n\n"
+            + "=" * 70 + "\n\n"
+        )
+    return (
+        "🚫🚫🚫 FIRST-PERSON ONLY - NO 3RD PERSON ALLOWED 🚫🚫🚫\n\n"
+        "THIS IS BODY CAM FOOTAGE. The camera IS the player's eyes.\n"
+        "DO NOT show 'a man walking' or 'a person' from outside.\n"
+        "Show ONLY what the player's eyes see while performing the action.\n\n"
+        "CRITICAL INSTRUCTION - READ THIS FIRST\n\n"
+        "YOU MUST ANIMATE THIS SPECIFIC ACTION:\n"
+        f">>> {dispatch_preview} <<<\n\n"
+        f"Player's choice was: \"{choice}\"\n\n"
+        "RULES:\n"
+        "1. FIRST-PERSON PERSPECTIVE - Show what YOUR eyes see (NOT a person from outside)\n"
+        "2. Show EXACTLY what the text describes from first-person POV\n"
+        "3. If text says 'approach' -> show target getting closer in YOUR view\n"
+        "4. If text says 'examine' -> show object filling YOUR view\n"
+        "5. NEVER show 'a man' or 'a person' - that's 3rd person (FORBIDDEN)\n"
+        "6. You ARE the player - camera = your eyes - no external views\n\n"
+        + "=" * 70 + "\n\n"
+    )
+
+
+def _flipbook_shot_block(is_free_will: bool) -> str:
+    """The text-to-image flipbook's one-continuous-shot clause, per perspective."""
+    if not game_identity.shows_character():
+        tail = (
+            "You ARE the player looking OUT at the world.\n\n"
+            if is_free_will
+            else "You ARE the player looking OUT at the world. No cuts, no edits, no perspective changes.\n\n"
+        )
+        return (
+            "PERSPECTIVE: ONE CONTINUOUS FIRST-PERSON SHOT - camera strapped to player's head.\n"
+            "NEVER show the player from outside. NEVER show their back, profile, or body.\n"
+            + tail
+        )
+    cfg = game_identity.mode_config()
+    who = game_identity.display_name()
+    return (
+        f"PERSPECTIVE: ONE CONTINUOUS {cfg['camera_header']} — the camera is {cfg['rig']}.\n"
+        f"{who} is visible in every panel and is the subject of the shot.\n"
+        "The camera never becomes their eyes and never cuts to an empty environment.\n\n"
+    )
 
 
 def _gen_image(*args, session_id: str = 'default', **kwargs) -> Optional[tuple[str, str, Optional[str]]]:
@@ -4452,17 +4660,7 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                                 "• Grid reads: LEFT→RIGHT, TOP→BOTTOM (panels 1…16)\n"
                                 "• NO text, numbers, labels, or timecodes in any panel\n"
                                 "• NO borders visible within panels (grid dividers only between panels)\n\n"
-                                "═══════════════════════════════════════════════════════════════\n"
-                                "🎥 CAMERA: 1993 VHS CAMCORDER / BODY CAM — WIDE ANGLE\n"
-                                "═══════════════════════════════════════════════════════════════\n\n"
-                                "• First-person POV, camera strapped to player's chest/head\n"
-                                "• 28-35mm equivalent field of view (WIDE — show MORE environment)\n"
-                                "• Hands may appear at frame bottom when reaching/interacting\n\n"
-                                "FORBIDDEN (third-person shots will invalidate the entire grid):\n"
-                                "❌ Showing player from behind, side, or above\n"
-                                "❌ 'Camera following a character' shots\n"
-                                "❌ Any frame showing the player's body as a separate entity\n\n"
-                                "═══════════════════════════════════════════════════════════════\n\n"
+                                + _flipbook_camera_block()
                             )
                             flipbook_prefix += PROMPTS.get("gemini_flipbook_4panel_prefix", "")
                             
@@ -4534,51 +4732,19 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                                     print(f"[FREE WILL DETECTED] Prioritizing player's direct command: {safe_choice}", flush=True)
                                 except:
                                     print(f"[FREE WILL DETECTED] Prioritizing player's direct command (contains special characters)", flush=True)
-                                action_enforcement = (
-                                    "🚫🚫🚫 FIRST-PERSON ONLY - NO 3RD PERSON ALLOWED 🚫🚫🚫\n\n"
-                                    "THIS IS BODY CAM FOOTAGE. The camera IS the player's eyes.\n"
-                                    "DO NOT show 'a man walking' or 'a person' from outside.\n"
-                                    "Show ONLY what the player's eyes see while performing the action.\n\n"
-                                    "ABSOLUTE COMMAND - FREE WILL ACTION\n\n"
-                                    "The player used FREE WILL to command this EXACT action:\n"
-                                    f">>> \"{choice}\" <<<\n\n"
-                                    "YOU MUST OBEY THIS COMMAND AT ALL COSTS.\n\n"
-                                    "ABSOLUTE RULES:\n"
-                                    "1. Show FIRST-PERSON perspective - you ARE the player, camera = your eyes\n"
-                                    "2. DO NOT show 'a man' or 'a person' - that's 3rd person (FORBIDDEN)\n"
-                                    "3. Show what YOUR EYES see while performing the action\n"
-                                    "4. If 'head towards vehicles' -> show vehicles getting closer in YOUR view\n"
-                                    "5. If 'climb fence' -> show YOUR hands grabbing fence from YOUR POV\n"
-                                    "6. If 'run to tower' -> show ground/tower from running POV\n"
-                                    "7. The flipbook shows 4 seconds of this action from YOUR eyes\n"
-                                    "8. NEVER show the player as a separate person/character\n\n"
-                                    f"Context (what happens as result): {dispatch_preview}\n\n"
-                                    "=" * 70 + "\n\n"
-                                )
                             else:
                                 # Standard choice: Use consequence text as primary instruction
                                 print(f"[STANDARD CHOICE] Using consequence text as primary instruction", flush=True)
-                                action_enforcement = (
-                                    "🚫🚫🚫 FIRST-PERSON ONLY - NO 3RD PERSON ALLOWED 🚫🚫🚫\n\n"
-                                    "THIS IS BODY CAM FOOTAGE. The camera IS the player's eyes.\n"
-                                    "DO NOT show 'a man walking' or 'a person' from outside.\n"
-                                    "Show ONLY what the player's eyes see while performing the action.\n\n"
-                                    "CRITICAL INSTRUCTION - READ THIS FIRST\n\n"
-                                    "YOU MUST ANIMATE THIS SPECIFIC ACTION:\n"
-                                    f">>> {dispatch_preview} <<<\n\n"
-                                    f"Player's choice was: \"{choice}\"\n\n"
-                                    "RULES:\n"
-                                    "1. FIRST-PERSON PERSPECTIVE - Show what YOUR eyes see (NOT a person from outside)\n"
-                                    "2. Show EXACTLY what the text describes from first-person POV\n"
-                                    "3. If text says 'approach' -> show target getting closer in YOUR view\n"
-                                    "4. If text says 'examine' -> show object filling YOUR view\n"
-                                    "5. NEVER show 'a man' or 'a person' - that's 3rd person (FORBIDDEN)\n"
-                                    "6. You ARE the player - camera = your eyes - no external views\n\n"
-                                    "=" * 70 + "\n\n"
-                                )
-                            
-                            # Use the FULL prompt_str for flipbooks with action FIRST
-                            flipbook_prompt = action_enforcement + flipbook_prefix + prompt_str
+                            action_enforcement = _flipbook_action_block(choice, dispatch_preview, bool(is_free_will))
+
+                            # Use the FULL prompt_str for flipbooks with action FIRST.
+                            # `prompt_str` was already reconciled by build_image_prompt;
+                            # the two wrapper blocks in front of it were not, and the
+                            # JSON flipbook prefix between them is player-editable, so
+                            # the whole thing gets one "raw" pass (no second directive).
+                            flipbook_prompt = game_identity.apply(
+                                action_enforcement + flipbook_prefix + prompt_str, "raw"
+                            )
                             try:
                                 safe_prompt = prompt_str[:100].encode('ascii', 'replace').decode('ascii')
                                 print(f"[FLIPBOOK] Using full prompt with context: {safe_prompt}...", flush=True)
@@ -4775,11 +4941,9 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                                     "6. If the command says 'run to tower' -> show rapid movement toward tower\n"
                                     "7. The flipbook shows the first 4 seconds of this action beginning\n"
                                     "8. This is a direct player command - it overrides ALL other instructions\n\n"
-                                    "PERSPECTIVE: ONE CONTINUOUS FIRST-PERSON SHOT - camera strapped to player's head.\n"
-                                    "NEVER show the player from outside. NEVER show their back, profile, or body.\n"
-                                    "You ARE the player looking OUT at the world.\n\n"
-                                    f"Context (what happens as result): {dispatch_preview}\n\n"
-                                    "=" * 70 + "\n\n"
+                                    + _flipbook_shot_block(True)
+                                    + f"Context (what happens as result): {dispatch_preview}\n\n"
+                                    + "=" * 70 + "\n\n"
                                 )
                                 flipbook_prompt = action_enforcement + flipbook_prefix + prompt_str
                             elif choice == "Intro":
@@ -4801,12 +4965,14 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                                     "4. If text says 'approach' -> show walking toward something\n"
                                     "5. If text says 'examine' -> show looking at something\n"
                                     "6. IGNORE any conflicting visual references - follow the TEXT ONLY\n\n"
-                                    "PERSPECTIVE: ONE CONTINUOUS FIRST-PERSON SHOT - camera strapped to player's head.\n"
-                                    "NEVER show the player from outside. NEVER show their back, profile, or body.\n"
-                                    "You ARE the player looking OUT at the world. No cuts, no edits, no perspective changes.\n\n"
-                                    "=" * 70 + "\n\n"
+                                    + _flipbook_shot_block(False)
+                                    + "=" * 70 + "\n\n"
                                 )
                                 flipbook_prompt = action_enforcement + flipbook_prefix + prompt_str
+                            # Same reasoning as the img2img flipbook path: the wrapper
+                            # blocks and the editable JSON prefix haven't been through
+                            # the perspective pass, only `prompt_str` has.
+                            flipbook_prompt = game_identity.apply(flipbook_prompt, "raw")
                             try:
                                 safe_prompt = prompt_str[:100].encode('ascii', 'replace').decode('ascii')
                                 print(f"[FLIPBOOK T2I] Using full prompt with context: {safe_prompt}...", flush=True)
@@ -4818,7 +4984,24 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                             print(f"[FLIPBOOK T2I] Using PURE T2I with INTRO-SPECIFIC prefix (no reference)", flush=True)
                             from gemini_image_utils import generate_with_gemini
                             
-                            # INTRO-SPECIFIC flipbook prefix - ENVIRONMENTAL ONLY, NO HANDS/PERSON
+                            # INTRO-SPECIFIC flipbook prefix — a wide establishing shot
+                            # of the level. "The ENTIRE facility complex" and the
+                            # no-character ban are both overridable: an authored level
+                            # isn't a facility, and in a third-person mode the player
+                            # arriving on screen IS the establishing shot.
+                            _intro_subject = game_identity.place_summary() or "the facility complex"
+                            if game_identity.shows_character():
+                                _intro_cast_rules = (
+                                    f"• {game_identity.display_name()} is visible in the frame, small in "
+                                    "the landscape, arriving at the location\n"
+                                    "• The camera is locked off and observational; only the character and "
+                                    "the weather move\n"
+                                )
+                            else:
+                                _intro_cast_rules = (
+                                    "• ABSOLUTELY NO people, NO hands, NO body parts, NO character visible\n"
+                                    "• Show ONLY the environment: buildings, landscape, terrain, sky\n"
+                                )
                             intro_flipbook_prefix = (
                                 "🚨🚨🚨 ABSOLUTE COMMAND - READ THIS FIRST 🚨🚨🚨\n\n"
                                 "YOU MUST GENERATE A 4x4 GRID OF 16 SEPARATE IMAGES.\n"
@@ -4837,15 +5020,14 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                                 "Think: Opening scene of a documentary or film showing the setting.\n\n"
                                 "📐 FIELD OF VIEW: EXTRA WIDE ANGLE (24mm-28mm equivalent)\n"
                                 "CRITICAL: Use an EXTREMELY WIDE field of view for this establishing shot.\n"
-                                "• Show the ENTIRE facility complex in frame\n"
+                                f"• Show all of {_intro_subject} in frame\n"
                                 "• Show MAXIMUM landscape - sky, horizon, distant terrain\n"
                                 "• Think: Wide documentary establishing shot\n"
                                 "• MORE environment visible, NOT close-up details\n"
                                 "• Avoid narrow/telephoto compositions\n\n"
                                 "CRITICAL RULES FOR INTRO:\n"
                                 "• WIDE LANDSCAPE VIEW from an elevated/distant vantage point\n"
-                                "• ABSOLUTELY NO people, NO hands, NO body parts, NO character visible\n"
-                                "• Show ONLY the environment: buildings, landscape, terrain, sky\n"
+                                + _intro_cast_rules +
                                 "• This is a STATIONARY CAMERA on a tripod or mounted position\n"
                                 "• Documentary/observational style - showing the location FROM OUTSIDE\n"
                                 "• The 16 frames show subtle environmental changes over 4 seconds:\n"
@@ -4864,7 +5046,9 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                                 "=" * 70 + "\n\n"
                             )
                             
-                            flipbook_prompt = intro_flipbook_prefix + prompt_str
+                            flipbook_prompt = game_identity.apply(
+                                intro_flipbook_prefix + prompt_str, "raw"
+                            )
                             
                             grid_path = generate_with_gemini(
                                 prompt=flipbook_prompt,
@@ -5419,6 +5603,9 @@ def _generate_situation_report(current_image: str = None, current_dispatch: str 
         # Don't use lore - this is just a summary with visual grounding
         return _ask(prompt, model="gemini", temp=1.0, tokens=60, image_path=current_image, use_lore=False)
     
+    authored = game_identity.opening_shot()
+    if authored:
+        return authored["prologue"]
     return "You stand on a rocky outcrop overlooking the Horizon facility, situated in the distance, surrounded by the vast red american southwest."
 
 def begin_tick() -> dict:
@@ -5474,7 +5661,16 @@ def _generate_random_starting_time() -> str:
     Use LLM to generate a randomized starting time/weather/mood for each game session.
     Format: "6:30pm | weather: clear, warm light | mood: tense anticipation"
     """
-    prompt = f"""Generate a starting time/weather/mood for a horror game set in the American Southwest desert at a mysterious facility.
+    # The weather of the run has to be the weather of the LEVEL. Asking for
+    # "desert weather" in an authored flooded shipyard produced a dust-storm
+    # mood line that then coloured every image prompt for the whole session.
+    place = game_identity.place_summary() or "the American Southwest desert at a mysterious facility"
+    weather_rule = (
+        "Weather that fits that location + lighting description"
+        if game_identity.setting_enabled()
+        else "Desert weather + lighting description (clear/cloudy/dusty/overcast + lighting type)"
+    )
+    prompt = f"""Generate a starting time/weather/mood for a horror game set in {place}
 
 Use EXACTLY this format: "TIME | weather: DESCRIPTION | mood: DESCRIPTION"
 
@@ -5482,7 +5678,7 @@ Example: "{INITIAL_TIME_OF_DAY}"
 
 Requirements:
 - TIME: Evening hours only (6:00pm - 8:00pm range, use exact time like 6:45pm or 7:22pm)
-- WEATHER: Desert weather + lighting description (clear/cloudy/dusty/overcast + lighting type)
+- WEATHER: {weather_rule}
 - MOOD: Horror/suspense mood (2-3 words describing emotional tone)
 
 Generate ONE random variation. Return ONLY the formatted string, no explanation."""
@@ -6080,6 +6276,22 @@ def generate_intro_turn_feed_items(session_id: str = 'default', new_state: Optio
     narrative_item = create_feed_item(type="narrative_event", content=initial_narrative_content)
     intro_items.append(narrative_item)
 
+    # The opening slate is grounded on a description of the first frame. Those
+    # two strings were the shipped Horizon fence line, hardcoded — so the very
+    # first thing an authored run asked you to do was vault a fence that isn't
+    # in your level. Derive them from the level plate when there is one.
+    authored_open = game_identity.opening_shot()
+    if authored_open:
+        intro_image_description = authored_open["vision"]
+        intro_situation = authored_open["prologue"]
+        choice_prompt_text = "You've arrived. What's your first move?"
+        fallback_choices = ["Move deeper into the space", "Search the nearest structure", "Circle the perimeter on foot"]
+    else:
+        intro_image_description = "Golden-hour desert at the perimeter fence of the Horizon facility; red mesas, chain-link fence, abandoned vehicles."
+        intro_situation = "You are crouched at the fence line of the quarantined Horizon facility as the sun drops. This is your way in."
+        choice_prompt_text = "The fence line waits. What's your first move?"
+        fallback_choices = ["Vault the perimeter fence", "Crouch low and scan the facility", "Photograph the abandoned vehicles"]
+
     # Choices are grounded on text (no image needed), so the intro returns fast.
     initial_choice_texts = []
     try:
@@ -6088,24 +6300,25 @@ def generate_intro_turn_feed_items(session_id: str = 'default', new_state: Optio
             prompt_tmpl=PROMPTS["player_choice_generation_instructions"],
             last_dispatch=initial_narrative_content,
             world_prompt=new_state.get("world_prompt", "System Online."),
-            image_description="Golden-hour desert at the perimeter fence of the Horizon facility; red mesas, chain-link fence, abandoned vehicles.",
-            situation_summary="You are crouched at the fence line of the quarantined Horizon facility as the sun drops. This is your way in.",
+            image_description=intro_image_description,
+            situation_summary=intro_situation,
             n=3
         )
     except Exception as e_choices:
         log_error(f"Error generating initial choices: {e_choices}")
-        initial_choice_texts = ["Vault the perimeter fence", "Crouch low and scan the facility", "Photograph the abandoned vehicles"]
+        initial_choice_texts = fallback_choices
 
-    choice_prompt_text = "The fence line waits. What's your first move?"
     choices_item = _structure_choices_for_feed(initial_choice_texts, choice_prompt_text, None)
     intro_items.append(choices_item)
     new_state["choices"] = choices_item['choices']
 
     # The intro scene image renders in the background and streams into the feed,
     # so reset returns immediately instead of blocking on image generation.
+    # An authored opening shot is a description of a FRAME; the narration is
+    # prose about a character. Render the frame when we have one.
     _spawn_scene_image_async(
         caption=initial_narrative_content,
-        dispatch=initial_narrative_content,
+        dispatch=intro_image_description if authored_open else initial_narrative_content,
         choice="Initialize Simulation",
         frame_idx=0,
         world_prompt=new_state.get("world_prompt", "Initialization sequence."),
@@ -6151,7 +6364,17 @@ def _perform_game_reset() -> List[Dict[str, Any]]:
         # /api/reset for a DIFFERENT session could swap it out (or itself get
         # clobbered) mid-call; see generate_intro_turn_feed_items's docstring.
         new_state = {
-            "world_prompt": PROMPTS.get("world_initial_state", "Default world starting point."),
+            # world_brief() folds the cast sheet into the run's world document.
+            # This is the reset /api/reset (and therefore the editor's "Save &
+            # Restart") actually goes through, and it used to seed the raw
+            # world_initial_state — so restarting after authoring a character
+            # and a level produced a run whose world state had never heard of
+            # either. reset_state() has always done this; the two agreeing is
+            # the difference between "the editor works" and "the editor works
+            # from the admin page".
+            "world_prompt": game_identity.world_brief(
+                PROMPTS.get("world_initial_state", "Default world starting point.")
+            ),
             "current_phase": "normal",
             "chaos_level": 0,
             "last_choice": "",
@@ -7265,15 +7488,24 @@ def build_talk_context(subject: dict, session_id: str = "default", opening_overr
         {"visible": [], "description": "", "time_of_day": "", "image_url": None}
     vision_block = _format_vision_for_persona(label, vision_snapshot)
 
+    # "A 1993 analog-horror world" and "the investigator/photojournalist" are
+    # the shipped premise, not the player's. A character talking to you should
+    # know who you actually are and where you actually are.
+    world_label = game_identity.place_summary() or "a 1993 analog-horror world"
+    interlocutor = (
+        game_identity.protagonist_line()
+        or "the investigator/photojournalist exploring this place"
+    )
+
     persona_prompt = (
-        f"You ARE the '{label}' — {kind_hint} — inside a 1993 analog-horror world. "
+        f"You ARE the '{label}' — {kind_hint} — inside {world_label} "
         f"You are NOT an AI assistant and you must never break character or mention being an AI. "
         f"Speak in-world, in first person, reacting to what is happening around you.\n\n"
         f"WORLD PREMISE: {premise}"
         f"{scene_block}{loc_block}{vision_block}"
         f"\n\nSTATE: story phase '{phase}', chaos level {chaos}/10, turn {turn}."
         f"{recent_block}\n\n"
-        f"The person you are speaking to is the investigator/photojournalist exploring this place"
+        f"The person you are speaking to is {interlocutor}"
         + (f" (currently carrying: {', '.join(inventory)})" if inventory else "")
         + ". Stay consistent with the premise and the recent events.\n\n"
         "HOW TO TALK: Sound like a real person actually speaking out loud, not writing. Use plain, "
@@ -7400,7 +7632,14 @@ def build_portrait_prompt(context: dict, img2img: bool = False) -> str:
         return _sanitize_for_image_generation(" ".join(bits))
 
     bits = [
-        CONVERSATION_PORTRAIT_STYLE_ANCHOR.rstrip(". ") + ".",
+        # A portrait is a deliberate break from the world camera — a locked-off
+        # medium shot of somebody who is NOT the player — so it takes the
+        # level's era and palette but keeps its own framing.
+        game_identity.world_anchor(
+            CONVERSATION_PORTRAIT_STYLE_ANCHOR,
+            include_character=False,
+            include_vantage=False,
+        ).rstrip(". ") + ".",
         f"Subject: the '{label}' — {kind_look}.",
         "Hold a charged, intimate medium shot; the subject fills the frame.",
     ]
@@ -8202,10 +8441,14 @@ def _build_camp_prompt(attendees: list, jeep_included: bool,
     jeep and #2..N are specific companion portraits — not anonymous faces.
     """
     attendee_labels = [a.get("label") for a in (attendees or []) if a.get("label")]
+    # Camp is a fixed Moment with its own art direction, but "which way is the
+    # camera pointing" and "what does the surrounding terrain look like" both
+    # belong to the player. Terrain follows the level when one is authored.
+    terrain = game_identity.place_summary() or "remote Four Corners high-desert scrub"
     bits = [
-        "First-person handheld establishing shot of a night campsite in remote Four Corners high-desert scrub.",
+        f"{game_identity.vantage().capitalize()}: handheld establishing shot of a night campsite in {terrain}",
         "4:3 frame matching the rest of the game. A small campfire burns in the mid-ground,",
-        "warm orange firelight pooling on sand and scrub, embers drifting, deep blue-black night sky,",
+        "warm orange firelight pooling on the ground, embers drifting, deep blue-black night sky,",
         "VHS analog grain, 1990s found-footage mood. Not a security camera, not a collage.",
         "CRITICAL — THE RED JEEP MUST BE IN FRAME: a dusty bright-red 1990s Jeep "
         "Cherokee/Wrangler parked at the RIGHT edge of the firelight, three-quarter "
@@ -8246,7 +8489,14 @@ def _build_camp_prompt(attendees: list, jeep_included: bool,
             "No people — a quiet empty camp. Only the fire and the red jeep."
         )
     bits.append("No text, no UI, no letterbox bars inside the image. Photoreal cinematic still.")
-    return _sanitize_for_image_generation(" ".join(bits))
+    if game_identity.shows_character() and game_identity.character_enabled():
+        bits.append(
+            f"The player's own character is at the fire too: {game_identity.protagonist_line()}"
+        )
+    # One bit per line, because the reconcile stage works line by line: joined
+    # into a single line, the empty-camp bit ("No people…") would take the whole
+    # prompt down with it the moment the camera is behind a visible character.
+    return _sanitize_for_image_generation(game_identity.apply("\n".join(bits), "raw"))
 
 
 def _build_camp_realtime_prompt(attendee_labels: list, jeep_included: bool = True) -> str:
@@ -8256,12 +8506,14 @@ def _build_camp_realtime_prompt(attendee_labels: list, jeep_included: bool = Tru
         who = " Companions seated around the fire: " + ", ".join(attendee_labels) + "."
     # Jeep is always part of camp identity — mention even if the prop file failed.
     jeep = " A dusty bright-red 1990s jeep is parked at the edge of the firelight."
+    terrain = game_identity.place_summary() or "remote high-desert scrub"
     visual = (
-        "Night campsite in remote high-desert scrub. A campfire burns in the mid-ground, "
-        "embers drifting, warm firelight on sand and brush, deep desert dark."
+        f"Night campsite in {terrain} A campfire burns in the mid-ground, "
+        "embers drifting, warm firelight on the ground, deep night dark."
         + jeep
         + who
-        + " First-person handheld view. Firelight flickers. Quiet night wind in the scrub."
+        + f" {game_identity.vantage().capitalize()}, handheld. "
+        "Firelight flickers. Quiet night wind."
     )
     return build_realtime_prompt(visual_scene=visual, narrative=visual, choice="")
 
@@ -9054,10 +9306,16 @@ def _narrator_script(focus: str, multi: bool, session_id: str) -> list:
     if not LLM_ENABLED:
         return fallback
 
+    # The narrator speaks as the player. "A 1993 analog-horror world" and the
+    # implicit unnamed lone person are both overridable; an authored run should
+    # hear its own protagonist's voice in its own level.
+    world_label = game_identity.place_summary() or "a 1993 analog-horror world"
+    narrator_self = game_identity.protagonist_line() or "one lone person"
+
     if multi:
         cast_names = ", ".join((VOICES_CONFIG.get("cast") or {}).keys()) or "narrator"
         prompt = (
-            f"You script a 1993 analog-horror world. PREMISE: {premise}"
+            f"You script {world_label} PREMISE: {premise}"
             f"{(chr(10)+chr(10)+'CURRENT SCENE: '+scene) if scene else ''}{recent_block}{focus_block}\n\n"
             f"Write a SHORT radio-play style world-building narration: 2 to 5 lines that hand off between "
             f"these voices where it fits: {cast_names}. Keep it atmospheric, ominous, concrete — no meta, "
@@ -9095,7 +9353,7 @@ def _narrator_script(focus: str, multi: bool, session_id: str) -> list:
     # here" beat. With no focus, keep the original evocative baseline.
     if (focus or "").strip():
         prompt = (
-            f"You are the NARRATOR of a 1993 analog-horror world — one lone person, "
+            f"You are the NARRATOR of {world_label} You are {narrator_self} "
             f"speaking quietly to yourself. PREMISE: {premise}"
             f"{(chr(10)+chr(10)+'CURRENT SCENE: '+scene) if scene else ''}{recent_block}\n\n"
             f"INSTRUCTIONS FOR THIS LINE: {focus.strip()}\n\n"
@@ -9104,7 +9362,7 @@ def _narrator_script(focus: str, multi: bool, session_id: str) -> list:
         )
     else:
         prompt = (
-            f"You are the NARRATOR of a 1993 analog-horror world — one lone person, "
+            f"You are the NARRATOR of {world_label} You are {narrator_self} "
             f"speaking quietly to yourself. PREMISE: {premise}"
             f"{(chr(10)+chr(10)+'CURRENT SCENE: '+scene) if scene else ''}{recent_block}\n\n"
             f"Speak in FIRST PERSON. Use ONE short, plain sentence — nothing more. Say how you FEEL right now — "
@@ -9691,7 +9949,11 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
         json_prompt = game_identity.apply(
             PROMPTS['action_consequence_instructions'], "narrative"
         ) + (
-            f"\n\n{free_will_header}"
+            # The free-will header is written outside the template, so it needs
+            # its own pass — it says "describe them DOING the action from
+            # first-person perspective", which is an instruction to write the
+            # wrong shot when the camera is behind the character.
+            f"\n\n{game_identity.apply(free_will_header, 'raw')}"
             f"PLAYER CHOICE: '{choice}'\n"
             f"WORLD CONTEXT: {world_prompt}\n"
             f"{grounding_block}"
@@ -10612,6 +10874,23 @@ def reset_state(session_id='default'):
     _last_image_path = None
     print(f"[RESET] Session {session_id} cleared. Starting fresh.")
 
+def _intro_world_seed(prologue: str) -> str:
+    """The world document a fresh run starts from, given its opening shot.
+
+    The intro used to store the one-sentence prologue AS the whole world state,
+    which threw away `world_initial_state` and the cast sheet on turn zero. The
+    per-turn evolution pass then treated that sentence as the entire history of
+    the world and rebuilt everything else from the shipped defaults, so an
+    authored world survived exactly until the first action.
+    """
+    base = game_identity.world_brief(
+        PROMPTS.get("world_initial_state", "Default world starting point.")
+    )
+    if not prologue:
+        return base
+    return f"{base}\n\nOPENING SHOT: {prologue}" if base else prologue
+
+
 def generate_intro_image_fast(session_id='default'):
     """
     PHASE 1 (FAST): Generate ONLY the intro image and basic info.
@@ -10655,7 +10934,7 @@ def generate_intro_image_fast(session_id='default'):
     vision_dispatch = scene["vision"]
     
     state = _load_state(session_id)
-    state["world_prompt"] = prologue
+    state["world_prompt"] = _intro_world_seed(prologue)
     state["current_phase"] = "normal"
     state["chaos_level"] = 0
     state["last_choice"] = ""
@@ -10891,7 +11170,7 @@ def generate_intro_turn(session_id: str = 'default'):
     vision_dispatch = scene["vision"]
     
     state = _load_state(session_id)
-    state["world_prompt"] = prologue
+    state["world_prompt"] = _intro_world_seed(prologue)
     state["current_phase"] = "normal"
     state["chaos_level"] = 0
     state["last_choice"] = ""

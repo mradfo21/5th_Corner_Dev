@@ -107,22 +107,28 @@ def evolve_world_state(
         "story to a different setting, never change the camera perspective.\n"
         if cast_sheet else ""
     )
-    _spec = game_identity.get_spec()
-    who_line = "Jason Fleece, photojournalist, 1993"
-    if game_identity.character_enabled(_spec):
-        _char = _spec[game_identity.CHARACTER_KEY]
-        who_line = ", ".join(
-            p for p in (game_identity.display_name(_spec), _char.get("role")) if p
-        )
-    setting_line = "1993 VHS horror, Four Corners facility"
-    if game_identity.setting_enabled(_spec):
-        _setting = _spec[game_identity.SETTING_KEY]
-        setting_line = ", ".join(
-            p for p in (_setting.get("era"), _setting.get("name"), _setting.get("palette")) if p
-        ) or setting_line
+    # Every line of the STRUCTURE skeleton below is authoritative for the next
+    # turn — the rewrite it produces IS the world state every other prompt then
+    # reads. While the skeleton said "ENVIRONMENT: Four Corners desert", an
+    # authored level lost a little more ground every turn until it was gone.
+    _lines = game_identity.structure_lines()
+    who_line = _lines["who"] or "Jason Fleece, photojournalist, 1993"
+    where_line = _lines["where"] or "Current location in facility (updated!)"
+    environment_line = _lines["environment"] or "Four Corners desert, facility details"
+    tone_line = _lines["tone"] or "VHS horror, grounded 1993 realism, body horror"
+    setting_line = _lines["tone"] or "1993 VHS horror, Four Corners facility"
+    if _lines["environment"]:
+        setting_line = ", ".join(p for p in (_lines["tone"], _lines["environment"]) if p)
+
+    # `world_evolution_instructions` lives in simulation_prompts.json and was
+    # read by nothing. That made the single prompt that rewrites the world
+    # every turn the one prompt the World Editor could not touch — you could
+    # rewrite the opening world state and watch this pass quietly walk it back.
+    house_rules = (PROMPTS.get("world_evolution_instructions") or "").strip()
+    house_rules_block = f"\n\nHOUSE RULES FOR HOW THIS WORLD CHANGES:\n{house_rules}\n" if house_rules else ""
 
     # Build evolution prompt
-    prompt = f"""You are evolving a dynamic world state for a survival horror game.{cast_rule}
+    prompt = f"""You are evolving a dynamic world state for a survival horror game.{cast_rule}{house_rules_block}
 
 CRITICAL PHILOSOPHY:
 The world_prompt is a LIVING DOCUMENT that grows richer as the player progresses.
@@ -159,11 +165,11 @@ CRITICAL RULES:
 
 STRUCTURE (maintain these sections):
 - WHO: {who_line}
-- WHERE: Current location in facility (updated!)
+- WHERE: {where_line}
 - WHAT'S HAPPENED: Journey so far (accumulated discoveries)
 - THREATS: Known dangers, guards, creatures, hazards
-- ENVIRONMENT: Four Corners desert, facility details
-- TONE: VHS horror, grounded 1993 realism, body horror
+- ENVIRONMENT: {environment_line}
+- TONE: {tone_line}
 
 Write the NEW world_prompt (1200-1500 words) that reflects everything up to this moment.
 

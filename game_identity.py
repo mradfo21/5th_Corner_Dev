@@ -140,6 +140,7 @@ PERSPECTIVE_MODES: Dict[str, Dict[str, Any]] = {
         "hands_default": True,
         "camera_header": "FIRST-PERSON CAMERA VIEW",
         "rig": "a camcorder held at eye level by the player",
+        "vantage": "first-person eye-level walking vantage, the camera is the player's own eyes",
         "image_rules": [
             "The camera IS the player's eyes — everything in frame is what they are looking at right now.",
             "The player's own face, head, back, torso, and legs are NEVER in frame.",
@@ -170,6 +171,7 @@ PERSPECTIVE_MODES: Dict[str, Dict[str, Any]] = {
         "hands_default": False,
         "camera_header": "OVER-THE-SHOULDER THIRD-PERSON VIEW",
         "rig": "a camera floating roughly one metre behind and slightly above the character's shoulder",
+        "vantage": "third-person over-the-shoulder vantage, the camera trailing a metre behind the character who stays visible in frame",
         "image_rules": [
             "The PLAYER CHARACTER is visible in frame, seen from behind and slightly above, "
             "occupying the lower-left or lower-right third of the composition.",
@@ -201,6 +203,7 @@ PERSPECTIVE_MODES: Dict[str, Dict[str, Any]] = {
         "hands_default": False,
         "camera_header": "THIRD-PERSON FOLLOW-CAM VIEW",
         "rig": "a camera three to five metres back from the character at chest height",
+        "vantage": "third-person follow-cam vantage, the camera several metres back with the character fully visible head to feet",
         "image_rules": [
             "The PLAYER CHARACTER is fully visible — head to feet — as the clear subject of the shot.",
             "The character reads at roughly a third to a half of the frame height, with the "
@@ -230,6 +233,7 @@ PERSPECTIVE_MODES: Dict[str, Dict[str, Any]] = {
         "hands_default": False,
         "camera_header": "FIXED CINEMATIC CAMERA ANGLE",
         "rig": "a camera locked off on a tripod in the corner of the space, watching it like a stage",
+        "vantage": "fixed cinematic camera angle locked off in the corner of the space, the character small inside the composed frame",
         "image_rules": [
             "The camera is BOLTED IN PLACE — a dramatic, composed angle (high corner, low floor "
             "level, through a doorway) that observes the whole space.",
@@ -775,6 +779,176 @@ def narrative_directive(spec: Optional[Dict[str, Any]] = None) -> str:
     return "🎬 DIRECTOR'S SHEET — CAST, CAMERA, AND PLACE\n" + "\n".join(lines)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# COMPACT SURFACES
+#
+# A dozen prompts in the pipeline are too small to take the full directive: a
+# realtime world-model prompt is capped at 2000 characters, a vision-analysis
+# prompt has to stay terse or the model stops answering in the requested
+# format, and a talk persona is three sentences. Bolting the 400-character
+# CAMERA/CAST/LOCATION block onto those either blows the budget or drowns the
+# actual instruction.
+#
+# They still need to know who and where, though — and until they did, the
+# authored level lost every argument with the hardcoded one. These helpers are
+# the one-line version of the same facts, so a short prompt can carry the cast
+# sheet without being taken over by it. Each returns "" when nothing has been
+# authored, so callers can concatenate unconditionally.
+# ═══════════════════════════════════════════════════════════════════════════
+
+def vantage(spec: Optional[Dict[str, Any]] = None) -> str:
+    """The active camera rig as a single descriptive clause."""
+    return mode_config(spec)["vantage"]
+
+
+def place_line(spec: Optional[Dict[str, Any]] = None) -> str:
+    """One line naming the level and what it looks like, or "" if unauthored."""
+    spec = spec or get_spec()
+    if not setting_enabled(spec):
+        return ""
+    setting = spec[SETTING_KEY]
+    head = setting.get("name") or "the level"
+    bits: List[str] = []
+    if setting.get("summary"):
+        bits.append(setting["summary"].rstrip("."))
+    if setting.get("era"):
+        bits.append(setting["era"].rstrip("."))
+    if setting.get("palette"):
+        bits.append(setting["palette"].rstrip("."))
+    if setting.get("landmarks"):
+        bits.append("landmarks: " + setting["landmarks"].rstrip("."))
+    return f"{head} — " + "; ".join(bits) + "." if bits else f"{head}."
+
+
+def place_summary(spec: Optional[Dict[str, Any]] = None) -> str:
+    """Just the level's name and one-line description — no palette or landmarks.
+
+    For prompts that want the place named but already carry their own look
+    direction (image descriptions, situation reports).
+    """
+    spec = spec or get_spec()
+    if not setting_enabled(spec):
+        return ""
+    setting = spec[SETTING_KEY]
+    name = setting.get("name") or "the level"
+    summary = (setting.get("summary") or "").rstrip(".")
+    return f"{name} — {summary}." if summary else f"{name}."
+
+
+def protagonist_line(spec: Optional[Dict[str, Any]] = None) -> str:
+    """One line naming the protagonist and what they look like, or ""."""
+    spec = spec or get_spec()
+    if not character_enabled(spec):
+        return ""
+    char = spec[CHARACTER_KEY]
+    head = display_name(spec)
+    if char.get("pronouns"):
+        head += f" ({char['pronouns']})"
+    bits: List[str] = []
+    for field in ("role", "appearance", "wardrobe"):
+        if char.get(field):
+            bits.append(char[field].rstrip("."))
+    if char.get("signature_gear"):
+        bits.append("carrying " + char["signature_gear"].rstrip("."))
+    return f"{head} — " + "; ".join(bits) + "." if bits else f"{head}."
+
+
+def scene_grounding(spec: Optional[Dict[str, Any]] = None) -> str:
+    """Who / where / which camera, in at most three lines.
+
+    The compact counterpart to :func:`image_directive`, for prompts that
+    analyse or describe the scene rather than render it.
+    """
+    spec = spec or get_spec()
+    if not is_active(spec):
+        return ""
+    lines = [f"CAMERA: {vantage(spec)}."]
+    place = place_line(spec)
+    if place:
+        lines.append(f"PLACE: {place}")
+    who = protagonist_line(spec)
+    if who:
+        lines.append(f"PLAYER CHARACTER: {who}")
+    return "\n".join(lines)
+
+
+def world_anchor(
+    default: str,
+    spec: Optional[Dict[str, Any]] = None,
+    include_character: bool = True,
+    include_vantage: bool = True,
+) -> str:
+    """The style/vantage anchor for realtime and video prompts.
+
+    ``default`` is the shipped anchor — a single paragraph of medium, era, and
+    film-stock language with the first-person vantage written into it. Rather
+    than replace it (which would throw away the look the game is built on),
+    this retunes its perspective wording and appends whatever the level and
+    camera blocks authored, so the anchor ends up describing the player's
+    world instead of the one it shipped describing.
+
+    Deliberately does NOT run :func:`reconcile`: that deletes whole *lines*,
+    and an anchor is one line, so a single anti-person clause would delete the
+    entire anchor.
+
+    ``include_character`` / ``include_vantage`` are for surfaces whose subject
+    or framing isn't the player — a conversation portrait is a deliberate
+    register change to a locked-off medium shot of somebody else, and it still
+    wants the level's era and palette.
+    """
+    spec = spec or get_spec()
+    if not is_active(spec):
+        return default
+    parts = [retune(default, spec).strip().rstrip(". ")]
+    if include_vantage:
+        parts.append(vantage(spec))
+
+    setting = spec[SETTING_KEY]
+    if setting_enabled(spec):
+        for field in ("era", "palette"):
+            if setting.get(field):
+                parts.append(setting[field].rstrip(". "))
+    cam = spec[CAMERA_KEY]
+    if cam.get("lens") and include_vantage:
+        parts.append(cam["lens"].rstrip(". "))
+    if include_character and shows_character(spec) and character_enabled(spec):
+        who = protagonist_line(spec).rstrip(". ")
+        parts.append(f"The player character stays in frame: {who}")
+    return ". ".join(p for p in parts if p) + "."
+
+
+def structure_lines(spec: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+    """WHO / WHERE / ENVIRONMENT / TONE for the world-evolution template.
+
+    The per-turn world rewrite is handed a section skeleton to fill in. While
+    that skeleton said "ENVIRONMENT: Four Corners desert", every turn quietly
+    dragged an authored level back toward the shipped one — the rewrite is
+    authoritative for the next turn's prompts, so a few turns of that and the
+    player's world was gone. Empty strings mean "no override", and the caller
+    keeps its shipped wording.
+    """
+    spec = spec or get_spec()
+    out = {"who": "", "where": "", "environment": "", "tone": ""}
+
+    if character_enabled(spec):
+        char = spec[CHARACTER_KEY]
+        out["who"] = ", ".join(
+            p for p in (display_name(spec), char.get("role"), char.get("demeanor")) if p
+        )
+
+    if setting_enabled(spec):
+        setting = spec[SETTING_KEY]
+        name = setting.get("name") or "the level"
+        out["where"] = f"Current position inside {name} (updated!)"
+        out["environment"] = ", ".join(
+            p for p in (name, setting.get("summary"), setting.get("landmarks")) if p
+        )
+        out["tone"] = ", ".join(
+            p for p in (setting.get("era"), setting.get("palette")) if p
+        )
+    return out
+
+
 def world_brief(base: str, spec: Optional[Dict[str, Any]] = None) -> str:
     """Seed the run's evolving world document with the cast sheet.
 
@@ -980,7 +1154,17 @@ def _forbids_visible_character(line: str) -> bool:
 
 
 def reconcile(text: str, spec: Optional[Dict[str, Any]] = None) -> str:
-    """Strip lines that forbid exactly what the active mode requires."""
+    """Strip lines that forbid exactly what the active mode requires.
+
+    Line-granular by design — the rules being removed live in editable JSON
+    that can't safely be rewritten word by word. The consequence is that a
+    caller who hands this a prompt written as ONE long line can have the whole
+    thing deleted by a single offending clause, which is a silent, total
+    failure (an empty image prompt renders whatever the model feels like). So
+    a reconcile that removes everything is treated as a caller mistake and
+    declines to apply: better a prompt with one stale anti-person line in it,
+    which the directive above it outranks, than no prompt at all.
+    """
     if not text:
         return text
     spec = spec or get_spec()
@@ -991,6 +1175,8 @@ def reconcile(text: str, spec: Optional[Dict[str, Any]] = None) -> str:
         ln for ln in text.split("\n")
         if not any(p.search(ln) for p in patterns) and not _forbids_visible_character(ln)
     ]
+    if not any(ln.strip() for ln in kept):
+        return text
     return "\n".join(kept)
 
 
