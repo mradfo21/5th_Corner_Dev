@@ -152,6 +152,35 @@ class CostTrackerTestCase(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertEqual(errors[0]["error_message"], "boom")
 
+    def test_storage_health_with_no_data_is_inconclusive(self):
+        health = cost_tracker.get_storage_health()
+        self.assertIsNone(health["oldest_event_at"])
+        self.assertIsNone(health["survived_restart"])
+        self.assertIsInstance(health["mount_detected"], bool)
+
+    def test_storage_health_not_yet_survived_a_restart(self):
+        # Data written by THIS process is necessarily newer than this
+        # process's own start time — that alone proves nothing either way.
+        cost_tracker.record_usage("s1", "text", "gemini", "gemini-3.1-flash-lite",
+                                   input_units=10, output_units=10, unit_type="tokens", success=True)
+        health = cost_tracker.get_storage_health()
+        self.assertIsNotNone(health["oldest_event_at"])
+        self.assertFalse(health["survived_restart"])
+
+    def test_storage_health_confirms_survived_restart(self):
+        from datetime import timedelta
+        cost_tracker.record_usage("s1", "text", "gemini", "gemini-3.1-flash-lite",
+                                   input_units=10, output_units=10, unit_type="tokens", success=True)
+        # Simulate "a restart happened": move this process's recorded start
+        # time to AFTER the event that's already in the ledger.
+        orig_started_at = cost_tracker._PROCESS_STARTED_AT
+        try:
+            cost_tracker._PROCESS_STARTED_AT = orig_started_at + timedelta(seconds=5)
+            health = cost_tracker.get_storage_health()
+            self.assertTrue(health["survived_restart"])
+        finally:
+            cost_tracker._PROCESS_STARTED_AT = orig_started_at
+
 
 if __name__ == "__main__":
     unittest.main()

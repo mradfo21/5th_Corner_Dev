@@ -25,6 +25,13 @@
   var LS_RECENT_KEY = "somewhere.lobby.recent";
   var LS_LAST_KEY = "somewhere.lobby.last_session";
   var MAX_RECENT = 12;
+  // sessionStorage key MUST match the one standalone.js reads in the
+  // CoinOp module (`coinop_comp_code`). Picking a comp code up here on
+  // the lobby and stashing it under that exact key means that when the
+  // lobby navigates to /play?session=<new_id>, the immersive UI will
+  // recover the code even if we did not manage to append it to the URL
+  // for whatever reason.
+  var SS_COMP_KEY = "coinop_comp_code";
 
   // ---------- Utilities ----------
 
@@ -104,6 +111,72 @@
   function safeJSON(res) {
     return res.json().catch(function () { return null; });
   }
+
+  // ---------- Coin-op comp code (free-play tokens for influencers/QA) ----------
+  //
+  // The coin-op continue feature (see coinop.py + standalone.js CoinOp)
+  // accepts a `?comp=<code>` query parameter that grants free continues
+  // for allowlisted codes (COINOP_FREE_PLAY_CODES). Historically the
+  // lobby had no idea about this, so a link like /lobby?comp=jane would
+  // drop the code the moment the visitor hit "New Game" and the server
+  // redirected them to /play?session=<newly-minted-id>.
+  //
+  // We now hoist that logic up to the lobby: read the code from the URL
+  // (or from a prior sessionStorage stash from earlier in this tab),
+  // persist it under the SAME key standalone.js reads, strip it from the
+  // visible URL for tidiness, and forward it on every navigation into
+  // /play. Belt AND suspenders: the URL param is authoritative, and the
+  // sessionStorage stash catches any code path we forgot to instrument.
+  function readComp() {
+    var fromUrl = "";
+    try {
+      var q = new URLSearchParams(location.search);
+      fromUrl = (q.get("comp") || "").trim();
+    } catch (_) {}
+    if (fromUrl) {
+      try { sessionStorage.setItem(SS_COMP_KEY, fromUrl); } catch (_) {}
+      try {
+        var q2 = new URLSearchParams(location.search);
+        q2.delete("comp");
+        var rest = q2.toString();
+        var clean = location.pathname + (rest ? "?" + rest : "") + location.hash;
+        history.replaceState(null, "", clean);
+      } catch (_) {}
+      return fromUrl;
+    }
+    try {
+      var fromStore = sessionStorage.getItem(SS_COMP_KEY);
+      if (fromStore) return String(fromStore).trim();
+    } catch (_) {}
+    return "";
+  }
+
+  var COMP_CODE = readComp();
+
+  // Append ?comp=<code> to any /play (or /live, /standalone) URL we hand
+  // to the browser. Idempotent: if the URL already has comp we leave it
+  // alone. Used by New Game, resume cards, and join-by-code so ALL exits
+  // from the lobby preserve the token.
+  function withComp(url) {
+    if (!COMP_CODE || !url) return url;
+    try {
+      var joiner = url.indexOf("?") === -1 ? "?" : "&";
+      if (url.indexOf("comp=") !== -1) return url;
+      return url + joiner + "comp=" + encodeURIComponent(COMP_CODE);
+    } catch (_) { return url; }
+  }
+
+  function showCompBadge() {
+    if (!COMP_CODE) return;
+    var badge = el("comp-badge");
+    if (!badge) return;
+    // Only surface the code itself when it's short — long codes would
+    // wreck the HUD layout and are usually opaque to the human anyway.
+    var display = COMP_CODE.length <= 16 ? COMP_CODE : "ON";
+    badge.textContent = "COMP · " + display;
+    badge.hidden = false;
+  }
+  showCompBadge();
 
   // ---------- Ambient clock ----------
 
@@ -250,7 +323,7 @@
 
       var card = document.createElement("a");
       card.className = classes.join(" ");
-      card.href = "/play?session=" + encodeURIComponent(sid);
+      card.href = withComp("/play?session=" + encodeURIComponent(sid));
       card.setAttribute("data-session-id", sid);
       card.setAttribute("title", "Continue '" + sid + "'");
       card.innerHTML =
@@ -414,7 +487,8 @@
         boot.advance("step forward…");
         setTimeout(function () {
           boot.done();
-          window.location.href = data.play_url || ("/play?session=" + encodeURIComponent(sid));
+          var dest = data.play_url || ("/play?session=" + encodeURIComponent(sid));
+          window.location.href = withComp(dest);
         }, 550);
       })
       .catch(function (err) {
@@ -465,7 +539,7 @@
       .then(function () {})
       .catch(function () {})
       .finally(function () {
-        window.location.href = "/play?session=" + encodeURIComponent(sid);
+        window.location.href = withComp("/play?session=" + encodeURIComponent(sid));
       });
   }
 

@@ -819,18 +819,128 @@ def _start_design_worker(key: str, brief: Dict[str, Any],
 # Public entry point — resolve / design a voice for a subject
 # ────────────────────────────────────────────────────────────────────────────
 
+def regenerate_voice(
+    subject: Dict[str, Any],
+    session_id: str,
+    description: str,
+    *,
+    world_prompt: str = "",
+    sample_text: str = "",
+    old_voice_id: Optional[str] = None,
+    wait: float = 0.0,
+) -> Optional[Dict[str, Any]]:
+    """Force a NEW Voice Design from a stored companion description.
+
+    Companions persist the Voice Design brief so a later beat can recreate
+    the same character's voice after slot eviction / session cleanup. This
+    path does **not** rebuild the brief from story context — it reuses the
+    exact ``description`` seed — then evicts the prior cache entry (and
+    best-effort deletes ``old_voice_id`` when its refcount is zero) before
+    kicking off a fresh design job under the same cache key.
+
+    Returns the same shape as ``get_or_design_voice``, or ``None`` when the
+    feature is unavailable / the description is unusable. Never raises.
+    """
+    if not is_available():
+        return None
+    if not isinstance(subject, dict):
+        return None
+    label = _norm(subject.get("label"))
+    if not label:
+        return None
+    desc = (description or "").strip()
+    # ElevenLabs Voice Design requires 20 <= len(voice_description) <= 1000.
+    if len(desc) < 20:
+        return None
+    desc = desc[:990]
+
+    key = cache_key(subject, session_id, world_prompt)
+
+    # Drop any ready/generating/failed entry for this key so we actually
+    # spend a new design credit instead of returning the cached voice_id.
+    existing = _get_entry(key)
+    if existing:
+        _drop_entries([key])
+    # Best-effort: free the previous ElevenLabs slot when nothing is holding
+    # a ref (an open Convai call keeps refcount > 0 and must not be yanked).
+    if old_voice_id and refcount(old_voice_id) <= 0:
+        try:
+            _delete_voice(old_voice_id)
+        except Exception:
+            pass
+
+    if _count_session_designs(session_id) >= DESIGN_BUDGET_PER_SESSION:
+        return {
+            "voice_id": None,
+            "cache_key": key,
+            "source": "budget",
+            "status": "failed",
+            "description": desc,
+        }
+
+    kind = _norm(subject.get("kind")) or "person"
+    brief = {
+        "description": desc,
+        "sample_text": _sample_text(sample_text or "", label),
+        "voice_name": _voice_name(label, kind),
+        "labels": {
+            "source": LABEL_TAG,
+            "subject_label": label[:60],
+            "subject_kind": kind[:20],
+            "created_at": _now_iso(),
+            "regen": "1",
+        },
+    }
+    ev = _start_design_worker(key, brief, session_id, subject)
+
+    if wait > 0:
+        ev.wait(timeout=wait)
+        entry = _get_entry(key)
+        if entry and entry.get("status") == "ready" and entry.get("voice_id"):
+            _touch_entry(key)
+            return {
+                "voice_id": entry["voice_id"],
+                "cache_key": key,
+                "source": "designed",
+                "status": "ready",
+                "description": desc,
+            }
+        if entry and entry.get("status") == "failed":
+            return {
+                "voice_id": None,
+                "cache_key": key,
+                "source": "failed",
+                "status": "failed",
+                "description": desc,
+            }
+
+    return {
+        "voice_id": None,
+        "cache_key": key,
+        "source": "generating",
+        "status": "generating",
+        "description": desc,
+    }
+
+
 def get_or_design_voice(
     subject: Dict[str, Any],
     session_id: str = "default",
     context: Optional[Dict[str, Any]] = None,
     world_prompt: str = "",
     wait: float = 0.0,
+    description_override: str = "",
 ) -> Optional[Dict[str, Any]]:
     """Resolve a designed voice for ``subject``, or ``None`` to signal that
     the caller should fall back to the static ``by_kind`` roster.
 
     ``wait`` seconds > 0 blocks the caller until a currently-in-flight job for
     this cache key completes (bounded by ``DESIGN_TIMEOUT_SECONDS``).
+
+    ``description_override`` (when >= 20 chars) reuses a stored companion
+    Voice Design brief instead of rebuilding one from story context — the
+    recovery path when a companion's ``voice_id`` was evicted but the regen
+    seed survived on the roster.
 
     Returns a dict::
 
@@ -918,7 +1028,25 @@ def get_or_design_voice(
             "description": "",
         }
 
-    brief = brief_for_subject(subject, context)
+    override = (description_override or "").strip()
+    if len(override) >= 20:
+        kind = _norm(subject.get("kind")) or "person"
+        brief = {
+            "description": override[:990],
+            "sample_text": _sample_text(
+                str((context or {}).get("opening_line") or ""), label
+            ),
+            "voice_name": _voice_name(label, kind),
+            "labels": {
+                "source": LABEL_TAG,
+                "subject_label": label[:60],
+                "subject_kind": kind[:20],
+                "created_at": _now_iso(),
+                "from_companion": "1",
+            },
+        }
+    else:
+        brief = brief_for_subject(subject, context)
     ev = _start_design_worker(key, brief, session_id, subject)
 
     if wait > 0:

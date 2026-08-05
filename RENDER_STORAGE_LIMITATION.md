@@ -1,14 +1,36 @@
 # ⚠️ Render Storage — Persistent Disk Status
 
-## ✅ **UPDATE (2026-07-21): Persistent disk is now configured**
+## 🔎 **UPDATE (2026-07-21): Disk declared in render.yaml — verify it actually attached**
 
-`render.yaml` mounts a 1GB persistent disk at `sessions/` (see the `disk:`
-block on the `somewhere-game` service). Render provisions/attaches it
-automatically on the next deploy after this change lands — no manual
-dashboard steps needed. This means `sessions/_analytics/usage.db` (the cost
-tracker's SQLite ledger), game state, and session images/tapes all now
-survive deploys and restarts. Cost: ~$1/GB/month on top of the Starter plan
-already in use.
+`render.yaml` declares a 1GB persistent disk mounted at `sessions/` (see the
+`disk:` block on the `somewhere-game` service). **Whether that alone is
+enough depends on how the Render service was originally created:**
+
+- If it was created via **Render's "New → Blueprint" flow** and is
+  Blueprint-synced to this repo, Render should pick up the `disk:` block on
+  the next deploy — though Render sometimes still shows a **"pending
+  changes" banner in the dashboard that a human has to approve** before an
+  infra change (like adding a disk) actually takes effect. Check for that
+  banner after deploying this.
+- If the service was created manually (**"New → Web Service"**, pointed at
+  this repo) — which is the more common path and is very possibly what
+  happened here — **Render does NOT read `disk:` out of a plain
+  `render.yaml` for an existing, non-Blueprint service.** In that case the
+  disk has to be added by hand:
+  1. Render Dashboard → the `somewhere-game` service → **Settings → Disks**
+  2. **Add Disk** → Name `game-data` → Mount Path
+     `/opt/render/project/src/sessions` → Size `1 GB` → Save
+  3. Render redeploys the service with the disk attached.
+
+**Don't guess — check the admin dashboard.** The Cost Analytics tab now
+shows a live storage-health banner (`GET /api/admin/analytics/storage_health`)
+that tells you definitively:
+- 🟢 green = confirmed — a ledger row has already survived a process
+  restart, so persistence is provably working.
+- 🟡 yellow = the mount looks present but hasn't been proven across a
+  restart yet (check back after the next deploy).
+- 🔴 red = **not mounted** — `sessions/` is still on ephemeral storage, and
+  this doc's manual steps above are what's needed.
 
 The rest of this document describes the PRIOR ephemeral-storage state, kept
 for context on why this mattered.

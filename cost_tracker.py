@@ -14,6 +14,7 @@ Design goals (see ADMIN_COST_ANALYTICS_DASHBOARD_PLAN.md):
 """
 
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -25,13 +26,19 @@ from typing import Any, Dict, Iterable, Optional
 import pricing
 
 ROOT = Path(__file__).parent.resolve()
-ANALYTICS_DIR = ROOT / "sessions" / "_analytics"
+SESSIONS_DIR = ROOT / "sessions"
+ANALYTICS_DIR = SESSIONS_DIR / "_analytics"
 DB_PATH = ANALYTICS_DIR / "usage.db"
 
 _lock = threading.Lock()
 _initialized = False
 
 SERVICE_TYPES = ("text", "image", "video", "voice", "realtime")
+
+# When THIS process started — used purely to answer "did the ledger survive
+# a restart?" (see get_storage_health()). Deliberately captured at import
+# time, before init_db() ever runs, so it's a true process-start timestamp.
+_PROCESS_STARTED_AT = datetime.now(timezone.utc)
 
 
 def _now_iso() -> str:
@@ -254,6 +261,63 @@ def _since_iso(range_key: str) -> Optional[str]:
     n, unit = _re.match(r"-(\d+)\s*(day|days)", delta).groups()
     from datetime import timedelta
     return (datetime.now(timezone.utc) - timedelta(days=int(n))).isoformat()
+
+
+def get_storage_health() -> Dict[str, Any]:
+    """Diagnose whether the ledger is actually on persistent storage.
+
+    There's no way to ask "is this disk ephemeral?" directly from inside the
+    container, so this combines two independent signals:
+
+      1. `mount_detected` — is `sessions/` its own mount point (Render's
+         persistent disk is mounted exactly there, per render.yaml)? Running
+         locally, or on a container without the disk attached, this is a
+         plain directory on the root filesystem and comes back False.
+      2. `survived_restart` — is the OLDEST event in the ledger older than
+         THIS process's start time? If so, that event was written by a
+         previous process and the file demonstrably outlived a restart —
+         the strongest possible evidence persistence is actually working.
+         None (not False) if there's no data yet or no restart has
+         happened to observe, since that's inconclusive rather than bad.
+
+    Surfaced on the admin dashboard so "is my cost data actually going to
+    stick around" is answered in the UI instead of guessed at after the
+    next redeploy silently wipes it (again).
+    """
+    init_db()
+    mount_detected = False
+    try:
+        mount_detected = os.path.ismount(str(SESSIONS_DIR))
+    except OSError:
+        pass
+
+    oldest_event_at = None
+    try:
+        with _lock:
+            conn = _connect()
+            try:
+                row = conn.execute("SELECT MIN(ts) AS oldest FROM usage_events").fetchone()
+                oldest_event_at = row["oldest"] if row else None
+            finally:
+                conn.close()
+    except Exception:
+        pass
+
+    survived_restart = None
+    if oldest_event_at:
+        try:
+            oldest_dt = datetime.fromisoformat(oldest_event_at)
+            survived_restart = oldest_dt < _PROCESS_STARTED_AT
+        except ValueError:
+            pass
+
+    return {
+        "db_path": str(DB_PATH),
+        "mount_detected": mount_detected,
+        "process_started_at": _PROCESS_STARTED_AT.isoformat(),
+        "oldest_event_at": oldest_event_at,
+        "survived_restart": survived_restart,
+    }
 
 
 def get_summary(range_key: str = "7d") -> Dict[str, Any]:

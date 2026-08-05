@@ -386,6 +386,11 @@ app.add_url_rule('/api/talk/portrait', 'standalone_api_talk_portrait', engine.ap
 # be listed and placed back into later scenes for a continuing story.
 app.add_url_rule('/api/companions', 'standalone_api_companions', engine.api_companions, methods=['GET'])
 app.add_url_rule('/api/companions/place', 'standalone_api_companion_place', engine.api_companion_place, methods=['POST'])
+# Rebuild a companion's ElevenLabs voice from the stored Voice Design brief
+# (persisted by api_talk_session). Poll /api/talk/voice/status while generating.
+app.add_url_rule('/api/companions/regenerate_voice',
+                 'standalone_api_companion_regenerate_voice',
+                 engine.api_companion_regenerate_voice, methods=['POST'])
 # CAMP Moment: night campsite establishing shot compositing the jeep prop +
 # up to 5 companion portraits. Side pocket — does not advance the turn loop.
 app.add_url_rule('/api/camp/enter', 'standalone_api_camp_enter', engine.api_camp_enter, methods=['POST'])
@@ -2026,6 +2031,24 @@ def admin_analytics_summary():
         return error_response("Failed to load analytics summary", str(e))
 
 
+@app.route('/api/admin/analytics/storage_health', methods=['GET'])
+def admin_analytics_storage_health():
+    """Is the cost ledger actually going to survive the next restart?
+
+    See cost_tracker.get_storage_health() — there's no direct way to ask
+    Render "is my disk attached", so this combines a mount-point check with
+    whether the oldest ledger row predates this process's own start time.
+    """
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import cost_tracker
+        return jsonify(success_response(cost_tracker.get_storage_health()))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to load storage health", str(e))
+
+
 @app.route('/api/admin/analytics/timeseries', methods=['GET'])
 def admin_analytics_timeseries():
     if not _admin_token_ok():
@@ -2592,8 +2615,16 @@ def index():
 
     Legacy behavior: /standalone still serves the immersive UI directly
     (defaulting to the shared 'default' session when no ?session=<id> is
-    supplied), so bookmarks and embed links continue to work."""
-    return redirect('/lobby')
+    supplied), so bookmarks and embed links continue to work.
+
+    Query string forwarding: any query params on `/` (e.g. `?comp=<code>`
+    handed to an influencer, or utm tags) are carried through to `/lobby`
+    so downstream code (the coin-op comp mechanism, analytics) can see
+    them. Without this a shared root URL would silently drop the comp
+    code and drop the influencer into the paid flow on first play."""
+    qs = request.query_string.decode("utf-8") if request.query_string else ""
+    target = "/lobby" + (f"?{qs}" if qs else "")
+    return redirect(target)
 
 
 # ═══════════════════════════════════════════════════════════════════

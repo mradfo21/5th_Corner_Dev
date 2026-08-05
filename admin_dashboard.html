@@ -1162,6 +1162,43 @@
             text-transform: uppercase;
         }
 
+        .storage-health-banner {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 14px 18px;
+            margin-bottom: 22px;
+            font-family: var(--font-ocr);
+            font-size: 0.72rem;
+            letter-spacing: 0.04em;
+            line-height: 1.5;
+        }
+        .storage-health-banner.is-bad {
+            border: 1px solid var(--color-blood-red);
+            border-left: 4px solid var(--color-blood-red);
+            background: rgba(220, 20, 60, 0.08);
+            color: var(--color-off-white);
+        }
+        .storage-health-banner.is-good {
+            border: 1px solid var(--color-success);
+            border-left: 4px solid var(--color-success);
+            background: rgba(76, 175, 80, 0.06);
+            color: var(--color-text-dim);
+        }
+        .storage-health-banner.is-pending {
+            border: 1px solid var(--color-border-red);
+            border-left: 4px solid var(--color-warning);
+            background: rgba(255, 152, 0, 0.05);
+            color: var(--color-text-dim);
+        }
+        .storage-health-banner .shb-icon { font-size: 1.1rem; flex-shrink: 0; }
+        .storage-health-banner strong { color: inherit; letter-spacing: 0.08em; }
+        .storage-health-banner code {
+            font-family: var(--font-ocr);
+            background: rgba(0,0,0,0.35);
+            padding: 1px 6px;
+        }
+
         .collapsible-header {
             cursor: pointer;
             user-select: none;
@@ -1396,6 +1433,8 @@
                 </div>
 
                 <div id="analytics-loading" class="loading">Loading analytics…</div>
+
+                <div id="storage-health-banner" class="storage-health-banner" style="display:none;"></div>
 
                 <div id="analytics-content" style="display:none;">
                     <!-- KPI CARDS -->

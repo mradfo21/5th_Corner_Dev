@@ -1232,20 +1232,46 @@
 
   // Reopen a previously-built world by its encrypted id (skips the build step).
   // Used when we revisit a place we've already generated — continuity + speed.
+  // Also used when leaving a Conversation Moment that temporarily re-anchored
+  // the session onto a character portrait.
   async function attachHappyOysterWorld(worldId, s) {
     if (!worldId) return false;
-    rstate.seedToken++;
-    if (!rstate.freezeActive && s && s.imageUrl) paintSeedToFreeze(s.imageUrl);
-    rstate.stagingGuideUrl = (s && s.imageUrl) || null;
-    rstate.hoStagingPrompt = (s && s.prompt) || null;
-    rstate.hoTraveling = false;
-    const worldReady = waitForEvent("world_ready", WORLD_BUILD_TIMEOUT_MS);
-    await cmd("attach_world", { encrypted_world_id: worldId });
-    await worldReady;
-    await cmd("start_travel", {});
-    await enterHappyOysterWorld(s);
-    log("happy-oyster: attached saved world + travelling");
-    return true;
+    if (!isHappyOyster()) return false;
+    try {
+      // attach_world while still travelling another world (e.g. the character
+      // portrait world from TALK) leaves the stream stuck on that prior world
+      // with the HUD back — the "frozen on the person after conversation" bug.
+      // Mirror applyRunningHappyOyster's rebuild teardown before attaching.
+      if (rstate.started || rstate.hoTraveling) {
+        beginSceneFade();
+        captureVideoToFreeze();
+        try { await cmd("stop", {}); } catch (_) {}
+        rstate.hoSentMove = null;
+        rstate.hoSentLook = null;
+        rstate.hoSentVerb = null;
+        rstate.started = false;
+        rstate.hoTraveling = false;
+        rstate.lastPrompt = null;
+      }
+      rstate.seedToken++;
+      if (!rstate.freezeActive && s && s.imageUrl) paintSeedToFreeze(s.imageUrl);
+      rstate.stagingGuideUrl = (s && s.imageUrl) || null;
+      rstate.hoStagingPrompt = (s && s.prompt) || null;
+      rstate.hoTraveling = false;
+      const worldReady = waitForEvent("world_ready", WORLD_BUILD_TIMEOUT_MS);
+      await cmd("attach_world", { encrypted_world_id: worldId });
+      // world_ready may time out (resolve null) on a slow reopen — still try
+      // start_travel; enterHappyOysterWorld arms the reveal either way.
+      await worldReady;
+      await cmd("start_travel", {});
+      await enterHappyOysterWorld(s);
+      log("happy-oyster: attached saved world + travelling");
+      return true;
+    } catch (err) {
+      log("happy-oyster: attach_world failed", err);
+      try { clearSceneFade(); } catch (_) {}
+      return false;
+    }
   }
 
   async function applyRunningHappyOyster(s, ctx) {
@@ -1329,11 +1355,27 @@
     }
 
     if (deferred) {
-      // Couldn't start (no reference image yet). Retry the SAME scene after a
-      // short delay — unless a newer scene has already been queued — so we
-      // don't spin in a tight failing loop.
+      // Couldn't start (no reference image yet). Retry after a short delay —
+      // unless a newer scene has already been queued — so we don't spin in a
+      // tight failing loop. Swept/404 guide PNGs used to retry forever every
+      // 1.5s (visible as /images/*.png 404 spam) and leave the player frozen
+      // on the previous freeze buffer; bail after repeated failures.
       if (rstate.pending == null) {
-        rstate.pending = s;
+        const fails = (s._guideFails || 0) + (s.imageUrl ? 1 : 0);
+        let next = s;
+        if (fails >= 2 && s.imageUrl) {
+          const fam = familyFor(rstate.modelId);
+          if (fam === "seed_locked") {
+            log("guide image failed repeatedly — giving up (seed-locked needs a still)");
+            try { clearSceneFade(); } catch (_) {}
+            return;
+          }
+          log("guide image failed repeatedly — retrying prompt-only");
+          next = Object.assign({}, s, { imageUrl: null, _guideFails: 0 });
+        } else if (s.imageUrl) {
+          next = Object.assign({}, s, { _guideFails: fails });
+        }
+        rstate.pending = next;
         setTimeout(() => { if (!rstate.started) flush(); }, 1500);
       } else {
         flush(); // a newer scene arrived; process it now
@@ -2092,11 +2134,26 @@
     // was established directly by native movement/exploration mode).
     getPrompt: () => rstate.lastPrompt ||
       (rstate.lastSceneApplied && rstate.lastSceneApplied.prompt) || null,
-    // True only when the LIVE video is actually on-screen (decoded frames and
-    // the freeze back-buffer is not covering it).
+    // True only when the LIVE video is actually on-screen and RUNNING — decoded
+    // frames are flowing AND nothing is covering/darkening the scene. Besides the
+    // freeze back-buffer and a blackout, this also excludes the two "not revealed
+    // yet" windows that are visually black but where the <video> already reports
+    // videoWidth>0 (from a held/stale frame):
+    //   • fadeDownActive — the scene-fade veil is deliberately down (the "moment
+    //     of pause" beat of a transition, incl. blend-model re-anchors that lift
+    //     via scheduleSceneReveal and never touch the freeze).
+    //   • freezeArmed — the stream started but its first genuinely-new frame has
+    //     not been presented; we're still showing the old/held frame.
+    // This keeps isShowing() in lockstep with the `video_showing` reveal event,
+    // so consumers gated on it (e.g. the OCR object-detection hotspots) never
+    // trigger over black before the video is actually playing.
     isShowing: () => {
       const v = rstate.video || document.getElementById("reactor-video");
-      return !!(v && v.videoWidth > 0 && !rstate.freezeActive && !rstate.blackout);
+      return !!(
+        v && v.videoWidth > 0 &&
+        !rstate.freezeActive && !rstate.blackout &&
+        !rstate.fadeDownActive && !rstate.freezeArmed
+      );
     },
     // Intrinsic size of the live video track, so callers can map normalized
     // frame coordinates (e.g. object-detection boxes) onto the object-fit:cover

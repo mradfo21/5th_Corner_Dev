@@ -173,9 +173,13 @@ class TestDesignPipeline(unittest.TestCase):
                 {"generated_voice_id": "gv_alt2"},
             ]}
 
+        self._save_n = 0
+
         def fake_save(gvid, brief):
-            self.call_log.append(("save", gvid))
-            return "voice_" + gvid
+            self._save_n += 1
+            vid = f"voice_{gvid}_{self._save_n}"
+            self.call_log.append(("save", gvid, vid))
+            return vid
 
         def fake_delete(voice_id):
             self.call_log.append(("delete", voice_id))
@@ -222,6 +226,37 @@ class TestDesignPipeline(unittest.TestCase):
                                         "s1", wait=0)
         self.assertEqual(r["status"], "ready")
         self.assertEqual(r["source"], "cache")
+
+    def test_regenerate_voice_uses_stored_description_and_redesigns(self):
+        # First design lands a voice; regenerate must DROP the cache entry,
+        # spend another design credit, and keep the caller's description seed.
+        first = self.vd.get_or_design_voice(
+            {"label": "kane", "kind": "person"}, "s1", wait=1.5
+        )
+        self.assertEqual(first["status"], "ready")
+        seed = "a low gravelly wary male voice mid-40s tired, analog horror radio."
+        self.assertGreaterEqual(len(seed), 20)
+        designs_before = len([c for c in self.call_log if c[0] == "design"])
+        regen = self.vd.regenerate_voice(
+            {"label": "kane", "kind": "person"}, "s1", seed,
+            old_voice_id=first["voice_id"], wait=1.5,
+        )
+        self.assertEqual(regen["status"], "ready")
+        self.assertEqual(regen["description"], seed)
+        self.assertNotEqual(regen["voice_id"], first["voice_id"])
+        designs_after = len([c for c in self.call_log if c[0] == "design"])
+        self.assertEqual(designs_after, designs_before + 1)
+        # Old slot freed when refcount is zero.
+        self.assertIn(("delete", first["voice_id"]), self.call_log)
+
+    def test_description_override_skips_brief_builder(self):
+        seed = "a thin metallic whisper for a machine called rusted intercom."
+        r = self.vd.get_or_design_voice(
+            {"label": "rusted intercom", "kind": "machine"}, "s1",
+            wait=1.5, description_override=seed,
+        )
+        self.assertEqual(r["status"], "ready")
+        self.assertEqual(r["description"], seed)
 
     def test_different_session_designs_different_voice(self):
         r1 = self.vd.get_or_design_voice({"label": "warden", "kind": "person"},

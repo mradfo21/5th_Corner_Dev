@@ -109,6 +109,11 @@ last_seen_turn, seen_count, prompt, scene}`), recorded by `api_talk_portrait`.
   the current scene using `[current frame + companion portrait]` as references,
   so the same character reappears standing in the present place. Returns the
   new scene `image_url`.
+- `POST /api/companions/regenerate_voice` — force a new ElevenLabs Voice Design
+  from the companion's stored `voice.description` seed. Body:
+  `{label, session_id?, wait?}`. Returns `{label, voice:{voice_id, status,
+  cache_key, description, model, source}}`. When `status` is `generating`,
+  poll `/api/talk/voice/status?cache_key=…` (the roster updates when ready).
 
 Each companion also stores its **ElevenLabs voice data** (recorded by
 `api_talk_session`) under `companion.voice`:
@@ -118,14 +123,16 @@ voice: {
   voice_id,      # reuse this exact ElevenLabs voice
   description,   # the Voice Design brief — the seed to REGENERATE the voice
   model,         # the TTV model that produced it (e.g. eleven_ttv_v3)
-  source,        # designed / cache / fallback / override
+  source,        # designed / cache / fallback / override / companion
   status, cache_key, settings, updated_at
 }
 ```
 
-`voice_id` lets a later scene reuse the exact voice; `description` + `model`
-are everything Voice Design needs to regenerate it from scratch if the voice
-slot was evicted. The regen description is preserved even if the player later
+`voice_id` is reused on later TALK sessions (`resolve_voice_for_subject`
+prefers the companion roster before designing a new voice). `description` +
+`model` are everything Voice Design needs to regenerate from scratch via
+`/api/companions/regenerate_voice` (or automatically when the stored id was
+evicted). The regen description is preserved even if the player later
 switches to a preset voice. Surfaced in `GET /api/companions`.
 
 The client shows a "{label} added to your companions" notification the first
@@ -158,16 +165,20 @@ The character is **animated by the world model** using the single Reactor
 session, with a fast, resume-like exit — best of both:
 
 - **Enter:** show the cinematic img2img still immediately, then
-  `animateCharacter()` saves the current world's id (`getWorldId()`) and scene,
-  **re-anchors the session onto the portrait** (`applyScene({prompt, imageUrl})`
-  via the facade, so `Renderer.lastScene` is untouched), and mirrors the live
-  feed into `#moment-portrait-video` (`Moments.setPortraitStream`, revealed when
+  `animateCharacter()` saves the current world's id (`getWorldId()`), scene, and
+  a **live env frame grab** (guide PNGs get swept and 404 later), **re-anchors
+  the session onto the portrait** (`applyScene({prompt, imageUrl})` via the
+  facade, so `Renderer.lastScene` is untouched), and mirrors the live feed into
+  `#moment-portrait-video` (`Moments.setPortraitStream`, revealed when
   `isShowing()`), crossfading over the still. The character moves/breathes with
   the world model.
-- **Exit:** `restoreWorldAfterConversation()` reopens the ORIGINAL world by id
-  with **`attach_world`** — which paints the env still into the freeze buffer
-  instantly (feels like a resume) then reveals the live world **without a
-  rebuild**. Falls back to a scene re-apply only when the id is unknown.
+- **Exit:** `restoreWorldAfterConversation()` fades over the character, then
+  reopens the ORIGINAL world by id with **`attach_world`** (which **stops** the
+  character travel first — attaching while still travelling left the stream
+  stuck on the person with the HUD back). Prefers the captured env frame over a
+  swept guide URL. If attach fails, falls back to a hard-transition rebuild
+  (prompt + frame, or prompt-only). Dead guide URLs no longer retry forever
+  every 1.5s.
 
 So the character animates live during the conversation, and returning to the
 world is a fast freeze-still-then-live reveal rather than a slow regeneration.
