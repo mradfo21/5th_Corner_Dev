@@ -158,16 +158,20 @@ The character is **animated by the world model** using the single Reactor
 session, with a fast, resume-like exit — best of both:
 
 - **Enter:** show the cinematic img2img still immediately, then
-  `animateCharacter()` saves the current world's id (`getWorldId()`) and scene,
-  **re-anchors the session onto the portrait** (`applyScene({prompt, imageUrl})`
-  via the facade, so `Renderer.lastScene` is untouched), and mirrors the live
-  feed into `#moment-portrait-video` (`Moments.setPortraitStream`, revealed when
+  `animateCharacter()` saves the current world's id (`getWorldId()`), scene, and
+  a **live env frame grab** (guide PNGs get swept and 404 later), **re-anchors
+  the session onto the portrait** (`applyScene({prompt, imageUrl})` via the
+  facade, so `Renderer.lastScene` is untouched), and mirrors the live feed into
+  `#moment-portrait-video` (`Moments.setPortraitStream`, revealed when
   `isShowing()`), crossfading over the still. The character moves/breathes with
   the world model.
-- **Exit:** `restoreWorldAfterConversation()` reopens the ORIGINAL world by id
-  with **`attach_world`** — which paints the env still into the freeze buffer
-  instantly (feels like a resume) then reveals the live world **without a
-  rebuild**. Falls back to a scene re-apply only when the id is unknown.
+- **Exit:** `restoreWorldAfterConversation()` fades over the character, then
+  reopens the ORIGINAL world by id with **`attach_world`** (which **stops** the
+  character travel first — attaching while still travelling left the stream
+  stuck on the person with the HUD back). Prefers the captured env frame over a
+  swept guide URL. If attach fails, falls back to a hard-transition rebuild
+  (prompt + frame, or prompt-only). Dead guide URLs no longer retry forever
+  every 1.5s.
 
 So the character animates live during the conversation, and returning to the
 world is a fast freeze-still-then-live reveal rather than a slow regeneration.
