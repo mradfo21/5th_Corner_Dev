@@ -267,6 +267,9 @@ class TestRealtimeRenderer(unittest.TestCase):
         # tests so a scanned tag stays put through multi-step assertions; the
         # dedicated fade-out test overrides this back to a short value.
         page.add_init_script("window.__SCAN_TTL_MS__ = 60000;")
+        # Start past first-run onboarding so the "tap to scan" tutorial modal
+        # never pops up and intercepts the pointer clicks these tests make.
+        page.add_init_script("try { localStorage.setItem('scan_tutorial_seen_v1', '1'); } catch (e) {}")
 
         # Serve the mock SDK in place of the pinned CDN module.
         page.route(
@@ -284,6 +287,31 @@ class TestRealtimeRenderer(unittest.TestCase):
                 status=200,
                 content_type="application/json",
                 body='{"jwt": "mock.jwt.token", "expires_at": 9999999999}',
+            ),
+        )
+        # Pin the advertised default world model to Happy Oyster. This suite is
+        # written around Happy Oyster's build/travel protocol (see the test
+        # docstrings), so it must not depend on the PRODUCTION default — which is
+        # now LingBot World 2. Mock /api/reactor/config so the renderer always
+        # boots Happy Oyster here, regardless of the server-side default.
+        page.route(
+            "**/api/reactor/config",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({
+                    "enabled": True,
+                    "renderer": "reactor",
+                    "world_model": "happy-oyster",
+                    "model_name": "reactor/happy-oyster",
+                    "available_models": [
+                        {"id": "happy-oyster", "label": "Happy Oyster", "sdk_name": "reactor/happy-oyster", "requires_seed_image": False, "protocol": "happy_oyster"},
+                        {"id": "lingbot-world-2", "label": "LingBot World 2", "sdk_name": "reactor/lingbot-world-2", "requires_seed_image": True, "protocol": "seed_locked"},
+                        {"id": "helios", "label": "Helios", "sdk_name": "reactor/helios", "requires_seed_image": False, "protocol": "blend"},
+                    ],
+                    "allow_custom_models": True,
+                    "sdk_name_prefix": "reactor/",
+                }),
             ),
         )
         return page

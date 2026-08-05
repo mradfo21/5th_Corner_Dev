@@ -100,6 +100,13 @@ class TestStandaloneE2E(unittest.TestCase):
 
     def setUp(self):
         self.page = self.browser.new_page()
+        # These tests exercise steady-state GAMEPLAY, not first-run onboarding,
+        # so start as a player who's already past the tutorial. Without this the
+        # first-run "tap to scan" modal appears once the opening scene is ready
+        # and intercepts pointer events, blocking the forward-hub / scene clicks.
+        self.page.add_init_script(
+            "try { localStorage.setItem('scan_tutorial_seen_v1', '1'); } catch (e) {}"
+        )
         # Always start each test from a clean game state.
         self.page.goto(f"{self.base_url}/standalone")
         # The control menu starts collapsed; reset via its keyboard shortcut (R),
