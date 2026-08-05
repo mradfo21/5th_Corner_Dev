@@ -3,8 +3,8 @@
 **Who you play as, the level you play it in, and where the camera sits.**
 
 Everything in this document is implemented by `game_identity.py` and edited from
-either **World Studio** (`/studio`) or the in-game **World Editor** (`E` /
-backtick while playing).
+either **World Studio** (`/studio`) or the in-game **World Editor** (backtick,
+or the EDIT rail button, while playing).
 
 ---
 
@@ -156,23 +156,71 @@ frame.
 
 ---
 
+## The compact half of the sheet
+
+Roughly a dozen prompts are too small to carry the directive. A realtime
+world-model prompt is capped at 2000 characters; a vision-analysis prompt stops
+answering in the requested format if you bury the format under 400 characters
+of preamble; a talk persona is three sentences. Bolting the full CAMERA / CAST /
+LOCATION block onto those either blows the budget or drowns the instruction.
+
+They still have to know who and where — and until they did, they all quietly
+carried the shipped Four Corners photojournalist while the still frames carried
+yours. So each has a one-line counterpart:
+
+| Helper | What it is |
+|---|---|
+| `vantage()` | The camera rig as one clause: *"third-person over-the-shoulder vantage, the camera trailing a metre behind the character"* |
+| `place_line()` | The level with palette and landmarks |
+| `place_summary()` | Just the level's name and description, for prompts that carry their own look |
+| `protagonist_line()` | The character with appearance, wardrobe, and gear |
+| `scene_grounding()` | Camera + place + character, at most three lines |
+| `world_anchor(default)` | Retunes a shipped style anchor's perspective and appends the level's era, palette, and lens. Takes `include_character` / `include_vantage` for surfaces whose subject isn't the player |
+| `structure_lines()` | WHO / WHERE / ENVIRONMENT / TONE for the world-evolution skeleton |
+
+All of them return `""` when nothing is authored, so callers concatenate
+unconditionally and the shipped text stands.
+
+---
+
 ## Where it's wired
 
 | Surface | What happens |
 |---|---|
 | `engine.build_image_prompt` | Every branch returns through the pipeline; the camera header is the active mode's |
 | `engine._gen_image_impl` | Attaches identity plates + their annotation; routes frame 0 through img2img when plates exist |
-| `engine.generate_intro_image_fast` / `generate_intro_turn` | An authored level plate beats the shipped Horizon openers |
-| `engine.reset_game` | Seeds the run's evolving world document with the cast sheet |
-| `engine._generate_combined_dispatches` / `_generate_dispatch` | Director's sheet on top of the consequence contract |
+| `engine._flipbook_camera_block` / `_flipbook_action_block` / `_flipbook_shot_block` | A 16-panel grid is ONE image, so its wrapper blocks are inherited by every panel. They shipped hard-wired to a chest-mounted body cam that invalidated "camera following a character" — the exact shot the third-person modes ask for |
+| `engine.build_realtime_base` | `world_anchor` + the level's geography. This path has no negative prompt, no directive, and no reference plates, so the anchor is the entire contract |
+| `engine.realtime_action_beat` | Follows the character instead of the eyes in third person |
+| `engine._vision_analyze_all` | `scene_grounding` on top, and the worked example is no longer a Horizon truck on sandy desert. Its output is the spatial anchor for the NEXT frame, so this is a continuity loop — whatever vocabulary it answers in is what the next image is built from |
+| `engine._detect_self_rule` | SCAN ignores your hands in first person, and your character in third — otherwise the protagonist gets tagged as an anonymous figure you can walk up to and talk to |
+| `engine._perceive_danger` | Grades the danger to whoever the camera is actually watching |
+| `engine.generate_intro_image_fast` / `generate_intro_turn` | An authored level plate beats the shipped Horizon openers, and `_intro_world_seed` stops replacing the whole world document with a one-sentence prologue |
+| `engine._perform_game_reset` / `reset_state` | Both seed the run's world document through `world_brief`. `/api/reset` — what the editor's **Save & Restart** calls — used to seed the raw `world_initial_state` |
+| `engine.generate_intro_turn_feed_items` | Opening narration, the first frame, and the opening choice slate all come off the level plate when there is one |
+| `engine._generate_combined_dispatches` / `_generate_dispatch` | Director's sheet on top of the consequence contract; the free-will header gets its own pass |
 | `engine._generate_vision_dispatch` | In third person, `visual_scene` is composed *with* the character in frame — inverted from the first-person rules |
-| `engine._generate_situation_report` | Director's sheet on the bulletin |
+| `engine._generate_situation_report` / `_world_report` / `generate_directive` | Director's sheet on the bulletin, the field notes, and the objective lead |
+| `engine._generate_random_starting_time` | Weather that belongs to the level, not to the desert |
+| `engine._build_camp_prompt` / `_build_camp_realtime_prompt` | Camp keeps its own art direction but takes the level's terrain and the active camera |
+| `engine.build_portrait_prompt` | A portrait is a deliberate register change, so it takes the level's era and palette and keeps its own framing |
+| `engine.build_talk_context` / `_narrator_script` | Anyone you talk to knows where they are and who you are |
 | `engine._build_vhs_prompt` | Anti-person block gated on the mode; negative prompt recomputed |
 | `choices.generate_choices` | Director's sheet; "Jason" and "from his eyes" recast |
-| `evolve_prompt_file.evolve_world_state` | Told to preserve the cast sheet verbatim — otherwise the per-turn world rewrite laundered your character back into the shipped photojournalist within a few turns |
+| `evolve_prompt_file.evolve_world_state` | Told to preserve the cast sheet verbatim, and its section skeleton (WHO / WHERE / ENVIRONMENT / TONE) comes from `structure_lines`. Its output IS the world state every other prompt reads next turn, so a skeleton reading "ENVIRONMENT: Four Corners desert" dragged an authored world back a little further every turn |
+| `veo_video_utils._build_veo_cinematic_prompt` | Veo takes one text prompt and no negative prompt, so its hardcoded "NEVER show the player character" was unarguable |
 | `gemini_image_utils` | `hero_mode` replaces the anti-person block with a keep-the-character block; negatives follow |
 | `krea_image_utils` | `_person_rule()` picks the block the mode wants |
 | `fal_image_utils` | Per-mode camera tags + character descriptors (SDXL reads tags, not prose) |
+
+### One caveat about `reconcile`
+
+Stage 3 deletes whole **lines**. A caller that hands it a prompt written as one
+long line can therefore have the entire thing deleted by a single offending
+clause, which fails silently — an empty image prompt renders whatever the model
+feels like. `reconcile` now declines to apply when it would remove everything,
+and callers that build a prompt from a list of clauses should join with `\n`
+rather than a space so removal stays surgical.
 
 ---
 
@@ -201,11 +249,32 @@ cards. Each opens a structured form: typed inputs, a 2×2 perspective picker,
 drag/drop/paste image zones with thumbnails, and a live pane showing the exact
 text the block compiles to.
 
-**In-game World Editor** (`E` or backtick) — the same three blocks as a leading
+**In-game World Editor** (backtick, or the EDIT rail button) — the same three blocks as a leading
 **Cast & Camera** tab, so you can redirect the game mid-run without leaving it.
 
 Text fields save on blur rather than per-keystroke: every save recompiles the
 directive server-side, and typing a sentence shouldn't fire forty of them.
+
+### Seeing what a field actually did
+
+Both editors used to show one shared blob per card: the director's sheet for the
+character and level cards, the image directive for the camera card. Half the
+fields therefore looked like dead controls — appearance, wardrobe, era, palette
+and the landmark list compile into the **image** blocks and appear nowhere in
+the director's sheet, so typing into them changed nothing on screen.
+
+`game_identity.block_preview()` now returns the text each card is individually
+responsible for, and both editors render it split by destination: *Sent to the
+image model*, *Negative prompt (recomputed for this camera)*, *Sent to the
+writer*. The in-game editor adds a **Where else this reaches** block showing the
+compact forms above, because "does any of this get past the still frames?" was
+the question the editor gave no way to answer.
+
+`game_identity.wiring_notes()` covers the cast sheet's internal dependencies,
+which are real and invisible from the form. A character's appearance is only
+ever sent to the image model when the camera can see them, so authoring a
+detailed look in first person with hands hidden legitimately does nothing to the
+picture — the editor now says so instead of going quiet.
 
 ---
 
@@ -239,9 +308,16 @@ since they still have all that material written inline.
 ## Tests
 
 ```bash
-python3 -m unittest test_game_identity -v
+python3 -m unittest test_game_identity test_world_authoring -v
 ```
 
-49 offline tests covering normalization, all four pipeline stages, the reference
-store (including path-traversal rejection and size limits), every mode
-compiling, and — most importantly — that the defaults are a genuine no-op.
+`test_game_identity` covers the sheet in isolation: normalization, all four
+pipeline stages, the reference store (including path-traversal rejection and
+size limits), every mode compiling, and — most importantly — that the defaults
+are a genuine no-op.
+
+`test_world_authoring` covers the wiring, which is what was actually broken. It
+authors a world (a named diver in a flooded shipbreaking yard, watched from
+behind — nothing about it resembles the shipped desert) and asserts surface by
+surface that the world reaches it, *and* that the same surface is byte-identical
+to the shipped text while the sheet sits at its defaults.

@@ -4152,10 +4152,27 @@
       return slot ? (identityPreview.reference_images[slot] || []) : [];
     }
 
+    // What a single card compiles to. The server sends one entry per block
+    // (see game_identity.block_preview) precisely because the old shared blob
+    // made half the fields look dead: appearance, wardrobe, era and palette
+    // compile into the IMAGE blocks and never appear in the director's sheet,
+    // so typing into them changed nothing on screen.
     function compiledFor(blockId) {
       const p = identityPreview || {};
-      if (blockId === "camera_perspective") return p.image_directive || "";
-      return p.narrative_directive || "";
+      const b = (p.blocks || {})[blockId] || {};
+      const panes = [];
+      if (b.image) panes.push({ label: "Sent to the image model", text: b.image });
+      if (b.negative) panes.push({ label: "Negative prompt (recomputed for this camera)", text: b.negative });
+      if (b.narrative) panes.push({ label: "Sent to the writer", text: b.narrative });
+      if (!panes.length && p.image_directive && blockId === "camera_perspective") {
+        panes.push({ label: "Sent to the image model", text: p.image_directive });
+      }
+      return panes;
+    }
+
+    function notesFor(blockId) {
+      const p = identityPreview || {};
+      return (p.notes || {})[blockId] || [];
     }
 
     function castRow(children) {
@@ -4262,14 +4279,21 @@
 
       if (block.supports_images) wrap.appendChild(makePlateZone(block));
 
-      const compiled = compiledFor(block.id);
-      if (compiled) {
-        wrap.appendChild(castLabel("What this compiles to"));
+      notesFor(block.id).forEach((note) => {
+        const warn = document.createElement("div");
+        warn.className = "we-warn";
+        warn.textContent = note;
+        wrap.appendChild(warn);
+      });
+
+      const panes = compiledFor(block.id);
+      panes.forEach((p) => {
+        wrap.appendChild(castLabel(p.label));
         const pane = document.createElement("div");
         pane.className = "we-compiled";
-        pane.textContent = compiled;
+        pane.textContent = p.text;
         wrap.appendChild(pane);
-      }
+      });
       return wrap;
     }
 
@@ -4323,10 +4347,73 @@
       return holder;
     }
 
+    // The short forms of the cast sheet that go to the surfaces which can't
+    // take the full directive — the live world model, the vision loop that
+    // decides what the NEXT frame looks like, camp, and anyone you talk to.
+    // Surfaced because "does this reach anything beyond the still image?" was
+    // the question the editor gave no way to answer.
+    function makeReachBlock() {
+      const c = (identityPreview || {}).compact || {};
+      const rows = [
+        ["Live world model & video", [c.vantage, c.place_line].filter(Boolean).join(" — ")],
+        ["Vision analysis & scans", c.scene_grounding],
+        ["Characters you talk to", c.protagonist_line],
+      ].filter((r) => r[1]);
+      if (!rows.length) return null;
+
+      const wrap = document.createElement("div");
+      wrap.className = "we-cast-block we-field";
+      const top = document.createElement("div");
+      top.className = "we-field-top";
+      const label = document.createElement("span");
+      label.className = "we-field-label";
+      label.textContent = "🛰️ Where else this reaches";
+      top.appendChild(label);
+      wrap.appendChild(top);
+
+      const desc = document.createElement("div");
+      desc.className = "we-field-desc";
+      desc.textContent =
+        "The same sheet, compressed for the surfaces that only get a sentence or two.";
+      wrap.appendChild(desc);
+
+      rows.forEach(([name, text]) => {
+        wrap.appendChild(castLabel(name));
+        const pane = document.createElement("div");
+        pane.className = "we-compiled";
+        pane.textContent = text;
+        wrap.appendChild(pane);
+      });
+      return wrap;
+    }
+
+    function makeCastReset() {
+      const row = document.createElement("div");
+      row.className = "we-cast-row";
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "we-btn";
+      btn.textContent = "Reset Cast & Camera";
+      btn.title = "Back to first person, nobody, nowhere";
+      btn.addEventListener("click", async () => {
+        if (!window.confirm("Clear your character, level, and camera back to the shipped defaults?")) return;
+        const { ok, data } = await weFetch("POST", "/api/admin/studio/identity/reset", {});
+        const payload = data && (data.data || data);
+        if (!ok || !payload) { toast("Couldn't reset.", "warn"); return; }
+        applyIdentityPayload(payload);
+        toast("Cast & Camera reset.");
+      });
+      row.appendChild(btn);
+      return row;
+    }
+
     function renderCast() {
       if (!el.weCast) return;
       el.weCast.innerHTML = "";
       identitySchema.forEach((block) => el.weCast.appendChild(makeCastBlock(block)));
+      const reach = makeReachBlock();
+      if (reach) el.weCast.appendChild(reach);
+      el.weCast.appendChild(makeCastReset());
     }
 
     function applyIdentityPayload(data) {
@@ -11060,6 +11147,14 @@
   // Keyboard shortcuts
   // ------------------------------------------------------------------
 
+  // Backtick toggles the World Editor. NOT E — E is strafe-right in movement
+  // mode (see the Q/E pair below), which is why the "press E" the docs used to
+  // promise could never have worked.
+  function _isEditorToggleKey(e) {
+    if (e.metaKey || e.ctrlKey || e.altKey) return false;
+    return e.key === "`";
+  }
+
   function onKeydown(e) {
     // First-run tutorial is a modal takeover: any key dismisses it and is
     // swallowed so a world shortcut (S=scan, C=photo…) doesn't fire behind it.
@@ -11085,9 +11180,9 @@
           if (_typing) _ae.blur(); else WorldEditor.close();
           return;
         }
-        if (e.key === "`" && !_typing) { e.preventDefault(); WorldEditor.close(); return; }
+        if (_isEditorToggleKey(e) && !_typing) { e.preventDefault(); WorldEditor.close(); return; }
         return; // typing passes through; all other shortcuts are blocked behind the editor
-      } else if (e.key === "`" && !_typing) {
+      } else if (_isEditorToggleKey(e) && !_typing) {
         e.preventDefault(); WorldEditor.open(); return;
       }
     }

@@ -311,6 +311,55 @@ class WorldSeedTestCase(_AuthoredWorldFixture):
         self.assertNotIn("DIRECTOR'S SHEET", seed)
 
 
+class EditorPreviewTestCase(_AuthoredWorldFixture):
+    """What the editors show back. Half the cast sheet compiles into the IMAGE
+    blocks, so a preview that only ever showed the director's sheet made
+    appearance, wardrobe, era, and palette look like dead controls."""
+
+    def test_character_preview_contains_the_visual_fields(self):
+        self._author_world()
+        block = gi.block_preview()[gi.CHARACTER_KEY]
+        self.assertIn("patched orange dive suit", block["image"])
+        self.assertIn("cropped black hair", block["image"])
+        self.assertIn("salvage diver", block["narrative"])
+
+    def test_setting_preview_contains_palette_and_landmarks(self):
+        self._author_world()
+        block = gi.block_preview()[gi.SETTING_KEY]
+        self.assertIn("sodium haze", block["image"])
+        self.assertIn("crane gantry", block["image"])
+
+    def test_camera_preview_carries_its_own_negative_prompt(self):
+        self._author_world()
+        block = gi.block_preview()[gi.CAMERA_KEY]
+        self.assertIn("OVER-THE-SHOULDER", block["image"])
+        self.assertNotIn("third person perspective", block["negative"].lower())
+
+    def test_no_notes_when_everything_is_wired(self):
+        self._author_world()
+        self.assertFalse(any(gi.wiring_notes().values()))
+
+    def test_note_when_the_camera_cannot_see_the_character(self):
+        gi.save_spec({
+            gi.CHARACTER_KEY: dict(CHARACTER),
+            gi.CAMERA_KEY: {"mode": "first_person", "show_hands": False},
+        })
+        notes = gi.wiring_notes()[gi.CHARACTER_KEY]
+        self.assertTrue(any("never sees your character" in n for n in notes))
+
+    def test_note_when_a_block_is_enabled_but_empty(self):
+        gi.save_spec({gi.SETTING_KEY: {"enabled": True}})
+        notes = gi.wiring_notes()[gi.SETTING_KEY]
+        self.assertTrue(any("every field is blank" in n for n in notes))
+
+    def test_preview_exposes_the_compact_forms(self):
+        self._author_world()
+        compact = gi.preview()["compact"]
+        self.assertIn("The Kettle Yard", compact["place_line"])
+        self.assertIn("Wren Alvarez", compact["protagonist_line"])
+        self.assertIn("over-the-shoulder", compact["vantage"])
+
+
 class WorldEvolutionTestCase(_AuthoredWorldFixture):
     """The per-turn rewrite. Its output becomes the world every other prompt
     reads next turn, so anything it drifts away from is gone for good."""

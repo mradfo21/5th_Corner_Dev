@@ -1587,14 +1587,28 @@ function makeIdentityField(block, field) {
     return row;
 }
 
+// The exact text THIS card produces. Appearance, wardrobe, era, and palette
+// compile into the image blocks and appear nowhere in the director's sheet, so
+// showing one shared blob per card made those fields look like dead controls.
 function renderCompiledPane(block) {
     const pane = document.getElementById('compiled-pane');
     if (!pane) return;
     const preview = STATE.identityPreview || {};
-    const text = block.id === 'camera_perspective'
-        ? [preview.image_directive, 'NEGATIVE PROMPT:\n' + (preview.negative_prompt || '')]
-            .filter(Boolean).join('\n\n')
-        : preview.narrative_directive || preview.image_directive || '';
+    const b = (preview.blocks || {})[block.id] || {};
+    const notes = (preview.notes || {})[block.id] || [];
+
+    const sections = [];
+    if (b.image) sections.push('SENT TO THE IMAGE MODEL:\n' + b.image);
+    if (b.negative) sections.push('NEGATIVE PROMPT (recomputed for this camera):\n' + b.negative);
+    if (b.narrative) sections.push('SENT TO THE WRITER:\n' + b.narrative);
+    if (!sections.length && block.id === 'camera_perspective' && preview.image_directive) {
+        sections.push(preview.image_directive);
+    }
+    // Fields that are set but can't reach anything are the single biggest
+    // source of "the editor is inconsistent" — say so instead of going blank.
+    if (notes.length) sections.unshift('⚠ ' + notes.join('\n⚠ '));
+
+    const text = sections.join('\n\n');
     pane.textContent = text || 'Nothing yet — fill in the fields above and this fills in with the exact prompt text.';
     pane.classList.toggle('empty', !text);
 }

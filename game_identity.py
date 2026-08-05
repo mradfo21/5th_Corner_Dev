@@ -1247,6 +1247,79 @@ def apply(text: str, surface: str = "image", spec: Optional[Dict[str, Any]] = No
     return f"{head}\n\n{body}" if body else head
 
 
+def block_preview(spec: Optional[Dict[str, Any]] = None) -> Dict[str, Dict[str, str]]:
+    """The compiled text each editor CARD is individually responsible for.
+
+    The editors used to show one shared blob per block: the director's sheet
+    for the character and level cards, the image directive for the camera card.
+    That made half the fields look broken — appearance, wardrobe, era, palette
+    and the landmark list are compiled into the IMAGE blocks and appear nowhere
+    in the director's sheet, so typing into them changed nothing on screen and
+    there was no way to tell whether they had reached anything.
+    """
+    spec = spec or get_spec()
+    return {
+        CHARACTER_KEY: {
+            "image": character_visual_sheet(spec) if (shows_character(spec) or hands_visible(spec)) else "",
+            "narrative": narrative_directive(spec),
+        },
+        SETTING_KEY: {
+            "image": setting_plate(spec),
+            "narrative": narrative_directive(spec),
+        },
+        CAMERA_KEY: {
+            "image": camera_directive(spec),
+            "negative": negative_prompt(spec=spec),
+        },
+    }
+
+
+def wiring_notes(spec: Optional[Dict[str, Any]] = None) -> Dict[str, List[str]]:
+    """Per-block warnings about fields that are set but can't reach anything.
+
+    The cast sheet has real internal dependencies — a character's appearance is
+    only ever sent to the image model when the camera can actually see them,
+    and a block that is switched off compiles to nothing at all. Both are
+    invisible from the form, and both read as "the editor is inconsistent".
+    """
+    spec = spec or get_spec()
+    notes: Dict[str, List[str]] = {CHARACTER_KEY: [], SETTING_KEY: [], CAMERA_KEY: []}
+    char = spec[CHARACTER_KEY]
+    setting = spec[SETTING_KEY]
+
+    if char.get("enabled") and not character_enabled(spec):
+        notes[CHARACTER_KEY].append(
+            "This character is switched on but every field is blank, so nothing is sent. "
+            "Fill in at least a name or a role."
+        )
+    if character_enabled(spec) and not (shows_character(spec) or hands_visible(spec)):
+        notes[CHARACTER_KEY].append(
+            "The camera is first person with hands hidden, so it never sees your character: "
+            "appearance, wardrobe, gear, and any character reference plate are not sent to the "
+            "image model. Name, role, temperament, and backstory still steer the writing."
+        )
+    if char.get("reference_images") and not (shows_character(spec) or hands_visible(spec)):
+        notes[CHARACTER_KEY].append(
+            "Your character reference plate is not being attached for the same reason."
+        )
+
+    if setting.get("enabled") and not setting_enabled(spec):
+        notes[SETTING_KEY].append(
+            "This level is switched on but every field is blank, so nothing is sent. "
+            "Fill in at least a name or a description."
+        )
+    if setting_enabled(spec) and not setting.get("opening_shot"):
+        notes[SETTING_KEY].append(
+            "No opening shot, so the first frame is derived from the description. "
+            "Write one to control the literal first image of the run."
+        )
+    if not spec[CAMERA_KEY].get("show_hands") and shows_character(spec):
+        notes[CAMERA_KEY].append(
+            "Show-hands only applies in first person; this mode already shows your whole character."
+        )
+    return notes
+
+
 def preview() -> Dict[str, Any]:
     """Exactly what the cast sheet compiles to, for the editors' live preview.
 
@@ -1265,6 +1338,19 @@ def preview() -> Dict[str, Any]:
         "narrative_directive": narrative_directive(spec),
         "negative_prompt": negative_prompt(spec=spec),
         "opening_shot": opening_shot(spec),
+        # What each editor card compiles to on its own, plus why a field might
+        # legitimately be having no effect.
+        "blocks": block_preview(spec),
+        "notes": wiring_notes(spec),
+        # The short forms the non-image surfaces receive (live world model,
+        # vision analysis, camp, talk). Shown so the editor can prove the cast
+        # sheet reaches more than the still frames.
+        "compact": {
+            "scene_grounding": scene_grounding(spec),
+            "place_line": place_line(spec),
+            "protagonist_line": protagonist_line(spec),
+            "vantage": vantage(spec),
+        },
         "reference_images": {
             "character": reference_manifest(spec[CHARACTER_KEY].get("reference_images", [])),
             "setting": reference_manifest(spec[SETTING_KEY].get("reference_images", [])),
