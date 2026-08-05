@@ -159,6 +159,9 @@
     <button id="btn-objectives" class="rail-btn" type="button" title="Objectives — the case board of active leads &amp; field goals (O)">
       <span class="rail-ico">◈</span><span class="rail-lbl">GOALS</span>
     </button>
+    <button id="btn-editor" class="rail-btn" type="button" title="World Editor — tweak the prompts that drive the sim, live (` backtick)">
+      <span class="rail-ico">✎</span><span class="rail-lbl">EDIT</span>
+    </button>
     <button id="autoplay-btn" class="rail-btn" type="button" title="Auto-play — advance on its own (P)">
       <span class="rail-ico">⏩</span><span class="rail-lbl" id="autoplay-label">AUTO</span>
     </button>
@@ -640,6 +643,51 @@
       <div class="tut-hint">tap anywhere to begin</div>
     </div>
   </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       WORLD EDITOR — an in-runtime prompt editor. Slides in over the live
+       game so you can tweak the prompts that drive the simulation and watch
+       the world change: edits Apply Live (next turn) or Save & Restart into a
+       fresh instance. The Worlds tab saves/loads named prompt-sets. Populated
+       + wired by the WorldEditor module in standalone.js from the existing
+       /api/admin/studio/* endpoints. Toggle with E or the EDIT rail button.
+       ═══════════════════════════════════════════════════════════════════ -->
+  <aside id="world-editor" class="hidden" aria-label="World Editor" aria-hidden="true">
+    <header class="we-head">
+      <div class="we-title">
+        <span class="we-mark" aria-hidden="true">✎</span>
+        <span>WORLD EDITOR</span>
+        <span id="we-dirty" class="we-dirty hidden" title="Unsaved edits">● unsaved</span>
+      </div>
+      <button id="we-close" class="we-close" type="button" title="Close (E)" aria-label="Close editor">&#10005;</button>
+    </header>
+
+    <nav class="we-tabs" id="we-tabs" role="tablist"></nav>
+
+    <div class="we-scroll">
+      <!-- PROMPT fields (schema-driven) render here, grouped by tab. -->
+      <div id="we-fields" class="we-fields"></div>
+
+      <!-- WORLDS tab content (hidden unless the Worlds tab is active). -->
+      <div id="we-worlds" class="we-worlds hidden">
+        <div class="we-worlds-save">
+          <input id="we-world-name" type="text" placeholder="Name this world…" maxlength="64" />
+          <button id="we-world-save" type="button" class="we-btn we-btn-primary">SAVE WORLD</button>
+        </div>
+        <div class="we-worlds-hint">Snapshots every prompt as a named world you can switch between.</div>
+        <ul id="we-worlds-list" class="we-worlds-list" aria-live="polite"></ul>
+      </div>
+    </div>
+
+    <footer class="we-foot" id="we-foot">
+      <button id="we-revert" class="we-btn we-btn-ghost" type="button" title="Undo all edits back to how this run started">↺ Revert</button>
+      <div class="we-foot-main">
+        <button id="we-apply" class="we-btn we-btn-primary" type="button" title="Save edits — they take effect on the next turn">Apply Live</button>
+        <button id="we-restart" class="we-btn we-btn-accent" type="button" title="Save edits and start a fresh run so opening/world changes seed from turn 0">Save &amp; Restart</button>
+      </div>
+    </footer>
+    <div id="we-toast" class="we-toast" aria-live="polite"></div>
+  </aside>
 
   <!-- (Session controls now live in #control-rail, top-right.) -->
 
