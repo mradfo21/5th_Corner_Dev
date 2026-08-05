@@ -58,6 +58,8 @@ test_*.py
 !test_prompts_store.py
 !test_game_identity.py
 !test_world_authoring.py
+!test_world_drift.py
+!test_camp_companions.py
 
 # Autoplay run artifacts
 autoplay_report.json

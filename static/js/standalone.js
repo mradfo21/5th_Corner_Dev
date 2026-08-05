@@ -34,6 +34,12 @@
   // /api/danger grader, the HEALTH HUD) stays intact and gated behind this one
   // flag. `window.__DAMAGE_ENABLED__` can force it on for testing.
   const DAMAGE_SYSTEM_ENABLED = (typeof window !== "undefined" && window.__DAMAGE_ENABLED__ === true) || false;
+  // AMBIENT WORLD DRIFT: how often we ASK the server for a text-only simulation
+  // step while the player is idle at a decision point (see the WorldDrift module
+  // and engine.world_drift_tick). The server owns the real pacing and refuses
+  // early asks with {skipped: "too_soon"}, so this only has to be frequent
+  // enough that a drift lands promptly once one is due.
+  const WORLD_DRIFT_ASK_MS = (typeof window !== "undefined" && window.__WORLD_DRIFT_ASK_MS__) || 6000;
   const REALTIME_MAX_RETRIES = 3; // transient realtime errors retry before falling back to stills
   // Reactor occasionally has no free server for the model ("no available
   // capacity" 429s) — an upstream availability shortage, not a local WebRTC
@@ -2360,6 +2366,29 @@
       return true;
     },
 
+    // AMBIENT DRIFT: apply a `world_drift` beat (see WorldDrift) as a prompt-only
+    // hot-swap on the running stream. Deliberately NOT routed through
+    // applyScene: a drift carries no new guide image, and on a seed-locked model
+    // an apply that looks like a new scene re-stages the whole world. We keep
+    // lastBase/lastScene coherent so a later steer, model swap, or reconnect
+    // builds on the DRIFTED world rather than snapping back to the last choice.
+    applyDrift(meta) {
+      const prompt = (meta && meta.prompt) || null;
+      if (!prompt) return false;
+      if (this.mode !== "reactor" || !this.reactorAvailable()) return false;
+      const RR = window.ReactorRenderer;
+      if (RR.supportsLiveSteer && !RR.supportsLiveSteer()) return false;
+      if (meta.base) this.lastBase = meta.base;
+      const prev = this.lastScene || {};
+      this.lastScene = {
+        prompt: prompt,
+        imageUrl: prev.imageUrl || null,
+        hardTransition: false,
+      };
+      RR.applyScene({ prompt: prompt, imageUrl: null, hardTransition: false });
+      return true;
+    },
+
     // MOVEMENT (joystick / WASD): steer the live video as a first-person CAMERA.
     // Like steerRealtime, this is a prompt hot-swap on the running stream — no
     // new guide image, no backend turn — but the beat is a camera-motion clause
@@ -2384,6 +2413,62 @@
   // Expose for debugging + e2e (so tests can seed a scene base for movement).
   // Moments.js also reads window.Renderer.pauseUnderlay / resumeUnderlay.
   try { window.__Renderer = Renderer; window.Renderer = Renderer; } catch (_) {}
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // WorldDrift — keep the world EVOLVING while the player deliberates.
+  //
+  // The turn loop is the only thing that ever spoke to the world model, so
+  // between choices the live stream ran forever on the prompt from the last
+  // action: the video kept moving but the world was frozen at that moment, which
+  // is what makes a long look around feel stale. This asks the server for a
+  // cheap text-only simulation step (POST /api/world_tick); the server decides
+  // whether one is due, and when it grants one it appends a `world_drift` feed
+  // item that the normal feed poll picks up and applies as a prompt-only
+  // re-steer (see Renderer.applyDrift).
+  //
+  // Everything expensive is gated here, on the client, because the client is the
+  // only place that knows whether anyone is actually WATCHING:
+  //   • realtime renderer live and genuinely showing frames (a still has nothing
+  //     to re-steer, and steering black wastes the call)
+  //   • the model can take a live prompt edit — a Happy Oyster adventure world is
+  //     fixed once built, so drifting it would rebuild the world on a timer
+  //   • idle: no turn in flight, not dead, not mid-camera-move, no full-screen
+  //     instrument or conversation claiming the view
+  //   • tab visible — a backgrounded tab must not keep billing
+  const WorldDrift = {
+    timer: null,
+    inFlight: false,
+
+    start() {
+      if (this.timer) return;
+      this.timer = setInterval(() => this.tick(), WORLD_DRIFT_ASK_MS);
+    },
+
+    stop() {
+      if (this.timer) clearInterval(this.timer);
+      this.timer = null;
+    },
+
+    idle() {
+      if (this.inFlight) return false;
+      if (typeof document !== "undefined" && document.hidden) return false;
+      if (Renderer.mode !== "reactor" || !Renderer.reactorAvailable()) return false;
+      const RR = window.ReactorRenderer;
+      if (RR.supportsLiveSteer && !RR.supportsLiveSteer()) return false;
+      if (!RR.isShowing || !RR.isShowing()) return false;
+      if (state.processing || state.awaitingResolution) return false;
+      return ambientContextAllowed();
+    },
+
+    tick() {
+      if (!this.idle()) return;
+      this.inFlight = true;
+      postJSON("/api/world_tick", {})
+        .catch((err) => console.warn("[standalone] world tick failed:", err))
+        .then(() => { this.inFlight = false; });
+    },
+  };
+  try { window.__WorldDrift = WorldDrift; } catch (_) {}
 
   // ═══════════════════════════════════════════════════════════════════════
   // DangerSystem — realtime vision-driven danger vignette + health.
@@ -5607,6 +5692,7 @@
     objective_new: "objective-event objective-new",
     objective_done: "objective-event objective-done",
     camp: "narrative-event",
+    world_drift: "world-drift-event",
   };
 
   function classForType(type) {
@@ -5635,6 +5721,7 @@
     objective_new: "OBJECTIVE",
     objective_done: "COMPLETE",
     camp: "CAMP",
+    world_drift: "WORLD",
   };
 
   function labelForType(type) {
@@ -5772,6 +5859,18 @@
       state.renderedIds.add(item.id);
     }
     if (item.id > state.lastId) state.lastId = item.id;
+
+    // Ambient world drift (see WorldDrift): a text-only simulation step between
+    // turns. It carries a steer prompt but NO new guide image, so it must not go
+    // through the generic scene path below — that treats a prompt as a new scene
+    // (ceremony beats, scene sound, autoplay, ambient re-score) and on a
+    // seed-locked model re-stages the whole world for an atmospheric beat.
+    if (item.type === "world_drift") {
+      Renderer.applyDrift(item.metadata || {});
+      appendProse(item);
+      Sound.text();
+      return;
+    }
 
     if (item.image_url || (item.metadata && item.metadata.prompt)) {
       // The world's new composition is being submitted to the renderer — this
@@ -12625,6 +12724,10 @@
     initKeyboardInset();
     startTimecode();
     startPolling();
+    // Ask for a text-only simulation step whenever the player is idle in front
+    // of a live world model, so the world keeps evolving between choices. The
+    // loop self-gates (see WorldDrift.idle) and the server owns the pacing.
+    WorldDrift.start();
     startStatusPolling();
     refreshStatus();
 

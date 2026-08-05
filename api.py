@@ -163,6 +163,13 @@ def _credit_gated_choose():
 
 
 app.add_url_rule('/api/choose', 'standalone_api_choose', _session_scoped(_credit_gated_choose), methods=['POST'])
+# Ambient world drift: one text-only simulation step for a session that's idle
+# at a decision point, so the live world model keeps receiving updates instead
+# of holding the prompt from the last choice. Registered WITHOUT _session_scoped
+# for the same reason as /api/feed — it's polled on a timer by every connected
+# client and must not swap the shared global mirror; engine.api_world_tick
+# resolves its own session id. See engine.world_drift_tick.
+app.add_url_rule('/api/world_tick', 'standalone_api_world_tick', engine.api_world_tick, methods=['POST'])
 app.add_url_rule('/api/regenerate_choices', 'standalone_api_regenerate_choices', _session_scoped(engine.api_regenerate_choices), methods=['POST'])
 
 # ─── COIN-OP (buy-a-continue) ────────────────────────────────────────────

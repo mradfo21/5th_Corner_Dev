@@ -4036,6 +4036,223 @@ def build_realtime_prompt(visual_scene: str = "", narrative: str = "", choice: s
     return base + (" " + beat if beat else "")
 
 
+# ── Ambient world drift: the text-only simulation tick between turns ──────────
+# The turn pipeline is the ONLY thing that ever spoke to the world model, so a
+# live stream sat on one unchanging prompt for as long as the player deliberated
+# — the video kept moving but the WORLD was frozen at the moment of the last
+# choice. A drift tick is a cheap, text-only simulation step for an idle
+# session: one small LLM call turns the current world state into ONE concrete
+# change, that change is folded back into session state (and into the next
+# world-evolution rewrite, so it becomes part of the world's history rather than
+# set dressing), and the new render prompt is pushed to the live model as a
+# prompt-only re-steer — no still to generate, no turn consumed, no choice used.
+#
+# The prompt driving it (`world_tick_micro_change_instructions`) has been sitting
+# in simulation_prompts.json — phase-gated time-of-day rules and all — with no
+# loop to call it.
+#
+# Cost and correctness are bounded three ways: a server-enforced minimum
+# interval (a spammy client cannot buy extra ticks), a per-decision-point
+# budget, and a hard skip while a real turn is in flight, since drift must never
+# race the turn pipeline for the world prompt.
+WORLD_DRIFT_ENABLED = os.getenv("WORLD_DRIFT", "1").strip().lower() not in ("0", "false", "no", "off")
+try:
+    WORLD_DRIFT_MIN_INTERVAL_S = max(5.0, float(os.getenv("WORLD_DRIFT_INTERVAL", "20")))
+except ValueError:
+    WORLD_DRIFT_MIN_INTERVAL_S = 20.0
+try:
+    WORLD_DRIFT_MAX_PER_TURN = max(0, int(os.getenv("WORLD_DRIFT_MAX_PER_TURN", "8")))
+except ValueError:
+    WORLD_DRIFT_MAX_PER_TURN = 8
+# How many drift beats we keep on state: enough to stop the LLM repeating itself
+# and to hand the next world-evolution pass what changed while nobody acted.
+WORLD_DRIFT_BEATS_KEPT = 6
+
+
+def _turn_in_flight() -> bool:
+    """Is a turn (or reset, or scene render) currently holding TURN_LOCK?
+
+    Probed rather than read: TURN_LOCK is an RLock, which exposes no locked(),
+    and a drift must NOT take the lock — it isn't a turn and has no business
+    delaying one. Because RLock is reentrant per-thread this only answers
+    correctly for a caller that doesn't already hold it, which is exactly the
+    drift path (a plain request thread).
+    """
+    if TURN_LOCK.acquire(blocking=False):
+        TURN_LOCK.release()
+        return False
+    return True
+
+
+def _drift_environment_type(st: dict, hist: list) -> str:
+    """The environment the drift must stay inside (indoor/outdoor + kind).
+
+    Vision already records this per turn as `setting_type` ("indoor-corridor",
+    "outdoor-desert", …) — reuse it rather than re-deriving, so a drift can't
+    put wind and dust inside a sealed lab.
+    """
+    for entry in reversed(hist or []):
+        setting = (entry.get("setting_type") or "").strip()
+        if setting:
+            return setting
+    return (st.get("time_of_day") and "the current environment") or "the current environment"
+
+
+def _drift_location_context(st: dict) -> str:
+    """The place a drift beat happens in, as the world model already sees it."""
+    base = (st.get("current_render_base") or "").strip()
+    if base:
+        return "WHERE YOU ARE RIGHT NOW: " + base[:700]
+    return ""
+
+
+def _world_drift_beat(st: dict, hist: list) -> str:
+    """One concrete present-tense change in the world right now (text only).
+
+    Deliberately small and cheap: no vision, no image, one short completion.
+    Returns "" when there's nothing usable, and the caller skips the tick.
+    """
+    if not LLM_ENABLED:
+        return ""
+    tmpl = (PROMPTS.get("world_tick_micro_change_instructions") or "").strip()
+    if not tmpl:
+        return ""
+    try:
+        head = tmpl.format(
+            location_context=_drift_location_context(st),
+            environment_type=_drift_environment_type(st, hist),
+        )
+    except (KeyError, IndexError, ValueError):
+        head = tmpl
+    recent = list(st.get("ambient_beats") or [])[-WORLD_DRIFT_BEATS_KEPT:]
+    sections = [
+        head,
+        "PHASE: {} \u00b7 THREAT: {}".format(
+            st.get("current_phase", "normal"), int(st.get("threat_level", 0) or 0)
+        ),
+        "TIME OF DAY: {}".format(st.get("time_of_day") or "unspecified"),
+        "THE PLAYER'S LAST ACTION: {}".format(st.get("last_choice") or "none yet"),
+    ]
+    if recent:
+        sections.append(
+            "ALREADY DRIFTED SINCE THAT ACTION (do not repeat, build on these):\n"
+            + "\n".join("- {}".format(b) for b in recent)
+        )
+    sections.append(
+        "The player has NOT acted since. Nobody moves the camera and nothing the "
+        "player does happens here \u2014 only the world itself changes. Describe a "
+        "PHYSICAL change, never a camera move.\n"
+        "Return ONLY the sentence."
+    )
+    try:
+        beat = (_ask("\n\n".join(s for s in sections if s), temp=0.9, tokens=60,
+                     use_lore=False) or "").strip()
+    except Exception as e:
+        log_error(f"[DRIFT] beat generation failed: {e}")
+        return ""
+    # One sentence, no labels, no quotes — this text is appended straight onto
+    # the world model's scene prompt.
+    beat = beat.split("\n")[0].strip().strip('"').strip("'")
+    for label in ("CHANGE:", "TICK:", "WORLD:", "DRIFT:"):
+        if beat.upper().startswith(label):
+            beat = beat[len(label):].strip()
+    words = beat.split()
+    if len(words) > 24:
+        beat = " ".join(words[:24]).rstrip(",;:") + "."
+    if beat and not beat.endswith((".", "!", "?")):
+        beat += "."
+    return beat if len(beat) > 12 else ""
+
+
+def world_drift_tick(session_id: str = 'default') -> dict:
+    """Run ONE text-only simulation step for an idle session.
+
+    Appends a `world_drift` feed item whose metadata carries the re-steer prompt
+    (scene base + the new beat) and NO image, which is exactly the shape the
+    client already applies as a prompt-only hot-swap on the running stream.
+
+    Returns {"ok": bool, "skipped": <reason>|None, "beat": str}. Every refusal
+    is a named reason rather than an error: the client ticks optimistically and
+    the server decides whether the world has earned a drift.
+    """
+    if not WORLD_DRIFT_ENABLED:
+        return {"ok": False, "skipped": "disabled"}
+    st = _load_state(session_id)
+    if not st.get("player_state", {}).get("alive", True):
+        return {"ok": False, "skipped": "dead"}
+    if int(st.get("turn_count", 0) or 0) < 1:
+        return {"ok": False, "skipped": "no_turns_yet"}
+    if not (st.get("current_render_base") or "").strip():
+        # Nothing to build a re-steer on yet (no scene has been rendered).
+        return {"ok": False, "skipped": "no_scene"}
+    # A turn owns the world prompt while it runs; drifting into it would fight
+    # the consequence the player is waiting for.
+    if _turn_in_flight():
+        return {"ok": False, "skipped": "turn_in_flight"}
+    if int(st.get("drift_count", 0) or 0) >= WORLD_DRIFT_MAX_PER_TURN:
+        return {"ok": False, "skipped": "budget_spent"}
+
+    now = time.time()
+    # Claim this tick's slot BEFORE the LLM call, under the lock, so overlapping
+    # polls (or two tabs on one session) can't each buy a drift.
+    with WORLD_STATE_LOCK:
+        st = _load_state(session_id)
+        if now - float(st.get("last_drift_ts", 0) or 0) < WORLD_DRIFT_MIN_INTERVAL_S:
+            return {"ok": False, "skipped": "too_soon"}
+        st["last_drift_ts"] = now
+        _save_state(st, session_id)
+        _sync_ambient_state(st, session_id)
+
+    base = (st.get("current_render_base") or "").strip()
+    beat = _world_drift_beat(st, _load_history(session_id))
+    if not beat:
+        return {"ok": False, "skipped": "no_beat"}
+
+    render_prompt = base + " " + beat
+    item = create_feed_item(
+        type="world_drift",
+        content=beat,
+        metadata={
+            "prompt": render_prompt,
+            "base": base,
+            # Marks this as an ambient re-steer, NOT a new scene: no image, no
+            # transition, and the client must not treat it as a turn resolving.
+            "drift": True,
+            "hard_transition": False,
+            "phase": st.get("current_phase", "normal"),
+        },
+    )
+    with WORLD_STATE_LOCK:
+        st = _load_state(session_id)
+        st["current_render_prompt"] = render_prompt
+        beats = list(st.get("ambient_beats") or [])
+        beats.append(beat)
+        st["ambient_beats"] = beats[-WORLD_DRIFT_BEATS_KEPT:]
+        st["drift_count"] = int(st.get("drift_count", 0) or 0) + 1
+        _feed_append(st, item)
+        _save_state(st, session_id)
+        _sync_ambient_state(st, session_id)
+    print(f"[DRIFT] {session_id} #{st.get('drift_count')}: {beat}", flush=True)
+    return {"ok": True, "skipped": None, "beat": beat, "item": item}
+
+
+def api_world_tick():
+    """One text-only simulation step for an idle session (see world_drift_tick).
+
+    Client-driven on purpose. A server-side timer would keep ticking (and
+    billing) sessions nobody is watching, and would have to guess which of them
+    still have a live stream; the client knows both, and stops the moment the
+    tab is hidden or the renderer isn't live. The server still owns the pacing,
+    so the client can only ever ASK.
+    """
+    try:
+        session_id = _resolve_request_session_id()
+        return jsonify(world_drift_tick(session_id))
+    except Exception as e:
+        log_error(f"[DRIFT] tick failed: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 def _build_vhs_prompt(base_prompt: str, use_img2img: bool = False) -> str:
     """
     Wrap any image generation prompt with VHS aesthetic instructions.
@@ -6306,7 +6523,11 @@ def _evolve_world_async(session_id: str, consequence_summary: str, vision_dispat
                 return
             with WORLD_STATE_LOCK:
                 st = _load_state(session_id)
-                for k in ("world_prompt", "evolution_summary", "recent_events", "seen_elements"):
+                # 'ambient_beats' comes back EMPTIED: the evolution just wrote
+                # those drifts into the world state, so they're history now and
+                # must not be replayed into the next rewrite.
+                for k in ("world_prompt", "evolution_summary", "recent_events",
+                          "seen_elements", "ambient_beats"):
                     if k in evolution_result:
                         st[k] = evolution_result[k]
                 _save_state(st, session_id)
@@ -6736,6 +6957,10 @@ def api_choose():
             st = _load_state(session_id)
             _feed_append(st, player_action_item)
             st['last_choice'] = player_choice_text
+            # Fresh drift budget for the decision point this turn opens (see
+            # world_drift_tick). The beats themselves are NOT cleared here —
+            # they're what the world-evolution pass folds into the world state.
+            st['drift_count'] = 0
             _save_state(st, session_id)
             # Guarded mirror update (see _sync_ambient_state's docstring): a
             # blind `state = st` here raced with OTHER sessions' concurrent
@@ -10513,7 +10738,8 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             evolution_result = evolve_world_state(history, consequence_summary, state_file=str(state_file_path), vision_description=vision_dispatch)
             state = _load_state(session_id)
             if evolution_result:
-                for _k in ("world_prompt", "evolution_summary", "recent_events", "seen_elements"):
+                for _k in ("world_prompt", "evolution_summary", "recent_events",
+                           "seen_elements", "ambient_beats"):
                     if _k in evolution_result:
                         state[_k] = evolution_result[_k]
                 _save_state(state, session_id)

@@ -814,6 +814,16 @@ body.story-log-on .story-log { display: flex; }
   letter-spacing: 0.04em;
 }
 
+/* Ambient world drift: what the world did on its own while you deliberated.
+   Deliberately quieter than a narrative beat — it's the world breathing, not a
+   consequence of anything you chose. */
+.prose-entry.world-drift-event {
+  color: rgba(200, 226, 214, 0.62);
+  font-style: italic;
+  border-left: 2px solid rgba(150, 190, 175, 0.28);
+  padding-left: 10px;
+}
+
 /* Objective beats in the run chronicle — a new lead / bounty, and completions. */
 .prose-entry.objective-event {
   border-left: 2px solid rgba(142, 255, 193, 0.4);

@@ -2134,6 +2134,15 @@
     // was established directly by native movement/exploration mode).
     getPrompt: () => rstate.lastPrompt ||
       (rstate.lastSceneApplied && rstate.lastSceneApplied.prompt) || null,
+    // Can the ACTIVE model take a prompt edit on the RUNNING stream? The prompt
+    // families can (set_prompt / schedule_prompt / set_shot), and so can Happy
+    // Oyster's Directing experience (instruct). A Happy Oyster ADVENTURE world
+    // is FIXED once built, so a new prompt there means tearing the world down
+    // and rebuilding it — the right cost for a turn, the wrong cost for an
+    // atmospheric beat. Anything that steers CONTINUOUSLY (see WorldDrift in
+    // standalone.js) must check this first or it rebuilds the world on a timer.
+    supportsLiveSteer: () =>
+      familyFor(rstate.modelId) !== "happy_oyster" || happyOysterExperience() === "director",
     // True only when the LIVE video is actually on-screen and RUNNING — decoded
     // frames are flowing AND nothing is covering/darkening the scene. Besides the
     // freeze back-buffer and a blackout, this also excludes the two "not revealed

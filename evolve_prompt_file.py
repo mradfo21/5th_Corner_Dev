@@ -85,6 +85,13 @@ def evolve_world_state(
     # Get recent context
     recent_events = state.get("recent_events", [])
     seen_elements = state.get("seen_elements", [])
+    # Everything the world did to ITSELF while the player was deciding (see
+    # engine.world_drift_tick). Those beats have already been shown to the
+    # player and pushed to the live world model, so if this rewrite ignores
+    # them the world state silently contradicts what the player just watched.
+    # Folding them in here is what makes drift accumulate into real history
+    # instead of evaporating at the next turn.
+    ambient_beats = [b for b in (state.get("ambient_beats") or []) if b]
     
     # Extract player action and consequence from dispatches
     last_choice = ""
@@ -149,6 +156,9 @@ PLAYER'S LATEST ACTION:
 CONSEQUENCE OF ACTION:
 {consequence_summary}
 
+WHAT THE WORLD DID ON ITS OWN WHILE THE PLAYER DELIBERATED:
+{chr(10).join(f"- {beat}" for beat in ambient_beats) if ambient_beats else "- [Nothing drifted]"}
+
 VISION ANALYSIS (what your camera sees right now):
 {vision_description if vision_description else "[No visual analysis]"}
 
@@ -162,6 +172,8 @@ CRITICAL RULES:
 4. MAINTAIN narrative continuity (what's happened so far)
 5. KEEP it 1200-1500 words (rich but not bloated)
 6. AMPLIFY tension and horror as story progresses
+7. CARRY the world's own drift forward — the player SAW those changes happen, so
+   they are now facts about this place, not weather that resets
 
 STRUCTURE (maintain these sections):
 - WHO: {who_line}
@@ -267,7 +279,10 @@ RETURN ONLY THE NEW WORLD PROMPT TEXT - NO PREAMBLE, NO EXPLANATION, JUST THE EV
         "world_prompt": new_world_prompt,
         "evolution_summary": evolution_summary,
         "recent_events": state["recent_events"],
-        "seen_elements": state["seen_elements"]
+        "seen_elements": state["seen_elements"],
+        # Consumed: these drifts are part of the rewritten world state now, so
+        # the caller clears them and the next decision point drifts from here.
+        "ambient_beats": [],
     }
 
 
