@@ -2220,6 +2220,9 @@ def admin_studio_content():
             "prompts_defaults": prompts_store.load_defaults(),
             "schema": prompts_store.PROMPT_SCHEMA,
             "groups": prompts_store.GROUP_LABELS,
+            # One line per tab, so a tab never opens onto an unlabelled wall of
+            # prompt text.
+            "group_blurbs": prompts_store.GROUP_BLURBS,
             # Cast & Camera: the structured spec, its form definition, the
             # thumbnails for any uploaded plates, and the exact text it all
             # compiles to (so the editor can show the real prompt, not a guess).

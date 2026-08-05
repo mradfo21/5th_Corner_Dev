@@ -26,15 +26,34 @@ Neither editor had any way to attach an image at all.
 
 ## The cast sheet
 
-Three structured blocks:
+Three structured blocks. Each field carries a **tier**: the editors show the
+essentials and fold the refinements behind one line you can click, because
+twenty equal-looking inputs is where a form stops reading as "who am I and
+where am I" and starts reading as paperwork.
 
 ```
-player_character     name, pronouns, role, appearance, wardrobe,
-                     signature_gear, demeanor, backstory, reference_images[]
-setting_reference    name, summary, era, palette, landmarks,
-                     opening_shot, reference_images[]
-camera_perspective   mode, show_hands, lens, notes
+player_character     ESSENTIAL  name, role, appearance ("Look"), reference_images[]
+                     ADVANCED   wardrobe, signature_gear, pronouns, demeanor, backstory
+
+setting_reference    ESSENTIAL  name, summary, landmarks, opening_shot, reference_images[]
+                     ADVANCED   era, palette
+
+camera_perspective   ESSENTIAL  mode, show_hands
+                     ADVANCED   lens, notes
 ```
+
+Eleven controls to author a whole world; twenty if you want every dial.
+`test_world_authoring.CastSheetSurfaceTestCase` asserts the essentials alone are
+enough to drive every compile stage — "advanced" hiding required input would be
+worse than showing everything.
+
+**The `enabled` toggle is a switch, not a gate.** Filling in any field on a
+switched-off block switches it on, because nothing about naming your character
+means "and don't use them". As a gate it was the worst kind of trap: you'd write
+a protagonist, watch every field save successfully, watch the game ignore all of
+it, and have nothing on screen explaining why. Turning it off explicitly is
+respected, so you can still A/B a character without deleting them — and
+`wiring_notes()` says so while it's off.
 
 They live **inside `prompts/simulation_prompts.json`** under those three keys.
 That's deliberate:
@@ -304,6 +323,24 @@ that happens, and the save API returns it as a non-blocking advisory.
 
 Templates that predate the split (no placeholders) render exactly as before,
 since they still have all that material written inline.
+
+## Related: the four prompts
+
+The cast sheet answers *who and where*. Everything else the simulation does is
+driven by `prompts/simulation_prompts.json`, and four of its fields do the
+redirecting: `world_initial_state`, `action_consequence_instructions`,
+`player_choice_generation_instructions`, and `image_art_direction`. The rest are
+mechanical rulebooks — camera physics, the negative prompt, the two image
+templates, the between-turn bulletin — and both editors fold them behind the
+same disclosure this sheet uses.
+
+Every key in that file is read by a live code path and reachable from both
+editors: `prompts_store.unwired_keys()` is asserted empty, so a prompt you can
+save but that changes nothing can't accumulate again. (Four had:
+`timeout_penalty_instructions` alone was 7.7KB of dead text that the README told
+you to edit.)
+
+---
 
 ## Tests
 

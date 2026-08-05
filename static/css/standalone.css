@@ -6638,6 +6638,24 @@ body.we-resizing #scene-frame, body.we-resizing iframe { pointer-events: none; }
 }
 #world-editor .we-warn.hidden { display: none; }
 
+/* One line of framing above a tab's fields. */
+#world-editor .we-blurb {
+  font-size: 11.5px; line-height: 1.5; color: rgba(232, 224, 200, 0.55);
+  margin: 0 0 14px; padding-bottom: 10px;
+  border-bottom: 1px solid rgba(232, 224, 200, 0.09);
+}
+
+/* The single "N advanced …" reveal shared by the prompt tabs and the cast
+   cards, so both disclose their machinery the same way. */
+#world-editor .we-more {
+  display: block; width: 100%; text-align: left;
+  background: none; border: 0; cursor: pointer;
+  font-family: inherit; font-size: 10.5px; letter-spacing: 0.06em;
+  text-transform: uppercase; color: rgba(134, 200, 255, 0.65);
+  padding: 8px 0; margin: 2px 0 10px;
+}
+#world-editor .we-more:hover { color: #86c8ff; }
+
 /* ── Cast & Camera tab ─────────────────────────────────────────────
    Structured spec (character / level / camera) rather than a prompt body,
    so it needs typed inputs, a perspective picker, and image drop zones. */

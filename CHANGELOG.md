@@ -1,5 +1,61 @@
 # 🔧 CHANGELOG - August 5, 2026
 
+## ✂️ Half the knobs, same fidelity
+
+**Files:** `prompts_store.py`, `game_identity.py`, `prompts/simulation_prompts*.json`,
+`static/js/standalone.js`, `static/css/standalone.css`, `world_studio.html`,
+`api.py`, `README.md`, `AGENT_GUIDE.md`, `CAST_AND_CAMERA.md`,
+`test_prompts_store.py`, `test_world_authoring.py`
+
+The editing surface had grown to twelve prompt fields across four tabs plus
+twenty cast-sheet inputs, all presented as equals. Nothing was missing — the
+problem was that nothing was ranked, so finding the knob that would actually
+redirect the game meant reading twelve paragraphs of description first.
+
+- **Four prompts do the redirecting.** `world_initial_state`,
+  `action_consequence_instructions`, `player_choice_generation_instructions`,
+  `image_art_direction`. Every schema field now declares a tier, and both
+  editors show the primary ones and fold the rulebooks behind one line. A tab
+  went from four dense paragraphs to one field and a `▸ 5 advanced prompts`
+  reveal. Nothing was removed and no fidelity was lost — the rulebooks are one
+  click away and still fully editable.
+- **~9KB of dead prompt deleted.** `timeout_penalty_instructions` (7.7KB),
+  `world_tick_micro_change_instructions`, `loading_message_instructions`, and
+  `story_progression_phases` were read by no code path, snapshotted into every
+  saved world, and named in both the README and AGENT_GUIDE as things to edit.
+  A prompt you can save that changes nothing costs you an edit, a restart, and
+  your trust in every other field. `prompts_store.unwired_keys()` is now
+  asserted empty, so they can't come back.
+
+  Two tests were asserting text inside those keys — including a "Tier 1/2/3"
+  timeout ladder whose own prompt said *"`timeout_tier` IS PROVIDED IN THE
+  PROMPT BELOW"* when nothing computed or passed a tier. They passed while the
+  feature they described had never shipped, which is worse than no test. They
+  now assert the doctrine that actually runs, in the prompt that is actually
+  read. The phase-linked time-of-day rule they also covered was a duplicate;
+  the live copy in `action_consequence_instructions` is untouched.
+- **Three tabs instead of four.** "Player Submissions" held exactly one field,
+  which made the choice prompt look like a separate subsystem instead of half of
+  how the game plays. Now: **World**, **Story & Play**, **Look** — each with a
+  one-line blurb, so a tab never opens onto an unlabelled wall of prompt text.
+  Fields are titled by what they do (*How Actions Play Out*, *What You Can Do*,
+  *How The World Looks*) rather than by their implementation.
+- **Eleven cast controls instead of twenty.** Essentials in front, refinements
+  behind the same disclosure. A test asserts the essentials alone can drive every
+  compile stage — "advanced" hiding required input would be worse than showing
+  everything.
+- **The `enabled` toggle stopped being a trap.** Filling in any field on a
+  switched-off character or level now switches it on. As a gate it was the worst
+  kind of failure: you'd write a protagonist, watch every field save
+  successfully, watch the game ignore all of it, and have nothing on screen
+  explaining why. Switching it off explicitly is still respected — so it works as
+  the A/B switch it was meant to be — and the editor says so while it's off.
+- **The World Studio map shows the ranking too.** Four zones, `start here` /
+  `advanced` badges, and the rulebook cards recede. Hiding cards would have
+  broken the map metaphor, so they dim instead.
+
+---
+
 ## 🌍 The authored world now reaches every generative surface
 
 **Files:** `game_identity.py`, `engine.py`, `evolve_prompt_file.py`,

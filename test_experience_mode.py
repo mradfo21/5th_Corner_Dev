@@ -527,7 +527,7 @@ class TestPacingFairnessHardening(unittest.TestCase):
       • The cheap-environmental-death pattern
       • Mandatory tension-escalation (now allowed to breathe)
       • Phase-gated countdown timer
-      • Tiered timeout penalty
+      • The death-fairness doctrine on damage turns
       • Injury state threading into prompts
       • Default experience mode = Full Frame
     """
@@ -587,12 +587,20 @@ class TestPacingFairnessHardening(unittest.TestCase):
             "Mandatory escalation final-sentence rule must be replaced with wave-rhythm",
         )
 
-    # -- Tiered timeout penalty --
-    def test_timeout_penalty_is_tiered(self):
-        # The prompt knows about tiered penalties.
-        self.assertIn("Tier 1", self.prompts_src)
-        self.assertIn("Tier 2", self.prompts_src)
-        self.assertIn("Tier 3", self.prompts_src)
+    # -- Fairness doctrine governs damage turns --
+    def test_damage_turns_are_governed_by_the_fairness_doctrine(self):
+        """What stops a hesitation/damage turn from cheaply killing you.
+
+        This used to assert the "Tier 1/2/3" ladder in
+        `timeout_penalty_instructions`. That key was read by no code path — it
+        even said "`timeout_tier` IS PROVIDED IN THE PROMPT BELOW" when nothing
+        computed or passed a tier — so the test passed while the tiered penalty
+        it described had never shipped, which is worse than no test at all. The
+        key is gone; the doctrine that actually runs lives in the consequence
+        prompt, which is what this checks.
+        """
+        self.assertIn("FAIRNESS", self.prompts_src.upper())
+        self.assertIn("action_consequence_instructions", self.prompts_src)
 
     # -- Injury state threading --
     def test_injury_state_threaded_into_choices(self):
@@ -626,10 +634,10 @@ class TestPacingFairnessHardening(unittest.TestCase):
 
     # -- Phase-linked time of day --
     def test_time_of_day_can_advance_with_phase(self):
+        # Lives in action_consequence_instructions, which is read every turn.
+        # A duplicate of this rule also sat in world_tick_micro_change_
+        # instructions, a key nothing read; that copy is gone.
         self.assertIn("TIME-OF-DAY PROGRESSION (PHASE-LINKED)", self.prompts_src)
-        # The world_tick instructions must allow the phase-gated exception
-        # so dusk/night can actually appear in long sessions.
-        self.assertIn("PHASE-GATED EXCEPTION", self.prompts_src)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

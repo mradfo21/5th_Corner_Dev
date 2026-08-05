@@ -204,7 +204,6 @@ svg#connectors {
 
 .zone-world .zone-label { color: var(--accent-amber); background: rgba(224, 168, 76, 0.1); }
 .zone-narrative .zone-label { color: var(--accent-violet); background: rgba(157, 140, 240, 0.1); }
-.zone-submissions .zone-label { color: var(--accent-teal); background: rgba(76, 198, 184, 0.1); }
 .zone-image .zone-label { color: #f0d060; background: rgba(240, 208, 96, 0.1); }
 
 /* ─────────────────────────────  MOBILE / COMPACT LIST VIEW  ───────────────────────────── */
@@ -245,7 +244,6 @@ body.view-list #mobile-list { display: block; }
 .zone-section.collapsed .zone-caret { transform: rotate(-90deg); }
 .zone-world .zone-section-title { color: var(--accent-amber); }
 .zone-narrative .zone-section-title { color: var(--accent-violet); }
-.zone-submissions .zone-section-title { color: var(--accent-teal); }
 .zone-image .zone-section-title { color: #f0d060; }
 
 .zone-section-body { padding: 12px; display: flex; flex-direction: column; gap: 12px; }
@@ -308,6 +306,13 @@ body.view-list #mobile-list { display: block; }
 .badge.edited { background: rgba(224, 168, 76, 0.18); color: var(--accent-amber); }
 .badge.info { background: rgba(255,255,255,0.06); color: var(--text-dim); }
 .badge.live { background: rgba(89, 201, 138, 0.15); color: var(--success); }
+.badge.primary { background: rgba(134, 200, 255, 0.16); color: #86c8ff; }
+.badge.advanced { background: rgba(255,255,255,0.05); color: var(--text-dim); }
+
+/* The advanced rulebooks stay on the map — hiding cards would break the map —
+   but recede, so the four prompts that redirect the game read first. */
+.card.card-advanced { opacity: 0.62; }
+.card.card-advanced:hover { opacity: 1; }
 
 /* Every card is split into two unmistakably distinct blocks: a muted
    "note" block (this Studio's own explanation of what the field controls)
@@ -482,6 +487,16 @@ body.view-list #mobile-list { display: block; }
 
 .cast-form { display: flex; flex-direction: column; gap: 14px; }
 .cast-row { display: flex; flex-direction: column; gap: 6px; }
+/* The single "N more fields" reveal — same disclosure the in-game editor uses,
+   so both editors present the sheet with the same hierarchy. */
+.cast-more {
+    background: none; border: 0; cursor: pointer; text-align: left; padding: 2px 0;
+    font-family: var(--font-mono); font-size: 0.68rem; letter-spacing: 0.05em;
+    text-transform: uppercase; color: var(--accent-teal);
+}
+.cast-more:hover { color: var(--text-bright); }
+.cast-more + div { display: flex; flex-direction: column; gap: 14px; }
+.cast-more + div[hidden] { display: none; }
 .cast-row .field-help { font-size: 0.7rem; color: var(--text-dim); line-height: 1.5; }
 .cast-row input[type="text"],
 .cast-row textarea {
@@ -831,6 +846,10 @@ const STATE = {
     identitySchema: [],
     identityById: {},
     identityPreview: null,
+    // Whether the cast inspector's advanced fields are unfolded. Remembered
+    // across cards so opening one, unfolding it, and opening the next doesn't
+    // fold it back up under you.
+    castAdvanced: false,
 };
 
 const IDENTITY_KEYS = ['player_character', 'setting_reference', 'camera_perspective'];
@@ -931,37 +950,42 @@ document.addEventListener('DOMContentLoaded', loadContent);
 // is shown, so every card on this map genuinely affects the game.
 // ═══════════════════════════════════════════════════════════════════
 
+// Four zones, ordered the way you'd answer the questions: who and where, what
+// kind of place, how it plays, how it looks. "Player Submissions" used to be a
+// fifth zone holding exactly one card, which made the choice prompt look like a
+// separate subsystem instead of half of how the game plays.
 const ZONES = {
-    cast:         { x: 40,   y: 40, w: 600,  h: 900, label: 'Cast & Camera',       desc: 'Who you play, where, and from what angle' },
-    world:        { x: 700,  y: 40, w: 600,  h: 640, label: 'World & Setting',     desc: 'What the story is grounded in' },
-    narrative:    { x: 1360, y: 40, w: 920,  h: 640, label: 'Narrative Engine',     desc: 'Turns an action into what you read & see' },
-    submissions:  { x: 2340, y: 40, w: 520,  h: 640, label: 'Player Submissions',   desc: 'What actions you can even submit' },
-    image:        { x: 2920, y: 40, w: 640,  h: 990, label: 'Image Generation',     desc: 'What the camera actually renders' },
+    cast:      { x: 40,   y: 40, w: 600, h: 900, label: 'Cast & Camera', desc: 'Who you play, where, and from what angle' },
+    world:     { x: 700,  y: 40, w: 600, h: 640, label: 'World',         desc: 'The place and its rules' },
+    narrative: { x: 1360, y: 40, w: 920, h: 640, label: 'Story & Play',  desc: 'How a turn resolves and what you\u2019re offered next' },
+    image:     { x: 2340, y: 40, w: 640, h: 990, label: 'Look',          desc: 'What every frame looks like' },
 };
 
 // Explicit per-field position within its zone (relative to zone x/y).
+// PRIMARY cards get the room; the advanced rulebooks sit beneath them at half
+// the height, so the map itself shows you which four prompts matter.
 const CARD_POSITIONS = {
     // Cast & Camera reads top-down as the three questions a player asks first.
     player_character:                        { x: 30,  y: 30,  w: 540, h: 300, size: 'md' },
     setting_reference:                       { x: 30,  y: 350, w: 540, h: 260, size: 'md' },
     camera_perspective:                      { x: 30,  y: 630, w: 540, h: 230, size: 'md' },
 
-    world_initial_state:                     { x: 30,  y: 30,  w: 540, h: 560, size: 'lg' },
+    world_initial_state:                     { x: 30,  y: 30,  w: 540, h: 400, size: 'lg' },
+    world_evolution_instructions:            { x: 30,  y: 450, w: 540, h: 150, size: 'md' },
 
-    action_consequence_instructions:         { x: 30,  y: 30,  w: 420, h: 260, size: 'md' },
-    situation_summary_instructions:          { x: 470, y: 30,  w: 420, h: 260, size: 'md' },
-    field_notes_format:                      { x: 30,  y: 320, w: 860, h: 260, size: 'md' },
+    action_consequence_instructions:         { x: 30,  y: 30,  w: 420, h: 290, size: 'lg' },
+    player_choice_generation_instructions:   { x: 470, y: 30,  w: 420, h: 290, size: 'lg' },
+    situation_summary_instructions:          { x: 30,  y: 340, w: 420, h: 240, size: 'md' },
+    field_notes_format:                      { x: 470, y: 340, w: 420, h: 240, size: 'md' },
 
-    player_choice_generation_instructions:   { x: 30,  y: 30,  w: 460, h: 560, size: 'lg' },
-
-    // Image zone reads top-down: the shared direction you actually edit, then
-    // the two thin per-mode templates that pull it in, then the extras.
-    image_art_direction:                     { x: 30,  y: 30,  w: 580, h: 250, size: 'lg' },
-    image_camera_rules:                      { x: 30,  y: 300, w: 580, h: 200, size: 'md' },
-    gemini_text_to_image_instructions:       { x: 30,  y: 520, w: 280, h: 200, size: 'md' },
-    gemini_image_to_image_instructions:      { x: 330, y: 520, w: 280, h: 200, size: 'md' },
-    image_negative_prompt:                   { x: 30,  y: 740, w: 280, h: 190, size: 'md' },
-    gemini_flipbook_4panel_prefix:           { x: 330, y: 740, w: 280, h: 190, size: 'md' },
+    // Look reads top-down: the one creative dial, then the rulebooks and the
+    // two thin templates that pull it in.
+    image_art_direction:                     { x: 30,  y: 30,  w: 580, h: 300, size: 'lg' },
+    image_camera_rules:                      { x: 30,  y: 350, w: 280, h: 190, size: 'md' },
+    image_negative_prompt:                   { x: 330, y: 350, w: 280, h: 190, size: 'md' },
+    gemini_text_to_image_instructions:       { x: 30,  y: 560, w: 280, h: 190, size: 'md' },
+    gemini_image_to_image_instructions:      { x: 330, y: 560, w: 280, h: 190, size: 'md' },
+    gemini_flipbook_4panel_prefix:           { x: 30,  y: 770, w: 580, h: 160, size: 'md' },
 };
 
 // Identity blocks aren't in PROMPT_SCHEMA (different shape, different save
@@ -1162,6 +1186,16 @@ function renderCardInner(card, field) {
     const badges = [];
     if (isEdited) badges.push('<span class="badge edited">● unsaved</span>');
     else if (!isSameAsDefault(field.id)) badges.push('<span class="badge edited">≠ default</span>');
+    // Hierarchy, on the map rather than only in the descriptions. There are
+    // four prompts worth reaching for first; everything else is a rulebook you
+    // can go a long time without opening.
+    if (field.tier === 'advanced') {
+        card.classList.add('card-advanced');
+        badges.push('<span class="badge advanced">advanced</span>');
+    } else {
+        card.classList.add('card-primary');
+        badges.push('<span class="badge primary">start here</span>');
+    }
 
     const preview = (typeof value === 'string' ? value : '').trim();
     const isLarge = card.dataset.size === 'lg';
@@ -1227,8 +1261,6 @@ function drawConnectors() {
     html += curve({ x: ZONES.cast.x + ZONES.cast.w, y: ZONES.cast.y + ZONES.cast.h - 60 },
                   { x: ZONES.image.x, y: ZONES.image.y + ZONES.image.h - 60 }, 120);
     html += straight(anchor('world', 'right'), anchor('narrative', 'left'));
-    html += straight(anchor('narrative', 'right'), anchor('submissions', 'left'));
-    html += curve({ x: ZONES.submissions.x, y: ZONES.submissions.y + 40 }, { x: ZONES.narrative.x + ZONES.narrative.w, y: ZONES.narrative.y + 40 }, -70);
     html += straight(anchor('narrative', 'right'), anchor('image', 'left'));
     html += curve({ x: ZONES.image.x, y: ZONES.image.y + ZONES.image.h - 40 }, { x: ZONES.narrative.x + ZONES.narrative.w, y: ZONES.narrative.y + ZONES.narrative.h - 40 }, 70);
 
@@ -1516,8 +1548,34 @@ function renderIdentityEditor(block) {
         </div>
     `;
 
+    // Essentials in front, refinements behind one line you can click. Nine
+    // equal-looking inputs is how a form stops reading as "who am I and where
+    // am I" and starts reading as paperwork.
     const form = document.getElementById('cast-form');
-    block.fields.forEach(field => form.appendChild(makeIdentityField(block, field)));
+    const essential = block.fields.filter(f => f.tier !== 'advanced');
+    const advanced = block.fields.filter(f => f.tier === 'advanced');
+    essential.forEach(field => form.appendChild(makeIdentityField(block, field)));
+    if (advanced.length) {
+        const more = document.createElement('button');
+        more.type = 'button';
+        more.className = 'cast-more';
+        const box = document.createElement('div');
+        const sync = () => {
+            const open = !box.hidden;
+            more.textContent = (open ? '▾ Hide ' : '▸ ') + advanced.length + ' more field' +
+                               (advanced.length === 1 ? '' : 's');
+        };
+        advanced.forEach(field => box.appendChild(makeIdentityField(block, field)));
+        box.hidden = !STATE.castAdvanced;
+        sync();
+        more.onclick = () => {
+            box.hidden = !box.hidden;
+            STATE.castAdvanced = !box.hidden;
+            sync();
+        };
+        form.appendChild(more);
+        form.appendChild(box);
+    }
 
     if (block.supports_images) wirePlateZone(block);
     renderCompiledPane(block);

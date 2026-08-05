@@ -212,11 +212,22 @@ tapes/                          # Runtime: Death replay GIFs
 
 ### Critical Prompts to Understand:
 
-- **`image_negative_prompt`** - What NOT to put in images
+The four that redirect the game:
+
+- **`world_initial_state`** - What kind of place this is
 - **`action_consequence_instructions`** - How to determine outcomes
-- **`timeout_penalty_instructions`** - How to handle hesitation
 - **`player_choice_generation_instructions`** - How to create exciting choices
+- **`image_art_direction`** - The look of every frame
+
+Rulebooks you'll touch rarely:
+
+- **`image_negative_prompt`** - What NOT to put in images
+- **`image_camera_rules`** - Framing and body physics
 - **`world_evolution_instructions`** - How to evolve environment without hallucinating
+
+Perspective, the protagonist, and the level are **not** prompts — they're the
+structured cast sheet (`CAST_AND_CAMERA.md`), because they have to reach thirty
+prompt surfaces at once and no paragraph can do that reliably.
 
 ---
 
@@ -308,16 +319,17 @@ GEMINI_API_KEY=your_gemini_api_key
 → Edit `action_consequence_instructions` in `simulation_prompts.json`
 
 ### Want different image styles?
-→ Edit `gemini_text_to_image_instructions` and `image_negative_prompt`
+→ Edit `image_art_direction` — it reaches the first frame and every
+continuation at once. The two templates just pull it in.
 
 ### Want different choice types?
 → Edit `player_choice_generation_instructions`
 
+### Want a named protagonist, a specific level, or third person?
+→ Cast & Camera in either editor, not a prompt. See `CAST_AND_CAMERA.md`.
+
 ### Want faster/slower auto-play?
 → Change `AUTO_PLAY_DELAY` in `bot.py` (default: 45 seconds)
-
-### Want different timeout penalty severity?
-→ Edit `timeout_penalty_instructions`
 
 ### Want to adjust visual continuity?
 → Modify reference image count logic in `engine.py` `_gen_image()`

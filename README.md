@@ -133,12 +133,22 @@ config.json                     # API keys and model configs
 
 This game is **prompt-driven** - 80% of behavior is controlled by LLM prompts in `prompts/simulation_prompts.json`.
 
-Key prompts:
-- `action_consequence_instructions` - How outcomes are determined
-- `player_choice_generation_instructions` - How choices are created
-- `timeout_penalty_instructions` - What happens when you hesitate
-- `world_evolution_instructions` - How the environment changes
-- `gemini_image_to_image_instructions` - Visual continuity rules
+Four prompts do the redirecting. Edit these and the game changes:
+
+- `world_initial_state` - What kind of place this is
+- `action_consequence_instructions` - How an action becomes what happened
+- `player_choice_generation_instructions` - What you're even offered to do
+- `image_art_direction` - What every frame looks like
+
+The rest of the file is mechanical rulebooks (camera physics, negative prompt,
+the two image templates, the between-turn bulletin) plus the **cast sheet** —
+who you play as, the level, and where the camera sits, which is a structured
+spec rather than prose (see `CAST_AND_CAMERA.md`). Both editors show the four
+above and fold the rulebooks behind one disclosure.
+
+Every key in that file is read by a live code path and editable in both
+editors — `prompts_store.unwired_keys()` is asserted empty by the test suite,
+so a prompt you can save but that changes nothing can't accumulate again.
 
 ---
 
