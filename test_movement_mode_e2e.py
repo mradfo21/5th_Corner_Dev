@@ -8,11 +8,11 @@ against a MOCK Reactor SDK — and proves the movement instrument end to end:
 
   * The joystick is the CENTER of the action cluster in realtime video mode,
     with the ACT hub pushed to the LEFT and the PHOTO hub to the RIGHT.
+  * Default INPUT profile is FPS: WASD moves (A/D strafe), mouse looks
+    (pointer-lock / harness simulate), arrows look. CLASSIC keeps A/D as turn.
   * Holding W (keyboard) drives the LIVE world with Happy Oyster's held move
     command (move {direction:"Front"}) — a native navigation command, no world
     rebuild — and releasing it stops (releases held controls).
-  * A / S / D (and the arrow keys) drive the other headings — S=Back, A/D turn
-    the view (look Mouse_Left/Mouse_Right).
   * Dragging the stick with a pointer (mouse/touch) in a direction moves that
     way, and the commands land in the same reactor command log the world reads.
   * The legacy LingBot axes (set_move_*/set_rotation_speed_deg) are still driven
@@ -117,8 +117,12 @@ class TestMovementMode(unittest.TestCase):
         page.on("console", lambda m: self._logs.append(f"{m.type}: {m.text}"))
         page.on("pageerror", lambda e: self._logs.append(f"PAGEERROR: {e}"))
         # Skip the first-run "tap to scan" tutorial modal so it can't intercept
-        # the pointer/keyboard interactions these movement tests drive.
-        page.add_init_script("try { localStorage.setItem('scan_tutorial_seen_v1', '1'); } catch (e) {}")
+        # the pointer/keyboard interactions these movement tests drive. Force the
+        # FPS input profile (default) so key→action mapping is deterministic.
+        page.add_init_script(
+            "try { localStorage.setItem('scan_tutorial_seen_v1', '1'); "
+            "localStorage.setItem('input_profile', 'fps'); } catch (e) {}"
+        )
         page.route(
             "https://esm.sh/**",
             lambda route: route.fulfill(status=200, content_type="application/javascript", body=MOCK_SDK_JS),
@@ -174,22 +178,22 @@ class TestMovementMode(unittest.TestCase):
         )
 
     def test_wasd_keys_drive_forward_back_and_look(self):
-        """The FULL Happy Oyster navigation surface: W/S move forward/back (move
-        Front/Back), A/D turn (look Mouse_Left/Right), Q/E strafe (move
-        Left/Right), ←/→ turn (look Mouse_Left/Right), and ↑/↓ tilt the view (look
-        Mouse_Up/Down). Each fires the native held command and releases (stop) on
+        """FPS profile Happy Oyster surface: W/S move Front/Back, A/D strafe
+        Left/Right (same as Q/E), ←/→ look Mouse_Left/Right, ↑/↓ look
+        Mouse_Up/Down. Each fires the native held command and releases (stop) on
         key-up; nothing is faked with set_prompt."""
         page = self._new_realtime_page()
         try:
             # This exercises Happy Oyster's held move/look verbs specifically, so
             # force that model rather than relying on the (now LingBot) default.
             self._boot_live(page, model="happy-oyster")
+            self.assertEqual(page.evaluate("() => window.__InputBindings.current()"), "fps")
             # key -> (command, param, held direction)
             cases = [
                 ("w", "move", "direction", "Front"),
                 ("s", "move", "direction", "Back"),
-                ("a", "look", "direction", "Mouse_Left"),
-                ("d", "look", "direction", "Mouse_Right"),
+                ("a", "move", "direction", "Left"),
+                ("d", "move", "direction", "Right"),
                 ("q", "move", "direction", "Left"),
                 ("e", "move", "direction", "Right"),
                 ("ArrowUp", "look", "direction", "Mouse_Up"),
@@ -215,19 +219,91 @@ class TestMovementMode(unittest.TestCase):
         finally:
             page.close()
 
-    def test_looking_sends_a_gentle_constant_rotation_speed(self):
-        """Legacy LingBot navigation: holding a look key must set a GENTLE,
-        CONSTANT rotation speed (no hold-time acceleration — that was
-        disorienting/hard to aim), well under the model default of 5. (Happy
-        Oyster has no turn-rate knob, so this is exercised on lingbot-world-2.)"""
+    def test_classic_profile_maps_ad_to_look(self):
+        """CLASSIC input profile restores A/D as look (pre-FPS scheme) so setups
+        can be swapped without a redeploy."""
+        page = self._new_realtime_page()
+        try:
+            self._boot_live(page, model="happy-oyster")
+            page.evaluate("() => window.__InputBindings.setProfile('classic')")
+            self.assertEqual(page.evaluate("() => window.__InputBindings.current()"), "classic")
+            self._reset_cmd_log(page)
+            page.keyboard.down("a")
+            self._wait_cmd(page, "look", "direction", "Mouse_Left")
+            page.keyboard.up("a")
+            self._wait_cmd(page, "stop")
+            self._reset_cmd_log(page)
+            page.keyboard.down("d")
+            self._wait_cmd(page, "look", "direction", "Mouse_Right")
+            page.keyboard.up("d")
+            self._wait_cmd(page, "stop")
+        except Exception:
+            print("\n=== CONSOLE LOG (classic-profile) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
+    def test_mouse_look_drives_camera_on_happy_oyster_and_lingbot(self):
+        """FPS mouse-look: simulated pointer deltas steer look on Happy Oyster
+        (held Mouse_Left) and LingBot (set_look_horizontal), with a gentle
+        rotation speed band. Releases when the harness clears the intent."""
+        # Happy Oyster
+        page = self._new_realtime_page()
+        try:
+            self._boot_live(page, model="happy-oyster")
+            self.assertTrue(page.evaluate("() => window.__MouseLook.allowed()"))
+            self._reset_cmd_log(page)
+            page.evaluate("() => window.__MouseLook.__simulate(-40, 0)")
+            self._wait_cmd(page, "look", "direction", "Mouse_Left")
+            page.evaluate("() => window.__MouseLook.__clear()")
+            self._wait_cmd(page, "stop")
+        except Exception:
+            print("\n=== CONSOLE LOG (mouse-look-ho) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
+        # LingBot — same mouse input, axis commands + subtle rot speed
         page = self._new_realtime_page()
         try:
             self._boot_live(page, model="lingbot-world-2")
             self._reset_cmd_log(page)
-            page.keyboard.down("a")
+            page.evaluate("() => window.__MouseLook.__simulate(48, 0)")
+            self._wait_cmd(page, "set_look_horizontal", "look_horizontal", "right")
+            page.wait_for_function(
+                """() => (window.__MOCK_CMD_LOG__||[]).some(
+                       c => c.name==='set_rotation_speed_deg' &&
+                            c.data.rotation_speed_deg <= 3.0)""",
+                timeout=4000,
+            )
+            speeds = page.evaluate(
+                """() => (window.__MOCK_CMD_LOG__||[])
+                       .filter(c => c.name==='set_rotation_speed_deg')
+                       .map(c => c.data.rotation_speed_deg)"""
+            )
+            self.assertTrue(speeds, f"mouse look should set rotation speed: {speeds}")
+            self.assertLessEqual(max(speeds), 3.0, f"mouse look must stay subtle: {speeds}")
+            page.evaluate("() => window.__MouseLook.__clear()")
+        except Exception:
+            print("\n=== CONSOLE LOG (mouse-look-lingbot) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
+    def test_looking_sends_a_gentle_constant_rotation_speed(self):
+        """Legacy LingBot navigation: holding a look key must set a GENTLE,
+        CONSTANT rotation speed (no hold-time acceleration — that was
+        disorienting/hard to aim), well under the model default of 5. (Happy
+        Oyster has no turn-rate knob, so this is exercised on lingbot-world-2.)
+        FPS profile: arrows look (A is strafe)."""
+        page = self._new_realtime_page()
+        try:
+            self._boot_live(page, model="lingbot-world-2")
+            self._reset_cmd_log(page)
+            page.keyboard.down("ArrowLeft")
             self._wait_cmd(page, "set_rotation_speed_deg")
             page.wait_for_timeout(1500)  # hold a while — speed must NOT creep up
-            page.keyboard.up("a")
+            page.keyboard.up("ArrowLeft")
             speeds = page.evaluate(
                 """() => (window.__MOCK_CMD_LOG__||[])
                        .filter(c => c.name==='set_rotation_speed_deg')

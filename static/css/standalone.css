@@ -2446,6 +2446,49 @@ body.realtime-on #forward-btn { bottom: 126px; }
    fade back in once movement stops. Belt-and-suspenders on top of closeScan(). */
 body.moving #scan-layer { opacity: 0 !important; pointer-events: none !important; }
 
+/* FPS mouse-look: a quiet center reticle while pointer-lock is held. No glow,
+   no badge — just enough to know the camera is under the mouse. */
+.mouse-look-reticle {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  width: 22px;
+  height: 22px;
+  transform: translate(-50%, -50%);
+  z-index: 18;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+.mouse-look-reticle.on { opacity: 0.7; }
+body.mouse-looking { cursor: none; }
+.mouse-look-reticle .mlr-h,
+.mouse-look-reticle .mlr-v {
+  position: absolute;
+  background: rgba(236, 244, 238, 0.78);
+}
+.mouse-look-reticle .mlr-h {
+  left: 0; right: 0; top: 50%;
+  height: 1px;
+  transform: translateY(-50%);
+}
+.mouse-look-reticle .mlr-v {
+  top: 0; bottom: 0; left: 50%;
+  width: 1px;
+  transform: translateX(-50%);
+}
+.mouse-look-reticle .mlr-dot {
+  position: absolute;
+  left: 50%; top: 50%;
+  width: 3px; height: 3px;
+  margin: -1.5px 0 0 -1.5px;
+  border-radius: 50%;
+  background: rgba(236, 244, 238, 0.9);
+}
+@media (prefers-reduced-motion: reduce) {
+  .mouse-look-reticle { transition: none; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   body.realtime-on #move-pad:not(.engaged) .move-ring { animation: none; }
   .move-nub { transition: border-color 0.18s, box-shadow 0.25s; }

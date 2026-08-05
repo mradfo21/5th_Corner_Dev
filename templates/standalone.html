@@ -246,6 +246,15 @@
         <div id="rt-ho-experience" class="rt-ho-seg" role="group" aria-label="Experience"></div>
       </div>
     </div>
+    <!-- Input profile — swap the EXPLORE control scheme (FPS mouse-look vs
+         classic A/D-turn) without a redeploy. Populated by InputProfileUi;
+         shown whenever the live world model is navigating. -->
+    <div id="rt-input-opts" class="rt-ho-opts hidden" role="group" aria-label="Explore control scheme">
+      <div class="rt-ho-row">
+        <span class="rt-ho-label">INPUT</span>
+        <div id="rt-input-profile" class="rt-ho-seg" role="group" aria-label="Input profile"></div>
+      </div>
+    </div>
     <!-- Music bed volume — the ambient score sits under the SFX. Tune or mute it
          here with preset options (persisted per browser); changes apply live. -->
     <div id="rt-music" class="rt-music" role="group" aria-label="Music volume">
@@ -314,12 +323,10 @@
     <!-- Drive joystick — the centerpiece of realtime "explore" mode. A 360°
          analog stick that drives + steers the LIVE world-model camera in first
          person: drag it (mouse or touch) — up/down move forward/back, left/right
-         look left/right. W/S (or ↑/↓) move forward/back, A/D (or ←/→) look
-         left/right on a keyboard. It drives the live world model's native
-         navigation (Happy Oyster's held move/look; LingBot's movement axes) with
-         a slow, easy-to-aim turn. Shown only in realtime video mode (there's nothing to
-         steer on a still image); ACT slides to the LEFT to make room for it in
-         the center, and PHOTO sits to the right. -->
+         look left/right. Default INPUT profile is FPS: WASD moves, mouse looks
+         (click the world to pointer-lock; subtle — latent models lag), arrows
+         still look. CLASSIC profile keeps A/D as turn. Shown only in realtime
+         video mode; ACT slides LEFT, PHOTO sits right. -->
     <div id="move-pad" class="move-pad" aria-hidden="true">
       <div class="move-grid" aria-hidden="true"></div>
       <div class="move-ring" aria-hidden="true">
@@ -330,9 +337,9 @@
       </div>
       <div class="move-thrust" aria-hidden="true"></div>
       <div id="move-nub" class="move-nub" role="slider" tabindex="0"
-           aria-label="Drive joystick — drag to move and look around the live world, or use W A S D / Q E / arrow keys"
+           aria-label="Drive joystick — WASD move, mouse look, arrows look, or drag"
            aria-valuetext="centered"
-           title="Explore — W/S move · A/D turn · Q/E strafe · ←/→ turn · ↑/↓ look up-down · or drag">
+           title="Explore — WASD move · mouse look · arrows look · or drag">
         <span class="move-arrow" aria-hidden="true"></span>
         <span class="move-core" aria-hidden="true"></span>
       </div>
