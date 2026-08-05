@@ -2031,6 +2031,24 @@ def admin_analytics_summary():
         return error_response("Failed to load analytics summary", str(e))
 
 
+@app.route('/api/admin/analytics/storage_health', methods=['GET'])
+def admin_analytics_storage_health():
+    """Is the cost ledger actually going to survive the next restart?
+
+    See cost_tracker.get_storage_health() — there's no direct way to ask
+    Render "is my disk attached", so this combines a mount-point check with
+    whether the oldest ledger row predates this process's own start time.
+    """
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import cost_tracker
+        return jsonify(success_response(cost_tracker.get_storage_health()))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to load storage health", str(e))
+
+
 @app.route('/api/admin/analytics/timeseries', methods=['GET'])
 def admin_analytics_timeseries():
     if not _admin_token_ok():
