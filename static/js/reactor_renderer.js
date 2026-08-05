@@ -2092,11 +2092,26 @@
     // was established directly by native movement/exploration mode).
     getPrompt: () => rstate.lastPrompt ||
       (rstate.lastSceneApplied && rstate.lastSceneApplied.prompt) || null,
-    // True only when the LIVE video is actually on-screen (decoded frames and
-    // the freeze back-buffer is not covering it).
+    // True only when the LIVE video is actually on-screen and RUNNING — decoded
+    // frames are flowing AND nothing is covering/darkening the scene. Besides the
+    // freeze back-buffer and a blackout, this also excludes the two "not revealed
+    // yet" windows that are visually black but where the <video> already reports
+    // videoWidth>0 (from a held/stale frame):
+    //   • fadeDownActive — the scene-fade veil is deliberately down (the "moment
+    //     of pause" beat of a transition, incl. blend-model re-anchors that lift
+    //     via scheduleSceneReveal and never touch the freeze).
+    //   • freezeArmed — the stream started but its first genuinely-new frame has
+    //     not been presented; we're still showing the old/held frame.
+    // This keeps isShowing() in lockstep with the `video_showing` reveal event,
+    // so consumers gated on it (e.g. the OCR object-detection hotspots) never
+    // trigger over black before the video is actually playing.
     isShowing: () => {
       const v = rstate.video || document.getElementById("reactor-video");
-      return !!(v && v.videoWidth > 0 && !rstate.freezeActive && !rstate.blackout);
+      return !!(
+        v && v.videoWidth > 0 &&
+        !rstate.freezeActive && !rstate.blackout &&
+        !rstate.fadeDownActive && !rstate.freezeArmed
+      );
     },
     // Intrinsic size of the live video track, so callers can map normalized
     // frame coordinates (e.g. object-detection boxes) onto the object-fit:cover
