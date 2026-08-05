@@ -27,6 +27,13 @@
   // render and breathe before the next turn resets it.
   const AUTOPLAY_REALTIME_WATCH_MS = (typeof window !== "undefined" && window.__AUTOPLAY_WATCH_MS__) || 22000;  // let the live video play this long before advancing
   const AUTOPLAY_REALTIME_MAX_WAIT_MS = 30000; // never wait longer than this for the video to appear
+  // DAMAGE / danger system toggle. The vision-driven danger vignette + health
+  // drain looks good but currently hurts the player arbitrarily (there's no
+  // real combat context yet), so it's DISABLED for now. Flip to true to bring
+  // it back for a future COMBAT MODE — all the machinery (DangerSystem, the
+  // /api/danger grader, the HEALTH HUD) stays intact and gated behind this one
+  // flag. `window.__DAMAGE_ENABLED__` can force it on for testing.
+  const DAMAGE_SYSTEM_ENABLED = (typeof window !== "undefined" && window.__DAMAGE_ENABLED__ === true) || false;
   const REALTIME_MAX_RETRIES = 3; // transient realtime errors retry before falling back to stills
   // Reactor occasionally has no free server for the model ("no available
   // capacity" 429s) — an upstream availability shortage, not a local WebRTC
@@ -2895,6 +2902,9 @@
 
     // ── Public control ──────────────────────────────────────────────────
     function start() {
+      // Damage/danger system is disabled until a real combat mode exists — see
+      // DAMAGE_SYSTEM_ENABLED. No frame grading, no health drain, no vignette.
+      if (!DAMAGE_SYSTEM_ENABLED) return;
       if (running) return;
       bindDom();
       if (!el.vignette) return; // DOM missing — abort silently
@@ -3025,6 +3035,7 @@
       // are in still-image mode or reactor is still warming), pull up the
       // system locally so demo/forceMode still work. Live samples remain
       // gated by shouldSample() so this doesn't add spurious API traffic.
+      if (!DAMAGE_SYSTEM_ENABLED) return false; // disabled until combat mode
       if (running) return true;
       bindDom();
       if (!el.vignette) { log("abort — no DOM"); return false; }
@@ -3046,6 +3057,7 @@
       // vision to actually escalate. Health drops during the HURTING phase
       // and regenerates during the recovery phase — same code path as a
       // real run.
+      if (!DAMAGE_SYSTEM_ENABLED) return; // disabled until combat mode
       if (!ensureLocallyRunning()) return;
       if (demoActive) endDemo();
       demoActive = true;
@@ -9665,15 +9677,22 @@
       }
       if (typeof s.image_enabled === "boolean") state.imagesEnabled = s.image_enabled;
       // HEALTH stakes meter (top-center dossier HUD). Server-authoritative;
-      // the danger vignette loop drains it. Colour-flags as it drops.
-      if (el.evidenceHud && typeof s.health === "number") {
-        const hv = el.evidenceHud.querySelector(".ev-health-val");
-        const hp = Math.max(0, Math.min(100, Math.round(s.health)));
-        if (hv) hv.textContent = String(hp);
+      // the danger vignette loop drains it. Hidden entirely while the damage
+      // system is disabled (health never changes, so a static "100" is just
+      // noise) — it returns automatically when DAMAGE_SYSTEM_ENABLED is on.
+      if (el.evidenceHud) {
         const hEl = el.evidenceHud.querySelector(".ev-health");
-        if (hEl) {
-          hEl.classList.toggle("low", hp <= 50 && hp > 25);
-          hEl.classList.toggle("critical", hp <= 25);
+        if (!DAMAGE_SYSTEM_ENABLED) {
+          if (hEl) hEl.classList.add("hidden");
+        } else if (typeof s.health === "number") {
+          const hv = el.evidenceHud.querySelector(".ev-health-val");
+          const hp = Math.max(0, Math.min(100, Math.round(s.health)));
+          if (hv) hv.textContent = String(hp);
+          if (hEl) {
+            hEl.classList.remove("hidden");
+            hEl.classList.toggle("low", hp <= 50 && hp > 25);
+            hEl.classList.toggle("critical", hp <= 25);
+          }
         }
       }
       renderInventory(s.inventory);

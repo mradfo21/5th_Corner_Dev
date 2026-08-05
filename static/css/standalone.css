@@ -6352,6 +6352,8 @@ body.touch-aiming .touch-zoom { opacity: 0.9; }
   font-variant-numeric: tabular-nums;
 }
 #evidence-hud .ev-stat-mark { font-size: 10px; opacity: 0.85; }
+/* Health stat hides entirely while the damage system is disabled. */
+#evidence-hud .ev-health.hidden { display: none; }
 #evidence-hud .ev-health .ev-stat-mark { color: #7fd0a0; }
 #evidence-hud .ev-health.low .ev-stat-mark,
 #evidence-hud .ev-health.low .ev-health-val { color: #ffd27a; }
