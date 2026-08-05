@@ -12,12 +12,12 @@
   "_comment_cast_and_camera": "═══ CAST & CAMERA (structured — edited via World Studio / World Editor) ═══",
   "_comment_cast_and_camera_desc": "Who you play as, the level you play it in, and where the camera sits. Compiled into prompt blocks by game_identity.py and injected into the image, narrative, and choice prompts below. Saved worlds snapshot these alongside the text prompts.",
   "player_character": {
-    "enabled": false,
+    "enabled": true,
     "name": "",
-    "pronouns": "they/them",
-    "role": "",
+    "pronouns": "she/her",
+    "role": "salvage diver",
     "appearance": "",
-    "wardrobe": "",
+    "wardrobe": "Patched orange dive suit, mismatched boots",
     "signature_gear": "",
     "demeanor": "",
     "backstory": "",
@@ -34,7 +34,7 @@
     "reference_images": []
   },
   "camera_perspective": {
-    "mode": "first_person",
+    "mode": "third_person",
     "show_hands": true,
     "lens": "",
     "notes": ""

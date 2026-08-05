@@ -794,7 +794,8 @@ def opening_shot(spec: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, st
         return None
 
     place = name or "the location"
-    vision_bits = [shot or summary]
+    lead = (shot or summary).rstrip()
+    vision_bits = [lead if lead.endswith((".", "!", "?")) else lead + "."]
     if setting.get("landmarks"):
         vision_bits.append(f"Visible landmarks: {setting['landmarks']}.")
     if setting.get("palette"):
@@ -931,8 +932,12 @@ _SELF_INVISIBLE_PATTERNS = [
     re.compile(p, re.IGNORECASE)
     for p in (
         r"never\s+show\s+your\s+(face|head|body)",
-        r"you\s+are\s+never\s+visible",
+        r"(you|the\s+camera\s+operator).{0,40}\bnever\s+visible\b",
+        r"no\s+part\s+of\s+(you|your\s+body)\s+(exists|is\s+visible)",
         r"your\s+own\s+body\s+is\s+not\s+visible",
+        r"\byou\s+are\s+behind\s+the\s+camera\b",
+        r"hands\s+can\s+be\s+visible",
+        r"\bthe\s+camera\s+is\s+your\s+eyes\b",
     )
 ]
 

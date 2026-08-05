@@ -478,6 +478,122 @@ body.view-list #mobile-list { display: block; }
     flex-wrap: wrap;
 }
 
+/* ───────────────────  CAST & CAMERA (structured editor)  ─────────────────── */
+
+.cast-form { display: flex; flex-direction: column; gap: 14px; }
+.cast-row { display: flex; flex-direction: column; gap: 6px; }
+.cast-row .field-help { font-size: 0.7rem; color: var(--text-dim); line-height: 1.5; }
+.cast-row input[type="text"],
+.cast-row textarea {
+    width: 100%;
+    background: var(--bg-void);
+    border: 1px solid var(--border-soft);
+    border-radius: 8px;
+    color: var(--text-bright);
+    font-family: var(--font-ui);
+    font-size: 0.84rem;
+    padding: 9px 11px;
+    resize: vertical;
+}
+.cast-row textarea { min-height: 66px; line-height: 1.55; }
+.cast-row input[type="text"]:focus,
+.cast-row textarea:focus { outline: none; border-color: var(--accent-teal); }
+
+.cast-toggle {
+    display: flex; align-items: center; gap: 10px;
+    background: var(--bg-card); border: 1px solid var(--border-soft);
+    border-radius: 10px; padding: 11px 13px; cursor: pointer;
+}
+.cast-toggle:hover { border-color: var(--border-strong); }
+.cast-toggle input { accent-color: var(--accent-teal); width: 16px; height: 16px; cursor: pointer; }
+.cast-toggle .cast-toggle-text { display: flex; flex-direction: column; gap: 2px; }
+.cast-toggle .cast-toggle-label { font-size: 0.84rem; font-weight: 500; }
+
+/* Perspective picker — the headline control of this whole editor. */
+.mode-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.mode-option {
+    text-align: left;
+    background: var(--bg-card);
+    border: 1px solid var(--border-soft);
+    border-radius: 10px;
+    padding: 11px 12px;
+    cursor: pointer;
+    display: flex; flex-direction: column; gap: 4px;
+    transition: border-color 0.12s, background 0.12s;
+}
+.mode-option:hover { background: var(--bg-card-hover); border-color: var(--border-strong); }
+.mode-option.selected { border-color: var(--accent-teal); background: rgba(76, 198, 184, 0.1); box-shadow: 0 0 0 1px rgba(76,198,184,0.28); }
+.mode-option .mode-name { font-size: 0.84rem; font-weight: 600; color: var(--text-bright); }
+.mode-option.selected .mode-name { color: var(--accent-teal); }
+.mode-option .mode-tag { font-size: 0.7rem; color: var(--text-dim); line-height: 1.45; }
+
+/* Reference plates — drop zone + thumbnails. */
+.plate-zone {
+    border: 1px dashed rgba(255,255,255,0.22);
+    border-radius: 10px;
+    padding: 16px;
+    text-align: center;
+    cursor: pointer;
+    color: var(--text-dim);
+    font-size: 0.78rem;
+    line-height: 1.5;
+    transition: border-color 0.12s, background 0.12s, color 0.12s;
+}
+.plate-zone:hover, .plate-zone.dragover {
+    border-color: var(--accent-teal);
+    background: rgba(76, 198, 184, 0.07);
+    color: var(--accent-teal);
+}
+.plate-zone strong { display: block; font-size: 0.82rem; color: var(--text-mid); margin-bottom: 3px; }
+.plate-zone:hover strong, .plate-zone.dragover strong { color: var(--accent-teal); }
+
+.plate-grid { display: flex; flex-wrap: wrap; gap: 8px; }
+.plate {
+    position: relative;
+    width: 92px; height: 92px;
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid var(--border-soft);
+    background: var(--bg-void);
+}
+.plate img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.plate .plate-remove {
+    position: absolute; top: 3px; right: 3px;
+    width: 20px; height: 20px; line-height: 18px;
+    border-radius: 50%; border: none; cursor: pointer;
+    background: rgba(0,0,0,0.68); color: #fff; font-size: 0.8rem;
+}
+.plate .plate-remove:hover { background: var(--danger); }
+
+/* Live compile preview — the exact text the model receives. */
+.compiled-pane {
+    background: var(--bg-void);
+    border: 1px solid rgba(76, 198, 184, 0.22);
+    border-radius: 8px;
+    padding: 11px 12px;
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    line-height: 1.6;
+    color: var(--text-mid);
+    max-height: 300px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+}
+.compiled-pane.empty { font-style: italic; color: var(--text-dim); }
+
+.card-block-cast { background: rgba(157, 140, 240, 0.06); border: 1px solid rgba(157, 140, 240, 0.22); flex: 1; }
+.card-block-cast .block-label { color: var(--accent-violet); }
+.card-block-cast .block-body { font-size: 0.72rem; color: var(--text-mid); line-height: 1.55; }
+.card-plates { display: flex; gap: 5px; margin-top: 7px; }
+.card-plates img { width: 34px; height: 34px; object-fit: cover; border-radius: 5px; border: 1px solid var(--border-soft); }
+
+.zone-cast .zone-label { color: var(--accent-violet); background: rgba(157, 140, 240, 0.1); }
+.zone-cast .zone-section-title { color: var(--accent-violet); }
+
+@media (max-width: 760px) {
+    .mode-grid { grid-template-columns: 1fr; }
+}
+
 /* ─────────────────────────────  TOAST  ───────────────────────────── */
 
 #toast-container {
@@ -707,7 +823,18 @@ const STATE = {
     schemaById: {},
     drafts: {},        // key -> draft string value, only for keys that differ from STATE.prompts[key]
     activeKey: null,    // currently open prompt key, or null
+
+    // Cast & Camera. Unlike prompts these are structured objects with image
+    // slots, so they get their own state, their own cards, and their own
+    // inspector editor — and they save through /api/admin/studio/identity.
+    identity: {},
+    identitySchema: [],
+    identityById: {},
+    identityPreview: null,
 };
+
+const IDENTITY_KEYS = ['player_character', 'setting_reference', 'camera_perspective'];
+const isIdentityKey = (key) => IDENTITY_KEYS.includes(key);
 
 // ═══════════════════════════════════════════════════════════════════
 // VIEW MODE — Map (spatial canvas) vs List (stacked accordion). The
@@ -767,6 +894,12 @@ async function loadContent() {
         STATE.schemaById = {};
         STATE.schema.forEach(f => STATE.schemaById[f.id] = f);
 
+        STATE.identity = data.identity || {};
+        STATE.identitySchema = data.identity_schema || [];
+        STATE.identityById = {};
+        STATE.identitySchema.forEach(b => STATE.identityById[b.id] = b);
+        STATE.identityPreview = data.identity_preview || null;
+
         wireTopLinks();
         setView(document.body.classList.contains('view-map') ? 'view-map' : 'view-list');
         buildBoard();
@@ -799,14 +932,20 @@ document.addEventListener('DOMContentLoaded', loadContent);
 // ═══════════════════════════════════════════════════════════════════
 
 const ZONES = {
-    world:        { x: 40,   y: 40, w: 600,  h: 640, label: 'World & Setting',     desc: 'What the story is grounded in' },
-    narrative:    { x: 700,  y: 40, w: 920,  h: 640, label: 'Narrative Engine',     desc: 'Turns an action into what you read & see' },
-    submissions:  { x: 1680, y: 40, w: 520,  h: 640, label: 'Player Submissions',   desc: 'What actions you can even submit' },
-    image:        { x: 2260, y: 40, w: 640,  h: 900, label: 'Image Generation',     desc: 'What the camera actually renders' },
+    cast:         { x: 40,   y: 40, w: 600,  h: 900, label: 'Cast & Camera',       desc: 'Who you play, where, and from what angle' },
+    world:        { x: 700,  y: 40, w: 600,  h: 640, label: 'World & Setting',     desc: 'What the story is grounded in' },
+    narrative:    { x: 1360, y: 40, w: 920,  h: 640, label: 'Narrative Engine',     desc: 'Turns an action into what you read & see' },
+    submissions:  { x: 2340, y: 40, w: 520,  h: 640, label: 'Player Submissions',   desc: 'What actions you can even submit' },
+    image:        { x: 2920, y: 40, w: 640,  h: 900, label: 'Image Generation',     desc: 'What the camera actually renders' },
 };
 
 // Explicit per-field position within its zone (relative to zone x/y).
 const CARD_POSITIONS = {
+    // Cast & Camera reads top-down as the three questions a player asks first.
+    player_character:                        { x: 30,  y: 30,  w: 540, h: 300, size: 'md' },
+    setting_reference:                       { x: 30,  y: 350, w: 540, h: 260, size: 'md' },
+    camera_perspective:                      { x: 30,  y: 630, w: 540, h: 230, size: 'md' },
+
     world_initial_state:                     { x: 30,  y: 30,  w: 540, h: 560, size: 'lg' },
 
     action_consequence_instructions:         { x: 30,  y: 30,  w: 420, h: 260, size: 'md' },
@@ -820,6 +959,22 @@ const CARD_POSITIONS = {
     image_negative_prompt:                   { x: 30,  y: 610, w: 280, h: 230, size: 'md' },
     gemini_flipbook_4panel_prefix:           { x: 330, y: 610, w: 280, h: 230, size: 'md' },
 };
+
+// Identity blocks aren't in PROMPT_SCHEMA (different shape, different save
+// endpoint), so the board needs them presented in the same schema-ish form.
+function castCardFields() {
+    return STATE.identitySchema.map(block => ({
+        id: block.id,
+        label: (block.icon ? block.icon + ' ' : '') + block.label,
+        description: block.description,
+        group: 'cast',
+        identity: true,
+    }));
+}
+
+function allBoardFields() {
+    return castCardFields().concat(STATE.schema);
+}
 
 function boardExtent() {
     let maxX = 0, maxH = 0;
@@ -846,7 +1001,7 @@ function buildBoard() {
         board.appendChild(zoneEl);
     });
 
-    STATE.schema.forEach(field => {
+    allBoardFields().forEach(field => {
         const pos = CARD_POSITIONS[field.id];
         const zone = ZONES[field.group];
         if (!pos || !zone) return;
@@ -868,8 +1023,9 @@ function buildBoard() {
 function buildMobileList() {
     const root = document.getElementById('mobile-list');
     root.innerHTML = '';
+    const boardFields = allBoardFields();
     Object.entries(ZONES).forEach(([key, z]) => {
-        const fields = STATE.schema.filter(f => f.group === key);
+        const fields = boardFields.filter(f => f.group === key);
         if (!fields.length) return;
 
         const section = document.createElement('div');
@@ -909,12 +1065,92 @@ function makeCard(field, size, listMode) {
     card.className = 'card' + (size === 'lg' ? '' : ' card-mini') + (listMode ? ' list-mode' : '');
     card.dataset.key = field.id;
     card.dataset.size = size;
-    card.onclick = () => openPromptInspector(field.id);
+    card.onclick = () => openInspector(field.id);
     renderCardInner(card, field);
     return card;
 }
 
+// ─────────────────────────  CAST CARD SUMMARIES  ─────────────────────────
+// A card should answer "is this set up, and to what?" at a glance — a raw JSON
+// dump of the spec would not.
+
+function castCardSummary(blockId) {
+    const v = STATE.identity[blockId] || {};
+    if (blockId === 'camera_perspective') {
+        const opt = perspectiveOption(v.mode);
+        return {
+            active: true,
+            text: (opt ? opt.label + ' — ' + opt.tagline : v.mode) +
+                  (v.lens ? '\nLens: ' + v.lens : ''),
+        };
+    }
+    if (!v.enabled) {
+        return {
+            active: false,
+            text: blockId === 'player_character'
+                ? 'No character set — the story falls back to whatever the World & Setting prompt describes.'
+                : 'No level set — the shipped Horizon-facility opening is used.',
+        };
+    }
+    const lines = [];
+    if (blockId === 'player_character') {
+        lines.push(v.name || '(unnamed)');
+        if (v.role) lines.push(v.role);
+        if (v.appearance) lines.push(v.appearance);
+    } else {
+        lines.push(v.name || '(unnamed)');
+        if (v.summary) lines.push(v.summary);
+        if (v.landmarks) lines.push('Landmarks: ' + v.landmarks);
+    }
+    return { active: true, text: lines.join('\n') };
+}
+
+function castPlateThumbs(blockId) {
+    const preview = STATE.identityPreview;
+    if (!preview || !preview.reference_images) return [];
+    const slot = blockId === 'player_character' ? 'character'
+               : blockId === 'setting_reference' ? 'setting' : null;
+    return slot ? (preview.reference_images[slot] || []) : [];
+}
+
+function renderIdentityCardInner(card, field) {
+    const summary = castCardSummary(field.id);
+    const thumbs = castPlateThumbs(field.id);
+    const badges = [];
+    if (field.id === 'camera_perspective') {
+        const opt = perspectiveOption((STATE.identity.camera_perspective || {}).mode);
+        if (opt && opt.shows_body) badges.push('<span class="badge edited">character on screen</span>');
+    } else if (summary.active) {
+        badges.push('<span class="badge live">● in play</span>');
+    }
+
+    const thumbHtml = thumbs.length
+        ? `<div class="card-plates">${thumbs.map(t => `<img src="${escapeHtml(t.url)}" alt="">`).join('')}</div>`
+        : '';
+
+    card.innerHTML = `
+        <div class="card-title-row">
+            <div class="card-title">${escapeHtml(field.label)}</div>
+            <div class="card-badges">${badges.join('')}</div>
+        </div>
+        <div class="card-block card-block-note">
+            <div class="block-label">🧭 What this does</div>
+            <div class="block-body">${escapeHtml(field.description)}</div>
+        </div>
+        <div class="card-block card-block-cast">
+            <div class="block-label">🎬 Currently</div>
+            <div class="block-body">${escapeHtml(summary.text)}</div>
+            ${thumbHtml}
+        </div>
+    `;
+    card.dataset.searchText = (field.label + ' ' + field.description + ' ' + summary.text).toLowerCase();
+}
+
 function renderCardInner(card, field) {
+    if (field.identity || isIdentityKey(field.id)) {
+        renderIdentityCardInner(card, field);
+        return;
+    }
     const value = valueForKey(field.id) || '';
     const isEdited = field.id in STATE.drafts
         ? STATE.drafts[field.id] !== STATE.prompts[field.id]
@@ -980,6 +1216,12 @@ function drawConnectors() {
     };
 
     let html = defs;
+    // Cast & Camera feeds BOTH the narrative engine and the renderer: the
+    // director's sheet lands on the story prompts, the camera directive lands
+    // on the image prompts.
+    html += straight(anchor('cast', 'right'), anchor('world', 'left'));
+    html += curve({ x: ZONES.cast.x + ZONES.cast.w, y: ZONES.cast.y + ZONES.cast.h - 60 },
+                  { x: ZONES.image.x, y: ZONES.image.y + ZONES.image.h - 60 }, 120);
     html += straight(anchor('world', 'right'), anchor('narrative', 'left'));
     html += straight(anchor('narrative', 'right'), anchor('submissions', 'left'));
     html += curve({ x: ZONES.submissions.x, y: ZONES.submissions.y + 40 }, { x: ZONES.narrative.x + ZONES.narrative.w, y: ZONES.narrative.y + 40 }, -70);
@@ -1005,9 +1247,11 @@ function isSameAsDefault(key) {
 }
 
 function refreshAllCards() {
+    const castFields = {};
+    castCardFields().forEach(f => castFields[f.id] = f);
     document.querySelectorAll('.card[data-key]').forEach(card => {
         const key = card.dataset.key;
-        const field = STATE.schemaById[key];
+        const field = STATE.schemaById[key] || castFields[key];
         if (!field) return;
         renderCardInner(card, field);
     });
@@ -1121,6 +1365,11 @@ function onSearch(query) {
 // INSPECTOR — full editor for one prompt field
 // ═══════════════════════════════════════════════════════════════════
 
+function openInspector(key) {
+    if (isIdentityKey(key)) return openIdentityInspector(key);
+    return openPromptInspector(key);
+}
+
 function openPromptInspector(key) {
     STATE.activeKey = key;
     document.querySelectorAll('.card').forEach(c => c.classList.toggle('active', c.dataset.key === key));
@@ -1191,6 +1440,276 @@ function renderTextEditor(field, body, footer) {
         <button class="btn primary" id="save-field-btn" onclick="saveField('${field.id}')">💾 Save</button>
         <button class="btn ghost" onclick="discardField('${field.id}')">Discard changes</button>
     `;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// CAST & CAMERA INSPECTOR
+//
+// Structured form rather than a textarea, plus drop zones for reference art
+// and a live view of exactly what the whole block compiles to. Saves go
+// straight to /api/admin/studio/identity (no drafts): these are small, typed
+// values where "did it take?" should be answerable immediately, and the
+// compiled preview underneath re-renders from the server's own output.
+// ═══════════════════════════════════════════════════════════════════
+
+function perspectiveOption(modeId) {
+    const block = STATE.identityById.camera_perspective;
+    if (!block) return null;
+    const field = block.fields.find(f => f.type === 'mode');
+    if (!field) return null;
+    return (field.options || []).find(o => o.id === modeId) || null;
+}
+
+function identityValue(blockId, fieldId) {
+    const block = STATE.identity[blockId] || {};
+    return block[fieldId];
+}
+
+function openIdentityInspector(blockId) {
+    STATE.activeKey = blockId;
+    document.querySelectorAll('.card').forEach(c => c.classList.toggle('active', c.dataset.key === blockId));
+
+    const block = STATE.identityById[blockId];
+    if (!block) return;
+
+    document.getElementById('inspector-title').textContent =
+        (block.icon ? block.icon + ' ' : '') + block.label;
+    document.getElementById('inspector-meta').innerHTML =
+        '<span class="badge live">🟢 live — applies next turn</span>' +
+        '<span class="badge info">saved with your world</span>';
+
+    renderIdentityEditor(block);
+    document.getElementById('inspector').classList.add('open');
+}
+
+function renderIdentityEditor(block) {
+    const body = document.getElementById('inspector-body');
+    const footer = document.getElementById('inspector-footer');
+    body.innerHTML = `
+        <div class="section-block note">
+            <div class="section-heading">🧭 What this does</div>
+            <p>${escapeHtml(block.description)}</p>
+        </div>
+        <div class="cast-form" id="cast-form"></div>
+        ${block.supports_images ? `
+            <div class="section-block note">
+                <div class="section-heading">🖼 ${escapeHtml(block.images_label || 'Reference images')}</div>
+                <p>${escapeHtml(block.images_hint || '')}</p>
+                <div class="plate-grid" id="plate-grid" style="margin-top:10px;"></div>
+                <div class="plate-zone" id="plate-zone" style="margin-top:10px;">
+                    <strong>Drop an image here, or click to choose one</strong>
+                    PNG, JPEG, WebP or GIF · up to 8MB · paste works too
+                </div>
+                <input type="file" id="plate-input" accept="image/*" style="display:none;">
+            </div>
+        ` : ''}
+        <div class="section-block prompt-zone">
+            <div>
+                <div class="section-heading">🤖 What this compiles to</div>
+                <div class="section-sub">The literal text injected into the image and story prompts. This is generated from the fields above — it is not editable directly.</div>
+            </div>
+            <div class="compiled-pane" id="compiled-pane"></div>
+        </div>
+    `;
+
+    const form = document.getElementById('cast-form');
+    block.fields.forEach(field => form.appendChild(makeIdentityField(block, field)));
+
+    if (block.supports_images) wirePlateZone(block);
+    renderCompiledPane(block);
+
+    footer.innerHTML = `
+        <button class="btn danger" id="cast-reset-btn">⟲ Reset Cast &amp; Camera</button>
+    `;
+    document.getElementById('cast-reset-btn').onclick = resetIdentity;
+}
+
+function makeIdentityField(block, field) {
+    const row = document.createElement('div');
+    row.className = 'cast-row';
+    const value = identityValue(block.id, field.id);
+
+    if (field.type === 'toggle') {
+        row.innerHTML = `
+            <label class="cast-toggle">
+                <input type="checkbox" ${value ? 'checked' : ''}>
+                <span class="cast-toggle-text">
+                    <span class="cast-toggle-label">${escapeHtml(field.label)}</span>
+                    ${field.help ? `<span class="field-help">${escapeHtml(field.help)}</span>` : ''}
+                </span>
+            </label>
+        `;
+        row.querySelector('input').onchange = (e) =>
+            saveIdentity(block, { [field.id]: e.target.checked });
+        return row;
+    }
+
+    if (field.type === 'mode') {
+        const current = value || 'first_person';
+        row.innerHTML = `
+            <span class="field-label">${escapeHtml(field.label)}</span>
+            <div class="mode-grid">
+                ${(field.options || []).map(o => `
+                    <button type="button" class="mode-option${o.id === current ? ' selected' : ''}" data-mode="${escapeHtml(o.id)}">
+                        <span class="mode-name">${escapeHtml(o.label)}</span>
+                        <span class="mode-tag">${escapeHtml(o.tagline)}</span>
+                    </button>
+                `).join('')}
+            </div>
+        `;
+        row.querySelectorAll('.mode-option').forEach(btn => {
+            btn.onclick = () => saveIdentity(block, { mode: btn.dataset.mode });
+        });
+        return row;
+    }
+
+    const isLong = field.type === 'longtext';
+    row.innerHTML = `
+        <span class="field-label">${escapeHtml(field.label)}</span>
+        ${isLong
+            ? `<textarea spellcheck="false" placeholder="${escapeHtml(field.placeholder || '')}"></textarea>`
+            : `<input type="text" spellcheck="false" placeholder="${escapeHtml(field.placeholder || '')}">`}
+        ${field.help ? `<span class="field-help">${escapeHtml(field.help)}</span>` : ''}
+    `;
+    const input = row.querySelector(isLong ? 'textarea' : 'input');
+    input.value = value == null ? '' : String(value);
+    // Save on blur rather than per-keystroke: every save recompiles the whole
+    // directive server-side, and typing a sentence shouldn't fire 40 of them.
+    input.onblur = () => {
+        if (input.value === (identityValue(block.id, field.id) || '')) return;
+        saveIdentity(block, { [field.id]: input.value });
+    };
+    input.onkeydown = (e) => { if (e.key === 'Enter' && !isLong) input.blur(); };
+    return row;
+}
+
+function renderCompiledPane(block) {
+    const pane = document.getElementById('compiled-pane');
+    if (!pane) return;
+    const preview = STATE.identityPreview || {};
+    const text = block.id === 'camera_perspective'
+        ? [preview.image_directive, 'NEGATIVE PROMPT:\n' + (preview.negative_prompt || '')]
+            .filter(Boolean).join('\n\n')
+        : preview.narrative_directive || preview.image_directive || '';
+    pane.textContent = text || 'Nothing yet — fill in the fields above and this fills in with the exact prompt text.';
+    pane.classList.toggle('empty', !text);
+}
+
+async function saveIdentity(block, patch) {
+    try {
+        const res = await studioFetch('/api/admin/studio/identity', {
+            method: 'PUT',
+            body: JSON.stringify({ [block.id]: patch }),
+        });
+        const json = await res.json();
+        if (!json.success) throw new Error(json.error || 'Save failed');
+        applyIdentityResponse(json.data);
+        toast('success', 'Saved — live on your next turn');
+    } catch (e) {
+        toast('error', 'Save failed: ' + e.message);
+    }
+}
+
+function applyIdentityResponse(data) {
+    if (data.identity) STATE.identity = data.identity;
+    if (data.preview) STATE.identityPreview = data.preview;
+    refreshAllCards();
+    if (STATE.activeKey && isIdentityKey(STATE.activeKey)) {
+        // Re-render so dependent fields update together — flipping to a
+        // third-person mode changes what the character block is even for.
+        openIdentityInspector(STATE.activeKey);
+    }
+}
+
+async function resetIdentity() {
+    if (!confirm('Reset your character, level, and camera back to defaults? Any uploaded reference images stay on disk but get unwired.')) return;
+    try {
+        const res = await studioFetch('/api/admin/studio/identity/reset', { method: 'POST' });
+        const json = await res.json();
+        if (!json.success) throw new Error(json.error || 'Reset failed');
+        applyIdentityResponse(json.data);
+        toast('success', 'Cast & camera reset to defaults');
+    } catch (e) {
+        toast('error', 'Reset failed: ' + e.message);
+    }
+}
+
+// ─────────────────────────  REFERENCE PLATES  ─────────────────────────
+
+function wirePlateZone(block) {
+    const slot = block.id === 'player_character' ? 'character' : 'setting';
+    const zone = document.getElementById('plate-zone');
+    const input = document.getElementById('plate-input');
+    const grid = document.getElementById('plate-grid');
+    if (!zone || !input || !grid) return;
+
+    const plates = castPlateThumbs(block.id);
+    grid.innerHTML = plates.map(p => `
+        <div class="plate">
+            <img src="${escapeHtml(p.url)}" alt="${escapeHtml(p.label || '')}" title="${escapeHtml(p.label || p.id)}">
+            <button class="plate-remove" data-id="${escapeHtml(p.id)}" title="Remove">✕</button>
+        </div>
+    `).join('');
+    grid.querySelectorAll('.plate-remove').forEach(btn => {
+        btn.onclick = () => deletePlate(btn.dataset.id);
+    });
+
+    zone.onclick = () => input.click();
+    input.onchange = () => { if (input.files[0]) uploadPlate(input.files[0], slot); input.value = ''; };
+
+    ['dragenter', 'dragover'].forEach(ev => zone.addEventListener(ev, (e) => {
+        e.preventDefault(); zone.classList.add('dragover');
+    }));
+    ['dragleave', 'drop'].forEach(ev => zone.addEventListener(ev, (e) => {
+        e.preventDefault(); zone.classList.remove('dragover');
+    }));
+    zone.addEventListener('drop', (e) => {
+        const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+        if (file) uploadPlate(file, slot);
+    });
+    // Paste-to-upload while the inspector is open — the fastest path from
+    // "found a reference online" to "it's in my game".
+    document.onpaste = (e) => {
+        if (!document.getElementById('plate-zone')) return;
+        const item = Array.from(e.clipboardData.items || []).find(i => i.type.startsWith('image/'));
+        if (item) uploadPlate(item.getAsFile(), slot);
+    };
+}
+
+function uploadPlate(file, slot) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async () => {
+        try {
+            toast('info', 'Uploading reference…');
+            const res = await studioFetch('/api/admin/studio/reference', {
+                method: 'POST',
+                body: JSON.stringify({ image: reader.result, kind: slot, label: file.name }),
+            });
+            const json = await res.json();
+            if (!json.success) throw new Error(json.error || 'Upload failed');
+            applyIdentityResponse(json.data);
+            toast('success', 'Reference added');
+        } catch (e) {
+            toast('error', 'Upload failed: ' + e.message);
+        }
+    };
+    reader.readAsDataURL(file);
+}
+
+async function deletePlate(refId) {
+    try {
+        const res = await studioFetch('/api/admin/studio/reference', {
+            method: 'DELETE',
+            body: JSON.stringify({ id: refId }),
+        });
+        const json = await res.json();
+        if (!json.success) throw new Error(json.error || 'Delete failed');
+        applyIdentityResponse(json.data);
+        toast('success', 'Reference removed');
+    } catch (e) {
+        toast('error', 'Delete failed: ' + e.message);
+    }
 }
 
 function onTextEdit(field, value) {
@@ -1288,6 +1807,7 @@ function renderLineDiff(a, b) {
 function closeInspector() {
     document.getElementById('inspector').classList.remove('open');
     STATE.activeKey = null;
+    document.onpaste = null;   // only armed while a plate drop zone is on screen
     document.querySelectorAll('.card').forEach(c => c.classList.remove('active'));
 }
 

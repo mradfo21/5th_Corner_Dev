@@ -2212,11 +2212,21 @@ def admin_studio_content():
         return _admin_unauthorized()
     try:
         import prompts_store
+        import game_identity
+        game_identity.ensure_spec_keys()
+        spec = game_identity.get_spec()
         return jsonify(success_response({
             "prompts": dict(prompts_store.PROMPTS),
             "prompts_defaults": prompts_store.load_defaults(),
             "schema": prompts_store.PROMPT_SCHEMA,
             "groups": prompts_store.GROUP_LABELS,
+            # Cast & Camera: the structured spec, its form definition, the
+            # thumbnails for any uploaded plates, and the exact text it all
+            # compiles to (so the editor can show the real prompt, not a guess).
+            "identity": spec,
+            "identity_schema": game_identity.identity_schema(),
+            "identity_defaults": game_identity.default_spec(),
+            "identity_preview": game_identity.preview(),
         }))
     except Exception as e:
         traceback.print_exc()
@@ -2298,6 +2308,158 @@ def admin_studio_prompts_reset():
     except Exception as e:
         traceback.print_exc()
         return error_response("Failed to reset prompt(s)", str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════
+# CAST & CAMERA — who you play as, the level you play it in, and where the
+# camera sits. Structured counterpart to the free-text prompts above; stored in
+# the same hot-reloaded prompt file so a saved world carries it too.
+# See game_identity.py.
+# ═══════════════════════════════════════════════════════════════════
+
+@app.route('/api/admin/studio/identity', methods=['GET'])
+def admin_studio_identity_get():
+    """The cast sheet plus everything it currently compiles to."""
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import game_identity
+        game_identity.ensure_spec_keys()
+        return jsonify(success_response({
+            "identity": game_identity.get_spec(),
+            "schema": game_identity.identity_schema(),
+            "defaults": game_identity.default_spec(),
+            "preview": game_identity.preview(),
+        }))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to load the cast sheet", str(e))
+
+
+@app.route('/api/admin/studio/identity', methods=['PUT'])
+def admin_studio_identity_put():
+    """Merge a partial cast-sheet update and persist immediately.
+
+    Body: any subset of {"player_character": {...}, "setting_reference": {...},
+    "camera_perspective": {...}} — and any subset of each block's fields, so
+    the editors can send only what changed. Unknown fields are dropped and
+    every value is normalized (see game_identity._normalize), so a malformed
+    payload can never wedge a turn.
+    """
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import game_identity
+        body = request.get_json(silent=True) or {}
+        payload = body.get('identity') if isinstance(body.get('identity'), dict) else body
+        if not any(k in payload for k in game_identity.SPEC_KEYS):
+            return error_response(
+                "Body must include at least one of: "
+                + ", ".join(game_identity.SPEC_KEYS) + ".", code=400)
+        spec = game_identity.save_spec(payload)
+        return jsonify(success_response(
+            {"identity": spec, "preview": game_identity.preview()},
+            "Cast & camera saved — live on your next turn"))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to save the cast sheet", str(e))
+
+
+@app.route('/api/admin/studio/identity/reset', methods=['POST'])
+def admin_studio_identity_reset():
+    """Clear the cast sheet back to first person, no character, no level."""
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import game_identity
+        spec = game_identity.reset_spec()
+        return jsonify(success_response(
+            {"identity": spec, "preview": game_identity.preview()},
+            "Cast & camera reset to defaults"))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to reset the cast sheet", str(e))
+
+
+@app.route('/api/admin/studio/reference', methods=['POST'])
+def admin_studio_reference_upload():
+    """Store an uploaded character sheet / level plate.
+
+    Body: {"image": "data:image/png;base64,...", "kind": "character"|"setting",
+    "label": "optional", "attach": true} — `attach` wires the new id straight
+    into that slot's reference list, which is what the editor's drop zone wants.
+    """
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import game_identity
+        body = request.get_json(silent=True) or {}
+        kind = (body.get('kind') or 'character').lower()
+        slot = {
+            'character': game_identity.CHARACTER_KEY,
+            'setting': game_identity.SETTING_KEY,
+        }.get(kind)
+        if not slot:
+            return error_response("'kind' must be 'character' or 'setting'.", code=400)
+
+        meta = game_identity.save_reference(body.get('image', ''), kind, body.get('label', ''))
+
+        if body.get('attach', True):
+            existing = game_identity.get_spec()[slot].get('reference_images', [])
+            game_identity.save_spec({slot: {'reference_images': existing + [meta['id']]}})
+
+        return jsonify(success_response({
+            "reference": meta,
+            "identity": game_identity.get_spec(),
+            "preview": game_identity.preview(),
+        }, "Reference image added"))
+    except ValueError as e:
+        return error_response(str(e), code=400)
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to store the reference image", str(e))
+
+
+@app.route('/api/admin/studio/reference', methods=['DELETE'])
+def admin_studio_reference_delete():
+    """Delete a reference image and unwire it from whichever slot used it."""
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import game_identity
+        body = request.get_json(silent=True) or {}
+        ref_id = body.get('id')
+        if not ref_id:
+            return error_response("Body must include 'id'.", code=400)
+        removed = game_identity.delete_reference(ref_id)
+        return jsonify(success_response({
+            "removed": removed,
+            "identity": game_identity.get_spec(),
+            "preview": game_identity.preview(),
+        }, "Reference image removed" if removed else "Reference image was already gone"))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to delete the reference image", str(e))
+
+
+@app.route('/api/studio/reference/<ref_id>', methods=['GET'])
+def serve_studio_reference(ref_id):
+    """Serve a stored reference plate.
+
+    Deliberately NOT admin-gated: these are inert user-uploaded images behind
+    unguessable ids, and both editors render them in plain <img> tags — the
+    in-game World Editor has no token to attach, so gating this would just
+    break its thumbnails in production.
+    """
+    try:
+        import game_identity
+        path = game_identity.reference_path(ref_id)
+        if not path:
+            return jsonify({"error": "not_found"}), 404
+        return send_file(str(path), max_age=31536000)
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to serve the reference image", str(e))
 
 
 # ═══════════════════════════════════════════════════════════════════
