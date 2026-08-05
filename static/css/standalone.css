@@ -6420,7 +6420,13 @@ body.touch-aiming .touch-zoom { opacity: 0.9; }
   left: 0;
   top: 0;
   bottom: 0;
-  width: min(468px, 94vw);
+  /* A developer tool, not a HUD widget: prompts here run 2,000+ characters, so
+     the default is wide enough to actually read one. clamp() rather than min()
+     so a laptop viewport still gets a usable fraction instead of collapsing
+     back to a column. Drag the right edge to resize (persisted), or hit WIDE to
+     take most of the viewport. */
+  width: var(--we-width, clamp(380px, 58vw, 980px));
+  max-width: 98vw;
   z-index: 44;
   display: flex;
   flex-direction: column;
@@ -6436,6 +6442,37 @@ body.touch-aiming .touch-zoom { opacity: 0.9; }
 }
 body.world-editor-on #world-editor { transform: translateX(0); }
 #world-editor.hidden { display: none; }
+/* WIDE mode: near-full viewport for heavy editing sessions. */
+#world-editor.we-wide { width: 96vw; }
+/* Drag-to-resize handle on the right edge. Visible at rest so it's actually
+   discoverable — a hidden-until-hover affordance on a dev tool is a feature
+   nobody finds. Hit area is wider than the grip looks. */
+#world-editor .we-resize {
+  position: absolute; top: 0; bottom: 0; right: -4px; width: 12px;
+  cursor: col-resize; z-index: 3;
+  display: flex; align-items: center; justify-content: center;
+}
+#world-editor .we-resize::before {
+  content: ''; position: absolute; top: 0; bottom: 0; left: 5px; width: 2px;
+  background: rgba(255, 210, 122, 0.2); transition: background 0.15s;
+}
+/* Centred grip dots — reads as "drag me". */
+#world-editor .we-resize::after {
+  content: ''; position: relative; width: 4px; height: 34px; border-radius: 2px;
+  background: rgba(255, 210, 122, 0.32);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
+  transition: background 0.15s, height 0.15s;
+}
+#world-editor .we-resize:hover::before,
+body.we-resizing #world-editor .we-resize::before { background: rgba(255, 210, 122, 0.6); }
+#world-editor .we-resize:hover::after,
+body.we-resizing #world-editor .we-resize::after { background: #ffd27a; height: 52px; }
+/* Kill text selection + iframe mouse capture while dragging the handle.
+   `user-select` isn't inherited into form controls in Chrome, so the textareas
+   need it forced or the drag paints a selection across them. */
+body.we-resizing { cursor: col-resize; }
+body.we-resizing, body.we-resizing * { user-select: none !important; }
+body.we-resizing #scene-frame, body.we-resizing iframe { pointer-events: none; }
 
 /* Header */
 #world-editor .we-head {
@@ -6467,21 +6504,35 @@ body.world-editor-on #world-editor { transform: translateX(0); }
   cursor: pointer; font-size: 15px; line-height: 1; padding: 4px 6px;
 }
 #world-editor .we-close:hover { color: #ff8f8f; }
+#world-editor .we-head-tools { display: flex; align-items: center; gap: 6px; }
+#world-editor .we-tool {
+  appearance: none; border: 1px solid rgba(232, 224, 200, 0.18);
+  background: rgba(255, 255, 255, 0.03); color: rgba(232, 224, 200, 0.66);
+  font: inherit; font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 5px 9px; border-radius: 6px; cursor: pointer; white-space: nowrap;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+#world-editor .we-tool:hover { color: #ffd27a; border-color: rgba(255, 210, 122, 0.4); }
+#world-editor .we-tool.active { color: #ffd27a; border-color: rgba(255, 210, 122, 0.5); background: rgba(255, 210, 122, 0.1); }
 
-/* Tabs */
+/* Tabs — one scrollable row rather than wrapping into stacked rows. */
 #world-editor .we-tabs {
   display: flex;
   gap: 4px;
   padding: 10px 12px 0;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
 }
+#world-editor .we-tabs::-webkit-scrollbar { height: 0; }
 #world-editor .we-tab {
   appearance: none;
   border: 1px solid rgba(232, 224, 200, 0.14);
   background: rgba(255, 255, 255, 0.02);
   color: rgba(232, 224, 200, 0.62);
-  font: inherit; font-size: 10.5px; letter-spacing: 0.06em;
-  padding: 6px 11px; border-radius: 7px 7px 0 0; cursor: pointer;
+  font: inherit; font-size: 11.5px; letter-spacing: 0.06em;
+  padding: 8px 14px; border-radius: 7px 7px 0 0; cursor: pointer;
+  white-space: nowrap; flex: 0 0 auto;
   transition: color 0.15s, background 0.15s, border-color 0.15s;
 }
 #world-editor .we-tab:hover { color: #e8e0c8; }
@@ -6494,7 +6545,7 @@ body.world-editor-on #world-editor { transform: translateX(0); }
 /* Scroll body */
 #world-editor .we-scroll {
   flex: 1 1 auto; min-height: 0; overflow-y: auto;
-  padding: 14px 14px 8px;
+  padding: 16px 18px 10px;
 }
 #world-editor .we-scroll::-webkit-scrollbar { width: 8px; }
 #world-editor .we-scroll::-webkit-scrollbar-thumb {
@@ -6512,7 +6563,7 @@ body.world-editor-on #world-editor { transform: translateX(0); }
 }
 #world-editor .we-field.modified { border-color: rgba(255, 210, 122, 0.36); }
 #world-editor .we-field-top {
-  display: flex; align-items: baseline; justify-content: space-between; gap: 8px;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
 }
 #world-editor .we-field-label {
   font-size: 13px; font-weight: 600; color: #f2ecda; letter-spacing: 0.01em;
@@ -6527,21 +6578,36 @@ body.world-editor-on #world-editor { transform: translateX(0); }
 #world-editor .we-mod-dot { color: #ffd27a; font-size: 10px; opacity: 0; transition: opacity 0.2s; }
 #world-editor .we-field.modified .we-mod-dot { opacity: 1; }
 #world-editor .we-field-desc {
-  font-size: 11px; line-height: 1.45; color: rgba(232, 224, 200, 0.58);
-  margin: 5px 0 8px;
+  font-size: 12px; line-height: 1.5; color: rgba(232, 224, 200, 0.62);
+  margin: 6px 0 9px;
 }
 #world-editor .we-field textarea {
   width: 100%; box-sizing: border-box;
-  min-height: 92px; resize: vertical;
-  background: rgba(0, 0, 0, 0.32);
+  /* Tall enough to hold a real paragraph of prompt. Anything longer belongs in
+     the pop-out editor (the EXPAND button / double-click). */
+  min-height: 240px; resize: vertical;
+  background: rgba(0, 0, 0, 0.34);
   border: 1px solid rgba(232, 224, 200, 0.14);
-  border-radius: 7px; color: #eee4cf;
+  border-radius: 7px; color: #f0e7d4;
   font-family: 'Share Tech Mono', ui-monospace, monospace;
-  font-size: 12px; line-height: 1.5; padding: 9px 10px;
+  font-size: 13px; line-height: 1.65; padding: 12px 13px;
   transition: border-color 0.15s;
+  tab-size: 2;
 }
 #world-editor .we-field textarea:focus {
   outline: none; border-color: rgba(255, 210, 122, 0.5);
+}
+/* EXPAND affordance sits in the field header so it's found before the scroll. */
+#world-editor .we-expand {
+  appearance: none; border: 1px solid rgba(134, 200, 255, 0.4);
+  background: rgba(134, 200, 255, 0.1); color: #86c8ff;
+  font: inherit; font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 4px 9px; border-radius: 6px; cursor: pointer; white-space: nowrap;
+}
+#world-editor .we-expand:hover { background: rgba(134, 200, 255, 0.22); }
+#world-editor .we-field-hint {
+  font-size: 10px; color: rgba(232, 224, 200, 0.34); margin-top: 5px;
+  font-style: italic;
 }
 #world-editor .we-field-foot {
   display: flex; align-items: center; justify-content: space-between;
@@ -6706,6 +6772,200 @@ body.world-editor-on #world-editor { transform: translateX(0); }
   transition: opacity 0.2s, transform 0.2s; pointer-events: none;
 }
 #world-editor .we-toast.show { opacity: 1; transform: translateY(0); }
+
+/* ══ POP-OUT PROMPT EDITOR ══════════════════════════════════════════════
+   A prompt is a 2,000+ character document. The side panel is fine for reading
+   and small tweaks; actually WRITING one needs the whole screen. This is a
+   centred overlay editor with line numbers, a font-size stepper, soft-wrap
+   toggle, live counts, and a diff against the factory default. */
+#we-modal {
+  position: fixed; inset: 0; z-index: 96;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(6, 5, 4, 0.76);
+  backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
+  opacity: 0; pointer-events: none;
+  transition: opacity 0.18s ease;
+  font-family: 'Inter', system-ui, sans-serif;
+}
+#we-modal.open { opacity: 1; pointer-events: auto; }
+#we-modal.hidden { display: none; }
+#we-modal .wem-box {
+  width: 94vw; height: 92vh;
+  max-width: 1500px;
+  display: flex; flex-direction: column;
+  background: linear-gradient(180deg, rgba(20, 16, 12, 0.99), rgba(12, 10, 9, 0.99));
+  border: 1px solid rgba(255, 210, 122, 0.3);
+  border-radius: 12px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.7);
+  transform: scale(0.985); transition: transform 0.18s ease;
+  overflow: hidden;
+}
+#we-modal.open .wem-box { transform: scale(1); }
+
+/* Header: what you're editing + why it matters */
+#we-modal .wem-head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 14px;
+  padding: 15px 18px 13px;
+  border-bottom: 1px solid rgba(255, 210, 122, 0.18);
+  flex: 0 0 auto;
+}
+#we-modal .wem-head-left { min-width: 0; }
+#we-modal .wem-title-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+#we-modal .wem-title {
+  font-size: 15px; font-weight: 600; color: #ffe6b0; letter-spacing: 0.02em;
+}
+#we-modal .wem-key {
+  font-family: 'Share Tech Mono', monospace; font-size: 10.5px;
+  color: rgba(232, 224, 200, 0.4);
+}
+/* The live/restart chip styles live under #world-editor; the modal is a
+   sibling of that panel, so it needs its own copy. */
+#we-modal .we-chip {
+  font-size: 8px; letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 3px 7px; border-radius: 4px; white-space: nowrap;
+}
+#we-modal .we-chip-live { background: rgba(134, 200, 255, 0.16); color: #86c8ff; }
+#we-modal .we-chip-restart { background: rgba(255, 210, 122, 0.16); color: #ffd27a; }
+#we-modal .wem-desc {
+  font-size: 12px; line-height: 1.55; color: rgba(232, 224, 200, 0.62);
+  margin-top: 7px; max-width: 92ch;
+}
+#we-modal .wem-close {
+  background: none; border: none; color: rgba(232, 224, 200, 0.5);
+  cursor: pointer; font-size: 20px; line-height: 1; padding: 2px 6px; flex: 0 0 auto;
+}
+#we-modal .wem-close:hover { color: #ff8f8f; }
+
+/* Toolbar: the dev-tool affordances */
+#we-modal .wem-bar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 9px 18px;
+  border-bottom: 1px solid rgba(232, 224, 200, 0.1);
+  background: rgba(0, 0, 0, 0.24);
+  flex: 0 0 auto;
+}
+#we-modal .wem-bar-sep { flex: 1 1 auto; }
+#we-modal .wem-btn {
+  appearance: none; border: 1px solid rgba(232, 224, 200, 0.2);
+  background: rgba(255, 255, 255, 0.03); color: #e8e0c8;
+  font: inherit; font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase;
+  padding: 7px 12px; border-radius: 7px; cursor: pointer; white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+#we-modal .wem-btn:hover { background: rgba(255, 255, 255, 0.08); }
+#we-modal .wem-btn.active { color: #ffd27a; border-color: rgba(255, 210, 122, 0.5); background: rgba(255, 210, 122, 0.1); }
+#we-modal .wem-btn-primary { border-color: rgba(134, 200, 255, 0.55); color: #86c8ff; background: rgba(134, 200, 255, 0.12); }
+#we-modal .wem-btn-primary:hover { background: rgba(134, 200, 255, 0.24); }
+#we-modal .wem-btn-danger { border-color: rgba(255, 120, 90, 0.4); color: #ffab96; }
+#we-modal .wem-btn-danger:hover { background: rgba(255, 90, 60, 0.14); }
+#we-modal .wem-btn:disabled { opacity: 0.38; cursor: default; }
+#we-modal .wem-fontstep { display: flex; align-items: center; gap: 0; }
+#we-modal .wem-fontstep .wem-btn:first-child { border-radius: 7px 0 0 7px; }
+#we-modal .wem-fontstep .wem-btn:last-child { border-radius: 0 7px 7px 0; margin-left: -1px; }
+#we-modal .wem-counts {
+  font-family: 'Share Tech Mono', monospace; font-size: 10.5px;
+  color: rgba(232, 224, 200, 0.45); white-space: nowrap;
+}
+
+/* Variable chips — click to insert a {placeholder} at the cursor */
+#we-modal .wem-vars {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  padding: 9px 18px; border-bottom: 1px solid rgba(232, 224, 200, 0.08);
+  flex: 0 0 auto;
+}
+#we-modal .wem-vars.hidden { display: none; }
+#we-modal .wem-vars-label {
+  font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: rgba(232, 224, 200, 0.36);
+}
+#we-modal .wem-var {
+  appearance: none; border: 1px solid rgba(134, 200, 255, 0.32);
+  background: rgba(134, 200, 255, 0.08); color: #9ed3ff;
+  font-family: 'Share Tech Mono', monospace; font-size: 11px;
+  padding: 3px 8px; border-radius: 5px; cursor: pointer;
+}
+#we-modal .wem-var:hover { background: rgba(134, 200, 255, 0.22); }
+
+/* The editor surface: line-number gutter + textarea, scrolling as one */
+#we-modal .wem-editor {
+  flex: 1 1 auto; min-height: 0;
+  display: flex; align-items: stretch;
+  background: rgba(0, 0, 0, 0.42);
+  position: relative;
+}
+#we-modal .wem-gutter {
+  flex: 0 0 auto; width: 58px;
+  overflow: hidden;
+  padding: 16px 10px 16px 0;
+  text-align: right;
+  font-family: 'Share Tech Mono', monospace;
+  color: rgba(232, 224, 200, 0.26);
+  background: rgba(0, 0, 0, 0.3);
+  border-right: 1px solid rgba(232, 224, 200, 0.08);
+  user-select: none; white-space: pre;
+}
+#we-modal .wem-gutter.hidden { display: none; }
+#we-modal .wem-text {
+  flex: 1 1 auto; min-width: 0;
+  background: none; border: none; outline: none; resize: none;
+  color: #f4ecda;
+  font-family: 'Share Tech Mono', ui-monospace, monospace;
+  padding: 16px 20px 16px 14px;
+  tab-size: 2;
+  white-space: pre-wrap; overflow-wrap: break-word;
+}
+#we-modal .wem-text.nowrap { white-space: pre; overflow-wrap: normal; overflow-x: auto; }
+#we-modal .wem-text::selection { background: rgba(255, 210, 122, 0.3); }
+#we-modal .wem-editor.with-diff .wem-text { border-right: 1px solid rgba(232, 224, 200, 0.1); }
+
+/* Diff against the factory default, side by side with the editor */
+#we-modal .wem-diff {
+  flex: 0 0 42%; min-width: 0; overflow: auto;
+  padding: 14px 16px;
+  background: rgba(0, 0, 0, 0.28);
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 11.5px; line-height: 1.6;
+  white-space: pre-wrap; overflow-wrap: break-word;
+}
+#we-modal .wem-diff.hidden { display: none; }
+#we-modal .wem-diff-head {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: rgba(232, 224, 200, 0.4); margin-bottom: 9px;
+}
+#we-modal .wem-dl { display: block; padding: 1px 4px; border-radius: 3px; }
+#we-modal .wem-dl-add { background: rgba(120, 220, 150, 0.14); color: #a9e8bf; }
+#we-modal .wem-dl-del { background: rgba(255, 110, 90, 0.14); color: #ffb0a0; text-decoration: line-through; }
+#we-modal .wem-dl-same { color: rgba(232, 224, 200, 0.4); }
+
+/* Footer: warnings + commit actions */
+#we-modal .wem-foot {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 12px 18px;
+  border-top: 1px solid rgba(255, 210, 122, 0.18);
+  background: rgba(0, 0, 0, 0.3);
+  flex: 0 0 auto;
+}
+#we-modal .wem-warn {
+  flex: 1 1 260px; min-width: 0;
+  font-size: 11px; line-height: 1.45; color: #ffb4a0;
+}
+#we-modal .wem-warn.hidden { display: none; }
+#we-modal .wem-keys {
+  font-family: 'Share Tech Mono', monospace; font-size: 10px;
+  color: rgba(232, 224, 200, 0.32); white-space: nowrap;
+}
+#we-modal .wem-foot-actions { display: flex; gap: 8px; margin-left: auto; }
+
+@media (max-width: 720px) {
+  #we-modal .wem-box { width: 100vw; height: 100vh; border-radius: 0; border: none; }
+  #we-modal .wem-gutter { display: none; }
+  #we-modal .wem-diff { flex-basis: 100%; }
+  #we-modal .wem-editor.with-diff { flex-direction: column; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #we-modal, #we-modal .wem-box { transition: none; }
+}
 
 /* The EDIT rail button reads "armed" while the editor is open. */
 #btn-editor.active .rail-ico, #btn-editor.active .rail-lbl { color: #ffd27a; }

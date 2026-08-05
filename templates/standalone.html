@@ -659,7 +659,10 @@
         <span>WORLD EDITOR</span>
         <span id="we-dirty" class="we-dirty hidden" title="Unsaved edits">● unsaved</span>
       </div>
-      <button id="we-close" class="we-close" type="button" title="Close (E)" aria-label="Close editor">&#10005;</button>
+      <div class="we-head-tools">
+        <button id="we-wide" class="we-tool" type="button" title="Toggle near-full-width editing">Wide</button>
+        <button id="we-close" class="we-close" type="button" title="Close (E)" aria-label="Close editor">&#10005;</button>
+      </div>
     </header>
 
     <nav class="we-tabs" id="we-tabs" role="tablist"></nav>
@@ -692,7 +695,69 @@
       </div>
     </footer>
     <div id="we-toast" class="we-toast" aria-live="polite"></div>
+    <!-- Drag the right edge to resize the panel; width is remembered. -->
+    <div id="we-resize" class="we-resize" title="Drag to resize" role="separator" aria-orientation="vertical"></div>
   </aside>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       POP-OUT PROMPT EDITOR — a prompt is a 2,000+ character document, and
+       the side panel can only ever be a window onto one. This is the full
+       writing surface: line numbers, font-size stepper, soft-wrap toggle,
+       live counts, and a side-by-side diff against the factory default.
+       Opened from any field's EXPAND button (or by double-clicking it).
+       Esc cancels, Ctrl/Cmd+S or Ctrl/Cmd+Enter saves.
+       ═══════════════════════════════════════════════════════════════════ -->
+  <div id="we-modal" class="hidden" role="dialog" aria-modal="true" aria-labelledby="wem-title">
+    <div class="wem-box">
+      <header class="wem-head">
+        <div class="wem-head-left">
+          <div class="wem-title-row">
+            <span class="wem-title" id="wem-title">—</span>
+            <span class="wem-key" id="wem-key"></span>
+            <span class="we-chip we-chip-live" id="wem-chip">live</span>
+          </div>
+          <div class="wem-desc" id="wem-desc"></div>
+        </div>
+        <button id="wem-close" class="wem-close" type="button" title="Cancel (Esc)" aria-label="Close">&#10005;</button>
+      </header>
+
+      <div class="wem-bar">
+        <div class="wem-fontstep">
+          <button id="wem-font-down" class="wem-btn" type="button" title="Smaller text">A&minus;</button>
+          <button id="wem-font-up" class="wem-btn" type="button" title="Larger text">A+</button>
+        </div>
+        <button id="wem-wrap" class="wem-btn active" type="button" title="Toggle soft wrapping">Wrap</button>
+        <button id="wem-lines" class="wem-btn active" type="button" title="Toggle line numbers">Lines</button>
+        <button id="wem-diff" class="wem-btn" type="button" title="Compare against the factory default">Diff</button>
+        <span class="wem-bar-sep"></span>
+        <span class="wem-counts" id="wem-counts"></span>
+      </div>
+
+      <div class="wem-vars hidden" id="wem-vars">
+        <span class="wem-vars-label">Insert</span>
+      </div>
+
+      <div class="wem-editor" id="wem-editor">
+        <div class="wem-gutter" id="wem-gutter" aria-hidden="true"></div>
+        <textarea id="wem-text" class="wem-text" spellcheck="false" autocomplete="off"
+                  aria-label="Prompt text"></textarea>
+        <div class="wem-diff hidden" id="wem-diff-pane">
+          <div class="wem-diff-head">Vs. factory default</div>
+          <div id="wem-diff-body"></div>
+        </div>
+      </div>
+
+      <footer class="wem-foot">
+        <button id="wem-reset" class="wem-btn wem-btn-danger" type="button" title="Restore this prompt's factory default">&#8635; Reset to default</button>
+        <div class="wem-warn hidden" id="wem-warn"></div>
+        <span class="wem-keys">Esc cancel &middot; Ctrl/&#8984;+S save</span>
+        <div class="wem-foot-actions">
+          <button id="wem-cancel" class="wem-btn" type="button">Cancel</button>
+          <button id="wem-save" class="wem-btn wem-btn-primary" type="button">Save &amp; Close</button>
+        </div>
+      </footer>
+    </div>
+  </div>
 
   <!-- (Session controls now live in #control-rail, top-right.) -->
 

@@ -187,6 +187,8 @@
     weTabs: document.getElementById("we-tabs"),
     weFields: document.getElementById("we-fields"),
     weCast: document.getElementById("we-cast"),
+    weWide: document.getElementById("we-wide"),
+    weResize: document.getElementById("we-resize"),
     weWorlds: document.getElementById("we-worlds"),
     weWorldsList: document.getElementById("we-worlds-list"),
     weWorldName: document.getElementById("we-world-name"),
@@ -196,6 +198,29 @@
     weRevert: document.getElementById("we-revert"),
     weDirty: document.getElementById("we-dirty"),
     weToast: document.getElementById("we-toast"),
+    // Pop-out prompt editor
+    wem: document.getElementById("we-modal"),
+    wemTitle: document.getElementById("wem-title"),
+    wemKey: document.getElementById("wem-key"),
+    wemChip: document.getElementById("wem-chip"),
+    wemDesc: document.getElementById("wem-desc"),
+    wemClose: document.getElementById("wem-close"),
+    wemFontDown: document.getElementById("wem-font-down"),
+    wemFontUp: document.getElementById("wem-font-up"),
+    wemWrap: document.getElementById("wem-wrap"),
+    wemLines: document.getElementById("wem-lines"),
+    wemDiffBtn: document.getElementById("wem-diff"),
+    wemCounts: document.getElementById("wem-counts"),
+    wemVars: document.getElementById("wem-vars"),
+    wemEditor: document.getElementById("wem-editor"),
+    wemGutter: document.getElementById("wem-gutter"),
+    wemText: document.getElementById("wem-text"),
+    wemDiffPane: document.getElementById("wem-diff-pane"),
+    wemDiffBody: document.getElementById("wem-diff-body"),
+    wemReset: document.getElementById("wem-reset"),
+    wemWarn: document.getElementById("wem-warn"),
+    wemCancel: document.getElementById("wem-cancel"),
+    wemSave: document.getElementById("wem-save"),
     rtModelAdd: document.getElementById("rt-model-add"),
     rtModelInput: document.getElementById("rt-model-input"),
     vhsOverlay: document.getElementById("vhs-overlay"),
@@ -3534,7 +3559,11 @@
       chip.title = isRestart
         ? "Seeds the world — start a fresh run (Save & Restart) to see it"
         : "Re-steers the sim on the next turn (Apply Live)";
-      chips.appendChild(dot); chips.appendChild(chip);
+      const expand = document.createElement("button");
+      expand.className = "we-expand"; expand.type = "button"; expand.textContent = "⤢ Expand";
+      expand.title = "Open this prompt in the full-screen editor";
+      expand.addEventListener("click", () => openPromptModal(key));
+      chips.appendChild(dot); chips.appendChild(chip); chips.appendChild(expand);
       top.appendChild(label); top.appendChild(chips);
 
       const desc = document.createElement("div");
@@ -3550,6 +3579,8 @@
         wrap.classList.toggle("modified", ta.value !== defOf(key));
         refreshDirtyBadge();
       });
+      // Double-click anywhere in the text is the fastest route to the big editor.
+      ta.addEventListener("dblclick", (e) => { e.preventDefault(); openPromptModal(key); });
 
       const foot = document.createElement("div");
       foot.className = "we-field-foot";
@@ -3567,8 +3598,12 @@
       const warn = document.createElement("div");
       warn.className = "we-warn hidden";
 
+      const hint = document.createElement("div");
+      hint.className = "we-field-hint";
+      hint.textContent = "Double-click the text (or hit Expand) to edit full-screen.";
+
       wrap.appendChild(top); wrap.appendChild(desc); wrap.appendChild(ta);
-      wrap.appendChild(foot); wrap.appendChild(warn);
+      wrap.appendChild(foot); wrap.appendChild(warn); wrap.appendChild(hint);
       return wrap;
     }
 
@@ -3689,6 +3724,381 @@
       delete edits[key];
       render();
       toast("Reset to default.");
+    }
+
+    // ── Pop-out prompt editor ─────────────────────────────────────────
+    // The side panel is a window onto a prompt; this is the writing surface.
+    // Deliberately dev-tool shaped: line numbers, a font-size stepper and
+    // soft-wrap toggle (both persisted), live counts, a diff against the
+    // factory default, and Ctrl/Cmd+S to commit.
+
+    const WEM_FONT_KEY = "we.editorFontPx";
+    const WEM_WRAP_KEY = "we.editorWrap";
+    const WEM_LINES_KEY = "we.editorLines";
+    const WEM_MIN_FONT = 11, WEM_MAX_FONT = 26;
+
+    let modalKey = null;        // which prompt is open, or null
+    let modalOpenValue = "";    // value when it opened (Cancel target)
+    let modalFont = 15;
+    let modalWrap = true;
+    let modalLines = true;
+    let modalDiff = false;
+
+    function lsGet(key, fallback) {
+      try { const v = localStorage.getItem(key); return v == null ? fallback : v; }
+      catch (_) { return fallback; }
+    }
+    function lsSet(key, value) { try { localStorage.setItem(key, String(value)); } catch (_) {} }
+
+    function loadModalPrefs() {
+      modalFont = Math.min(WEM_MAX_FONT, Math.max(WEM_MIN_FONT, parseInt(lsGet(WEM_FONT_KEY, "15"), 10) || 15));
+      modalWrap = lsGet(WEM_WRAP_KEY, "1") !== "0";
+      modalLines = lsGet(WEM_LINES_KEY, "1") !== "0";
+    }
+
+    function applyModalPrefs() {
+      if (!el.wemText) return;
+      // The gutter has to match the textarea's metrics exactly or the numbers
+      // drift out of alignment as you scroll.
+      const px = modalFont + "px";
+      const lh = (Math.round(modalFont * 1.65 * 100) / 100) + "px";
+      el.wemText.style.fontSize = px;
+      el.wemText.style.lineHeight = lh;
+      if (el.wemGutter) {
+        el.wemGutter.style.fontSize = px;
+        el.wemGutter.style.lineHeight = lh;
+        el.wemGutter.classList.toggle("hidden", !modalLines);
+      }
+      el.wemText.classList.toggle("nowrap", !modalWrap);
+      if (el.wemWrap) el.wemWrap.classList.toggle("active", modalWrap);
+      if (el.wemLines) el.wemLines.classList.toggle("active", modalLines);
+      if (el.wemFontDown) el.wemFontDown.disabled = modalFont <= WEM_MIN_FONT;
+      if (el.wemFontUp) el.wemFontUp.disabled = modalFont >= WEM_MAX_FONT;
+      renderGutter();
+    }
+
+    // With soft wrapping on, one logical line can occupy several visual rows, so
+    // a naive 1..n gutter would desync. Measure each line's rendered height and
+    // pad the gutter to match.
+    function renderGutter() {
+      if (!el.wemGutter || !el.wemText || !modalLines) return;
+      const lines = el.wemText.value.split("\n");
+      const lineH = parseFloat(getComputedStyle(el.wemText).lineHeight) || (modalFont * 1.65);
+      const probe = gutterProbe();
+      let out = "";
+      for (let i = 0; i < lines.length; i++) {
+        let rows = 1;
+        if (modalWrap) {
+          probe.textContent = lines[i] || " ";
+          rows = Math.max(1, Math.round(probe.getBoundingClientRect().height / lineH));
+        }
+        out += (i + 1) + "\n".repeat(rows);
+      }
+      el.wemGutter.textContent = out;
+      el.wemGutter.scrollTop = el.wemText.scrollTop;
+    }
+
+    // Offscreen mirror of the textarea's text box, used to measure wrapped height.
+    let _probe = null;
+    function gutterProbe() {
+      if (!_probe) {
+        _probe = document.createElement("div");
+        _probe.setAttribute("aria-hidden", "true");
+        _probe.style.cssText =
+          "position:absolute;visibility:hidden;pointer-events:none;left:-9999px;top:0;" +
+          "white-space:pre-wrap;overflow-wrap:break-word;";
+        document.body.appendChild(_probe);
+      }
+      const cs = getComputedStyle(el.wemText);
+      _probe.style.font = cs.font;
+      _probe.style.fontSize = cs.fontSize;
+      _probe.style.lineHeight = cs.lineHeight;
+      _probe.style.letterSpacing = cs.letterSpacing;
+      _probe.style.width = (el.wemText.clientWidth
+        - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight)) + "px";
+      return _probe;
+    }
+
+    function modalCounts() {
+      if (!el.wemCounts || !el.wemText) return;
+      const v = el.wemText.value;
+      const words = (v.trim().match(/\S+/g) || []).length;
+      const dirty = v !== ((content.prompts && content.prompts[modalKey]) || "");
+      el.wemCounts.textContent =
+        `${v.length.toLocaleString()} chars · ${words.toLocaleString()} words · ` +
+        `${v.split("\n").length} lines${dirty ? " · unsaved" : ""}`;
+    }
+
+    function modalValidate() {
+      if (!el.wemWarn) return;
+      const f = schemaFields().find((x) => x.id === modalKey);
+      const allowed = new Set((f && f.format_vars) || []);
+      const msgs = [];
+      if (f && f.format_vars) {
+        const found = new Set((el.wemText.value.match(/\{([a-zA-Z_][a-zA-Z0-9_]*)\}/g) || [])
+          .map((m) => m.slice(1, -1)));
+        const unknown = [...found].filter((v) => !allowed.has(v));
+        if (unknown.length) {
+          msgs.push("⚠ Unknown placeholder(s) " + unknown.map((u) => "{" + u + "}").join(", ") +
+                    " — only " + [...allowed].map((v) => "{" + v + "}").join(", ") +
+                    " are recognized here, and saving this will break the prompt at runtime.");
+        }
+        const scrubbed = el.wemText.value
+          .replace(/\{[a-zA-Z_][a-zA-Z0-9_]*\}/g, "").replace(/\{\{/g, "").replace(/\}\}/g, "");
+        if (scrubbed.includes("{") || scrubbed.includes("}")) {
+          msgs.push("⚠ Stray '{' or '}' that isn't a recognized placeholder — double it ({{ or }}) to keep it literal.");
+        }
+      }
+      el.wemWarn.textContent = msgs.join(" ");
+      el.wemWarn.classList.toggle("hidden", !msgs.length);
+    }
+
+    function renderModalDiff() {
+      if (!el.wemDiffBody) return;
+      const a = String(defOf(modalKey) || "").split("\n");
+      const b = String(el.wemText.value || "").split("\n");
+      const aSet = new Set(a), bSet = new Set(b);
+      let html = "";
+      if (a.join("\n") === b.join("\n")) {
+        html = '<span class="wem-dl wem-dl-same">(identical to the factory default)</span>';
+      } else {
+        for (let i = 0; i < Math.max(a.length, b.length); i++) {
+          const al = a[i], bl = b[i];
+          if (al === bl) {
+            if (al !== undefined) html += `<span class="wem-dl wem-dl-same">${escapeHtml(al || " ")}</span>`;
+          } else {
+            if (al !== undefined && !bSet.has(al)) html += `<span class="wem-dl wem-dl-del">− ${escapeHtml(al || " ")}</span>`;
+            if (bl !== undefined && !aSet.has(bl)) html += `<span class="wem-dl wem-dl-add">+ ${escapeHtml(bl || " ")}</span>`;
+          }
+        }
+      }
+      el.wemDiffBody.innerHTML = html;
+    }
+
+    function setModalDiff(on) {
+      modalDiff = !!on;
+      if (el.wemDiffPane) el.wemDiffPane.classList.toggle("hidden", !modalDiff);
+      if (el.wemEditor) el.wemEditor.classList.toggle("with-diff", modalDiff);
+      if (el.wemDiffBtn) el.wemDiffBtn.classList.toggle("active", modalDiff);
+      if (modalDiff) renderModalDiff();
+      renderGutter();
+    }
+
+    function openPromptModal(key) {
+      const f = schemaFields().find((x) => x.id === key);
+      if (!f || !el.wem) return;
+      modalKey = key;
+      modalOpenValue = valOf(key);
+
+      el.wemTitle.textContent = f.label || key;
+      el.wemKey.textContent = key;
+      const isRestart = RESTART_KEYS.has(key);
+      el.wemChip.className = "we-chip " + (isRestart ? "we-chip-restart" : "we-chip-live");
+      el.wemChip.textContent = isRestart ? "restart" : "live";
+      el.wemChip.title = isRestart
+        ? "Seeds the world — start a fresh run to see it"
+        : "Re-steers the sim on the next turn";
+      el.wemDesc.textContent = f.description || "";
+
+      // Placeholder chips, for the fields that are run through str.format().
+      const vars = (f.format_vars || []);
+      el.wemVars.classList.toggle("hidden", !vars.length);
+      el.wemVars.querySelectorAll(".wem-var").forEach((n) => n.remove());
+      vars.forEach((v) => {
+        const b = document.createElement("button");
+        b.type = "button"; b.className = "wem-var"; b.textContent = "{" + v + "}";
+        b.title = "Insert at the cursor";
+        b.addEventListener("click", () => insertAtCursor(el.wemText, "{" + v + "}"));
+        el.wemVars.appendChild(b);
+      });
+
+      el.wemText.value = modalOpenValue;
+      el.wem.classList.remove("hidden");
+      requestAnimationFrame(() => el.wem.classList.add("open"));
+      applyModalPrefs();
+      setModalDiff(false);
+      modalCounts();
+      modalValidate();
+      el.wemText.focus();
+      el.wemText.setSelectionRange(0, 0);
+      el.wemText.scrollTop = 0;
+    }
+
+    function insertAtCursor(ta, text) {
+      const s = ta.selectionStart, e = ta.selectionEnd;
+      ta.value = ta.value.slice(0, s) + text + ta.value.slice(e);
+      ta.selectionStart = ta.selectionEnd = s + text.length;
+      ta.focus();
+      onModalInput();
+    }
+
+    function onModalInput() {
+      if (!modalKey) return;
+      const base = (content.prompts && content.prompts[modalKey] != null) ? content.prompts[modalKey] : "";
+      if (el.wemText.value === base) delete edits[modalKey]; else edits[modalKey] = el.wemText.value;
+      modalCounts();
+      modalValidate();
+      renderGutter();
+      if (modalDiff) renderModalDiff();
+      refreshDirtyBadge();
+    }
+
+    function modalIsOpen() { return !!modalKey; }
+
+    function closePromptModal(restore) {
+      if (!modalKey) return;
+      const key = modalKey;
+      if (restore) {
+        // Cancel: put the value back to what it was when the modal opened.
+        const base = (content.prompts && content.prompts[key] != null) ? content.prompts[key] : "";
+        if (modalOpenValue === base) delete edits[key]; else edits[key] = modalOpenValue;
+      }
+      modalKey = null;
+      el.wem.classList.remove("open");
+      setTimeout(() => { if (!modalKey) el.wem.classList.add("hidden"); }, 200);
+      render();   // reflect the new value back into the panel's textarea
+    }
+
+    async function saveFromModal() {
+      if (!modalKey) return;
+      const key = modalKey;
+      const value = el.wemText.value;
+      const { ok, warnings } = await saveFields({ [key]: value });
+      if (!ok) {
+        // Keep the modal open so the reported problem can be fixed in place.
+        const msgs = (warnings && warnings[key]) || [];
+        if (msgs.length && el.wemWarn) {
+          el.wemWarn.textContent = "⚠ " + msgs.join(" ");
+          el.wemWarn.classList.remove("hidden");
+        }
+        toast("Fix the highlighted placeholder issue to save.", "warn");
+        return;
+      }
+      modalOpenValue = value;
+      closePromptModal(false);
+      toast("Saved — live on your next turn.");
+    }
+
+    async function resetFromModal() {
+      if (!modalKey) return;
+      const key = modalKey;
+      const { ok, data } = await weFetch("POST", "/api/admin/studio/prompts/reset", { key });
+      const payload = data && (data.data || data);
+      if (!ok || !payload || !payload.prompts) { toast("Reset failed.", "warn"); return; }
+      content.prompts = payload.prompts;
+      delete edits[key];
+      el.wemText.value = valOf(key);
+      modalOpenValue = el.wemText.value;
+      onModalInput();
+      toast("Reset to factory default.");
+    }
+
+    function onModalKeydown(e) {
+      const meta = e.ctrlKey || e.metaKey;
+      if (e.key === "Escape") {
+        e.preventDefault(); e.stopPropagation();
+        if (el.wemText.value !== modalOpenValue &&
+            !confirm("Discard your changes to this prompt?")) return;
+        closePromptModal(true);
+        return;
+      }
+      if (meta && (e.key === "s" || e.key === "S")) { e.preventDefault(); saveFromModal(); return; }
+      if (meta && e.key === "Enter") { e.preventDefault(); saveFromModal(); return; }
+      // Tab indents instead of escaping the field — this is a text editor.
+      if (e.key === "Tab") {
+        e.preventDefault();
+        insertAtCursor(el.wemText, "  ");
+      }
+    }
+
+    function initModal() {
+      if (!el.wem) return;
+      loadModalPrefs();
+      el.wemText.addEventListener("input", onModalInput);
+      el.wemText.addEventListener("scroll", () => {
+        if (el.wemGutter) el.wemGutter.scrollTop = el.wemText.scrollTop;
+      });
+      el.wem.addEventListener("keydown", onModalKeydown);
+      // Click the backdrop to cancel, but never a click inside the box.
+      el.wem.addEventListener("mousedown", (e) => {
+        if (e.target === el.wem) closePromptModal(true);
+      });
+      el.wemClose.addEventListener("click", () => closePromptModal(true));
+      el.wemCancel.addEventListener("click", () => closePromptModal(true));
+      el.wemSave.addEventListener("click", saveFromModal);
+      el.wemReset.addEventListener("click", () => {
+        if (confirm("Restore this prompt's factory default? This overwrites the saved value immediately.")) resetFromModal();
+      });
+      el.wemWrap.addEventListener("click", () => {
+        modalWrap = !modalWrap; lsSet(WEM_WRAP_KEY, modalWrap ? "1" : "0"); applyModalPrefs();
+      });
+      el.wemLines.addEventListener("click", () => {
+        modalLines = !modalLines; lsSet(WEM_LINES_KEY, modalLines ? "1" : "0"); applyModalPrefs();
+      });
+      el.wemDiffBtn.addEventListener("click", () => setModalDiff(!modalDiff));
+      el.wemFontUp.addEventListener("click", () => {
+        modalFont = Math.min(WEM_MAX_FONT, modalFont + 1); lsSet(WEM_FONT_KEY, modalFont); applyModalPrefs();
+      });
+      el.wemFontDown.addEventListener("click", () => {
+        modalFont = Math.max(WEM_MIN_FONT, modalFont - 1); lsSet(WEM_FONT_KEY, modalFont); applyModalPrefs();
+      });
+      window.addEventListener("resize", () => { if (modalIsOpen()) renderGutter(); });
+    }
+
+    // ── Panel width: drag to resize, remembered across sessions ───────
+    const WE_WIDTH_KEY = "we.panelWidth";
+    const WE_WIDE_KEY = "we.panelWide";
+
+    function applyPanelWidth() {
+      const stored = parseInt(lsGet(WE_WIDTH_KEY, ""), 10);
+      if (stored && el.worldEditor) {
+        el.worldEditor.style.setProperty("--we-width", stored + "px");
+      }
+      const wide = lsGet(WE_WIDE_KEY, "0") === "1";
+      if (el.worldEditor) el.worldEditor.classList.toggle("we-wide", wide);
+      if (el.weWide) el.weWide.classList.toggle("active", wide);
+    }
+
+    function initResize() {
+      if (!el.weResize || !el.worldEditor) return;
+      applyPanelWidth();
+
+      if (el.weWide) {
+        el.weWide.addEventListener("click", () => {
+          const wide = !el.worldEditor.classList.contains("we-wide");
+          el.worldEditor.classList.toggle("we-wide", wide);
+          el.weWide.classList.toggle("active", wide);
+          lsSet(WE_WIDE_KEY, wide ? "1" : "0");
+        });
+      }
+
+      const onMove = (e) => {
+        const w = Math.max(380, Math.min(window.innerWidth * 0.98, e.clientX));
+        el.worldEditor.style.setProperty("--we-width", w + "px");
+      };
+      const onUp = () => {
+        document.body.classList.remove("we-resizing");
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+        const w = parseInt(el.worldEditor.style.getPropertyValue("--we-width"), 10);
+        if (w) lsSet(WE_WIDTH_KEY, w);
+      };
+      el.weResize.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        // Dragging the edge is an explicit width choice; drop WIDE so the two
+        // don't fight over the same property.
+        el.worldEditor.classList.remove("we-wide");
+        if (el.weWide) el.weWide.classList.remove("active");
+        lsSet(WE_WIDE_KEY, "0");
+        document.body.classList.add("we-resizing");
+        document.addEventListener("mousemove", onMove);
+        document.addEventListener("mouseup", onUp);
+      });
+      // Double-click the handle to snap back to the default width.
+      el.weResize.addEventListener("dblclick", () => {
+        el.worldEditor.style.removeProperty("--we-width");
+        try { localStorage.removeItem(WE_WIDTH_KEY); } catch (_) {}
+      });
     }
 
     // ── Cast & Camera tab ─────────────────────────────────────────────
@@ -4058,13 +4468,15 @@
       if (el.weApply) el.weApply.addEventListener("click", applyLive);
       if (el.weRestart) el.weRestart.addEventListener("click", saveAndRestart);
       if (el.weRevert) el.weRevert.addEventListener("click", revertToStart);
+      initResize();
+      initModal();
       if (el.weWorldSave) el.weWorldSave.addEventListener("click", saveWorld);
       if (el.weWorldName) el.weWorldName.addEventListener("keydown", (e) => {
         if (e.key === "Enter") { e.preventDefault(); saveWorld(); }
       });
     }
 
-    return { init, open, close, toggle, isOpen };
+    return { init, open, close, toggle, isOpen, modalIsOpen, openPrompt: openPromptModal };
   })();
 
   // ------------------------------------------------------------------
@@ -10630,8 +11042,18 @@
     {
       const _ae = document.activeElement;
       const _typing = _ae && (_ae.tagName === "TEXTAREA" || _ae.tagName === "INPUT");
+      // The pop-out prompt editor is a modal takeover and handles its own keys
+      // (Esc cancels, Ctrl/Cmd+S saves) on the dialog element.
+      if (WorldEditor.modalIsOpen && WorldEditor.modalIsOpen()) return;
       if (WorldEditor.isOpen()) {
-        if (e.key === "Escape" || (e.key === "`" && !_typing)) { e.preventDefault(); WorldEditor.close(); return; }
+        // Esc while typing gets you OUT OF THE FIELD, not out of the editor —
+        // closing the whole panel mid-sentence loses the thread of the edit.
+        if (e.key === "Escape") {
+          e.preventDefault();
+          if (_typing) _ae.blur(); else WorldEditor.close();
+          return;
+        }
+        if (e.key === "`" && !_typing) { e.preventDefault(); WorldEditor.close(); return; }
         return; // typing passes through; all other shortcuts are blocked behind the editor
       } else if (e.key === "`" && !_typing) {
         e.preventDefault(); WorldEditor.open(); return;
