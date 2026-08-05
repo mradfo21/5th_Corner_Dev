@@ -6567,6 +6567,82 @@ body.world-editor-on #world-editor { transform: translateX(0); }
 }
 #world-editor .we-warn.hidden { display: none; }
 
+/* ── Cast & Camera tab ─────────────────────────────────────────────
+   Structured spec (character / level / camera) rather than a prompt body,
+   so it needs typed inputs, a perspective picker, and image drop zones. */
+#world-editor .we-cast.hidden { display: none; }
+#world-editor .we-cast-block { margin-bottom: 18px; }
+#world-editor .we-cast-row { margin-bottom: 10px; }
+#world-editor .we-cast-label {
+  display: block; font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: rgba(232, 224, 200, 0.5); margin-bottom: 4px;
+}
+#world-editor .we-cast-row input[type="text"],
+#world-editor .we-cast-row textarea {
+  width: 100%; box-sizing: border-box;
+  background: rgba(0, 0, 0, 0.32);
+  border: 1px solid rgba(232, 224, 200, 0.14);
+  border-radius: 7px; color: #eee4cf; font: inherit; font-size: 12px;
+  line-height: 1.5; padding: 8px 10px;
+}
+#world-editor .we-cast-row textarea { min-height: 58px; resize: vertical; font-family: 'Share Tech Mono', ui-monospace, monospace; }
+#world-editor .we-cast-row input[type="text"]:focus,
+#world-editor .we-cast-row textarea:focus { outline: none; border-color: rgba(255, 210, 122, 0.5); }
+#world-editor .we-cast-help { font-size: 10px; line-height: 1.4; color: rgba(232, 224, 200, 0.42); margin-top: 4px; }
+
+#world-editor .we-cast-toggle {
+  display: flex; align-items: center; gap: 9px; cursor: pointer;
+  border: 1px solid rgba(232, 224, 200, 0.12); border-radius: 8px;
+  padding: 9px 11px; background: rgba(255, 255, 255, 0.015);
+}
+#world-editor .we-cast-toggle input { accent-color: #ffd27a; width: 15px; height: 15px; cursor: pointer; }
+#world-editor .we-cast-toggle .we-cast-toggle-label { font-size: 12px; color: #f2ecda; }
+
+#world-editor .we-mode-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+#world-editor .we-mode {
+  appearance: none; text-align: left; cursor: pointer;
+  border: 1px solid rgba(232, 224, 200, 0.14);
+  background: rgba(255, 255, 255, 0.02); color: rgba(232, 224, 200, 0.7);
+  border-radius: 8px; padding: 9px 10px; font: inherit;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+#world-editor .we-mode:hover { background: rgba(255, 255, 255, 0.05); color: #e8e0c8; }
+#world-editor .we-mode.active {
+  border-color: rgba(255, 210, 122, 0.5); background: rgba(255, 210, 122, 0.1); color: #ffd27a;
+}
+#world-editor .we-mode-name { display: block; font-size: 11.5px; font-weight: 600; }
+#world-editor .we-mode-tag { display: block; font-size: 9.5px; line-height: 1.35; color: rgba(232, 224, 200, 0.45); margin-top: 2px; }
+
+#world-editor .we-plates { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+#world-editor .we-plate { position: relative; width: 72px; height: 72px; border-radius: 7px; overflow: hidden; border: 1px solid rgba(232, 224, 200, 0.14); }
+#world-editor .we-plate img { width: 100%; height: 100%; object-fit: cover; display: block; }
+#world-editor .we-plate-remove {
+  position: absolute; top: 2px; right: 2px; width: 18px; height: 18px; line-height: 16px;
+  border: none; border-radius: 50%; cursor: pointer;
+  background: rgba(0, 0, 0, 0.7); color: #fff; font-size: 10px; padding: 0;
+}
+#world-editor .we-plate-remove:hover { background: rgba(255, 90, 60, 0.85); }
+#world-editor .we-drop {
+  border: 1px dashed rgba(232, 224, 200, 0.24); border-radius: 8px;
+  padding: 13px 10px; text-align: center; cursor: pointer;
+  font-size: 10.5px; line-height: 1.45; color: rgba(232, 224, 200, 0.5);
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+#world-editor .we-drop:hover, #world-editor .we-drop.dragover {
+  border-color: rgba(255, 210, 122, 0.55); background: rgba(255, 210, 122, 0.06); color: #ffd27a;
+}
+#world-editor .we-compiled {
+  background: rgba(0, 0, 0, 0.32); border: 1px solid rgba(134, 200, 255, 0.2);
+  border-radius: 7px; padding: 9px 10px; margin-top: 8px;
+  font-family: 'Share Tech Mono', ui-monospace, monospace;
+  font-size: 10px; line-height: 1.55; color: rgba(232, 224, 200, 0.62);
+  max-height: 220px; overflow-y: auto; white-space: pre-wrap;
+}
+
+@media (max-width: 560px) {
+  #world-editor .we-mode-grid { grid-template-columns: 1fr; }
+}
+
 /* Worlds tab */
 #world-editor .we-worlds.hidden { display: none; }
 #world-editor .we-worlds-save { display: flex; gap: 8px; }

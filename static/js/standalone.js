@@ -186,6 +186,7 @@
     weClose: document.getElementById("we-close"),
     weTabs: document.getElementById("we-tabs"),
     weFields: document.getElementById("we-fields"),
+    weCast: document.getElementById("we-cast"),
     weWorlds: document.getElementById("we-worlds"),
     weWorldsList: document.getElementById("we-worlds-list"),
     weWorldName: document.getElementById("we-world-name"),
@@ -3432,10 +3433,17 @@
     let content = null;            // {prompts, prompts_defaults, schema, groups}
     let sessionSnapshot = null;    // editable values captured on first load (Revert target)
     let edits = {};                // key -> current textarea value (unsaved)
-    let tabs = [];                 // [{id,label}] incl. a trailing "worlds"
+    let tabs = [];                 // [{id,label}] incl. leading "cast" + trailing "worlds"
     let activeTab = null;
     let loaded = false;
     let loading = false;
+    // Cast & Camera: the structured spec, its form definition, and what it
+    // compiles to. Unlike prompts these save on change (no draft buffer) —
+    // they're small typed values and every save recompiles the directive
+    // server-side, which is what the preview pane renders.
+    let identity = {};
+    let identitySchema = [];
+    let identityPreview = null;
 
     async function weFetch(method, path, body) {
       const opts = { method, headers: {} };
@@ -3482,6 +3490,9 @@
       }
       const labels = groupLabels();
       tabs = seen.map((g) => ({ id: g, label: labels[g] || g }));
+      // Cast & Camera leads: "who am I and where's the camera" is the first
+      // question a player has, and it's the one the prompt tabs assume answered.
+      if (identitySchema.length) tabs.unshift({ id: "cast", label: "Cast & Camera" });
       tabs.push({ id: "worlds", label: "Worlds" });
       if (!activeTab || !tabs.find((t) => t.id === activeTab)) activeTab = tabs[0] && tabs[0].id;
     }
@@ -3564,9 +3575,12 @@
     function render() {
       renderTabs();
       const showWorlds = activeTab === "worlds";
-      if (el.weFields) el.weFields.classList.toggle("hidden", showWorlds);
+      const showCast = activeTab === "cast";
+      if (el.weFields) el.weFields.classList.toggle("hidden", showWorlds || showCast);
+      if (el.weCast) el.weCast.classList.toggle("hidden", !showCast);
       if (el.weWorlds) el.weWorlds.classList.toggle("hidden", !showWorlds);
       if (showWorlds) { renderWorlds(); refreshDirtyBadge(); return; }
+      if (showCast) { renderCast(); refreshDirtyBadge(); return; }
       if (!el.weFields) return;
       el.weFields.innerHTML = "";
       schemaFields().filter((f) => f.group === activeTab).forEach((f) => {
@@ -3592,10 +3606,16 @@
           schema: payload.schema || [],
           groups: payload.groups || {},
         };
-        // Capture the run's starting prompts ONCE, as the Revert target.
+        identity = payload.identity || {};
+        identitySchema = payload.identity_schema || [];
+        identityPreview = payload.identity_preview || null;
+        // Capture the run's starting prompts ONCE, as the Revert target. The
+        // cast sheet lives in the same prompt file, so Revert has to restore it
+        // too or you'd revert the writing and keep a mismatched protagonist.
         if (!sessionSnapshot) {
           sessionSnapshot = {};
           for (const f of content.schema) sessionSnapshot[f.id] = content.prompts[f.id];
+          for (const b of identitySchema) sessionSnapshot[b.id] = content.prompts[b.id];
         }
         loaded = true;
         buildTabs();
@@ -3656,6 +3676,7 @@
       const { ok } = await saveFields(Object.assign({}, sessionSnapshot));
       if (!ok) return;
       edits = {};
+      await loadContent(true);   // pick the cast sheet back up too
       toast("Reverted to how this run started.");
       render();
     }
@@ -3668,6 +3689,244 @@
       delete edits[key];
       render();
       toast("Reset to default.");
+    }
+
+    // ── Cast & Camera tab ─────────────────────────────────────────────
+    // Direct your own game: name your character, describe the level, attach
+    // reference art, and pick where the camera sits. Everything here compiles
+    // into the image and story prompts (see game_identity.py), and the pane at
+    // the bottom of each block shows the literal text that gets injected.
+
+    function perspectiveOptions() {
+      const block = identitySchema.find((b) => b.id === "camera_perspective");
+      const field = block && block.fields.find((f) => f.type === "mode");
+      return (field && field.options) || [];
+    }
+
+    function plateThumbs(blockId) {
+      if (!identityPreview || !identityPreview.reference_images) return [];
+      const slot = blockId === "player_character" ? "character"
+                 : blockId === "setting_reference" ? "setting" : null;
+      return slot ? (identityPreview.reference_images[slot] || []) : [];
+    }
+
+    function compiledFor(blockId) {
+      const p = identityPreview || {};
+      if (blockId === "camera_perspective") return p.image_directive || "";
+      return p.narrative_directive || "";
+    }
+
+    function castRow(children) {
+      const row = document.createElement("div");
+      row.className = "we-cast-row";
+      children.forEach((c) => row.appendChild(c));
+      return row;
+    }
+
+    function castLabel(text) {
+      const s = document.createElement("span");
+      s.className = "we-cast-label";
+      s.textContent = text;
+      return s;
+    }
+
+    function castHelp(text) {
+      const s = document.createElement("div");
+      s.className = "we-cast-help";
+      s.textContent = text;
+      return s;
+    }
+
+    function makeCastField(blockId, field) {
+      const value = (identity[blockId] || {})[field.id];
+
+      if (field.type === "toggle") {
+        const label = document.createElement("label");
+        label.className = "we-cast-toggle";
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = !!value;
+        cb.addEventListener("change", () => saveIdentity(blockId, { [field.id]: cb.checked }));
+        const text = document.createElement("span");
+        const name = document.createElement("span");
+        name.className = "we-cast-toggle-label";
+        name.textContent = field.label;
+        text.appendChild(name);
+        if (field.help) text.appendChild(castHelp(field.help));
+        label.appendChild(cb); label.appendChild(text);
+        return castRow([label]);
+      }
+
+      if (field.type === "mode") {
+        const grid = document.createElement("div");
+        grid.className = "we-mode-grid";
+        perspectiveOptions().forEach((o) => {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.className = "we-mode" + (o.id === (value || "first_person") ? " active" : "");
+          const nm = document.createElement("span");
+          nm.className = "we-mode-name"; nm.textContent = o.label;
+          const tg = document.createElement("span");
+          tg.className = "we-mode-tag"; tg.textContent = o.tagline;
+          b.appendChild(nm); b.appendChild(tg);
+          b.addEventListener("click", () => saveIdentity(blockId, { mode: o.id }));
+          grid.appendChild(b);
+        });
+        return castRow([castLabel(field.label), grid]);
+      }
+
+      const isLong = field.type === "longtext";
+      const input = document.createElement(isLong ? "textarea" : "input");
+      if (!isLong) input.type = "text";
+      input.spellcheck = false;
+      if (field.placeholder) input.placeholder = field.placeholder;
+      input.value = value == null ? "" : String(value);
+      // Save on blur, not per-keystroke: each save recompiles the directive
+      // server-side and re-renders this panel.
+      input.addEventListener("blur", () => {
+        const current = (identity[blockId] || {})[field.id] || "";
+        if (input.value === current) return;
+        saveIdentity(blockId, { [field.id]: input.value });
+      });
+      if (!isLong) {
+        input.addEventListener("keydown", (e) => { if (e.key === "Enter") input.blur(); });
+      }
+      const kids = [castLabel(field.label), input];
+      if (field.help) kids.push(castHelp(field.help));
+      return castRow(kids);
+    }
+
+    function makeCastBlock(block) {
+      const wrap = document.createElement("div");
+      wrap.className = "we-cast-block we-field";
+
+      const top = document.createElement("div");
+      top.className = "we-field-top";
+      const label = document.createElement("span");
+      label.className = "we-field-label";
+      label.textContent = (block.icon ? block.icon + " " : "") + block.label;
+      const chip = document.createElement("span");
+      chip.className = "we-chip we-chip-live";
+      chip.textContent = "live";
+      chip.title = "Re-steers the sim on the next turn";
+      top.appendChild(label); top.appendChild(chip);
+
+      const desc = document.createElement("div");
+      desc.className = "we-field-desc";
+      desc.textContent = block.description || "";
+
+      wrap.appendChild(top); wrap.appendChild(desc);
+      block.fields.forEach((f) => wrap.appendChild(makeCastField(block.id, f)));
+
+      if (block.supports_images) wrap.appendChild(makePlateZone(block));
+
+      const compiled = compiledFor(block.id);
+      if (compiled) {
+        wrap.appendChild(castLabel("What this compiles to"));
+        const pane = document.createElement("div");
+        pane.className = "we-compiled";
+        pane.textContent = compiled;
+        wrap.appendChild(pane);
+      }
+      return wrap;
+    }
+
+    function makePlateZone(block) {
+      const slot = block.id === "player_character" ? "character" : "setting";
+      const holder = document.createElement("div");
+      holder.className = "we-cast-row";
+      holder.appendChild(castLabel(block.images_label || "Reference images"));
+      if (block.images_hint) holder.appendChild(castHelp(block.images_hint));
+
+      const grid = document.createElement("div");
+      grid.className = "we-plates";
+      plateThumbs(block.id).forEach((p) => {
+        const cell = document.createElement("div");
+        cell.className = "we-plate";
+        const img = document.createElement("img");
+        img.src = p.url; img.alt = p.label || ""; img.title = p.label || p.id;
+        const rm = document.createElement("button");
+        rm.type = "button"; rm.className = "we-plate-remove"; rm.textContent = "✕";
+        rm.title = "Remove";
+        rm.addEventListener("click", () => deletePlate(p.id));
+        cell.appendChild(img); cell.appendChild(rm);
+        grid.appendChild(cell);
+      });
+      holder.appendChild(grid);
+
+      const file = document.createElement("input");
+      file.type = "file"; file.accept = "image/*"; file.style.display = "none";
+      file.addEventListener("change", () => {
+        if (file.files[0]) uploadPlate(file.files[0], slot);
+        file.value = "";
+      });
+
+      const drop = document.createElement("div");
+      drop.className = "we-drop";
+      drop.textContent = "Drop an image here, or tap to choose one";
+      drop.addEventListener("click", () => file.click());
+      ["dragenter", "dragover"].forEach((ev) => drop.addEventListener(ev, (e) => {
+        e.preventDefault(); drop.classList.add("dragover");
+      }));
+      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => {
+        e.preventDefault(); drop.classList.remove("dragover");
+      }));
+      drop.addEventListener("drop", (e) => {
+        const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+        if (f) uploadPlate(f, slot);
+      });
+
+      holder.appendChild(drop);
+      holder.appendChild(file);
+      return holder;
+    }
+
+    function renderCast() {
+      if (!el.weCast) return;
+      el.weCast.innerHTML = "";
+      identitySchema.forEach((block) => el.weCast.appendChild(makeCastBlock(block)));
+    }
+
+    function applyIdentityPayload(data) {
+      if (!data) return;
+      if (data.identity) identity = data.identity;
+      if (data.preview) identityPreview = data.preview;
+      renderCast();
+      try { refreshDirective(true); } catch (_) {}
+    }
+
+    async function saveIdentity(blockId, patch) {
+      const { ok, data } = await weFetch("PUT", "/api/admin/studio/identity", { [blockId]: patch });
+      const payload = data && (data.data || data);
+      if (!ok || !payload) { toast("Couldn't save that.", "warn"); return; }
+      applyIdentityPayload(payload);
+      toast("Saved — live on your next turn.");
+    }
+
+    function uploadPlate(file, slot) {
+      const reader = new FileReader();
+      reader.onload = async () => {
+        toast("Uploading reference…");
+        const { ok, data } = await weFetch("POST", "/api/admin/studio/reference", {
+          image: reader.result, kind: slot, label: file.name,
+        });
+        const payload = data && (data.data || data);
+        if (!ok || !payload) {
+          toast((data && data.error) || "Upload failed.", "warn");
+          return;
+        }
+        applyIdentityPayload(payload);
+        toast("Reference added.");
+      };
+      reader.readAsDataURL(file);
+    }
+
+    async function deletePlate(refId) {
+      const { ok, data } = await weFetch("DELETE", "/api/admin/studio/reference", { id: refId });
+      const payload = data && (data.data || data);
+      if (!ok || !payload) { toast("Delete failed.", "warn"); return; }
+      applyIdentityPayload(payload);
+      toast("Reference removed.");
     }
 
     // ── Worlds tab ────────────────────────────────────────────────────
@@ -3732,8 +3991,11 @@
       const { ok, data } = await weFetch("POST", "/api/admin/studio/worlds/load", { slug });
       const payload = data && (data.data || data);
       if (!ok || !payload) { toast("Couldn't load world.", "warn"); return; }
-      if (payload.prompts) content.prompts = payload.prompts;
       edits = {};
+      // Refetch rather than patching from the response: a world carries the
+      // cast sheet as well as the prompts, and the compiled directive preview
+      // has to be recomputed server-side from the newly applied spec.
+      await loadContent(true);
       render();
       if (restart) {
         toast("Loaded — launching…");
