@@ -1072,8 +1072,23 @@
     try {
       enabled = !(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
     } catch (_) {}
+    // Chrome blocks navigator.vibrate() (and logs an [Intervention] warning) until
+    // the page has received a genuine user gesture. Track that so we never call
+    // vibrate prematurely — e.g. haptics fired during boot or programmatic events.
+    let userEngaged = false;
+    try {
+      const markEngaged = () => {
+        userEngaged = true;
+        ["pointerdown", "touchstart", "keydown", "mousedown", "click"].forEach((evt) => {
+          try { window.removeEventListener(evt, markEngaged, true); } catch (_) {}
+        });
+      };
+      ["pointerdown", "touchstart", "keydown", "mousedown", "click"].forEach((evt) => {
+        window.addEventListener(evt, markEngaged, { capture: true, passive: true });
+      });
+    } catch (_) {}
     function buzz(pattern) {
-      if (!enabled) return;
+      if (!enabled || !userEngaged) return;
       try { if (navigator && typeof navigator.vibrate === "function") navigator.vibrate(pattern); } catch (_) {}
     }
     return {
