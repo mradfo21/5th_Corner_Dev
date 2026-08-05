@@ -432,6 +432,14 @@ print(f"[ENGINE INIT] Source: os.getenv={bool(os.getenv('GEMINI_API_KEY'))}, con
 # process restart required.
 from prompts_store import PROMPTS
 
+# Cast sheet — who you play as, the level you play it in, and where the camera
+# sits (see game_identity.py). Lives in the same hot-reloaded prompt file, so
+# an edit in either editor is live on the next turn. Every helper is a no-op
+# while the sheet is at its defaults (first person, no named character), so the
+# shipped experience is byte-identical until a player actually directs it.
+import game_identity
+game_identity.ensure_spec_keys()
+
 # Game constants - Structured time/atmosphere tracking
 INITIAL_TIME_OF_DAY = "6:30pm | weather: clear, warm light | mood: tense anticipation"  # Start time matching world_initial_state
 
@@ -3312,9 +3320,10 @@ def _generate_dispatch(choice: str, state: dict, prev_state: dict = None) -> dic
             spatial_context = f"\n\nCURRENT VISUAL SCENE (MUST STAY CONSISTENT): {prev_vision}\nDo NOT change locations unless the choice explicitly moves through a door, entrance, or exit. Stay in the same environment."
         
         # System instructions + user prompt combined for Gemini
-        prompt = (
-            f"{PROMPTS['action_consequence_instructions']}\n\n"
-            f"PLAYER CHOICE: '{choice}'\n"
+        prompt = game_identity.apply(
+            PROMPTS['action_consequence_instructions'], "narrative"
+        ) + (
+            f"\n\nPLAYER CHOICE: '{choice}'\n"
             f"WORLD CONTEXT: {state['world_prompt']}\n"
             f"PREVIOUS: {prev_state['world_prompt'] if prev_state else ''}"
             f"{spatial_context}\n\n"
@@ -3577,7 +3586,19 @@ def build_image_prompt(
 
     ``prev_setting`` — indoor/outdoor environment type from previous vision
     analysis; used to enforce environment type consistency.
+
+    Every branch below returns through ``game_identity.apply(..., "image")``,
+    which stamps the active CAMERA / CAST / LOCATION directive on top and
+    reconciles the perspective language underneath it. That's what makes the
+    editor's first/third-person switch actually reach the image model rather
+    than losing an argument with the hardcoded first-person prose.
     """
+    spec = game_identity.get_spec()
+    cam = game_identity.mode_config(spec)
+
+    def _finish(text: str) -> str:
+        return game_identity.apply(text, "image", spec)
+
     # ── TIMEOUT PENALTIES: identical camera, only environment reacts ──────────
     if is_timeout_penalty:
         base = (
@@ -3589,7 +3610,7 @@ def build_image_prompt(
         )
         if prev_spatial:
             base += f"\n\n🗺️ LOCKED POSITION: {prev_spatial}"
-        return base
+        return _finish(base)
 
     # ── INTRO FRAME: pure establishing shot ───────────────────────────────────
     if player_choice.lower().strip() == "intro":
@@ -3597,7 +3618,7 @@ def build_image_prompt(
         print(f"\n{'='*60}")
         print(f"[INTRO MODE] Creating establishing shot")
         print(f"{'='*60}\n", flush=True)
-        return prompt
+        return _finish(prompt)
 
     # ── Detect movement type ──────────────────────────────────────────────────
     global _last_movement_type
@@ -3636,7 +3657,7 @@ def build_image_prompt(
         if len(narrative_brief) > 120:
             narrative_brief = narrative_brief[:117] + "..."
         prompt = (
-            f"FIRST-PERSON CAMERA VIEW — render exactly this scene:\n"
+            f"{cam['camera_header']} — render exactly this scene:\n"
             f"{dispatch}\n\n"
             f"Action just performed: {player_choice}\n"
             f"(Brief narrative context, do not over-illustrate: {narrative_brief})"
@@ -3649,7 +3670,7 @@ def build_image_prompt(
         if len(scaffold) > 240:
             scaffold = scaffold[:237] + "..."
         prompt = (
-            f"FIRST-PERSON CAMERA VIEW — continuing directly from the previous frame.\n"
+            f"{cam['camera_header']} — continuing directly from the previous frame.\n"
             f"Previous frame visual state: {scaffold}\n"
             f"Action just performed: {player_choice}\n"
             f"Now render the SAME camera position evolved to show the result of that "
@@ -3713,7 +3734,7 @@ def build_image_prompt(
                 f"Only environmental/lighting changes: {prev_vision_analysis[:200]}"
             )
 
-    return prompt
+    return _finish(prompt)
 
 # Stable "scene bible" anchor for the realtime world model (Reactor Happy Oyster).
 # Happy Oyster turns a PARAGRAPH OF TEXT into a navigable place you then travel
@@ -3882,8 +3903,14 @@ def _build_vhs_prompt(base_prompt: str, use_img2img: bool = False) -> str:
     # Add CRITICAL anti-border instructions
     anti_border = "\n\nCRITICAL - ABSOLUTELY NO BORDERS OR FRAMES:\nThe image MUST fill the ENTIRE canvas edge-to-edge with ZERO borders, frames, or edges of any kind. NO black bars, NO white borders, NO photo frames, NO matting, NO letterboxing. The content fills 100% of the image area. This is RAW FOOTAGE, not a framed photograph."
     
-    # Add CRITICAL anti-person instructions
-    anti_person = "\n\nCRITICAL - ABSOLUTELY NO PERSON/PLAYER VISIBLE:\nThis is a FIXED CAMERA VIEW mounted to a wall or tripod. The camera operator does NOT exist in this image. NEVER show ANY part of a human body - no head, no back of head, no shoulders, no arms, no hands, no legs, no feet, no torso, no silhouette. Show ONLY the environment - walls, floor, ceiling, objects, debris, sky, ground. Think: security camera footage, dashboard cam, surveillance view - PURE environmental shot with ZERO human presence in frame."
+    # Add CRITICAL anti-person instructions — but ONLY while the camera is
+    # supposed to be nobody's eyes. In any third-person mode the player has
+    # explicitly asked to see their character, so this block becomes the single
+    # loudest voice arguing against the thing they asked for.
+    if game_identity.shows_character():
+        anti_person = ""
+    else:
+        anti_person = "\n\nCRITICAL - ABSOLUTELY NO PERSON/PLAYER VISIBLE:\nThis is a FIXED CAMERA VIEW mounted to a wall or tripod. The camera operator does NOT exist in this image. NEVER show ANY part of a human body - no head, no back of head, no shoulders, no arms, no hands, no legs, no feet, no torso, no silhouette. Show ONLY the environment - walls, floor, ceiling, objects, debris, sky, ground. Think: security camera footage, dashboard cam, surveillance view - PURE environmental shot with ZERO human presence in frame."
     
     # Add CRITICAL anti-timecode/text instructions
     anti_timecode = (
@@ -3900,9 +3927,17 @@ def _build_vhs_prompt(base_prompt: str, use_img2img: bool = False) -> str:
     )
     
     full_prompt = structured_prompt + anti_border + anti_person + anti_timecode
-    
-    # Add negative prompt for extra safety (used by some providers)
-    negative_prompt_text = PROMPTS.get("image_negative_prompt", "")
+
+    # Retune/reconcile the wrapper's own perspective language. `base_prompt`
+    # arrives already stamped with the camera directive by build_image_prompt();
+    # this pass catches the first-person wording baked into the JSON template
+    # and the constant blocks above it. "raw" so we don't stack a second
+    # directive on top of the one already in there.
+    full_prompt = game_identity.apply(full_prompt, "raw")
+
+    # Add negative prompt for extra safety (used by some providers), rewritten
+    # so it stops banning whichever perspective is currently selected.
+    negative_prompt_text = game_identity.negative_prompt()
     if negative_prompt_text:
         full_prompt += f"\n\nNEGATIVE PROMPT (avoid these): {negative_prompt_text}"
     
@@ -4174,6 +4209,30 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                 prompt_str = (
                     f"{prompt_str}\nMatch the lighting, time of day, and color palette to the previous image."
                 )
+
+        # --- IDENTITY PLATES (character sheet / level reference) ---
+        # User-supplied art from the Cast & Camera editor. These ride along as
+        # EXTRA img2img references so the protagonist stays the same person and
+        # the level keeps its architecture. They're appended AFTER the previous
+        # frame(s) on continuation turns — Gemini weights the first reference
+        # hardest and spatial continuity has to keep winning that slot — but on
+        # frame 0 (nothing to continue from) they lead, which is what turns a
+        # location plate into an actual opening shot of YOUR level.
+        identity_spec = game_identity.get_spec()
+        identity_plates = game_identity.identity_reference_paths(
+            # A character sheet is only useful to the renderer when the body or
+            # hands can appear; otherwise it just wastes a reference slot and
+            # tempts the model into putting a stranger in frame.
+            include_character=(
+                game_identity.shows_character(identity_spec)
+                or game_identity.hands_visible(identity_spec)
+            ),
+            spec=identity_spec,
+        )
+        if identity_plates:
+            prompt_str += game_identity.reference_annotation(identity_plates, identity_spec)
+            print(f"[IDENTITY] {len(identity_plates)} reference plate(s) available for this frame")
+
         # --- LOGGING ---
         print("[IMG LOG] --- IMAGE GENERATION PARAMETERS ---")
         print(f"[IMG LOG] frame_idx: {frame_idx}")
@@ -4293,6 +4352,14 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                             ref_images_to_use.append(live_frame)
                         print(f"[IMG GENERATION] Realtime dual-ref: guide still PRIMARY (quality/aesthetic) + live frame SECONDARY (spatial) [{os.path.basename(primary_guide_image_path)}]")
                 
+                # Identity plates ride BEHIND the continuity frame(s): the most
+                # recent frame must stay the primary influence or the scene
+                # teleports back to whatever the plate depicts.
+                for plate in identity_plates:
+                    if plate not in ref_images_to_use and len(ref_images_to_use) < 4:
+                        ref_images_to_use.append(plate)
+                        print(f"[IDENTITY] Attached plate as reference: {os.path.basename(plate)}")
+
                 print(f"[IMG GENERATION] References being passed to API:")
                 for i, ref in enumerate(ref_images_to_use):
                     print(f"[IMG GENERATION]   {i+1}. {os.path.basename(ref)}")
@@ -4835,17 +4902,37 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                 
                 # --- STATIC IMAGE GENERATION (Skip if in Flipbook Mode) ---
                 if not flipbook_enabled:
-                    result_path = generate_with_gemini(
-                        prompt=prompt_str,
-                        caption=caption,
-                        world_prompt=world_prompt,
-                        aspect_ratio="4:3",  # Faster generation, smaller files (1184x864)
-                        time_of_day=use_time_of_day,
-                        is_first_frame=(frame_idx == 0),  # Keep for fallback logic
-                        action_context=choice,  # Pass action for FPS hands context
-                        hd_mode=use_hq_for_this_frame,  # Frame 0 always HQ, others respect quality toggle
-                        output_dir=img_dir  # Session-specific directory
-                    )
+                    if identity_plates:
+                        # No previous frame to continue from, but the player HAS
+                        # supplied art. Go through img2img so the opening frame is
+                        # built out of their level plate and their character sheet
+                        # instead of the model's guess at the same words.
+                        print(f"[IDENTITY] No history — seeding this frame from "
+                              f"{len(identity_plates)} reference plate(s)", flush=True)
+                        result_path = generate_gemini_img2img(
+                            prompt=prompt_str,
+                            caption=caption,
+                            reference_image_path=identity_plates,
+                            world_prompt=world_prompt,
+                            time_of_day=use_time_of_day,
+                            action_context=choice,
+                            hd_mode=use_hq_for_this_frame,
+                            output_dir=img_dir,
+                        )
+                    else:
+                        result_path = None
+                    if not result_path:
+                        result_path = generate_with_gemini(
+                            prompt=prompt_str,
+                            caption=caption,
+                            world_prompt=world_prompt,
+                            aspect_ratio="4:3",  # Faster generation, smaller files (1184x864)
+                            time_of_day=use_time_of_day,
+                            is_first_frame=(frame_idx == 0),  # Keep for fallback logic
+                            action_context=choice,  # Pass action for FPS hands context
+                            hd_mode=use_hq_for_this_frame,  # Frame 0 always HQ, others respect quality toggle
+                            output_dir=img_dir  # Session-specific directory
+                        )
                 else:
                     print(f"[IMG GENERATION] Skipping static T2I image - Flipbook mode is active.")
                     result_path = None
@@ -5251,13 +5338,31 @@ def _sanitize_for_image_generation(text: str) -> str:
 
 # ───────── vision dispatch generator ─────────────────────────────────────────
 def _generate_vision_dispatch(narrative_dispatch: str, world_prompt: str = "") -> str:
-    prompt = (
-        "You are a visual scene writer. Output only the literal, visible scene as you would see it, in first-person present tense.\n\n"
-        "Rewrite the following narrative as a first-person, present-tense description of what you see, suitable for a visual scene. "
-        "Only describe what is visible. Do not include yourself or any internal thoughts. "
-        "Do not show yourself. Do not show the protagonist. Do not show any character from behind. Only show what you see from your own eyes. "
-        f"\n\nNARRATIVE DISPATCH: {narrative_dispatch}\n\nWORLD CONTEXT: {world_prompt}"
-    )
+    # `visual_scene` written here becomes the image prompt, so the rules about
+    # who may appear in frame have to follow the camera. In third person the
+    # "do not show the protagonist" rules are exactly backwards.
+    if game_identity.shows_character():
+        cfg = game_identity.mode_config()
+        who = game_identity.display_name()
+        framing = (
+            f"Rewrite the following narrative as a present-tense description of what the camera sees "
+            f"in {cfg['phrase']} view. {who} is IN the shot — describe where they are in the frame, "
+            f"their posture, and what they are doing, then the space around them. "
+            f"No internal thoughts, no sound, no feelings — only what is visible."
+        )
+        prompt = (
+            "You are a visual scene writer for a video game camera.\n\n"
+            + framing
+            + f"\n\nNARRATIVE DISPATCH: {narrative_dispatch}\n\nWORLD CONTEXT: {world_prompt}"
+        )
+    else:
+        prompt = (
+            "You are a visual scene writer. Output only the literal, visible scene as you would see it, in first-person present tense.\n\n"
+            "Rewrite the following narrative as a first-person, present-tense description of what you see, suitable for a visual scene. "
+            "Only describe what is visible. Do not include yourself or any internal thoughts. "
+            "Do not show yourself. Do not show the protagonist. Do not show any character from behind. Only show what you see from your own eyes. "
+            f"\n\nNARRATIVE DISPATCH: {narrative_dispatch}\n\nWORLD CONTEXT: {world_prompt}"
+        )
     # Don't use lore - this is just reformatting narrative to visual description
     result = _ask(prompt, model="gemini", temp=1.0, tokens=100, use_lore=False)
     return result
@@ -5280,10 +5385,10 @@ def _generate_situation_report(current_image: str = None, current_dispatch: str 
                 "\n\nIMPORTANT: This is a turning point. Introduce a major new development, threat, opportunity, or mystery. Shake up the situation in a dramatic way."
             )
         
-        prompt = (
-            PROMPTS.get("situation_summary_instructions", "Describe what is happening NOW.") +
-            f"\n\nWorld State (before current moment):\n{world_state}\n\nNarrative Result of Last Action:\n{last_dispatch}"
-        )
+        prompt = game_identity.apply(
+            PROMPTS.get("situation_summary_instructions", "Describe what is happening NOW."),
+            "narrative",
+        ) + f"\n\nWorld State (before current moment):\n{world_state}\n\nNarrative Result of Last Action:\n{last_dispatch}"
         
         if vision_analysis:
             prompt += f"\n\nVisual Reality (what is actually seen):\n{vision_analysis}"
@@ -5944,7 +6049,7 @@ def generate_intro_turn_feed_items(session_id: str = 'default', new_state: Optio
         new_state = state
     intro_items = [] # This list will be returned
     
-    initial_narrative_content = (
+    initial_narrative_content = game_identity.opening_narration() or (
         "1993. Golden hour bleeds across the Four Corners desert. You are Jason Fleece, "
         "photojournalist, crouched at the perimeter of Horizon Industries' quarantined "
         "facility \u2014 the last place the missing were ever seen. Your camcorder hums against "
@@ -9557,10 +9662,15 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
             f"{interaction_directive}"
         )
 
-        # Use JUST the action_consequence_instructions (which has JSON format)
-        json_prompt = (
-            f"{PROMPTS['action_consequence_instructions']}\n\n"
-            f"{free_will_header}"
+        # Use JUST the action_consequence_instructions (which has JSON format).
+        # The director's sheet goes on top so the model knows who it's writing
+        # and what the camera can actually see before it reads a single rule —
+        # `visual_scene` in particular is the text that becomes the image, so it
+        # has to be composed for the active perspective.
+        json_prompt = game_identity.apply(
+            PROMPTS['action_consequence_instructions'], "narrative"
+        ) + (
+            f"\n\n{free_will_header}"
             f"PLAYER CHOICE: '{choice}'\n"
             f"WORLD CONTEXT: {world_prompt}\n"
             f"{grounding_block}"
@@ -9570,7 +9680,7 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
             "Generate the consequence in valid JSON format. In ADDITION to the "
             "mandatory `dispatch`, `visual_scene`, and `player_alive` fields, also "
             "include a fourth field `next_choices`: an array of EXACTLY 3 short "
-            "(3-6 word) FIRST-PERSON physical action options for what the player "
+            "(3-6 word) physical action options for what the player "
             "does NEXT from this new position. Each MUST move the body through the "
             "space or physically manipulate something (NEVER look/observe/wait/"
             "photograph/listen). The three original fields stay mandatory and "
@@ -10447,7 +10557,10 @@ def reset_state(session_id='default'):
     
     # Recreate state for this session
     intro_state = {
-        "world_prompt": PROMPTS["world_initial_state"],
+        # Seed the run's evolving world document with the cast sheet, not just
+        # the setting brief — otherwise the protagonist and level exist only as
+        # a per-prompt garnish that the world-evolution pass overwrites.
+        "world_prompt": game_identity.world_brief(PROMPTS["world_initial_state"]),
         "current_phase": "normal",
         "chaos_level": 0,
         "turn": 0,
@@ -10510,7 +10623,13 @@ def generate_intro_image_fast(session_id='default'):
         }
     ]
     
-    scene = random.choice(opening_scenes)
+    # An authored level plate wins over the shipped Horizon openers — the first
+    # frame is the whole promise of the run, so if the player told us where
+    # their game happens, that's what we open on.
+    authored_open = game_identity.opening_shot()
+    if authored_open:
+        print(f"[INTRO] Opening on the authored level plate: {authored_open['prologue']}", flush=True)
+    scene = authored_open or random.choice(opening_scenes)
     prologue = scene["prologue"]
     vision_dispatch = scene["vision"]
     
@@ -10740,7 +10859,13 @@ def generate_intro_turn(session_id: str = 'default'):
         }
     ]
     
-    scene = random.choice(opening_scenes)
+    # An authored level plate wins over the shipped Horizon openers — the first
+    # frame is the whole promise of the run, so if the player told us where
+    # their game happens, that's what we open on.
+    authored_open = game_identity.opening_shot()
+    if authored_open:
+        print(f"[INTRO] Opening on the authored level plate: {authored_open['prologue']}", flush=True)
+    scene = authored_open or random.choice(opening_scenes)
     prologue = scene["prologue"]
     vision_dispatch = scene["vision"]
     

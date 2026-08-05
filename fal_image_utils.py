@@ -38,6 +38,10 @@ import requests
 # identity, same content-filter softening) instead of duplicating that logic.
 from gemini_image_utils import PROMPTS, _sanitize_for_safety
 
+# Cast sheet — supplies the camera tags and the character descriptors SDXL gets
+# instead of the long prose blocks the Gemini path uses.
+import game_identity
+
 ROOT = Path(__file__).parent
 try:
     with open(ROOT / "config.json", "r", encoding="utf-8") as f:
@@ -113,21 +117,50 @@ else:
 # We now lead with the scene and append tight style tags, and push the
 # "no text / no border / no people" constraints into a proper negative prompt.
 
-_SDXL_STYLE_TAGS = (
+_SDXL_BASE_STYLE_TAGS = (
     "1990s VHS camcorder footage, analog videotape look, photorealistic, "
     "real camera optics, heavy film grain, slight chromatic aberration, "
-    "first-person head-mounted camera POV, environment only, edge-to-edge full frame"
+    "edge-to-edge full frame"
 )
+
+# Camera tags per perspective. CLIP reads tags, not prose, so the perspective
+# has to arrive as a handful of descriptors rather than the paragraph the
+# Gemini path gets.
+_SDXL_CAMERA_TAGS = {
+    "first_person": "first-person head-mounted camera POV, environment only",
+    "over_shoulder": "third-person over-the-shoulder view, character seen from behind in foreground",
+    "third_person": "third-person full-body follow cam, character centered in frame",
+    "fixed_cinematic": "fixed wide cinematic angle, character small within the environment",
+}
 
 # fal's SDXL endpoints accept a negative_prompt — the correct place for the
 # anti-text / anti-border / anti-person constraints (as tags, not prose).
-_SDXL_NEGATIVE_PROMPT = (
+_SDXL_BASE_NEGATIVE = (
     "text, words, letters, numbers, watermark, timecode, timestamp, REC icon, "
     "caption, subtitles, logo, border, frame, black bars, letterboxing, "
-    "person, people, human, face, portrait, hands, "
     "3d render, cgi, video game screenshot, illustration, cartoon, anime, painting, "
     "deformed, distorted, blurry, low quality, jpeg artifacts"
 )
+
+# Only banned when the camera is nobody's eyes.
+_SDXL_NO_PEOPLE = "person, people, human, face, portrait, hands"
+
+
+def _style_tags() -> str:
+    mode = game_identity.camera_mode()
+    camera = _SDXL_CAMERA_TAGS.get(mode, _SDXL_CAMERA_TAGS["first_person"])
+    tags = f"{_SDXL_BASE_STYLE_TAGS}, {camera}"
+    if game_identity.shows_character():
+        sheet = game_identity.character_sdxl_tags()
+        if sheet:
+            tags = f"{tags}, {sheet}"
+    return tags
+
+
+def _negative_prompt() -> str:
+    if game_identity.shows_character():
+        return f"{_SDXL_BASE_NEGATIVE}, empty scene with no character, first person view"
+    return f"{_SDXL_BASE_NEGATIVE}, {_SDXL_NO_PEOPLE}"
 
 
 def _clamp(prompt: str, limit: int = 700) -> str:
@@ -141,7 +174,7 @@ def _build_text2img_prompt(prompt: str, time_of_day: str = "") -> str:
     parts = [scene]
     if time_of_day:
         parts.append(f"{time_of_day} lighting")
-    parts.append(_SDXL_STYLE_TAGS)
+    parts.append(_style_tags())
     return _clamp(_sanitize_for_safety(", ".join(p for p in parts if p)))
 
 
@@ -153,7 +186,7 @@ def _build_img2img_prompt(prompt: str, time_of_day: str = "") -> str:
     ]
     if time_of_day:
         parts.append(f"{time_of_day} lighting")
-    parts.append(_SDXL_STYLE_TAGS)
+    parts.append(_style_tags())
     return _clamp(_sanitize_for_safety(", ".join(p for p in parts if p)))
 
 
@@ -327,7 +360,7 @@ def generate_with_fal(
     full_prompt = _build_text2img_prompt(prompt, time_of_day=time_of_day)
     payload = {
         "prompt": full_prompt,
-        "negative_prompt": _SDXL_NEGATIVE_PROMPT,
+        "negative_prompt": _negative_prompt(),
         "image_size": FAL_IMAGE_SIZE,
         "num_inference_steps": FAL_NUM_INFERENCE_STEPS,
         "format": "png",
@@ -396,7 +429,7 @@ def generate_fal_img2img(
     payload = {
         "image_url": data_uri,
         "prompt": full_prompt,
-        "negative_prompt": _SDXL_NEGATIVE_PROMPT,
+        "negative_prompt": _negative_prompt(),
         "image_size": FAL_IMAGE_SIZE,
         "num_inference_steps": FAL_NUM_INFERENCE_STEPS,
         "strength": img2img_strength,

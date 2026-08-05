@@ -11,6 +11,7 @@ from typing import List, Union
 # Evolution summaries now stored in state["evolution_summary"]
 import engine
 import difflib
+import game_identity
 
 # No longer using OpenAI - everything uses Gemini now!
 def _ensure_client(c):
@@ -296,7 +297,12 @@ def generate_choices(
             "If there's ANY conflict between text and image -> IMAGE WINS.\n\n"
             "═══════════════════════════════════════════════════════\n\n"
         ) + full_prompt
-    
+
+    # Cast & camera pass. This prompt is full of "Jason" and "from his eyes" —
+    # both wrong the moment the player names their own character or moves the
+    # camera behind them, and both of them shape what the choice slate offers.
+    full_prompt = game_identity.apply(full_prompt, "narrative")
+
     # Build parts list (text + optional image)
     parts = [{"text": full_prompt}]
     

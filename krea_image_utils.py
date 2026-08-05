@@ -41,6 +41,10 @@ import requests
 # same content-filter softening) instead of duplicating that logic here.
 from gemini_image_utils import PROMPTS, _sanitize_for_safety
 
+# Cast sheet — decides whether the player's character belongs in frame and
+# rewrites the perspective language in the shared Gemini templates below.
+import game_identity
+
 ROOT = Path(__file__).parent
 try:
     with open(ROOT / "config.json", "r", encoding="utf-8") as f:
@@ -124,6 +128,17 @@ _ANTI_PERSON = (
     "legs, torso or silhouette). Show only the environment."
 )
 
+_HERO_PRESENT = (
+    "THE PLAYER CHARACTER IS THE SUBJECT. They are on screen — see the CAMERA "
+    "DIRECTIVE for where they sit in the frame — and must stay the same person "
+    "shot to shot. A frame with no character in it is a failed render."
+)
+
+
+def _person_rule() -> str:
+    """Whichever person rule the active camera perspective actually wants."""
+    return _HERO_PRESENT if game_identity.shows_character() else _ANTI_PERSON
+
 _PHOTOGRAPHIC_ANCHOR = (
     "OPTICAL REALITY - REAL FOOTAGE: real light captured through real glass optics "
     "onto physical magnetic videotape. This is photographic reality, NOT a video "
@@ -154,9 +169,9 @@ def _time_injection(time_of_day: str) -> str:
 
 def _build_text2img_prompt(prompt: str, time_of_day: str = "") -> str:
     structured = PROMPTS["gemini_text_to_image_instructions"].format(prompt=prompt)
-    head = [_ANTI_TIMECODE, _time_injection(time_of_day), _ANTI_BORDER, _ANTI_PERSON, _PHOTOGRAPHIC_ANCHOR]
+    head = [_ANTI_TIMECODE, _time_injection(time_of_day), _ANTI_BORDER, _person_rule(), _PHOTOGRAPHIC_ANCHOR]
     parts = [p for p in head if p] + [structured]
-    return _clamp(_sanitize_for_safety("\n\n".join(parts)))
+    return _clamp(_sanitize_for_safety(game_identity.apply("\n\n".join(parts), "raw")))
 
 
 def _build_img2img_prompt(prompt: str, time_of_day: str = "", is_flipbook: bool = False) -> str:
@@ -171,9 +186,9 @@ def _build_img2img_prompt(prompt: str, time_of_day: str = "", is_flipbook: bool 
     head = [_ANTI_TIMECODE, continuity, _time_injection(time_of_day)]
     if not is_flipbook:
         head.append(_ANTI_BORDER)
-    head.extend([_ANTI_PERSON, _PHOTOGRAPHIC_ANCHOR])
+    head.extend([_person_rule(), _PHOTOGRAPHIC_ANCHOR])
     parts = [p for p in head if p] + [structured]
-    return _clamp(_sanitize_for_safety("\n\n".join(parts)))
+    return _clamp(_sanitize_for_safety(game_identity.apply("\n\n".join(parts), "raw")))
 
 
 def _tier_from_name(name) -> str | None:

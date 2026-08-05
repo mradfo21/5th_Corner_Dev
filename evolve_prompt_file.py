@@ -93,9 +93,36 @@ def evolve_world_state(
         last_choice = last_entry.get("choice", last_entry.get("user_input", ""))
     
     player_action = last_choice if last_choice else "exploring"
-    
+
+    # The world_prompt is seeded at reset with the player's cast sheet (who they
+    # are, the level, the camera). This pass REWRITES that whole document every
+    # turn, so without an explicit preservation rule it quietly launders the
+    # player's character back into the shipped photojournalist within a few turns.
+    import game_identity
+    cast_sheet = game_identity.narrative_directive()
+    cast_rule = (
+        f"\n\n{cast_sheet}\n\n"
+        "THE DIRECTOR'S SHEET ABOVE IS FIXED. Carry it through verbatim in the "
+        "rewritten world state — never rename the protagonist, never relocate the "
+        "story to a different setting, never change the camera perspective.\n"
+        if cast_sheet else ""
+    )
+    _spec = game_identity.get_spec()
+    who_line = "Jason Fleece, photojournalist, 1993"
+    if game_identity.character_enabled(_spec):
+        _char = _spec[game_identity.CHARACTER_KEY]
+        who_line = ", ".join(
+            p for p in (game_identity.display_name(_spec), _char.get("role")) if p
+        )
+    setting_line = "1993 VHS horror, Four Corners facility"
+    if game_identity.setting_enabled(_spec):
+        _setting = _spec[game_identity.SETTING_KEY]
+        setting_line = ", ".join(
+            p for p in (_setting.get("era"), _setting.get("name"), _setting.get("palette")) if p
+        ) or setting_line
+
     # Build evolution prompt
-    prompt = f"""You are evolving a dynamic world state for a survival horror game.
+    prompt = f"""You are evolving a dynamic world state for a survival horror game.{cast_rule}
 
 CRITICAL PHILOSOPHY:
 The world_prompt is a LIVING DOCUMENT that grows richer as the player progresses.
@@ -123,15 +150,15 @@ YOUR TASK:
 Rewrite the ENTIRE world_prompt (1200-1500 words) to incorporate this new turn.
 
 CRITICAL RULES:
-1. PRESERVE the core setting and tone (1993 VHS horror, Four Corners facility)
+1. PRESERVE the core setting and tone ({setting_line})
 2. INTEGRATE new discoveries, locations, threats from this turn
-3. UPDATE spatial position (where Jason is NOW)
+3. UPDATE spatial position (where the protagonist is NOW)
 4. MAINTAIN narrative continuity (what's happened so far)
 5. KEEP it 1200-1500 words (rich but not bloated)
 6. AMPLIFY tension and horror as story progresses
 
 STRUCTURE (maintain these sections):
-- WHO: Jason Fleece, photojournalist, 1993
+- WHO: {who_line}
 - WHERE: Current location in facility (updated!)
 - WHAT'S HAPPENED: Journey so far (accumulated discoveries)
 - THREATS: Known dangers, guards, creatures, hazards

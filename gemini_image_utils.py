@@ -22,6 +22,11 @@ except FileNotFoundError:
 # edits made through the World Studio editor apply immediately, no restart.
 from prompts_store import PROMPTS
 
+# Cast sheet — the active camera perspective decides whether the player's own
+# character belongs in frame, which flips both the anti-person prompt blocks
+# below and the POV hand-stripping post-process. See game_identity.py.
+import game_identity
+
 # Read from environment variables first, fall back to config.json
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", config.get("GEMINI_API_KEY", ""))
 IMAGE_DIR = Path("images")
@@ -258,9 +263,23 @@ def generate_with_gemini(
     
     structured_prompt = structured_prompt + anti_border
 
-    # Portrait mode intentionally INCLUDES a character (Conversation Moments).
-    # Environment stills keep the hard anti-person rule used everywhere else.
-    if not portrait_mode:
+    # Three ways a person can relate to the frame:
+    #   portrait_mode — Conversation Moments; the SUBJECT is a character.
+    #   hero_mode     — the player picked a third-person camera, so their own
+    #                   character is the subject and the anti-person rule is
+    #                   the exact opposite of what they asked for.
+    #   neither       — first person; the shipped environment-only rule holds.
+    hero_mode = (not portrait_mode) and game_identity.shows_character()
+    if hero_mode:
+        structured_prompt = structured_prompt + (
+            "\n\nCRITICAL - THE PLAYER CHARACTER IS IN THIS SHOT:\n"
+            "This is NOT an empty environment plate. The character the player controls is "
+            "ON SCREEN and is the subject of the frame — see the CAMERA DIRECTIVE above for "
+            "exactly where they sit in the composition. An image with no character in it is "
+            "a failed render. Ignore any instruction below that demands an empty scene, a "
+            "fixed security-camera view, or zero human presence."
+        )
+    elif not portrait_mode:
         anti_person = "\n\nCRITICAL - ABSOLUTELY NO PERSON/PLAYER VISIBLE:\nThis is a FIXED CAMERA VIEW mounted to a wall or tripod. The camera operator does NOT exist in this image. NEVER show ANY part of a human body - no head, no back of head, no shoulders, no arms, no hands, no legs, no feet, no torso, no silhouette. Show ONLY the environment - walls, floor, ceiling, objects, debris, sky, ground. Think: security camera footage, dashboard cam, surveillance view - PURE environmental shot with ZERO human presence in frame."
         structured_prompt = structured_prompt + anti_person
     else:
@@ -307,7 +326,9 @@ def generate_with_gemini(
             "Subject holds eye contact or a charged near-look; background soft and suggestive of the scene.\n"
         )
     else:
-        negative_emphasis = "\n\nNEVER INCLUDE: Text overlays, timecode, date stamps, timestamps, time displays, numbers, letters, words, 'DEC 14 1993', '4:32 PM', 'PCC HISS', 'REC', battery indicators, recording icons, ANY TEXT. Borders, frames, black bars, white borders, photo edges, polaroid frames, picture frames, matting, letterbox bars, any kind of border or frame element. Person visible, human visible, man visible, character visible, head visible, shoulders visible, back of head, person's back, body parts, hands, arms, legs, feet."
+        negative_emphasis = "\n\nNEVER INCLUDE: Text overlays, timecode, date stamps, timestamps, time displays, numbers, letters, words, 'DEC 14 1993', '4:32 PM', 'PCC HISS', 'REC', battery indicators, recording icons, ANY TEXT. Borders, frames, black bars, white borders, photo edges, polaroid frames, picture frames, matting, letterbox bars, any kind of border or frame element."
+        if not hero_mode:
+            negative_emphasis += " Person visible, human visible, man visible, character visible, head visible, shoulders visible, back of head, person's back, body parts, hands, arms, legs, feet."
     
         # OPTICAL REALITY ANCHOR - Critical for first frame to set the tone
         photographic_anchor = (
@@ -350,7 +371,14 @@ def generate_with_gemini(
     
     # Put anti-timecode FIRST (highest attention), then the rest
     structured_prompt = anti_timecode + "\n\n" + structured_prompt + negative_emphasis + photographic_anchor
-    
+
+    # Cast & camera reconciliation. `prompt` already arrives stamped with the
+    # camera directive from engine.build_image_prompt(); this pass rewrites the
+    # first-person wording baked into the JSON template and the constant blocks
+    # assembled around it. "raw" so we don't stack a second directive.
+    if not portrait_mode:
+        structured_prompt = game_identity.apply(structured_prompt, "raw")
+
     # Gemini has a 5000 char limit, so truncate if needed
     if len(structured_prompt) > 5000:
         structured_prompt = structured_prompt[:5000]
@@ -1047,6 +1075,19 @@ def generate_gemini_img2img(
             "in focus, with the reference environment softly behind them."
         )
         structured_prompt = structured_prompt + add_person
+    elif game_identity.shows_character():
+        # Third-person camera: the player asked to see their character, so the
+        # reference frame legitimately contains them and deleting them would be
+        # deleting the protagonist.
+        structured_prompt = structured_prompt + (
+            "\n\n🕹️ CRITICAL - KEEP THE PLAYER CHARACTER IN FRAME:\n\n"
+            "The reference image shows the player's own character. They belong here.\n"
+            "Carry them into this frame as the SAME person — same face, build, hair, and\n"
+            "outfit — moved and re-posed to match the action described. See the CAMERA\n"
+            "DIRECTIVE for where they sit in the composition.\n\n"
+            "DO NOT erase them. DO NOT swap them for a different person. DO NOT render an\n"
+            "empty environment plate — a frame with no character in it is a failed render."
+        )
     else:
         anti_person = "\n\n🚨 CRITICAL - REMOVE ANY PEOPLE FROM REFERENCE IMAGE:\n\n" \
                      "The REFERENCE IMAGE may contain a person/character - this is WRONG. Your job is to REMOVE THEM.\n\n" \
@@ -1083,6 +1124,8 @@ def generate_gemini_img2img(
         negative_emphasis = "\n\nNEVER INCLUDE: Text overlays, timecode, date stamps, timestamps, time displays, numbers, letters, words, 'DEC 14 1993', '4:32 PM', 'PCC HISS', 'REC', battery indicators, recording icons, ANY TEXT. Borders, frames, black bars, white borders, photo edges, polaroid frames, picture frames, matting, letterbox bars, any kind of border or frame element. Collage layout, split-screen of separate portraits, floating heads, mismatched lighting that ignores the campfire."
     elif portrait_mode:
         negative_emphasis = "\n\nNEVER INCLUDE: Text overlays, timecode, date stamps, timestamps, time displays, numbers, letters, words, 'DEC 14 1993', '4:32 PM', 'PCC HISS', 'REC', battery indicators, recording icons, ANY TEXT. Borders, frames, black bars, white borders, photo edges, polaroid frames, picture frames, matting, letterbox bars, any kind of border or frame element. Empty room with no subject, wide establishing shot, a completely different location than the reference."
+    elif game_identity.shows_character():
+        negative_emphasis = "\n\nNEVER INCLUDE: Text overlays, timecode, date stamps, timestamps, time displays, numbers, letters, words, 'DEC 14 1993', '4:32 PM', 'PCC HISS', 'REC', battery indicators, recording icons, ANY TEXT. Borders, frames, black bars, white borders, photo edges, polaroid frames, picture frames, matting, letterbox bars, any kind of border or frame element. Empty scene with no character, a different person than the reference character, floating disembodied camera view."
     else:
         negative_emphasis = "\n\nNEVER INCLUDE: Text overlays, timecode, date stamps, timestamps, time displays, numbers, letters, words, 'DEC 14 1993', '4:32 PM', 'PCC HISS', 'REC', battery indicators, recording icons, ANY TEXT. Borders, frames, black bars, white borders, photo edges, polaroid frames, picture frames, matting, letterbox bars, any kind of border or frame element. Person visible, human visible, man visible, character visible, head visible, back of head, shoulders visible, person's back, character's back, body parts, hands, arms, legs, feet, torso, silhouette, person from behind."
     
@@ -1129,7 +1172,12 @@ def generate_gemini_img2img(
     
     # Put anti-timecode FIRST (highest attention), then the rest
     full_prompt = anti_timecode + "\n\n" + structured_prompt + negative_emphasis + photographic_anchor
-    
+
+    # Cast & camera reconciliation (see generate_with_gemini). Skipped for the
+    # portrait/ensemble moments, which run their own deliberate camera grammar.
+    if not (portrait_mode or ensemble_mode):
+        full_prompt = game_identity.apply(full_prompt, "raw")
+
     # Sanitize to avoid safety blocks
     full_prompt = _sanitize_for_safety(full_prompt)
     

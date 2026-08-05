@@ -16,6 +16,9 @@ sessions/*
 !sessions/.gitkeep
 archives/*
 !archives/.gitkeep
+# Uploaded character/setting reference plates (Cast & Camera) — runtime user data
+assets/references/*
+!assets/references/.gitkeep
 # Saved "worlds" (named prompt-set snapshots) — runtime user data
 worlds/*
 !worlds/.gitkeep
