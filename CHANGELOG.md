@@ -1,5 +1,21 @@
 # 🔧 CHANGELOG - August 5, 2026
 
+## 🎮 FPS mouse-look + swappable input profiles
+
+**Files:** `static/js/standalone.js`, `static/css/standalone.css`,
+`templates/standalone.html`, `test_movement_mode_e2e.py`
+
+Realtime explore now defaults to an FPS control scheme: **WASD moves**, **mouse
+looks** (pointer-lock on a world click; Esc releases), arrows still look. Look
+sensitivity is intentionally subtle — latent world models lag, so twitchy mouse
+input overshoots. A quiet center reticle shows while locked.
+
+Input mapping is no longer hard-coded in the drive loop. `InputBindings` holds
+named profiles (`fps` / `classic`) that map keys → semantic actions and toggle
+mouse look; the WORLD MODEL panel exposes an **INPUT** toggle so schemes can be
+swapped without a redeploy (persisted in `localStorage`). Classic restores the
+prior A/D-turn layout.
+
 ## 🌍 The authored world now reaches every generative surface
 
 **Files:** `game_identity.py`, `engine.py`, `evolve_prompt_file.py`,
