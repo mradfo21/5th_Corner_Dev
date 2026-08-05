@@ -46,7 +46,11 @@ That's deliberate:
   one swaps the whole package.
 
 Reference images are stored as files under `assets/references/` and referenced by
-id, so the JSON stays small and diffable.
+id, so the JSON stays small and diffable. That location is overridable with
+`REFERENCES_DIR`, and production points it inside the persistent disk
+(`sessions/_references`) so an uploaded portrait survives a deploy — see
+`RENDER_STORAGE_LIMITATION.md`. If a plate does go missing its id is simply
+skipped, both in the editor's thumbnails and in the image call.
 
 Everything degrades to the shipped behavior while the sheet is at its defaults —
 first person, no named character, no level override. `game_identity.is_active()`

@@ -28,6 +28,12 @@ services:
       mountPath: /opt/render/project/src/sessions
       sizeGB: 1
     envVars:
+      # Cast & Camera reference plates (character sheets / level art uploaded in
+      # World Studio) live inside the persistent disk mounted above, so they
+      # survive deploys. Without this they'd default into the repo tree and be
+      # wiped on every restart along with everything else outside `sessions/`.
+      - key: REFERENCES_DIR
+        value: /opt/render/project/src/sessions/_references
       - key: GEMINI_API_KEY
         sync: false
       - key: OPENAI_API_KEY

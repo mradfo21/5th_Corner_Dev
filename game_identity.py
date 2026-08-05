@@ -61,6 +61,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import os
 import re
 import threading
 import time
@@ -72,7 +73,14 @@ import prompts_store
 from prompts_store import PROMPTS
 
 ROOT = Path(__file__).parent.resolve()
-REFERENCES_DIR = ROOT / "assets" / "references"
+
+# Where uploaded character sheets / level plates are stored. Overridable because
+# only `sessions/` is on Render's persistent disk (see
+# RENDER_STORAGE_LIMITATION.md) — production points this inside that mount so
+# an uploaded portrait survives a deploy. Local dev keeps them in the repo tree.
+REFERENCES_DIR = Path(
+    os.getenv("REFERENCES_DIR") or (ROOT / "assets" / "references")
+)
 
 # Spec keys as they appear in prompts/simulation_prompts.json.
 CHARACTER_KEY = "player_character"
