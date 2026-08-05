@@ -6333,6 +6333,84 @@ body.touch-aiming .touch-zoom { opacity: 0.9; }
   letter-spacing: 0.08em;
   color: rgba(232, 224, 200, 0.7);
 }
+/* ── First-run tutorial ("tap to scan") ─────────────────────────────── */
+#scan-tutorial {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(6, 5, 4, 0.72);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  opacity: 0;
+  transition: opacity 0.28s ease;
+}
+#scan-tutorial.show { opacity: 1; }
+#scan-tutorial.hidden { display: none; }
+#scan-tutorial .tut-card {
+  max-width: 380px;
+  width: 100%;
+  text-align: center;
+  padding: 26px 26px 20px;
+  border: 1px solid rgba(232, 224, 200, 0.22);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(24, 20, 16, 0.96), rgba(14, 12, 10, 0.96));
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.6), inset 0 0 0 1px rgba(255, 255, 255, 0.03);
+  transform: translateY(8px) scale(0.98);
+  transition: transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+#scan-tutorial.show .tut-card { transform: translateY(0) scale(1); }
+#scan-tutorial .tut-kicker {
+  font-size: 10px;
+  letter-spacing: 0.28em;
+  text-transform: uppercase;
+  color: rgba(255, 210, 122, 0.85);
+  margin-bottom: 14px;
+}
+#scan-tutorial .tut-lead {
+  font-size: 19px;
+  line-height: 1.35;
+  color: #f2ecda;
+  margin: 0 0 10px;
+}
+#scan-tutorial .tut-lead b { color: #ffd27a; }
+#scan-tutorial .tut-sub {
+  font-size: 13px;
+  line-height: 1.5;
+  color: rgba(232, 224, 200, 0.72);
+  margin: 0 0 18px;
+}
+#scan-tutorial .tut-sub b { color: #e8e0c8; }
+#scan-tutorial #tut-dismiss {
+  appearance: none;
+  border: 1px solid rgba(255, 210, 122, 0.55);
+  background: rgba(255, 210, 122, 0.12);
+  color: #ffd27a;
+  font: inherit;
+  font-size: 13px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding: 10px 26px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.1s ease;
+}
+#scan-tutorial #tut-dismiss:hover { background: rgba(255, 210, 122, 0.22); }
+#scan-tutorial #tut-dismiss:active { transform: scale(0.97); }
+#scan-tutorial .tut-hint {
+  margin-top: 12px;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(232, 224, 200, 0.4);
+}
+@media (prefers-reduced-motion: reduce) {
+  #scan-tutorial, #scan-tutorial .tut-card { transition: none; }
+}
+
 /* Stakes row: HEALTH + FILM under the case bar. */
 #evidence-hud .ev-stakes {
   display: flex;

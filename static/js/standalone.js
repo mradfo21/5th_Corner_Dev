@@ -85,6 +85,8 @@
     freeWillBtn: document.getElementById("free-will-btn"),
     realtimeBtn: document.getElementById("realtime-btn"),
     scanBtn: document.getElementById("scan-btn"),
+    scanTutorial: document.getElementById("scan-tutorial"),
+    tutDismiss: document.getElementById("tut-dismiss"),
     campBtn: document.getElementById("camp-btn"),
     leaveCampBtn: document.getElementById("leave-camp-btn"),
     movePad: document.getElementById("move-pad"),
@@ -1123,7 +1125,9 @@
     // complaint: the win condition was effectively hidden until you happened to
     // pick up the camera).
     try { Evidence.reveal(); } catch (_) {}
-    try { showIntroGoalOnce(); } catch (_) {}
+    // First-timers get the tutorial card (which already states the goal); after
+    // they've dismissed it once, returning runs get the lighter goal toast.
+    try { if (!showScanTutorialOnce()) showIntroGoalOnce(); } catch (_) {}
     try { refreshDirective(true); } catch (_) {}
     try { updateScanButton(); } catch (_) {} // a scene is readable — SCAN is live
   }
@@ -1135,11 +1139,44 @@
   function showIntroGoalOnce() {
     if (state._introGoalShown) return;
     state._introGoalShown = true;
-    const target = (window.Evidence && Evidence.target && Evidence.target()) || 12;
+    const target = (window.Evidence && Evidence.target && Evidence.target()) || 8;
     try {
       showRendererToast("Raise your camera and DOCUMENT the evidence \u2014 photograph " +
         target + " distinct subjects to close the case.", 6000);
     } catch (_) {}
+  }
+
+  // ── First-run tutorial: the ONE thing a new player must learn — TAP TO SCAN.
+  // Shown once per browser (localStorage-gated) the first time a scene is
+  // readable. Dismissed by the button, a tap anywhere on it, or Escape.
+  // Returns true if it was shown this call (so the caller can suppress the
+  // redundant goal toast on the very first run).
+  const TUTORIAL_SEEN_KEY = "scan_tutorial_seen_v1";
+  function showScanTutorialOnce() {
+    if (!el.scanTutorial) return false;
+    if (state._tutorialShown) return false; // already up this session
+    let seen = false;
+    try { seen = localStorage.getItem(TUTORIAL_SEEN_KEY) === "1"; } catch (_) {}
+    if (seen) return false;
+    state._tutorialShown = true;
+    const tgt = el.scanTutorial.querySelector("#tut-target");
+    const target = (window.Evidence && Evidence.target && Evidence.target()) || 8;
+    if (tgt) tgt.textContent = String(target);
+    el.scanTutorial.classList.remove("hidden");
+    // rAF so the .show transition actually plays from the hidden state.
+    requestAnimationFrame(() => el.scanTutorial.classList.add("show"));
+    try { Sound.talkOpen && Sound.talkOpen(); } catch (_) {}
+    return true;
+  }
+
+  function dismissScanTutorial() {
+    if (!el.scanTutorial || el.scanTutorial.classList.contains("hidden")) return;
+    state._tutorialShown = false;
+    try { localStorage.setItem(TUTORIAL_SEEN_KEY, "1"); } catch (_) {}
+    el.scanTutorial.classList.remove("show");
+    const hide = () => el.scanTutorial.classList.add("hidden");
+    if (prefersReducedMotion()) hide(); else setTimeout(hide, 300);
+    try { Sound.press && Sound.press(); } catch (_) {}
   }
 
   // ------------------------------------------------------------------
@@ -9917,6 +9954,13 @@
   // ------------------------------------------------------------------
 
   function onKeydown(e) {
+    // First-run tutorial is a modal takeover: any key dismisses it and is
+    // swallowed so a world shortcut (S=scan, C=photo…) doesn't fire behind it.
+    if (el.scanTutorial && !el.scanTutorial.classList.contains("hidden")) {
+      e.preventDefault();
+      dismissScanTutorial();
+      return;
+    }
     // Conversation Moments are a cinematic takeover — Esc hangs up, typing
     // goes to the composer, and world shortcuts (choices / ACT / PHOTO / SCAN)
     // stay blocked until the Moment pops. The legacy non-cinematic TALK strip
@@ -10987,6 +11031,9 @@
     el.freeWillBtn.addEventListener("click", openFreeWill);
     if (el.realtimeBtn) el.realtimeBtn.addEventListener("click", openTouch);
     if (el.scanBtn) el.scanBtn.addEventListener("click", () => triggerScan());
+    // First-run tutorial: dismiss on the button OR a tap anywhere on the card.
+    if (el.tutDismiss) el.tutDismiss.addEventListener("click", (e) => { e.stopPropagation(); dismissScanTutorial(); });
+    if (el.scanTutorial) el.scanTutorial.addEventListener("click", () => dismissScanTutorial());
     if (el.campBtn) el.campBtn.addEventListener("click", () => openCamp());
     if (el.leaveCampBtn) el.leaveCampBtn.addEventListener("click", () => leaveCamp());
     if (el.touchLayer) {
