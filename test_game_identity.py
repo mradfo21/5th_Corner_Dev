@@ -301,6 +301,51 @@ class GameIdentityTestCase(_IdentityFixture):
         neg = gi.negative_prompt()
         self.assertEqual(neg.lower().count("first person view"), 1)
 
+    def test_negative_prompt_drops_every_presence_and_body_ban(self):
+        # The shipped negative prompt has a long FORBIDDEN clause listing every
+        # way a protagonist could show up. Any one left in argues against the
+        # character the player asked to see.
+        ps.save_prompts_bulk({"image_negative_prompt": (
+            "CGI, clean modernism. FORBIDDEN: Face visible, head visible, shoulders visible, "
+            "full body in frame, person from behind, character's back, protagonist shown, "
+            "someone else visible in frame, reflection of face, silhouette, "
+            "third person perspective, over shoulder view, behind character, following someone. "
+            "ABSOLUTELY NO: Black borders"
+        )})
+        self._set_mode("third_person")
+        neg = gi.negative_prompt().lower()
+        for gone in ("face visible", "head visible", "shoulders visible", "full body in frame",
+                     "person from behind", "character's back", "protagonist shown",
+                     "someone else visible", "reflection of face", "silhouette",
+                     "third person", "over shoulder", "behind character", "following someone"):
+            self.assertNotIn(gone, neg, f"{gone!r} should not survive into third person")
+        # Unrelated bans are untouched.
+        self.assertIn("cgi", neg)
+        self.assertIn("black borders", neg)
+
+    def test_lines_that_ban_third_person_framing_are_dropped(self):
+        # Retune can't fix these — they say "third-person" on purpose — so
+        # reconcile has to recognize a prohibition paired with a framing term.
+        self._set_mode("over_shoulder")
+        out = gi.reconcile(
+            "FORBIDDEN (third-person shots will invalidate the entire grid):\n"
+            "❌ Showing player from behind, side, or above\n"
+            "❌ 'Camera following a character' shots\n"
+            "❌ Any frame showing the player's body as a separate entity\n"
+            "✓ Camera at IDENTICAL height as the first reference image"
+        )
+        self.assertEqual(out.strip(), "✓ Camera at IDENTICAL height as the first reference image")
+
+    def test_reconcile_keeps_the_directives_own_rules(self):
+        # reconcile runs over text that already carries the compiled directive
+        # (the "raw" surface used by the image providers), so it must not eat
+        # the very rules it just wrote.
+        self._set_character()
+        for mode in gi.PERSPECTIVE_MODES:
+            self._set_mode(mode)
+            directive = gi.image_directive()
+            self.assertEqual(gi.reconcile(directive), directive, f"reconcile ate part of {mode}")
+
     # ── accessors ───────────────────────────────────────────────────
 
     def test_hands_toggle_only_applies_to_first_person(self):

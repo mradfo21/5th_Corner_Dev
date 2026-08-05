@@ -105,6 +105,23 @@ _MIME_EXT = {
 # it selectable in both editors with no other code changes.
 # ═══════════════════════════════════════════════════════════════════════════
 
+# Everything the shipped negative prompt bans that a visible protagonist needs.
+# Shared by every third-person mode: the negative prompt is one long
+# comma-separated string, and any clause left in it is actively arguing against
+# the character the player asked to see. Matched as case-insensitive substrings
+# against each comma-separated clause (see `negative_prompt`).
+_CHARACTER_NEGATIVE_STRIP = [
+    # Framing bans
+    "third person", "over shoulder", "behind character", "following someone",
+    # Presence bans
+    "person visible", "human visible", "man visible", "character visible",
+    "protagonist shown", "someone else visible", "full body in frame",
+    "person from behind", "character's back", "person's back",
+    # Body-part bans
+    "body parts", "head visible", "shoulders visible", "back of head",
+    "face visible", "reflection of face", "silhouette",
+]
+
 PERSPECTIVE_MODES: Dict[str, Dict[str, Any]] = {
     "first_person": {
         "label": "First person",
@@ -165,11 +182,7 @@ PERSPECTIVE_MODES: Dict[str, Dict[str, Any]] = {
             "first person view", "camera as eyes", "empty foreground with no character",
             "character facing the camera", "selfie",
         ],
-        "negative_strip": [
-            "third person", "over shoulder", "behind character", "following someone",
-            "person visible", "human visible", "character visible", "body parts",
-            "head visible", "shoulders visible", "back of head",
-        ],
+        "negative_strip": _CHARACTER_NEGATIVE_STRIP,
     },
     "third_person": {
         "label": "Third person",
@@ -198,11 +211,7 @@ PERSPECTIVE_MODES: Dict[str, Dict[str, Any]] = {
             "first person view", "camera as eyes", "empty scene with no character",
             "close-up portrait", "cropped body",
         ],
-        "negative_strip": [
-            "third person", "over shoulder", "behind character", "following someone",
-            "person visible", "human visible", "character visible", "body parts",
-            "head visible", "shoulders visible", "back of head",
-        ],
+        "negative_strip": _CHARACTER_NEGATIVE_STRIP,
     },
     "fixed_cinematic": {
         "label": "Fixed cinematic",
@@ -231,11 +240,7 @@ PERSPECTIVE_MODES: Dict[str, Dict[str, Any]] = {
         "negative_add": [
             "first person view", "camera as eyes", "handheld shake", "empty scene with no character",
         ],
-        "negative_strip": [
-            "third person", "over shoulder", "behind character", "following someone",
-            "person visible", "human visible", "character visible", "body parts",
-            "head visible", "shoulders visible", "back of head",
-        ],
+        "negative_strip": _CHARACTER_NEGATIVE_STRIP,
     },
 }
 
@@ -942,6 +947,30 @@ _SELF_INVISIBLE_PATTERNS = [
 ]
 
 
+# Lines that explicitly BAN third-person framing. Retune can't help here — it
+# rewrites "first-person", and these say "third-person" on purpose — so a line
+# like "FORBIDDEN: showing the player from behind" survives into a mode that
+# requires exactly that. Matched as "a prohibition AND a third-person framing
+# term in the same line", which is specific enough not to eat the directive's
+# own rules (none of which pair the two).
+_PROHIBITION_RE = re.compile(
+    r"❌|\bforbidden\b|\bnever\b|\bdo not\b|\bdon't\b|\bavoid\b|\binvalidate\b|"
+    r"\bbanned\b|\bnot allowed\b|\bwrong\b",
+    re.IGNORECASE,
+)
+_THIRD_PERSON_FRAMING_RE = re.compile(
+    r"third[-\s]person|over[-\s](?:the[-\s])?shoulder|behind\s+(?:the\s+)?character|"
+    r"following\s+(?:a\s+character|someone)|player\s+from\s+(?:behind|the\s+side)|"
+    r"character\s+from\s+behind|player'?s\s+body|character'?s\s+back|person'?s\s+back|"
+    r"chase\s+cam",
+    re.IGNORECASE,
+)
+
+
+def _forbids_visible_character(line: str) -> bool:
+    return bool(_PROHIBITION_RE.search(line) and _THIRD_PERSON_FRAMING_RE.search(line))
+
+
 def reconcile(text: str, spec: Optional[Dict[str, Any]] = None) -> str:
     """Strip lines that forbid exactly what the active mode requires."""
     if not text:
@@ -950,7 +979,10 @@ def reconcile(text: str, spec: Optional[Dict[str, Any]] = None) -> str:
     if not shows_character(spec):
         return text
     patterns = _ANTI_PERSON_LINE_PATTERNS + _SELF_INVISIBLE_PATTERNS
-    kept = [ln for ln in text.split("\n") if not any(p.search(ln) for p in patterns)]
+    kept = [
+        ln for ln in text.split("\n")
+        if not any(p.search(ln) for p in patterns) and not _forbids_visible_character(ln)
+    ]
     return "\n".join(kept)
 
 
@@ -970,15 +1002,23 @@ def negative_prompt(base: Optional[str] = None, spec: Optional[Dict[str, Any]] =
         base = PROMPTS.get("image_negative_prompt", "") or ""
     cfg = mode_config(spec)
 
-    parts = [p.strip() for p in re.split(r"[,\n]", base) if p.strip()]
     strip = [s.lower() for s in cfg["negative_strip"]]
-    kept = [p for p in parts if not any(s in p.lower() for s in strip)]
+    if strip:
+        # Split on commas AND sentence boundaries. The shipped negative prompt
+        # runs sentences together inside comma-separated clauses ("following
+        # someone. ABSOLUTELY NO: Black borders"), so clause-level removal alone
+        # would take unrelated bans down with the one being stripped.
+        parts = [p.strip() for p in re.split(r"[,\n]|(?<=\.)\s+", base) if p.strip()]
+        out = ", ".join(p for p in parts if not any(s in p.lower() for s in strip))
+    else:
+        # First person strips nothing, so leave the author's text exactly as
+        # written rather than reformatting it into a comma list.
+        out = base.strip()
 
-    for extra in cfg["negative_add"]:
-        if not any(extra.lower() in p.lower() for p in kept):
-            kept.append(extra)
-
-    return ", ".join(kept)
+    additions = [e for e in cfg["negative_add"] if e.lower() not in out.lower()]
+    if additions:
+        out = (out + ", " if out else "") + ", ".join(additions)
+    return out
 
 
 # ═══════════════════════════════════════════════════════════════════════════
