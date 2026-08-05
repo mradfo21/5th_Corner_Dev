@@ -1,3 +1,58 @@
+# 🔧 CHANGELOG - August 5, 2026
+
+## 🎬 Cast & Camera: play as your own character, in your own level, from your own angle
+
+**Files:** `game_identity.py` (new), `prompts/simulation_prompts*.json`,
+`engine.py`, `choices.py`, `evolve_prompt_file.py`, `gemini_image_utils.py`,
+`krea_image_utils.py`, `fal_image_utils.py`, `api.py`, `world_studio.html`,
+`static/js/standalone.js`, `static/css/standalone.css`,
+`templates/standalone.html`, `test_game_identity.py` (new),
+`CAST_AND_CAMERA.md` (new)
+
+The sim was fully re-authorable but three things a player cares about weren't
+addressable at all: **who am I**, **where am I**, and **where's the camera**. The
+protagonist was hardcoded prose (plus "Jason Fleece" in ~12 strings), the opening
+shot was a hardcoded list of five Horizon descriptions, and "first person" was
+~40 hardcoded strings rather than a setting. Neither editor could attach an image.
+
+- **The cast sheet** — a structured spec (`player_character` /
+  `setting_reference` / `camera_perspective`) stored inside
+  `prompts/simulation_prompts.json`, so `prompts_store` hot-reloads it and
+  `worlds_store` snapshots it: **saving a world now carries your protagonist,
+  your level, and your camera**, and loading one swaps the whole package.
+- **Four perspectives** — first person, over the shoulder (RE4 / TLOU),
+  third-person follow cam (Tomb Raider), fixed cinematic (classic RE / Silent
+  Hill). Each is a complete contract: camera language, whether the body is in
+  frame, how the narrator refers to you, and its own negative-prompt deltas.
+- **A four-stage prompt pipeline**, because perspective can't just be appended to
+  prompts saturated with first-person language: **compile** an authoritative
+  camera/cast/location directive on top → **retune** perspective nouns inline,
+  case-preserving (and recast the shipped protagonist's name to yours) →
+  **reconcile** away lines that contradict the mode (the anti-person rules have
+  to go once you've asked to see your character) → **negate** with a negative
+  prompt that stops banning whichever perspective you just selected.
+- **Reference plates** — a character sheet and a photo of the level, stored under
+  `assets/references/` and threaded into the image call as extra img2img
+  references, annotated so the model treats them as an identity/place anchor
+  rather than "the previous frame". Behind the continuity frame on later turns;
+  **leading on frame 0**, which is what turns a photo of a place into an actual
+  opening shot of your level.
+- **World Studio** gets a new leftmost **Cast & Camera** zone (Your Character /
+  The Level / Camera & Perspective) with structured forms, a 2×2 perspective
+  picker, drag/drop/paste image zones, and a live pane showing the exact text
+  each block compiles to.
+- **The in-game World Editor** gets the same as a leading **Cast & Camera** tab,
+  so the game can be redirected mid-run.
+- **World evolution now preserves the sheet** — the per-turn `world_prompt`
+  rewrite was laundering your character back into the shipped photojournalist
+  within a few turns.
+
+Every helper is a no-op while the sheet sits at its defaults, so the shipped
+experience is unchanged until someone actually directs it. 46 offline tests in
+`test_game_identity.py`; see `CAST_AND_CAMERA.md` for the full design.
+
+---
+
 # 🔧 CHANGELOG - July 21, 2026
 
 ## 🐚 Happy Oyster: full ability surface wired into the UX

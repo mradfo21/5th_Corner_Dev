@@ -20,7 +20,7 @@ Every scene is generated in real-time by AI. Every choice matters. Death is perm
 - 🎬 **Death Replays** - Every run saved as a VHS tape GIF
 - 🤖 **Auto-Play Mode** - Watch the AI play itself
 - 🎨 **HD Toggle** - Switch between fast/quality image generation
-- 👁️ **First-Person POV** - Immersive bodycam-style perspective
+- 🎬 **Cast & Camera** - Play as your own character, in your own level, from first or third person — with reference images the renderer actually uses ([docs](CAST_AND_CAMERA.md))
 
 ---
 

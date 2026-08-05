@@ -56,6 +56,7 @@ test_*.py
 !test_cost_tracker.py
 !test_analytics_api.py
 !test_prompts_store.py
+!test_game_identity.py
 
 # Autoplay run artifacts
 autoplay_report.json
