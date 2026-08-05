@@ -197,6 +197,99 @@ def test_companions_endpoint_lists_roster():
     assert kane["portrait_url"] == "/images/companion_kane.png"
 
 
+def test_resolve_voice_reuses_companion_voice_id():
+    # Continuing-story: talking to a known companion must reuse their stored
+    # ElevenLabs voice_id instead of designing a fresh one every scene.
+    sid = "test_companion_voice_reuse"
+    st = engine._load_state(sid) or {}
+    st["companions"] = {}
+    st["characters"] = {}
+    st["world_prompt"] = "a flooded subway"
+    engine._save_state(st, sid)
+    preset = "cjVigY5qzO86Huf0OWal"  # Eric — known voices.json id
+    seed = "a low gravelly wary male voice mid-40s tired analog horror."
+    engine._record_companion_voice(sid, {"label": "Kane", "kind": "person"}, {
+        "voice_id": preset,
+        "description": seed,
+        "source": "designed",
+        "status": "ready",
+        "cache_key": "deadbeefdeadbeef",
+        "model": "eleven_ttv_v3",
+    })
+    resolved = engine.resolve_voice_for_subject(
+        {"label": "Kane", "kind": "person"}, sid, world_prompt="somewhere else"
+    )
+    assert resolved["voice_id"] == preset
+    assert resolved["source"] == "companion"
+    assert resolved["status"] == "ready"
+    assert "gravelly" in resolved["description"]
+
+
+def test_companion_regenerate_voice_endpoint():
+    import api
+    from unittest import mock
+
+    sid = "test_companion_regen_api"
+    st = engine._load_state(sid) or {}
+    st["companions"] = {}
+    st["characters"] = {}
+    st["world_prompt"] = "campfire"
+    engine._save_state(st, sid)
+    seed = "a low gravelly wary male voice mid-40s tired analog horror."
+    engine._record_companion(sid, {"label": "Kane", "kind": "person"},
+                             "/images/companion_kane.png")
+    engine._record_companion_voice(sid, {"label": "Kane", "kind": "person"}, {
+        "voice_id": "cjVigY5qzO86Huf0OWal",
+        "description": seed,
+        "source": "designed",
+        "status": "ready",
+        "cache_key": "oldkeyoldkeyoldk",
+        "model": "eleven_ttv_v3",
+    })
+
+    fake = {
+        "voice_id": "voice_gv_regen",
+        "cache_key": "newkeynewkeynewk",
+        "source": "designed",
+        "status": "ready",
+        "description": seed,
+    }
+    c = api.app.test_client()
+    with mock.patch("voice_design.regenerate_voice", return_value=fake), \
+         mock.patch("voice_design.is_available", return_value=True):
+        r = c.post("/api/companions/regenerate_voice", json={
+            "label": "Kane", "session_id": sid, "wait": 0.5,
+        })
+    assert r.status_code == 200, r.get_data(as_text=True)
+    data = r.get_json()
+    assert data["label"] == "Kane"
+    assert data["voice"]["voice_id"] == "voice_gv_regen"
+    assert data["voice"]["status"] == "ready"
+    # Roster updated to the new id; description seed preserved.
+    st = engine._load_state(sid)
+    v = (st.get("companions") or {}).get("kane", {}).get("voice") or {}
+    assert v.get("voice_id") == "voice_gv_regen"
+    assert "gravelly" in (v.get("description") or "")
+
+    # Missing description → no_description (don't burn a design credit).
+    # Use a fresh session so the 2s rate-limit from the call above doesn't
+    # 429 this assertion.
+    sid2 = "test_companion_regen_nodesc"
+    st2 = engine._load_state(sid2) or {}
+    st2["companions"] = {}
+    engine._save_state(st2, sid2)
+    engine._record_companion_voice(sid2, {"label": "Mute", "kind": "person"}, {
+        "voice_id": "cjVigY5qzO86Huf0OWal", "description": "", "source": "fallback",
+        "status": "ready", "cache_key": None, "model": "",
+    })
+    with mock.patch("engine._rate_limited", return_value=False):
+        r2 = c.post("/api/companions/regenerate_voice", json={
+            "label": "Mute", "session_id": sid2,
+        })
+    assert r2.status_code == 200
+    assert r2.get_json().get("reason") == "no_description"
+
+
 if __name__ == "__main__":
     test_conversation_music_profile_is_intimate()
     test_build_portrait_prompt_uses_cinematic_anchor()
