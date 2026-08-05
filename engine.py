@@ -3267,24 +3267,44 @@ def generate_directive(session_id: str = "default") -> dict:
 
 # ───────── world report (with vision‑desc) ─────────────────────────────────
 def _world_report() -> str:
-    base = PROMPTS["field_notes_format"].format(
-        context=state["world_prompt"],
-        last_choice=state["last_choice"]
-    )
+    context = state.get("world_prompt", "")
+    last_choice = state.get("last_choice", "")
+
+    # `field_notes_format` has no {context}/{last_choice} placeholders by
+    # default, and str.format() silently swallows unused kwargs — so this used
+    # to pass the world state in and have it thrown away, leaving the model
+    # writing field notes about nothing. Substitute when the author HAS added
+    # the placeholders, otherwise append the context explicitly.
+    template = PROMPTS.get("field_notes_format", "") or ""
+    if "{context}" in template or "{last_choice}" in template:
+        base = template.format(context=context, last_choice=last_choice)
+    else:
+        base = (
+            f"{template}\n\n"
+            f"WORLD STATE: {context}\n"
+            f"LAST ACTION: {last_choice or '(none yet)'}"
+        )
+
     # Vision model disabled: do not use _vision_describe or add image description
     # Alternate tone based on phase and beat
     phase = state.get("current_phase", "normal")
-    beat = state.get("current_beat", None)
     if phase == "critical":
         tone = "suspenseful"
     elif phase == "escalating":
         tone = "mysterious"
     else:
         tone = "reflective"
-    prompt = (
-        f"{base}\n\n"
-        f"[{tone.upper()} TONE] {PROMPTS['situation_report_prompt']}"
+
+    # This used to read PROMPTS['situation_report_prompt'], a key that has never
+    # existed in simulation_prompts.json — so every call raised KeyError and took
+    # begin_tick() (and therefore autotest.py) down with it. The bulletin prompt
+    # it meant is `situation_summary_instructions`; read it defensively so a
+    # missing prompt can degrade instead of killing a turn.
+    bulletin = PROMPTS.get(
+        "situation_summary_instructions",
+        "Describe what is happening NOW in 1-2 sentences.",
     )
+    prompt = f"{base}\n\n[{tone.upper()} TONE] {bulletin}"
     # Don't use lore - this is just a summary of current state
     return _ask(prompt, tokens=60, use_lore=False)
 

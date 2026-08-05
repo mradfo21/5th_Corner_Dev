@@ -372,9 +372,11 @@ PROMPT_SCHEMA: List[Dict[str, Any]] = [
         "label": "Field Notes Format",
         "group": "narrative",
         "type": "longtext",
-        "description": "Format/voice rules for the player's in-universe field notes / journal entries.",
+        "description": "Format/voice rules for the player's in-universe field notes / journal entries. Optionally place {context} (the world state) and {last_choice} (the action just taken) wherever you want them — leave them out and they're appended below your rules instead.",
         "code_refs": ["engine.py"],
         "live": True,
+        "format_safe_required": True,
+        "format_vars": ["context", "last_choice"],
     },
     {
         "id": "player_choice_generation_instructions",

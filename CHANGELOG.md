@@ -1,5 +1,33 @@
 # 🔧 CHANGELOG - August 5, 2026
 
+## 🐛 Two long-standing prompt bugs
+
+**Files:** `engine.py`, `prompts_store.py`, `krea_image_utils.py`
+
+- **`_world_report()` raised `KeyError` on every call.** It read
+  `PROMPTS['situation_report_prompt']`, a key that has never existed in
+  `simulation_prompts.json`. That took `begin_tick()` down with it, which is
+  what `autotest.py` drives — so the automated harness couldn't complete a tick.
+  It now reads `situation_summary_instructions` (the bulletin prompt it meant)
+  defensively, so a missing prompt degrades instead of killing a turn.
+- **Field notes were written about nothing.** The same function called
+  `PROMPTS["field_notes_format"].format(context=..., last_choice=...)`, but that
+  template has no such placeholders — and `str.format()` silently discards
+  unused kwargs, so the world state and the player's last action were passed in
+  and thrown away. The context is now appended when the placeholders aren't
+  present, substituted in place when they are, and `{context}`/`{last_choice}`
+  are declared in the schema so the editor validates them either way.
+- **Krea was losing its continuity rules.** Krea clamps prompts at 5,000 chars,
+  and the shared art-direction block sat between the scene and the
+  spatial-lock/continuity rules, so those were cut off entirely — on the exact
+  render path whose only job is continuity. Each template now leads with its own
+  mode-specific delta before the shared blocks (better ordering for every
+  provider, since a rule buried 4,000 chars down gets ignored), and Krea's local
+  `_PHOTOGRAPHIC_ANCHOR` was dropped because `image_art_direction` now says all
+  of it.
+
+---
+
 ## 🎨 One place to direct the world's look (+ a truncation bug that ate half every prompt)
 
 **Files:** `prompts/simulation_prompts*.json`, `prompts_store.py`,

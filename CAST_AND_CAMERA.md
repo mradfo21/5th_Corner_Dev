@@ -242,6 +242,6 @@ since they still have all that material written inline.
 python3 -m unittest test_game_identity -v
 ```
 
-46 offline tests covering normalization, all four pipeline stages, the reference
+49 offline tests covering normalization, all four pipeline stages, the reference
 store (including path-traversal rejection and size limits), every mode
 compiling, and — most importantly — that the defaults are a genuine no-op.

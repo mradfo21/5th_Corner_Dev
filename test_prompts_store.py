@@ -128,6 +128,17 @@ class PromptsStoreTestCase(unittest.TestCase):
         for key in ps.IMAGE_TEMPLATE_KEYS:
             self.assertIn("CAMERA: locked tripod", ps.render_image_template(key, "scene"))
 
+    def test_each_template_leads_with_its_own_delta(self):
+        # Ordering matters twice over: a mode-specific rule buried 4,000 chars
+        # down gets ignored, and Krea clamps the prompt at 5,000 chars — which
+        # was cutting the i2i spatial-lock rules off entirely.
+        for key in ps.IMAGE_TEMPLATE_KEYS:
+            tmpl = ps.PROMPTS[key]
+            self.assertLess(tmpl.index("{prompt}"), tmpl.index("{art_direction}"),
+                            f"{key}: the scene must come first")
+            self.assertLess(tmpl.index("{art_direction}"), tmpl.index("{camera_rules}"),
+                            f"{key}: art direction before the long camera rulebook")
+
     def test_each_template_keeps_only_its_own_delta(self):
         t2i = ps.render_image_template("gemini_text_to_image_instructions", "scene")
         i2i = ps.render_image_template("gemini_image_to_image_instructions", "scene")

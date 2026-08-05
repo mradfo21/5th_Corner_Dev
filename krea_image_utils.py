@@ -140,24 +140,19 @@ def _person_rule() -> str:
     """Whichever person rule the active camera perspective actually wants."""
     return _HERO_PRESENT if game_identity.shows_character() else _ANTI_PERSON
 
-_PHOTOGRAPHIC_ANCHOR = (
-    "OPTICAL REALITY - REAL FOOTAGE: real light captured through real glass optics "
-    "onto physical magnetic videotape. This is photographic reality, NOT a video "
-    "game, 3D render, CGI, or digital art. Messy, irregular, weathered surfaces; "
-    "atmospheric depth; soft diffuse natural light; organic texture. Recorded onto "
-    "1990s consumer VHS tape: subtle grain, gentle noise, slight color shift. "
-    "Looks like early-1990s amateur camcorder / news B-roll / surveillance footage."
-)
-
-
 def _clamp(prompt: str, limit: int = 5000) -> str:
     return prompt if len(prompt) <= limit else prompt[:limit]
 
 
-# The shared Gemini templates are very long; the critical, Krea-specific
-# instructions (scene, continuity, time-of-day, anchors) are placed BEFORE the
-# verbose template so they always survive the character clamp — only the
-# generic tail of the template is trimmed.
+# The shared templates are long and Krea clamps at 5,000 chars, so the short,
+# Krea-specific guards (no text, no borders, person rule, time of day) go BEFORE
+# the template and only its generic tail is trimmed.
+#
+# There used to be a local _PHOTOGRAPHIC_ANCHOR block here too ("real light
+# through real glass optics onto physical magnetic videotape..."). It's gone:
+# `image_art_direction` now says all of that in its CAMERA & FILM STOCK /
+# OPTICAL PROPERTIES / TAPE DEGRADATION sections, and repeating it here only ate
+# into the budget that the templates' own mode-critical rules need.
 
 def _time_injection(time_of_day: str) -> str:
     if not time_of_day:
@@ -170,7 +165,7 @@ def _time_injection(time_of_day: str) -> str:
 
 def _build_text2img_prompt(prompt: str, time_of_day: str = "") -> str:
     structured = prompts_store.render_image_template("gemini_text_to_image_instructions", prompt)
-    head = [_ANTI_TIMECODE, _time_injection(time_of_day), _ANTI_BORDER, _person_rule(), _PHOTOGRAPHIC_ANCHOR]
+    head = [_ANTI_TIMECODE, _time_injection(time_of_day), _ANTI_BORDER, _person_rule()]
     parts = [p for p in head if p] + [structured]
     return _clamp(_sanitize_for_safety(game_identity.apply("\n\n".join(parts), "raw")))
 
@@ -187,7 +182,7 @@ def _build_img2img_prompt(prompt: str, time_of_day: str = "", is_flipbook: bool 
     head = [_ANTI_TIMECODE, continuity, _time_injection(time_of_day)]
     if not is_flipbook:
         head.append(_ANTI_BORDER)
-    head.extend([_person_rule(), _PHOTOGRAPHIC_ANCHOR])
+    head.append(_person_rule())
     parts = [p for p in head if p] + [structured]
     return _clamp(_sanitize_for_safety(game_identity.apply("\n\n".join(parts), "raw")))
 
