@@ -188,6 +188,8 @@
     weFields: document.getElementById("we-fields"),
     weCast: document.getElementById("we-cast"),
     weWide: document.getElementById("we-wide"),
+    weFontDown: document.getElementById("we-font-down"),
+    weFontUp: document.getElementById("we-font-up"),
     weResize: document.getElementById("we-resize"),
     weWorlds: document.getElementById("we-worlds"),
     weWorldsList: document.getElementById("we-worlds-list"),
@@ -3767,11 +3769,12 @@
     const WEM_FONT_KEY = "we.editorFontPx";
     const WEM_WRAP_KEY = "we.editorWrap";
     const WEM_LINES_KEY = "we.editorLines";
-    const WEM_MIN_FONT = 11, WEM_MAX_FONT = 26;
+    const WEM_MIN_FONT = 12, WEM_MAX_FONT = 34;
+    const WEM_DEFAULT_FONT = 18;
 
     let modalKey = null;        // which prompt is open, or null
     let modalOpenValue = "";    // value when it opened (Cancel target)
-    let modalFont = 15;
+    let modalFont = WEM_DEFAULT_FONT;
     let modalWrap = true;
     let modalLines = true;
     let modalDiff = false;
@@ -3783,7 +3786,8 @@
     function lsSet(key, value) { try { localStorage.setItem(key, String(value)); } catch (_) {} }
 
     function loadModalPrefs() {
-      modalFont = Math.min(WEM_MAX_FONT, Math.max(WEM_MIN_FONT, parseInt(lsGet(WEM_FONT_KEY, "15"), 10) || 15));
+      modalFont = Math.min(WEM_MAX_FONT, Math.max(WEM_MIN_FONT,
+        parseInt(lsGet(WEM_FONT_KEY, String(WEM_DEFAULT_FONT)), 10) || WEM_DEFAULT_FONT));
       modalWrap = lsGet(WEM_WRAP_KEY, "1") !== "0";
       modalLines = lsGet(WEM_LINES_KEY, "1") !== "0";
     }
@@ -4075,6 +4079,50 @@
         modalFont = Math.max(WEM_MIN_FONT, modalFont - 1); lsSet(WEM_FONT_KEY, modalFont); applyModalPrefs();
       });
       window.addEventListener("resize", () => { if (modalIsOpen()) renderGutter(); });
+    }
+
+    // ── Editor text size ──────────────────────────────────────────────
+    // Every type size in the panel and the pop-out is a multiple of --we-fs, so
+    // this one control scales the whole surface. Persisted, because the right
+    // size depends on the display and the eyes in front of it.
+    const WE_FS_KEY = "we.textScale";
+    const WE_FS_MIN = 0.9, WE_FS_MAX = 1.8, WE_FS_STEP = 0.1, WE_FS_DEFAULT = 1.15;
+    let textScale = WE_FS_DEFAULT;
+
+    function applyTextScale() {
+      document.documentElement.style.setProperty("--we-fs", String(textScale));
+      if (el.weFontDown) el.weFontDown.disabled = textScale <= WE_FS_MIN + 1e-9;
+      if (el.weFontUp) el.weFontUp.disabled = textScale >= WE_FS_MAX - 1e-9;
+      // The pop-out's line-number gutter is measured in pixels, so it has to be
+      // re-laid-out whenever surrounding metrics change.
+      if (modalIsOpen()) renderGutter();
+    }
+
+    function stepTextScale(delta) {
+      const next = Math.min(WE_FS_MAX, Math.max(WE_FS_MIN, textScale + delta));
+      textScale = Math.round(next * 100) / 100;
+      lsSet(WE_FS_KEY, textScale);
+      applyTextScale();
+      toast("Editor text " + Math.round(textScale * 100) + "%");
+    }
+
+    function initTextScale() {
+      const stored = parseFloat(lsGet(WE_FS_KEY, ""));
+      if (stored >= WE_FS_MIN && stored <= WE_FS_MAX) textScale = stored;
+      applyTextScale();
+      if (el.weFontUp) el.weFontUp.addEventListener("click", () => stepTextScale(WE_FS_STEP));
+      if (el.weFontDown) el.weFontDown.addEventListener("click", () => stepTextScale(-WE_FS_STEP));
+      // Double-click either half to get back to the default.
+      [el.weFontUp, el.weFontDown].forEach((b) => {
+        if (!b) return;
+        b.addEventListener("dblclick", (e) => {
+          e.preventDefault();
+          textScale = WE_FS_DEFAULT;
+          lsSet(WE_FS_KEY, textScale);
+          applyTextScale();
+          toast("Editor text reset");
+        });
+      });
     }
 
     // ── Panel width: drag to resize, remembered across sessions ───────
@@ -4500,6 +4548,7 @@
       if (el.weApply) el.weApply.addEventListener("click", applyLive);
       if (el.weRestart) el.weRestart.addEventListener("click", saveAndRestart);
       if (el.weRevert) el.weRevert.addEventListener("click", revertToStart);
+      initTextScale();
       initResize();
       initModal();
       if (el.weWorldSave) el.weWorldSave.addEventListener("click", saveWorld);
