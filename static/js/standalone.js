@@ -3504,6 +3504,35 @@
     }
     function anyDirty() { return Object.keys(edits).length > 0; }
 
+    // The two image templates pull the shared Art Direction / Camera Rules
+    // blocks in through {art_direction} / {camera_rules}. Deleting a
+    // placeholder is legal — you might want a fully bespoke template — but it
+    // means edits to the shared field stop reaching this render path, which is
+    // invisible from the resulting image. Say so.
+    //
+    // Derived from the field's CURRENT text rather than a value fetched at
+    // load, so it can't go stale the moment you save a template.
+    const SHARED_IMAGE_VARS = ["art_direction", "camera_rules"];
+
+    function setHint(node, key) {
+      const note = sharedWiringNote(key);
+      node.textContent = note || "Double-click the text (or hit Expand) to edit full-screen.";
+      node.classList.toggle("warn", note.startsWith("\u26a0"));
+    }
+
+    function sharedWiringNote(key) {
+      const f = schemaFields().find((x) => x.id === key);
+      const shared = ((f && f.format_vars) || []).filter((v) => SHARED_IMAGE_VARS.includes(v));
+      if (!shared.length) return "";
+      const text = String(valOf(key) || "");
+      const missing = shared.filter((v) => !text.includes("{" + v + "}"));
+      if (!missing.length) {
+        return "Pulls in the shared Art Direction + Camera Rules. Edit those to change the world.";
+      }
+      return "⚠ This template no longer includes " + missing.map((v) => "{" + v + "}").join(" or ") +
+             ", so edits to that shared field won't reach this render path.";
+    }
+
     function refreshDirtyBadge() {
       if (el.weDirty) el.weDirty.classList.toggle("hidden", !anyDirty());
     }
@@ -3577,6 +3606,9 @@
         const base = (content.prompts && content.prompts[key] != null) ? content.prompts[key] : "";
         if (ta.value === base) delete edits[key]; else edits[key] = ta.value;
         wrap.classList.toggle("modified", ta.value !== defOf(key));
+        // Keep the shared-wiring note honest while a placeholder is being
+        // typed or deleted, not just after a save.
+        setHint(hint, key);
         refreshDirtyBadge();
       });
       // Double-click anywhere in the text is the fastest route to the big editor.
@@ -3600,7 +3632,7 @@
 
       const hint = document.createElement("div");
       hint.className = "we-field-hint";
-      hint.textContent = "Double-click the text (or hit Expand) to edit full-screen.";
+      setHint(hint, key);
 
       wrap.appendChild(top); wrap.appendChild(desc); wrap.appendChild(ta);
       wrap.appendChild(foot); wrap.appendChild(warn); wrap.appendChild(hint);

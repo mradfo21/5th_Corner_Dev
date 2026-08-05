@@ -936,7 +936,7 @@ const ZONES = {
     world:        { x: 700,  y: 40, w: 600,  h: 640, label: 'World & Setting',     desc: 'What the story is grounded in' },
     narrative:    { x: 1360, y: 40, w: 920,  h: 640, label: 'Narrative Engine',     desc: 'Turns an action into what you read & see' },
     submissions:  { x: 2340, y: 40, w: 520,  h: 640, label: 'Player Submissions',   desc: 'What actions you can even submit' },
-    image:        { x: 2920, y: 40, w: 640,  h: 900, label: 'Image Generation',     desc: 'What the camera actually renders' },
+    image:        { x: 2920, y: 40, w: 640,  h: 990, label: 'Image Generation',     desc: 'What the camera actually renders' },
 };
 
 // Explicit per-field position within its zone (relative to zone x/y).
@@ -954,10 +954,14 @@ const CARD_POSITIONS = {
 
     player_choice_generation_instructions:   { x: 30,  y: 30,  w: 460, h: 560, size: 'lg' },
 
-    gemini_text_to_image_instructions:       { x: 30,  y: 30,  w: 580, h: 260, size: 'md' },
-    gemini_image_to_image_instructions:      { x: 30,  y: 320, w: 580, h: 260, size: 'md' },
-    image_negative_prompt:                   { x: 30,  y: 610, w: 280, h: 230, size: 'md' },
-    gemini_flipbook_4panel_prefix:           { x: 330, y: 610, w: 280, h: 230, size: 'md' },
+    // Image zone reads top-down: the shared direction you actually edit, then
+    // the two thin per-mode templates that pull it in, then the extras.
+    image_art_direction:                     { x: 30,  y: 30,  w: 580, h: 250, size: 'lg' },
+    image_camera_rules:                      { x: 30,  y: 300, w: 580, h: 200, size: 'md' },
+    gemini_text_to_image_instructions:       { x: 30,  y: 520, w: 280, h: 200, size: 'md' },
+    gemini_image_to_image_instructions:      { x: 330, y: 520, w: 280, h: 200, size: 'md' },
+    image_negative_prompt:                   { x: 30,  y: 740, w: 280, h: 190, size: 'md' },
+    gemini_flipbook_4panel_prefix:           { x: 330, y: 740, w: 280, h: 190, size: 'md' },
 };
 
 // Identity blocks aren't in PROMPT_SCHEMA (different shape, different save

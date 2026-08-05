@@ -190,6 +190,54 @@ def editable_keys(data: Optional[Dict[str, Any]] = None) -> List[str]:
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# Image template rendering
+#
+# The first-frame (text-to-image) and continuation (image-to-image) templates
+# used to be near-duplicates — 81 of their ~130 lines were identical — so
+# redirecting how the world LOOKS meant editing the same paragraphs twice and
+# hoping they stayed in sync. The shared material now lives in two fields:
+#
+#   image_art_direction  — the creative dial: era, film stock, palette, horror
+#                          register. This is the ONE field you edit to redirect
+#                          the world's look.
+#   image_camera_rules   — the mechanical rulebook: POV, human body physics,
+#                          framing, what may be in frame, no-text bans.
+#
+# Both are substituted into the two templates via {art_direction} and
+# {camera_rules}, leaving each template holding only its genuine delta (a first
+# frame has nothing to continue from; a continuation has a reference to honour).
+#
+# Every image provider renders through `render_image_template` so there is a
+# single place this composition happens.
+# ─────────────────────────────────────────────────────────────────────────
+
+ART_DIRECTION_KEY = "image_art_direction"
+CAMERA_RULES_KEY = "image_camera_rules"
+IMAGE_TEMPLATE_KEYS = (
+    "gemini_text_to_image_instructions",
+    "gemini_image_to_image_instructions",
+)
+# The placeholders a template uses to pull the shared blocks in.
+SHARED_IMAGE_VARS = ("art_direction", "camera_rules")
+
+
+def render_image_template(template_key: str, prompt: str) -> str:
+    """Render an image template with the scene and the shared direction blocks.
+
+    Templates that don't reference `{art_direction}` / `{camera_rules}` are
+    rendered as-is. That's the backwards-compatible path: an install whose
+    prompts were customized before this split still has all that material
+    written inline, and injecting it again would duplicate it.
+    """
+    template = PROMPTS.get(template_key, "") or ""
+    return template.format(
+        prompt=prompt,
+        art_direction=PROMPTS.get(ART_DIRECTION_KEY, "") or "",
+        camera_rules=PROMPTS.get(CAMERA_RULES_KEY, "") or "",
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # Placeholder validation
 #
 # A handful of fields are run through Python's `str.format(**kwargs)` at
@@ -230,26 +278,43 @@ def _brace_balance_error(value: str) -> Optional[str]:
 def validate_prompt_value(key: str, value: Any) -> Tuple[bool, List[str]]:
     """Validate a candidate new value for `key` before it's saved.
 
-    Returns (ok, warnings). `ok=False` means the value would very likely
+    Returns (ok, messages). `ok=False` means the value would very likely
     crash the game at runtime the next time this field is used, and the
     caller should require an explicit override to save it anyway. Fields
     that aren't run through `.format()` always return ok=True (their braces
     are always literal/safe).
+
+    Messages can also be purely advisory — dropping `{art_direction}` from an
+    image template is a legitimate choice (a fully bespoke template), but it
+    silently disconnects that render path from the shared direction, which is
+    invisible from the resulting image. Those warn without blocking the save.
     """
     field = PROMPT_SCHEMA_BY_ID.get(key)
-    warnings: List[str] = []
+    blocking: List[str] = []
+    advisory: List[str] = []
 
-    if field is None or not field.get("format_safe_required"):
-        return True, warnings
+    if field is None or not isinstance(value, str):
+        return True, []
 
-    if not isinstance(value, str):
-        return True, warnings
+    if key in IMAGE_TEMPLATE_KEYS:
+        dropped = [v for v in SHARED_IMAGE_VARS if f"{{{v}}}" not in value]
+        if dropped:
+            advisory.append(
+                "This template no longer includes "
+                + " or ".join(f"{{{v}}}" for v in dropped)
+                + ", so edits to that shared field will not reach this render "
+                "path. That's fine if you meant to write a fully bespoke "
+                "template — otherwise put the placeholder back."
+            )
+
+    if not field.get("format_safe_required"):
+        return True, advisory
 
     allowed = set(field.get("format_vars", []))
     found = set(find_placeholders(value))
     unknown = sorted(found - allowed)
     if unknown:
-        warnings.append(
+        blocking.append(
             "Unknown placeholder(s) "
             + ", ".join(f"{{{u}}}" for u in unknown)
             + f" — only {', '.join('{' + v + '}' for v in sorted(allowed)) or '(none)'} "
@@ -259,9 +324,9 @@ def validate_prompt_value(key: str, value: Any) -> Tuple[bool, List[str]]:
 
     brace_error = _brace_balance_error(value)
     if brace_error:
-        warnings.append(brace_error)
+        blocking.append(brace_error)
 
-    return (len(warnings) == 0), warnings
+    return (len(blocking) == 0), blocking + advisory
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -327,26 +392,44 @@ PROMPT_SCHEMA: List[Dict[str, Any]] = [
         ],
     },
     {
+        "id": "image_art_direction",
+        "label": "Art Direction (shared)",
+        "group": "image",
+        "type": "longtext",
+        "description": "★ THE ONE FIELD TO EDIT TO REDIRECT HOW THE WORLD LOOKS. Era, allowed subject matter, camera/film stock, palette, degradation, horror register. Injected into BOTH image templates below via {art_direction}, so a change here reaches the first frame and every continuation at once.",
+        "code_refs": ["gemini_image_utils.py", "krea_image_utils.py"],
+        "live": True,
+    },
+    {
+        "id": "image_camera_rules",
+        "label": "Camera Rules (shared)",
+        "group": "image",
+        "type": "longtext",
+        "description": "The mechanical rulebook, shared by both image templates via {camera_rules}: POV, human-body camera physics, framing distance, what may appear in frame, and the no-text/no-border bans. Rarely needs touching — art direction is the creative dial.",
+        "code_refs": ["gemini_image_utils.py", "krea_image_utils.py"],
+        "live": True,
+    },
+    {
         "id": "gemini_text_to_image_instructions",
         "label": "Image Gen — First Frame (text-to-image)",
         "group": "image",
         "type": "longtext",
-        "description": "Wraps every intro/first-shot image prompt — camera, POV, film stock, and safety framing rules.",
+        "description": "Only what's unique to the FIRST frame: the scene slot and the fact that there's no reference to continue from. Shared look and camera rules come in via {art_direction} and {camera_rules} — edit those to change the world, not this.",
         "code_refs": ["gemini_image_utils.py"],
         "live": True,
         "format_safe_required": True,
-        "format_vars": ["prompt"],
+        "format_vars": ["prompt", "art_direction", "camera_rules"],
     },
     {
         "id": "gemini_image_to_image_instructions",
         "label": "Image Gen — Continuation (image-to-image)",
         "group": "image",
         "type": "longtext",
-        "description": "Wraps every subsequent-turn image prompt — spatial continuity, POV, and visual style rules that keep frames coherent.",
+        "description": "Only what's unique to a CONTINUATION: honouring the reference frame as a spatial lock, scaling change to the action, and not 'cleaning up' the reference's grain. Shared look and camera rules come in via {art_direction} and {camera_rules}.",
         "code_refs": ["gemini_image_utils.py", "krea_image_utils.py", "fal_image_utils.py"],
         "live": True,
         "format_safe_required": True,
-        "format_vars": ["prompt"],
+        "format_vars": ["prompt", "art_direction", "camera_rules"],
     },
     {
         "id": "image_negative_prompt",

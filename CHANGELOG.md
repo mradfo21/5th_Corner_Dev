@@ -1,5 +1,46 @@
 # 🔧 CHANGELOG - August 5, 2026
 
+## 🎨 One place to direct the world's look (+ a truncation bug that ate half every prompt)
+
+**Files:** `prompts/simulation_prompts*.json`, `prompts_store.py`,
+`gemini_image_utils.py`, `krea_image_utils.py`, `engine.py`, `api.py`,
+`world_studio.html`, `static/js/standalone.js`, `static/css/standalone.css`,
+`test_prompts_store.py`
+
+The first-frame and continuation image templates were near-duplicates — **81 of
+their ~130 lines were identical** — so changing the world's art direction meant
+editing the same paragraphs twice and hoping they stayed in sync.
+
+- **Two shared fields.** `image_art_direction` is the creative dial (era, film
+  stock, palette, horror register) and the one field you edit to redirect how the
+  world looks. `image_camera_rules` is the mechanical rulebook (POV, body
+  physics, framing, no-text bans). Both are injected into the two templates via
+  `{art_direction}` / `{camera_rules}`, so **one edit reaches both render paths**.
+  7,000 characters of duplication removed.
+- **The templates now hold only their deltas** — a first frame has nothing to
+  continue from; a continuation has a reference to honour as a spatial lock.
+- **One render path.** Every provider goes through
+  `prompts_store.render_image_template()`.
+- **Disconnect warning.** Deleting a placeholder is legal, but it silently cuts
+  that render path off from the shared direction. Both editors now warn live
+  under the field as you type, and the save API returns a non-blocking advisory.
+- **Backwards compatible.** A pre-split template with no placeholders renders
+  exactly as before — it still has all that material inline, so injecting it
+  again would duplicate it.
+
+**Bug found while measuring this:** the assembled prompt was being truncated at
+**5,000 characters**, but the t2i template alone was 9,281 chars and the i2i one
+13,466. Roughly 10,000–14,000 characters were being silently discarded on every
+single image — including the entire `WHAT IS IN FRAME` list, all the
+no-text/no-border bans, the optical-reality anchor, and the negative prompt,
+because those are appended *after* the template. Editing any of them had no
+effect on the image. The cap is now a 24,000-char sanity bound (well inside what
+Gemini's image models accept) that logs loudly if it ever trips, and the dedup
+brought the assembled prompt comfortably back under it: **nothing is discarded
+now**.
+
+---
+
 ## 🎬 Cast & Camera: play as your own character, in your own level, from your own angle
 
 **Files:** `game_identity.py` (new), `prompts/simulation_prompts*.json`,

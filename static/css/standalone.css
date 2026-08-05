@@ -6609,6 +6609,11 @@ body.we-resizing #scene-frame, body.we-resizing iframe { pointer-events: none; }
   font-size: 10px; color: rgba(232, 224, 200, 0.34); margin-top: 5px;
   font-style: italic;
 }
+/* A hint that opens with ⚠ is reporting a disconnected shared placeholder —
+   read it as a warning, not as help text. */
+#world-editor .we-field-hint.warn {
+  color: #ffc9a0; font-style: normal;
+}
 #world-editor .we-field-foot {
   display: flex; align-items: center; justify-content: space-between;
   gap: 8px; margin-top: 7px;

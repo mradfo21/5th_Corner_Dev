@@ -40,6 +40,7 @@ import requests
 # Krea output stays visually consistent with the Gemini path (same VHS identity,
 # same content-filter softening) instead of duplicating that logic here.
 from gemini_image_utils import PROMPTS, _sanitize_for_safety
+import prompts_store
 
 # Cast sheet — decides whether the player's character belongs in frame and
 # rewrites the perspective language in the shared Gemini templates below.
@@ -168,14 +169,14 @@ def _time_injection(time_of_day: str) -> str:
 
 
 def _build_text2img_prompt(prompt: str, time_of_day: str = "") -> str:
-    structured = PROMPTS["gemini_text_to_image_instructions"].format(prompt=prompt)
+    structured = prompts_store.render_image_template("gemini_text_to_image_instructions", prompt)
     head = [_ANTI_TIMECODE, _time_injection(time_of_day), _ANTI_BORDER, _person_rule(), _PHOTOGRAPHIC_ANCHOR]
     parts = [p for p in head if p] + [structured]
     return _clamp(_sanitize_for_safety(game_identity.apply("\n\n".join(parts), "raw")))
 
 
 def _build_img2img_prompt(prompt: str, time_of_day: str = "", is_flipbook: bool = False) -> str:
-    structured = PROMPTS["gemini_image_to_image_instructions"].format(prompt=prompt)
+    structured = prompts_store.render_image_template("gemini_image_to_image_instructions", prompt)
     continuity = (
         "HOW TO USE THE STYLE REFERENCE(S): the reference image(s) show the "
         "PREVIOUS moment. Carry forward their palette, grain, lighting, time of day "

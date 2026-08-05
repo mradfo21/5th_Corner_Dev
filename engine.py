@@ -431,6 +431,7 @@ print(f"[ENGINE INIT] Source: os.getenv={bool(os.getenv('GEMINI_API_KEY'))}, con
 # up edits made through the World Studio editor on the next request, with no
 # process restart required.
 from prompts_store import PROMPTS
+import prompts_store
 
 # Cast sheet — who you play as, the level you play it in, and where the camera
 # sits (see game_identity.py). Lives in the same hot-reloaded prompt file, so
@@ -3898,7 +3899,7 @@ def _build_vhs_prompt(base_prompt: str, use_img2img: bool = False) -> str:
     else:
         template_key = "gemini_text_to_image_instructions"
     
-    structured_prompt = PROMPTS[template_key].format(prompt=base_prompt)
+    structured_prompt = prompts_store.render_image_template(template_key, base_prompt)
     
     # Add CRITICAL anti-border instructions
     anti_border = "\n\nCRITICAL - ABSOLUTELY NO BORDERS OR FRAMES:\nThe image MUST fill the ENTIRE canvas edge-to-edge with ZERO borders, frames, or edges of any kind. NO black bars, NO white borders, NO photo frames, NO matting, NO letterboxing. The content fills 100% of the image area. This is RAW FOOTAGE, not a framed photograph."

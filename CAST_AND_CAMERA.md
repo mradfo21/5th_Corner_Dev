@@ -209,6 +209,33 @@ directive server-side, and typing a sentence shouldn't fire forty of them.
 
 ---
 
+## Related: the shared image direction
+
+The two image templates (`gemini_text_to_image_instructions` for the first frame,
+`gemini_image_to_image_instructions` for every continuation) used to be
+near-duplicates — 81 of their ~130 lines were identical — so redirecting how the
+world *looks* meant editing the same paragraphs twice and hoping they stayed in
+sync. The shared material now lives in two fields:
+
+| Field | What it is |
+|---|---|
+| `image_art_direction` | **The creative dial.** Era, allowed subject matter, camera and film stock, palette, degradation, horror register. This is the one field to edit to redirect the world's look. |
+| `image_camera_rules` | The mechanical rulebook: POV, human-body camera physics, framing distance, what may appear in frame, no-text/no-border bans. Rarely touched. |
+
+Both are substituted into the templates through `{art_direction}` and
+`{camera_rules}` by `prompts_store.render_image_template()`, which every image
+provider now renders through. Each template keeps only its genuine delta: a
+first frame has nothing to continue from, and a continuation has a reference
+frame to honour as a spatial lock.
+
+Deleting a placeholder is legal — you might want a fully bespoke template — but
+it disconnects that render path from the shared direction, which is invisible
+from the resulting image. Both editors show a live warning under the field when
+that happens, and the save API returns it as a non-blocking advisory.
+
+Templates that predate the split (no placeholders) render exactly as before,
+since they still have all that material written inline.
+
 ## Tests
 
 ```bash

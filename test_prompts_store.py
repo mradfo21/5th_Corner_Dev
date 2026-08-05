@@ -24,8 +24,10 @@ SAMPLE_PROMPTS = {
     "story_progression_phases": ["Establish", "Explore", "Climax"],
     "action_consequence_instructions": "Describe consequences using {dispatch} only if used via f-string, not format().",
     "player_choice_generation_instructions": "Choices for {dispatch} and {seen_elements} and {recent_choices} and {caption} and {image_description} and {time_of_day} and {beat_nudge} and {situation_summary} and {injury_state}.",
-    "gemini_text_to_image_instructions": "SCENE:\n{prompt}",
-    "gemini_image_to_image_instructions": "SHOW:\n{prompt}",
+    "image_art_direction": "LOOK: 1993 VHS, muted palette.",
+    "image_camera_rules": "CAMERA: eye level, first-person, no text overlays.",
+    "gemini_text_to_image_instructions": "SCENE:\n{prompt}\n\n{art_direction}\n\n{camera_rules}",
+    "gemini_image_to_image_instructions": "SHOW:\n{prompt}\n\n{art_direction}\n\nHONOUR THE REFERENCE.\n\n{camera_rules}",
     "image_negative_prompt": "no CGI",
 }
 
@@ -101,6 +103,116 @@ class PromptsStoreTestCase(unittest.TestCase):
         ps.reset_all_prompts()
         self.assertEqual(dict(ps.PROMPTS), SAMPLE_PROMPTS)
 
+    # ── unified image templates ─────────────────────────────────────
+    #
+    # The two image templates used to be near-duplicates, so redirecting the
+    # world's look meant editing the same paragraphs twice. They now share
+    # `image_art_direction` + `image_camera_rules` through placeholders.
+
+    def test_render_image_template_injects_the_shared_blocks(self):
+        out = ps.render_image_template("gemini_text_to_image_instructions", "A muddy yard")
+        self.assertIn("A muddy yard", out)
+        self.assertIn("LOOK: 1993 VHS, muted palette.", out)
+        self.assertIn("CAMERA: eye level", out)
+
+    def test_one_art_direction_edit_reaches_both_render_paths(self):
+        # This is the whole point of the split.
+        ps.save_prompt_field("image_art_direction", "LOOK: 1982 Antarctic station, blue-grey.")
+        for key in ps.IMAGE_TEMPLATE_KEYS:
+            out = ps.render_image_template(key, "scene")
+            self.assertIn("1982 Antarctic station", out, f"{key} missed the shared edit")
+            self.assertNotIn("1993 VHS", out, f"{key} kept the stale direction")
+
+    def test_one_camera_rules_edit_reaches_both_render_paths(self):
+        ps.save_prompt_field("image_camera_rules", "CAMERA: locked tripod, no handheld.")
+        for key in ps.IMAGE_TEMPLATE_KEYS:
+            self.assertIn("CAMERA: locked tripod", ps.render_image_template(key, "scene"))
+
+    def test_each_template_keeps_only_its_own_delta(self):
+        t2i = ps.render_image_template("gemini_text_to_image_instructions", "scene")
+        i2i = ps.render_image_template("gemini_image_to_image_instructions", "scene")
+        self.assertIn("HONOUR THE REFERENCE.", i2i)
+        self.assertNotIn("HONOUR THE REFERENCE.", t2i)
+
+    def test_render_leaves_no_unresolved_placeholders(self):
+        for key in ps.IMAGE_TEMPLATE_KEYS:
+            self.assertEqual(ps.find_placeholders(ps.render_image_template(key, "scene")), [])
+
+    def test_template_without_placeholders_renders_untouched(self):
+        # Backwards compatibility: an install customized before the split still
+        # has all this material written inline, so injecting it would duplicate it.
+        ps.save_prompt_field("gemini_text_to_image_instructions",
+                             "OLD MONOLITHIC\nSCENE: {prompt}\nrules inline")
+        out = ps.render_image_template("gemini_text_to_image_instructions", "scene")
+        self.assertEqual(out, "OLD MONOLITHIC\nSCENE: scene\nrules inline")
+        self.assertNotIn("LOOK: 1993 VHS", out)
+
+    def test_partial_wiring_injects_only_what_is_referenced(self):
+        ps.save_prompt_field("gemini_text_to_image_instructions", "SCENE: {prompt}\n{art_direction}")
+        out = ps.render_image_template("gemini_text_to_image_instructions", "scene")
+        self.assertIn("LOOK: 1993 VHS", out)
+        self.assertNotIn("CAMERA: eye level", out)
+
+    def test_missing_shared_field_renders_empty_rather_than_raising(self):
+        ps.save_prompt_field("image_art_direction", None)
+        # Must not raise — a half-migrated file shouldn't break a running turn.
+        self.assertIn("scene", ps.render_image_template("gemini_text_to_image_instructions", "scene"))
+
+    def test_dropping_a_shared_placeholder_warns_but_does_not_block(self):
+        # Writing a fully bespoke template is legitimate, so this must not stop
+        # the save — but it silently disconnects the shared direction from that
+        # render path, which is invisible from the image, so it has to be said.
+        ok, msgs = ps.validate_prompt_value(
+            "gemini_image_to_image_instructions", "SHOW: {prompt}")
+        self.assertTrue(ok)
+        self.assertEqual(len(msgs), 1)
+        self.assertIn("{art_direction}", msgs[0])
+        self.assertIn("{camera_rules}", msgs[0])
+
+    def test_partially_dropped_placeholder_names_only_the_missing_one(self):
+        ok, msgs = ps.validate_prompt_value(
+            "gemini_text_to_image_instructions", "SCENE: {prompt}\n{art_direction}")
+        self.assertTrue(ok)
+        self.assertIn("{camera_rules}", msgs[0])
+        self.assertNotIn("{art_direction}", msgs[0])
+
+    def test_fully_wired_template_produces_no_warning(self):
+        ok, msgs = ps.validate_prompt_value(
+            "gemini_text_to_image_instructions",
+            "SCENE: {prompt}\n{art_direction}\n{camera_rules}")
+        self.assertTrue(ok)
+        self.assertEqual(msgs, [])
+
+    def test_a_real_placeholder_error_still_blocks_the_save(self):
+        # The advisory path must not have softened the blocking one.
+        ok, msgs = ps.validate_prompt_value(
+            "gemini_text_to_image_instructions",
+            "SCENE: {prompt}\n{art_direction}\n{camera_rules}\n{nonsense}")
+        self.assertFalse(ok)
+        self.assertTrue(any("nonsense" in m for m in msgs))
+
+    def test_shared_fields_themselves_are_never_warned_about(self):
+        # They're substituted as values, so they have no placeholder contract.
+        for key in (ps.ART_DIRECTION_KEY, ps.CAMERA_RULES_KEY):
+            ok, msgs = ps.validate_prompt_value(key, "anything at all {loose")
+            self.assertTrue(ok)
+            self.assertEqual(msgs, [])
+
+    def test_shared_placeholders_validate_on_the_templates(self):
+        for key in ps.IMAGE_TEMPLATE_KEYS:
+            ok, warnings = ps.validate_prompt_value(
+                key, "SCENE: {prompt}\n{art_direction}\n{camera_rules}")
+            self.assertTrue(ok, f"{key}: {warnings}")
+
+    def test_shared_fields_are_not_format_parsed(self):
+        # They're substituted as values, so braces in them are literal and must
+        # not be rejected or blow up the render.
+        ps.save_prompt_field("image_art_direction", "LOOK: a {curly} brace and a lone {")
+        ok, _ = ps.validate_prompt_value("image_art_direction", "LOOK: a lone {")
+        self.assertTrue(ok)
+        out = ps.render_image_template("gemini_text_to_image_instructions", "scene")
+        self.assertIn("a {curly} brace and a lone {", out)
+
     # ── hot reload via mtime ────────────────────────────────────────
 
     def test_external_file_edit_is_picked_up_without_explicit_reload_call(self):
@@ -130,13 +242,16 @@ class PromptsStoreTestCase(unittest.TestCase):
     # ── placeholder validation ──────────────────────────────────────
 
     def test_validate_prompt_value_accepts_known_placeholders(self):
-        value = ps.PROMPT_SCHEMA_BY_ID["gemini_text_to_image_instructions"]
-        ok, warnings = ps.validate_prompt_value("gemini_text_to_image_instructions", "SCENE:\n{prompt}\nmore text")
+        ok, warnings = ps.validate_prompt_value(
+            "gemini_text_to_image_instructions",
+            "SCENE:\n{prompt}\n{art_direction}\n{camera_rules}\nmore text")
         self.assertTrue(ok)
         self.assertEqual(warnings, [])
 
     def test_validate_prompt_value_rejects_unknown_placeholder(self):
-        ok, warnings = ps.validate_prompt_value("gemini_text_to_image_instructions", "SCENE:\n{prompt} and {bogus}")
+        ok, warnings = ps.validate_prompt_value(
+            "gemini_text_to_image_instructions",
+            "SCENE:\n{prompt} and {bogus}\n{art_direction}\n{camera_rules}")
         self.assertFalse(ok)
         self.assertTrue(any("bogus" in w for w in warnings))
 

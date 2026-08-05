@@ -21,6 +21,7 @@ except FileNotFoundError:
 # Load prompts — shared, hot-reloadable singleton (see prompts_store.py) so
 # edits made through the World Studio editor apply immediately, no restart.
 from prompts_store import PROMPTS
+import prompts_store
 
 # Cast sheet — the active camera perspective decides whether the player's own
 # character belongs in frame, which flips both the anti-person prompt blocks
@@ -43,6 +44,20 @@ else:
 # Google Gemini models
 GEMINI_FLASH_IMAGE = "gemini-3.1-flash-lite-image"  # Fast, cost-effective image generation
 GEMINI_PRO_IMAGE = "gemini-3.1-flash-image"  # Slower, higher quality, 4K support
+
+# Hard ceiling on the assembled prompt.
+#
+# This used to be 5,000 characters, which was quietly destructive: the t2i
+# template alone was 9,281 chars and the i2i one 13,466, so the back HALF of
+# every prompt — the "what is in frame" list, the no-text/no-border bans, and
+# the optical-reality anchor appended after them — was cut off before the
+# request was ever sent. Editing those sections had no effect on the image.
+#
+# Gemini's image models take a text part far larger than this (tens of
+# thousands of tokens), so the cap is now a sanity bound rather than a real
+# constraint. Deduplicating the two templates (see prompts_store) also brought
+# the assembled prompt back under it.
+MAX_PROMPT_CHARS = 24000
 
 # Track last corrected image for continuity
 _last_corrected_image = None
@@ -251,7 +266,10 @@ def generate_with_gemini(
     print(f"[GOOGLE GEMINI] Using {model} (Nano Banana 2 Lite) for speed @ 1K")
     
     # Load prompt template from JSON (single source of truth!)
-    structured_prompt = PROMPTS["gemini_text_to_image_instructions"].format(prompt=prompt)
+    # Renders the template plus the shared art-direction / camera-rules blocks
+    # (see prompts_store.render_image_template) so the world only has to be
+    # directed in one place.
+    structured_prompt = prompts_store.render_image_template("gemini_text_to_image_instructions", prompt)
     
     # Inject time/weather/mood if provided
     if time_of_day:
@@ -379,9 +397,12 @@ def generate_with_gemini(
     if not portrait_mode:
         structured_prompt = game_identity.apply(structured_prompt, "raw")
 
-    # Gemini has a 5000 char limit, so truncate if needed
-    if len(structured_prompt) > 5000:
-        structured_prompt = structured_prompt[:5000]
+    # Sanity bound only — see MAX_PROMPT_CHARS. Warn loudly if we ever hit it,
+    # because silently dropping the tail of a prompt is invisible from the image.
+    if len(structured_prompt) > MAX_PROMPT_CHARS:
+        print(f"[GEMINI IMG] WARNING: prompt is {len(structured_prompt)} chars; "
+              f"truncating to {MAX_PROMPT_CHARS}. The tail will not reach the model.", flush=True)
+        structured_prompt = structured_prompt[:MAX_PROMPT_CHARS]
     
     # Sanitize to avoid safety blocks
     full_prompt = _sanitize_for_safety(structured_prompt)
@@ -894,7 +915,7 @@ def generate_gemini_img2img(
         })
     
     # Load prompt template from JSON (single source of truth!)
-    structured_prompt = PROMPTS["gemini_image_to_image_instructions"].format(prompt=prompt)
+    structured_prompt = prompts_store.render_image_template("gemini_image_to_image_instructions", prompt)
     
     # Inject time/weather/mood if provided
     if time_of_day:
@@ -1181,8 +1202,10 @@ def generate_gemini_img2img(
     # Sanitize to avoid safety blocks
     full_prompt = _sanitize_for_safety(full_prompt)
     
-    if len(full_prompt) > 5000:
-        full_prompt = full_prompt[:5000]
+    if len(full_prompt) > MAX_PROMPT_CHARS:
+        print(f"[GEMINI IMG] WARNING: prompt is {len(full_prompt)} chars; "
+              f"truncating to {MAX_PROMPT_CHARS}. The tail will not reach the model.", flush=True)
+        full_prompt = full_prompt[:MAX_PROMPT_CHARS]
     
     # Stills standardized on Nano Banana 2 Lite for speed (see generate_with_gemini).
     selected_model = GEMINI_FLASH_IMAGE
