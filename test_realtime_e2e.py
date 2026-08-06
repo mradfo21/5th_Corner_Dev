@@ -2176,6 +2176,66 @@ class TestRealtimeRenderer(unittest.TestCase):
         finally:
             page.close()
 
+    def test_missing_guide_image_falls_back_to_stills_instead_of_black(self):
+        """The "it just draws black" failure.
+
+        LingBot (the production default) is seed-locked: it cannot start without
+        a guide still. When image generation is content-filtered or fails, the
+        engine still emits the scene beat — with a prompt and NO image_url — so
+        realtime can keep steering. But a seed-locked model has nothing to steer,
+        so it deferred, and the retry only counted attempts that CARRIED an
+        image: with no image the counter never moved, so it retried ~1/second
+        forever behind a permanently black screen, with no message and no way
+        out. Bound the wait, then fall back to the still renderer.
+        """
+        page = self._new_realtime_page()
+        # Tight budget so the test doesn't sit through the real 60s wait.
+        page.add_init_script("window.__GUIDE_WAIT_MAX_ATTEMPTS__ = 3;")
+        page.add_init_script("window.__GUIDE_RETRY_MS__ = 120;")
+        page.add_init_script("window.__REACTOR_FORCE_MODEL__ = 'lingbot-world-2';")
+        scene_items = [
+            {"id": 1, "type": "narrative_event", "content": "The corridor swallows the light."},
+            # A blocked still: prompt present, image_url absent — exactly what
+            # _generate_and_append_scene_image emits when the render fails.
+            {"id": 2, "type": "scene_image", "content": "",
+             "metadata": {"prompt": "First-person VHS corridor.",
+                          "base": "First-person VHS corridor.",
+                          "hard_transition": False, "blocked": True}},
+            {"id": 3, "type": "player_choice_prompt", "content": "?",
+             "choices": [{"text": "Go", "action_id": "a"}]},
+        ]
+        page.route("**/api/reset", lambda r: r.fulfill(
+            status=200, content_type="application/json", body=json.dumps(scene_items)))
+        page.route("**/api/feed*", lambda r: r.fulfill(
+            status=200, content_type="application/json", body="[]"))
+        try:
+            page.goto(f"{self.base_url}/realtime", wait_until="domcontentloaded")
+            page.wait_for_function(
+                "window.ReactorRenderer && window.ReactorRenderer.isReady() === true", timeout=15000)
+            page.evaluate("window.ReactorRenderer.setModel('lingbot-world-2')")
+            page.wait_for_function(
+                "window.ReactorRenderer.getModel() === 'lingbot-world-2'", timeout=8000)
+            # Drive the blocked scene (prompt, no image) at the seed-locked model.
+            page.evaluate(
+                """() => window.ReactorRenderer.applyScene({
+                    prompt: 'First-person VHS corridor.', imageUrl: null, hardTransition: false })""")
+
+            # It must GIVE UP rather than retry forever...
+            page.wait_for_function(
+                "() => window.Renderer && window.Renderer.mode === 'image'", timeout=15000)
+            # ...and the player must not be left staring at a gated black screen.
+            self.assertFalse(
+                page.evaluate("document.body.classList.contains('awaiting-first-scene')"),
+                "the UI must not stay gated when the live world can never start")
+            self.assertFalse(
+                page.evaluate("window.ReactorRenderer.isActive()"),
+                "realtime must be torn down, not left running over black")
+        except Exception:
+            print("\n=== REACTOR CONSOLE LOG (no-seed-image) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
     def test_world_drift_resteers_without_restaging(self):
         """Ambient world drift must keep the live stream EVOLVING between turns
         without tearing the world down.

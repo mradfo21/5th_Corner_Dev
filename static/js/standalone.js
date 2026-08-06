@@ -1783,16 +1783,9 @@
               return;
             }
             console.warn("[standalone] realtime unavailable after retries — falling back to stills", isCapacity ? "(capacity)" : "");
-            Renderer.mode = "image"; // reflect reality; keep stored pref intact
-            showRendererToast(isCapacity
+            Renderer.fallbackToStills(isCapacity
               ? "Reactor is full right now \u2014 showing stills (retrying quietly)"
               : "Realtime unavailable \u2014 showing stills");
-            clearScanTags(); // re-map hotspots onto the still that replaces the video
-            hideGuideThumbnail();
-            // Tear down the realtime layers (video + freeze) and paint the last
-            // known still so the fallback isn't a blank/black screen.
-            try { window.ReactorRenderer.disable(); } catch (_) {}
-            if (Renderer.lastScene && Renderer.lastScene.imageUrl) setScene(Renderer.lastScene.imageUrl);
             // Capacity is Reactor's problem to resolve, not the player's — keep
             // quietly checking in the background so realtime comes back on its
             // own the moment a server frees up, instead of leaving the player
@@ -1911,6 +1904,27 @@
               closeScan();
               updateScanButton();
               showRendererToast("Scene refused \u2014 showing still");
+            }
+            // The live world can NEVER start for this scene: the model needs a
+            // seed still and none is coming (generation was content-filtered or
+            // failed). Nothing is on screen and nothing ever will be, so stop
+            // waiting on black and hand the scene to the still renderer. Without
+            // this the player just sits looking at black — the whole "it's
+            // completely broken" report.
+            if (name === "needs_seed_image") {
+              const shown = Renderer.lastScene && Renderer.lastScene.imageUrl;
+              if (shown) setScene(Renderer.lastScene.imageUrl);
+              else glitchTransition();
+              markSceneVisible();
+              Ceremony.imageLoaded();
+              closeScan();
+              updateScanButton();
+              // Drop to stills for real: realtime has nothing to render, and
+              // leaving the toggle on "LIVE" over a dead stream reads as broken.
+              Renderer.fallbackToStills(
+                shown ? "No live scene \u2014 showing stills"
+                      : "Scene unavailable \u2014 showing stills",
+              );
             }
             // Real frames returned — the live video is back on screen.
             if (name === "video_recovered") {
@@ -2147,6 +2161,24 @@
         return;
       }
       if (imageUrl) setScene(imageUrl);
+    },
+
+    // Drop out of realtime and show the still renderer instead. Used whenever
+    // the live world cannot present frames and won't recover on its own
+    // (connect failed, or the model needs a seed still that never arrived).
+    // Tears the realtime layers down and paints the last known still, so a
+    // fallback is never just a black screen. The STORED preference is left
+    // alone — this reflects reality, it isn't the player changing their mind.
+    fallbackToStills(message) {
+      this.mode = "image";
+      if (message) showRendererToast(message);
+      clearScanTags();   // re-map hotspots onto the still that replaces the video
+      hideGuideThumbnail();
+      try { window.ReactorRenderer.disable(); } catch (_) {}
+      if (this.lastScene && this.lastScene.imageUrl) setScene(this.lastScene.imageUrl);
+      // Danger grading reads the live frame; there isn't one anymore.
+      try { DangerSystem.stop(); } catch (_) {}
+      updateRendererButton();
     },
 
     // Quietly keep retrying realtime in the background after an automatic
