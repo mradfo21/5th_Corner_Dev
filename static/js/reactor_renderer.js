@@ -830,7 +830,15 @@
       };
       try { video.requestVideoFrameCallback(cb); } catch (_) { rstate.frameWatch = false; }
     } else {
+      // Remember the handler so teardown can detach it. The <video> element is
+      // persistent, but startFrameWatch runs again on every new track (model
+      // swap, capacity retry, reconnect) — without removal each reconnect left
+      // another pair of listeners bound, so onPresentedFrame ran N times per
+      // timeupdate, doing N freeze-reveal checks and N seedToken bumps.
+      stopFrameWatchListeners();
       const onp = () => onPresentedFrame(video);
+      rstate.frameWatchEl = video;
+      rstate.frameWatchHandler = onp;
       video.addEventListener("playing", onp);
       video.addEventListener("timeupdate", onp);
       rstate.frameWatchTimer = setInterval(() => {
@@ -838,6 +846,21 @@
         onPresentedFrame(video);
       }, 400);
     }
+  }
+
+  // Detach the fallback frame-watch listeners (no-op on the
+  // requestVideoFrameCallback path, which self-cancels via rstate.frameWatch).
+  function stopFrameWatchListeners() {
+    const v = rstate.frameWatchEl;
+    const h = rstate.frameWatchHandler;
+    if (v && h) {
+      try {
+        v.removeEventListener("playing", h);
+        v.removeEventListener("timeupdate", h);
+      } catch (_) {}
+    }
+    rstate.frameWatchEl = null;
+    rstate.frameWatchHandler = null;
   }
 
   // Fetch our own generated still and upload it to Reactor, returning a FileRef
@@ -1360,7 +1383,16 @@
       }
     } catch (err) {
       log("apply scene failed", err);
-      if (rstate.pending == null) rstate.pending = s; // retry on next ready/flush
+      // Re-queue for a LATER retry, never an immediate one. Re-queuing without
+      // also marking this deferred used to fall straight through to the
+      // "drain the queue" call at the end of this function, which re-entered
+      // flush() with no delay and no attempt counter: one repeatedly-throwing
+      // sendCommand became unbounded microtask recursion that starved the
+      // timer/render/input queues and wedged the whole tab. Route throws
+      // through the SAME bounded deferral path as a refusal.
+      if (rstate.pending == null) {
+        deferred = true;
+      }
     } finally {
       rstate.applying = false;
     }
@@ -1622,6 +1654,7 @@
     rstate.lastRef = null;
     rstate.stagingGuideUrl = null;
     rstate.frameWatch = false;
+    stopFrameWatchListeners();
     rstate.freezeArmed = false;
     clearBlackout();
     clearSceneFade(); // the freeze cover holds the last frame across the swap
@@ -1696,6 +1729,7 @@
     rstate.lastRef = null;
     rstate.stagingGuideUrl = null;
     rstate.frameWatch = false;
+    stopFrameWatchListeners();
     rstate.freezeArmed = false;
     clearCaps();
     clearBlackout();

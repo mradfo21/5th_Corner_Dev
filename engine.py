@@ -106,9 +106,14 @@ def _client(api_key: str, base_url: str):
         except Exception as e:
             print(f"[ENGINE INIT] Failed to create OpenAI client: {e}")
 
+            # Bind the reason NOW: Python unbinds `e` when the except block
+            # exits, so referring to it from __getattr__ raised NameError and
+            # buried the actual init failure behind a confusing traceback.
+            init_error = str(e)
+
             class _BrokenClient:
                 def __getattr__(self, name):
-                    raise RuntimeError(f"OpenAI client init failed: {e}")
+                    raise RuntimeError(f"OpenAI client init failed: {init_error}")
 
             return _BrokenClient()
     openai.api_key, openai.api_base = api_key, base_url
@@ -4084,6 +4089,12 @@ except ValueError:
 # and to hand the next world-evolution pass what changed while nobody acted.
 WORLD_DRIFT_BEATS_KEPT = 6
 # Process-wide single-flight: at most ONE drift LLM call in flight, ever.
+# Guarded by its own lock because the check and the set are far apart (a state
+# load and five gates sit between them): two request threads for DIFFERENT
+# sessions would otherwise both read False and both spawn, which is exactly the
+# thread-budget exhaustion the guard exists to prevent. Same-session races are
+# already handled by the last_drift_ts claim under WORLD_STATE_LOCK.
+_DRIFT_LOCK = threading.Lock()
 _drift_worker_active = False
 
 
@@ -4233,15 +4244,23 @@ def world_drift_tick(session_id: str = 'default', background: bool = False) -> d
         _sync_ambient_state(st, session_id)
 
     if background:
-        _spawn_world_drift(session_id, st)
+        if not _spawn_world_drift(session_id, st):
+            return {"ok": False, "skipped": "busy"}
         return {"ok": True, "skipped": None, "queued": True}
     return _world_drift_publish(session_id, st)
 
 
-def _spawn_world_drift(session_id: str, st: dict) -> None:
-    """Run the drift's LLM call + publish OFF the request thread."""
+def _spawn_world_drift(session_id: str, st: dict) -> bool:
+    """Run the drift's LLM call + publish OFF the request thread.
+
+    Returns False when another drift is already in flight process-wide.
+    """
     global _drift_worker_active
-    _drift_worker_active = True
+    # Claim atomically — a plain check-then-set lets two sessions both through.
+    with _DRIFT_LOCK:
+        if _drift_worker_active:
+            return False
+        _drift_worker_active = True
 
     def _worker():
         global _drift_worker_active
@@ -4250,13 +4269,17 @@ def _spawn_world_drift(session_id: str, st: dict) -> None:
         except Exception as e:
             log_error(f"[DRIFT] worker failed: {e}")
         finally:
-            _drift_worker_active = False
+            with _DRIFT_LOCK:
+                _drift_worker_active = False
 
     try:
         threading.Thread(target=_worker, daemon=True).start()
+        return True
     except Exception as e:
-        _drift_worker_active = False
+        with _DRIFT_LOCK:
+            _drift_worker_active = False
         log_error(f"[DRIFT] could not spawn worker: {e}")
+        return False
 
 
 def _world_drift_publish(session_id: str, st: dict) -> dict:
@@ -6826,16 +6849,31 @@ def api_reset():
         has_choice_prompt = any(item.get('type') == 'player_choice_prompt' for item in initial_items)
         if not has_choice_prompt:
             logging.error("api_reset: No player_choice_prompt found in initial_items. Adding fallback.")
-            fallback_item = {
-                "id": 999999,
-                "type": "player_choice_prompt",
-                "content": "The system is online. Your journey begins now. What is your first action?",
-                "choices": [
+            # The id MUST come from the shared counter, and the item MUST be
+            # appended to the session's feed_log like every other beat.
+            #
+            # This used to be a literal id of 999999 that was never persisted.
+            # The client tracks the highest id it has seen and then polls
+            # `/api/feed?since_id=<that>`, so one appearance of this fallback
+            # pinned the client at since_id=999999 for the life of the page:
+            # every real item (ids in the tens) was filtered out server-side,
+            # the feed went permanently silent, and every turn afterwards died
+            # on the watchdog. A recovery path must not be able to brick the
+            # session it is recovering.
+            fallback_item = create_feed_item(
+                type="player_choice_prompt",
+                content="The system is online. Your journey begins now. What is your first action?",
+                choices=[
                     {"text": "Look around", "action_id": "look_around"},
                     {"text": "Move forward", "action_id": "move_forward"},
-                    {"text": "Wait", "action_id": "wait"}
-                ]
-            }
+                    {"text": "Wait", "action_id": "wait"},
+                ],
+            )
+            with WORLD_STATE_LOCK:
+                st = _load_state(SID)
+                _feed_append(st, fallback_item)
+                _save_state(st, SID)
+                _sync_ambient_state(st, SID)
             initial_items.append(fallback_item)
         logging.info(f"api_reset: Returning {len(initial_items)} items. First item ID (if any): {initial_items[0]['id'] if initial_items else 'N/A'}")
         return jsonify(initial_items)
@@ -6980,6 +7018,29 @@ def api_feed():
             items_to_return = list(feed_log) # Return a copy of the full feed log
     return jsonify(items_to_return)
 
+_THREAD_SIGNAL_TTL_S = 300
+
+
+def _sweep_thread_signals() -> None:
+    """Delete stale thread_signal_*.tmp scratch files from ROOT.
+
+    Nothing waits on these anymore (see api_choose), so a worker's marker is
+    just litter once its turn is over. Cheap: one small glob per turn, and only
+    files older than the TTL are removed, so a marker for a turn still running
+    is never touched. Best-effort — this must never fail a turn.
+    """
+    try:
+        cutoff = time.time() - _THREAD_SIGNAL_TTL_S
+        for p in ROOT.glob("thread_signal_*.tmp"):
+            try:
+                if p.stat().st_mtime < cutoff:
+                    p.unlink()
+            except OSError:
+                pass
+    except Exception:
+        pass
+
+
 def api_choose():
     global state
     try:
@@ -7059,29 +7120,30 @@ def api_choose():
         # 2. Start background processing for the rest of the turn
         # Pass the ID of the player_action_item so the background thread can link its logs if needed.
         
-        temp_signal_file = ROOT / f"thread_signal_{player_action_item['id']}.tmp" # Use the correct ID here
-        
+        # The turn runs on a DAEMON thread and we do not wait on it.
+        #
+        # This used to spawn a non-daemon thread, then sleep 200ms on the
+        # request thread polling for a scratch file the worker writes, purely to
+        # print a debug line. Three costs, all real in production (one gunicorn
+        # worker, a handful of threads): 200ms added to every single turn while
+        # holding a serving thread; a non-daemon thread per turn, so a graceful
+        # restart blocked on every in-flight LLM+image pipeline; and, whenever
+        # scheduling pushed the worker's write past the 200ms window, an
+        # orphaned thread_signal_*.tmp left in ROOT forever.
+        #
+        # The signal file is still passed (the worker writes it and it is useful
+        # under DEBUG_MODE), but nothing blocks on it and it's swept, not leaked.
+        temp_signal_file = ROOT / f"thread_signal_{player_action_item['id']}.tmp"
+
         try:
-            thread = threading.Thread(target=_process_turn_background, args=(player_choice_text, player_action_item['id'], str(temp_signal_file)), kwargs={"source": action_source, "session_id": session_id})
-            # thread.daemon = True # Allow main program to exit even if threads are running. Temporarily commenting out for testing.
-            thread.start()            
-            # Check for signal from thread via temp file
-            time.sleep(0.2) # Give thread a moment to write
-            signal_received = False
-            if temp_signal_file.exists():
-                try:
-                    content = temp_signal_file.read_text().strip()
-                    if content == "THREAD SPAWNED AND WROTE TO FILE":
-                        signal_received = True
-                    temp_signal_file.unlink() # Clean up
-                except Exception as e_file_read:
-                    if DEBUG_MODE: print(f"[DEBUG] api_choose - Error reading/deleting signal file: {e_file_read}", flush=True)
-            
-            if DEBUG_MODE: print(f"[DEBUG] api_choose - Signal from thread via file: {'RECEIVED' if signal_received else 'NOT RECEIVED'}", flush=True)
-            if not signal_received and thread.is_alive():
-                 if DEBUG_MODE: print(f"[DEBUG] api_choose - Thread is alive but signal file not as expected.", flush=True)
-            elif not signal_received and not thread.is_alive():
-                 if DEBUG_MODE: print(f"[DEBUG] api_choose - Thread is NOT alive and signal file not as expected.", flush=True)
+            thread = threading.Thread(
+                target=_process_turn_background,
+                args=(player_choice_text, player_action_item['id'], str(temp_signal_file)),
+                kwargs={"source": action_source, "session_id": session_id},
+                daemon=True,
+            )
+            thread.start()
+            _sweep_thread_signals()
 
         except Exception as e_thread_start:
             print(f"CRITICAL DEBUG PRINT: api_choose - ERROR STARTING THREAD: {e_thread_start}", flush=True)
@@ -10156,6 +10218,13 @@ def _spawn_observe_reground(fpath: str, web: str, session_id: str, prompt_id):
                 _save_state(st, session_id)
                 _sync_ambient_state(st, session_id)
 
+            # Local import, like every other generate_choices call site. Without
+            # it this raised NameError on every run — swallowed by the worker's
+            # except, so nothing 500'd and the only trace was one line in the
+            # error log, but it meant the realtime anti-drift loop (regenerating
+            # choices from the frame the player is actually looking at) had never
+            # worked: the vision call was paid for, then thrown away.
+            from choices import generate_choices
             last_dispatch = ""
             for it in reversed(st.get('feed_log', [])):
                 if it.get('type') in ('consequence_event', 'narrative_event') and it.get('content'):
@@ -10194,7 +10263,15 @@ def _spawn_observe_reground(fpath: str, web: str, session_id: str, prompt_id):
         finally:
             _observe_reground_active = False
 
-    threading.Thread(target=_worker, daemon=True).start()
+    # Clear the guard if the thread can't even start (thread exhaustion is a
+    # live risk on a small gunicorn worker). Setting the flag before the spawn
+    # and only clearing it inside the worker meant a failed start disabled
+    # regrounding permanently for the rest of the process.
+    try:
+        threading.Thread(target=_worker, daemon=True).start()
+    except Exception as e:
+        _observe_reground_active = False
+        log_error(f"[OBSERVE] could not spawn reground worker: {e}")
 
 
 def api_regenerate_choices():

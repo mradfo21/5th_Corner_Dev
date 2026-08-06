@@ -61,6 +61,9 @@ test_*.py
 !test_world_drift.py
 !test_camp_companions.py
 
+# Turn-thread scratch markers (swept at runtime; see _sweep_thread_signals)
+thread_signal_*.tmp
+
 # Autoplay run artifacts
 autoplay_report.json
 voice_design_cache.json
