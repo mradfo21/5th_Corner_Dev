@@ -26,6 +26,7 @@ Run with:
 import os
 import shutil
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -54,7 +55,10 @@ BASE_PROMPT = (
 class TestWorldDriftTick(unittest.TestCase):
     def setUp(self):
         engine.LLM_ENABLED = True
+        # Drift ships OFF by default (production runs one gunicorn worker with a
+        # handful of threads); these tests exercise it explicitly enabled.
         engine.WORLD_DRIFT_ENABLED = True
+        engine._drift_worker_active = False
         self._real_ask = engine._ask
         self.ask_calls = []
 
@@ -214,6 +218,7 @@ class TestWorldTickEndpoint(unittest.TestCase):
         self.client = api.app.test_client()
         engine.LLM_ENABLED = True
         engine.WORLD_DRIFT_ENABLED = True
+        engine._drift_worker_active = False
         self._real_ask = engine._ask
         engine._ask = lambda prompt, **kw: "A door slams somewhere deeper in the facility."
         st = engine._load_state(SESSION_ID)
@@ -229,8 +234,34 @@ class TestWorldTickEndpoint(unittest.TestCase):
         engine._save_state(st, SESSION_ID)
 
     def tearDown(self):
+        # Let any queued worker land BEFORE we discard the session, or it
+        # recreates the file mid-teardown and leaks a drift into the next test.
+        deadline = time.time() + 5
+        while engine._drift_worker_active and time.time() < deadline:
+            time.sleep(0.02)
         engine._ask = self._real_ask
+        engine._drift_worker_active = False
         _discard_test_session()
+
+    def _wait_for_drift(self, timeout_s=5.0):
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            feed = self.client.get(f"/api/feed?since_id=0&session_id={SESSION_ID}").get_json()
+            drifts = [i for i in feed if i.get("type") == "world_drift"]
+            if drifts:
+                return drifts
+            time.sleep(0.05)
+        return []
+
+    def test_endpoint_never_waits_on_the_model(self):
+        """Production serves the whole game from one worker with a few threads.
+        The tick endpoint is polled by every client, so it must hand the model
+        call to a worker and return immediately."""
+        resp = self.client.post("/api/world_tick", json={"session_id": SESSION_ID})
+        self.assertEqual(resp.status_code, 200)
+        body = resp.get_json()
+        self.assertTrue(body["ok"], body)
+        self.assertTrue(body.get("queued"), "the endpoint must queue, not block")
 
     def test_tick_lands_on_the_requested_session_feed(self):
         resp = self.client.post("/api/world_tick", json={"session_id": SESSION_ID})
@@ -239,8 +270,7 @@ class TestWorldTickEndpoint(unittest.TestCase):
 
         # The client learns about the drift through the SAME feed poll it already
         # runs — no second channel.
-        feed = self.client.get(f"/api/feed?since_id=0&session_id={SESSION_ID}").get_json()
-        drifts = [i for i in feed if i.get("type") == "world_drift"]
+        drifts = self._wait_for_drift()
         self.assertEqual(len(drifts), 1)
         self.assertIn("metadata", drifts[0])
         self.assertIsNone(drifts[0].get("image_url"))
@@ -249,11 +279,23 @@ class TestWorldTickEndpoint(unittest.TestCase):
         """The client asks optimistically on a timer; a refusal is normal
         operation, not an error it should log or back off from."""
         self.client.post("/api/world_tick", json={"session_id": SESSION_ID})
+        self._wait_for_drift()
         resp = self.client.post("/api/world_tick", json={"session_id": SESSION_ID})
         self.assertEqual(resp.status_code, 200)
         body = resp.get_json()
         self.assertFalse(body["ok"])
         self.assertEqual(body["skipped"], "too_soon")
+
+    def test_only_one_drift_runs_at_a_time(self):
+        """Several players (or tabs) polling must not each buy an LLM call and
+        exhaust the thread budget the actual game needs."""
+        engine._drift_worker_active = True
+        try:
+            body = self.client.post("/api/world_tick", json={"session_id": SESSION_ID}).get_json()
+        finally:
+            engine._drift_worker_active = False
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["skipped"], "busy")
 
 
 class TestDriftFeedsBackIntoTheSimulation(unittest.TestCase):

@@ -2452,16 +2452,24 @@
     idle() {
       if (this.inFlight) return false;
       if (typeof document !== "undefined" && document.hidden) return false;
-      if (Renderer.mode !== "reactor" || !Renderer.reactorAvailable()) return false;
+      if (!window.Renderer || Renderer.mode !== "reactor" || !Renderer.reactorAvailable()) return false;
       const RR = window.ReactorRenderer;
+      if (!RR) return false;
       if (RR.supportsLiveSteer && !RR.supportsLiveSteer()) return false;
       if (!RR.isShowing || !RR.isShowing()) return false;
       if (state.processing || state.awaitingResolution) return false;
       return ambientContextAllowed();
     },
 
+    // Ambient polish must never be able to break the game: any throw in the
+    // gate (a renderer swapped out mid-check, an instrument module not loaded
+    // yet) is swallowed, and a failed ask just waits for the next interval.
     tick() {
-      if (!this.idle()) return;
+      try {
+        if (!this.idle()) return;
+      } catch (_) {
+        return;
+      }
       this.inFlight = true;
       postJSON("/api/world_tick", {})
         .catch((err) => console.warn("[standalone] world tick failed:", err))

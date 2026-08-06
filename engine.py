@@ -4051,11 +4051,17 @@ def build_realtime_prompt(visual_scene: str = "", narrative: str = "", choice: s
 # in simulation_prompts.json — phase-gated time-of-day rules and all — with no
 # loop to call it.
 #
-# Cost and correctness are bounded three ways: a server-enforced minimum
+# Cost and correctness are bounded four ways: a server-enforced minimum
 # interval (a spammy client cannot buy extra ticks), a per-decision-point
-# budget, and a hard skip while a real turn is in flight, since drift must never
-# race the turn pipeline for the world prompt.
-WORLD_DRIFT_ENABLED = os.getenv("WORLD_DRIFT", "1").strip().lower() not in ("0", "false", "no", "off")
+# budget, a hard skip while a real turn is in flight (drift must never race the
+# turn pipeline for the world prompt), and a process-wide single-flight guard.
+#
+# OFF BY DEFAULT. Production serves the whole game from ONE gunicorn worker with
+# only GUNICORN_THREADS (default 4) threads, shared by every client's 1.5s feed
+# poll, status poll, resets and turns. An extra endpoint that every connected
+# client hits on a timer is a real risk to that budget, so this stays opt-in
+# until it has been exercised against a live deploy: set WORLD_DRIFT=1.
+WORLD_DRIFT_ENABLED = os.getenv("WORLD_DRIFT", "0").strip().lower() not in ("0", "false", "no", "off")
 try:
     WORLD_DRIFT_MIN_INTERVAL_S = max(5.0, float(os.getenv("WORLD_DRIFT_INTERVAL", "20")))
 except ValueError:
@@ -4067,6 +4073,8 @@ except ValueError:
 # How many drift beats we keep on state: enough to stop the LLM repeating itself
 # and to hand the next world-evolution pass what changed while nobody acted.
 WORLD_DRIFT_BEATS_KEPT = 6
+# Process-wide single-flight: at most ONE drift LLM call in flight, ever.
+_drift_worker_active = False
 
 
 def _turn_in_flight() -> bool:
@@ -4164,7 +4172,7 @@ def _world_drift_beat(st: dict, hist: list) -> str:
     return beat if len(beat) > 12 else ""
 
 
-def world_drift_tick(session_id: str = 'default') -> dict:
+def world_drift_tick(session_id: str = 'default', background: bool = False) -> dict:
     """Run ONE text-only simulation step for an idle session.
 
     Appends a `world_drift` feed item whose metadata carries the re-steer prompt
@@ -4174,9 +4182,20 @@ def world_drift_tick(session_id: str = 'default') -> dict:
     Returns {"ok": bool, "skipped": <reason>|None, "beat": str}. Every refusal
     is a named reason rather than an error: the client ticks optimistically and
     the server decides whether the world has earned a drift.
+
+    background=True does all the cheap gating inline (one small JSON read) and
+    then hands the LLM call to a worker thread, returning immediately. That is
+    what the HTTP endpoint uses: production serves everything from one gunicorn
+    worker with a handful of threads, so an endpoint every client polls must
+    never sit on one of them waiting on a model.
     """
     if not WORLD_DRIFT_ENABLED:
         return {"ok": False, "skipped": "disabled"}
+    # Never let drift ticks stack up process-wide. With several players (or
+    # tabs) polling, unguarded ticks would run one LLM call each and exhaust the
+    # thread budget the actual game needs.
+    if _drift_worker_active:
+        return {"ok": False, "skipped": "busy"}
     st = _load_state(session_id)
     if not st.get("player_state", {}).get("alive", True):
         return {"ok": False, "skipped": "dead"}
@@ -4203,6 +4222,35 @@ def world_drift_tick(session_id: str = 'default') -> dict:
         _save_state(st, session_id)
         _sync_ambient_state(st, session_id)
 
+    if background:
+        _spawn_world_drift(session_id, st)
+        return {"ok": True, "skipped": None, "queued": True}
+    return _world_drift_publish(session_id, st)
+
+
+def _spawn_world_drift(session_id: str, st: dict) -> None:
+    """Run the drift's LLM call + publish OFF the request thread."""
+    global _drift_worker_active
+    _drift_worker_active = True
+
+    def _worker():
+        global _drift_worker_active
+        try:
+            _world_drift_publish(session_id, st)
+        except Exception as e:
+            log_error(f"[DRIFT] worker failed: {e}")
+        finally:
+            _drift_worker_active = False
+
+    try:
+        threading.Thread(target=_worker, daemon=True).start()
+    except Exception as e:
+        _drift_worker_active = False
+        log_error(f"[DRIFT] could not spawn worker: {e}")
+
+
+def _world_drift_publish(session_id: str, st: dict) -> dict:
+    """Generate the beat and append it to the feed. Assumes the slot is claimed."""
     base = (st.get("current_render_base") or "").strip()
     beat = _world_drift_beat(st, _load_history(session_id))
     if not beat:
@@ -4244,10 +4292,15 @@ def api_world_tick():
     still have a live stream; the client knows both, and stops the moment the
     tab is hidden or the renderer isn't live. The server still owns the pacing,
     so the client can only ever ASK.
+
+    Always returns immediately: the gating is a small JSON read and the model
+    call runs on a worker thread (see world_drift_tick's background flag), so
+    this endpoint can never occupy one of the few gunicorn threads the rest of
+    the game is sharing.
     """
     try:
         session_id = _resolve_request_session_id()
-        return jsonify(world_drift_tick(session_id))
+        return jsonify(world_drift_tick(session_id, background=True))
     except Exception as e:
         log_error(f"[DRIFT] tick failed: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500

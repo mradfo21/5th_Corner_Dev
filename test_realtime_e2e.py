@@ -331,6 +331,10 @@ class TestRealtimeRenderer(unittest.TestCase):
         page.on("console", lambda m: self._logs.append(f"{m.type}: {m.text}"))
         page.on("pageerror", lambda e: self._logs.append(f"PAGEERROR: {e}"))
         page.add_init_script("window.__SCAN_TTL_MS__ = 60000;")
+        # Same first-run suppression the desktop helper does. Without it the
+        # "How to play" tutorial (an aria-modal dialog) is up over the whole
+        # phone viewport and swallows every tap, so the test can't reach SCAN.
+        page.add_init_script("try { localStorage.setItem('scan_tutorial_seen_v1', '1'); } catch (e) {}")
         page.route(
             "https://esm.sh/**",
             lambda route: route.fulfill(status=200, content_type="application/javascript", body=MOCK_SDK_JS),
