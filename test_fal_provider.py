@@ -34,11 +34,27 @@ class TestPromptBuilding(unittest.TestCase):
     def test_anti_text_constraints_live_in_negative_prompt(self):
         # The "no text / no border / no people" constraints belong in the
         # negative prompt for SDXL, not buried in the positive prompt.
+        #
+        # The negative is built per-call now (_negative_prompt) rather than
+        # being one frozen _SDXL_NEGATIVE_PROMPT constant, because "no people"
+        # is only correct while the camera is nobody's eyes — see
+        # game_identity. This test was still reaching for the old constant.
         p = fal._build_text2img_prompt("a rusted watchtower on the horizon")
         self.assertNotIn("NO TEXT", p.upper())
-        neg = fal._SDXL_NEGATIVE_PROMPT.lower()
+        neg = fal._negative_prompt().lower()
         for term in ("text", "border", "person"):
             self.assertIn(term, neg)
+
+    def test_negative_prompt_stops_banning_people_in_third_person(self):
+        """The anti-person tags are the one part of the negative that has to
+        follow the camera: keep them in a third-person mode and SDXL is being
+        told to omit the character the player asked to see."""
+        with mock.patch.object(fal.game_identity, "shows_character", return_value=True):
+            neg = fal._negative_prompt().lower()
+        self.assertIn("text", neg)          # the anti-text bans survive
+        self.assertIn("border", neg)
+        self.assertNotIn("person, people", neg)
+        self.assertIn("empty scene with no character", neg)
 
     def test_img2img_includes_continuity_language(self):
         p = fal._build_img2img_prompt("step through the doorway")
