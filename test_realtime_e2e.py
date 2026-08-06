@@ -258,7 +258,18 @@ class TestRealtimeRenderer(unittest.TestCase):
                 cls.server_proc.kill()
 
     def _new_realtime_page(self):
-        page = self.browser.new_page()
+        return self._prepare_realtime_page(self.browser.new_page())
+
+    def _prepare_realtime_page(self, page):
+        """Everything a realtime page needs before `goto`, for desktop AND phone.
+
+        Shared rather than copied because it already drifted once: the mobile
+        helper below was a near-copy that had fallen two entries behind — it
+        never set the tutorial-seen flag, so the first-run "tap to scan" modal
+        covered the SCAN button and swallowed the click, and it never mocked
+        /api/reactor/config, so it booted the production world model instead of
+        the Happy Oyster protocol this suite is written around.
+        """
         self._logs = []
         page.on("console", lambda m: self._logs.append(f"{m.type}: {m.text}"))
         page.on("pageerror", lambda e: self._logs.append(f"PAGEERROR: {e}"))
@@ -326,21 +337,7 @@ class TestRealtimeRenderer(unittest.TestCase):
         device = self.playwright.devices[device_name]
         context = self.browser.new_context(**device)
         self._mobile_context = context
-        page = context.new_page()
-        self._logs = []
-        page.on("console", lambda m: self._logs.append(f"{m.type}: {m.text}"))
-        page.on("pageerror", lambda e: self._logs.append(f"PAGEERROR: {e}"))
-        page.add_init_script("window.__SCAN_TTL_MS__ = 60000;")
-        page.route(
-            "https://esm.sh/**",
-            lambda route: route.fulfill(status=200, content_type="application/javascript", body=MOCK_SDK_JS),
-        )
-        page.route(
-            "**/api/reactor/token",
-            lambda route: route.fulfill(status=200, content_type="application/json",
-                                         body='{"jwt": "mock.jwt.token", "expires_at": 9999999999}'),
-        )
-        return page
+        return self._prepare_realtime_page(context.new_page())
 
     def _dump_logs(self):
         return "\n".join(self._logs[-60:])
