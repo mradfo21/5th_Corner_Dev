@@ -206,6 +206,29 @@ class TestWorldDriftTick(unittest.TestCase):
         self.assertEqual(self._tick()["skipped"], "budget_spent")
         self.assertEqual(self.ask_calls, [])
 
+    def test_drift_survives_the_prompt_being_pruned_from_the_editor(self):
+        """The editable prompt surface is deliberately kept small, and this
+        instruction block was once pruned from it as a dead knob — which
+        silently turned every drift into a no-op. The feature carries its own
+        default so tidying the editor can't disable it."""
+        from prompts_store import PROMPTS
+        self.assertNotIn("world_tick_micro_change_instructions", PROMPTS,
+                         "if this key is back, this test's premise needs revisiting")
+        result = self._tick()
+        self.assertTrue(result["ok"], result)
+        self.assertIn("TIME PASSES", self.ask_calls[0])
+
+    def test_an_authored_prompt_overrides_the_default(self):
+        """…but if someone does expose it again, theirs wins."""
+        real = engine.PROMPTS
+        engine.PROMPTS = dict(real)
+        engine.PROMPTS["world_tick_micro_change_instructions"] = "AUTHORED DRIFT RULES {environment_type}"
+        try:
+            self.assertTrue(self._tick()["ok"])
+        finally:
+            engine.PROMPTS = real
+        self.assertIn("AUTHORED DRIFT RULES", self.ask_calls[0])
+
     def test_empty_beat_is_not_published(self):
         engine._ask = lambda prompt, **kw: "   "
         self.assertEqual(self._tick()["skipped"], "no_beat")
@@ -296,6 +319,96 @@ class TestWorldTickEndpoint(unittest.TestCase):
             engine._drift_worker_active = False
         self.assertFalse(body["ok"])
         self.assertEqual(body["skipped"], "busy")
+
+
+class TestResetFallbackCannotBrickTheFeed(unittest.TestCase):
+    """api_reset's "no choices came back" recovery used to append an item with a
+    hardcoded id of 999999 that was never persisted.
+
+    The client tracks the highest id it has seen and then polls
+    /api/feed?since_id=<that>, so one appearance of that fallback pinned it at
+    999999 for the life of the page: every real item (ids in the tens) was
+    filtered out server-side and the feed went silent forever. A recovery path
+    must not be able to brick the session it is recovering.
+    """
+
+    def setUp(self):
+        self.src = (ROOT / "engine.py").read_text(encoding="utf-8")
+
+    def test_fallback_choice_prompt_has_no_hardcoded_id(self):
+        self.assertNotIn('"id": 999999', self.src)
+
+    def test_fallback_choice_prompt_goes_through_the_shared_counter(self):
+        block = self.src.split("No player_choice_prompt found in initial_items", 1)[1][:1400]
+        self.assertIn("create_feed_item(", block)
+        # …and is actually persisted, so the server's counter stays ahead of it.
+        self.assertIn("_feed_append(st, fallback_item)", block)
+
+
+class TestTurnThreadHygiene(unittest.TestCase):
+    """The /api/choose spawn used to be a leftover debug harness: a non-daemon
+    thread per turn, a 200ms sleep on the request thread, and a scratch file
+    that leaked whenever the worker didn't write it inside that window."""
+
+    def setUp(self):
+        self.src = (ROOT / "engine.py").read_text(encoding="utf-8")
+        self.choose = self.src.split("def api_choose(", 1)[1].split("\ndef ", 1)[0]
+
+    def test_turn_thread_is_a_daemon(self):
+        self.assertIn("daemon=True", self.choose)
+        self.assertNotIn("# thread.daemon = True", self.src)
+
+    def test_request_thread_does_not_sleep_waiting_on_the_worker(self):
+        self.assertNotIn("time.sleep(0.2)", self.choose)
+
+    def test_scratch_markers_are_swept(self):
+        self.assertIn("_sweep_thread_signals", self.choose)
+        self.assertIn("def _sweep_thread_signals", self.src)
+
+    def test_sweeper_only_removes_stale_markers(self):
+        engine._sweep_thread_signals()  # must never raise
+        fresh = engine.ROOT / "thread_signal_test_fresh.tmp"
+        fresh.write_text("x", encoding="utf-8")
+        try:
+            engine._sweep_thread_signals()
+            self.assertTrue(fresh.exists(), "a marker for a running turn must survive")
+        finally:
+            fresh.unlink(missing_ok=True)
+
+
+class TestObserveRegroundIsWiredUp(unittest.TestCase):
+    """The realtime anti-drift loop called generate_choices without importing
+    it, so every run raised NameError inside the worker. It was swallowed, so
+    nothing 500'd — the feature had simply never worked, and the vision call it
+    pays for was thrown away every time."""
+
+    def test_reground_worker_imports_generate_choices(self):
+        src = (ROOT / "engine.py").read_text(encoding="utf-8")
+        worker = src.split("def _spawn_observe_reground(", 1)[1].split("\ndef ", 1)[0]
+        self.assertIn("from choices import generate_choices", worker)
+
+    def test_reground_guard_is_released_when_the_thread_cannot_start(self):
+        src = (ROOT / "engine.py").read_text(encoding="utf-8")
+        worker = src.split("def _spawn_observe_reground(", 1)[1].split("\ndef ", 1)[0]
+        self.assertIn("could not spawn reground worker", worker)
+
+
+class TestDriftSingleFlightIsAtomic(unittest.TestCase):
+    """Two sessions polling /api/world_tick must not both spawn an LLM worker —
+    that's the thread-budget exhaustion the guard exists to prevent."""
+
+    def test_claim_is_taken_under_a_lock(self):
+        src = (ROOT / "engine.py").read_text(encoding="utf-8")
+        spawn = src.split("def _spawn_world_drift(", 1)[1].split("\ndef ", 1)[0]
+        self.assertIn("with _DRIFT_LOCK:", spawn)
+        self.assertIn("_DRIFT_LOCK = threading.Lock()", src)
+
+    def test_a_refused_claim_is_reported_as_busy(self):
+        engine._drift_worker_active = True
+        try:
+            self.assertFalse(engine._spawn_world_drift("whoever", {}))
+        finally:
+            engine._drift_worker_active = False
 
 
 class TestDriftFeedsBackIntoTheSimulation(unittest.TestCase):

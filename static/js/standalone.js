@@ -40,6 +40,9 @@
   // early asks with {skipped: "too_soon"}, so this only has to be frequent
   // enough that a drift lands promptly once one is due.
   const WORLD_DRIFT_ASK_MS = (typeof window !== "undefined" && window.__WORLD_DRIFT_ASK_MS__) || 6000;
+  // Hard release for the in-flight guard, so a request that never settles can't
+  // silently stop the world drifting for the rest of the page.
+  const WORLD_DRIFT_ASK_TIMEOUT_MS = 15000;
   const REALTIME_MAX_RETRIES = 3; // transient realtime errors retry before falling back to stills
   // Reactor occasionally has no free server for the model ("no available
   // capacity" 429s) — an upstream availability shortage, not a local WebRTC
@@ -2519,9 +2522,14 @@
         return;
       }
       this.inFlight = true;
+      // Always release the in-flight guard, even if the request never settles.
+      // A fetch that hangs forever would otherwise pin inFlight=true and stop
+      // the world drifting for the rest of the page with no error anywhere.
+      const release = () => { this.inFlight = false; };
+      const guard = setTimeout(release, WORLD_DRIFT_ASK_TIMEOUT_MS);
       postJSON("/api/world_tick", {})
         .catch((err) => console.warn("[standalone] world tick failed:", err))
-        .then(() => { this.inFlight = false; });
+        .then(() => { clearTimeout(guard); release(); });
     },
   };
   try { window.__WorldDrift = WorldDrift; } catch (_) {}

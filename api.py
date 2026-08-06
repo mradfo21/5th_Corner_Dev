@@ -148,8 +148,17 @@ def _credit_gated_choose():
                 traceback.print_exc()
         raise
 
+    # engine.api_choose signals failure by RETURNING `(jsonify(...), 500)` — a
+    # plain tuple, not a Response — and it catches almost everything internally
+    # rather than raising. Reading `.status_code` off the result therefore saw
+    # no attribute and fell back to 200 for exactly the failures this refund
+    # exists to cover, so a player was charged a real credit for a turn that
+    # errored and never rendered. Unpack the tuple form too.
     try:
-        status = response.status_code if hasattr(response, 'status_code') else 200
+        payload = response[0] if isinstance(response, tuple) else response
+        status = response[1] if isinstance(response, tuple) and len(response) > 1 else None
+        if not isinstance(status, int):
+            status = getattr(payload, "status_code", 200)
     except Exception:
         status = 200
     if debited and status >= 500:
