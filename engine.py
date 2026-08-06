@@ -6150,7 +6150,11 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             player_alive = turn_state.get("player_state", {}).get("alive", True)
 
             turn_items: List[Dict[str, Any]] = [
-                create_feed_item(type="narrative_event", content=dispatch_text, metadata={"source": "dispatch"})
+                create_feed_item(
+                    type="narrative_event",
+                    content=dispatch_text,
+                    metadata={"source": "dispatch", "degraded": bool(p1.get("degraded"))},
+                )
             ]
 
             # Phase escalation sting: when this turn tipped the story into a higher
@@ -7024,6 +7028,22 @@ def api_choose():
                     if DEBUG_MODE: print(f"[DEBUG] api_choose ingested act-time world-model frame for img2img.", flush=True)
             except Exception as e_frame:
                 log_error(f"api_choose: failed to ingest act frame: {e_frame}")
+
+        # A specimen armed from the investigations tray. The client used to send
+        # only `investigation_id`, which was meaningless here — the capture lives
+        # in the browser and was never uploaded — so selecting a photo and acting
+        # on it grounded nothing. The crop itself arrives now and becomes this
+        # turn's img2img reference, so "describe your action" is answered by a
+        # frame that actually contains the thing being described. Ingested AFTER
+        # act_frame so an explicitly chosen specimen outranks the ambient frame.
+        investigation_frame = data.get('investigation_frame')
+        if investigation_frame:
+            try:
+                if _ingest_realtime_frame(investigation_frame, session_id):
+                    print(f"[INVESTIGATION] grounded the turn on specimen "
+                          f"{data.get('investigation_id') or '(unnamed)'}", flush=True)
+            except Exception as e_inv:
+                log_error(f"api_choose: failed to ingest investigation frame: {e_inv}")
 
         # 1. Immediately create and log the Player Action
         player_action_item = create_feed_item(
@@ -10582,6 +10602,62 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
         # Fallback to safe defaults
         return "You make a tense move in the chaos.", "The desert stretches ahead.", True, []
 
+# ───────── degraded turns, told in-world ─────────────────────────────────────
+# When dispatch generation fails, `_ask` returns a sentinel string — "Signal
+# interrupted due to timeout...", "Signal interrupted — Anthropic API key not
+# configured." — and the turn loop's only guard was for an EMPTY dispatch, so
+# those went straight into the feed as the story. The player got an error
+# message in the voice of the narrator, which is the least recoverable way for
+# an outage to present: it reads as the game being broken rather than the
+# signal being bad.
+_DISPATCH_FAILURE_MARKERS = (
+    "signal interrupted",
+    "api error",
+    "transmission wavers",
+    "system communications remain static",
+    "the world holds its breath",
+    "could not read image",
+    "error:",
+    "gemini_api_key",
+    "openai_api_key",
+    "not configured",
+)
+
+# Deliberately world-neutral: these run in whatever level the player authored,
+# so they describe the CAMERA failing, never the setting. Anything about a
+# desert or a facility would be a different bug in a hand-built world.
+_DIEGETIC_DISPATCHES = (
+    "The viewfinder floods with static, then snaps back. For a heartbeat you saw "
+    "nothing at all — and whatever moved while the picture was gone has already stopped.",
+    "The tape stutters. Audio drops to a low hum, the frame smears, then steadies. "
+    "Something took that moment from you.",
+    "A wave of interference rolls across the lens. When it clears the light has "
+    "shifted, and the silence feels deliberate — like it waited for the picture to break.",
+    "The battery indicator flickers red. The image ghosts, doubles, resolves. You are "
+    "still moving, and you have lost track of how far.",
+    "Static swallows the shot. You keep rolling on instinct; when the picture returns "
+    "the shadows have rearranged themselves.",
+)
+
+
+def _is_failure_dispatch(text: Optional[str]) -> bool:
+    """True when a dispatch is an error sentinel rather than story."""
+    t = (text or "").strip().lower()
+    if not t:
+        return True
+    return any(marker in t for marker in _DISPATCH_FAILURE_MARKERS)
+
+
+def _diegetic_dispatch(choice: str = "") -> str:
+    """An in-world line to show instead of an error sentinel.
+
+    Varied by the action and a coarse clock so two failures in a row don't
+    print the same sentence, but stable within a turn.
+    """
+    seed = f"{choice}|{int(time.time() // 7)}"
+    return _DIEGETIC_DISPATCHES[abs(hash(seed)) % len(_DIEGETIC_DISPATCHES)]
+
+
 # ───────── persistent injuries ───────────────────────────────────────────────
 # Words that mean the player actually took bodily harm. Bare body-part nouns
 # are deliberately excluded: "he raised a hand" is not a wound, and a false
@@ -10855,6 +10931,16 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
         _save_state(state, session_id)
         print(f"[STATE] Saved - alive={player_alive}, health={state['player_state'].get('health', 100)}")
         
+        # An error sentinel is not an empty string, so it slipped past the guard
+        # below and was narrated to the player verbatim. Mask it as a camcorder
+        # glitch instead: the turn is degraded either way, but the fiction holds.
+        degraded = _is_failure_dispatch(dispatch)
+        if degraded:
+            print(f"[DEGRADED TURN] masking failed dispatch: {str(dispatch)[:80]}", flush=True)
+            dispatch = _diegetic_dispatch(choice)
+            if _is_failure_dispatch(vision_dispatch):
+                vision_dispatch = dispatch
+
         if not dispatch or dispatch.strip().lower() in {"none", "", "[", "[]"}:
             dispatch = "You make a tense move in the chaos."
         if not vision_dispatch or vision_dispatch.strip().lower() in {"none", "", "[", "[]"}:
@@ -10978,6 +11064,10 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             "consequence_image_prompt": consequence_img_prompt,
             "consequence_video": consequence_video_url,  # Video path for HD mode playback
             "hard_transition": hard_transition,  # Track location changes for reference buffer
+            # True when the dispatch was a masked failure. The player sees only
+            # the in-world glitch line, but autoplay and QA need to know this
+            # beat carried no real story so they don't treat it as progress.
+            "degraded": degraded,
             "frame_idx": frame_idx,  # for async image generation on the feed path
             "provisional_choices": provisional_choices,  # next-action options from the same LLM call (may be empty)
             "evolution_summary": state.get("evolution_summary", ""),  # Include world changes

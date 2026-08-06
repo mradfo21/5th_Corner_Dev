@@ -275,7 +275,29 @@
     const capacity = /\b429\b/.test(message) ||
       /no available (capacity|servers?)/i.test(message) ||
       /at capacity|no capacity|no servers? available/i.test(message);
-    return { message: message, capacity: capacity };
+    // Capacity was the only failure that got a name, so every other cause —
+    // an unconfigured server, a blocked SDK, a rejected key — showed the same
+    // "realtime unavailable" with nothing actionable in it. These are the
+    // causes worth telling apart, because the fix for each is different.
+    let reason = "unknown";
+    let hint = "Realtime unavailable \u2014 showing stills";
+    if (capacity) {
+      reason = "capacity";
+      hint = "Reactor is full right now \u2014 showing stills (retrying quietly)";
+    } else if (/not configured|REACTOR_API_KEY|\b503\b/i.test(message)) {
+      reason = "not_configured";
+      hint = "Realtime isn't configured on this server \u2014 showing stills";
+    } else if (/\b401\b|\b403\b|unauthor|forbidden/i.test(message)) {
+      reason = "bad_key";
+      hint = "Realtime rejected this server's key \u2014 showing stills";
+    } else if (/import|module|failed to fetch|network|load/i.test(message)) {
+      reason = "sdk_blocked";
+      hint = "Couldn't load the realtime SDK \u2014 showing stills";
+    } else if (/token/i.test(message)) {
+      reason = "token_exchange_failed";
+      hint = "Realtime sign-in failed \u2014 showing stills";
+    }
+    return { message: message, capacity: capacity, reason: reason, hint: hint };
   }
 
   function setStatus(s) {
@@ -765,6 +787,7 @@
   // screen, so it crossfades the freeze buffer out.
   function onPresentedFrame(video) {
     if (video.videoWidth <= 0) return;
+    tickTelemetry();
     clearRevealWatchdog(); // frames are flowing — the stream is healthy
     // A full reset hides the video for a clean wipe; genuine frames un-hide it
     // (a re-anchor keeps it visible under the freeze, so this is a no-op there).
@@ -817,6 +840,46 @@
 
   function clearRevealWatchdog() {
     if (rstate.revealWatchdog) { clearTimeout(rstate.revealWatchdog); rstate.revealWatchdog = null; }
+  }
+
+  // ── Telemetry ────────────────────────────────────────────────────────────
+  // "Is the stream actually alive?" was previously answered by whether the
+  // status string said "live", which stays true through a total stall — the
+  // last decoded frame just sits there. Counting presented frames is the only
+  // way to tell a running world from a frozen picture of one.
+  const tele = { frames: 0, fps: 0, lastFrameTs: 0, _windowStart: 0, _windowFrames: 0 };
+
+  function tickTelemetry() {
+    const now = Date.now();
+    tele.frames++;
+    tele.lastFrameTs = now;
+    if (!tele._windowStart) { tele._windowStart = now; tele._windowFrames = 0; }
+    tele._windowFrames++;
+    const span = now - tele._windowStart;
+    if (span >= 1000) {
+      tele.fps = Math.round((tele._windowFrames * 1000) / span);
+      tele._windowStart = now;
+      tele._windowFrames = 0;
+    }
+  }
+
+  function resetTelemetry() {
+    tele.frames = 0; tele.fps = 0; tele.lastFrameTs = 0;
+    tele._windowStart = 0; tele._windowFrames = 0;
+  }
+
+  function getTelemetry() {
+    const since = tele.lastFrameTs ? Date.now() - tele.lastFrameTs : null;
+    return {
+      frames: tele.frames,
+      fps: tele.fps,
+      msSinceLastFrame: since,
+      // Frames stopped arriving but we still claim to be live — the picture is
+      // frozen. Two seconds is well past any normal inter-frame gap.
+      stalled: rstate.status === "live" && since != null && since > 2000,
+      status: rstate.status,
+      blackout: !!rstate.blackout,
+    };
   }
 
   function startFrameWatch(video) {
@@ -1571,6 +1634,7 @@
       rstate.connecting = false;
       rstate.connectedAt = Date.now();
       rstate.lastError = null;
+      resetTelemetry(); // a fresh connection starts a fresh frame count
       return true;
     } catch (err) {
       const classified = classifyConnectError(err);
@@ -2140,6 +2204,10 @@
     // free server for this model right now) from other failures so it can be
     // more patient and explain what's happening instead of a generic error.
     getLastError: () => rstate.lastError,
+    // Measured stream health: presented frames, fps, and whether the picture
+    // has frozen while still reporting "live". Status alone can't tell those
+    // apart — a stalled stream keeps showing its last decoded frame.
+    getTelemetry: getTelemetry,
     isActive: () => rstate.active,
     isReady: () => rstate.ready,
     // World-model selection API (for the mid-game switcher UI).

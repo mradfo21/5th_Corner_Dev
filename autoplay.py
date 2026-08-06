@@ -150,7 +150,16 @@ def play(base, turns, strategy, turn_timeout):
         new_prompt = latest_prompt(items)
         new_choices = choice_texts(new_prompt)
         regenerated = bool(new_choices) and new_choices != prev_choices
-        real_text = bool(narr) and not is_fallback_text(narr)
+        # A degraded turn is a masked failure: the player sees an in-world
+        # camcorder glitch, so the text no longer LOOKS like an error and
+        # is_fallback_text can't spot it. The server flags it explicitly —
+        # without this, a run where every LLM call failed would report 100%
+        # real narrative.
+        degraded_turn = any(
+            (i.get("metadata") or {}).get("degraded")
+            for i in items if i.get("type") == "narrative_event"
+        )
+        real_text = bool(narr) and not is_fallback_text(narr) and not degraded_turn
         fallback_choices = bool(new_choices) and all(c.lower() in KNOWN_FALLBACKS for c in new_choices)
 
         turn = {

@@ -367,14 +367,27 @@ def generate_choices(
         # Moving-stealth options — quiet, but the body still covers ground.
         opts.append("Creep to the next patch of cover")
         opts.append("Crawl forward into the shadows")
-        # De-dupe while preserving order, cap at 3
+        # De-dupe while preserving order
         seen_local: set = set()
         deduped: List[str] = []
         for o in opts:
             if o.lower() not in seen_local:
                 seen_local.add(o.lower())
                 deduped.append(o)
-        return deduped[:3] if len(deduped) >= 2 else ["Vault forward over the obstacle", "Creep to the next cover", "Wrench the nearest door open"]
+        if len(deduped) < 2:
+            deduped = ["Vault forward over the obstacle", "Creep to the next cover",
+                       "Wrench the nearest door open", "Shoulder your way past the blockage",
+                       "Break for the nearest opening"]
+        # Rotate the window instead of always serving the first three. A run
+        # that degrades for several turns in a row used to offer the identical
+        # slate every time, which reads as the game having frozen even when it
+        # is still accepting input. Seeded by the scene so the same situation is
+        # stable within a turn but differs from the last one.
+        if len(deduped) > 3:
+            import hashlib
+            offset = int(hashlib.md5(ctx.strip()[:200].encode("utf-8")).hexdigest(), 16) % len(deduped)
+            deduped = [deduped[(offset + i) % len(deduped)] for i in range(len(deduped))]
+        return deduped[:3]
 
     # Offline/mock backend short-circuit: when ai_provider_manager has been
     # told to use the "mock" backend (e.g. by run_local.py --mock or the

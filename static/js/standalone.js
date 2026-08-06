@@ -1786,10 +1786,16 @@
               updateRendererButton();
               return;
             }
-            console.warn("[standalone] realtime unavailable after retries — falling back to stills", isCapacity ? "(capacity)" : "");
-            Renderer.fallbackToStills(isCapacity
-              ? "Reactor is full right now \u2014 showing stills (retrying quietly)"
-              : "Realtime unavailable \u2014 showing stills");
+            console.warn("[standalone] realtime unavailable after retries — falling back to stills",
+                         (lastErr && lastErr.reason) || "unknown");
+            // Every non-capacity failure used to read as the same shrug. The
+            // classifier names the cause now, and each cause has a different
+            // fix, so say which one happened.
+            Renderer.fallbackToStills(
+              (lastErr && lastErr.hint) ||
+              (isCapacity
+                ? "Reactor is full right now \u2014 showing stills (retrying quietly)"
+                : "Realtime unavailable \u2014 showing stills"));
             // Capacity is Reactor's problem to resolve, not the player's — keep
             // quietly checking in the background so realtime comes back on its
             // own the moment a server frees up, instead of leaving the player
@@ -1987,6 +1993,11 @@
               return;
             case "chunk_complete":
               Ceremony.note("\u25A3 Chunk " + ((d.chunk_index != null ? d.chunk_index : 0) + 1) + " rendered");
+              // A rendered chunk means frames are arriving, which is the same
+              // proof of life as `video_showing`. Some models emit chunks and
+              // never that event, and the ceremony then sat on "World Updating"
+              // over a world that was already running.
+              Ceremony.reach("world_respond");
               return;
             case "state": {
               const now = Date.now();
@@ -6768,10 +6779,15 @@
         } catch (_) {}
       }
     }
-    // If a captured specimen is armed, ride its id along with the action so the
-    // backend can (in future) ground the turn on what the player examined. The
-    // engine ignores unknown fields today — this is forward infrastructure.
-    const investigationId = state.selectedInvestigation ? state.selectedInvestigation.id : null;
+    // If a captured specimen is armed, send the CAPTURE ITSELF, not just its id.
+    // The id only ever meant something in this tab — nothing was uploaded — so
+    // the engine had no way to resolve it and dropped it, and "loaded — describe
+    // your action" was a promise the turn never kept. The texture rides along as
+    // an img2img reference so the next frame is actually grounded on the thing
+    // the player examined.
+    const armed = state.selectedInvestigation;
+    const investigationId = armed ? armed.id : null;
+    const investigationFrame = (armed && armed.texture) || null;
     state.selectedInvestigation = null;
     try { Investigations.render(); } catch (_) {} // drop the selection highlight
     try {
@@ -6780,6 +6796,7 @@
         context_item_id: contextItemId,
         act_frame: actFrame,
         investigation_id: investigationId,
+        investigation_frame: investigationFrame,
         source: actionSource,
       });
       renderItems(items); // immediately shows the player_action echo
