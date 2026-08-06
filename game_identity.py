@@ -382,11 +382,26 @@ def default_spec() -> Dict[str, Dict[str, Any]]:
     }
 
 
+# Filling one of these in is unambiguous intent to use the block, so doing it
+# while the block is switched off turns it on (see save_spec). Deliberately
+# excludes reference_images: deleting a plate calls save_spec too, and a delete
+# must never enable anything.
+_INTENT_FIELDS = ("name", "role", "appearance", "wardrobe", "signature_gear",
+                  "demeanor", "backstory", "summary", "era", "palette",
+                  "landmarks", "opening_shot")
+
+
 def save_spec(partial: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     """Merge a partial cast-sheet update into the live prompt file.
 
     Accepts any subset of the three blocks and any subset of their fields, so
     the editors can PUT just what changed.
+
+    Typing into a switched-off block switches it on. The toggle exists so you
+    can A/B a character or level without deleting it, but as a *gate* it was a
+    trap: you'd write a protagonist, save every field successfully, watch the
+    game ignore all of it, and have no way to tell why. Nothing about naming
+    your character means "and don't use them".
     """
     current = get_spec()
     fields: Dict[str, Any] = {}
@@ -398,6 +413,13 @@ def save_spec(partial: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
             continue
         merged = dict(current[key])
         merged.update(incoming)
+        if (
+            key in (CHARACTER_KEY, SETTING_KEY)
+            and "enabled" not in incoming          # never override an explicit choice
+            and not current[key].get("enabled")
+            and any(str(incoming.get(f, "")).strip() for f in _INTENT_FIELDS)
+        ):
+            merged["enabled"] = True
         fields[key] = _normalize(key, merged)
     if fields:
         prompts_store.save_prompts_bulk(fields)
@@ -430,40 +452,54 @@ def ensure_spec_keys() -> None:
 # and the in-game World Editor at once.
 # ═══════════════════════════════════════════════════════════════════════════
 
+# Every field carries a `tier`. "essential" fields are the ones that visibly
+# change the game the moment you fill them in; "advanced" fields refine what
+# they establish. The editors show essentials and fold the rest behind one
+# disclosure, because twenty equal-looking inputs is how a form stops reading
+# as "who am I and where am I" and starts reading as paperwork.
+TIER_ESSENTIAL = "essential"
+TIER_ADVANCED = "advanced"
+
 IDENTITY_SCHEMA: List[Dict[str, Any]] = [
     {
         "id": CHARACTER_KEY,
         "label": "Your Character",
         "icon": "🧍",
         "description": (
-            "Who you actually play as. Name and temperament steer the writing; appearance, "
-            "wardrobe, and gear steer the picture — and matter most when the camera can see you."
+            "Who you play as. Name and role reach everything; the look only reaches the "
+            "picture when the camera can actually see you."
         ),
         "supports_images": True,
         "images_label": "Character reference",
         "images_hint": (
-            "A portrait or character sheet. Passed to the image model as an identity lock so "
-            "your character is the same person in every frame."
+            "A portrait or character sheet. Locks your character to the same face in every frame."
         ),
         "fields": [
             {"id": "enabled", "label": "Use this character", "type": "toggle",
-             "help": "Off means the story falls back to whatever the World & Setting prompt describes."},
-            {"id": "name", "label": "Name", "type": "text", "placeholder": "Wren Alvarez"},
-            {"id": "pronouns", "label": "Pronouns", "type": "text", "placeholder": "she/her"},
-            {"id": "role", "label": "Role", "type": "text",
-             "placeholder": "freelance salvage diver", "help": "What they do — drives the kinds of actions the game offers."},
-            {"id": "appearance", "label": "Appearance", "type": "longtext",
-             "placeholder": "Early thirties, close-cropped black hair, burn scar across the left jaw.",
-             "help": "Physical description the image model locks onto."},
+             "tier": TIER_ESSENTIAL,
+             "help": "Switches on the moment you fill anything in. Turn it off to play without them, keeping the details."},
+            {"id": "name", "label": "Name", "type": "text", "tier": TIER_ESSENTIAL,
+             "placeholder": "Wren Alvarez"},
+            {"id": "role", "label": "Role", "type": "text", "tier": TIER_ESSENTIAL,
+             "placeholder": "freelance salvage diver",
+             "help": "Drives the kinds of actions the game offers you."},
+            {"id": "appearance", "label": "Look", "type": "longtext", "tier": TIER_ESSENTIAL,
+             "placeholder": "Early thirties, close-cropped black hair, burn scar across the left jaw. Patched orange dive suit.",
+             "help": "Face, build, and what they're wearing — what the image model locks onto."},
             {"id": "wardrobe", "label": "Wardrobe", "type": "longtext",
-             "placeholder": "Patched orange dive suit, mismatched boots, canvas satchel."},
+             "tier": TIER_ADVANCED,
+             "placeholder": "Patched orange dive suit, mismatched boots, canvas satchel.",
+             "help": "Only needed if you want clothing called out separately from Look."},
             {"id": "signature_gear", "label": "Signature gear", "type": "text",
+             "tier": TIER_ADVANCED,
              "placeholder": "dented Nikon F3, sodium lamp",
              "help": "Visible in frame and usable in the fiction."},
-            {"id": "demeanor", "label": "Temperament", "type": "text",
+            {"id": "pronouns", "label": "Pronouns", "type": "text", "tier": TIER_ADVANCED,
+             "placeholder": "she/her"},
+            {"id": "demeanor", "label": "Temperament", "type": "text", "tier": TIER_ADVANCED,
              "placeholder": "dry, unflappable, talks to herself",
              "help": "Colours how the narrator writes their reactions."},
-            {"id": "backstory", "label": "Backstory", "type": "longtext",
+            {"id": "backstory", "label": "Backstory", "type": "longtext", "tier": TIER_ADVANCED,
              "placeholder": "Came back for the sister who never filed a flight plan."},
         ],
     },
@@ -472,48 +508,55 @@ IDENTITY_SCHEMA: List[Dict[str, Any]] = [
         "label": "The Level",
         "icon": "🗺️",
         "description": (
-            "The place the run happens in. The opening shot replaces the shipped intro, and the "
-            "landmarks keep every later frame anchored to the same geography."
+            "The one place this run happens in. Overrides the geography in The World prompt, "
+            "and its landmarks keep every later frame anchored to the same space."
         ),
         "supports_images": True,
         "images_label": "Setting reference",
         "images_hint": (
-            "A photo, concept plate, or screenshot of the place. Passed to the image model as a "
-            "location anchor for architecture, materials, and palette."
+            "A photo, concept plate, or screenshot. Anchors architecture, materials, and palette."
         ),
         "fields": [
             {"id": "enabled", "label": "Use this level", "type": "toggle",
-             "help": "Off means the shipped Horizon-facility opening is used."},
-            {"id": "name", "label": "Name", "type": "text", "placeholder": "The Kettle Yard"},
-            {"id": "summary", "label": "What it is", "type": "longtext",
+             "tier": TIER_ESSENTIAL,
+             "help": "Switches on the moment you fill anything in. Turn it off to fall back to the shipped opening."},
+            {"id": "name", "label": "Name", "type": "text", "tier": TIER_ESSENTIAL,
+             "placeholder": "The Kettle Yard"},
+            {"id": "summary", "label": "What it is", "type": "longtext", "tier": TIER_ESSENTIAL,
              "placeholder": "A flooded shipbreaking yard on a tidal flat, half the hulls still standing."},
-            {"id": "era", "label": "Era / tech level", "type": "text", "placeholder": "1993, analog only"},
-            {"id": "palette", "label": "Palette & light", "type": "text",
-             "placeholder": "rust orange, sodium haze, low grey sky"},
             {"id": "landmarks", "label": "Landmarks that must recur", "type": "longtext",
+             "tier": TIER_ESSENTIAL,
              "placeholder": "The listing tanker, the crane gantry, the pump house with the red door.",
-             "help": "Named geography the image model must keep returning to, so the space feels real."},
+             "help": "Named geography every frame keeps returning to, so the space feels real."},
             {"id": "opening_shot", "label": "Opening shot", "type": "longtext",
+             "tier": TIER_ESSENTIAL,
              "placeholder": "Low tide at dawn. The tanker's hull fills the right of frame; mud flats run out to the gantry.",
-             "help": "The literal first frame of the run. Leave blank to auto-derive it from the summary."},
+             "help": "The literal first frame. Leave blank to derive it from the description."},
+            {"id": "era", "label": "Era / tech level", "type": "text", "tier": TIER_ADVANCED,
+             "placeholder": "1993, analog only"},
+            {"id": "palette", "label": "Palette & light", "type": "text", "tier": TIER_ADVANCED,
+             "placeholder": "rust orange, sodium haze, low grey sky",
+             "help": "Narrower than Look in the prompt tabs — this is this level's light specifically."},
         ],
     },
     {
         "id": CAMERA_KEY,
-        "label": "Camera & Perspective",
+        "label": "Camera",
         "icon": "🎥",
         "description": (
-            "Where the lens sits. This is a real switch, not a suggestion — it rewrites the "
-            "perspective language inside every shipped prompt and flips the negative prompt to match."
+            "A real switch, not a suggestion: it rewrites the perspective language inside every "
+            "prompt in the game and flips the negative prompt to match."
         ),
         "supports_images": False,
         "fields": [
-            {"id": "mode", "label": "Perspective", "type": "mode"},
+            {"id": "mode", "label": "Perspective", "type": "mode", "tier": TIER_ESSENTIAL},
             {"id": "show_hands", "label": "Show your hands in frame", "type": "toggle",
-             "help": "First person only — whether your own hands/forearms may enter the bottom of frame."},
-            {"id": "lens", "label": "Lens / framing", "type": "text",
+             "tier": TIER_ESSENTIAL,
+             "help": "First person only — whether your hands may enter the bottom of frame."},
+            {"id": "lens", "label": "Lens / framing", "type": "text", "tier": TIER_ADVANCED,
              "placeholder": "28mm wide, handheld, slight dutch"},
             {"id": "notes", "label": "Extra camera notes", "type": "longtext",
+             "tier": TIER_ADVANCED,
              "placeholder": "Keep the horizon low. Never look straight down."},
         ],
     },
@@ -525,6 +568,7 @@ def identity_schema() -> List[Dict[str, Any]]:
     schema = json.loads(json.dumps(IDENTITY_SCHEMA))
     for block in schema:
         for field in block["fields"]:
+            field.setdefault("tier", TIER_ESSENTIAL)
             if field.get("type") == "mode":
                 field["options"] = mode_options()
     return schema
@@ -1303,10 +1347,19 @@ def wiring_notes(spec: Optional[Dict[str, Any]] = None) -> Dict[str, List[str]]:
             "Your character reference plate is not being attached for the same reason."
         )
 
+    if not char.get("enabled") and any(char.get(f) for f in _INTENT_FIELDS):
+        notes[CHARACTER_KEY].append(
+            "Switched off, so none of this is being used. Turn it back on to play as them."
+        )
+
     if setting.get("enabled") and not setting_enabled(spec):
         notes[SETTING_KEY].append(
             "This level is switched on but every field is blank, so nothing is sent. "
             "Fill in at least a name or a description."
+        )
+    if not setting.get("enabled") and any(setting.get(f) for f in _INTENT_FIELDS):
+        notes[SETTING_KEY].append(
+            "Switched off, so the shipped opening is used instead of this level."
         )
     if setting_enabled(spec) and not setting.get("opening_shot"):
         notes[SETTING_KEY].append(

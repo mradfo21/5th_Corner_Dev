@@ -3580,6 +3580,13 @@
     let identity = {};
     let identitySchema = [];
     let identityPreview = null;
+    // One switch for the whole editor. Off (the default) shows the four
+    // prompts and the dozen cast fields that actually redirect the game; on
+    // reveals the mechanical rulebooks underneath them. Twelve equal-looking
+    // paragraphs is how you end up editing the wrong one, so the hierarchy is
+    // in the UI rather than only in the descriptions.
+    let showAdvanced = false;
+    try { showAdvanced = localStorage.getItem("we_advanced") === "1"; } catch (_) {}
 
     async function weFetch(method, path, body) {
       const opts = { method, headers: {} };
@@ -3605,6 +3612,30 @@
 
     function schemaFields() { return (content && content.schema) || []; }
     function groupLabels() { return (content && content.groups) || {}; }
+    function groupBlurbs() { return (content && content.group_blurbs) || {}; }
+    function isAdvanced(f) { return (f && f.tier) === "advanced"; }
+
+    function setAdvanced(on) {
+      showAdvanced = !!on;
+      try { localStorage.setItem("we_advanced", showAdvanced ? "1" : "0"); } catch (_) {}
+      render();
+    }
+
+    // The "N more" reveal shared by the prompt tabs and the cast cards, so
+    // both use one mental model: essentials in front, machinery behind a
+    // single labelled line you can click.
+    function makeAdvancedToggle(count, noun) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "we-more";
+      const label = count + " advanced " + noun + (count === 1 ? "" : "s");
+      b.textContent = showAdvanced ? "▾ Hide " + label : "▸ " + label;
+      b.title = showAdvanced
+        ? "Hide the mechanical rulebooks"
+        : "Show the mechanical rulebooks underneath these";
+      b.addEventListener("click", () => setAdvanced(!showAdvanced));
+      return b;
+    }
     function valOf(key) {
       if (key in edits) return edits[key];
       return (content && content.prompts && content.prompts[key] != null) ? content.prompts[key] : "";
@@ -3757,13 +3788,31 @@
       if (el.weFields) el.weFields.classList.toggle("hidden", showWorlds || showCast);
       if (el.weCast) el.weCast.classList.toggle("hidden", !showCast);
       if (el.weWorlds) el.weWorlds.classList.toggle("hidden", !showWorlds);
+      // Drop the prompt column's DOM when it isn't the active tab: dozens of
+      // textareas holding tens of thousands of characters have no business
+      // sitting behind the cast form.
+      if ((showWorlds || showCast) && el.weFields) el.weFields.innerHTML = "";
       if (showWorlds) { renderWorlds(); refreshDirtyBadge(); return; }
       if (showCast) { renderCast(); refreshDirtyBadge(); return; }
       if (!el.weFields) return;
       el.weFields.innerHTML = "";
-      schemaFields().filter((f) => f.group === activeTab).forEach((f) => {
-        el.weFields.appendChild(makeField(f));
-      });
+
+      const blurb = groupBlurbs()[activeTab];
+      if (blurb) {
+        const b = document.createElement("div");
+        b.className = "we-blurb";
+        b.textContent = blurb;
+        el.weFields.appendChild(b);
+      }
+
+      const fields = schemaFields().filter((f) => f.group === activeTab);
+      const primary = fields.filter((f) => !isAdvanced(f));
+      const advanced = fields.filter(isAdvanced);
+      primary.forEach((f) => el.weFields.appendChild(makeField(f)));
+      if (advanced.length) {
+        el.weFields.appendChild(makeAdvancedToggle(advanced.length, "prompt"));
+        if (showAdvanced) advanced.forEach((f) => el.weFields.appendChild(makeField(f)));
+      }
       refreshDirtyBadge();
     }
 
@@ -3783,6 +3832,7 @@
           prompts_defaults: payload.prompts_defaults || {},
           schema: payload.schema || [],
           groups: payload.groups || {},
+          group_blurbs: payload.group_blurbs || {},
         };
         identity = payload.identity || {};
         identitySchema = payload.identity_schema || [];
@@ -4309,22 +4359,24 @@
       return slot ? (identityPreview.reference_images[slot] || []) : [];
     }
 
-    // What a single card compiles to. The server sends one entry per block
-    // (see game_identity.block_preview) precisely because the old shared blob
-    // made half the fields look dead: appearance, wardrobe, era and palette
-    // compile into the IMAGE blocks and never appear in the director's sheet,
-    // so typing into them changed nothing on screen.
+    // What a single card compiles to, as ONE block of text with the
+    // destinations marked inside it. The server sends a per-block breakdown
+    // (see game_identity.block_preview) because the old shared blob made half
+    // the fields look dead — appearance, wardrobe, era and palette compile
+    // into the IMAGE blocks and never appear in the director's sheet, so
+    // typing into them changed nothing on screen. But three separate scrolling
+    // panes per card was its own wall of text, so they're joined here.
     function compiledFor(blockId) {
       const p = identityPreview || {};
       const b = (p.blocks || {})[blockId] || {};
-      const panes = [];
-      if (b.image) panes.push({ label: "Sent to the image model", text: b.image });
-      if (b.negative) panes.push({ label: "Negative prompt (recomputed for this camera)", text: b.negative });
-      if (b.narrative) panes.push({ label: "Sent to the writer", text: b.narrative });
-      if (!panes.length && p.image_directive && blockId === "camera_perspective") {
-        panes.push({ label: "Sent to the image model", text: p.image_directive });
+      const parts = [];
+      if (b.image) parts.push("→ TO THE IMAGE MODEL\n" + b.image);
+      if (b.negative) parts.push("→ NEGATIVE PROMPT (recomputed for this camera)\n" + b.negative);
+      if (b.narrative) parts.push("→ TO THE WRITER\n" + b.narrative);
+      if (!parts.length && p.image_directive && blockId === "camera_perspective") {
+        parts.push("→ TO THE IMAGE MODEL\n" + p.image_directive);
       }
-      return panes;
+      return parts.join("\n\n");
     }
 
     function notesFor(blockId) {
@@ -4432,7 +4484,14 @@
       desc.textContent = block.description || "";
 
       wrap.appendChild(top); wrap.appendChild(desc);
-      block.fields.forEach((f) => wrap.appendChild(makeCastField(block.id, f)));
+
+      const essential = block.fields.filter((f) => f.tier !== "advanced");
+      const advanced = block.fields.filter((f) => f.tier === "advanced");
+      essential.forEach((f) => wrap.appendChild(makeCastField(block.id, f)));
+      if (advanced.length) {
+        wrap.appendChild(makeAdvancedToggle(advanced.length, "field"));
+        if (showAdvanced) advanced.forEach((f) => wrap.appendChild(makeCastField(block.id, f)));
+      }
 
       if (block.supports_images) wrap.appendChild(makePlateZone(block));
 
@@ -4443,14 +4502,14 @@
         wrap.appendChild(warn);
       });
 
-      const panes = compiledFor(block.id);
-      panes.forEach((p) => {
-        wrap.appendChild(castLabel(p.label));
+      const compiled = compiledFor(block.id);
+      if (compiled) {
+        wrap.appendChild(castLabel("What this sends to the model"));
         const pane = document.createElement("div");
         pane.className = "we-compiled";
-        pane.textContent = p.text;
+        pane.textContent = compiled;
         wrap.appendChild(pane);
-      });
+      }
       return wrap;
     }
 
@@ -4507,8 +4566,9 @@
     // The short forms of the cast sheet that go to the surfaces which can't
     // take the full directive — the live world model, the vision loop that
     // decides what the NEXT frame looks like, camp, and anyone you talk to.
-    // Surfaced because "does this reach anything beyond the still image?" was
-    // the question the editor gave no way to answer.
+    // Behind the advanced switch: it answers "does this reach anything beyond
+    // the still image?", which is worth being able to check and not worth
+    // reading every time.
     function makeReachBlock() {
       const c = (identityPreview || {}).compact || {};
       const rows = [
@@ -4567,9 +4627,15 @@
     function renderCast() {
       if (!el.weCast) return;
       el.weCast.innerHTML = "";
+      const blurb = document.createElement("div");
+      blurb.className = "we-blurb";
+      blurb.textContent = "Who you play, where, and where the lens sits. Live on your next turn.";
+      el.weCast.appendChild(blurb);
       identitySchema.forEach((block) => el.weCast.appendChild(makeCastBlock(block)));
-      const reach = makeReachBlock();
-      if (reach) el.weCast.appendChild(reach);
+      if (showAdvanced) {
+        const reach = makeReachBlock();
+        if (reach) el.weCast.appendChild(reach);
+      }
       el.weCast.appendChild(makeCastReset());
     }
 

@@ -330,69 +330,58 @@ def validate_prompt_value(key: str, value: Any) -> Tuple[bool, List[str]]:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# Schema — drives the World Studio UI (grouping, descriptions, placeholder
-# legends, and "used by" tags). Deliberately only lists fields that are
-# actually read by a live code path (see `code_refs`) — a handful of keys
-# still live in simulation_prompts.json for legacy/future reasons but are
-# not wired into any generation logic, so World Studio doesn't show them
-# at all (showing an editable field with zero effect on the game is worse
-# than not showing it).
+# Schema — drives both editors (grouping, tier, descriptions, placeholder
+# legends).
+#
+# Two rules keep this honest:
+#
+# 1. Every key in simulation_prompts.json is either listed here or is a
+#    cast-sheet block. An editable field with no effect on the game is worse
+#    than no field at all, and four keys had quietly become exactly that
+#    (~9KB of prompt text read by nothing, snapshotted into every saved
+#    world, and pointed at by the README). `unwired_keys()` below plus a test
+#    stop that from coming back.
+#
+# 2. Every field declares a `tier`. There are only four PRIMARY prompts —
+#    the world, how an action becomes a consequence, what actions are even
+#    offered, and how the world looks. Those four plus the Cast & Camera
+#    sheet are the whole creative surface. Everything else is a mechanical
+#    rulebook you can go a long time without opening, so the editors keep it
+#    behind one disclosure instead of presenting twelve equal-looking
+#    paragraphs and letting you guess which one matters.
 # ─────────────────────────────────────────────────────────────────────────
+
+TIER_PRIMARY = "primary"
+TIER_ADVANCED = "advanced"
 
 PROMPT_SCHEMA: List[Dict[str, Any]] = [
     {
         "id": "world_initial_state",
-        "label": "World & Opening Setting",
+        "label": "The World",
         "group": "world",
+        "tier": TIER_PRIMARY,
         "type": "longtext",
-        "description": "The full opening world-state brief — setting, tone, era, threats, and rules the whole story is grounded in. Re-used every turn as the base of the evolving world prompt.",
+        "description": "What kind of place this is: setting, era, tone, what threatens you. Every turn's world state grows out of this. To pin down one specific location instead, use The Level in Cast & Camera — it overrides the geography here.",
         "code_refs": ["engine.py"],
         "live": True,
     },
     {
         "id": "action_consequence_instructions",
-        "label": "Action & Consequence Rules",
+        "label": "How Actions Play Out",
         "group": "narrative",
+        "tier": TIER_PRIMARY,
         "type": "longtext",
-        "description": "How the model turns a player action into a narrative dispatch + visual scene + life/death outcome. The single biggest lever on how the game feels turn to turn.",
+        "description": "Turns an action into what happened, what you now see, and whether you survived. The biggest single lever on how the game feels.",
         "code_refs": ["engine.py"],
         "live": True,
-    },
-    {
-        "id": "world_evolution_instructions",
-        "label": "World Evolution Rules",
-        "group": "world",
-        "type": "longtext",
-        "description": "House rules for the per-turn pass that REWRITES the whole world state. This runs after every action and its output becomes the world every other prompt reads next turn — so anything it drifts away from is gone. Use it to say what must stay fixed and what is allowed to change.",
-        "code_refs": ["evolve_prompt_file.py"],
-        "live": True,
-    },
-    {
-        "id": "situation_summary_instructions",
-        "label": "Situation Summary",
-        "group": "narrative",
-        "type": "longtext",
-        "description": "How the model writes the short 'what's urgent right now' bulletin shown between turns.",
-        "code_refs": ["engine.py"],
-        "live": True,
-    },
-    {
-        "id": "field_notes_format",
-        "label": "Field Notes Format",
-        "group": "narrative",
-        "type": "longtext",
-        "description": "Format/voice rules for the player's in-universe field notes / journal entries. Optionally place {context} (the world state) and {last_choice} (the action just taken) wherever you want them — leave them out and they're appended below your rules instead.",
-        "code_refs": ["engine.py"],
-        "live": True,
-        "format_safe_required": True,
-        "format_vars": ["context", "last_choice"],
     },
     {
         "id": "player_choice_generation_instructions",
-        "label": "Player Choice / Submission Prompt",
-        "group": "submissions",
+        "label": "What You Can Do",
+        "group": "narrative",
+        "tier": TIER_PRIMARY,
         "type": "longtext",
-        "description": "The prompt that generates the slate of actions the player can submit each turn. This is the 'submission prompt' — it decides what kinds of choices are even possible.",
+        "description": "Writes the actions offered each turn — so it decides what kind of game this is to play, not just to read.",
         "code_refs": ["choices.py", "engine.py"],
         "live": True,
         "format_safe_required": True,
@@ -404,28 +393,73 @@ PROMPT_SCHEMA: List[Dict[str, Any]] = [
     },
     {
         "id": "image_art_direction",
-        "label": "Art Direction (shared)",
+        "label": "How The World Looks",
         "group": "image",
+        "tier": TIER_PRIMARY,
         "type": "longtext",
-        "description": "★ THE ONE FIELD TO EDIT TO REDIRECT HOW THE WORLD LOOKS. Era, allowed subject matter, camera/film stock, palette, degradation, horror register. Injected into BOTH image templates below via {art_direction}, so a change here reaches the first frame and every continuation at once.",
+        "description": "Era, film stock, palette, degradation, horror register. Reaches the first frame and every continuation at once — this is the field to edit to redirect the look.",
         "code_refs": ["gemini_image_utils.py", "krea_image_utils.py"],
         "live": True,
     },
     {
-        "id": "image_camera_rules",
-        "label": "Camera Rules (shared)",
-        "group": "image",
+        "id": "world_evolution_instructions",
+        "label": "What May Change Between Turns",
+        "group": "world",
+        "tier": TIER_ADVANCED,
         "type": "longtext",
-        "description": "The mechanical rulebook, shared by both image templates via {camera_rules}: POV, human-body camera physics, framing distance, what may appear in frame, and the no-text/no-border bans. Rarely needs touching — art direction is the creative dial.",
+        "description": "Guardrails for the pass that rewrites the world state after every action. Its output becomes the world the next turn reads, so this is what stops a desert drifting into a forest.",
+        "code_refs": ["evolve_prompt_file.py"],
+        "live": True,
+    },
+    {
+        "id": "situation_summary_instructions",
+        "label": "Between-Turn Bulletin",
+        "group": "narrative",
+        "tier": TIER_ADVANCED,
+        "type": "longtext",
+        "description": "The one-line \"what's urgent right now\" shown between turns.",
+        "code_refs": ["engine.py"],
+        "live": True,
+    },
+    {
+        "id": "field_notes_format",
+        "label": "Field Notes Voice",
+        "group": "narrative",
+        "tier": TIER_ADVANCED,
+        "type": "longtext",
+        "description": "Format and voice of the in-universe journal. Place {context} and {last_choice} where you want them, or leave them out and they're appended.",
+        "code_refs": ["engine.py"],
+        "live": True,
+        "format_safe_required": True,
+        "format_vars": ["context", "last_choice"],
+    },
+    {
+        "id": "image_camera_rules",
+        "label": "Camera Physics",
+        "group": "image",
+        "tier": TIER_ADVANCED,
+        "type": "longtext",
+        "description": "The mechanical rulebook shared by both image templates: framing distance, what may appear in frame, no-text and no-border bans. Perspective itself is a switch in Cast & Camera, not something to edit here.",
         "code_refs": ["gemini_image_utils.py", "krea_image_utils.py"],
+        "live": True,
+    },
+    {
+        "id": "image_negative_prompt",
+        "label": "What Never Appears",
+        "group": "image",
+        "tier": TIER_ADVANCED,
+        "type": "longtext",
+        "description": "What the image model must avoid. The perspective clauses in here are recomputed to match your camera, so you don't have to.",
+        "code_refs": ["engine.py"],
         "live": True,
     },
     {
         "id": "gemini_text_to_image_instructions",
-        "label": "Image Gen — First Frame (text-to-image)",
+        "label": "Template — First Frame",
         "group": "image",
+        "tier": TIER_ADVANCED,
         "type": "longtext",
-        "description": "Only what's unique to the FIRST frame: the scene slot and the fact that there's no reference to continue from. Shared look and camera rules come in via {art_direction} and {camera_rules} — edit those to change the world, not this.",
+        "description": "Only what's unique to the first frame, which has nothing to continue from. Keep {art_direction} and {camera_rules} in it or this render path stops receiving the shared look.",
         "code_refs": ["gemini_image_utils.py"],
         "live": True,
         "format_safe_required": True,
@@ -433,30 +467,23 @@ PROMPT_SCHEMA: List[Dict[str, Any]] = [
     },
     {
         "id": "gemini_image_to_image_instructions",
-        "label": "Image Gen — Continuation (image-to-image)",
+        "label": "Template — Continuation",
         "group": "image",
+        "tier": TIER_ADVANCED,
         "type": "longtext",
-        "description": "Only what's unique to a CONTINUATION: honouring the reference frame as a spatial lock, scaling change to the action, and not 'cleaning up' the reference's grain. Shared look and camera rules come in via {art_direction} and {camera_rules}.",
+        "description": "Only what's unique to a continuation: honouring the previous frame as a spatial lock and not cleaning up its grain. Keep {art_direction} and {camera_rules} in it.",
         "code_refs": ["gemini_image_utils.py", "krea_image_utils.py", "fal_image_utils.py"],
         "live": True,
         "format_safe_required": True,
         "format_vars": ["prompt", "art_direction", "camera_rules"],
     },
     {
-        "id": "image_negative_prompt",
-        "label": "Image Negative Prompt",
-        "group": "image",
-        "type": "longtext",
-        "description": "Everything the image model should avoid generating (CGI look, borders, faces, sci-fi elements, UI overlays, etc).",
-        "code_refs": ["engine.py"],
-        "live": True,
-    },
-    {
         "id": "gemini_flipbook_4panel_prefix",
         "label": "Flipbook Sequence Rules",
         "group": "image",
+        "tier": TIER_ADVANCED,
         "type": "longtext",
-        "description": "Rules for the optional 16-frame flipbook/GIF mode — temporal sequencing and perspective-lock across frames.",
+        "description": "Temporal sequencing for the optional 16-frame flipbook mode. Only read when flipbook is on.",
         "code_refs": ["engine.py"],
         "live": True,
     },
@@ -464,9 +491,44 @@ PROMPT_SCHEMA: List[Dict[str, Any]] = [
 
 PROMPT_SCHEMA_BY_ID: Dict[str, Dict[str, Any]] = {f["id"]: f for f in PROMPT_SCHEMA}
 
+# Three tabs, ordered the way you'd actually answer the questions: what place
+# is this, how does it play, how does it look. "Player Submissions" used to be
+# a fourth tab holding exactly one field, which made the choice prompt feel
+# like a separate subsystem rather than half of how the game plays.
 GROUP_LABELS: Dict[str, str] = {
-    "world": "World & Setting",
-    "narrative": "Narrative Engine",
-    "submissions": "Player Submissions",
-    "image": "Image Generation",
+    "world": "World",
+    "narrative": "Story & Play",
+    "image": "Look",
 }
+
+# One line per tab, shown above its fields. A tab that opens onto a 19,000
+# character paragraph with no framing is where "I don't know what I'm editing"
+# starts.
+GROUP_BLURBS: Dict[str, str] = {
+    "world": "The place and its rules. Seeds every run; a fresh run picks up changes.",
+    "narrative": "How a turn resolves and what you're offered next.",
+    "image": "What every frame looks like.",
+}
+
+
+# The cast-sheet blocks. Structured objects rather than prompt bodies, edited
+# through their own form (see game_identity.IDENTITY_SCHEMA), so they're absent
+# from PROMPT_SCHEMA but are still legitimate keys in the file. Named here so
+# `unwired_keys` doesn't flag them; game_identity remains the source of truth.
+SPEC_BLOCK_KEYS = ("player_character", "setting_reference", "camera_perspective")
+
+
+def primary_keys() -> List[str]:
+    """The short list: the prompts worth reaching for first."""
+    return [f["id"] for f in PROMPT_SCHEMA if f.get("tier", TIER_PRIMARY) == TIER_PRIMARY]
+
+
+def unwired_keys(data: Optional[Dict[str, Any]] = None) -> List[str]:
+    """Editable keys in the prompt file that no editor and no code path reads.
+
+    A prompt you can save but that changes nothing is the most expensive kind
+    of confusion: it costs you an edit, a restart, and your trust in every
+    other field. Asserted empty by the test suite.
+    """
+    known = set(PROMPT_SCHEMA_BY_ID) | set(SPEC_BLOCK_KEYS)
+    return [k for k in editable_keys(data) if k not in known]

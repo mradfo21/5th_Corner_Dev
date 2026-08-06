@@ -412,12 +412,91 @@ class EditorPreviewTestCase(_AuthoredWorldFixture):
         notes = gi.wiring_notes()[gi.SETTING_KEY]
         self.assertTrue(any("every field is blank" in n for n in notes))
 
+    def test_note_when_a_filled_in_block_is_switched_off(self):
+        self._author_world()
+        gi.save_spec({gi.SETTING_KEY: {"enabled": False}})
+        notes = gi.wiring_notes()[gi.SETTING_KEY]
+        self.assertTrue(any("Switched off" in n for n in notes))
+
     def test_preview_exposes_the_compact_forms(self):
         self._author_world()
         compact = gi.preview()["compact"]
         self.assertIn("The Kettle Yard", compact["place_line"])
         self.assertIn("Wren Alvarez", compact["protagonist_line"])
         self.assertIn("over-the-shoulder", compact["vantage"])
+
+
+class EnableOnIntentTestCase(_AuthoredWorldFixture):
+    """The toggle is for A/B-ing a character, not a gate you have to remember.
+
+    As a gate it was the worst kind of trap: you'd write a protagonist, watch
+    every field save successfully, watch the game ignore all of it, and have
+    nothing on screen explaining why.
+    """
+
+    def test_naming_a_character_switches_the_block_on(self):
+        self.assertFalse(gi.get_spec()[gi.CHARACTER_KEY]["enabled"])
+        gi.save_spec({gi.CHARACTER_KEY: {"name": "Wren Alvarez"}})
+        self.assertTrue(gi.character_enabled())
+
+    def test_describing_a_level_switches_the_block_on(self):
+        gi.save_spec({gi.SETTING_KEY: {"summary": "A flooded shipbreaking yard"}})
+        self.assertTrue(gi.setting_enabled())
+
+    def test_switching_off_explicitly_is_respected(self):
+        self._author_world()
+        gi.save_spec({gi.CHARACTER_KEY: {"enabled": False}})
+        self.assertFalse(gi.character_enabled())
+        # …and stays off while you keep editing in the same request.
+        gi.save_spec({gi.CHARACTER_KEY: {"enabled": False, "role": "diver"}})
+        self.assertFalse(gi.character_enabled())
+
+    def test_deleting_a_reference_plate_never_enables_anything(self):
+        gi.save_spec({gi.CHARACTER_KEY: {"reference_images": []}})
+        self.assertFalse(gi.get_spec()[gi.CHARACTER_KEY]["enabled"])
+
+    def test_camera_block_has_no_enable_to_infer(self):
+        gi.save_spec({gi.CAMERA_KEY: {"lens": "28mm"}})
+        self.assertEqual(gi.camera_mode(), gi.DEFAULT_MODE)
+
+
+class CastSheetSurfaceTestCase(unittest.TestCase):
+    """How many controls the cast sheet actually asks you to fill in.
+
+    Reads the real schema, since the point is the shipped form's shape.
+    """
+
+    def test_every_field_declares_a_tier(self):
+        for block in gi.identity_schema():
+            for field in block["fields"]:
+                self.assertIn(field["tier"], (gi.TIER_ESSENTIAL, gi.TIER_ADVANCED),
+                              f"{block['id']}.{field['id']}")
+
+    def test_essentials_alone_can_author_a_whole_world(self):
+        """Everything the compile stages actually need has to be reachable
+        without opening a single disclosure — otherwise 'advanced' is hiding
+        required input, which is worse than showing everything."""
+        essential = {
+            block["id"]: {f["id"] for f in block["fields"] if f["tier"] == gi.TIER_ESSENTIAL}
+            for block in gi.identity_schema()
+        }
+        # A character the image model can lock onto, and that turns the sheet on.
+        self.assertLessEqual({"enabled", "name", "role", "appearance"},
+                             essential[gi.CHARACTER_KEY])
+        # A level with a first frame and recurring geography.
+        self.assertLessEqual({"enabled", "name", "summary", "landmarks", "opening_shot"},
+                             essential[gi.SETTING_KEY])
+        # The camera switch itself.
+        self.assertIn("mode", essential[gi.CAMERA_KEY])
+
+    def test_the_default_form_stays_small(self):
+        """A cap, not a target. Twenty equal-looking inputs is where the sheet
+        stops reading as 'who am I and where am I'."""
+        shown = sum(
+            1 for block in gi.identity_schema()
+            for f in block["fields"] if f["tier"] == gi.TIER_ESSENTIAL
+        )
+        self.assertLessEqual(shown, 12)
 
 
 class WorldEvolutionTestCase(_AuthoredWorldFixture):
