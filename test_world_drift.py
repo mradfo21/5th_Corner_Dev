@@ -206,6 +206,29 @@ class TestWorldDriftTick(unittest.TestCase):
         self.assertEqual(self._tick()["skipped"], "budget_spent")
         self.assertEqual(self.ask_calls, [])
 
+    def test_drift_survives_the_prompt_being_pruned_from_the_editor(self):
+        """The editable prompt surface is deliberately kept small, and this
+        instruction block was once pruned from it as a dead knob — which
+        silently turned every drift into a no-op. The feature carries its own
+        default so tidying the editor can't disable it."""
+        from prompts_store import PROMPTS
+        self.assertNotIn("world_tick_micro_change_instructions", PROMPTS,
+                         "if this key is back, this test's premise needs revisiting")
+        result = self._tick()
+        self.assertTrue(result["ok"], result)
+        self.assertIn("TIME PASSES", self.ask_calls[0])
+
+    def test_an_authored_prompt_overrides_the_default(self):
+        """…but if someone does expose it again, theirs wins."""
+        real = engine.PROMPTS
+        engine.PROMPTS = dict(real)
+        engine.PROMPTS["world_tick_micro_change_instructions"] = "AUTHORED DRIFT RULES {environment_type}"
+        try:
+            self.assertTrue(self._tick()["ok"])
+        finally:
+            engine.PROMPTS = real
+        self.assertIn("AUTHORED DRIFT RULES", self.ask_calls[0])
+
     def test_empty_beat_is_not_published(self):
         engine._ask = lambda prompt, **kw: "   "
         self.assertEqual(self._tick()["skipped"], "no_beat")

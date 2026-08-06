@@ -4088,6 +4088,32 @@ except ValueError:
 # How many drift beats we keep on state: enough to stop the LLM repeating itself
 # and to hand the next world-evolution pass what changed while nobody acted.
 WORLD_DRIFT_BEATS_KEPT = 6
+# The instruction block for a drift beat.
+#
+# Carried here rather than in simulation_prompts.json on purpose. The editable
+# prompt surface is deliberately ranked down to the few prompts that are worth a
+# designer's attention, and this text was pruned from it once as a "dead knob"
+# (correctly — nothing called it yet). A feature must not silently become a
+# no-op because its prompt was tidied away, so this is the default and the JSON
+# key is an override that's honoured when someone chooses to expose it again.
+_WORLD_DRIFT_INSTRUCTIONS = """{location_context} TIME PASSES. Describe substantial change in {environment_type} based on the actions.
+
+Write ONE vivid sentence (max 15 words). Match the environment you're actually in. Include sound when dramatic.
+
+In 'normal' phase, developments should be minor and occasional (e.g., a single unexpected detail like a helicopter rumble or new graffiti). In 'escalating' phase, allow moderate world intrusions. In 'critical' phase, frequent major events may occur.
+
+CRITICAL RULES:
+- If you're INSIDE, describe INDOOR changes (lights, sounds, alarms, equipment, footsteps).
+- If you're OUTSIDE, describe OUTDOOR changes (wind, metal sounds, distant gunfire, engines).
+- DO NOT describe outdoor elements if indoors, and vice versa.
+- Describe small physical/sound/atmospheric changes
+- Be specific and grounded
+
+TIME-OF-DAY PROGRESSION (PHASE-GATED EXCEPTION):
+- Most ticks DO NOT change time of day.
+- A tick may shift lighting ONE tier (golden hour -> dusk, or dusk -> night) ONLY when the phase has just transitioned (normal->escalating or escalating->critical).
+- Never shift backward. Never skip tiers. Never invent unrelated weather changes (no storms, no clouds at the start)."""
+
 # Process-wide single-flight: at most ONE drift LLM call in flight, ever.
 # Guarded by its own lock because the check and the set are far apart (a state
 # load and five gates sit between them): two request threads for DIFFERENT
@@ -4143,9 +4169,8 @@ def _world_drift_beat(st: dict, hist: list) -> str:
     """
     if not LLM_ENABLED:
         return ""
-    tmpl = (PROMPTS.get("world_tick_micro_change_instructions") or "").strip()
-    if not tmpl:
-        return ""
+    tmpl = (PROMPTS.get("world_tick_micro_change_instructions") or "").strip() \
+        or _WORLD_DRIFT_INSTRUCTIONS
     try:
         head = tmpl.format(
             location_context=_drift_location_context(st),
