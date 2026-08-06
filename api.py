@@ -82,9 +82,32 @@ def _stall_watchdog():
             pass
 
 
+_watchdog_thread = None
+
+
+def _ensure_watchdog():
+    """Start the watchdog in whatever process is actually serving requests.
+
+    Starting it at import time alone proved unreliable — in production the
+    worker's thread list came back with no watchdog in it, so the one hang we
+    most needed a report for went unrecorded. Arming it from the request path
+    guarantees it exists wherever requests are being handled.
+    """
+    global _watchdog_thread
+    if _watchdog_thread is not None and _watchdog_thread.is_alive():
+        return
+    try:
+        _watchdog_thread = threading.Thread(
+            target=_stall_watchdog, name="stall-watchdog", daemon=True)
+        _watchdog_thread.start()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 @app.before_request
 def _stall_track_start():
     try:
+        _ensure_watchdog()
         with _inflight_lock:
             _inflight[id(request._get_current_object())] = (request.path, time.time())
     except Exception:  # noqa: BLE001
@@ -125,7 +148,7 @@ def api_diag_stacks():
     })
 
 
-threading.Thread(target=_stall_watchdog, name="stall-watchdog", daemon=True).start()
+_ensure_watchdog()
 
 # Optional realtime music streaming (Increment 2). flask-sock is an optional
 # dependency: if it's missing, the /ws/scene_music route simply isn't registered

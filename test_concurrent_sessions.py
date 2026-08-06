@@ -18,6 +18,7 @@ Run with:
 
 import os
 import shutil
+import sys
 import threading
 import time
 import unittest
@@ -153,6 +154,90 @@ class TestSceneImageDoesNotBlockOtherPlayers(unittest.TestCase):
             self.release.set()
             t1.join(10)
             t2.join(10)
+
+
+class TestImportWarmup(unittest.TestCase):
+    """The production wedge: `requests` lazily does `from netrc import ...` on
+    EVERY call, inside the function. The first time several threads made a
+    request at the same moment they deadlocked on CPython's per-module import
+    lock — three threads parked forever in
+    importlib._bootstrap._lock_unlock_module under
+    requests.utils.get_netrc_auth. On a four-thread worker that is the whole
+    service: /api/reset never answers and /api/health can't even get a thread.
+    It never recovers.
+
+    Warming those imports at module load, while still single-threaded, means no
+    worker thread ever takes an import lock for them.
+    """
+
+    LAZY = ["netrc", "base64", "hashlib", "mimetypes", "uuid", "sqlite3"]
+
+    def test_lazily_imported_modules_are_warm_after_engine_import(self):
+        for name in self.LAZY:
+            self.assertIn(name, sys.modules,
+                          f"{name} must be imported at boot, not lazily on a worker thread")
+
+    def test_netrc_is_warm_because_requests_imports_it_per_call(self):
+        # Pin the specific one that took production down, and why.
+        import requests.utils
+        self.assertTrue(hasattr(requests.utils, "get_netrc_auth"))
+        self.assertIn("netrc", sys.modules)
+
+    def test_concurrent_request_preparation_does_not_deadlock(self):
+        """Exercise the real path: many threads preparing requests at once.
+        With the imports cold this is where the worker used to wedge."""
+        import requests
+
+        done = []
+        errors = []
+
+        def prepare():
+            try:
+                req = requests.Request("POST", "https://example.invalid/x", json={"a": 1})
+                requests.Session().prepare_request(req)   # calls get_netrc_auth
+                done.append(1)
+            except Exception as e:  # noqa: BLE001
+                errors.append(e)
+
+        threads = [threading.Thread(target=prepare, daemon=True) for _ in range(12)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(20)
+        self.assertFalse([t for t in threads if t.is_alive()],
+                         "a thread hung preparing a request — import-lock deadlock")
+        self.assertEqual(errors, [])
+        self.assertEqual(len(done), 12)
+
+
+class TestStallWatchdog(unittest.TestCase):
+    """A hang on a box you can't attach a debugger to has to report itself."""
+
+    def test_watchdog_is_armed_from_the_request_path(self):
+        import api
+        # Starting it only at import proved unreliable in production (the
+        # worker's thread list came back with no watchdog in it), so it must
+        # also be armed when requests start arriving.
+        self.assertTrue(hasattr(api, "_ensure_watchdog"))
+        api._ensure_watchdog()
+        self.assertTrue(api._watchdog_thread is not None and api._watchdog_thread.is_alive())
+
+    def test_stack_dump_names_the_blocking_frame(self):
+        import api
+        text = api._format_all_stacks("[TEST]")
+        self.assertIn("--- thread", text)
+        self.assertIn("test_concurrent_sessions.py", text)
+
+    def test_stack_dump_carries_no_locals_or_environment(self):
+        import api
+        os.environ["_DIAG_CANARY"] = "super-secret-value"
+        try:
+            secret_local = "another-secret-value"  # noqa: F841
+            text = api._format_all_stacks("[TEST]")
+        finally:
+            os.environ.pop("_DIAG_CANARY", None)
+        self.assertNotIn("super-secret-value", text)
+        self.assertNotIn("another-secret-value", text)
 
 
 class TestIntroImageOrdering(unittest.TestCase):

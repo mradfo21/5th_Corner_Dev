@@ -29,6 +29,35 @@ from pathlib import Path
 from urllib.parse import quote
 from typing import Optional, List, Dict, Any
 import logging
+
+# ── Import warm-up: prevent a threaded import-lock deadlock ──────────────────
+# `requests` calls `get_netrc_auth()` on EVERY request, and that helper does a
+# lazy `from netrc import ...` inside the function body. So the first time two
+# threads make a request at the same moment, both reach for CPython's
+# per-module import lock at once — and when that goes wrong it does not merely
+# serialise, it HANGS. Observed in production: three threads (a reset, the
+# narrator, and a scene render) all parked forever in
+# importlib._bootstrap._lock_unlock_module -> acquire, under
+# requests.utils.get_netrc_auth. On a worker with four threads that is the
+# entire service: /api/reset never answers, and even /api/health can't get a
+# thread, so from outside the box looks dead. It does not recover on its own.
+#
+# Importing these here, at module load, while we are still single-threaded,
+# means no worker thread ever has to take an import lock for them later. Cheap
+# insurance: every name below is either already a dependency or stdlib, and
+# each is one that some code path imports lazily from inside a function.
+import importlib as _importlib
+
+for _warm_module in (
+    "netrc",            # requests.utils.get_netrc_auth — the observed deadlock
+    "base64", "binascii", "hashlib", "mimetypes", "uuid", "shutil",
+    "csv", "sqlite3", "socket", "ssl", "email.utils", "http.cookiejar",
+):
+    try:
+        _importlib.import_module(_warm_module)
+    except Exception:  # noqa: BLE001 — a missing optional module must not stop boot
+        pass
+del _warm_module
 print("[ENGINE] stdlib imports complete", flush=True); sys.stdout.flush()
 
 import openai
