@@ -117,6 +117,17 @@
   const WORLD_BUILD_TIMEOUT_MS = (typeof window !== "undefined" && window.__HAPPY_OYSTER_BUILD_TIMEOUT_MS__) || 15000;
   // How long to wait for the seed image to decode before starting anyway.
   const IMAGE_ACCEPT_TIMEOUT_MS = 6000;
+  // Guide-image deferral budget (see flush). A seed-locked model can't start
+  // without a still, so we retry — but bounded, or a scene whose still never
+  // arrives leaves the stream black forever with no way out.
+  const GUIDE_RETRY_MS = (typeof window !== "undefined" && window.__GUIDE_RETRY_MS__) || 1500;
+  // Still present but unusable (swept / 404): broken now, won't heal — bail fast.
+  const GUIDE_UPLOAD_MAX_ATTEMPTS =
+    (typeof window !== "undefined" && window.__GUIDE_UPLOAD_MAX_ATTEMPTS__) || 3;
+  // No still yet: the render is probably still in flight (the intro image takes
+  // tens of seconds), so wait generously — but not forever.
+  const GUIDE_WAIT_MAX_ATTEMPTS =
+    (typeof window !== "undefined" && window.__GUIDE_WAIT_MAX_ATTEMPTS__) || 40;
   // After we issue `start`, how long to wait for real decoded video frames
   // before declaring the stream stalled. If this fires, the model accepted our
   // commands but no `main_video` frames arrived — a server/session/model issue,
@@ -1355,28 +1366,39 @@
     }
 
     if (deferred) {
-      // Couldn't start (no reference image yet). Retry after a short delay —
-      // unless a newer scene has already been queued — so we don't spin in a
-      // tight failing loop. Swept/404 guide PNGs used to retry forever every
-      // 1.5s (visible as /images/*.png 404 spam) and leave the player frozen
-      // on the previous freeze buffer; bail after repeated failures.
+      // Couldn't start. Retry after a short delay — unless a newer scene has
+      // already been queued — so we don't spin in a tight failing loop.
+      //
+      // EVERY deferral counts, including ones for a scene that carried no image
+      // at all. Only counting image-bearing attempts meant a scene whose still
+      // was content-filtered or failed to generate (the engine emits that beat
+      // with a prompt and NO image_url) retried forever on a seed-locked model:
+      // ~1 attempt/second, no cap, no message, and a permanently black stream
+      // because LingBot cannot start without a seed. That is the "it just draws
+      // black" failure — the retry has to be able to give up and say so.
       if (rstate.pending == null) {
-        const fails = (s._guideFails || 0) + (s.imageUrl ? 1 : 0);
-        let next = s;
-        if (fails >= 2 && s.imageUrl) {
-          const fam = familyFor(rstate.modelId);
+        const fails = (s._guideFails || 0) + 1;
+        const fam = familyFor(rstate.modelId);
+        // Two different waits. A still we HAVE but can't upload (swept/404 PNG)
+        // is broken now and won't heal, so bail fast. NO still yet just means
+        // the render is still in flight — the intro image legitimately takes
+        // tens of seconds — so wait generously before declaring it lost.
+        const budget = s.imageUrl ? GUIDE_UPLOAD_MAX_ATTEMPTS : GUIDE_WAIT_MAX_ATTEMPTS;
+        let next = Object.assign({}, s, { _guideFails: fails });
+        if (fails >= budget) {
           if (fam === "seed_locked") {
-            log("guide image failed repeatedly — giving up (seed-locked needs a still)");
+            log("no usable guide image after " + fails + " attempts — giving up (seed-locked needs a still)");
             try { clearSceneFade(); } catch (_) {}
+            // Tell the app the live world can NEVER start for this scene, so it
+            // can fall back to stills instead of holding a black frame forever.
+            emitEvent("needs_seed_image", { attempts: fails, hadImage: !!s.imageUrl });
             return;
           }
-          log("guide image failed repeatedly — retrying prompt-only");
+          log("guide image unavailable — retrying prompt-only");
           next = Object.assign({}, s, { imageUrl: null, _guideFails: 0 });
-        } else if (s.imageUrl) {
-          next = Object.assign({}, s, { _guideFails: fails });
         }
         rstate.pending = next;
-        setTimeout(() => { if (!rstate.started) flush(); }, 1500);
+        setTimeout(() => { if (!rstate.started) flush(); }, GUIDE_RETRY_MS);
       } else {
         flush(); // a newer scene arrived; process it now
       }
