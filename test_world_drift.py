@@ -74,7 +74,13 @@ class TestWorldDriftTick(unittest.TestCase):
         _discard_test_session()
 
     def _seed_state(self, **overrides):
-        """A session parked at a decision point with a rendered scene."""
+        """A session parked at a decision point with a rendered scene.
+
+        Starts from a discarded session: a drift worker from an earlier test
+        can still be mid-write when that test tears down, and inheriting its
+        leftovers made this suite flake.
+        """
+        _discard_test_session()
         st = engine._load_state(SESSION_ID)
         st.update({
             "turn_count": 3,
@@ -268,13 +274,20 @@ class TestWorldTickEndpoint(unittest.TestCase):
 
     def _wait_for_drift(self, timeout_s=5.0):
         deadline = time.time() + timeout_s
+        drifts = []
         while time.time() < deadline:
             feed = self.client.get(f"/api/feed?since_id=0&session_id={SESSION_ID}").get_json()
             drifts = [i for i in feed if i.get("type") == "world_drift"]
             if drifts:
-                return drifts
+                break
             time.sleep(0.05)
-        return []
+        # The worker publishes the feed item BEFORE clearing its in-flight
+        # flag, so the item appearing doesn't mean the tick is finished. A test
+        # that asks again in that window gets a perfectly valid "busy" instead
+        # of the refusal it was checking for.
+        while engine._drift_worker_active and time.time() < deadline:
+            time.sleep(0.02)
+        return drifts
 
     def test_endpoint_never_waits_on_the_model(self):
         """Production serves the whole game from one worker with a few threads.

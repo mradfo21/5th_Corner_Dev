@@ -46,6 +46,22 @@ try:
 except ValueError:
     _STALL_AFTER_S = 25.0
 _STALL_REDUMP_S = 60.0
+# Last resort. A wedged worker does NOT get recycled on its own: gunicorn's
+# --timeout only fires when the worker stops notifying the arbiter, and a worker
+# whose request threads are all blocked keeps notifying happily from its accept
+# loop. Observed: the service stayed dead for 15+ minutes and only came back on
+# a manual redeploy. Exiting hands the process back to gunicorn, which restarts
+# it in about a second — an outage measured in seconds beats one that lasts
+# until somebody notices.
+#
+# The threshold is deliberately well above the slowest legitimate request (camp
+# entry composites several portraits; a talk portrait is a full image
+# generation) so this only ever fires on a genuine wedge, never on a slow turn.
+# Set STALL_EXIT_S=0 to disable.
+try:
+    _STALL_EXIT_S = float(os.getenv("STALL_EXIT_S", "180"))
+except ValueError:
+    _STALL_EXIT_S = 180.0
 
 
 def _format_all_stacks(note: str) -> str:
@@ -68,16 +84,33 @@ def _stall_watchdog():
             now = time.time()
             with _inflight_lock:
                 stalled = [(p, now - t) for (p, t) in _inflight.values() if now - t > _STALL_AFTER_S]
-            if not stalled or (now - last_dump) < _STALL_REDUMP_S:
+            if not stalled:
                 continue
-            last_dump = now
             worst = max(stalled, key=lambda s: s[1])
-            reason = f"{len(stalled)} request(s) in flight > {_STALL_AFTER_S:.0f}s; worst: {worst[0]} ({worst[1]:.0f}s)"
-            text = _format_all_stacks(f"[STALL WATCHDOG] {reason}")
-            _stall_report["at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
-            _stall_report["reason"] = reason
-            _stall_report["text"] = text
-            print(text, file=sys.stderr, flush=True)
+
+            # Dump is throttled (the stacks are long and repetitive); the
+            # give-up check is NOT — it has to be evaluated every pass, or a
+            # wedge that starts just after a dump waits out the whole throttle
+            # window before anyone acts on it.
+            if (now - last_dump) >= _STALL_REDUMP_S:
+                last_dump = now
+                reason = (f"{len(stalled)} request(s) in flight > {_STALL_AFTER_S:.0f}s; "
+                          f"worst: {worst[0]} ({worst[1]:.0f}s)")
+                text = _format_all_stacks(f"[STALL WATCHDOG] {reason}")
+                _stall_report["at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
+                _stall_report["reason"] = reason
+                _stall_report["text"] = text
+                print(text, file=sys.stderr, flush=True)
+
+            if _STALL_EXIT_S > 0 and worst[1] > _STALL_EXIT_S:
+                print(
+                    f"[STALL WATCHDOG] {worst[0]} has been stuck for {worst[1]:.0f}s "
+                    f"(> {_STALL_EXIT_S:.0f}s). The worker cannot recover on its own; "
+                    f"exiting so gunicorn restarts it.",
+                    file=sys.stderr, flush=True,
+                )
+                sys.stderr.flush()
+                os._exit(1)
         except Exception:  # noqa: BLE001 — the watchdog must never take the app down
             pass
 

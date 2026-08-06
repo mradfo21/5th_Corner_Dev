@@ -228,6 +228,19 @@ class TestStallWatchdog(unittest.TestCase):
         self.assertIn("--- thread", text)
         self.assertIn("test_concurrent_sessions.py", text)
 
+    def test_a_wedged_worker_gives_up_rather_than_staying_dead(self):
+        """gunicorn will NOT recycle a worker whose request threads are all
+        blocked — it keeps notifying the arbiter from its accept loop, so the
+        outage lasts until a human redeploys (observed: 15+ minutes). The
+        watchdog exits instead, and gunicorn restarts in about a second."""
+        import api
+        self.assertGreater(api._STALL_EXIT_S, 0, "self-heal must be on by default")
+        # Comfortably above the slowest legitimate request (camp entry, talk
+        # portrait) so it can only fire on a real wedge.
+        self.assertGreaterEqual(api._STALL_EXIT_S, 120)
+        self.assertGreater(api._STALL_EXIT_S, api._STALL_AFTER_S,
+                           "must dump diagnostics before giving up, not after")
+
     def test_stack_dump_carries_no_locals_or_environment(self):
         import api
         os.environ["_DIAG_CANARY"] = "super-secret-value"

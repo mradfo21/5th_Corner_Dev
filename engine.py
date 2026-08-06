@@ -58,6 +58,36 @@ for _warm_module in (
     except Exception:  # noqa: BLE001 — a missing optional module must not stop boot
         pass
 del _warm_module
+
+# Warming the import narrows the race but does not close it: `requests` still
+# runs that lazy `from netrc import ...` on every single call, so any thread can
+# still end up in the import machinery. Take the code path away instead.
+#
+# We authenticate to every service with an API key in a header. netrc is a
+# ~/.netrc credentials file for FTP-era tooling; we have never used it, there is
+# no such file on the server, and the only thing this lookup does for us is
+# stat() a few paths and expose us to that deadlock. Returning None means "no
+# netrc credentials", which is already the answer.
+#
+# requests.sessions does `from .utils import get_netrc_auth`, so it holds its
+# OWN reference — patching only requests.utils would miss the call site that
+# actually matters (Session.prepare_request).
+def _disable_netrc_lookup() -> None:
+    try:
+        import requests.utils as _rutils
+        import requests.sessions as _rsessions
+    except Exception:  # noqa: BLE001
+        return
+    _noop = lambda *_a, **_kw: None  # noqa: E731
+    for _mod in (_rutils, _rsessions):
+        try:
+            if getattr(_mod, "get_netrc_auth", None) is not None:
+                _mod.get_netrc_auth = _noop
+        except Exception:  # noqa: BLE001
+            pass
+
+
+_disable_netrc_lookup()
 print("[ENGINE] stdlib imports complete", flush=True); sys.stdout.flush()
 
 import openai
