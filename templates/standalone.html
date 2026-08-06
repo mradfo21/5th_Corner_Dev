@@ -114,6 +114,11 @@
     <div id="vhs-timecode">REC <span id="rec-dot">●</span> <span id="timecode-text">00:00:00</span></div>
   </div>
 
+  <!-- Presence: how many people are on THIS run (scoped by ?session=, so a
+       private run reads as one person). Stays hidden until somebody else
+       actually arrives — see the Lobby module in standalone.js. -->
+  <div id="lobby-count" class="lobby-count hidden" aria-live="polite"></div>
+
   <!-- Coin meter: always-visible arcade credit HUD chip. Sits below the
        REC timecode in the top-right so it reads as part of the same
        arcade cabinet readout. Hidden until /api/coinop/config confirms

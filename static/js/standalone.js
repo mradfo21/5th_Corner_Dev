@@ -187,6 +187,7 @@
     imgModelList: document.getElementById("img-model-list"),
     imgModelHide: document.getElementById("img-model-hide"),
     btnStory: document.getElementById("btn-story"),
+    lobbyCount: document.getElementById("lobby-count"),
     btnEditor: document.getElementById("btn-editor"),
     worldEditor: document.getElementById("world-editor"),
     weClose: document.getElementById("we-close"),
@@ -6790,6 +6791,9 @@
     const investigationFrame = (armed && armed.texture) || null;
     state.selectedInvestigation = null;
     try { Investigations.render(); } catch (_) {} // drop the selection highlight
+    // Committing an action is what separates "watching" from "steering" in
+    // the presence readout.
+    try { Lobby.markActive(); } catch (_) {}
     try {
       const items = await postJSON("/api/choose", {
         choice: choiceText,
@@ -13074,6 +13078,76 @@
   })();
 
   // ------------------------------------------------------------------
+  // Presence — who else is on THIS run. Scoped to the session, so two tabs
+  // only see each other when they're pointed at the same ?session= id; a
+  // private run correctly reads as one person. Entirely decorative: every
+  // call is best-effort and a failure is swallowed.
+  // ------------------------------------------------------------------
+  const Lobby = (function () {
+    const HEARTBEAT_MS = 8000;
+    let viewerId = null;
+    let timer = null;
+    let last = { count: 0, active_count: 0 };
+
+    function id() {
+      if (viewerId) return viewerId;
+      try {
+        viewerId = sessionStorage.getItem("somewhere.viewer_id");
+        if (!viewerId) {
+          viewerId = "v_" + Math.random().toString(36).slice(2, 12);
+          sessionStorage.setItem("somewhere.viewer_id", viewerId);
+        }
+      } catch (_) {
+        viewerId = "v_" + Math.random().toString(36).slice(2, 12);
+      }
+      return viewerId;
+    }
+
+    async function beat(active) {
+      try {
+        const snap = await postJSON("/api/lobby/heartbeat", { viewer_id: id(), active: !!active });
+        if (snap && typeof snap.count === "number") { last = snap; render(); }
+      } catch (_) {}
+    }
+
+    function render() {
+      const node = el.lobbyCount;
+      if (!node) return;
+      // One person on their own run is the normal case and doesn't need a
+      // headcount shouting at them — only show it once somebody else is here.
+      if (!last.count || last.count < 2) { node.classList.add("hidden"); return; }
+      node.classList.remove("hidden");
+      node.textContent = last.active_count > 0
+        ? `${last.count} watching \u00B7 ${last.active_count} steering`
+        : `${last.count} watching`;
+    }
+
+    function markActive() { beat(true); }
+
+    function init() {
+      beat(false);
+      timer = setInterval(() => beat(false), HEARTBEAT_MS);
+      // sendBeacon survives the page teardown that a fetch would not, so a
+      // closed tab drops out now instead of lingering for the TTL.
+      const bail = () => {
+        try {
+          const blob = new Blob([JSON.stringify({ viewer_id: id(), session_id: SESSION_ID })],
+                                { type: "application/json" });
+          navigator.sendBeacon("/api/lobby/leave", blob);
+        } catch (_) {}
+      };
+      window.addEventListener("pagehide", bail);
+      window.addEventListener("beforeunload", bail);
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "visible") beat(false);
+      });
+    }
+
+    return { init, markActive, get: () => last };
+  })();
+  window.Lobby = Lobby;
+
+  // ------------------------------------------------------------------
   // Bootstrap — every visit / reload starts a fresh run from scratch
   // ------------------------------------------------------------------
 
@@ -13126,6 +13200,7 @@
     if (el.objCollapse) el.objCollapse.addEventListener("click", (ev) => { ev.stopPropagation(); Objectives.toggle(); });
     if (el.rtModelAdd) el.rtModelAdd.addEventListener("submit", addCustomModel);
     StoryLog.init();
+    Lobby.init();
     WorldEditor.init();
     ImageModel.init();
     Menu.init();

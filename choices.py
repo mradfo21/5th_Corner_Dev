@@ -367,6 +367,16 @@ def generate_choices(
         # Moving-stealth options — quiet, but the body still covers ground.
         opts.append("Creep to the next patch of cover")
         opts.append("Crawl forward into the shadows")
+        # Always have more than three to choose from. A scene that matched no
+        # keywords used to fall through with only the two stealth options and
+        # return a slate of TWO, leaving the player a short row of buttons with
+        # no explanation — the caller and the UI both expect three.
+        opts.extend([
+            "Vault forward over the obstacle",
+            "Wrench the nearest door open",
+            "Shoulder past the blockage",
+            "Break for the nearest opening",
+        ])
         # De-dupe while preserving order
         seen_local: set = set()
         deduped: List[str] = []
@@ -374,15 +384,11 @@ def generate_choices(
             if o.lower() not in seen_local:
                 seen_local.add(o.lower())
                 deduped.append(o)
-        if len(deduped) < 2:
-            deduped = ["Vault forward over the obstacle", "Creep to the next cover",
-                       "Wrench the nearest door open", "Shoulder your way past the blockage",
-                       "Break for the nearest opening"]
-        # Rotate the window instead of always serving the first three. A run
-        # that degrades for several turns in a row used to offer the identical
-        # slate every time, which reads as the game having frozen even when it
-        # is still accepting input. Seeded by the scene so the same situation is
-        # stable within a turn but differs from the last one.
+        # Rotate the window rather than always serving the first three. Several
+        # degraded turns in a row used to offer the identical slate every time,
+        # which reads as the game having frozen even though it is still taking
+        # input. Seeded by the scene, so it's stable within a situation and
+        # different once the situation moves.
         if len(deduped) > 3:
             import hashlib
             offset = int(hashlib.md5(ctx.strip()[:200].encode("utf-8")).hexdigest(), 16) % len(deduped)

@@ -754,6 +754,155 @@ class TestTapeIsPerRun(unittest.TestCase):
         self.assertNotIn("_get_image_dir('default')", tape)
 
 
+class TestDegradedTurnsStayInFiction(unittest.TestCase):
+    """`_ask` returns sentinel strings on failure, and the turn loop only
+    guarded against an EMPTY dispatch — so "Signal interrupted due to
+    timeout..." was narrated to the player as the story."""
+
+    def test_sentinels_are_recognised_as_failures(self):
+        import engine
+        for bad in ("Signal interrupted due to timeout...",
+                    "Signal interrupted — Anthropic API key not configured.",
+                    "The transmission wavers... static fills the air.",
+                    ""):
+            self.assertTrue(engine._is_failure_dispatch(bad), bad)
+
+    def test_real_prose_is_not_mistaken_for_a_failure(self):
+        import engine
+        self.assertFalse(engine._is_failure_dispatch(
+            "You vault the rail and land hard on the deck plating."))
+
+    def test_the_replacement_is_world_neutral(self):
+        """These run in whatever level the player authored, so they describe
+        the camera failing, never the setting."""
+        import engine
+        blob = " ".join(engine._DIEGETIC_DISPATCHES).lower()
+        for setting_word in ("desert", "facility", "quarantine", "horizon", "mesa"):
+            self.assertNotIn(setting_word, blob)
+
+    def test_the_turn_loop_masks_before_narrating(self):
+        src = (Path(__file__).parent / "engine.py").read_text(encoding="utf-8")
+        self.assertIn("degraded = _is_failure_dispatch(dispatch)", src)
+        self.assertIn("dispatch = _diegetic_dispatch(choice)", src)
+
+    def test_autoplay_can_still_tell_a_masked_failure_apart(self):
+        """Masking makes the text look real, so the flag is the only signal
+        left — without it a fully broken run reports 100% real narrative."""
+        src = (Path(__file__).parent / "autoplay.py").read_text(encoding="utf-8")
+        self.assertIn("degraded_turn", src)
+        self.assertIn("not degraded_turn", src)
+
+
+class TestDegradedChoicesRotate(unittest.TestCase):
+    """Several degraded turns in a row used to serve an identical slate, which
+    reads as the game having frozen even though it still accepts input."""
+
+    def _slate(self, scene):
+        # `choices` imports ai_provider_manager inside the function, so patch
+        # the module itself rather than an attribute on `choices`.
+        import ai_provider_manager, choices
+        # Short-circuit to the fallback path without touching the network.
+        with patch.object(ai_provider_manager, "is_mock_active", return_value=True):
+            return choices.generate_choices(None, "", "", world_prompt=scene)
+
+    def test_different_scenes_get_different_fallback_slates(self):
+        a = self._slate("a flooded shipbreaking yard at dawn")
+        b = self._slate("a concrete corridor deep underground")
+        self.assertEqual(len(a), 3)
+        self.assertEqual(len(b), 3)
+        self.assertNotEqual(a, b)
+
+    def test_the_same_scene_is_stable(self):
+        scene = "a flooded shipbreaking yard at dawn"
+        self.assertEqual(self._slate(scene), self._slate(scene))
+
+    def test_a_scene_matching_no_keywords_still_gets_three(self):
+        """It used to fall through with only the two stealth options."""
+        self.assertEqual(len(self._slate("an empty white room")), 3)
+
+
+class TestRealtimeFailuresAreNamed(unittest.TestCase):
+    """Capacity was the only failure with a name, so an unconfigured server, a
+    blocked SDK and a rejected key all produced the same shrug."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.src = (Path(__file__).parent / "static" / "js" / "reactor_renderer.js").read_text(encoding="utf-8")
+
+    def test_each_distinct_cause_is_classified(self):
+        for reason in ("not_configured", "bad_key", "sdk_blocked", "token_exchange_failed", "capacity"):
+            self.assertIn(f'"{reason}"', self.src)
+
+    def test_the_toast_uses_the_classified_hint(self):
+        client = (Path(__file__).parent / "static" / "js" / "standalone.js").read_text(encoding="utf-8")
+        self.assertIn("lastErr && lastErr.hint", client)
+
+    def test_stream_health_is_measured_not_assumed(self):
+        """A stalled stream keeps showing its last decoded frame, so `status`
+        alone cannot tell a running world from a frozen picture of one."""
+        self.assertIn("function getTelemetry", self.src)
+        self.assertIn("stalled:", self.src)
+        self.assertIn("getTelemetry: getTelemetry", self.src)
+
+
+class TestInvestigationGroundsTheTurn(unittest.TestCase):
+    """The client sent `investigation_id`, which only meant something in that
+    tab — nothing was uploaded — so the engine dropped it and "loaded, describe
+    your action" was a promise the turn never kept."""
+
+    def test_the_client_sends_the_capture_not_just_the_id(self):
+        src = (Path(__file__).parent / "static" / "js" / "standalone.js").read_text(encoding="utf-8")
+        self.assertIn("investigation_frame: investigationFrame", src)
+
+    def test_the_engine_ingests_it_as_an_img2img_reference(self):
+        src = (Path(__file__).parent / "engine.py").read_text(encoding="utf-8")
+        self.assertIn("investigation_frame = data.get('investigation_frame')", src)
+        self.assertIn("_ingest_realtime_frame(investigation_frame, session_id)", src)
+
+
+class TestPresenceIsPerRun(unittest.TestCase):
+    """Main gives each visitor their own persisted instance, so a global
+    headcount would tell someone alone in a private run that four people are
+    watching."""
+
+    def setUp(self):
+        import presence
+        presence.reset()
+
+    def test_two_runs_do_not_see_each_other(self):
+        import presence
+        presence.touch("runA", "v1")
+        presence.touch("runA", "v2")
+        presence.touch("runB", "v3")
+        self.assertEqual(presence.snapshot("runA")["count"], 2)
+        self.assertEqual(presence.snapshot("runB")["count"], 1)
+
+    def test_acting_marks_a_viewer_as_steering(self):
+        import presence
+        presence.touch("runA", "v1")
+        snap = presence.touch("runA", "v2", active=True)
+        self.assertEqual(snap["count"], 2)
+        self.assertEqual(snap["active_count"], 1)
+
+    def test_leaving_drops_the_viewer_immediately(self):
+        import presence
+        presence.touch("runA", "v1")
+        presence.touch("runA", "v2")
+        presence.leave("runA", "v2")
+        self.assertEqual(presence.snapshot("runA")["count"], 1)
+
+    def test_a_stale_viewer_times_out(self):
+        import presence, time as _t
+        presence.touch("runA", "v1")
+        with patch.object(presence.time, "time", return_value=_t.time() + presence.PRESENCE_TTL_SECONDS + 5):
+            self.assertEqual(presence.snapshot("runA")["count"], 0)
+
+    def test_a_garbage_viewer_id_cannot_wedge_it(self):
+        import presence
+        self.assertEqual(presence.touch("runA", "")["count"], 0)
+        presence.leave("runA", None)  # must not raise
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # ENTRY POINT
 # ═══════════════════════════════════════════════════════════════════════════

@@ -1469,6 +1469,69 @@ def api_lobby_session_status(session_id):
 
 
 # ═══════════════════════════════════════════════════════════════════
+# PRESENCE — who else is on THIS run right now
+#
+# Scoped per session on purpose: main gives each visitor their own persisted
+# instance, so a global headcount would tell someone alone in a private run
+# that four people are watching. See presence.py.
+# ═══════════════════════════════════════════════════════════════════
+
+def _presence_session_id():
+    raw = (request.get_json(silent=True) or {}).get('session_id') \
+        or request.args.get('session_id') or request.args.get('session') \
+        or request.headers.get('X-Session-Id') or 'default'
+    try:
+        return engine._sanitize_session_id(str(raw))
+    except Exception:
+        return 'default'
+
+
+@app.route('/api/lobby/heartbeat', methods=['POST'])
+def api_lobby_heartbeat():
+    """"Still here." Returns the run's presence snapshot in the same call, so
+    the widget never needs a second round trip."""
+    try:
+        import presence
+        data = request.get_json(silent=True) or {}
+        snap = presence.touch(
+            _presence_session_id(),
+            str(data.get('viewer_id') or ''),
+            label=data.get('label'),
+            active=bool(data.get('active')),
+        )
+        return jsonify(snap)
+    except Exception as e:
+        # Presence is decoration; it must never take a turn down with it.
+        traceback.print_exc()
+        return jsonify({"count": 0, "active_count": 0, "viewers": [], "you": None, "error": str(e)})
+
+
+@app.route('/api/lobby/leave', methods=['POST'])
+def api_lobby_leave():
+    """Tab closed. Sent via sendBeacon, so it must always 200 and never block."""
+    try:
+        import presence
+        data = request.get_json(silent=True) or {}
+        presence.leave(_presence_session_id(), str(data.get('viewer_id') or ''))
+    except Exception:
+        traceback.print_exc()
+    return jsonify({"ok": True})
+
+
+@app.route('/api/lobby/presence', methods=['GET'])
+def api_lobby_presence():
+    """Read-only presence for a run, for anything that wants the headcount
+    without claiming to be a viewer."""
+    try:
+        import presence
+        return jsonify(presence.snapshot(
+            _presence_session_id(), request.args.get('viewer_id')))
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"count": 0, "active_count": 0, "viewers": [], "you": None, "error": str(e)})
+
+
+# ═══════════════════════════════════════════════════════════════════
 # ASSET SERVING ENDPOINTS
 # ═══════════════════════════════════════════════════════════════════
 
