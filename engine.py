@@ -6398,15 +6398,24 @@ def _generate_and_append_scene_image(caption: str, dispatch: str, choice: str, f
     global state, history
     if not WORLD_IMAGE_ENABLED:
         return None
-    # Serialize scene-image generation system-wide with TURN_LOCK so it never
-    # runs concurrently with a turn's own state mutations (and, for the bot
-    # path, so two channels' renders don't collide on the module globals).
-    # We read this session's history from disk into a LOCAL and hand it to
-    # _gen_image via history_ref, so a concurrent different-session request
-    # swapping the module-global `history` can't feed the wrong session's
-    # frames into this render. Single-session latency is unaffected: a turn
-    # only ever has one image generation in flight (see _process_turn_background).
-    with TURN_LOCK:
+    # Serialize scene-image generation PER SESSION, not globally.
+    #
+    # This used to take the global TURN_LOCK for the entire 10-30s render, and
+    # TURN_LOCK is also what /api/reset and /api/choose hold. So one player's
+    # intro still blocked every OTHER player's reset and turns: their HTTP
+    # request sat waiting on a lock held by a stranger's render. The client
+    # awaits /api/reset before it can render anything, so a second player
+    # opening the game watched the loader sit on its first step over a black
+    # screen until someone else's image finished — and with only a handful of
+    # gunicorn threads, a few concurrent opens wedged the whole service.
+    #
+    # A render only ever needed to exclude another render of the SAME session
+    # (they both write that session's history entry). Cross-session safety is
+    # already handled explicitly: we read this session's history from disk into
+    # a LOCAL and hand it to _gen_image via history_ref, so a concurrent
+    # different-session request swapping the module-global `history` can't feed
+    # the wrong session's frames into this render.
+    with _session_image_lock(session_id):
         try:
             # Before the (large) still write, make sure the persistent disk has
             # room. If it's low, this sweeps stale/regenerable data across all
@@ -6670,7 +6679,8 @@ def _evolve_world_async(session_id: str, consequence_summary: str, vision_dispat
 
 
 # Ensure generate_intro_turn_feed_items is defined AFTER _structure_choices_for_feed
-def generate_intro_turn_feed_items(session_id: str = 'default', new_state: Optional[dict] = None) -> List[Dict[str, Any]]:
+def generate_intro_turn_feed_items(session_id: str = 'default', new_state: Optional[dict] = None,
+                                   spawn_image: bool = True):
     """Build the intro feed items for a fresh session.
 
     `new_state` — the LOCAL (not module-global) fresh-state dict the caller
@@ -6738,7 +6748,7 @@ def generate_intro_turn_feed_items(session_id: str = 'default', new_state: Optio
     # so reset returns immediately instead of blocking on image generation.
     # An authored opening shot is a description of a FRAME; the narration is
     # prose about a character. Render the frame when we have one.
-    _spawn_scene_image_async(
+    intro_image_kwargs = dict(
         caption=initial_narrative_content,
         dispatch=intro_image_description if authored_open else initial_narrative_content,
         choice="Initialize Simulation",
@@ -6746,8 +6756,17 @@ def generate_intro_turn_feed_items(session_id: str = 'default', new_state: Optio
         world_prompt=new_state.get("world_prompt", "Initialization sequence."),
         session_id=session_id,
     )
-
-    return intro_items
+    if spawn_image:
+        _spawn_scene_image_async(**intro_image_kwargs)
+        return intro_items
+    # Deferred: the caller spawns it AFTER persisting the new state. The render
+    # appends its scene_image by reloading state under the lock, so spawning it
+    # before the caller's own _save_state lets that save clobber the appended
+    # item — and losing the intro frame is a black screen the run never recovers
+    # from. Previously this was masked by the global TURN_LOCK (the render
+    # couldn't start until reset released it); now that renders are per-session,
+    # the ordering has to be explicit.
+    return intro_items, intro_image_kwargs
     
 # --- Internal Reset Logic --- (Moved from api_reset for reusability)
 def _perform_game_reset() -> List[Dict[str, Any]]:
@@ -6840,7 +6859,8 @@ def _perform_game_reset() -> List[Dict[str, Any]]:
         else:
             logging.info("_perform_game_reset: history.json does not exist, no need to clear.")
 
-        initial_items = generate_intro_turn_feed_items(SID, new_state)
+        initial_items, intro_image_kwargs = generate_intro_turn_feed_items(
+            SID, new_state, spawn_image=False)
         logging.info(f"_perform_game_reset: initial_items from generate_intro_turn_feed_items (IDs): {[item['id'] for item in initial_items if item]}")
     
         new_state['feed_log'].extend(initial_items) # Add to the new state's new feed_log
@@ -6853,7 +6873,12 @@ def _perform_game_reset() -> List[Dict[str, Any]]:
             state = new_state
             history = new_history
         logging.info(f"_perform_game_reset: Game reset complete. {len(initial_items)} initial items generated and saved.")
-        return initial_items
+    # Spawn the intro render OUTSIDE the TURN_LOCK block and AFTER the save
+    # above, so it can never be clobbered by that save and never holds the
+    # global lock. This is the first frame the player sees; on a seed-locked
+    # world model it's also the thing realtime needs before it can start.
+    _spawn_scene_image_async(**intro_image_kwargs)
+    return initial_items
 
 def api_reset():
     # Resolve THIS request's session id straight from Flask's request object
@@ -7048,6 +7073,21 @@ def api_feed():
     return jsonify(items_to_return)
 
 _THREAD_SIGNAL_TTL_S = 300
+
+# One scene-image lock per session (see _generate_and_append_scene_image). Keyed
+# by session so two players never wait on each other's render; re-entrant
+# because the render path can recurse through fallback helpers.
+_SESSION_IMAGE_LOCKS: Dict[str, threading.RLock] = {}
+_SESSION_IMAGE_LOCKS_GUARD = threading.Lock()
+
+
+def _session_image_lock(session_id: str) -> threading.RLock:
+    with _SESSION_IMAGE_LOCKS_GUARD:
+        lock = _SESSION_IMAGE_LOCKS.get(session_id)
+        if lock is None:
+            lock = threading.RLock()
+            _SESSION_IMAGE_LOCKS[session_id] = lock
+        return lock
 
 
 def _sweep_thread_signals() -> None:
