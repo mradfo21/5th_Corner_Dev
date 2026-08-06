@@ -6415,7 +6415,7 @@ def _generate_and_append_scene_image(caption: str, dispatch: str, choice: str, f
     # a LOCAL and hand it to _gen_image via history_ref, so a concurrent
     # different-session request swapping the module-global `history` can't feed
     # the wrong session's frames into this render.
-    with _session_image_lock(session_id):
+    with _session_image_lock(session_id), _IMAGE_SLOTS:
         try:
             # Before the (large) still write, make sure the persistent disk has
             # room. If it's low, this sweeps stale/regenerable data across all
@@ -7079,6 +7079,18 @@ _THREAD_SIGNAL_TTL_S = 300
 # because the render path can recurse through fallback helpers.
 _SESSION_IMAGE_LOCKS: Dict[str, threading.RLock] = {}
 _SESSION_IMAGE_LOCKS_GUARD = threading.Lock()
+
+# …but not UNBOUNDED across sessions. Production is a 0.5-CPU / 512MB box, and a
+# render decodes and writes a multi-megabyte still; letting every session render
+# at once trades one stall (everyone queued behind a global lock) for a worse
+# one (the box thrashing). Two at a time keeps players off each other's critical
+# path without swamping the instance. Raise via WORLD_IMAGE_CONCURRENCY on
+# bigger hardware.
+try:
+    _IMAGE_CONCURRENCY = max(1, int(os.getenv("WORLD_IMAGE_CONCURRENCY", "2")))
+except ValueError:
+    _IMAGE_CONCURRENCY = 2
+_IMAGE_SLOTS = threading.BoundedSemaphore(_IMAGE_CONCURRENCY)
 
 
 def _session_image_lock(session_id: str) -> threading.RLock:

@@ -39,6 +39,10 @@
   // and engine.world_drift_tick). The server owns the real pacing and refuses
   // early asks with {skipped: "too_soon"}, so this only has to be frequent
   // enough that a drift lands promptly once one is due.
+  // How long the boot will wait for /api/reset before giving up and saying so.
+  // Generous — reset does real model work — but finite, because the loader
+  // cannot draw anything until this resolves.
+  const RESET_TIMEOUT_MS = (typeof window !== "undefined" && window.__RESET_TIMEOUT_MS__) || 45000;
   const WORLD_DRIFT_ASK_MS = (typeof window !== "undefined" && window.__WORLD_DRIFT_ASK_MS__) || 6000;
   // Hard release for the in-flight guard, so a request that never settles can't
   // silently stop the world drifting for the rest of the page.
@@ -1517,6 +1521,22 @@
   // Expose for debugging + for any tooling that wants to know which instance
   // this page is bound to. Read-only; the framework does not support hot-swap.
   try { window.__SOMEWHERE_SESSION__ = SESSION_ID; } catch (_) {}
+
+  /**
+   * Reject after `ms` if `promise` hasn't settled. The underlying request is
+   * left to finish or die on its own — the point is that the UI stops waiting,
+   * not that the socket is torn down.
+   */
+  function withTimeout(promise, ms, label) {
+    let timer = null;
+    const bail = new Promise((_resolve, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`${label || "request"} (timed out after ${Math.round(ms / 1000)}s)`)),
+        ms,
+      );
+    });
+    return Promise.race([promise, bail]).finally(() => clearTimeout(timer));
+  }
 
   async function postJSON(url, body) {
     const payload = Object.assign({}, body || {});
@@ -6290,6 +6310,9 @@
         Sound.select();
         try { Haptics.select(); } catch (_) {}
         btn.classList.add("picked");
+        // The boot-failure recovery button restarts the run rather than taking
+        // a turn — there is no run yet to take one in.
+        if (choice.action_id === "__retry_boot") { resetGame(); return; }
         makeChoice(choice.text, promptItem.id);
       });
       el.choices.appendChild(btn);
@@ -6634,7 +6657,16 @@
       closeFreeWill(true);
       renderInventory([]);
       startTimecode();
-      const items = await postJSON("/api/reset", {});
+      // Bound the wait. resetGame() awaits this before it can draw ANYTHING, so
+      // a server that accepts the request and never answers (a wedged worker,
+      // a proxy holding the socket) leaves the loader parked on its first step
+      // over a black screen with no error, forever — indistinguishable from the
+      // game being broken. Fail loudly instead, and let the player retry.
+      const items = await withTimeout(
+        postJSON("/api/reset", {}),
+        RESET_TIMEOUT_MS,
+        "the server did not respond",
+      );
       // Do NOT hide the veil here: the ceremony now owns the progress bar and
       // fades itself once the first scene lands (player_choice_prompt →
       // Ceremony.complete, then the guide-image step resolves on scene_image).
@@ -6648,7 +6680,15 @@
     } catch (err) {
       console.error("[standalone] resetGame failed:", err);
       hideVeil();
-      appendProse({ id: -1, type: "error_event", content: `Could not reach the server: ${err.message}` });
+      appendProse({ id: -1, type: "error_event", content: `Could not start the run: ${err.message}` });
+      // Leave the player somewhere they can act from. Without this the boot
+      // failure is a dead black screen: prose is the only thing on it, there
+      // are no choices, and the only way out is knowing to reload.
+      renderChoices({
+        id: -1,
+        choices: [{ text: "Try again", action_id: "__retry_boot" }],
+      });
+      state.awaitingResolution = false;
     } finally {
       startPolling(); // resume normal polling once the fresh feed is in
     }

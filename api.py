@@ -5,6 +5,9 @@ Provides RESTful endpoints for game state management, session control, and asset
 
 import os
 import json
+import sys
+import threading
+import time
 import traceback
 from pathlib import Path
 from flask import Flask, request, jsonify, send_file, make_response, render_template, redirect
@@ -16,6 +19,113 @@ import coinop
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
+
+
+# ═══════════════════════════════════════════════════════════════════
+# STALL WATCHDOG
+#
+# Production runs ONE gunicorn worker with a handful of threads. If a request
+# blocks on a lock and never returns, the next few requests pile up behind it,
+# every thread is consumed, and the whole service stops answering — including
+# /api/health, which touches nothing. From the outside that is indistinguishable
+# from the box being down, and the logs say nothing at all, because the failure
+# is threads waiting rather than an exception.
+#
+# So: track in-flight requests and, when one overstays, dump EVERY thread's
+# stack to stderr (Render's log pipeline) and keep a copy in memory. That turns
+# "the game hangs and we have no idea why" into a stack trace naming the exact
+# line, for this hang and any future one.
+# ═══════════════════════════════════════════════════════════════════
+
+_inflight = {}
+_inflight_lock = threading.Lock()
+_stall_report = {"at": None, "reason": None, "text": ""}
+
+try:
+    _STALL_AFTER_S = max(5.0, float(os.getenv("STALL_DUMP_S", "25")))
+except ValueError:
+    _STALL_AFTER_S = 25.0
+_STALL_REDUMP_S = 60.0
+
+
+def _format_all_stacks(note: str) -> str:
+    """Every live thread's stack. Frames only — no locals, no environment."""
+    out = [note, ""]
+    frames = sys._current_frames()
+    names = {t.ident: t.name for t in threading.enumerate()}
+    for tid, frame in frames.items():
+        out.append(f"--- thread {names.get(tid, '?')} ({tid}) ---")
+        out.extend(line.rstrip() for line in traceback.format_stack(frame))
+        out.append("")
+    return "\n".join(out)
+
+
+def _stall_watchdog():
+    last_dump = 0.0
+    while True:
+        try:
+            time.sleep(5)
+            now = time.time()
+            with _inflight_lock:
+                stalled = [(p, now - t) for (p, t) in _inflight.values() if now - t > _STALL_AFTER_S]
+            if not stalled or (now - last_dump) < _STALL_REDUMP_S:
+                continue
+            last_dump = now
+            worst = max(stalled, key=lambda s: s[1])
+            reason = f"{len(stalled)} request(s) in flight > {_STALL_AFTER_S:.0f}s; worst: {worst[0]} ({worst[1]:.0f}s)"
+            text = _format_all_stacks(f"[STALL WATCHDOG] {reason}")
+            _stall_report["at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
+            _stall_report["reason"] = reason
+            _stall_report["text"] = text
+            print(text, file=sys.stderr, flush=True)
+        except Exception:  # noqa: BLE001 — the watchdog must never take the app down
+            pass
+
+
+@app.before_request
+def _stall_track_start():
+    try:
+        with _inflight_lock:
+            _inflight[id(request._get_current_object())] = (request.path, time.time())
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@app.teardown_request
+def _stall_track_end(_exc=None):
+    try:
+        with _inflight_lock:
+            _inflight.pop(id(request._get_current_object()), None)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@app.route('/api/diag/stacks', methods=['GET'])
+def api_diag_stacks():
+    """Thread stacks — the last recorded stall, plus a live snapshot.
+
+    Read-only and frames-only (no locals, no environment, no secrets). This is
+    how a hang gets diagnosed on a box you can't attach a debugger to. Set
+    DIAG_STACKS=0 to turn it off.
+    """
+    if os.getenv("DIAG_STACKS", "1").strip().lower() in ("0", "false", "no", "off"):
+        return jsonify({"error": "diagnostics disabled"}), 404
+    now = time.time()
+    with _inflight_lock:
+        current = sorted(
+            ({"path": p, "seconds": round(now - t, 1)} for (p, t) in _inflight.values()),
+            key=lambda d: -d["seconds"],
+        )
+    return jsonify({
+        "inflight": current,
+        "stall_threshold_s": _STALL_AFTER_S,
+        "last_stall": {k: _stall_report[k] for k in ("at", "reason")},
+        "last_stall_stacks": _stall_report["text"],
+        "live_stacks": _format_all_stacks("[LIVE SNAPSHOT]"),
+    })
+
+
+threading.Thread(target=_stall_watchdog, name="stall-watchdog", daemon=True).start()
 
 # Optional realtime music streaming (Increment 2). flask-sock is an optional
 # dependency: if it's missing, the /ws/scene_music route simply isn't registered
