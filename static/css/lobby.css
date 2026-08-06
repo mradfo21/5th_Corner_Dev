@@ -744,6 +744,17 @@ img { display: block; max-width: 100%; }
   .frame { align-items: flex-end; }
   .features-grid { grid-template-columns: 1fr; }
   .features-cta { flex-direction: column; align-items: stretch; width: min(320px, 100%); margin-inline: auto; }
+
+  /* Boot overlay typography is sized for a desktop frame; at phone width the
+     same values fill the screen and the loading sequence reads as shouting.
+     Roughly two-thirds scale keeps the terminal look without the volume. */
+  .boot-brand { font-size: clamp(1.3rem, 5.2vw, 1.95rem); }
+  .boot-line { font-size: 0.48rem; }
+  .boot-hud { font-size: 0.44rem; }
+  .boot-code { font-size: 0.44rem; }
+  .boot-tip { padding: 0.42rem 0.75rem; }
+  .boot-tip-label { font-size: 0.38rem; }
+  .boot-tip-text { font-size: 0.48rem; }
 }
 
 /* background-attachment: fixed is unreliable / disabled on most touch

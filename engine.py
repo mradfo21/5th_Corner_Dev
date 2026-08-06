@@ -3886,7 +3886,15 @@ REALTIME_STYLE_ANCHOR = os.getenv(
     "A navigable first-person world you can walk through, shot as 1993 analog VHS "
     "home-video footage from a handheld camcorder, heavy film grain and chromatic "
     "aberration, slightly desaturated, low-light dread and horror atmosphere. "
-    "Eye-level walking vantage with a medium-wide field of view",
+    "Eye-level walking vantage with a medium-wide field of view. "
+    # World models are trained on a great deal of gameplay footage, and
+    # "first-person" plus a motion verb is the strongest FPS cue there is —
+    # so they hallucinate a weapon in the lower frame, a crosshair, and a
+    # health bar. Nothing downstream can remove them: this path has no
+    # negative prompt, so the ban has to live in the anchor itself.
+    "Empty hands, nothing held in the lower frame. No weapon, no gun, no crosshair, "
+    "no reticle, no HUD, no health bar, no minimap, no on-screen text or game UI of "
+    "any kind — this is found footage, not a video game",
 )
 
 # Conversation Moment portraits use a DIFFERENT lens language than the handheld
@@ -4004,9 +4012,11 @@ def build_realtime_base(visual_scene: str = "", narrative: str = "") -> str:
     """
     scene = (visual_scene or narrative or "").strip().replace("\n", " ")
     scene = _sanitize_for_image_generation(scene)
-    # Keep it focused; overly long prompts dilute the signal for the video model.
-    if len(scene) > 600:
-        scene = scene[:597].rstrip() + "..."
+    # Keep it focused; overly long prompts dilute the signal for the video
+    # model, and the anchor's negatives are the first thing a long scene pushes
+    # out of the effective context.
+    if len(scene) > 480:
+        scene = scene[:477].rstrip() + "..."
     parts = [game_identity.world_anchor(REALTIME_STYLE_ANCHOR).rstrip(". ") + "."]
     if scene:
         parts.append(scene)
@@ -5034,15 +5044,21 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                                 flipbook_refs.append(prev_grid)
                                 print(f"[FLIPBOOK STYLE] Full grid as style reference: {os.path.basename(prev_grid)}", flush=True)
 
-                            # 4. Grid template (layout hint — lowest weight, append last)
+                            # 4. Grid template (layout hint — lowest weight, append last).
+                            # The BLANK grid wins. The numbered template has
+                            # "FRAME 1".."FRAME 16" and 0.00s..3.75s printed on it,
+                            # and telling a model not to copy text that is sitting
+                            # in its reference image does not work — those labels
+                            # came back burned into the generated panels. The blank
+                            # grid carries the same layout with nothing to copy.
                             numbered_template_path = str(ROOT / "prompts" / "flipbook_numbered_template.png")
                             blank_template_path    = str(ROOT / "prompts" / "flipbook_blank_grid_template.png")
-                            if os.path.exists(numbered_template_path):
-                                flipbook_refs.append(numbered_template_path)
-                                print(f"[FLIPBOOK LAYOUT] Numbered template appended (layout hint)", flush=True)
-                            elif os.path.exists(blank_template_path):
+                            if os.path.exists(blank_template_path):
                                 flipbook_refs.append(blank_template_path)
                                 print(f"[FLIPBOOK LAYOUT] Blank grid template appended (layout hint)", flush=True)
+                            elif os.path.exists(numbered_template_path):
+                                flipbook_refs.append(numbered_template_path)
+                                print(f"[FLIPBOOK LAYOUT] Numbered template appended (no blank grid available)", flush=True)
 
                             if not flipbook_refs:
                                 print(f"[FLIPBOOK GEN] No reference images available (first turn)", flush=True)
@@ -6424,6 +6440,15 @@ def _generate_and_append_scene_image(caption: str, dispatch: str, choice: str, f
                 st['current_image_prompt'] = image_prompt
                 st['current_render_prompt'] = render_prompt
                 st['current_render_base'] = render_base
+                # Record the frame on THIS run's tape. /api/tape used to rebuild
+                # the reel by globbing the image directory by mtime, which meant
+                # a session that had been played before showed a tape splicing
+                # every run together in timestamp order. An explicit per-run list
+                # is the only thing that knows where one playthrough ends.
+                tape = [f for f in (st.get('tape_frames') or []) if isinstance(f, str)]
+                if not tape or tape[-1] != web:
+                    tape.append(web)
+                st['tape_frames'] = tape[-400:]
                 _feed_append(st, item)
                 _save_state(st, session_id)
                 _sync_ambient_state(st, session_id)
@@ -6726,6 +6751,10 @@ def _perform_game_reset() -> List[Dict[str, Any]]:
             "last_saved": datetime.now(timezone.utc).isoformat(),
             "seen_elements": [],
             "player_state": {"alive": True},
+            "injuries": [],
+            # A new run starts a new tape. Without this the reel would splice
+            # this playthrough onto the end of the last one.
+            "tape_frames": [],
             "feed_log": [],  # Explicitly a new empty list
             "current_image_url": None,
             "choices": [],
@@ -10553,6 +10582,61 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
         # Fallback to safe defaults
         return "You make a tense move in the chaos.", "The desert stretches ahead.", True, []
 
+# ───────── persistent injuries ───────────────────────────────────────────────
+# Words that mean the player actually took bodily harm. Bare body-part nouns
+# are deliberately excluded: "he raised a hand" is not a wound, and a false
+# positive here follows the player for the rest of the run.
+_INJURY_SIGNALS = (
+    "bleed", "blood", "wound", "gash", "laceration", "lacerat", "sprain",
+    "fracture", "broken bone", "burn", "scorch", "sear", "graze", "grazed",
+    "bruise", "bruised", "dislocat", "impaled", "puncture", "torn muscle",
+    "gouge", "twisted ankle", "cracked rib", "split lip", "deep cut",
+)
+
+
+def _extract_injury(dispatch: str) -> Optional[str]:
+    """The one sentence of the dispatch that describes a wound, or None."""
+    if not dispatch:
+        return None
+    if not any(sig in dispatch.lower() for sig in _INJURY_SIGNALS):
+        return None
+    for sentence in re.split(r"(?<=[.!?])\s+", dispatch.strip()):
+        if any(sig in sentence.lower() for sig in _INJURY_SIGNALS):
+            wound = sentence.strip()
+            return (wound[:87] + "...") if len(wound) > 90 else wound
+    return None
+
+
+def _apply_injuries(state: dict, dispatch: str, is_timeout_penalty: bool = False) -> bool:
+    """Carry wounds forward in ``state['injuries']``.
+
+    Four prompts read this list — the consequence grounding and every choice
+    call — and nothing wrote it, so the UNLUCKY prompt's promise that a wound
+    "becomes a persistent burden the player carries forward" never happened.
+
+    Wounds age out rather than accumulating: capped at three, and a clean turn
+    has a chance to heal the oldest, so a run can't end up permanently crippled
+    by one bad roll on turn two.
+
+    Returns True when a NEW wound was recorded this turn.
+    """
+    import random as _random
+    injuries = [i for i in (state.get("injuries", []) or []) if isinstance(i, str)]
+    wound = None if is_timeout_penalty else _extract_injury(dispatch)
+    newly_injured = False
+    if wound:
+        # Don't log a near-duplicate of the wound we just recorded.
+        if not injuries or injuries[-1][:30].lower() != wound[:30].lower():
+            injuries.append(wound)
+            injuries = injuries[-3:]
+            newly_injured = True
+            print(f"[INJURY] recorded: {wound[:60]}", flush=True)
+    elif injuries and _random.random() < 0.30:
+        print(f"[INJURY] healed: {injuries.pop(0)[:40]}", flush=True)
+    state["injuries"] = injuries
+    return newly_injured
+
+
 def summarize_world_state_diff(prev_state: dict, state: dict) -> str:
     """
     Return a concise summary of the most important differences between two world states.
@@ -10775,7 +10859,15 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             dispatch = "You make a tense move in the chaos."
         if not vision_dispatch or vision_dispatch.strip().lower() in {"none", "", "[", "[]"}:
             vision_dispatch = dispatch
-        
+
+        # Persist any wound this turn described. `state['injuries']` is read by
+        # four prompts (the consequence grounding and every choice call) and was
+        # written by nothing, so the UNLUCKY prompt's promise that a wound
+        # "becomes a persistent burden the player carries forward" was empty —
+        # the list was initialised at reset and stayed at [] for the whole run.
+        _apply_injuries(state, dispatch, is_timeout_penalty)
+        _save_state(state, session_id)
+
         # Evolve world state.
         consequence_summary = summarize_world_state_diff(prev_state, state)
         if skip_evolve:
@@ -11330,6 +11422,7 @@ def reset_state(session_id='default'):
         "situation": "You stand at the edge of the restricted zone, camera in hand.",
         "beat": 0,
         "injuries": [],
+        "tape_frames": [],
         "inventory": ["Nikon F3 camera", "notebook", "flashlight"],
         "location": "desert_edge",
         "environment_type": "desert",

@@ -515,6 +515,20 @@ def serve_legacy_image(filename):
         fallback = _find_image_in_any_session(safe_filename)
         if fallback is not None:
             return send_file(str(fallback), mimetype=mimetype)
+        # Every frame is written alongside a downsampled `<name>_small.png` used
+        # for vision calls, and the small one outlives the full-res frame when a
+        # session sweep trims disk. Serving it beats a 404: a slightly soft
+        # frame is invisible next to a hole in the feed.
+        low = safe_filename.lower()
+        if low.endswith('.png') and not low.endswith('_small.png'):
+            small_name = safe_filename[:-4] + '_small.png'
+            for image_path in candidates:
+                small_path = image_path.with_name(small_name)
+                if small_path.exists():
+                    return send_file(str(small_path), mimetype='image/png')
+            small_fallback = _find_image_in_any_session(small_name)
+            if small_fallback is not None:
+                return send_file(str(small_fallback), mimetype='image/png')
         return error_response("Image not found", code=404)
     except Exception as e:
         traceback.print_exc()
@@ -677,25 +691,36 @@ def serve_lobby():
 
 @app.route('/api/tape', methods=['GET'])
 def api_tape():
-    """Ordered scene frames captured this session, for VHS tape playback.
+    """Ordered scene frames captured on THIS run, for VHS tape playback.
 
-    The standalone game already saves every canonical scene frame to the
-    'default' session image directory; we just list them chronologically
-    (by mtime) as servable /images/<file> URLs. Downsampled vision helper
-    frames (*_small.png) and flipbook grids are excluded."""
+    Reads the run's own `tape_frames` list, written as each canonical scene
+    frame lands. It used to glob the image directory by mtime, which had two
+    bugs: it always read the 'default' session (so a player on their own
+    session watched somebody else's tape), and mtime order splices every run
+    that session has ever played into one reel. The glob survives only as a
+    fallback for sessions that predate the list.
+    """
     try:
         from pathlib import Path as _P
-        img_dir = _P(engine._get_image_dir('default'))
-        frames = []
-        if img_dir.exists():
-            files = [
-                p for p in img_dir.glob('*.png')
-                if not p.name.endswith('_small.png')
-                and 'flipbook' not in p.name.lower()
-                and not p.name.startswith('observed_')  # low-res video grabs, not canonical stills
-            ]
-            files.sort(key=lambda p: p.stat().st_mtime)
-            frames = [f"/images/{p.name}" for p in files]
+        session_id = request.args.get('session') or request.args.get('session_id') or 'default'
+        session_id = _P(str(session_id)).name or 'default'
+        try:
+            st = engine._load_state(session_id)
+        except Exception:
+            st = {}
+        frames = [f for f in (st.get('tape_frames') or []) if isinstance(f, str)]
+
+        if not frames:
+            img_dir = _P(engine._get_image_dir(session_id))
+            if img_dir.exists():
+                files = [
+                    p for p in img_dir.glob('*.png')
+                    if not p.name.endswith('_small.png')
+                    and 'flipbook' not in p.name.lower()
+                    and not p.name.startswith('observed_')  # low-res video grabs, not canonical stills
+                ]
+                files.sort(key=lambda p: p.stat().st_mtime)
+                frames = [f"/images/{p.name}" for p in files]
         return jsonify({"frames": frames, "count": len(frames)})
     except Exception as e:
         traceback.print_exc()
@@ -883,6 +908,44 @@ def api_reactor_token():
     except Exception as e:
         traceback.print_exc()
         return error_response("Reactor token exchange error", str(e), code=502)
+
+
+@app.route('/api/reactor/health', methods=['GET'])
+def api_reactor_health():
+    """Can realtime actually work right now, and if not, why?
+
+    /api/reactor/config only reports whether a key is *set*. That is not the
+    same question: the key can be present and wrong, expired, or rate-limited,
+    and the only symptom a player gets is the stills fallback with no
+    explanation. This actually mints a token, so "realtime unavailable" comes
+    with a reason instead of a shrug.
+
+    Never raises, and never returns the key or the token itself.
+    """
+    api_key = os.getenv("REACTOR_API_KEY")
+    if not api_key:
+        return jsonify({
+            "ok": False, "configured": False, "reason": "no_api_key",
+            "detail": "REACTOR_API_KEY is not set on the server.",
+        })
+    try:
+        import requests
+        resp = requests.post(
+            REACTOR_TOKEN_URL, headers={"Reactor-API-Key": api_key}, timeout=10,
+        )
+        if resp.status_code == 200:
+            return jsonify({"ok": True, "configured": True, "reason": "ready"})
+        reason = "rate_limited" if resp.status_code == 429 else (
+            "bad_api_key" if resp.status_code in (401, 403) else "token_exchange_failed"
+        )
+        return jsonify({
+            "ok": False, "configured": True, "reason": reason,
+            "detail": f"HTTP {resp.status_code}: {resp.text[:200]}",
+        })
+    except Exception as e:
+        return jsonify({
+            "ok": False, "configured": True, "reason": "unreachable", "detail": str(e)[:200],
+        })
 
 
 @app.route('/api/reactor/usage', methods=['POST'])

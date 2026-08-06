@@ -1177,6 +1177,10 @@
     if (state.sceneVisible) return;
     state.sceneVisible = true;
     document.body.classList.remove("awaiting-first-scene");
+    // There is now something to photograph, which is what reveals the camera
+    // (see updateRendererButton) — in stills that's this call, not a renderer
+    // status change, so nothing else would refresh it.
+    try { updateRendererButton(); } catch (_) {}
     // The world is genuinely on screen now — surface the objectives tracker
     // (and derive this run's opening lead). Held back until here so it never
     // floats over the black boot / "rendering" void.
@@ -3291,10 +3295,15 @@
   try { window.__DangerSystem = DangerSystem; } catch (_) {}
 
   function updateRendererButton() {
-    // Reveal the realtime SHAPE tool only when the realtime renderer is active.
+    const realtime = Renderer.mode === "reactor" && Renderer.reactorAvailable();
+    document.body.classList.toggle("realtime-on", realtime);
+    // The camera works on a still frame just as well as on live video, so it's
+    // revealed by "there is a scene", not "realtime is up". Gating it on
+    // realtime hid the whole photography loop — the dossier and the case win
+    // with it — in exactly the situation where realtime is unavailable.
     document.body.classList.toggle(
-      "realtime-on",
-      Renderer.mode === "reactor" && Renderer.reactorAvailable()
+      "camera-on",
+      realtime || !!(state.currentStillUrl || (Renderer.lastScene && Renderer.lastScene.imageUrl))
     );
     if (!el.rendererBtn) return;
     const reactorMode = Renderer.mode === "reactor";
@@ -8169,8 +8178,17 @@
   function openTouch() {
     if (state.gameOver || state.freeWillOpen) return;
     if (state.touchMode) { closeTouch(); return; } // toggle off if already armed
-    if (Renderer.mode !== "reactor" || !Renderer.reactorAvailable()) return;
-    closeScan(); // the two realtime instruments are mutually exclusive
+    // Gate on "is there anything to photograph", not "is realtime on". Capture
+    // has worked on stills for a while (captureSceneRegion falls back to the
+    // scene <img>, and the C hotkey already used it), but the PHOTO tool itself
+    // was still locked behind the reactor check — so the whole camera loop, the
+    // dossier, and the case win were unreachable whenever realtime dropped to
+    // stills, which is exactly when Reactor is full or unconfigured.
+    if (!currentSourceSize()) {
+      showRendererToast("Nothing to photograph yet");
+      return;
+    }
+    closeScan(); // the two scene instruments are mutually exclusive
     state.touchMode = "aim";
     if (el.realtimeBtn) el.realtimeBtn.classList.add("aiming");
     document.body.classList.add("touch-aiming");

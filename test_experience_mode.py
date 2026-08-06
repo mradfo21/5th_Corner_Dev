@@ -16,6 +16,7 @@ engine module-level globals are restored after each test.
 """
 
 import os
+import re
 import sys
 import json
 import unittest
@@ -638,6 +639,119 @@ class TestPacingFairnessHardening(unittest.TestCase):
         # A duplicate of this rule also sat in world_tick_micro_change_
         # instructions, a key nothing read; that copy is gone.
         self.assertIn("TIME-OF-DAY PROGRESSION (PHASE-LINKED)", self.prompts_src)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# STRANDED FIXES
+#
+# Each of these was fixed once on an agent branch that never merged, and the
+# bug sat in main for months while the fix sat on a branch. They're guarded
+# here so the next long-lived branch can't quietly re-open them.
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestPersistentInjuries(unittest.TestCase):
+    """`state['injuries']` is read by the consequence grounding and every
+    choice call, and used to be written by nothing — so the UNLUCKY prompt's
+    promise that a wound "becomes a persistent burden the player carries
+    forward" was empty for the whole run."""
+
+    def test_a_wound_in_the_prose_is_recorded(self):
+        import engine
+        st = {"injuries": []}
+        self.assertTrue(engine._apply_injuries(
+            st, "You vault the rail. Jagged metal opens a deep cut across your forearm."))
+        self.assertEqual(len(st["injuries"]), 1)
+        self.assertIn("deep cut", st["injuries"][0].lower())
+
+    def test_a_clean_turn_records_nothing(self):
+        import engine
+        st = {"injuries": []}
+        self.assertFalse(engine._apply_injuries(
+            st, "You sprint across the yard and reach the gantry untouched."))
+        self.assertEqual(st["injuries"], [])
+
+    def test_body_parts_alone_are_not_injuries(self):
+        """A false positive follows the player for the rest of the run, so the
+        signal list is verbs of harm, not nouns of anatomy."""
+        import engine
+        st = {"injuries": []}
+        self.assertFalse(engine._apply_injuries(st, "You raise a hand and steady your shoulder against the door."))
+        self.assertEqual(st["injuries"], [])
+
+    def test_wounds_are_capped_so_a_run_cannot_be_crippled_forever(self):
+        import engine
+        st = {"injuries": []}
+        for i in range(8):
+            engine._apply_injuries(st, f"Scalding steam burns your {i} hand.")
+        self.assertLessEqual(len(st["injuries"]), 3)
+
+    def test_the_turn_loop_actually_calls_it(self):
+        src = (Path(__file__).parent / "engine.py").read_text(encoding="utf-8")
+        self.assertIn("_apply_injuries(state, dispatch, is_timeout_penalty)", src)
+
+
+class TestFlipbookTextBleed(unittest.TestCase):
+    """Gemini copies text it can see in a reference image, and text it is told
+    about in the prompt, into the panels it generates. Both sources of "FRAME
+    1" / "0.00s" had to go."""
+
+    @classmethod
+    def setUpClass(cls):
+        root = Path(__file__).parent
+        cls.engine_src = (root / "engine.py").read_text(encoding="utf-8")
+        cls.prompts = json.loads((root / "prompts" / "simulation_prompts.json").read_text(encoding="utf-8"))
+
+    def test_blank_grid_template_is_preferred_over_the_numbered_one(self):
+        i_blank = self.engine_src.index('if os.path.exists(blank_template_path):')
+        i_numbered = self.engine_src.index('elif os.path.exists(numbered_template_path):')
+        self.assertLess(i_blank, i_numbered,
+                        "the numbered template has FRAME/timestamp labels printed on it")
+
+    def test_no_timestamp_ladder_left_in_the_flipbook_prompt(self):
+        leftovers = re.findall(r"\d+\.\d+s", self.prompts["gemini_flipbook_4panel_prefix"])
+        self.assertEqual(leftovers, [], f"timestamp literals can be rendered as text: {leftovers}")
+
+
+class TestRealtimeAnchorIsNotAnFPS(unittest.TestCase):
+    """The realtime path has no negative prompt, so anything the world model
+    must not draw has to be banned inside the anchor. "First-person" plus a
+    motion verb is the strongest FPS cue there is, and the models answered it
+    with a weapon, a crosshair and a health bar."""
+
+    def test_anchor_bans_weapons_and_hud(self):
+        import engine
+        anchor = engine.REALTIME_STYLE_ANCHOR.lower()
+        for term in ("no weapon", "no crosshair", "no hud"):
+            self.assertIn(term, anchor)
+
+    def test_the_ban_survives_into_the_built_prompt(self):
+        import engine
+        prompt = engine.build_realtime_prompt("A flooded hold.", "", "Climb the ladder").lower()
+        self.assertIn("no crosshair", prompt)
+        self.assertLess(len(prompt), 2000, "world-model prompts are capped at 2000 chars")
+
+
+class TestTapeIsPerRun(unittest.TestCase):
+    """/api/tape used to rebuild the reel by globbing the image directory by
+    mtime, which spliced every run that session had ever played into one tape
+    — and always read the 'default' session, so a player on their own session
+    watched somebody else's."""
+
+    def test_scene_images_are_recorded_on_the_run(self):
+        src = (Path(__file__).parent / "engine.py").read_text(encoding="utf-8")
+        self.assertIn("st['tape_frames'] = tape[-400:]", src)
+
+    def test_reset_starts_a_fresh_reel(self):
+        src = (Path(__file__).parent / "engine.py").read_text(encoding="utf-8")
+        self.assertIn('"tape_frames": []', src)
+
+    def test_the_endpoint_is_session_scoped_and_reads_the_run(self):
+        src = (Path(__file__).parent / "api.py").read_text(encoding="utf-8")
+        tape = src[src.index("def api_tape("):]
+        tape = tape[:tape.index("\n@app.route")]
+        self.assertIn("tape_frames", tape)
+        self.assertNotIn("_get_image_dir('default')", tape)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

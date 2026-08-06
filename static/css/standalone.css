@@ -1926,7 +1926,7 @@ body.coinop-paused #reactor-video {
   box-shadow: inset 0 0 12px rgba(0,0,0,0.5);
   transition: border-color 0.16s, box-shadow 0.16s, transform 0.1s, opacity 0.22s;
 }
-body.realtime-on #realtime-btn { display: flex; }
+body.camera-on #realtime-btn { display: flex; }
 /* Boot gate: hide the SNAP camera tool alongside the rest of the UI until the
    first frame of a fresh run is on screen (see #prose-feed above). */
 body.awaiting-first-scene #realtime-btn {
@@ -2421,12 +2421,12 @@ body.realtime-on #free-will-btn {
 body.realtime-on #free-will-btn:hover { transform: translateX(calc(-50% - 100px)) scale(1.08); }
 body.realtime-on #free-will-btn:active { transform: translateX(calc(-50% - 100px)) scale(0.94); }
 
-body.realtime-on #realtime-btn {
+body.camera-on #realtime-btn {
   bottom: 32px;
   transform: translateX(calc(-50% + 100px));
 }
-body.realtime-on #realtime-btn:hover { transform: translateX(calc(-50% + 100px)) scale(1.08); }
-body.realtime-on #realtime-btn:active { transform: translateX(calc(-50% + 100px)) scale(0.94); }
+body.camera-on #realtime-btn:hover { transform: translateX(calc(-50% + 100px)) scale(1.08); }
+body.camera-on #realtime-btn:active { transform: translateX(calc(-50% + 100px)) scale(0.94); }
 
 /* SCAN stacks directly ABOVE the ACT hub on the left of the joystick cluster,
    clear of the taller center joystick. */
@@ -6052,9 +6052,9 @@ body.agent-log-on #agent-log { display: flex; }
   body.realtime-on #free-will-btn { bottom: 28px; transform: translateX(calc(-50% - 86px)); }
   body.realtime-on #free-will-btn:hover { transform: translateX(calc(-50% - 86px)) scale(1.08); }
   body.realtime-on #free-will-btn:active { transform: translateX(calc(-50% - 86px)) scale(0.94); }
-  body.realtime-on #realtime-btn { bottom: 28px; transform: translateX(calc(-50% + 86px)); }
-  body.realtime-on #realtime-btn:hover { transform: translateX(calc(-50% + 86px)) scale(1.08); }
-  body.realtime-on #realtime-btn:active { transform: translateX(calc(-50% + 86px)) scale(0.94); }
+  body.camera-on #realtime-btn { bottom: 28px; transform: translateX(calc(-50% + 86px)); }
+  body.camera-on #realtime-btn:hover { transform: translateX(calc(-50% + 86px)) scale(1.08); }
+  body.camera-on #realtime-btn:active { transform: translateX(calc(-50% + 86px)) scale(0.94); }
   body.realtime-on #scan-btn { bottom: 82px; transform: translateX(calc(-50% - 86px)); }
   body.realtime-on #scan-btn:hover { transform: translateX(calc(-50% - 86px)) scale(1.08); }
   body.realtime-on #scan-btn:active { transform: translateX(calc(-50% - 86px)) scale(0.94); }
@@ -6100,8 +6100,8 @@ body.agent-log-on #agent-log { display: flex; }
   body.realtime-on #forward-btn { bottom: 92px; }
   body.realtime-on #free-will-btn { bottom: 22px; transform: translateX(calc(-50% - 74px)); }
   body.realtime-on #free-will-btn:hover { transform: translateX(calc(-50% - 74px)) scale(1.08); }
-  body.realtime-on #realtime-btn { bottom: 22px; transform: translateX(calc(-50% + 74px)); }
-  body.realtime-on #realtime-btn:hover { transform: translateX(calc(-50% + 74px)) scale(1.08); }
+  body.camera-on #realtime-btn { bottom: 22px; transform: translateX(calc(-50% + 74px)); }
+  body.camera-on #realtime-btn:hover { transform: translateX(calc(-50% + 74px)) scale(1.08); }
   body.realtime-on #scan-btn { bottom: 68px; transform: translateX(calc(-50% - 74px)); }
   body.realtime-on #scan-btn:hover { transform: translateX(calc(-50% - 74px)) scale(1.08); }
   body.realtime-on #camp-btn { bottom: 68px; transform: translateX(calc(-50% + 74px)); }
