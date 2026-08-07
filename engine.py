@@ -222,8 +222,36 @@ ELEVENLABS_VOICE_ID = (os.getenv("ELEVENLABS_VOICE_ID") or CONFIG.get("ELEVENLAB
 # keep it story-aware).
 ELEVENLABS_ALLOW_OVERRIDES = (os.getenv("ELEVENLABS_ALLOW_OVERRIDES", "1").strip().lower()
                               not in ("0", "false", "no", "off"))
+def elevenlabs_key_problem() -> Optional[str]:
+    """Why the ElevenLabs key can't be used, or None if it looks usable.
+
+    A key that is merely PRESENT is not a key that works. The deployed key was
+    being reported as "key=YES" while ElevenLabs rejected every call with
+    `invalid_api_key_prefix: API key must start with 'sk_'` — so signing a
+    conversation URL always failed, every TALK fell back to a private agent it
+    could not authorise, and the channel never opened. The boot line said
+    everything was fine.
+
+    Format-only: it cannot tell a revoked key from a live one, but it catches
+    the case that actually happened (a value pasted into the env var that is
+    not an ElevenLabs key at all — an agent id, a project id, a truncated
+    copy). The live answer comes from the API itself; see _mint_signed_url.
+    """
+    if not ELEVENLABS_API_KEY:
+        return "not set"
+    if not ELEVENLABS_API_KEY.startswith("sk_"):
+        return ("malformed — ElevenLabs API keys start with 'sk_' "
+                f"(this one starts with {ELEVENLABS_API_KEY[:4]!r})")
+    return None
+
+
+_ELEVENLABS_KEY_PROBLEM = elevenlabs_key_problem()
 print(f"[ENGINE INIT] ElevenLabs TALK: key={'YES' if ELEVENLABS_API_KEY else 'no'}, "
       f"agent={'set' if ELEVENLABS_AGENT_ID else 'none'}, overrides={'on' if ELEVENLABS_ALLOW_OVERRIDES else 'off'}")
+if _ELEVENLABS_KEY_PROBLEM:
+    print(f"[ENGINE INIT] ElevenLabs API key {_ELEVENLABS_KEY_PROBLEM}. "
+          f"Voice TALK cannot mint a signed URL, so conversations with a PRIVATE "
+          f"agent will not connect and fall back to text. Fix ELEVENLABS_API_KEY.")
 
 # ── Voice registry (data-driven) ────────────────────────────────────────────
 # Shared by the TALK mechanic (live voice switching per subject) and the
@@ -9637,8 +9665,20 @@ def api_talk_session():
         signed_url = None
         # Voice needs only an agent id (public agents connect with it directly).
         mode = "voice" if agent_id else "text"
+        # Why voice might not work, in words, for the client to show and log.
+        # Without this a failed signing was invisible: the response still said
+        # "voice", the browser tried to open a PRIVATE agent it had no
+        # signature for, and the player sat on "establishing channel…" forever
+        # with nothing anywhere saying why.
+        voice_error = None
 
-        if agent_id and api_key:
+        if agent_id and not api_key:
+            voice_error = "ElevenLabs API key is not set"
+        elif agent_id and _ELEVENLABS_KEY_PROBLEM:
+            voice_error = f"ElevenLabs API key {_ELEVENLABS_KEY_PROBLEM}"
+            log_error(f"[TALK] skipping signed-url: key {_ELEVENLABS_KEY_PROBLEM}")
+
+        if agent_id and api_key and not voice_error:
             # Private agents need a short-lived signed URL minted server-side so
             # the API key never reaches the browser. A signing failure is
             # non-fatal: a public agent can still connect with the bare agent_id.
@@ -9653,8 +9693,10 @@ def api_talk_session():
                 if resp.status_code == 200:
                     signed_url = (resp.json() or {}).get("signed_url")
                 else:
+                    voice_error = f"ElevenLabs rejected the signing request ({resp.status_code})"
                     log_error(f"[TALK] signed-url {resp.status_code}: {resp.text[:200]}")
             except Exception as e:
+                voice_error = "could not reach ElevenLabs to sign the conversation"
                 log_error(f"[TALK] signed-url exchange failed: {e}")
 
         return jsonify({
@@ -9668,6 +9710,9 @@ def api_talk_session():
             },
             "agent_id": agent_id or None,
             "signed_url": signed_url,
+            # Null when voice should work. When set, the browser can say why the
+            # channel didn't open instead of hanging on "establishing channel…".
+            "voice_error": voice_error,
             "voice_id": resolved_voice or None,
             # Extra fields let the client hot-swap the Convai voice once a
             # per-character voice designed in the background is ready.

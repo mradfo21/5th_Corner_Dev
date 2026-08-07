@@ -43,6 +43,9 @@
   // Generous — reset does real model work — but finite, because the loader
   // cannot draw anything until this resolves.
   const RESET_TIMEOUT_MS = (typeof window !== "undefined" && window.__RESET_TIMEOUT_MS__) || 45000;
+  // How long a TALK voice channel gets to actually connect before we give up on
+  // it and hold the conversation in text instead.
+  const TALK_CONNECT_TIMEOUT_MS = (typeof window !== "undefined" && window.__TALK_CONNECT_TIMEOUT_MS__) || 12000;
   const WORLD_DRIFT_ASK_MS = (typeof window !== "undefined" && window.__WORLD_DRIFT_ASK_MS__) || 6000;
   // Hard release for the in-flight guard, so a request that never settles can't
   // silently stop the world drifting for the rest of the page.
@@ -10797,7 +10800,15 @@
           });
         } catch (_) {}
       }
-      if (session && session.mode === "voice" && (session.agent_id || session.signed_url)) {
+      if (session && session.voice_error) {
+        // The server already knows voice can't work (no key, a malformed key,
+        // a rejected signing request). Don't open a channel that will never
+        // connect — go straight to the text conversation, which does work, and
+        // say why once so it's diagnosable instead of mysterious.
+        console.warn("[talk] voice unavailable:", session.voice_error);
+        try { AgentLog.push("error", "voice unavailable", session.voice_error); } catch (_) {}
+        beginText(opening, "text transmission \u00b7 voice unavailable");
+      } else if (session && session.mode === "voice" && (session.agent_id || session.signed_url)) {
         beginVoice(session, opening);
       } else {
         beginText(opening);
@@ -10848,11 +10859,22 @@
       }
       if (!open || mode !== "voice") return;
 
+      // A channel that never opens must not look like one that is still
+      // opening. startSession() can resolve happily and then simply never
+      // connect — an unauthorised private agent does exactly that — which left
+      // the player staring at "opening channel…" with a dead mic and no way to
+      // tell it had failed. Give it a bounded window, then use text.
+      let connected = false;
+      let connectTimer = null;
+      const clearConnectTimer = () => { if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; } };
+
       const opts = {
         connectionType: "websocket",
         dynamicVariables: session.dynamic_variables || {},
         onConnect: () => {
           if (!open) return;
+          connected = true;
+          clearConnectTimer();
           switching = false;
           AgentLog.push("ok", "talk connected", subject && subject.label);
           setSub("channel live \u00b7 listening"); setOrbState("listening");
@@ -10947,9 +10969,21 @@
       } catch (e) {
         console.warn("[talk] voice start failed, falling back to text:", e);
         convo = null;
+        clearConnectTimer();
         return beginText(opening, "text transmission (mic unavailable)");
       }
-      if (!open) { try { convo.endSession(); } catch (_) {} convo = null; return; }
+      if (!open) { try { convo.endSession(); } catch (_) {} convo = null; clearConnectTimer(); return; }
+      // Armed only after startSession resolves, so a slow SDK handshake isn't
+      // counted against the connect budget.
+      connectTimer = setTimeout(() => {
+        connectTimer = null;
+        if (!open || connected || mode !== "voice") return;
+        console.warn("[talk] voice channel never connected — falling back to text");
+        try { AgentLog.push("error", "voice channel never opened", "falling back to text"); } catch (_) {}
+        try { if (convo) convo.endSession(); } catch (_) {}
+        convo = null;
+        beginText(opening, "text transmission \u00b7 voice didn't connect");
+      }, TALK_CONNECT_TIMEOUT_MS);
       setTimeout(() => { if (open) el.talkInput.focus(); }, 200);
     }
 
