@@ -322,30 +322,54 @@ class TestMovementMode(unittest.TestCase):
         finally:
             page.close()
 
-    def test_clicking_the_world_captures_the_pointer_in_fps(self):
-        """A plain click on the world takes real pointer lock (true FPS feel),
-        while a look-DRAG must not — releasing a drag should never silently
-        swallow the cursor."""
+    def test_a_plain_click_never_steals_the_cursor(self):
+        """Regression: a single click on the world used to silently take pointer
+        lock. The game uses clicks, so that hid the cursor and swallowed the
+        click — indistinguishable from a freeze. Only a DOUBLE-click may capture."""
         page = self._new_realtime_page(mode="fps")
         try:
             self._boot_live(page, model="happy-oyster")
-            # Drag, then release: no capture.
+            # Plain click: no capture.
+            page.mouse.move(550, 300)
+            page.mouse.click(550, 300)
+            page.wait_for_timeout(700)
+            self.assertFalse(page.evaluate("() => !!document.pointerLockElement"),
+                             "a single click must never capture the pointer")
+            # A look-drag: also no capture.
             self._look_drag(page, dx=-200)
             page.mouse.up()
             page.wait_for_timeout(500)
             self.assertFalse(page.evaluate("() => !!document.pointerLockElement"),
-                             "a look-drag must not capture the pointer")
-            # Plain click: capture.
-            page.mouse.move(550, 300)
-            page.mouse.down()
-            page.mouse.up()
+                             "a look-drag must never capture the pointer")
+            # Double-click: explicit opt-in, capture allowed.
+            page.mouse.dblclick(560, 320)
             page.wait_for_function("() => !!document.pointerLockElement", timeout=4000)
-            # pointerlockchange dispatches after the property flips, so wait for
-            # the class rather than reading it in the same tick.
             page.wait_for_function(
                 "() => document.body.classList.contains('mouse-look-locked')", timeout=4000)
         except Exception:
-            print("\n=== CONSOLE LOG (fps-lock) ===\n" + self._dump_logs())
+            print("\n=== CONSOLE LOG (no-cursor-theft) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
+    def test_capture_is_refused_while_the_world_is_still_black(self):
+        """Never grab the cursor before the live world has revealed — a slow first
+        scene plus a captured cursor is exactly what "froze on black" looked
+        like."""
+        page = self._new_realtime_page(mode="fps")
+        try:
+            self._boot_live(page, model="happy-oyster")
+            page.evaluate("""() => {
+                window.__realShowing = window.ReactorRenderer.isShowing;
+                window.ReactorRenderer.isShowing = () => false;   // world still black
+            }""")
+            page.mouse.dblclick(560, 320)
+            page.wait_for_timeout(900)
+            self.assertFalse(page.evaluate("() => !!document.pointerLockElement"),
+                             "must not capture the cursor before the world shows")
+            page.evaluate("() => { window.ReactorRenderer.isShowing = window.__realShowing; }")
+        except Exception:
+            print("\n=== CONSOLE LOG (black-world-capture) ===\n" + self._dump_logs())
             raise
         finally:
             page.close()

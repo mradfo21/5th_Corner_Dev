@@ -11,9 +11,14 @@ top of the WORLD EDITOR (persisted per browser):
 - **DOOM** (default) — `W` forward, `S` back, `A`/`D` turn the view, `Q`/`E`
   strafe. Keyboard only, no pointer capture.
 - **FPS** — `W` forward, `S` back, `A`/`D` strafe, and the **mouse steers the
-  camera**. Click the world to take real pointer lock (Esc frees it), or just
-  hold the left button and sweep — drag-look always works, including when a
-  browser refuses capture.
+  camera**. Hold the left button on the world and sweep to look; **double-click**
+  to take real pointer lock for continuous steering (Esc frees it).
+
+Capture is deliberately *not* on a single click. The game uses clicks, so an
+implicit capture hid the cursor and swallowed the click that was meant to start
+or advance a turn — indistinguishable from the game freezing. Capture is also
+refused until the live world has actually revealed, so a slow first scene can
+never combine with a hidden cursor to look like a black freeze.
 
 Mouse look works on a **turn budget**. A world model only accepts a *held* look
 direction — it keeps rotating until told to stop — so "turn while the mouse is

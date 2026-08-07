@@ -5102,7 +5102,7 @@
       // FPS: WASD is pure locomotion, the MOUSE steers the camera.
       fps: {
         label: "FPS",
-        hint: "WASD move · mouse look (click world to capture, Esc frees)",
+        hint: "WASD move · drag the world to look (double-click to capture, Esc frees)",
         mouseLook: true,
         mouse: MOUSE_SUBTLE,
         keys: {
@@ -5166,10 +5166,13 @@
   // instead of fighting it. Two ways in, because a browser can always refuse
   // pointer capture:
   //
-  //   • Pointer lock — click the world; the cursor disappears and the mouse
-  //     steers continuously (true FPS). Esc (or clicking away) frees it.
-  //   • Drag-look — hold the left button on the world and move. Always works,
-  //     and is what you get if pointer lock is denied.
+  //   • Drag-look (primary) — hold the left button on the world and move. Always
+  //     works, never touches the cursor, and a click with no movement does
+  //     nothing, so it can't swallow a click the game needed.
+  //   • Pointer lock (opt-in) — DOUBLE-click the world to capture the cursor and
+  //     steer continuously (true FPS); Esc frees it. Deliberately NOT bound to a
+  //     single click: that silently stole the cursor from ordinary clicks, which
+  //     reads as the game freezing.
   //
   // Everything here no-ops outside FPS mode / outside live video.
   // ------------------------------------------------------------------
@@ -5301,6 +5304,11 @@
     // ---- pointer lock ----
     function requestLock() {
       if (locked || !allowed() || uiBusy()) return;
+      // Capturing the cursor over a world that hasn't revealed yet is how a slow
+      // first scene turns into "the game froze on black".
+      try {
+        if (!window.ReactorRenderer.isShowing || !window.ReactorRenderer.isShowing()) return;
+      } catch (_) { return; }
       const req = document.body.requestPointerLock || document.body.mozRequestPointerLock;
       if (!req) return;
       try { req.call(document.body); } catch (_) {}
@@ -5338,6 +5346,10 @@
       lastClient = { x: e.clientX, y: e.clientY };
       downAt = { x: e.clientX, y: e.clientY };
       paint();
+      if (!hinted) {
+        hinted = true;
+        showRendererToast("Mouse look \u2014 drag to steer \u00B7 double-click to capture the cursor", 3200);
+      }
     }
     function onMouseUp() {
       if (!dragging) return;
@@ -5354,22 +5366,13 @@
       if (lastClient) feed(e.clientX - lastClient.x, e.clientY - lastClient.y);
       lastClient = { x: e.clientX, y: e.clientY };
     }
-    function onClick(e) {
+    // Explicit opt-in for full capture. A single click is left alone: the game
+    // uses clicks, and stealing the cursor from one looked like a freeze.
+    function onDblClick(e) {
       if (locked || !allowed() || uiBusy()) return;
       if (e.button != null && e.button !== 0) return;
       if (isUi(e.target)) return;
-      // A drag already steered the camera — don't also grab the pointer, or
-      // letting go of a look-drag would silently capture the cursor.
-      if (downAt && Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) > 6) {
-        downAt = null;
-        return;
-      }
-      downAt = null;
       requestLock();
-      if (!hinted) {
-        hinted = true;
-        showRendererToast("Mouse look \u2014 move gently, the world lags \u00B7 Esc frees the cursor", 3000);
-      }
     }
     function onBlur() { if (locked || dragging) releaseLock(); }
 
@@ -5385,7 +5388,7 @@
       document.addEventListener("mousedown", onMouseDown, true);
       document.addEventListener("mouseup", onMouseUp, true);
       document.addEventListener("mousemove", onMouseMove);
-      document.addEventListener("click", onClick, true);
+      document.addEventListener("dblclick", onDblClick, true);
       window.addEventListener("blur", onBlur);
       paint();
     }
