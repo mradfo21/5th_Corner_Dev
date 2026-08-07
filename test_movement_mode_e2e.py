@@ -368,6 +368,89 @@ class TestMovementMode(unittest.TestCase):
         finally:
             page.close()
 
+    def test_mouse_look_never_spins_on_forever(self):
+        """Regression: the camera used to spin endlessly in whichever direction
+        you last swept. A held look command keeps rotating until stopped, and the
+        old "turn while the mouse is moving" rule meant ordinary hand tremor
+        sustained it forever. Turn is now a BUDGET that drains: a sweep followed
+        by 2s of 1px tremor must come to REST and emit exactly one stop."""
+        page = self._new_realtime_page(mode="fps")
+        try:
+            self._boot_live(page, model="happy-oyster")
+            result = page.evaluate(
+                """async () => {
+                    const sleep = (m) => new Promise(r => setTimeout(r, m));
+                    window.__MOCK_CMD_LOG__ = [];
+                    // A hard sweep left, as if aiming at something.
+                    for (let i = 0; i < 12; i++) { window.__MouseLook.__feed(-25, 0); await sleep(10); }
+                    const swept = window.__MouseLook.intent();
+                    // Then a hand simply resting on the mouse: 1px tremor at 60Hz.
+                    let turning = 0;
+                    for (let i = 0; i < 120; i++) {
+                        window.__MouseLook.__feed(i % 2 ? 1 : -1, 0);
+                        await sleep(16);
+                        if (window.__MouseLook.intent()) turning++;
+                    }
+                    return {
+                        swept: swept && swept.lookH,
+                        turningFrames: turning,
+                        resting: window.__MouseLook.intent() === null,
+                        stops: (window.__MOCK_CMD_LOG__ || []).filter(c => c.name === 'stop').length,
+                        looks: (window.__MOCK_CMD_LOG__ || [])
+                            .filter(c => c.name === 'look').map(c => c.data.direction),
+                    };
+                }"""
+            )
+            self.assertEqual(result["swept"], "left", "the sweep itself should look left")
+            # Only the tail of the sweep may still be draining; tremor adds nothing.
+            self.assertLess(result["turningFrames"], 40,
+                            f"tremor kept the camera turning: {result}")
+            self.assertTrue(result["resting"], f"camera never came to rest: {result}")
+            self.assertEqual(result["looks"], ["Mouse_Left"],
+                             f"tremor should not re-issue look commands: {result}")
+            self.assertEqual(result["stops"], 1, f"expected exactly one stop: {result}")
+        except Exception:
+            print("\n=== CONSOLE LOG (no-endless-spin) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
+    def test_mouse_look_turn_is_proportional_to_mouse_distance(self):
+        """"Tied to the mouse": a longer sweep owes a longer turn, and any sweep
+        winds down on its own within a few hundred ms of the mouse stopping."""
+        page = self._new_realtime_page(mode="fps")
+        try:
+            self._boot_live(page, model="happy-oyster")
+            result = page.evaluate(
+                """async () => {
+                    const sleep = (m) => new Promise(r => setTimeout(r, m));
+                    async function sweepThenTime(px, steps) {
+                        for (let i = 0; i < steps; i++) { window.__MouseLook.__feed(px, 0); await sleep(10); }
+                        const t0 = performance.now();
+                        for (let i = 0; i < 60; i++) {
+                            await sleep(25);
+                            if (!window.__MouseLook.intent()) return Math.round(performance.now() - t0);
+                        }
+                        return -1;  // never stopped
+                    }
+                    const small = await sweepThenTime(4, 4);
+                    await sleep(600);   // let the budget fully drain between sweeps
+                    const big = await sweepThenTime(30, 12);
+                    return { small: small, big: big };
+                }"""
+            )
+            self.assertGreater(result["small"], 0, f"small sweep never settled: {result}")
+            self.assertGreater(result["big"], 0, f"big sweep never settled: {result}")
+            self.assertGreater(result["big"], result["small"],
+                               f"a longer sweep should owe a longer turn: {result}")
+            # Bounded: a full-budget sweep unwinds fast enough to feel connected.
+            self.assertLess(result["big"], 900, f"wind-down too long: {result}")
+        except Exception:
+            print("\n=== CONSOLE LOG (proportional) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
     def test_world_editor_switches_control_mode(self):
         """The CONTROLS switch lives in the WORLD EDITOR: it lists both modes,
         marks the active one, actually re-binds the keys, and persists."""

@@ -5069,17 +5069,19 @@
   // ------------------------------------------------------------------
   const InputBindings = (function () {
     const LS_KEY = "input_profile";
-    // Mouse-look tuning for LATENT world models: the picture lags the command by
-    // a chunk or two, so 1:1 sensitivity overshoots badly. We sum recent deltas
-    // over a short window, hold the resulting look direction, and release when
-    // the mouse settles — deliberately gentle.
+    // Mouse-look tuning. The world model only takes a HELD look direction, which
+    // keeps rotating until stopped — so "turn while the mouse is moving" is the
+    // wrong contract: hand tremor alone sustains it and the camera spins forever.
+    // Instead every mouse delta deposits a finite BUDGET of turn (in px) that
+    // bleeds off over time. Rotation is therefore proportional to how far you
+    // actually moved the mouse, always winds down on its own, and jitter (which
+    // nets ~zero and drains away) can never hold the camera.
     const MOUSE_SUBTLE = {
-      windowMs: 220,       // deltas within this window make up the current look
-      releaseMs: 200,      // mouse still for this long -> release the look axis
-      deadzonePx: 9,       // ignore micro-jitter / accidental nudges
-      saturatePx: 260,     // summed px that reach maxIntensity
+      sensitivity: 1.0,    // mouse px -> queued turn px
+      holdPx: 12,          // queued turn under this = camera at rest
+      maxBudgetPx: 140,    // ceiling, so one wild flick can't spin for seconds
+      drainPxPerMs: 0.4,   // bleed-off rate (full budget unwinds in ~350ms)
       maxIntensity: 0.5,   // caps the turn-rate contribution (subtle)
-      minFlipMs: 240,      // committed look direction sticks this long
       invertY: false,
     };
     const PROFILES = {
@@ -5156,10 +5158,13 @@
   // ------------------------------------------------------------------
   // MouseLook — the FPS camera steer (FPS mode only).
   //
-  // World models take DISCRETE held look directions, not angles, so we sum the
-  // last few mouse deltas, hold the dominant axis while the mouse keeps moving,
-  // and release it when the mouse settles. Two ways in, because a browser can
-  // always refuse pointer capture:
+  // World models take DISCRETE held look directions (keep turning until told to
+  // stop), not angles. So mouse motion deposits a finite TURN BUDGET that drains
+  // with time: while budget remains we hold that direction, and when it runs out
+  // we stop. Moving the mouse further turns further, holding still winds the turn
+  // down within a few hundred ms, and flicking back cancels the queued turn
+  // instead of fighting it. Two ways in, because a browser can always refuse
+  // pointer capture:
   //
   //   • Pointer lock — click the world; the cursor disappears and the mouse
   //     steers continuously (true FPS). Esc (or clicking away) frees it.
@@ -5182,12 +5187,11 @@
 
     let locked = false;         // pointer lock held
     let dragging = false;       // left button held on the world
-    let samples = [];           // {t, dx, dy} recent deltas
-    let lastMoveTs = 0;
+    let budgetX = 0;            // signed px of turn still owed to the player
+    let budgetY = 0;
+    let drainedAt = 0;          // wall clock of the last budget bleed
     let lastClient = null;      // previous cursor pos (drag-look delta source)
     let downAt = null;          // where the button went down (drag vs click)
-    let heldDir = null;         // committed look direction
-    let heldSince = 0;
     let hinted = false;
     let reticle = null;
 
@@ -5234,53 +5238,62 @@
     }
 
     function reset() {
-      samples = [];
+      budgetX = 0;
+      budgetY = 0;
+      drainedAt = 0;
       lastClient = null;
-      lastMoveTs = 0;
-      heldDir = null;
-      heldSince = 0;
     }
 
+    function clamp(v, lim) { return v < -lim ? -lim : v > lim ? lim : v; }
+    // Bleed the queued turn toward zero, never past it.
+    function bleed(v, amount) {
+      if (v > 0) return Math.max(0, v - amount);
+      if (v < 0) return Math.min(0, v + amount);
+      return 0;
+    }
+
+    // Bank the turn this mouse movement earned. Opposite motion SUBTRACTS, so
+    // flicking back cancels a queued turn rather than queueing a fight.
     function feed(dx, dy) {
       if (!dx && !dy) return;
-      lastMoveTs = Date.now();
-      samples.push({ t: lastMoveTs, dx: dx, dy: dy });
+      const cfg = InputBindings.mouseConfig();
+      const s = cfg.sensitivity || 1;
+      const lim = cfg.maxBudgetPx || 140;
+      drain(); // charge elapsed time before depositing, so rate stays honest
+      budgetX = clamp(budgetX + dx * s, lim);
+      budgetY = clamp(budgetY + (cfg.invertY ? -dy : dy) * s, lim);
       // Keep the drive loop warm so the look lands on the very next tick.
       try { Movement.noteActivity(); } catch (_) {}
     }
 
-    // The current look intent: dominant axis + a gentle intensity, or null when
-    // the mouse is idle. Happy Oyster holds ONE look direction, so never both.
+    // Time-based, so it behaves identically however often it's called.
+    function drain() {
+      const now = Date.now();
+      if (!drainedAt) { drainedAt = now; return; }
+      const dt = now - drainedAt;
+      if (dt <= 0) return;
+      drainedAt = now;
+      const cfg = InputBindings.mouseConfig();
+      const amount = (cfg.drainPxPerMs || 0.4) * dt;
+      budgetX = bleed(budgetX, amount);
+      budgetY = bleed(budgetY, amount);
+    }
+
+    // The current look intent: dominant axis + a gentle intensity, or null once
+    // the budget is spent. Happy Oyster holds ONE look direction, so never both.
     function intent() {
       if (!modeOn() || (!locked && !dragging)) return null;
+      drain();
       const cfg = InputBindings.mouseConfig();
-      const now = Date.now();
-      if (lastMoveTs && now - lastMoveTs > (cfg.releaseMs || 200)) { samples = []; return null; }
-      const win = cfg.windowMs || 220;
-      while (samples.length && now - samples[0].t > win) samples.shift();
-      if (!samples.length) return null;
-      let sx = 0, sy = 0;
-      for (let i = 0; i < samples.length; i++) { sx += samples[i].dx; sy += samples[i].dy; }
-      if (cfg.invertY) sy = -sy;
-      const dead = cfg.deadzonePx || 9;
-      if (Math.hypot(sx, sy) < dead) return null;
-      const sat = Math.max(dead + 1, cfg.saturatePx || 260);
+      const ax = Math.abs(budgetX), ay = Math.abs(budgetY);
+      const owed = Math.max(ax, ay);
+      if (owed < (cfg.holdPx || 12)) return null;
       const strength = Math.min(cfg.maxIntensity || 0.5,
-        (Math.hypot(sx, sy) - dead) / (sat - dead));
-      const want = Math.abs(sx) >= Math.abs(sy)
-        ? { lookH: sx < 0 ? "left" : "right", lookV: "idle" }
-        : { lookH: "idle", lookV: sy < 0 ? "up" : "down" };
-      // Hysteresis: a latent world takes ~a chunk to even show the turn, so
-      // flipping direction faster than this just smears the picture. Stay on the
-      // committed heading until the mouse settles (release) or the new heading
-      // has persisted long enough to mean it.
-      const now2 = Date.now();
-      const same = heldDir && heldDir.lookH === want.lookH && heldDir.lookV === want.lookV;
-      if (!heldDir || (!same && now2 - heldSince >= (cfg.minFlipMs || 240))) {
-        heldDir = want;
-        heldSince = now2;
+        owed / (cfg.maxBudgetPx || 140));
+      if (ax >= ay) {
+        return { lookH: budgetX < 0 ? "left" : "right", lookV: "idle", intensity: strength };
       }
-      return { lookH: heldDir.lookH, lookV: heldDir.lookV, intensity: strength };
+      return { lookH: "idle", lookV: budgetY < 0 ? "up" : "down", intensity: strength };
     }
     function isActive() { return !!intent(); }
     function isEngaged() { return locked || dragging; }

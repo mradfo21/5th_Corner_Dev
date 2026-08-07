@@ -15,11 +15,16 @@ top of the WORLD EDITOR (persisted per browser):
   hold the left button and sweep — drag-look always works, including when a
   browser refuses capture.
 
-Mouse look sums recent deltas, holds the dominant look axis while the mouse
-keeps moving, and releases when it settles. It commits to a heading for a beat
-before allowing a flip, because a latent world needs a chunk or two just to
-show the turn — fast reversals only smear the picture. Turn rate is capped well
-below the keyboard band.
+Mouse look works on a **turn budget**. A world model only accepts a *held* look
+direction — it keeps rotating until told to stop — so "turn while the mouse is
+moving" is the wrong contract: a hand simply resting on the mouse produces
+enough tremor to sustain it, and the camera spins forever in whichever direction
+you last swept. Instead each mouse delta banks a finite budget of turn (in
+pixels) that bleeds off with time. Rotation is therefore proportional to how far
+you actually moved the mouse, it always winds down on its own (~350ms from a
+full budget), moving back cancels a queued turn instead of fighting it, and
+tremor — which nets about zero and drains away — can never hold the camera.
+Turn rate stays capped well below the keyboard band.
 
 Two real bugs went with it: mouse look could never engage (capture was gated on
 a class the free-will form never carries), and merely holding the look pointer
