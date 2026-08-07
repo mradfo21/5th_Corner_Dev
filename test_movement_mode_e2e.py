@@ -475,6 +475,83 @@ class TestMovementMode(unittest.TestCase):
         finally:
             page.close()
 
+    def test_mouse_look_supports_diagonals(self):
+        """Up AND left at once. Models with independent look axes hold a true
+        diagonal; Happy Oyster can only hold ONE look verb, so the two are
+        interleaved in time slices — either way both axes get driven."""
+        # LingBot: independent axes -> both held simultaneously.
+        page = self._new_realtime_page(mode="fps")
+        try:
+            self._boot_live(page, model="lingbot-world-2")
+            self._reset_cmd_log(page)
+            self._look_drag(page, dx=-180, dy=-180)
+            self._wait_cmd(page, "set_look_horizontal", "look_horizontal", "left")
+            self._wait_cmd(page, "set_look_vertical", "look_vertical", "up")
+            it = page.evaluate("() => window.__MouseLook.intent()")
+            self.assertEqual(it["lookH"], "left", f"intent: {it}")
+            self.assertEqual(it["lookV"], "up", f"intent: {it}")
+            page.mouse.up()
+        except Exception:
+            print("\n=== CONSOLE LOG (diagonal-lingbot) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
+        # Happy Oyster: one held verb at a time -> must interleave both.
+        page = self._new_realtime_page(mode="fps")
+        try:
+            self._boot_live(page, model="happy-oyster")
+            self.assertTrue(page.evaluate("() => window.ReactorRenderer.looksOneAxisAtATime()"))
+            self._reset_cmd_log(page)
+            self._look_drag(page, dx=-260, dy=-260, steps=26)
+            page.wait_for_function(
+                """() => {
+                    const d = (window.__MOCK_CMD_LOG__||[])
+                        .filter(c => c.name === 'look').map(c => c.data.direction);
+                    return d.includes('Mouse_Left') && d.includes('Mouse_Up');
+                }""", timeout=6000)
+            page.mouse.up()
+        except Exception:
+            print("\n=== CONSOLE LOG (diagonal-oyster) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
+    def test_editor_exposes_look_sensitivity(self):
+        """Sensitivity is tunable from the editor CONTROLS row, defaults to 3x,
+        persists, clamps, and is inert (disabled) in DOOM where there's no mouse
+        look."""
+        page = self._new_realtime_page(mode="fps")
+        try:
+            self._boot_live(page, model="happy-oyster")
+            self.assertEqual(page.evaluate("() => window.__InputBindings.sensitivity()"), 3)
+            page.keyboard.press("`")
+            page.wait_for_selector("#we-input-sens", timeout=8000)
+            self.assertEqual(page.evaluate("() => document.getElementById('we-input-sens').value"), "3")
+            self.assertFalse(page.evaluate("() => document.getElementById('we-input-sens').disabled"),
+                             "slider should be usable in FPS mode")
+            # Drag the slider like a player would.
+            page.evaluate("""() => {
+                const s = document.getElementById('we-input-sens');
+                s.value = '7';
+                s.dispatchEvent(new Event('input', { bubbles: true }));
+            }""")
+            self.assertEqual(page.evaluate("() => window.__InputBindings.sensitivity()"), 7)
+            self.assertEqual(page.evaluate("() => localStorage.getItem('input_look_sens')"), "7")
+            self.assertIn("7", page.evaluate("() => document.getElementById('we-input-sens-val').textContent"))
+            # Clamped to the advertised range.
+            self.assertEqual(page.evaluate("() => window.__InputBindings.setSensitivity(9999)"), 12)
+            self.assertEqual(page.evaluate("() => window.__InputBindings.setSensitivity(-5)"), 0.5)
+            # DOOM has no mouse look, so the control goes inert.
+            page.click("#we-input-profile button[data-value='doom']")
+            page.wait_for_function(
+                "() => document.getElementById('we-input-sens').disabled === true", timeout=4000)
+        except Exception:
+            print("\n=== CONSOLE LOG (sensitivity-ui) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
     def test_world_editor_switches_control_mode(self):
         """The CONTROLS switch lives in the WORLD EDITOR: it lists both modes,
         marks the active one, actually re-binds the keys, and persists."""

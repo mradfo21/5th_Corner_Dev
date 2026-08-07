@@ -5077,13 +5077,20 @@
     // actually moved the mouse, always winds down on its own, and jitter (which
     // nets ~zero and drains away) can never hold the camera.
     const MOUSE_SUBTLE = {
-      sensitivity: 1.0,    // mouse px -> queued turn px
+      sensitivity: 3.0,    // mouse px -> queued turn px (tunable in the editor)
       holdPx: 12,          // queued turn under this = camera at rest
-      maxBudgetPx: 140,    // ceiling, so one wild flick can't spin for seconds
-      drainPxPerMs: 0.4,   // bleed-off rate (full budget unwinds in ~350ms)
+      drainPxPerMs: 0.4,   // bleed-off rate
+      // The ceiling is expressed in TIME, not pixels: however sensitive the
+      // mouse is, one wild flick can never buy more than this much rotation.
+      // Raising sensitivity therefore reaches a given turn SOONER rather than
+      // spinning for longer — which is what "more sensitive" should mean.
+      maxHoldMs: 600,
       maxIntensity: 0.5,   // caps the turn-rate contribution (subtle)
       invertY: false,
     };
+    const SENS_KEY = "input_look_sens";
+    const SENS_MIN = 0.5, SENS_MAX = 12;
+    let sensitivity = MOUSE_SUBTLE.sensitivity;
     const PROFILES = {
       // Doom: the tank-style scheme — A/D swing the view, no mouse capture.
       doom: {
@@ -5122,6 +5129,22 @@
         const v = localStorage.getItem(LS_KEY);
         if (v && PROFILES[v]) name = v;
       } catch (_) {}
+      try {
+        const s = parseFloat(localStorage.getItem(SENS_KEY));
+        if (isFinite(s)) sensitivity = clampSens(s);
+      } catch (_) {}
+    }
+    function clampSens(v) {
+      v = Number(v);
+      if (!isFinite(v)) return MOUSE_SUBTLE.sensitivity;
+      return Math.min(SENS_MAX, Math.max(SENS_MIN, Math.round(v * 10) / 10));
+    }
+    function setSensitivity(v) {
+      const next = clampSens(v);
+      if (next === sensitivity) return sensitivity;
+      sensitivity = next;
+      try { localStorage.setItem(SENS_KEY, String(sensitivity)); } catch (_) {}
+      return sensitivity;
     }
     function profile() { return PROFILES[name] || PROFILES.doom; }
     function setProfile(id) {
@@ -5149,7 +5172,19 @@
       setProfile: setProfile,
       keyFor: keyFor,
       mouseLookEnabled: () => !!profile().mouseLook,
-      mouseConfig: () => profile().mouse || MOUSE_SUBTLE,
+      // The live mouse config: profile defaults, the player's sensitivity, and
+      // the pixel ceiling derived from the time ceiling.
+      mouseConfig: () => {
+        const base = profile().mouse || MOUSE_SUBTLE;
+        const drain = base.drainPxPerMs || 0.4;
+        return Object.assign({}, base, {
+          sensitivity: sensitivity,
+          maxBudgetPx: (base.maxHoldMs || 600) * drain,
+        });
+      },
+      sensitivity: () => sensitivity,
+      setSensitivity: setSensitivity,
+      sensitivityRange: () => ({ min: SENS_MIN, max: SENS_MAX }),
       hint: () => profile().hint || "",
     };
   })();
@@ -5282,21 +5317,27 @@
       budgetY = bleed(budgetY, amount);
     }
 
-    // The current look intent: dominant axis + a gentle intensity, or null once
-    // the budget is spent. Happy Oyster holds ONE look direction, so never both.
+    // The current look intent, or null once the budget is spent. BOTH axes can be
+    // owed at once (up AND left), so we report both plus how much each is owed —
+    // the drive layer decides whether the live model can hold a real diagonal or
+    // has to time-slice one.
     function intent() {
       if (!modeOn() || (!locked && !dragging)) return null;
       drain();
       const cfg = InputBindings.mouseConfig();
+      const hold = cfg.holdPx || 12;
+      const lim = cfg.maxBudgetPx || 240;
       const ax = Math.abs(budgetX), ay = Math.abs(budgetY);
-      const owed = Math.max(ax, ay);
-      if (owed < (cfg.holdPx || 12)) return null;
-      const strength = Math.min(cfg.maxIntensity || 0.5,
-        owed / (cfg.maxBudgetPx || 140));
-      if (ax >= ay) {
-        return { lookH: budgetX < 0 ? "left" : "right", lookV: "idle", intensity: strength };
-      }
-      return { lookH: "idle", lookV: budgetY < 0 ? "up" : "down", intensity: strength };
+      if (Math.max(ax, ay) < hold) return null;
+      const hOn = ax >= hold, vOn = ay >= hold;
+      const strength = Math.min(cfg.maxIntensity || 0.5, Math.max(ax, ay) / lim);
+      return {
+        lookH: hOn ? (budgetX < 0 ? "left" : "right") : "idle",
+        lookV: vOn ? (budgetY < 0 ? "up" : "down") : "idle",
+        hMag: hOn ? Math.min(1, ax / lim) : 0,
+        vMag: vOn ? Math.min(1, ay / lim) : 0,
+        intensity: strength,
+      };
     }
     function isActive() { return !!intent(); }
     function isEngaged() { return locked || dragging; }
@@ -5435,6 +5476,35 @@
       });
     }
 
+    // The sensitivity slider (editor only). Only meaningful in a mouse-look mode,
+    // so it dims out in DOOM rather than vanishing — the control stays findable.
+    function buildSens() {
+      const slider = document.getElementById("we-input-sens");
+      if (!slider || slider.dataset.wired) return;
+      const r = InputBindings.sensitivityRange();
+      slider.min = String(r.min);
+      slider.max = String(r.max);
+      slider.dataset.wired = "1";
+      slider.addEventListener("input", () => {
+        InputBindings.setSensitivity(slider.value);
+        paintSens();
+      });
+    }
+    function paintSens() {
+      const slider = document.getElementById("we-input-sens");
+      const out = document.getElementById("we-input-sens-val");
+      const wrap = document.getElementById("we-input-sens-wrap");
+      const on = InputBindings.mouseLookEnabled();
+      const s = InputBindings.sensitivity();
+      if (slider) { slider.value = String(s); slider.disabled = !on; }
+      if (out) out.textContent = s.toFixed(1) + "\u00D7";
+      if (wrap) {
+        wrap.classList.toggle("off", !on);
+        wrap.title = on ? "How far the camera turns per mouse movement"
+                        : "Mouse look is only used in FPS mode";
+      }
+    }
+
     function paint() {
       const cur = InputBindings.current();
       MOUNTS.forEach((m) => {
@@ -5449,6 +5519,8 @@
           if (h) h.textContent = InputBindings.hint();
         }
       });
+      buildSens();
+      paintSens();
     }
 
     // The WORLD MODEL mirror only makes sense while a navigable model is live;
@@ -5504,6 +5576,10 @@
     // Mouse look uses a gentler band — latent lag punishes fast turns.
     const MOUSE_ROT_MIN = 1.0;
     const MOUSE_ROT_MAX = 2.75;
+    // Full H+V cycle when interleaving a diagonal on a one-look-axis model. Long
+    // enough that each slice actually moves the latent picture, short enough to
+    // read as one diagonal sweep rather than two separate turns.
+    const DIAGONAL_CYCLE_MS = 320;
     const KEY_INTENSITY = 0.5;       // fixed push level for keyboard turning (no analog)
     const FALLBACK_SEND_MS = 950;    // prompt-fallback (non-native-nav) re-steer cadence
 
@@ -5541,6 +5617,20 @@
 
     function setVar(node, name, val) { if (node) node.style.setProperty(name, val); }
 
+    // Can the live model hold only ONE look direction at a time? (Happy Oyster.)
+    function oneLookAxisOnly() {
+      try {
+        return !!(window.ReactorRenderer.looksOneAxisAtATime &&
+                  window.ReactorRenderer.looksOneAxisAtATime());
+      } catch (_) { return false; }
+    }
+    // Which half of the interleave cycle we're in. `hShare` (0..1) is horizontal's
+    // slice of the cycle, so a mostly-sideways sweep spends most of it turning.
+    function diagonalPhase(hShare) {
+      const share = Math.min(0.85, Math.max(0.15, hShare)); // always give V a turn
+      return ((Date.now() % DIAGONAL_CYCLE_MS) / DIAGONAL_CYCLE_MS) < share;
+    }
+
     // Compose the desired DRIVE state from keyboard + stick + mouse-look.
     // Precedence per axis: keys > stick > mouse (keys win where non-idle).
     function compose() {
@@ -5565,8 +5655,12 @@
           ptrTurnMag = Math.min(1, Math.max(0, (Math.abs(vec.x) - DEADZONE) / (1 - DEADZONE)));
         }
       }
-      // Mouse-look contribution (FPS profile): subtle dominant-axis look from
-      // recent pointer deltas. Never overrides an explicit look key / stick yaw.
+      // Mouse-look contribution (FPS profile). Never overrides an explicit look
+      // key / stick yaw. Both axes can be owed at once, so a diagonal (up AND
+      // left) is honoured: models with independent look axes hold both, while
+      // Happy Oyster — which can hold only ONE held look verb — gets the two
+      // interleaved in time slices weighted by how far the mouse went on each
+      // axis, which reads as a diagonal sweep.
       let mouseIntensity = 0;
       let fromMouse = false;
       if (lh === "idle" && lv === "idle") {
@@ -5577,6 +5671,11 @@
           lv = ml.lookV || "idle";
           mouseIntensity = ml.intensity || 0;
           fromMouse = lh !== "idle" || lv !== "idle";
+          if (lh !== "idle" && lv !== "idle" && oneLookAxisOnly()) {
+            const hShare = (ml.hMag || 0) / ((ml.hMag || 0) + (ml.vMag || 0) || 1);
+            if (diagonalPhase(hShare)) lv = "idle";
+            else lh = "idle";
+          }
         }
       }
       // Turn speed (deg/frame): CONSTANT, predictable — no hold-time acceleration.

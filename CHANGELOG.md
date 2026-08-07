@@ -20,6 +20,15 @@ or advance a turn — indistinguishable from the game freezing. Capture is also
 refused until the live world has actually revealed, so a slow first scene can
 never combine with a hidden cursor to look like a black freeze.
 
+Mouse look steers **both axes at once** — sweeping up-and-left looks up and left.
+Models with independent look axes (LingBot) hold a true diagonal; Happy Oyster
+can only hold one look verb at a time, so the two are interleaved in short time
+slices weighted by how far the mouse travelled on each axis, which reads as one
+diagonal sweep. Sensitivity now defaults to **3×** and is adjustable live from a
+**LOOK** slider in the editor's CONTROLS row (0.5×–12×, persisted). Sensitivity
+buys the turn *sooner*, not *longer*: the ceiling is expressed in time, so no
+setting can make one flick spin for seconds.
+
 Mouse look works on a **turn budget**. A world model only accepts a *held* look
 direction — it keeps rotating until told to stop — so "turn while the mouse is
 moving" is the wrong contract: a hand simply resting on the mouse produces

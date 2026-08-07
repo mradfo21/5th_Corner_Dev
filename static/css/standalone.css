@@ -6680,6 +6680,51 @@ body.we-resizing #scene-frame, body.we-resizing iframe { pointer-events: none; }
   color: rgba(232, 224, 200, 0.42);
 }
 
+/* Mouse-look sensitivity. Dims (not hides) outside a mouse-look mode so the
+   control stays findable. */
+#world-editor .we-input-sens {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  transition: opacity 0.18s;
+}
+#world-editor .we-input-sens.off { opacity: 0.38; }
+#world-editor .we-input-sens input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 96px;
+  height: 3px;
+  border-radius: 2px;
+  background: rgba(232, 224, 200, 0.22);
+  outline: none;
+  cursor: pointer;
+}
+#world-editor .we-input-sens input[type="range"]:disabled { cursor: default; }
+#world-editor .we-input-sens input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #e8e0c8;
+  border: none;
+  cursor: pointer;
+}
+#world-editor .we-input-sens input[type="range"]::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border: none;
+  border-radius: 50%;
+  background: #e8e0c8;
+  cursor: pointer;
+}
+#world-editor .we-input-sens-val {
+  min-width: 30px;
+  font-size: calc(10.5px * var(--we-fs));
+  font-variant-numeric: tabular-nums;
+  color: rgba(232, 224, 200, 0.7);
+}
+
 #world-editor .we-tabs {
   display: flex;
   gap: 4px;

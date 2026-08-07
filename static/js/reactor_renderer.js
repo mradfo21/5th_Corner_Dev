@@ -2175,6 +2175,11 @@
     beginSceneFade, endSceneFade,
     // Live camera drive (see above): the navigable-video control surface.
     motionSupported, setAxis, setAxes, setRotationSpeed, stopMotion,
+    // Happy Oyster can only HOLD ONE look direction at a time (its look is a
+    // held Mouse_* verb, and hoLookDirection picks a single winner), so a
+    // diagonal has to be time-sliced by the caller. LingBot has independent
+    // horizontal/vertical axes and can hold a true diagonal.
+    looksOneAxisAtATime: () => isHappyOyster(),
     // Interaction verbs (Happy Oyster): interact(action) fires a momentary verb
     // (Jump/Attack or a world-advertised verb); setHeldVerb(action|null) holds a
     // verb (Sprint/Crouch) that composes with movement. canInteract() tells the
