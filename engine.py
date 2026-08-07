@@ -9674,11 +9674,8 @@ def api_talk_session():
 
         if agent_id and not api_key:
             voice_error = "ElevenLabs API key is not set"
-        elif agent_id and _ELEVENLABS_KEY_PROBLEM:
-            voice_error = f"ElevenLabs API key {_ELEVENLABS_KEY_PROBLEM}"
-            log_error(f"[TALK] skipping signed-url: key {_ELEVENLABS_KEY_PROBLEM}")
 
-        if agent_id and api_key and not voice_error:
+        if agent_id and api_key:
             # Private agents need a short-lived signed URL minted server-side so
             # the API key never reaches the browser. A signing failure is
             # non-fatal: a public agent can still connect with the bare agent_id.
@@ -9693,7 +9690,13 @@ def api_talk_session():
                 if resp.status_code == 200:
                     signed_url = (resp.json() or {}).get("signed_url")
                 else:
+                    # Always ATTEMPT the exchange — the format check is only
+                    # ever used to explain a failure, never to pre-empt one, so
+                    # a key shape we don't recognise but ElevenLabs accepts
+                    # keeps working.
                     voice_error = f"ElevenLabs rejected the signing request ({resp.status_code})"
+                    if _ELEVENLABS_KEY_PROBLEM:
+                        voice_error += f" — API key {_ELEVENLABS_KEY_PROBLEM}"
                     log_error(f"[TALK] signed-url {resp.status_code}: {resp.text[:200]}")
             except Exception as e:
                 voice_error = "could not reach ElevenLabs to sign the conversation"

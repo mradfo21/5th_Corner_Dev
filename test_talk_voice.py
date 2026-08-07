@@ -69,13 +69,20 @@ class TestTalkSessionReportsWhyVoiceFailed(unittest.TestCase):
     def test_response_carries_a_voice_error_field(self):
         self.assertIn('"voice_error": voice_error', self.session)
 
-    def test_an_unusable_key_short_circuits_the_signing_call(self):
-        # No point spending a network round trip on a key we know is wrong.
-        self.assertIn("_ELEVENLABS_KEY_PROBLEM", self.session)
-        self.assertIn("skipping signed-url", self.session)
-
     def test_a_rejected_signing_request_is_reported_not_swallowed(self):
         self.assertIn("ElevenLabs rejected the signing request", self.session)
+
+    def test_the_format_check_explains_failures_but_never_pre_empts_them(self):
+        """The signing exchange is always attempted. The format check only
+        annotates a failure, so a key shape we don't recognise but ElevenLabs
+        accepts keeps working — being wrong about the format must not be able
+        to take voice down."""
+        self.assertIn("_ELEVENLABS_KEY_PROBLEM", self.session)
+        self.assertNotIn("skipping signed-url", self.session)
+        attempt_at = self.session.index("get-signed-url")
+        annotate_at = self.session.index("_ELEVENLABS_KEY_PROBLEM")
+        self.assertLess(attempt_at, annotate_at,
+                        "the key-format hint must only be applied after a real failure")
 
 
 class TestClientNeverHangsOnADeadChannel(unittest.TestCase):
