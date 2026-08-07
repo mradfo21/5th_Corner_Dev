@@ -4873,6 +4873,9 @@
       document.body.classList.add("world-editor-on");
       if (el.worldEditor) { el.worldEditor.classList.remove("hidden"); el.worldEditor.setAttribute("aria-hidden", "false"); }
       if (el.btnEditor) el.btnEditor.classList.add("active");
+      // The CONTROLS switch is local (no server content needed), so paint it
+      // before the prompt fetch — it must work even if that request fails.
+      try { InputProfileUi.paint(); } catch (_) {}
       const ok = await loadContent(false);
       if (ok) { await loadWorlds(); render(); }
     }
@@ -5051,32 +5054,39 @@
   }
 
   // ------------------------------------------------------------------
-  // InputBindings — declarative input profiles for the EXPLORE instrument.
+  // InputBindings — the CONTROL MODES for the realtime EXPLORE instrument.
   //
-  // Physical inputs (keys, mouse look) map to SEMANTIC drive tokens the
-  // Movement layer understands (fwd/back/strafeL/strafeR/lookL/lookR/
-  // pitchUp/pitchDown). Profiles let us swap schemes without rewriting the
-  // drive loop — e.g. classic (A/D look) vs fps (WASD move + mouse look).
-  // Persist the active profile in localStorage so a preferred setup sticks.
+  // Physical inputs map to SEMANTIC drive tokens the Movement layer already
+  // understands (fwd / back / strafeL / strafeR / lookL / lookR / pitchUp /
+  // pitchDown). Two modes ship, toggled live in the WORLD EDITOR:
+  //
+  //   DOOM  W forward · S back · A look left · D look right   (no mouse look)
+  //   FPS   W forward · S back · A strafe left · D strafe right + MOUSE look
+  //
+  // DOOM is the default because it needs no pointer capture and works on any
+  // setup. Adding a mode = one entry in PROFILES; nothing in the drive loop
+  // changes. The choice persists per browser in localStorage.
   // ------------------------------------------------------------------
   const InputBindings = (function () {
     const LS_KEY = "input_profile";
-    // Mouse-look knobs are tuned for LATENT world models: the view lags the
-    // command by a chunk or two, so aggressive sensitivity overshoots hard.
-    // Keep the activate threshold high, the window short (release quickly when
-    // the mouse stops), and the max intensity well under a keyboard turn.
+    // Mouse-look tuning for LATENT world models: the picture lags the command by
+    // a chunk or two, so 1:1 sensitivity overshoots badly. We sum recent deltas
+    // over a short window, hold the resulting look direction, and release when
+    // the mouse settles — deliberately gentle.
     const MOUSE_SUBTLE = {
-      windowMs: 110,       // recent-delta sample window
-      deadzonePx: 6,       // ignore micro jitters / tiny flicks
-      saturatePx: 220,     // pixels (summed) that reach maxIntensity
-      maxIntensity: 0.42,  // caps LingBot turn rate contribution
+      windowMs: 220,       // deltas within this window make up the current look
+      releaseMs: 200,      // mouse still for this long -> release the look axis
+      deadzonePx: 9,       // ignore micro-jitter / accidental nudges
+      saturatePx: 260,     // summed px that reach maxIntensity
+      maxIntensity: 0.5,   // caps the turn-rate contribution (subtle)
+      minFlipMs: 240,      // committed look direction sticks this long
       invertY: false,
     };
     const PROFILES = {
-      // Pre-mouse-look scheme: A/D turn, Q/E strafe, arrows look, no mouse.
-      classic: {
-        label: "CLASSIC",
-        hint: "W/S move · A/D turn · Q/E strafe · arrows look",
+      // Doom: the tank-style scheme — A/D swing the view, no mouse capture.
+      doom: {
+        label: "DOOM",
+        hint: "W/S move · A/D turn · Q/E strafe",
         mouseLook: false,
         mouse: null,
         keys: {
@@ -5087,11 +5097,10 @@
           arrowup: "pitchUp", arrowdown: "pitchDown",
         },
       },
-      // FPS: WASD is pure locomotion, mouse steers the camera (subtle), arrows
-      // remain a look fallback when pointer-lock isn't engaged.
+      // FPS: WASD is pure locomotion, the MOUSE steers the camera.
       fps: {
         label: "FPS",
-        hint: "WASD move · mouse look · arrows look · click world to aim",
+        hint: "WASD move · mouse look (click world to capture, Esc frees)",
         mouseLook: true,
         mouse: MOUSE_SUBTLE,
         keys: {
@@ -5103,8 +5112,8 @@
         },
       },
     };
-    const ORDER = ["fps", "classic"];
-    let name = "fps";
+    const ORDER = ["doom", "fps"];
+    let name = "doom";
 
     function load() {
       try {
@@ -5112,270 +5121,336 @@
         if (v && PROFILES[v]) name = v;
       } catch (_) {}
     }
-    function save() {
-      try { localStorage.setItem(LS_KEY, name); } catch (_) {}
-    }
-    function profile() { return PROFILES[name] || PROFILES.fps; }
-    function current() { return name; }
-    function list() {
-      return ORDER.map((id) => ({ id, label: PROFILES[id].label, hint: PROFILES[id].hint }));
-    }
+    function profile() { return PROFILES[name] || PROFILES.doom; }
     function setProfile(id) {
       if (!PROFILES[id] || id === name) return false;
       name = id;
-      save();
-      try { MouseLook.onProfileChanged(); } catch (_) {}
-      try { InputProfileUi.update(); } catch (_) {}
+      try { localStorage.setItem(LS_KEY, name); } catch (_) {}
+      // Leaving a mouse-look mode must drop any pointer capture, and any keys
+      // held under the OLD map have to be released or they stay stuck down.
+      try { MouseLook.onModeChanged(); } catch (_) {}
+      try { Movement.releaseAll(); } catch (_) {}
       try { Movement.refreshHints(); } catch (_) {}
+      try { InputProfileUi.paint(); } catch (_) {}
       return true;
     }
     function keyFor(key) {
-      const k = (key || "").toLowerCase();
       const map = profile().keys || {};
-      return map[k] || null;
+      return map[(key || "").toLowerCase()] || null;
     }
-    function mouseLookEnabled() { return !!profile().mouseLook; }
-    function mouseConfig() { return profile().mouse || MOUSE_SUBTLE; }
-    function hint() { return profile().hint || ""; }
 
     load();
-    return { current, profile, list, setProfile, keyFor, mouseLookEnabled, mouseConfig, hint };
+    return {
+      current: () => name,
+      profile: profile,
+      list: () => ORDER.map((id) => ({ id: id, label: PROFILES[id].label, hint: PROFILES[id].hint })),
+      setProfile: setProfile,
+      keyFor: keyFor,
+      mouseLookEnabled: () => !!profile().mouseLook,
+      mouseConfig: () => profile().mouse || MOUSE_SUBTLE,
+      hint: () => profile().hint || "",
+    };
   })();
   try { window.__InputBindings = InputBindings; } catch (_) {}
 
   // ------------------------------------------------------------------
-  // MouseLook — FPS-style camera steer from mouse deltas (pointer-lock).
+  // MouseLook — the FPS camera steer (FPS mode only).
   //
-  // World models only accept discrete held look directions, so we translate
-  // recent mouse movement into a single dominant look axis + a gentle intensity
-  // (LingBot turn rate). Tuned subtle on purpose: latent-video lag means a
-  // twitchy mouse produces overshoot. Click the world to lock; Esc / blur
-  // releases. No-ops when the active InputBindings profile disables mouse look,
-  // or when Movement itself is disabled (still mode / Director).
+  // World models take DISCRETE held look directions, not angles, so we sum the
+  // last few mouse deltas, hold the dominant axis while the mouse keeps moving,
+  // and release it when the mouse settles. Two ways in, because a browser can
+  // always refuse pointer capture:
+  //
+  //   • Pointer lock — click the world; the cursor disappears and the mouse
+  //     steers continuously (true FPS). Esc (or clicking away) frees it.
+  //   • Drag-look — hold the left button on the world and move. Always works,
+  //     and is what you get if pointer lock is denied.
+  //
+  // Everything here no-ops outside FPS mode / outside live video.
   // ------------------------------------------------------------------
   const MouseLook = (function () {
-    const UI_BLOCK =
-      "button, a, input, textarea, select, option, label, " +
-      "[role='button'], [contenteditable='true'], " +
+    // Real UI that must keep its own clicks/drags. Anything NOT matching this
+    // counts as "the world" (the video, the still layers, the page backdrop).
+    const UI = "button, a, input, textarea, select, option, label, " +
+      "[role='button'], [role='dialog'], [contenteditable='true'], " +
       "#move-pad, #verb-bar, #control-rail, #menu-toggle, #rt-log, #story-log, " +
-      "#talk-overlay, #touch-layer, #scan-layer, #action-wheel, #objectives-hud, " +
-      "#evidence-hud, #investigations-tray, #coinop-pause, #case-overlay, " +
-      "#ceremony, #processing-veil, #free-will-btn, #scan-btn, #realtime-btn, " +
-      "#camp-btn, #leave-camp-btn, #forward-btn, #img-model, #agent-log, " +
-      ".renderer-toast, #guide-thumb, #capture-thumb, #narrator-bar, #scan-tutorial";
+      "#img-model, #agent-log, #world-editor, #we-modal, #talk-overlay, " +
+      "#touch-layer, #scan-layer, #action-wheel, #objectives-hud, #evidence-hud, " +
+      "#investigations-tray, #case-overlay, #ceremony, #processing-veil, " +
+      "#scan-tutorial, #narrator-bar, #guide-thumb, #capture-thumb, " +
+      "#moment-overlay, .renderer-toast, #tape-overlay";
 
-    let locked = false;
-    let samples = [];          // {t, dx, dy} recent movement
+    let locked = false;         // pointer lock held
+    let dragging = false;       // left button held on the world
+    let samples = [];           // {t, dx, dy} recent deltas
+    let lastMoveTs = 0;
+    let lastClient = null;      // previous cursor pos (drag-look delta source)
+    let downAt = null;          // where the button went down (drag vs click)
+    let heldDir = null;         // committed look direction
+    let heldSince = 0;
     let hinted = false;
     let reticle = null;
-    // Test/harness hooks — inject deltas without a real pointer-lock gesture.
-    let forceActive = false;
-    let harnessIntent = null;  // sticky intent for e2e (does not expire)
 
-    function finePointer() {
-      try { return window.matchMedia && window.matchMedia("(pointer: fine)").matches; }
-      catch (_) { return true; }
-    }
+    function modeOn() { return InputBindings.mouseLookEnabled(); }
     function allowed() {
-      return InputBindings.mouseLookEnabled() && Movement.enabled() && finePointer();
+      if (!modeOn()) return false;
+      try { if (!Movement.enabled()) return false; } catch (_) { return false; }
+      return true;
     }
-    function isUiTarget(t) {
-      try { return !!(t && t.closest && t.closest(UI_BLOCK)); } catch (_) { return true; }
+    // Another instrument owns the pointer right now — never capture over it.
+    function uiBusy() {
+      try {
+        if (state.touchMode) return true;                       // photo aiming
+        if (typeof tapeIsOpen === "function" && tapeIsOpen()) return true;
+        if (el.actionWheel && el.actionWheel.classList.contains("fw-open")) return true;
+        if (el.worldEditor && !el.worldEditor.classList.contains("hidden")) return true;
+        if (el.talkOverlay && !el.talkOverlay.classList.contains("hidden")) return true;
+        if (document.body.classList.contains("awaiting-first-scene")) return true;
+      } catch (_) {}
+      return false;
     }
+    function isUi(t) {
+      try { return !!(t && t.closest && t.closest(UI)); } catch (_) { return true; }
+    }
+
     function ensureReticle() {
-      if (reticle) return reticle;
+      if (reticle && reticle.isConnected) return reticle;
       reticle = document.getElementById("mouse-look-reticle");
-      if (reticle) return reticle;
-      reticle = document.createElement("div");
-      reticle.id = "mouse-look-reticle";
-      reticle.className = "mouse-look-reticle";
-      reticle.setAttribute("aria-hidden", "true");
-      reticle.innerHTML = '<span class="mlr-h"></span><span class="mlr-v"></span><span class="mlr-dot"></span>';
-      document.body.appendChild(reticle);
+      if (!reticle) {
+        reticle = document.createElement("div");
+        reticle.id = "mouse-look-reticle";
+        reticle.className = "mouse-look-reticle";
+        reticle.setAttribute("aria-hidden", "true");
+        reticle.innerHTML = '<span class="mlr-h"></span><span class="mlr-v"></span><span class="mlr-dot"></span>';
+        document.body.appendChild(reticle);
+      }
       return reticle;
     }
     function paint() {
-      document.body.classList.toggle("mouse-looking", locked || forceActive);
-      const r = ensureReticle();
-      r.classList.toggle("on", locked || forceActive);
+      const on = locked || dragging;
+      document.body.classList.toggle("mouse-looking", on);
+      document.body.classList.toggle("mouse-look-locked", locked);
+      ensureReticle().classList.toggle("on", on);
     }
-    function clearSamples() { samples = []; harnessIntent = null; }
 
-    function requestLock() {
-      if (!allowed() || locked) return;
-      // Don't steal focus from an open instrument (photo, talk, tape, free-will…).
-      try {
-        if (state.touchMode) return;
-        if (typeof tapeIsOpen === "function" && tapeIsOpen()) return;
-        if (document.body.classList.contains("fw-open")) return;
-        if (el.customForm && !el.customForm.classList.contains("hidden")) return;
-      } catch (_) {}
-      const target = document.body;
-      const req = target.requestPointerLock || target.mozRequestPointerLock;
-      if (!req) return;
-      try { req.call(target); } catch (_) {}
+    function reset() {
+      samples = [];
+      lastClient = null;
+      lastMoveTs = 0;
+      heldDir = null;
+      heldSince = 0;
     }
-    function releaseLock() {
-      const exit = document.exitPointerLock || document.mozExitPointerLock;
-      if (exit) { try { exit.call(document); } catch (_) {} }
-      forceActive = false;
-      clearSamples();
-      paint();
-    }
-    function onLockChange() {
-      const elLocked = document.pointerLockElement || document.mozPointerLockElement;
-      locked = !!elLocked;
-      if (!locked) clearSamples();
-      paint();
-      if (locked) {
-        try { Movement.noteActivity(); } catch (_) {}
-      } else {
-        try { Movement.onMouseLookIdle(); } catch (_) {}
-      }
-    }
-    function onMouseMove(e) {
-      if (!locked && !forceActive) return;
-      if (!allowed()) return;
-      const dx = e.movementX || 0;
-      const dy = e.movementY || 0;
+
+    function feed(dx, dy) {
       if (!dx && !dy) return;
-      samples.push({ t: Date.now(), dx: dx, dy: dy });
+      lastMoveTs = Date.now();
+      samples.push({ t: lastMoveTs, dx: dx, dy: dy });
+      // Keep the drive loop warm so the look lands on the very next tick.
       try { Movement.noteActivity(); } catch (_) {}
     }
-    function onClickCapture(e) {
-      if (!allowed() || locked) return;
+
+    // The current look intent: dominant axis + a gentle intensity, or null when
+    // the mouse is idle. Happy Oyster holds ONE look direction, so never both.
+    function intent() {
+      if (!modeOn() || (!locked && !dragging)) return null;
+      const cfg = InputBindings.mouseConfig();
+      const now = Date.now();
+      if (lastMoveTs && now - lastMoveTs > (cfg.releaseMs || 200)) { samples = []; return null; }
+      const win = cfg.windowMs || 220;
+      while (samples.length && now - samples[0].t > win) samples.shift();
+      if (!samples.length) return null;
+      let sx = 0, sy = 0;
+      for (let i = 0; i < samples.length; i++) { sx += samples[i].dx; sy += samples[i].dy; }
+      if (cfg.invertY) sy = -sy;
+      const dead = cfg.deadzonePx || 9;
+      if (Math.hypot(sx, sy) < dead) return null;
+      const sat = Math.max(dead + 1, cfg.saturatePx || 260);
+      const strength = Math.min(cfg.maxIntensity || 0.5,
+        (Math.hypot(sx, sy) - dead) / (sat - dead));
+      const want = Math.abs(sx) >= Math.abs(sy)
+        ? { lookH: sx < 0 ? "left" : "right", lookV: "idle" }
+        : { lookH: "idle", lookV: sy < 0 ? "up" : "down" };
+      // Hysteresis: a latent world takes ~a chunk to even show the turn, so
+      // flipping direction faster than this just smears the picture. Stay on the
+      // committed heading until the mouse settles (release) or the new heading
+      // has persisted long enough to mean it.
+      const now2 = Date.now();
+      const same = heldDir && heldDir.lookH === want.lookH && heldDir.lookV === want.lookV;
+      if (!heldDir || (!same && now2 - heldSince >= (cfg.minFlipMs || 240))) {
+        heldDir = want;
+        heldSince = now2;
+      }
+      return { lookH: heldDir.lookH, lookV: heldDir.lookV, intensity: strength };
+    }
+    function isActive() { return !!intent(); }
+    function isEngaged() { return locked || dragging; }
+
+    // ---- pointer lock ----
+    function requestLock() {
+      if (locked || !allowed() || uiBusy()) return;
+      const req = document.body.requestPointerLock || document.body.mozRequestPointerLock;
+      if (!req) return;
+      try { req.call(document.body); } catch (_) {}
+    }
+    function releaseLock() {
+      dragging = false;
+      reset();
+      if (locked) {
+        const exit = document.exitPointerLock || document.mozExitPointerLock;
+        if (exit) { try { exit.call(document); } catch (_) {} }
+      }
+      paint();
+      try { Movement.onLookReleased(); } catch (_) {}
+    }
+    function onLockChange() {
+      locked = !!(document.pointerLockElement || document.mozPointerLockElement);
+      reset();
+      paint();
+      if (locked) {
+        RtLog.push("dim", "\u25CE mouse look \u00B7 captured");
+      } else {
+        try { Movement.onLookReleased(); } catch (_) {}
+      }
+    }
+
+    // ---- events ----
+    function onMouseDown(e) {
+      if (!allowed() || uiBusy()) return;
+      if (e.button !== 0 || isUi(e.target)) return;
+      if (locked) return;
+      // Drag-look starts immediately; the click that follows asks for the lock,
+      // so a plain click upgrades to full capture and a drag still steers if
+      // the browser refuses.
+      dragging = true;
+      lastClient = { x: e.clientX, y: e.clientY };
+      downAt = { x: e.clientX, y: e.clientY };
+      paint();
+    }
+    function onMouseUp() {
+      if (!dragging) return;
+      dragging = false;
+      reset();
+      paint();
+      try { Movement.onLookReleased(); } catch (_) {}
+    }
+    function onMouseMove(e) {
+      if (!modeOn()) return;
+      if (locked) { feed(e.movementX || 0, e.movementY || 0); return; }
+      if (!dragging) { lastClient = null; return; }
+      if (!allowed()) return;
+      if (lastClient) feed(e.clientX - lastClient.x, e.clientY - lastClient.y);
+      lastClient = { x: e.clientX, y: e.clientY };
+    }
+    function onClick(e) {
+      if (locked || !allowed() || uiBusy()) return;
       if (e.button != null && e.button !== 0) return;
-      if (isUiTarget(e.target)) return;
+      if (isUi(e.target)) return;
+      // A drag already steered the camera — don't also grab the pointer, or
+      // letting go of a look-drag would silently capture the cursor.
+      if (downAt && Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) > 6) {
+        downAt = null;
+        return;
+      }
+      downAt = null;
       requestLock();
       if (!hinted) {
         hinted = true;
-        showRendererToast("Mouse look on — move gently (latent lag) · Esc releases", 2800);
+        showRendererToast("Mouse look \u2014 move gently, the world lags \u00B7 Esc frees the cursor", 3000);
       }
     }
-    function onBlur() { if (locked) releaseLock(); }
+    function onBlur() { if (locked || dragging) releaseLock(); }
 
-    // Dominant-axis look intent from recent deltas. Returns null when idle.
-    // Happy Oyster can hold only ONE look direction, so we never emit both axes.
-    function intentFromDelta(sx, sy, cfg) {
-      if (cfg.invertY) sy = -sy;
-      const mag = Math.hypot(sx, sy);
-      const dead = cfg.deadzonePx || 6;
-      if (mag < dead) return null;
-      const sat = Math.max(dead + 1, cfg.saturatePx || 220);
-      const intensity = Math.min(cfg.maxIntensity || 0.42, (mag - dead) / (sat - dead));
-      // Dominant axis only — avoids Happy Oyster H/V thrash under diagonal moves.
-      if (Math.abs(sx) >= Math.abs(sy)) {
-        return { lookH: sx < 0 ? "left" : "right", lookV: "idle", intensity: intensity };
-      }
-      return { lookH: "idle", lookV: sy < 0 ? "up" : "down", intensity: intensity };
-    }
-
-    function intent() {
-      if ((!locked && !forceActive) || !InputBindings.mouseLookEnabled()) return null;
-      if (harnessIntent) return harnessIntent;
-      const cfg = InputBindings.mouseConfig();
-      const now = Date.now();
-      const win = cfg.windowMs || 110;
-      while (samples.length && now - samples[0].t > win) samples.shift();
-      let sx = 0, sy = 0;
-      for (let i = 0; i < samples.length; i++) { sx += samples[i].dx; sy += samples[i].dy; }
-      return intentFromDelta(sx, sy, cfg);
-    }
-    function isActive() {
-      if (!InputBindings.mouseLookEnabled()) return false;
-      if (!locked && !forceActive) return false;
-      return !!intent();
-    }
-    function isLocked() { return locked || forceActive; }
-
-    function onProfileChanged() {
-      if (!InputBindings.mouseLookEnabled() && (locked || forceActive)) releaseLock();
-      paint();
-    }
-
-    // Harness: simulate pointer-lock + a sticky look intent without a real gesture.
-    function __simulate(dx, dy) {
-      forceActive = true;
-      const cfg = InputBindings.mouseConfig();
-      harnessIntent = intentFromDelta(dx || 0, dy || 0, cfg);
-      // Also keep a live sample so production path stays warm under the harness.
-      samples.push({ t: Date.now(), dx: dx || 0, dy: dy || 0 });
-      paint();
-      try { Movement.noteActivity(); } catch (_) {}
-    }
-    function __clear() {
-      forceActive = false;
-      clearSamples();
-      paint();
-      try { Movement.onMouseLookIdle(); } catch (_) {}
+    function onModeChanged() {
+      if (!modeOn()) releaseLock();
+      else paint();
     }
 
     function init() {
       ensureReticle();
       document.addEventListener("pointerlockchange", onLockChange);
       document.addEventListener("mozpointerlockchange", onLockChange);
+      document.addEventListener("mousedown", onMouseDown, true);
+      document.addEventListener("mouseup", onMouseUp, true);
       document.addEventListener("mousemove", onMouseMove);
-      // Capture phase so we see the click before UI stopPropagation, but we
-      // still refuse UI targets so buttons stay clickable.
-      document.addEventListener("click", onClickCapture, true);
+      document.addEventListener("click", onClick, true);
       window.addEventListener("blur", onBlur);
       paint();
     }
 
     return {
-      init, intent, isActive, isLocked, requestLock, releaseLock,
-      onProfileChanged, allowed,
-      __simulate, __clear,
+      init, intent, isActive, isEngaged, requestLock, releaseLock,
+      onModeChanged, allowed,
+      // Debug/e2e: push a synthetic delta as if the mouse moved while captured.
+      __feed: (dx, dy) => { dragging = true; paint(); feed(dx, dy); },
     };
   })();
   try { window.__MouseLook = MouseLook; } catch (_) {}
 
   // ------------------------------------------------------------------
-  // InputProfileUi — tiny FPS / CLASSIC toggle in the WORLD MODEL panel so
-  // schemes can be swapped without a redeploy. Mirrors HappyOysterOptions.
+  // InputProfileUi — the CONTROLS switch (DOOM / FPS). Mounted in the WORLD
+  // EDITOR (the authoring surface) and mirrored in the WORLD MODEL panel, both
+  // driven from one place so a new mode shows up in both automatically.
   // ------------------------------------------------------------------
   const InputProfileUi = (function () {
-    function host() { return document.getElementById("rt-input-profile"); }
-    function wrap() { return document.getElementById("rt-input-opts"); }
+    const MOUNTS = [
+      { seg: "we-input-profile", wrap: "we-input-opts", hint: "we-input-hint", always: true },
+      { seg: "rt-input-profile", wrap: "rt-input-opts", hint: null, always: false },
+    ];
 
     function apply(id) {
       if (!InputBindings.setProfile(id)) return;
       const p = InputBindings.profile();
-      showRendererToast("Controls: " + (p.label || id).toLowerCase() + " — " + (p.hint || ""), 2600);
-      try { Movement.retick(); } catch (_) {}
+      showRendererToast("Controls: " + (p.label || id) + " \u2014 " + (p.hint || ""), 2800);
+      try { RtLog.push("ok", "controls", (p.label || id) + " \u00B7 " + (p.hint || "")); } catch (_) {}
     }
 
-    function build() {
-      const h = host();
-      if (!h || h.childElementCount) return;
-      InputBindings.list().forEach(({ id, label, hint }) => {
+    function build(m) {
+      const host = document.getElementById(m.seg);
+      if (!host || host.childElementCount) return;
+      InputBindings.list().forEach((opt) => {
         const b = document.createElement("button");
         b.type = "button";
         b.className = "rt-ho-btn";
-        b.dataset.value = id;
-        b.textContent = label;
-        b.title = hint || label;
-        b.addEventListener("click", () => apply(id));
-        h.appendChild(b);
+        b.dataset.value = opt.id;
+        b.textContent = opt.label;
+        b.title = opt.hint || opt.label;
+        b.addEventListener("click", () => apply(opt.id));
+        host.appendChild(b);
       });
     }
 
     function paint() {
-      const h = host();
-      if (!h) return;
       const cur = InputBindings.current();
-      Array.from(h.children).forEach((b) => b.classList.toggle("on", b.dataset.value === cur));
+      MOUNTS.forEach((m) => {
+        const host = document.getElementById(m.seg);
+        if (host) {
+          build(m);
+          Array.from(host.children).forEach((b) =>
+            b.classList.toggle("on", b.dataset.value === cur));
+        }
+        if (m.hint) {
+          const h = document.getElementById(m.hint);
+          if (h) h.textContent = InputBindings.hint();
+        }
+      });
     }
 
+    // The WORLD MODEL mirror only makes sense while a navigable model is live;
+    // the editor mount is always available (that's where you set up a rig).
     function update() {
-      const w = wrap();
-      const on = !!(Renderer && Renderer.mode === "reactor" && Renderer.reactorAvailable && Renderer.reactorAvailable());
-      if (w) w.classList.toggle("hidden", !on);
-      if (on) { build(); paint(); }
+      let live = false;
+      try {
+        live = Renderer.mode === "reactor" && Renderer.reactorAvailable();
+      } catch (_) {}
+      MOUNTS.forEach((m) => {
+        const w = document.getElementById(m.wrap);
+        if (w && !m.always) w.classList.toggle("hidden", !live);
+      });
+      paint();
     }
 
     function init() { update(); }
-    return { init, update };
+    return { init, update, paint };
   })();
   try { window.__InputProfileUi = InputProfileUi; } catch (_) {}
 
@@ -5605,8 +5680,14 @@
       const st = compose();
       updateVisual(st);
       const label = actionLabel(st);
+      // OCR hotspots follow REAL motion, not merely an engaged instrument —
+      // holding the mouse captured without moving must not keep SCAN disabled.
+      const moving = st.longitudinal !== "idle" || st.lateral !== "idle" ||
+                     st.lookH !== "idle" || st.lookV !== "idle";
+      if (moving) { try { onMovementStart(); } catch (_) {} }
+      else { try { onMovementStop(); } catch (_) {} }
       if (nativeMotion()) driveNative(st);
-      else driveFallback(st, label);
+      else if (moving) driveFallback(st, label);
     }
 
     function startLoop() { if (!loopTimer) loopTimer = setInterval(tick, TICK_MS); }
@@ -5619,10 +5700,8 @@
       warnedNotReady = false;
       if (el.movePad) el.movePad.classList.add("engaged");
       try { Sound.press(); } catch (_) {}
-      // Hide the OCR hotspots/choices — they're inaccurate while the view moves.
-      try { onMovementStart(); } catch (_) {}
       startLoop();
-      tick(); // respond immediately
+      tick(); // respond immediately (also hides the OCR overlay if we're moving)
     }
 
     function stopAll() {
@@ -5686,8 +5765,13 @@
       updateFromPointer(e.clientX, e.clientY);
       e.preventDefault();
     }
+    // Something is still holding the instrument: a key, the stick, or the mouse
+    // (captured / dragging). Mouse capture keeps the loop warm without implying
+    // motion — tick() decides whether the camera is actually moving.
     function anyDriver() {
-      return keys.size > 0 || pointerActive || MouseLook.isLocked();
+      let mouse = false;
+      try { mouse = MouseLook.isEngaged(); } catch (_) {}
+      return keys.size > 0 || pointerActive || mouse;
     }
 
     function onPointerUp(e) {
@@ -5717,6 +5801,7 @@
     }
     function releaseAll() {
       try { MouseLook.releaseLock(); } catch (_) {}
+      keys.clear();
       if (engaged) disengage();
     }
 
@@ -5727,7 +5812,8 @@
       engage();
       tick();
     }
-    function onMouseLookIdle() {
+    // Pointer capture / drag ended: stop the camera unless a key still holds it.
+    function onLookReleased() {
       if (!engaged) return;
       if (!anyDriver()) disengage();
       else tick();
@@ -5737,10 +5823,8 @@
     function refreshHints() {
       if (!el.moveNub) return;
       const hint = InputBindings.hint();
-      el.moveNub.setAttribute("aria-label",
-        "Drive joystick — " + hint + (InputBindings.mouseLookEnabled()
-          ? ". Click the world for mouse look." : ""));
-      el.moveNub.title = "Explore — " + hint;
+      el.moveNub.setAttribute("aria-label", "Drive joystick \u2014 " + hint + ", or drag the stick");
+      el.moveNub.title = "Explore \u2014 " + hint;
     }
 
     function init() {
@@ -5761,13 +5845,11 @@
       measure();
       refreshHints();
       updateVisual({ longitudinal: "idle", lateral: "idle", lookH: "idle", lookV: "idle" });
-      try { MouseLook.init(); } catch (_) {}
-      try { InputProfileUi.init(); } catch (_) {}
     }
 
     return {
       init, enabled, keyFor, pressKey, releaseKey, releaseAll,
-      noteActivity, onMouseLookIdle, retick, refreshHints,
+      noteActivity, onLookReleased, retick, refreshHints,
     };
   })();
   // Expose for debugging + e2e.
@@ -13365,6 +13447,11 @@
     if (el.agentDebugBtn) el.agentDebugBtn.addEventListener("click", () => AgentLog.toggle());
     AgentLog.init();
     Movement.init();
+    // Independent of the joystick element: mouse look and the CONTROLS switch
+    // must come up even on layouts without a #move-pad.
+    MouseLook.init();
+    InputProfileUi.init();
+    Movement.refreshHints();
     VerbBar.init();
     HappyOysterOptions.init();
     document.addEventListener("keydown", onKeydown);

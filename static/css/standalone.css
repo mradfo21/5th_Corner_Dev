@@ -6656,6 +6656,30 @@ body.we-resizing #scene-frame, body.we-resizing iframe { pointer-events: none; }
 #world-editor .we-fontstep .we-tool:last-child { border-radius: 0 6px 6px 0; margin-left: -1px; }
 
 /* Tabs — one scrollable row rather than wrapping into stacked rows. */
+/* CONTROLS row — the movement scheme switch (DOOM / FPS), pinned above the tabs
+   so it's reachable from any tab. Reuses the .rt-ho-btn segmented styling. */
+#world-editor .we-input-opts {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex: 0 0 auto;
+  margin: 0 12px;
+  padding: 9px 0 10px;
+  border-bottom: 1px solid rgba(232, 224, 200, 0.1);
+}
+#world-editor .we-input-label {
+  font-size: calc(10.5px * var(--we-fs));
+  letter-spacing: 0.16em;
+  color: rgba(232, 224, 200, 0.5);
+}
+#world-editor .we-input-hint {
+  flex: 1 1 100%;
+  font-size: calc(10.5px * var(--we-fs));
+  line-height: 1.5;
+  color: rgba(232, 224, 200, 0.42);
+}
+
 #world-editor .we-tabs {
   display: flex;
   gap: 4px;

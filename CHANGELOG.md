@@ -1,5 +1,31 @@
 # 🔧 CHANGELOG - August 5, 2026
 
+## 🎮 Two control modes: DOOM and FPS
+
+**Files:** `static/js/standalone.js`, `static/css/standalone.css`,
+`templates/standalone.html`, `test_movement_mode_e2e.py`
+
+Explore now ships two movement schemes, switched from a **CONTROLS** row at the
+top of the WORLD EDITOR (persisted per browser):
+
+- **DOOM** (default) — `W` forward, `S` back, `A`/`D` turn the view, `Q`/`E`
+  strafe. Keyboard only, no pointer capture.
+- **FPS** — `W` forward, `S` back, `A`/`D` strafe, and the **mouse steers the
+  camera**. Click the world to take real pointer lock (Esc frees it), or just
+  hold the left button and sweep — drag-look always works, including when a
+  browser refuses capture.
+
+Mouse look sums recent deltas, holds the dominant look axis while the mouse
+keeps moving, and releases when it settles. It commits to a heading for a beat
+before allowing a flip, because a latent world needs a chunk or two just to
+show the turn — fast reversals only smear the picture. Turn rate is capped well
+below the keyboard band.
+
+Two real bugs went with it: mouse look could never engage (capture was gated on
+a class the free-will form never carries), and merely holding the look pointer
+pinned the game in its "moving" state, which permanently hid the OCR hotspots
+and disabled SCAN. Motion state now follows actual camera motion.
+
 ## ✂️ Half the knobs, same fidelity
 
 **Files:** `prompts_store.py`, `game_identity.py`, `prompts/simulation_prompts*.json`,

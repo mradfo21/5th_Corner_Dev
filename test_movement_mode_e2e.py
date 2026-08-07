@@ -8,8 +8,11 @@ against a MOCK Reactor SDK — and proves the movement instrument end to end:
 
   * The joystick is the CENTER of the action cluster in realtime video mode,
     with the ACT hub pushed to the LEFT and the PHOTO hub to the RIGHT.
-  * Default INPUT profile is FPS: WASD moves (A/D strafe), mouse looks
-    (pointer-lock / harness simulate), arrows look. CLASSIC keeps A/D as turn.
+  * Two CONTROL MODES, switched from the WORLD EDITOR (persisted per browser):
+      - DOOM (default): W/S move, A/D turn, Q/E strafe, no mouse look.
+      - FPS: W/S move, A/D strafe, and the MOUSE steers the camera.
+  * Mouse look is exercised with REAL mouse events (drag-look) and a real
+    click-to-capture pointer lock — not a test-only shim.
   * Holding W (keyboard) drives the LIVE world with Happy Oyster's held move
     command (move {direction:"Front"}) — a native navigation command, no world
     rebuild — and releasing it stops (releases held controls).
@@ -111,17 +114,17 @@ class TestMovementMode(unittest.TestCase):
             except subprocess.TimeoutExpired:
                 cls.server_proc.kill()
 
-    def _new_realtime_page(self):
+    def _new_realtime_page(self, mode="doom"):
         page = self.browser.new_page(viewport={"width": 1100, "height": 800})
         self._logs = []
         page.on("console", lambda m: self._logs.append(f"{m.type}: {m.text}"))
         page.on("pageerror", lambda e: self._logs.append(f"PAGEERROR: {e}"))
         # Skip the first-run "tap to scan" tutorial modal so it can't intercept
-        # the pointer/keyboard interactions these movement tests drive. Force the
-        # FPS input profile (default) so key→action mapping is deterministic.
+        # the pointer/keyboard interactions these movement tests drive. Pin the
+        # control mode so key→action mapping is deterministic per test.
         page.add_init_script(
             "try { localStorage.setItem('scan_tutorial_seen_v1', '1'); "
-            "localStorage.setItem('input_profile', 'fps'); } catch (e) {}"
+            f"localStorage.setItem('input_profile', '{mode}'); }} catch (e) {{}}"
         )
         page.route(
             "https://esm.sh/**",
@@ -177,115 +180,229 @@ class TestMovementMode(unittest.TestCase):
             arg=[name, param, value], timeout=timeout,
         )
 
-    def test_wasd_keys_drive_forward_back_and_look(self):
-        """FPS profile Happy Oyster surface: W/S move Front/Back, A/D strafe
-        Left/Right (same as Q/E), ←/→ look Mouse_Left/Right, ↑/↓ look
-        Mouse_Up/Down. Each fires the native held command and releases (stop) on
-        key-up; nothing is faked with set_prompt."""
+    # A real look-drag over the world: press on the scene and sweep the mouse.
+    # This is exactly what a player does — no test-only injection hooks.
+    def _look_drag(self, page, dx=0, dy=0, steps=10, start=(550, 360)):
+        page.mouse.move(*start)
+        page.mouse.down()
+        for i in range(steps):
+            page.mouse.move(start[0] + dx * (i + 1) / steps,
+                            start[1] + dy * (i + 1) / steps)
+            page.wait_for_timeout(35)
+
+    def test_doom_mode_is_the_default_and_ad_turn_the_view(self):
+        """DOOM (default): W/S move Front/Back, A/D TURN the view, Q/E strafe,
+        arrows look. Each fires the native held command and releases on key-up."""
         page = self._new_realtime_page()
         try:
-            # This exercises Happy Oyster's held move/look verbs specifically, so
-            # force that model rather than relying on the (now LingBot) default.
             self._boot_live(page, model="happy-oyster")
-            self.assertEqual(page.evaluate("() => window.__InputBindings.current()"), "fps")
-            # key -> (command, param, held direction)
+            self.assertEqual(page.evaluate("() => window.__InputBindings.current()"), "doom")
             cases = [
                 ("w", "move", "direction", "Front"),
                 ("s", "move", "direction", "Back"),
-                ("a", "move", "direction", "Left"),
-                ("d", "move", "direction", "Right"),
+                ("a", "look", "direction", "Mouse_Left"),
+                ("d", "look", "direction", "Mouse_Right"),
                 ("q", "move", "direction", "Left"),
                 ("e", "move", "direction", "Right"),
-                ("ArrowUp", "look", "direction", "Mouse_Up"),
-                ("ArrowDown", "look", "direction", "Mouse_Down"),
                 ("ArrowLeft", "look", "direction", "Mouse_Left"),
                 ("ArrowRight", "look", "direction", "Mouse_Right"),
+                ("ArrowUp", "look", "direction", "Mouse_Up"),
+                ("ArrowDown", "look", "direction", "Mouse_Down"),
             ]
             for key, cmd, param, value in cases:
                 self._reset_cmd_log(page)
                 page.keyboard.down(key)
                 self._wait_cmd(page, cmd, param, value)
                 page.keyboard.up(key)
-                # Held control MUST be released on key-up (a single `stop`), or
-                # the camera keeps going.
                 self._wait_cmd(page, "stop")
-            # Movement uses native move/look verbs, never a set_prompt fake.
             log = page.evaluate("() => window.__MOCK_CMD_LOG__ || []")
             self.assertTrue(all(c["name"] != "set_prompt" for c in log),
                             f"drive should not use set_prompt. log:\n{log}")
         except Exception:
-            print("\n=== CONSOLE LOG (drive-keys) ===\n" + self._dump_logs())
+            print("\n=== CONSOLE LOG (doom-keys) ===\n" + self._dump_logs())
             raise
         finally:
             page.close()
 
-    def test_classic_profile_maps_ad_to_look(self):
-        """CLASSIC input profile restores A/D as look (pre-FPS scheme) so setups
-        can be swapped without a redeploy."""
+    def test_doom_mode_has_no_mouse_look(self):
+        """DOOM is keyboard-only: sweeping the mouse over the world must not
+        steer the camera (and must not grab the cursor)."""
         page = self._new_realtime_page()
         try:
             self._boot_live(page, model="happy-oyster")
-            page.evaluate("() => window.__InputBindings.setProfile('classic')")
-            self.assertEqual(page.evaluate("() => window.__InputBindings.current()"), "classic")
             self._reset_cmd_log(page)
-            page.keyboard.down("a")
+            self._look_drag(page, dx=-240)
+            page.mouse.up()
+            page.wait_for_timeout(400)
+            steer = page.evaluate(
+                """() => (window.__MOCK_CMD_LOG__||[]).filter(c =>
+                       ['move','look'].includes(c.name))"""
+            )
+            self.assertEqual(steer, [], f"DOOM must ignore the mouse, got: {steer}")
+            self.assertFalse(page.evaluate("() => document.body.classList.contains('mouse-looking')"))
+        except Exception:
+            print("\n=== CONSOLE LOG (doom-no-mouse) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
+    def test_fps_mode_ad_strafe_and_mouse_looks(self):
+        """FPS: A/D become STRAFE, and a real mouse sweep steers the camera —
+        left sweep looks left, right sweep looks right, and letting go stops."""
+        page = self._new_realtime_page(mode="fps")
+        try:
+            self._boot_live(page, model="happy-oyster")
+            self.assertEqual(page.evaluate("() => window.__InputBindings.current()"), "fps")
+            for key, value in (("a", "Left"), ("d", "Right")):
+                self._reset_cmd_log(page)
+                page.keyboard.down(key)
+                self._wait_cmd(page, "move", "direction", value)
+                page.keyboard.up(key)
+                self._wait_cmd(page, "stop")
+
+            self._reset_cmd_log(page)
+            self._look_drag(page, dx=-240)
             self._wait_cmd(page, "look", "direction", "Mouse_Left")
-            page.keyboard.up("a")
+            page.mouse.up()
             self._wait_cmd(page, "stop")
+
             self._reset_cmd_log(page)
-            page.keyboard.down("d")
+            self._look_drag(page, dx=240, start=(400, 360))
             self._wait_cmd(page, "look", "direction", "Mouse_Right")
-            page.keyboard.up("d")
+            page.mouse.up()
             self._wait_cmd(page, "stop")
         except Exception:
-            print("\n=== CONSOLE LOG (classic-profile) ===\n" + self._dump_logs())
+            print("\n=== CONSOLE LOG (fps-mouse) ===\n" + self._dump_logs())
             raise
         finally:
             page.close()
 
-    def test_mouse_look_drives_camera_on_happy_oyster_and_lingbot(self):
-        """FPS mouse-look: simulated pointer deltas steer look on Happy Oyster
-        (held Mouse_Left) and LingBot (set_look_horizontal), with a gentle
-        rotation speed band. Releases when the harness clears the intent."""
-        # Happy Oyster
-        page = self._new_realtime_page()
+    def test_fps_mouse_look_composes_with_movement_and_tilts(self):
+        """Holding W while sweeping the mouse down must do BOTH: keep moving
+        forward and tilt the view — mouse look never cancels locomotion."""
+        page = self._new_realtime_page(mode="fps")
         try:
             self._boot_live(page, model="happy-oyster")
-            self.assertTrue(page.evaluate("() => window.__MouseLook.allowed()"))
             self._reset_cmd_log(page)
-            page.evaluate("() => window.__MouseLook.__simulate(-40, 0)")
-            self._wait_cmd(page, "look", "direction", "Mouse_Left")
-            page.evaluate("() => window.__MouseLook.__clear()")
+            page.keyboard.down("w")
+            self._wait_cmd(page, "move", "direction", "Front")
+            self._look_drag(page, dy=240)
+            self._wait_cmd(page, "look", "direction", "Mouse_Down")
+            page.mouse.up()
+            page.keyboard.up("w")
             self._wait_cmd(page, "stop")
         except Exception:
-            print("\n=== CONSOLE LOG (mouse-look-ho) ===\n" + self._dump_logs())
+            print("\n=== CONSOLE LOG (fps-compose) ===\n" + self._dump_logs())
             raise
         finally:
             page.close()
 
-        # LingBot — same mouse input, axis commands + subtle rot speed
-        page = self._new_realtime_page()
+    def test_fps_mouse_look_drives_lingbot_axes_gently(self):
+        """The same mouse input drives the legacy LingBot axes, with a turn rate
+        well under the keyboard band (latent video punishes fast turns), and the
+        axis returns to idle on release so the camera actually halts."""
+        page = self._new_realtime_page(mode="fps")
         try:
             self._boot_live(page, model="lingbot-world-2")
             self._reset_cmd_log(page)
-            page.evaluate("() => window.__MouseLook.__simulate(48, 0)")
+            self._look_drag(page, dx=240, start=(400, 360))
             self._wait_cmd(page, "set_look_horizontal", "look_horizontal", "right")
-            page.wait_for_function(
-                """() => (window.__MOCK_CMD_LOG__||[]).some(
-                       c => c.name==='set_rotation_speed_deg' &&
-                            c.data.rotation_speed_deg <= 3.0)""",
-                timeout=4000,
-            )
             speeds = page.evaluate(
                 """() => (window.__MOCK_CMD_LOG__||[])
                        .filter(c => c.name==='set_rotation_speed_deg')
                        .map(c => c.data.rotation_speed_deg)"""
             )
-            self.assertTrue(speeds, f"mouse look should set rotation speed: {speeds}")
+            self.assertTrue(speeds, f"mouse look should set a rotation speed: {speeds}")
             self.assertLessEqual(max(speeds), 3.0, f"mouse look must stay subtle: {speeds}")
-            page.evaluate("() => window.__MouseLook.__clear()")
+            page.mouse.up()
+            self._wait_cmd(page, "set_look_horizontal", "look_horizontal", "idle")
         except Exception:
-            print("\n=== CONSOLE LOG (mouse-look-lingbot) ===\n" + self._dump_logs())
+            print("\n=== CONSOLE LOG (fps-lingbot) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
+    def test_clicking_the_world_captures_the_pointer_in_fps(self):
+        """A plain click on the world takes real pointer lock (true FPS feel),
+        while a look-DRAG must not — releasing a drag should never silently
+        swallow the cursor."""
+        page = self._new_realtime_page(mode="fps")
+        try:
+            self._boot_live(page, model="happy-oyster")
+            # Drag, then release: no capture.
+            self._look_drag(page, dx=-200)
+            page.mouse.up()
+            page.wait_for_timeout(500)
+            self.assertFalse(page.evaluate("() => !!document.pointerLockElement"),
+                             "a look-drag must not capture the pointer")
+            # Plain click: capture.
+            page.mouse.move(550, 300)
+            page.mouse.down()
+            page.mouse.up()
+            page.wait_for_function("() => !!document.pointerLockElement", timeout=4000)
+            # pointerlockchange dispatches after the property flips, so wait for
+            # the class rather than reading it in the same tick.
+            page.wait_for_function(
+                "() => document.body.classList.contains('mouse-look-locked')", timeout=4000)
+        except Exception:
+            print("\n=== CONSOLE LOG (fps-lock) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
+    def test_mouse_look_release_restores_scanning(self):
+        """Regression: holding the look pointer must not leave the game stuck in
+        the "moving" state — that permanently hid the OCR hotspots and disabled
+        SCAN. Motion state has to follow ACTUAL camera motion."""
+        page = self._new_realtime_page(mode="fps")
+        page.add_init_script("window.__MOVE_SETTLE_MS__ = 250;")
+        try:
+            self._boot_live(page, model="happy-oyster")
+            self._look_drag(page, dx=-240)
+            page.wait_for_function("() => document.body.classList.contains('moving')", timeout=4000)
+            page.mouse.up()
+            page.wait_for_function("() => !document.body.classList.contains('moving')", timeout=5000)
+        except Exception:
+            print("\n=== CONSOLE LOG (scan-restore) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
+    def test_world_editor_switches_control_mode(self):
+        """The CONTROLS switch lives in the WORLD EDITOR: it lists both modes,
+        marks the active one, actually re-binds the keys, and persists."""
+        page = self._new_realtime_page()
+        try:
+            self._boot_live(page, model="happy-oyster")
+            # ` opens the editor (the EDIT rail button is behind the collapsed menu).
+            page.keyboard.press("`")
+            page.wait_for_selector("#we-input-profile button", timeout=8000)
+            labels = page.evaluate(
+                """() => Array.from(document.querySelectorAll('#we-input-profile button'))
+                       .map(b => b.textContent.trim())"""
+            )
+            self.assertEqual(labels, ["DOOM", "FPS"])
+            self.assertEqual(
+                page.evaluate(
+                    """() => (document.querySelector('#we-input-profile button.on')||{}).textContent"""
+                ), "DOOM")
+            page.click("#we-input-profile button[data-value='fps']")
+            page.wait_for_function("() => window.__InputBindings.current() === 'fps'", timeout=4000)
+            self.assertEqual(page.evaluate("() => localStorage.getItem('input_profile')"), "fps")
+            self.assertEqual(
+                page.evaluate(
+                    """() => (document.querySelector('#we-input-profile button.on')||{}).textContent"""
+                ), "FPS")
+            # Close the editor and confirm the NEW binding is live: A strafes.
+            page.click("#we-close")
+            page.wait_for_timeout(500)
+            self._reset_cmd_log(page)
+            page.keyboard.down("a")
+            self._wait_cmd(page, "move", "direction", "Left")
+            page.keyboard.up("a")
+            self._wait_cmd(page, "stop")
+        except Exception:
+            print("\n=== CONSOLE LOG (editor-switch) ===\n" + self._dump_logs())
             raise
         finally:
             page.close()
@@ -294,16 +411,15 @@ class TestMovementMode(unittest.TestCase):
         """Legacy LingBot navigation: holding a look key must set a GENTLE,
         CONSTANT rotation speed (no hold-time acceleration — that was
         disorienting/hard to aim), well under the model default of 5. (Happy
-        Oyster has no turn-rate knob, so this is exercised on lingbot-world-2.)
-        FPS profile: arrows look (A is strafe)."""
+        Oyster has no turn-rate knob, so this is exercised on lingbot-world-2.)"""
         page = self._new_realtime_page()
         try:
             self._boot_live(page, model="lingbot-world-2")
             self._reset_cmd_log(page)
-            page.keyboard.down("ArrowLeft")
+            page.keyboard.down("a")
             self._wait_cmd(page, "set_rotation_speed_deg")
             page.wait_for_timeout(1500)  # hold a while — speed must NOT creep up
-            page.keyboard.up("ArrowLeft")
+            page.keyboard.up("a")
             speeds = page.evaluate(
                 """() => (window.__MOCK_CMD_LOG__||[])
                        .filter(c => c.name==='set_rotation_speed_deg')
