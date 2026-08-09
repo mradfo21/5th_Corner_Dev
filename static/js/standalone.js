@@ -152,15 +152,15 @@
     touchDof: document.getElementById("touch-dof"),
     evidenceCard: document.getElementById("evidence-card"),
     captureCinema: document.getElementById("capture-cinema"),
-    evidenceHud: document.getElementById("evidence-hud"),
+    shotTally: document.getElementById("shot-tally"),
+    tallyCount: document.getElementById("tally-count"),
     objectivesHud: document.getElementById("objectives-hud"),
     objHead: document.getElementById("obj-head"),
     objCount: document.getElementById("obj-count"),
     objList: document.getElementById("obj-list"),
     objCollapse: document.getElementById("obj-collapse"),
-    objBanner: document.getElementById("obj-banner"),
     btnObjectives: document.getElementById("btn-objectives"),
-    photoReceipt: document.getElementById("photo-receipt"),
+    photoFiled: document.getElementById("photo-filed"),
     caseOverlay: document.getElementById("case-overlay"),
     caseRankLetter: document.getElementById("case-rank-letter"),
     caseSubjects: document.getElementById("case-subjects"),
@@ -1220,8 +1220,8 @@
     state._introGoalShown = true;
     const target = (window.Evidence && Evidence.target && Evidence.target()) || 8;
     try {
-      showRendererToast("Raise your camera and DOCUMENT the evidence \u2014 photograph " +
-        target + " distinct subjects to close the case.", 6000);
+      showRendererToast("Raise your camera. " + target +
+        " good photographs closes the case.", 5000);
     } catch (_) {}
   }
 
@@ -5399,7 +5399,7 @@
       "[role='button'], [role='dialog'], [contenteditable='true'], " +
       "#move-pad, #verb-bar, #control-rail, #menu-toggle, #rt-log, #story-log, " +
       "#img-model, #agent-log, #world-editor, #we-modal, #talk-overlay, " +
-      "#touch-layer, #scan-layer, #action-wheel, #objectives-hud, #evidence-hud, " +
+      "#touch-layer, #scan-layer, #action-wheel, #objectives-hud, #shot-tally, " +
       "#investigations-tray, #case-overlay, #ceremony, #processing-veil, " +
       "#scan-tutorial, #narrator-bar, #guide-thumb, #capture-thumb, " +
       "#moment-overlay, .renderer-toast, #tape-overlay";
@@ -7633,25 +7633,12 @@
       try { localStorage.setItem(KEY, JSON.stringify({ total, shots, film, seen: [...seen], spent: [...spent] })); } catch (_) {}
     }
 
-    // Paint the FILM counter (exposures remaining) + flag low / empty.
-    function renderFilm() {
-      if (!el.evidenceHud) return;
-      const v = el.evidenceHud.querySelector(".ev-film-val");
-      const cap = el.evidenceHud.querySelector(".ev-film-cap");
-      const wrap = el.evidenceHud.querySelector(".ev-film");
-      if (v) v.textContent = String(Math.max(0, film));
-      if (cap) cap.textContent = "/" + FILM_START;
-      if (wrap) {
-        wrap.classList.toggle("low", film <= 8 && film > 0);
-        wrap.classList.toggle("out", film <= 0);
-      }
-    }
-
     function fmt(n) { return Math.round(n).toLocaleString("en-US"); }
 
-    // Photographer's grade from the evidence banked (shown live + on the win
-    // screen). Thresholds scale with the (larger) census so an S still means a
-    // genuinely thorough, well-shot case rather than an automatic clear.
+    // Photographer's grade from the evidence banked. Still tracked every shot —
+    // it's what grades the run on the case-closed screen — but no longer painted
+    // live: a rank you can't act on mid-run is decoration, and it was sitting in
+    // the corner of every frame competing with the world.
     function rankFor(t) {
       if (t >= 4800) return "S";
       if (t >= 3400) return "A";
@@ -7660,55 +7647,16 @@
       return "D";
     }
 
-    // Paint the RANK badge + the CASE FILE census bar.
-    function renderCase() {
-      if (!el.evidenceHud) return;
-      const rankEl = el.evidenceHud.querySelector(".ev-rank");
-      if (rankEl) {
-        const r = rankFor(total);
-        rankEl.textContent = "RANK " + r;
-        rankEl.className = "ev-rank rank-" + r;
-      }
-      const count = Math.min(seen.size, CASE_TARGET);
-      const fill = el.evidenceHud.querySelector(".ev-bar-fill");
-      if (fill) fill.style.width = Math.round((count / CASE_TARGET) * 100) + "%";
-      const countEl = el.evidenceHud.querySelector(".ev-case-count");
-      if (countEl) countEl.textContent = seen.size + "/" + CASE_TARGET;
-      el.evidenceHud.classList.toggle("case-complete", seen.size >= CASE_TARGET);
-    }
-
-    // Roll the HUD number from its current display value up to `total`, ticking
-    // as it climbs — so points visibly accrue rather than snapping.
-    function renderHud(animate) {
-      if (!el.evidenceHud) return;
-      el.evidenceHud.classList.remove("hidden");
-      renderCase();
-      const totalEl = el.evidenceHud.querySelector(".ev-total");
-      if (!totalEl) return;
-      const from = Number(totalEl.getAttribute("data-val")) || 0;
-      const to = total;
-      totalEl.setAttribute("data-val", String(to));
-      if (!animate || from === to || prefersReducedMotion()) {
-        totalEl.textContent = fmt(to);
-        return;
-      }
-      el.evidenceHud.classList.remove("bump");
-      void el.evidenceHud.offsetWidth;
-      el.evidenceHud.classList.add("bump");
-      const t0 = performance.now();
-      // Snappy roll — a quick, satisfying spin-up rather than a long casino tick.
-      const dur = Math.min(360, 120 + Math.abs(to - from) * 0.5);
-      let lastTick = 0;
-      function step(now) {
-        const p = Math.min(1, (now - t0) / dur);
-        const eased = 1 - Math.pow(1 - p, 3);
-        const v = from + (to - from) * eased;
-        totalEl.textContent = fmt(v);
-        if (now - lastTick > 70) { try { Sound.scoreTick(); } catch (_) {} lastTick = now; }
-        if (p < 1) requestAnimationFrame(step);
-        else totalEl.textContent = fmt(to);
-      }
-      requestAnimationFrame(step);
+    // The ONLY ambient readout: how many keepers you have, and how many close
+    // the case. Replaces a score, a rank badge, a progress bar and a film gauge.
+    function renderTally() {
+      if (!el.shotTally) return;
+      if (el.tallyCount) el.tallyCount.textContent = seen.size + "/" + CASE_TARGET;
+      el.shotTally.classList.toggle("case-complete", seen.size >= CASE_TARGET);
+      // Film only speaks up when it's actually a problem. A gauge that reads
+      // 36/36 for most of a run is telling you nothing.
+      el.shotTally.classList.toggle("film-low", film <= 8 && film > 0);
+      el.shotTally.classList.toggle("film-out", film <= 0);
     }
 
     return {
@@ -7727,31 +7675,28 @@
       filmCap: () => FILM_START,
       hasFilm: () => film > 0,
       addShot: () => {
-        shots += 1; film = Math.max(0, film - 1); persist(); renderFilm();
+        shots += 1; film = Math.max(0, film - 1); persist(); renderTally();
         if (film === 8) { try { showRendererToast("8 exposures left \u2014 make them count.", 3000); } catch (_) {} }
         else if (film === 0) { try { showRendererToast("That was your last frame.", 3000); } catch (_) {} }
       },
-      add(points) { total = Math.max(0, total + (Number(points) || 0)); persist(); renderHud(true); },
-      // Flash the HUD when a brand-new subject joins the case file.
+      add(points) { total = Math.max(0, total + (Number(points) || 0)); persist(); renderTally(); },
+      // A new keeper joined the file — one small pulse on the tally.
       pulseSubject() {
-        if (!el.evidenceHud) return;
-        el.evidenceHud.classList.remove("subject");
-        void el.evidenceHud.offsetWidth;
-        el.evidenceHud.classList.add("subject");
+        if (!el.shotTally) return;
+        el.shotTally.classList.remove("subject");
+        void el.shotTally.offsetWidth;
+        el.shotTally.classList.add("subject");
       },
-      // Show the dossier HUD even before the first point (so the goal is known).
-      reveal() { if (el.evidenceHud) { el.evidenceHud.classList.remove("hidden"); renderCase(); renderFilm(); } },
-      renderHud,
-      renderFilm,
+      // Show the tally as soon as the goal is knowable.
+      reveal() { if (el.shotTally) { el.shotTally.classList.remove("hidden"); renderTally(); } },
+      renderHud: renderTally,
+      renderFilm: renderTally,
       reset() {
         total = 0; shots = 0; film = FILM_START; seen = new Set(); spent = new Set(); persist();
-        if (el.evidenceHud) {
-          el.evidenceHud.classList.add("hidden");
-          el.evidenceHud.classList.remove("case-complete");
-          const t = el.evidenceHud.querySelector(".ev-total");
-          if (t) { t.textContent = "0"; t.setAttribute("data-val", "0"); }
-          renderCase();
-          renderFilm();
+        if (el.shotTally) {
+          el.shotTally.classList.add("hidden");
+          el.shotTally.classList.remove("case-complete", "film-low", "film-out");
+          renderTally();
         }
       },
     };
@@ -7781,7 +7726,7 @@
   // ------------------------------------------------------------------
   const Objectives = (function () {
     const KEY = "objectives_v1";
-    const COLLAPSE_KEY = "objectives_collapsed";
+    const OPEN_KEY = "objectives_open";
     const MAX_FIELD = 3;             // simultaneous field bounties (avoid clutter)
     const STALE_MISSES = 4;          // detection passes a subject can be absent before its bounty retires
     const ARCHIVE_MS = 4600;         // how long a completed side-goal lingers before filing away
@@ -7799,16 +7744,16 @@
     let nodes = new Map();           // id -> <li>
     let seq = 0;                     // creation order tiebreak
     let revealed = false;
-    let collapsed = false;
+    let open_ = false;
     let bannerTimer = null;
     const archiveTimers = new Map(); // id -> timeout
 
-    try { collapsed = localStorage.getItem(COLLAPSE_KEY) === "1"; } catch (_) {}
+    try { open_ = localStorage.getItem(OPEN_KEY) === "1"; } catch (_) {}
 
     function persist() {
       try {
         localStorage.setItem(KEY, JSON.stringify({ items }));
-        localStorage.setItem(COLLAPSE_KEY, collapsed ? "1" : "0");
+        localStorage.setItem(OPEN_KEY, open_ ? "1" : "0");
       } catch (_) {}
     }
 
@@ -7820,23 +7765,13 @@
     }
 
     // ---- Cinematic banner ("NEW OBJECTIVE" / "OBJECTIVE COMPLETE") ----
-    function banner(kicker, title, cls) {
-      const b = el.objBanner;
-      if (!b) return;
-      if (prefersReducedMotion()) return; // the tracker itself is enough motion
-      clearTimeout(bannerTimer);
-      const k = b.querySelector(".obj-banner-kicker");
-      const t = b.querySelector(".obj-banner-title");
-      if (k) k.textContent = kicker || "";
-      if (t) t.textContent = title || "";
-      b.className = "obj-banner" + (cls ? " " + cls : "");
-      b.classList.remove("hidden");
-      void b.offsetWidth;
-      b.classList.add("show");
-      bannerTimer = setTimeout(() => { b.classList.add("hidden"); b.classList.remove("show"); }, 2700);
-    }
+    // The cinematic "NEW OBJECTIVE" / "BOUNTY SECURED" / "CHALLENGE COMPLETE"
+    // banner is gone. A sweeping title card every time the world noticed an
+    // object is what made a quiet documentary game feel like a slot machine;
+    // objective changes are recorded in the story log instead, where you can
+    // read them if you care and ignore them if you don't.
+    function banner() {}
 
-    // ---- DOM ----
     function makeNode(o) {
       const li = document.createElement("li");
       li.className = "obj-item kind-" + o.kind;
@@ -7932,20 +7867,33 @@
       });
       if (el.objCount) {
         const done = items.filter((o) => o.status === "complete").length;
-        el.objCount.textContent = done + "/" + items.length;
+        el.objCount.textContent = done ? done + " done" : "";
       }
     }
 
+    // "Revealed" now means the case EXISTS and the tally can show, not that a
+    // panel is open over the scene. The sheet itself only appears when asked for
+    // (O / the CASE rail button), so being told your goal costs one line.
     function reveal() {
-      if (!el.objectivesHud) return;
-      el.objectivesHud.classList.remove("hidden");
-      el.objectivesHud.classList.toggle("collapsed", collapsed);
-      if (!revealed && !prefersReducedMotion()) {
-        el.objectivesHud.classList.remove("obj-in"); void el.objectivesHud.offsetWidth;
-        el.objectivesHud.classList.add("obj-in");
-      }
       revealed = true;
-      render();
+      try { Evidence.reveal(); } catch (_) {}
+      if (!open_) render();
+      syncRailButton();
+    }
+
+    // Open / close the case sheet.
+    function setOpen(next) {
+      open_ = !!next;
+      if (!el.objectivesHud) return;
+      el.objectivesHud.classList.toggle("hidden", !open_);
+      if (open_) {
+        render();
+        if (!prefersReducedMotion()) {
+          el.objectivesHud.classList.remove("obj-in"); void el.objectivesHud.offsetWidth;
+          el.objectivesHud.classList.add("obj-in");
+        }
+      }
+      persist();
       syncRailButton();
     }
 
@@ -7956,7 +7904,7 @@
     }
 
     function syncRailButton() {
-      if (el.btnObjectives) el.btnObjectives.classList.toggle("active", revealed && !collapsed);
+      if (el.btnObjectives) el.btnObjectives.classList.toggle("active", open_);
     }
 
     // Mirror an objective moment into the STORY LOG (the run chronicle), so the
@@ -8028,7 +7976,7 @@
         try { Sound.newSubject(); } catch (_) {}
         try { Haptics.select(); } catch (_) {}
         const cls = o.kind === "bonus" ? "bonus" : "complete";
-        const KICKER = { field: "Bounty Secured", bonus: "Challenge Complete", lead: "Lead Closed", primary: "Case File Complete" };
+        const KICKER = { field: "Photographed", bonus: "Done", lead: "Lead closed", primary: "Case closed" };
         banner(KICKER[o.kind] || "Objective Complete", o.title, cls);
         logBeat("objective_done", "\u2713", o.title);
       }
@@ -8070,13 +8018,8 @@
 
     // ---- Collapse / toggle (O key + GOALS rail button) ----
     function toggleCollapsed() {
-      if (!revealed) { collapsed = false; reveal(); return; }
-      collapsed = !collapsed;
-      el.objectivesHud.classList.toggle("collapsed", collapsed);
-      if (el.objCollapse) el.objCollapse.setAttribute("aria-expanded", String(!collapsed));
-      persist();
-      syncRailButton();
-      try { Sound.toggle(); } catch (_) {}
+      if (!revealed) reveal();
+      setOpen(!open_);
     }
 
     // ---- Generative LEAD (the evolving directive) ----
@@ -8107,8 +8050,8 @@
       if (!has("case")) {
         add({
           id: "case", kind: "primary",
-          title: "Close the case",
-          detail: "Document " + goal + " distinct subjects",
+          title: "Take " + goal + " good photographs",
+          detail: "Each has to be something new \u2014 the same subject twice only counts once",
           count, goal, quiet: true,
         });
       } else {
@@ -8132,7 +8075,7 @@
       if (window.Evidence && Evidence.isSpent && Evidence.isSpent(l)) return; // already documented
       if (window.Evidence && Evidence.isNew && !Evidence.isNew(l)) return;    // already on file
       if (activeFieldCount() >= MAX_FIELD) return;           // keep the board tidy
-      add({ id, kind: "field", title: fieldTitle(l, label), detail: "Photograph it for the case file" });
+      add({ id, kind: "field", title: fieldTitle(l, label), detail: "" });
     }
 
     // A little procedural variety in the phrasing so the board doesn't read as
@@ -8189,7 +8132,7 @@
         return "targeted";
       }
       if (activeFieldCount() >= MAX_FIELD) evictOldestField(id);
-      add({ id, kind: "field", title: fieldTitle(l, label), detail: "Photograph it for the case file" });
+      add({ id, kind: "field", title: fieldTitle(l, label), detail: "" });
       pulseHud();
       return "targeted";
     }
@@ -8254,12 +8197,12 @@
       syncCase();
       // Seed the LEAD so the board reads complete the instant it's revealed;
       // refreshDirective() upgrades it with a world-grounded directive shortly.
-      add({ id: LEAD_ID, kind: "lead", title: "Survey the area",
-            detail: "Read the scene and find your first subject.", quiet: true });
-      add({ id: "bonus:rare", kind: "bonus", title: "Secure a rare specimen",
-            detail: "Photograph a \u2605\u2605\u2605\u2605\u2605 subject", quiet: true });
-      add({ id: "bonus:perfect", kind: "bonus", title: "Land a perfect shot",
-            detail: "Nail PERFECT focus on any subject", quiet: true });
+      add({ id: LEAD_ID, kind: "lead", title: "Look around",
+            detail: "Find something worth photographing.", quiet: true });
+      add({ id: "bonus:rare", kind: "bonus", title: "Photograph something rare",
+            detail: "Something you won't get a second chance at", quiet: true });
+      add({ id: "bonus:perfect", kind: "bonus", title: "Get one perfectly sharp",
+            detail: "Centred and in focus", quiet: true });
       persist();
       syncRailButton();
     }
@@ -8285,7 +8228,7 @@
   // ------------------------------------------------------------------
   const LEAD_FALLBACKS = {
     normal: [
-      { t: "Survey the area", d: "Read the scene and find your first subject." },
+      { t: "Look around", d: "Find something worth photographing." },
       { t: "Document what you find", d: "Photograph anything that tells the story." },
       { t: "Press deeper", d: "Follow the scene to whatever it's hiding." },
     ],
@@ -8334,35 +8277,27 @@
   }
 
   // ------------------------------------------------------------------
-  // Photo — the reward loop that ties a capture to feedback + score. On capture
-  // it files the specimen to the CASE FILE (as before), then prints a "receipt"
-  // in the top-right: the shot develops, its contents are named and revealed
-  // one at a time (each with a rising chime + points), and a rating stamp lands.
-  // A newer capture cancels an in-flight reveal so receipts never stack.
+  // Photo — what happens after you press the shutter.
+  //
+  // This used to print a scored receipt: every object in frame itemised with
+  // points, a star rating, NEW / RARE / ON FILE badges, bonus rows for framing
+  // and focus, a running subtotal, and a rubber stamp that graded the shot
+  // SNAPSHOT through SMOKING GUN. All of it landed on top of the one moment in
+  // the game that should feel like looking at a photograph you just took.
+  //
+  // Now the picture holds full-screen on its own (see presentCapture), and when
+  // it fades we say one line: what you kept. The scoring still happens — it's
+  // what ranks the run at the end — it just stops narrating itself shot by shot.
   // ------------------------------------------------------------------
   const Photo = (function () {
-    const STAGGER_MS = 130;       // gap between item reveals — snappy rising combo
-    const HOLD_MS = 1900;         // how long the finished receipt lingers
+    const HOLD_MS = 2100;         // how long the "filed" line lingers
     const BASE_PER_INTEREST = 40; // points per interest point (1..5)
     const NOVELTY_BONUS = 60;     // first time a subject is photographed this run
     const RARE_BONUS = 80;        // a striking 5-star "rare find" premium
-    const CONSOLATION = 10;       // an "undeveloped" shot still pays a little
+    const CONSOLATION = 10;       // an unreadable shot still pays a little
     // FOCUS grade → payout multiplier. A crisp, centered frame is worth far more
-    // than a soft one — this is where the shooting skill turns into score.
+    // than a soft one; this is still where shooting skill turns into rank.
     const FOCUS_MULT = { PERFECT: 1.6, SHARP: 1.15, SOFT: 0.6 };
-
-    const TIERS = [
-      { min: 0,   tier: 0, label: "UNDEVELOPED" },
-      { min: 1,   tier: 1, label: "SNAPSHOT" },
-      { min: 150, tier: 2, label: "EVIDENCE" },
-      { min: 350, tier: 3, label: "KEY EVIDENCE" },
-      { min: 600, tier: 4, label: "SMOKING GUN" },
-    ];
-    function ratingFor(shotTotal) {
-      let r = TIERS[0];
-      for (const t of TIERS) if (shotTotal >= t.min) r = t;
-      return r;
-    }
 
     function clearTimers() {
       state.receiptTimers.forEach((t) => clearTimeout(t));
@@ -8371,30 +8306,17 @@
     function later(fn, ms) { const t = setTimeout(fn, ms); state.receiptTimers.push(t); return t; }
 
     function els() {
-      const r = el.photoReceipt;
+      const r = el.photoFiled;
       if (!r) return null;
-      return {
-        root: r,
-        photo: r.querySelector(".receipt-photo"),
-        status: r.querySelector(".receipt-status"),
-        caption: r.querySelector(".receipt-caption"),
-        items: r.querySelector(".receipt-items"),
-        subtotal: r.querySelector(".receipt-subtotal"),
-        subVal: r.querySelector(".receipt-subtotal .rs-val"),
-        stamp: r.querySelector(".receipt-stamp"),
-      };
+      return { root: r, text: r.querySelector(".filed-text") };
     }
 
     function hide() {
-      const r = el.photoReceipt;
+      const r = el.photoFiled;
       if (!r) return;
       clearTimers();
-      r.classList.add("leaving");
       r.classList.remove("show");
-      later(() => {
-        r.classList.add("hidden");
-        r.classList.remove("leaving", "developing", "tallied");
-      }, 320);
+      later(() => r.classList.add("hidden"), 320);
     }
 
     // Entry point from the two capture paths.
@@ -8402,12 +8324,9 @@
     function capture(spec) {
       if (!spec || !spec.texture) return;
       // OUT OF FILM: exposures are a finite resource. When the roll is spent you
-      // can't shoot — a hard stop that makes every earlier shot a real decision
-      // and turns "close the case before you run out" into genuine pressure.
+      // can't shoot — a hard stop that makes every earlier shot a real decision.
       if (window.Evidence && Evidence.hasFilm && !Evidence.hasFilm()) {
         try { Sound.miss && Sound.miss(); } catch (_) {}
-        // Accurate copy: the case only closes at the full census, so if you're
-        // out of film you can't finish THIS roll — press R for a fresh case.
         const closed = (window.Evidence && Evidence.uniqueCount && Evidence.target)
           ? Evidence.uniqueCount() >= Evidence.target() : false;
         try {
@@ -8417,229 +8336,114 @@
         } catch (_) {}
         return;
       }
-      // File the specimen exactly as before (case file + server mirror).
       try { Investigations.store(spec); } catch (_) {}
-      reveal(spec.texture, { zoom: spec.zoom || 1, focus: spec.focus, grade: spec.focusGrade, subject: spec.subject });
+      appraise(spec.texture, {
+        zoom: spec.zoom || 1, focus: spec.focus,
+        grade: spec.focusGrade, subject: spec.subject,
+      });
     }
 
-    function reveal(texture, shot) {
+    // Score the shot silently, then say one line about it. No UI opens until the
+    // answer is back, so nothing competes with the photo while it's on screen.
+    function appraise(texture, shot) {
       shot = shot || {};
-      const parts = els();
-      if (!parts) return;
-      const token = ++state.receiptToken; // invalidate any older reveal
+      const token = ++state.receiptToken; // invalidate any older appraisal
       clearTimers();
-
-      // Reset + open the receipt in its "developing" state.
-      parts.items.innerHTML = "";
-      parts.caption.textContent = "";
-      parts.stamp.textContent = "";
-      parts.stamp.className = "receipt-stamp";
-      if (parts.subVal) parts.subVal.textContent = "+0";
-      parts.status.textContent = "DEVELOPING\u2026";
-      if (parts.photo && texture) parts.photo.style.backgroundImage = `url('${texture}')`;
-      parts.root.classList.remove("hidden", "leaving", "tallied");
-      parts.root.classList.add("developing");
-      void parts.root.offsetWidth;
-      parts.root.classList.add("show");
-      try { Sound.receiptOpen(); } catch (_) {}
-
       postJSON("/api/photo", { frame: texture })
-        .then((res) => { if (token === state.receiptToken) printReceipt(token, res || {}, shot); })
+        .then((res) => { if (token === state.receiptToken) settle(token, res || {}, shot); })
         .catch((err) => {
           console.warn("[standalone] photo appraise failed:", err);
-          if (token === state.receiptToken) printReceipt(token, { items: [] }, shot); });
+          if (token === state.receiptToken) settle(token, { items: [] }, shot);
+        });
     }
 
-    function printReceipt(token, appraisal, shot) {
+    // One line, and the scoring behind it.
+    function settle(token, appraisal, shot) {
       shot = shot || {};
-      const zoom = shot.zoom || 1;
-      const grade = shot.grade || null;
-      const subject = shot.subject || null;
-      const parts = els();
-      if (!parts || token !== state.receiptToken) return;
-      parts.root.classList.remove("developing");
+      if (token !== state.receiptToken) return;
       const items = Array.isArray(appraisal.items) ? appraisal.items : [];
+      const subject = shot.subject || null;
       Evidence.addShot();
 
       if (!items.length) {
-        // Nothing legible — a gentle consolation so it never feels punishing.
-        // The POI is NOT spent here: an empty exposure never burns a subject, so
-        // you can line the shot up again.
-        parts.status.textContent = "NO CLEAR EVIDENCE";
-        if (appraisal.caption) parts.caption.textContent = appraisal.caption;
-        Evidence.add(CONSOLATION);   // a small pity payout so it never feels punishing
-        finishStamp(token, 0);       // ...but the shot itself rates UNDEVELOPED
-        scheduleDismiss(token);
+        // Nothing legible. The POI is NOT spent, so you can line the shot up
+        // again — and the copy says that rather than grading you for it.
+        Evidence.add(CONSOLATION);
+        say("Nothing came out \u2014 try again, closer.", { faint: true });
         return;
       }
 
-      // The shot developed real evidence — NOW the POI is documented (spent), so
-      // the credit (below) and the document-once lockout stay in lockstep. A
-      // cancelled receipt returns above before this runs, so a superseded shot
-      // never spends its subject.
+      // Real evidence developed, so NOW the subject counts as documented — the
+      // credit and the document-once lockout stay in lockstep.
       if (subject) {
         Evidence.spend(subject);
-        // The framed subject IS what the FIELD bounties are keyed on — complete
-        // its objective the instant it's documented (reliable match).
         try { Objectives.onSubjectDocumented(subject, { rare: false }); } catch (_) {}
-        if (state.touchMode === "aim") layoutPhotoTargets(); // dim its target to a ✓
+        if (state.touchMode === "aim") layoutPhotoTargets(); // dim its target to a check
       }
-
-      parts.status.textContent = "EVIDENCE LOGGED";
-      if (appraisal.caption) parts.caption.textContent = "\u201C" + appraisal.caption + "\u201D";
 
       let shotTotal = 0;
       let newCount = 0;
-      const reduced = prefersReducedMotion();
-      items.forEach((it, i) => {
-        const delay = reduced ? 0 : i * STAGGER_MS;
-        later(() => {
-          if (token !== state.receiptToken) return;
-          const label = String(it.label || "?");
-          const interest = Math.max(1, Math.min(5, Number(it.interest) || 2));
-          const isNew = Evidence.isNew(label);
-          const isRare = interest >= 5;
-          // DOCUMENT ONCE: a subject already in the dossier is worth nothing —
-          // no farming the same evidence. Only NEW finds pay out (novelty; rare
-          // 5-star finds pay a premium). Duplicates still show, flagged ON FILE.
-          let pts = isNew
-            ? interest * BASE_PER_INTEREST + NOVELTY_BONUS + (isRare ? RARE_BONUS : 0)
-            : 0;
-          Evidence.markSeen(label);
-          if (isNew) {
-            newCount += 1;
-            // Any NEW appraised subject can also satisfy a field bounty (by its
-            // own label) and — if striking — the rare-specimen challenge.
-            try { Objectives.onSubjectDocumented(label, { rare: isRare }); } catch (_) {}
-          }
+      const kept = [];
+      items.forEach((it) => {
+        const label = String(it.label || "?");
+        const interest = Math.max(1, Math.min(5, Number(it.interest) || 2));
+        const isNew = Evidence.isNew(label);
+        const isRare = interest >= 5;
+        // DOCUMENT ONCE: a subject already in the dossier is worth nothing, so
+        // there's no farming the same evidence.
+        const pts = isNew
+          ? interest * BASE_PER_INTEREST + NOVELTY_BONUS + (isRare ? RARE_BONUS : 0)
+          : 0;
+        Evidence.markSeen(label);
+        if (isNew) {
+          newCount += 1;
           shotTotal += pts;
-          appendItemRow(parts, { label, interest, note: it.note, pts, isNew, isRare, onFile: !isNew });
-          if (parts.subVal) parts.subVal.textContent = "+" + Math.round(shotTotal);
-          if (isNew) { try { Sound.newSubject(); } catch (_) {} Evidence.pulseSubject(); }
-          else { try { Sound.itemReveal(i); } catch (_) {} }
-          if (pts) Evidence.add(pts); // each new find visibly bumps the TOP score + case bar
-        }, delay);
+          kept.push(label);
+          try { Evidence.pulseSubject(); } catch (_) {}
+          if (isRare) { try { Objectives.complete("bonus:rare"); } catch (_) {} }
+        }
       });
 
-      // After the last item: composition + framing + FOCUS bonuses, then stamp.
-      const afterItems = reduced ? 10 : items.length * STAGGER_MS + 120;
-      later(() => {
-        if (token !== state.receiptToken) return;
-        parts.root.classList.add("tallied");
-        if (!newCount) {
-          // Every subject here was already on file — no points, no farming.
-          parts.status.textContent = "ALREADY ON FILE";
-          if (parts.subVal) parts.subVal.textContent = "+0";
-          finishStamp(token, 0);
-          scheduleDismiss(token);
-          return;
-        }
-        // Busier, well-composed shots earn an escalating combo on top.
-        if (newCount >= 2) {
-          const combo = Math.round(shotTotal * 0.15 * (newCount - 1));
-          shotTotal += combo;
-          appendBonusRow(parts, "composition \u00d7" + newCount, combo);
-          Evidence.add(combo);
-        }
-        // A tight, zoomed-in frame is a "detail shot" — rewards using the zoom.
-        if (zoom && zoom > 1.3) {
-          const framing = Math.round(shotTotal * 0.12 * Math.min(1.5, zoom - 1));
-          if (framing > 0) {
-            shotTotal += framing;
-            appendBonusRow(parts, "tight framing " + zoom.toFixed(1) + "\u00d7", framing);
-            Evidence.add(framing);
-          }
-        }
-        // FOCUS is the skill payoff: a crisp, centered frame pays a premium; a
-        // soft one is docked. (Ungated snapshots have no grade — left neutral.)
-        if (grade && FOCUS_MULT[grade] != null) {
-          const delta = Math.round(shotTotal * (FOCUS_MULT[grade] - 1));
-          if (delta !== 0) {
-            shotTotal += delta;
-            appendBonusRow(parts, grade.toLowerCase() + " focus", delta);
-            Evidence.add(delta);
-          }
-        }
-        if (parts.subVal) parts.subVal.textContent = "+" + Math.round(shotTotal);
-        finishStamp(token, shotTotal);
-        scheduleDismiss(token);
-        // Feed the objective tracker: a PERFECT frame satisfies the skill
-        // challenge, and the case primary follows the dossier census.
-        try { Objectives.onFocusGrade(grade); } catch (_) {}
-        try { Objectives.syncCase(); } catch (_) {}
-        // The win condition: enough distinct subjects closes the case.
-        maybeCloseCase();
-      }, afterItems);
+      // Composition and framing still pay, quietly.
+      if (newCount >= 2) shotTotal += Math.round(shotTotal * 0.15 * (newCount - 1));
+      const zoom = shot.zoom || 1;
+      if (zoom > 1.3) shotTotal += Math.round(shotTotal * 0.12 * Math.min(1.5, zoom - 1));
+      const mult = FOCUS_MULT[shot.grade];
+      if (mult) shotTotal += Math.round(shotTotal * (mult - 1));
+      if (shotTotal > 0) Evidence.add(shotTotal);
+      if (shot.grade) { try { Objectives.onFocusGrade(shot.grade); } catch (_) {} }
+      try { Objectives.syncCase(); } catch (_) {}
+
+      if (!kept.length) {
+        // Everything in frame is already in the file. Say so plainly instead of
+        // stamping ALREADY ON FILE across the picture.
+        say("Already in the file.", { faint: true });
+        return;
+      }
+      // Name what you actually kept — the photograph is the reward, this is the
+      // receipt for it. Two subjects read as a list; more than that would turn
+      // back into the inventory this replaced.
+      const named = kept.length <= 2
+        ? kept.join(" and ")
+        : kept.slice(0, 2).join(", ") + " +" + (kept.length - 2);
+      say("Filed \u2014 " + named);
+      try { maybeCloseCase(); } catch (_) {}
     }
 
-    function appendItemRow(parts, o) {
-      const li = document.createElement("li");
-      li.className = "receipt-item" + (o.onFile ? " on-file" : "");
-      const stars = "\u2605".repeat(o.interest) + "\u2606".repeat(5 - o.interest);
-      const label = document.createElement("span");
-      label.className = "ri-label";
-      label.textContent = o.label;
-      if (o.isNew) {
-        const nw = document.createElement("span");
-        nw.className = "ri-new";
-        nw.textContent = "NEW";
-        label.appendChild(nw);
-      }
-      if (o.isRare) {
-        const rr = document.createElement("span");
-        rr.className = "ri-rare";
-        rr.textContent = "RARE";
-        label.appendChild(rr);
-      }
-      if (o.onFile) {
-        const of = document.createElement("span");
-        of.className = "ri-onfile";
-        of.textContent = "ON FILE";
-        label.appendChild(of);
-      }
-      const pts = document.createElement("span");
-      pts.className = "ri-pts";
-      pts.textContent = o.pts > 0 ? "+" + Math.round(o.pts) : "\u2014";
-      const note = document.createElement("span");
-      note.className = "ri-note";
-      note.innerHTML = `<span class="ri-stars">${stars}</span>` + (o.note ? "  " + escapeHtml(o.note) : "");
-      li.appendChild(label);
-      li.appendChild(pts);
-      li.appendChild(note);
-      parts.items.appendChild(li);
-    }
-
-    function appendBonusRow(parts, labelText, pts) {
-      const li = document.createElement("li");
-      const neg = pts < 0;
-      li.className = "receipt-item receipt-bonus" + (neg ? " penalty" : "");
-      const label = document.createElement("span");
-      label.className = "ri-label";
-      label.textContent = labelText;
-      const p = document.createElement("span");
-      p.className = "ri-pts";
-      p.textContent = (neg ? "\u2212" : "+") + Math.round(Math.abs(pts));
-      li.appendChild(label);
-      li.appendChild(p);
-      parts.items.appendChild(li);
-    }
-
-    function finishStamp(token, shotTotal) {
+    function say(text, opts) {
+      opts = opts || {};
       const parts = els();
-      if (!parts || token !== state.receiptToken) return;
-      const r = ratingFor(shotTotal);
-      parts.stamp.textContent = r.label;
-      parts.stamp.className = "receipt-stamp tier-" + r.tier;
-      void parts.stamp.offsetWidth;
-      parts.stamp.classList.add("stamped");
-      try { Sound.stamp(); } catch (_) {}
+      if (!parts) return;
+      parts.text.textContent = text;
+      parts.root.classList.toggle("faint", !!opts.faint);
+      parts.root.classList.remove("hidden");
+      void parts.root.offsetWidth;
+      parts.root.classList.add("show");
+      try { Sound.receiptOpen(); } catch (_) {}
+      later(() => hide(), HOLD_MS);
     }
 
-    function scheduleDismiss(token) {
-      later(() => { if (token === state.receiptToken) hide(); }, HOLD_MS);
-    }
-
-    return { capture, reveal, hide, clearTimers };
+    return { capture, hide };
   })();
   window.Photo = Photo;
 
@@ -8649,12 +8453,15 @@
   // photographer's RANK. Fires once per run; the player can start a new case
   // or dismiss and keep shooting the same world.
   // ------------------------------------------------------------------
+  // One short line. These used to be full sentences of self-congratulation
+  // ("A flawless dossier. Every subject catalogued, the whole picture
+  // developed.") stacked under four stat readouts.
   const CASE_FLAVORS = {
-    S: "A flawless dossier. Every subject catalogued, the whole picture developed.",
-    A: "A sharp, thorough case. The story's in the details you caught.",
-    B: "A solid file — enough evidence to make the pattern undeniable.",
-    C: "The case holds together. A few more angles and it would sing.",
-    D: "Barely a case, but the shutter never lies. It's on the record now.",
+    S: "Not a frame wasted.",
+    A: "Sharp work. The story's in the details you caught.",
+    B: "Enough here to make the pattern undeniable.",
+    C: "It holds together. A few more angles and it would sing.",
+    D: "Thin, but the shutter never lies.",
   };
 
   // The reward screen is the payoff of COMPLETING THE PRIMARY OBJECTIVE (Close
@@ -12296,25 +12103,11 @@
         el.backendName.textContent = label;
       }
       if (typeof s.image_enabled === "boolean") state.imagesEnabled = s.image_enabled;
-      // HEALTH stakes meter (top-center dossier HUD). Server-authoritative;
-      // the danger vignette loop drains it. Hidden entirely while the damage
-      // system is disabled (health never changes, so a static "100" is just
-      // noise) — it returns automatically when DAMAGE_SYSTEM_ENABLED is on.
-      if (el.evidenceHud) {
-        const hEl = el.evidenceHud.querySelector(".ev-health");
-        if (!DAMAGE_SYSTEM_ENABLED) {
-          if (hEl) hEl.classList.add("hidden");
-        } else if (typeof s.health === "number") {
-          const hv = el.evidenceHud.querySelector(".ev-health-val");
-          const hp = Math.max(0, Math.min(100, Math.round(s.health)));
-          if (hv) hv.textContent = String(hp);
-          if (hEl) {
-            hEl.classList.remove("hidden");
-            hEl.classList.toggle("low", hp <= 50 && hp > 25);
-            hEl.classList.toggle("critical", hp <= 25);
-          }
-        }
-      }
+      // HEALTH has no readout. It used to sit in the dossier HUD next to the
+      // score, which meant carrying that whole panel for a number that never
+      // moves while DAMAGE_SYSTEM_ENABLED is false. When combat returns, health
+      // wants its own surface tied to the danger vignette that actually drains
+      // it — not a digit parked beside the photo tally.
       renderInventory(s.inventory);
       if (el.hudTimeWrap && el.hudTime) {
         if (s.time_of_day) {

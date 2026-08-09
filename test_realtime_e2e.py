@@ -610,14 +610,17 @@ class TestRealtimeRenderer(unittest.TestCase):
             payload = json.loads(investigates[0] or "{}")
             self.assertEqual(payload.get("kind"), "photo")
             self.assertTrue((payload.get("texture") or "").startswith("data:image"))
-            # ...prints the receipt and reveals the appraised items...
-            page.wait_for_function("document.getElementById('photo-receipt').classList.contains('show')", timeout=6000)
-            page.wait_for_function("document.querySelectorAll('#photo-receipt .receipt-item').length >= 1", timeout=8000)
-            # ...lights the EVIDENCE score HUD with points on the board...
+            # ...says ONE quiet line naming what it kept (no itemised scorecard:
+            # the photograph is the reward, this is just the receipt for it)...
+            page.wait_for_function("document.getElementById('photo-filed').classList.contains('show')", timeout=12000)
+            filed = page.evaluate("document.querySelector('#photo-filed .filed-text').textContent")
+            self.assertIn("Filed", filed, f"expected a filed line, got {filed!r}")
+            self.assertIn("rusted valve", filed.lower(), f"the line must name the keeper, got {filed!r}")
+            # ...counts it on the one ambient readout there is...
             page.wait_for_function(
-                "!document.getElementById('evidence-hud').classList.contains('hidden')", timeout=6000)
+                "!document.getElementById('shot-tally').classList.contains('hidden')", timeout=6000)
             page.wait_for_function(
-                "Number(document.querySelector('#evidence-hud .ev-total').getAttribute('data-val')) > 0", timeout=8000)
+                "!/^0\\//.test(document.getElementById('tally-count').textContent)", timeout=8000)
             # ...adds it to the case file...
             page.wait_for_function("document.querySelectorAll('#investigations-strip .inv-thumb').length >= 1", timeout=8000)
             # ...and does NOT steer or resolve a turn.
@@ -728,11 +731,11 @@ class TestRealtimeRenderer(unittest.TestCase):
             page.wait_for_function("window.ReactorRenderer && window.ReactorRenderer.isShowing() === true", timeout=15000)
             # Arm the camera: the dossier HUD (with the case goal) is revealed.
             page.evaluate("document.getElementById('realtime-btn').click()")
-            page.wait_for_function("!document.getElementById('evidence-hud').classList.contains('hidden')", timeout=5000)
+            page.wait_for_function("!document.getElementById('shot-tally').classList.contains('hidden')", timeout=5000)
             # The census goal is whatever the live tracker reports (CASE_TARGET).
             goal = page.evaluate("window.Evidence.target()")
             self.assertGreaterEqual(goal, 1)
-            self.assertIn("/" + str(goal), page.evaluate("document.querySelector('#evidence-hud .ev-case-count').textContent"))
+            self.assertIn("/" + str(goal), page.evaluate("document.getElementById('tally-count').textContent"))
             # Document exactly `goal` distinct subjects in one dense frame.
             subjects = subject_pool[:goal]
             self.assertEqual(len(subjects), goal, "need enough distinct subjects to close the case")
@@ -821,13 +824,13 @@ class TestRealtimeRenderer(unittest.TestCase):
             shoot_center(2)
             page.wait_for_timeout(700)
             self.assertEqual(len(photos), 0, "an empty frame must not appraise the shot")
-            self.assertFalse(page.evaluate("document.getElementById('photo-receipt').classList.contains('show')"),
+            self.assertFalse(page.evaluate("document.getElementById('photo-filed').classList.contains('show')"),
                              "a miss must not show the receipt")
 
             # WORTHY: once the centered subject is detected, framing it develops a receipt.
             page.wait_for_function("document.querySelectorAll('#touch-targets .photo-target').length >= 1", timeout=8000)
             shoot_center(3)
-            page.wait_for_function("document.getElementById('photo-receipt').classList.contains('show')", timeout=6000)
+            page.wait_for_function("document.getElementById('photo-filed').classList.contains('show')", timeout=12000)
             self.assertGreaterEqual(len(photos), 1, "a worthy shot must appraise the frame")
         except Exception:
             print("\n=== REACTOR CONSOLE LOG (worthy) ===\n" + self._dump_logs())
