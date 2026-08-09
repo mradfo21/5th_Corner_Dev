@@ -2180,6 +2180,10 @@
     // diagonal has to be time-sliced by the caller. LingBot has independent
     // horizontal/vertical axes and can hold a true diagonal.
     looksOneAxisAtATime: () => isHappyOyster(),
+    // Same story for translation: hoMoveDirection() returns a single held move
+    // verb and longitudinal beats lateral, so W+A (forward + strafe) drops the
+    // strafe entirely unless the caller time-slices the two.
+    movesOneAxisAtATime: () => isHappyOyster(),
     // Interaction verbs (Happy Oyster): interact(action) fires a momentary verb
     // (Jump/Attack or a world-advertised verb); setHeldVerb(action|null) holds a
     // verb (Sprint/Crouch) that composes with movement. canInteract() tells the

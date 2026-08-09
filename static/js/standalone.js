@@ -5624,11 +5624,19 @@
                   window.ReactorRenderer.looksOneAxisAtATime());
       } catch (_) { return false; }
     }
+    // ...and only ONE move direction? Then forward+strafe needs slicing too.
+    function oneMoveAxisOnly() {
+      try {
+        return !!(window.ReactorRenderer.movesOneAxisAtATime &&
+                  window.ReactorRenderer.movesOneAxisAtATime());
+      } catch (_) { return false; }
+    }
     // Which half of the interleave cycle we're in. `hShare` (0..1) is horizontal's
     // slice of the cycle, so a mostly-sideways sweep spends most of it turning.
-    function diagonalPhase(hShare) {
+    function diagonalPhase(hShare, offsetMs) {
       const share = Math.min(0.85, Math.max(0.15, hShare)); // always give V a turn
-      return ((Date.now() % DIAGONAL_CYCLE_MS) / DIAGONAL_CYCLE_MS) < share;
+      const t = (Date.now() + (offsetMs || 0)) % DIAGONAL_CYCLE_MS;
+      return (t / DIAGONAL_CYCLE_MS) < share;
     }
 
     // Compose the desired DRIVE state from keyboard + stick + mouse-look.
@@ -5689,7 +5697,18 @@
           rot = ROT_MIN + (ROT_MAX - ROT_MIN) * intensity;
         }
       }
-      return { longitudinal: lon, lateral: lat, lookH: lh, lookV: lv, rot: rot };
+      // What the player is ASKING for, before any per-model slicing. The readout
+      // and the joystick show this, so the HUD never flickers mid-interleave.
+      const raw = { longitudinal: lon, lateral: lat, lookH: lh, lookV: lv };
+      // Forward + strafe (W+A) on a model that holds only ONE move direction:
+      // interleave them, or the renderer picks longitudinal and the strafe is
+      // silently dropped. Offset half a cycle from the look interleave so the
+      // move and look slices don't stall in lockstep.
+      if (lon !== "idle" && lat !== "idle" && oneMoveAxisOnly()) {
+        if (diagonalPhase(0.5, DIAGONAL_CYCLE_MS / 2)) lat = "idle";
+        else lon = "idle";
+      }
+      return { longitudinal: lon, lateral: lat, lookH: lh, lookV: lv, rot: rot, raw: raw };
     }
 
     // Push changed drive axes to the world model via the renderer facade, which
@@ -5757,8 +5776,10 @@
       return p.length ? p.join(" + ") : "still";
     }
 
-    function updateVisual(st) {
+    function updateVisual(state_) {
       if (!el.movePad) return;
+      // Show the player's actual intent, not the current interleave slice.
+      const st = state_.raw || state_;
       // Nub position: pointer uses its real vector; keys synthesize one from the
       // active axes so the knob shows the drive direction.
       let nx = vec.x, ny = vec.y;
@@ -5794,11 +5815,12 @@
       if (!engaged) return;
       const st = compose();
       updateVisual(st);
-      const label = actionLabel(st);
+      const label = actionLabel(st.raw || st);
       // OCR hotspots follow REAL motion, not merely an engaged instrument —
       // holding the mouse captured without moving must not keep SCAN disabled.
-      const moving = st.longitudinal !== "idle" || st.lateral !== "idle" ||
-                     st.lookH !== "idle" || st.lookV !== "idle";
+      const intent = st.raw || st;
+      const moving = intent.longitudinal !== "idle" || intent.lateral !== "idle" ||
+                     intent.lookH !== "idle" || intent.lookV !== "idle";
       if (moving) { try { onMovementStart(); } catch (_) {} }
       else { try { onMovementStop(); } catch (_) {} }
       if (nativeMotion()) driveNative(st);
