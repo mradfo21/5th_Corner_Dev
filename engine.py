@@ -233,16 +233,33 @@ def elevenlabs_key_problem() -> Optional[str]:
     everything was fine.
 
     Format-only: it cannot tell a revoked key from a live one, but it catches
-    the case that actually happened (a value pasted into the env var that is
-    not an ElevenLabs key at all — an agent id, a project id, a truncated
-    copy). The live answer comes from the API itself; see _mint_signed_url.
+    the cases that actually happened. The live answer comes from the API itself;
+    see _mint_signed_url.
+
+    The mistake worth naming precisely: the ElevenLabs dashboard lists each key
+    by its **ID** (a bare hex string) while the key itself — the `sk_...` secret
+    — is only ever shown once, when the key is created or rotated. Copying the
+    row from the list therefore yields a plausible-looking value that ElevenLabs
+    rejects with `api_key_id_used_as_api_key`. Saying "malformed" sends someone
+    hunting for a truncated paste; saying "that's the ID, not the key" tells them
+    exactly what to do.
     """
     if not ELEVENLABS_API_KEY:
         return "not set"
-    if not ELEVENLABS_API_KEY.startswith("sk_"):
-        return ("malformed — ElevenLabs API keys start with 'sk_' "
-                f"(this one starts with {ELEVENLABS_API_KEY[:4]!r})")
-    return None
+    if ELEVENLABS_API_KEY.startswith("sk_"):
+        return None
+    key = ELEVENLABS_API_KEY
+    if len(key) in (32, 64) and all(c in "0123456789abcdefABCDEF" for c in key):
+        return ("looks like the API key ID, not the key. The dashboard lists keys "
+                "by ID (bare hex); the key itself starts with 'sk_' and is shown "
+                "ONLY when you create or rotate it. In ElevenLabs go to your "
+                "profile -> API Keys, create or rotate a key, and copy the 'sk_' "
+                "value")
+    if key.startswith("agent_"):
+        return ("is an agent id, not an API key (ELEVENLABS_AGENT_ID holds the "
+                "agent; ELEVENLABS_API_KEY needs the 'sk_' secret)")
+    return ("malformed — ElevenLabs API keys start with 'sk_' "
+            f"(this one starts with {key[:4]!r})")
 
 
 _ELEVENLABS_KEY_PROBLEM = elevenlabs_key_problem()

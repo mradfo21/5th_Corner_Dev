@@ -51,7 +51,28 @@ class TestElevenLabsKeyValidation(unittest.TestCase):
         engine.ELEVENLABS_API_KEY = "agent_1601kxh3rz2hej9swfs75dv33q78"
         problem = engine.elevenlabs_key_problem()
         self.assertIsNotNone(problem)
+        self.assertIn("agent id", problem)
         self.assertIn("sk_", problem)
+
+    def test_an_api_key_ID_is_named_as_such(self):
+        """The second production value: the key's ID, copied from the dashboard
+        list. ElevenLabs rejects it with `api_key_id_used_as_api_key`. Calling it
+        merely "malformed" sends you hunting for a truncated paste, so the message
+        has to name the actual mistake and where the real key comes from."""
+        engine.ELEVENLABS_API_KEY = "629614d8f9b6fc247ae55f47ee5c635845bf7fec5addb595d150613de9c4f44d"
+        problem = engine.elevenlabs_key_problem()
+        self.assertIsNotNone(problem)
+        self.assertIn("ID", problem)
+        self.assertIn("sk_", problem)
+        self.assertIn("rotate", problem)
+        # A 32-char key id is the other shape the dashboard shows.
+        engine.ELEVENLABS_API_KEY = "0123456789abcdef0123456789abcdef"
+        self.assertIn("ID", engine.elevenlabs_key_problem())
+
+    def test_a_hex_looking_value_that_is_a_real_key_is_still_accepted(self):
+        """Only the 'sk_' prefix decides acceptance — never length or charset."""
+        engine.ELEVENLABS_API_KEY = "sk_" + "0123456789abcdef" * 4
+        self.assertIsNone(engine.elevenlabs_key_problem())
 
     def test_the_problem_says_what_to_do_about_it(self):
         engine.ELEVENLABS_API_KEY = "nope"
