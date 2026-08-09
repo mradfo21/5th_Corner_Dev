@@ -1,5 +1,43 @@
 # 🔧 CHANGELOG - August 5, 2026
 
+## 🧍 Your character, in the live world
+
+**Files:** `game_identity.py`, `engine.py`, `api.py`,
+`static/js/reactor_renderer.js`, `static/js/standalone.js`,
+`test_world_authoring.py`, `test_realtime_e2e.py`, `CAST_AND_CAMERA.md`
+
+Authoring a character with a reference plate and asking for a third-person
+camera redirected every still frame, every server prompt and every negative
+prompt — and the character still never appeared. The live world model is the
+default renderer, and the browser is the half of that loop nobody had wired.
+
+It **builds** the world: `create_world` takes its own `perspective`, fixed for
+that world's lifetime, and it came from a per-browser localStorage toggle that
+defaulted to first person. So the game compiled a third-person world and then
+built a first-person one out of it. It also **re-steers** that world between
+turns — every movement, nudge and idle drift — with prompts the client composes
+itself, and those were hardcoded first-person prose ("the view shifts as
+you…", "Smooth continuous first-person motion"). Whatever the camera directive
+achieved on the still, the next step the player took undid.
+
+`game_identity.live_camera_contract()` now compiles the camera once and serves
+it at `/api/camera` (and in `/api/reactor/config`): the perspective the world is
+built with, plus the clauses the client composes its re-steers from — the same
+`motion_clause` the server's own action beat uses, so the two halves of the loop
+can't word the same event differently. Saving a camera in the editor pushes it
+into the running renderer and rebuilds the world, so the switch lands on the
+turn you made it instead of the next hard cut, and it clears a stale **VIEW**
+override rather than losing to one.
+
+The reference plates also stopped at the default provider. They now reach Krea
+(style references, and frame 0 seeded from them), fal (frame 0, where the single
+reference slot is free), Veo (as reference frames — not as the video's first
+frame, which would produce eight seconds of a portrait) and OpenAI's edits
+endpoint. And the Gemini recovery path, which falls back when img2img returns
+empty, now retries from the plates alone instead of dropping to text-to-image:
+that fallback made the recovery frame the one frame in the run with a stranger
+in it.
+
 ## 🎮 Two control modes: DOOM and FPS
 
 **Files:** `static/js/standalone.js`, `static/css/standalone.css`,

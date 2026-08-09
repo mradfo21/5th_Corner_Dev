@@ -1795,6 +1795,8 @@
       return (this.contract && this.contract.vantage) ||
         "first-person eye-level walking vantage";
     },
+    // The player character's name, or "" when nobody has been authored.
+    subject() { return (this.contract && this.contract.subject) || ""; },
   };
   try { window.__Camera = Camera; } catch (_) {}
 
@@ -2536,7 +2538,8 @@
       return true;
     },
 
-    // MOVEMENT (joystick / WASD): steer the live video as a first-person CAMERA.
+    // MOVEMENT (joystick / WASD): steer the live video as a CAMERA, phrased for
+    // whichever camera the game was authored with (see Camera.movementClause).
     // Like steerRealtime, this is a prompt hot-swap on the running stream — no
     // new guide image, no backend turn — but the beat is a camera-motion clause
     // (`camera` describes where the viewpoint travels) so the world reads as a
@@ -6546,7 +6549,9 @@
   // ------------------------------------------------------------------
   // HappyOysterOptions — the two session-fixed knobs Happy Oyster exposes at
   // world creation, surfaced in the WORLD MODEL panel:
-  //   • VIEW — camera perspective: first-person (default) or third-person.
+  //   • VIEW — camera perspective. Follows the camera authored in the editor
+  //     (see Camera); flipping it here is a per-browser override of that,
+  //     until the editor sets a camera again.
   //   • MODE — the EXPERIENCE: Adventure (walk/look/interact — the game) or
   //     Director (steer the scene with text + pause/resume/rewind).
   // Both are fixed for a world's lifetime, so changing one persists the choice
@@ -12048,8 +12053,12 @@
       const bridgeFocus = dest
         ? "The player has just committed to travel to the " + dest + ". Speak ONE short, tense bridging line \u2014 the trip in motion, the world closing behind them, the next place looming \u2014 as the scene fades to black."
         : "The player has just committed to travel to a new location. Speak ONE short, tense bridging line \u2014 the trip in motion, the world closing behind them, the next place looming \u2014 as the scene fades to black.";
+      // "the reporter" is the SHIPPED protagonist. Once someone has authored a
+      // character, naming them here is the difference between a confession from
+      // the player's own character and one from a stranger the game replaced.
+      const who = Camera.subject() || "the reporter";
       const truthFocus =
-        "REVEAL A DARK TRUTH. Speak ONE short first-person confession from the reporter \u2014 the BURIED reason they're really out here. Not the assignment, not the cover story: the private motive they haven't admitted to themselves. A guilt, a debt, a person they lost, a thing they did, a thing they're chasing that will destroy them. Concrete and specific to this world's premise + recent events. Ominous, quiet, honest. First person, one short sentence, no meta.";
+        "REVEAL A DARK TRUTH. Speak ONE short first-person confession from " + who + " \u2014 the BURIED reason they're really out here. Not the assignment, not the cover story: the private motive they haven't admitted to themselves. A guilt, a debt, a person they lost, a thing they did, a thing they're chasing that will destroy them. Concrete and specific to this world's premise + recent events. Ominous, quiet, honest. First person, one short sentence, no meta.";
       AgentLog.push("narrator", "transition\u2026", "bridge + dark truth");
       try {
         // One request carries BOTH focuses (follow_focus is appended server-
