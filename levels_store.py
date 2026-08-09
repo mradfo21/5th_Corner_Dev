@@ -71,6 +71,10 @@ def _summarize(fields: Dict[str, Any]) -> Dict[str, Any]:
         "has_opening_shot": bool((setting.get("opening_shot") or "").strip()),
         "brief_chars": len(brief) if isinstance(brief, str) else 0,
         "plate_count": len(setting.get("reference_images") or []),
+        # Served URLs for the level's reference art, so a gallery can SHOW the
+        # place instead of describing it.
+        "plates": ["/api/studio/reference/" + r
+                   for r in (setting.get("reference_images") or [])[:3]],
     }
 
 

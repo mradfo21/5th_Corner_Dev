@@ -6484,683 +6484,724 @@ body.touch-aiming .touch-zoom { opacity: 0.9; }
 #scan-tutorial .tut-card { transition: none; }
 }
 
-/* ══ WORLD EDITOR — in-runtime live prompt editor ═══════════════════════
-   Left-docked column, translucent so the LIVE game stays visible beside it —
-   you watch the world change as you edit. Amber-accented to match the
-   field-briefing aesthetic.
+/* ══ WORLD EDITOR ═══════════════════════════════════════════════════════
+   A tool, not a document.
+   The previous pass filed the prompts into layers but kept the old dev-console
+   dressing: amber-on-brown panels, a paragraph of explanation per surface, and
+   a dozen 320px textareas open at once. You had to READ the editor before you
+   could use it.
+   This is the same information, re-weighted. Neutral near-black surfaces so the
+   only colour on screen is the layer you're in and the art you've added.
+   System text (SF on Apple, Segoe on Windows, Inter elsewhere) at UI sizes,
+   with monospace kept for prompt bodies where it means "this is code". Every
+   prompt is a card with a two-line preview; the full writing surface is one
+   click away. Every explanation is behind a disclosure. Reference art is a
+   grid, big enough to actually look at.
+   ═══════════════════════════════════════════════════════════════════════ */
 
-   TEXT SIZE: every type size in this panel and in the pop-out editor is a
-   multiple of --we-fs, so the A− / A+ control in the header scales the whole
-   surface at once (persisted). Set on :root because the pop-out is a sibling of
-   the panel, not a child. Displays and eyesight differ too much for one
-   hardcoded size to be right for everyone. */
 :root { --we-fs: 1; }
+
 #world-editor {
+  --we-width: clamp(440px, 46vw, 760px);
+  --we-bg: #0b0c0e;
+  --we-panel: #121418;
+  --we-raise: #171a1f;
+  --we-line: rgba(255, 255, 255, 0.07);
+  --we-line-strong: rgba(255, 255, 255, 0.13);
+  --we-text: #f2f4f7;
+  --we-text-mid: rgba(242, 244, 247, 0.66);
+  --we-text-dim: rgba(242, 244, 247, 0.4);
+  --we-accent: #7aa2ff;
+  --layer-accent: #7aa2ff;
+  --we-ui: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Inter, system-ui, sans-serif;
+  --we-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', 'Share Tech Mono', monospace;
+
   position: fixed;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  /* A developer tool, not a HUD widget: prompts here run 2,000+ characters, so
-     the default is wide enough to actually read one. clamp() rather than min()
-     so a laptop viewport still gets a usable fraction instead of collapsing
-     back to a column. Drag the right edge to resize (persisted), or hit WIDE to
-     take most of the viewport. */
-  width: var(--we-width, clamp(420px, 64vw, 1280px));
-  max-width: 98vw;
-  z-index: 44;
+  inset: 0 auto 0 0;
+  z-index: 45;
+  width: var(--we-width);
+  max-width: 100vw;
   display: flex;
   flex-direction: column;
-  background: linear-gradient(180deg, rgba(16, 13, 10, 0.94), rgba(10, 9, 8, 0.95));
-  border-right: 1px solid rgba(255, 210, 122, 0.22);
-  box-shadow: 12px 0 48px rgba(0, 0, 0, 0.5);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
-  color: #e8e0c8;
-  transform: translateX(-102%);
-  transition: transform 0.34s cubic-bezier(0.2, 0.85, 0.2, 1);
-  font-family: 'Inter', system-ui, sans-serif;
+  background: var(--we-bg);
+  border-right: 1px solid var(--we-line);
+  box-shadow: 40px 0 120px -30px rgba(0, 0, 0, 0.9);
+  color: var(--we-text);
+  font-family: var(--we-ui);
+  font-size: calc(14px * var(--we-fs));
+  -webkit-font-smoothing: antialiased;
+  transform: translateX(-101%);
+  transition: transform 0.34s cubic-bezier(0.22, 1, 0.36, 1);
 }
 body.world-editor-on #world-editor { transform: translateX(0); }
 #world-editor.hidden { display: none; }
-/* WIDE mode: near-full viewport for heavy editing sessions. */
-#world-editor.we-wide { width: 96vw; }
-/* Drag-to-resize handle on the right edge. Visible at rest so it's actually
-   discoverable — a hidden-until-hover affordance on a dev tool is a feature
-   nobody finds. Hit area is wider than the grip looks. */
-#world-editor .we-resize {
-  position: absolute; top: 0; bottom: 0; right: -4px; width: 12px;
-  cursor: col-resize; z-index: 3;
-  display: flex; align-items: center; justify-content: center;
-}
-#world-editor .we-resize::before {
-  content: ''; position: absolute; top: 0; bottom: 0; left: 5px; width: 2px;
-  background: rgba(255, 210, 122, 0.2); transition: background 0.15s;
-}
-/* Centred grip dots — reads as "drag me". */
-#world-editor .we-resize::after {
-  content: ''; position: relative; width: 4px; height: 34px; border-radius: 2px;
-  background: rgba(255, 210, 122, 0.32);
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4);
-  transition: background 0.15s, height 0.15s;
-}
-#world-editor .we-resize:hover::before,
-body.we-resizing #world-editor .we-resize::before { background: rgba(255, 210, 122, 0.6); }
-#world-editor .we-resize:hover::after,
-body.we-resizing #world-editor .we-resize::after { background: #ffd27a; height: 52px; }
-/* Kill text selection + iframe mouse capture while dragging the handle.
-   `user-select` isn't inherited into form controls in Chrome, so the textareas
-   need it forced or the drag paints a selection across them. */
-body.we-resizing { cursor: col-resize; }
-body.we-resizing,
-body.we-resizing * { user-select: none !important; }
-body.we-resizing #scene-frame,
-body.we-resizing iframe { pointer-events: none; }
+#world-editor.we-wide { --we-width: min(96vw, 1180px); }
 
-/* Header */
+/* ── Resize handle ─────────────────────────────────────────────────────── */
+#we-resize {
+  position: absolute;
+  top: 0; right: -3px; bottom: 0;
+  width: 8px;
+  cursor: col-resize;
+  z-index: 3;
+}
+#we-resize::after {
+  content: "";
+  position: absolute;
+  inset: 0 3px;
+  background: var(--layer-accent);
+  opacity: 0;
+  transition: opacity 0.16s;
+}
+#we-resize:hover::after { opacity: 0.5; }
+body.we-resizing { cursor: col-resize; user-select: none; }
+
+/* ── Title bar ─────────────────────────────────────────────────────────── */
 #world-editor .we-head {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 10px;
   padding: 14px 16px 12px;
-  border-bottom: 1px solid rgba(255, 210, 122, 0.16);
-  flex: 0 0 auto;
+  border-bottom: 1px solid var(--we-line);
 }
 #world-editor .we-title {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  font-size: calc(14px * var(--we-fs));
-  letter-spacing: 0.22em;
+  display: flex; align-items: center; gap: 9px;
+  font-size: calc(13px * var(--we-fs));
+  font-weight: 600;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #f2ecda;
+  color: var(--we-text);
 }
-#world-editor .we-mark { color: #ffd27a; font-size: calc(15px * var(--we-fs)); }
+#world-editor .we-mark { color: var(--layer-accent); font-size: calc(13px * var(--we-fs)); }
 #world-editor .we-dirty {
   font-size: calc(10.5px * var(--we-fs));
-  letter-spacing: 0.12em;
-  color: #ffd27a;
-  opacity: 0.9;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  color: #ffce6a;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(255, 206, 106, 0.12);
 }
 #world-editor .we-dirty.hidden { display: none; }
+#world-editor .we-head-tools { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+#world-editor .we-tool,
 #world-editor .we-close {
-  background: none; border: none; color: rgba(232, 224, 200, 0.55);
-  cursor: pointer; font-size: calc(17px * var(--we-fs)); line-height: 1; padding: 4px 6px;
+  appearance: none;
+  border: 1px solid var(--we-line);
+  background: transparent;
+  color: var(--we-text-mid);
+  font: inherit;
+  font-size: calc(11px * var(--we-fs));
+  padding: 5px 9px;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
-#world-editor .we-close:hover { color: #ff8f8f; }
-#world-editor .we-head-tools { display: flex; align-items: center; gap: 6px; }
-#world-editor .we-tool {
-  appearance: none; border: 1px solid rgba(232, 224, 200, 0.18);
-  background: rgba(255, 255, 255, 0.03); color: rgba(232, 224, 200, 0.66);
-  font: inherit; font-size: calc(11px * var(--we-fs)); letter-spacing: 0.1em; text-transform: uppercase;
-  padding: 5px 9px; border-radius: 6px; cursor: pointer; white-space: nowrap;
-  transition: color 0.15s, background 0.15s, border-color 0.15s;
+#world-editor .we-tool:hover,
+#world-editor .we-close:hover {
+  background: var(--we-raise); color: var(--we-text); border-color: var(--we-line-strong);
 }
-#world-editor .we-tool:hover { color: #ffd27a; border-color: rgba(255, 210, 122, 0.4); }
-#world-editor .we-tool.active { color: #ffd27a; border-color: rgba(255, 210, 122, 0.5); background: rgba(255, 210, 122, 0.1); }
-#world-editor .we-tool:disabled { opacity: 0.35; cursor: default; }
-/* A− / A+ read as one segmented control. */
 #world-editor .we-fontstep { display: inline-flex; }
-#world-editor .we-fontstep .we-tool:first-child { border-radius: 6px 0 0 6px; }
-#world-editor .we-fontstep .we-tool:last-child { border-radius: 0 6px 6px 0; margin-left: -1px; }
+#world-editor .we-fontstep .we-tool:first-child { border-radius: 7px 0 0 7px; }
+#world-editor .we-fontstep .we-tool:last-child { border-radius: 0 7px 7px 0; margin-left: -1px; }
 
-/* Tabs — one scrollable row rather than wrapping into stacked rows. */
-/* CONTROLS row — the movement scheme switch (DOOM / FPS), pinned above the tabs
-   so it's reachable from any tab. Reuses the .rt-ho-btn segmented styling. */
+/* ── CONTROLS row (how you drive, not what the game is) ────────────────── */
 #world-editor .we-input-opts {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
   flex: 0 0 auto;
-  margin: 0 12px;
-  padding: 7px 0 8px;
-  border-bottom: 1px solid rgba(232, 224, 200, 0.1);
-  /* Subordinate to the layer stack below: this is how YOU drive, not what the
-     game IS. Full strength on hover so it stays usable. */
-  opacity: 0.62;
+  padding: 8px 16px;
+  border-top: 1px solid var(--we-line);
+  opacity: 0.55;
   transition: opacity 0.18s;
 }
 #world-editor .we-input-opts:hover,
 #world-editor .we-input-opts:focus-within { opacity: 1; }
-#world-editor .we-input-opts .rt-ho-btn {
-  font-size: calc(9.5px * var(--we-fs));
-  padding: 3px 9px;
-}
 #world-editor .we-input-label {
-  font-size: calc(10.5px * var(--we-fs));
-  letter-spacing: 0.16em;
-  color: rgba(232, 224, 200, 0.5);
+  font-size: calc(9.5px * var(--we-fs));
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--we-text-dim);
 }
-#world-editor .we-input-hint {
-  flex: 1 1 100%;
-  font-size: calc(10.5px * var(--we-fs));
-  line-height: 1.5;
-  color: rgba(232, 224, 200, 0.42);
+#world-editor .we-input-hint { flex: 1 1 100%; font-size: calc(10.5px * var(--we-fs)); color: var(--we-text-dim); }
+#world-editor .we-input-opts .rt-ho-btn {
+  font-size: calc(10px * var(--we-fs)); padding: 3px 10px; border-radius: 6px;
 }
-
-/* Mouse-look sensitivity. Dims (not hides) outside a mouse-look mode so the
-   control stays findable. */
-#world-editor .we-input-sens {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  transition: opacity 0.18s;
-}
-#world-editor .we-input-sens.off { opacity: 0.38; }
+#world-editor .we-input-sens { display: inline-flex; align-items: center; gap: 8px; }
+#world-editor .we-input-sens.off { opacity: 0.4; }
 #world-editor .we-input-sens input[type="range"] {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 96px;
-  height: 3px;
-  border-radius: 2px;
-  background: rgba(232, 224, 200, 0.22);
-  outline: none;
-  cursor: pointer;
+  -webkit-appearance: none; appearance: none;
+  width: 92px; height: 3px; border-radius: 2px;
+  background: var(--we-line-strong); outline: none; cursor: pointer;
 }
-#world-editor .we-input-sens input[type="range"]:disabled { cursor: default; }
 #world-editor .we-input-sens input[type="range"]::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: #e8e0c8;
-  border: none;
-  cursor: pointer;
+  -webkit-appearance: none; appearance: none;
+  width: 12px; height: 12px; border-radius: 50%; background: var(--we-text); border: none;
 }
 #world-editor .we-input-sens input[type="range"]::-moz-range-thumb {
-  width: 12px;
-  height: 12px;
-  border: none;
-  border-radius: 50%;
-  background: #e8e0c8;
-  cursor: pointer;
+  width: 12px; height: 12px; border: none; border-radius: 50%; background: var(--we-text);
 }
 #world-editor .we-input-sens-val {
-  min-width: 30px;
-  font-size: calc(10.5px * var(--we-fs));
-  font-variant-numeric: tabular-nums;
-  color: rgba(232, 224, 200, 0.7);
+  min-width: 30px; font-size: calc(10.5px * var(--we-fs));
+  font-variant-numeric: tabular-nums; color: var(--we-text-mid);
 }
 
-/* ── LAYER STACK ─────────────────────────────────────────────────────────
-   Not a tab strip. Four rails, each carrying its own accent, the question it
-   answers, and whether editing it is a contract change or content — so reading
-   the stack top to bottom teaches the model before you touch anything. The
-   accent is passed in per-rail as --layer-accent from the manifest, so adding a
-   fifth layer needs no CSS. */
+/* ── LAYER STACK ───────────────────────────────────────────────────────── */
 #world-editor .we-tabs {
   display: flex;
-  gap: 6px;
-  padding: 12px 12px 2px;
+  gap: 2px;
+  padding: 10px 12px 0;
   flex: 0 0 auto;
-  flex-wrap: nowrap;
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
 }
+#world-editor .we-tabs::-webkit-scrollbar { height: 0; }
 #world-editor .we-layer {
-  --layer-accent: #ffd27a;
+  --layer-accent: #7aa2ff;
   appearance: none;
   position: relative;
   flex: 1 1 0;
-  min-width: 132px;
+  min-width: 84px;
   display: flex;
-  align-items: flex-start;
-  gap: 8px;
+  flex-direction: column;
+  gap: 3px;
   text-align: left;
-  padding: 9px 10px 10px;
-  border: 1px solid rgba(232, 224, 200, 0.12);
-  border-bottom-color: transparent;
-  border-radius: 9px 9px 0 0;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(0, 0, 0, 0.18));
-  color: rgba(232, 224, 200, 0.66);
+  padding: 9px 10px 11px;
+  border: 0;
+  background: transparent;
+  color: var(--we-text-dim);
   font: inherit;
   cursor: pointer;
-  transition: color 0.18s, background 0.18s, border-color 0.18s, transform 0.18s;
+  border-radius: 8px 8px 0 0;
+  transition: color 0.16s, background 0.16s;
 }
-#world-editor .we-layer::before {
-  /* The signal line: a layer's accent runs along its top edge and lights up
-     when active, which is what makes the stack read as a pipeline. */
+#world-editor .we-layer::after {
   content: "";
   position: absolute;
-  left: 9px; right: 9px; top: 0;
+  left: 10px; right: 10px; bottom: 0;
   height: 2px;
-  border-radius: 2px;
+  border-radius: 2px 2px 0 0;
   background: var(--layer-accent);
-  opacity: 0.22;
-  transition: opacity 0.2s, box-shadow 0.2s;
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
 }
-#world-editor .we-layer:hover {
-  color: #f2ecda;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(0, 0, 0, 0.16));
-}
-#world-editor .we-layer:hover::before { opacity: 0.5; }
-#world-editor .we-layer.active {
-  color: #f6f1e2;
-  border-color: rgba(232, 224, 200, 0.2);
-  background: linear-gradient(180deg,
-    color-mix(in srgb, var(--layer-accent) 14%, transparent),
-    rgba(0, 0, 0, 0.28));
-}
-#world-editor .we-layer.active::before {
-  opacity: 1;
-  box-shadow: 0 0 12px var(--layer-accent);
-}
-#world-editor .we-layer-glyph {
-  font-size: calc(15px * var(--we-fs));
-  line-height: 1.15;
-  color: var(--layer-accent);
-  flex-shrink: 0;
-  opacity: 0.85;
-}
-#world-editor .we-layer-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+#world-editor .we-layer:hover { color: var(--we-text-mid); background: rgba(255, 255, 255, 0.02); }
+#world-editor .we-layer.active { color: var(--we-text); }
+#world-editor .we-layer.active::after { transform: scaleX(1); }
+#world-editor .we-layer-glyph { display: none; }
+#world-editor .we-layer-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 #world-editor .we-layer-name {
-  font-size: calc(12.5px * var(--we-fs));
+  font-size: calc(11.5px * var(--we-fs));
   font-weight: 600;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.07em;
   text-transform: uppercase;
-  white-space: nowrap;
 }
-#world-editor .we-layer-q {
-  font-size: calc(10px * var(--we-fs));
-  line-height: 1.28;
-  color: rgba(232, 224, 200, 0.44);
-  /* Wrap to a second line rather than truncating. "How doe…" tells a designer
-     nothing, and the question is the whole reason the rail exists. */
-  white-space: normal;
-  text-wrap: balance;
+#world-editor .we-layer-q { display: none; }   /* the header says it, once */
+#world-editor .we-layer-risk { display: none; }
+
+/* ── LAYER HEADER ──────────────────────────────────────────────────────── */
+#world-editor .we-layer-head { flex: 0 0 auto; border-bottom: 1px solid var(--we-line); }
+#world-editor .we-layer-head.hidden { display: none; }
+#world-editor .we-lhead { padding: 16px 16px 14px; }
+#world-editor .we-lhead-row { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; }
+#world-editor .we-lhead-dot {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--layer-accent);
+  box-shadow: 0 0 10px var(--layer-accent);
+  align-self: center;
 }
-#world-editor .we-layer-risk {
+#world-editor .we-lhead-title {
+  font-size: calc(19px * var(--we-fs));
+  font-weight: 600;
+  letter-spacing: -0.012em;
+  color: var(--we-text);
+}
+#world-editor .we-lhead-tag {
+  font-size: calc(12.5px * var(--we-fs));
+  color: var(--we-text-dim);
+}
+
+/* ── Disclosures: the whole text-volume strategy ───────────────────────── */
+#world-editor .we-more-info { margin-top: 9px; }
+#world-editor .we-more-info > summary {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: calc(11px * var(--we-fs));
+  color: var(--we-text-dim);
+  cursor: pointer;
+  list-style: none;
+  padding: 3px 0;
+  transition: color 0.15s;
+  width: fit-content;
+}
+#world-editor .we-more-info > summary::-webkit-details-marker { display: none; }
+#world-editor .we-more-info > summary::before {
+  content: "";
+  width: 4px; height: 4px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 0.18s;
+}
+#world-editor .we-more-info[open] > summary::before { transform: rotate(45deg); }
+#world-editor .we-more-info > summary:hover { color: var(--we-text-mid); }
+#world-editor .we-more-info-body {
+  font-size: calc(12.5px * var(--we-fs));
+  line-height: 1.6;
+  color: var(--we-text-mid);
+  padding: 4px 0 2px;
+  max-width: 62ch;
+}
+#world-editor .we-more-wiring {
+  margin-top: 7px;
+  font-size: calc(11.5px * var(--we-fs));
+  color: var(--we-text-dim);
+}
+
+/* ── Scroll body ───────────────────────────────────────────────────────── */
+#world-editor .we-scroll {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-bottom: 12px;
+}
+#world-editor .we-scroll::-webkit-scrollbar { width: 10px; }
+#world-editor .we-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1); border-radius: 6px;
+  border: 3px solid transparent; background-clip: content-box;
+}
+#world-editor .we-fields, #world-editor .we-cast { padding: 14px 16px 0; }
+#world-editor .we-fields.hidden, #world-editor .we-cast.hidden { display: none; }
+#world-editor .we-blurb {
+  font-size: calc(12.5px * var(--we-fs)); line-height: 1.6;
+  color: var(--we-text-dim); margin-bottom: 12px;
+}
+
+/* ── PROMPT CARDS ──────────────────────────────────────────────────────── */
+#world-editor .we-card {
+  position: relative;
+  display: block;
+  padding: 13px 14px 12px;
+  margin-bottom: 9px;
+  border: 1px solid var(--we-line);
+  border-radius: 11px;
+  background: var(--we-panel);
+  cursor: pointer;
+  transition: border-color 0.16s, background 0.16s, transform 0.16s;
+}
+#world-editor .we-card:hover {
+  border-color: var(--we-line-strong);
+  background: var(--we-raise);
+  transform: translateY(-1px);
+}
+#world-editor .we-card:focus-visible {
+  outline: none; border-color: var(--layer-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--layer-accent) 22%, transparent);
+}
+#world-editor .we-card-head { display: flex; align-items: center; gap: 8px; }
+#world-editor .we-card-label {
+  font-size: calc(14px * var(--we-fs));
+  font-weight: 550;
+  letter-spacing: -0.008em;
+  color: var(--we-text);
+}
+#world-editor .we-tag {
   margin-left: auto;
   flex-shrink: 0;
-  font-size: calc(8.5px * var(--we-fs));
+  font-size: calc(9.5px * var(--we-fs));
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  padding: 2px 7px;
+  border-radius: 999px;
+}
+#world-editor .we-tag-live { background: rgba(122, 162, 255, 0.14); color: #9bb8ff; }
+#world-editor .we-tag-restart { background: rgba(255, 206, 106, 0.14); color: #ffce6a; }
+#world-editor .we-card-preview {
+  margin-top: 7px;
+  font-family: var(--we-mono);
+  font-size: calc(11.5px * var(--we-fs));
+  line-height: 1.55;
+  color: var(--we-text-dim);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+#world-editor .we-card-meta {
+  display: flex; align-items: center; gap: 10px;
+  margin-top: 9px;
+  font-size: calc(10.5px * var(--we-fs));
+  font-variant-numeric: tabular-nums;
+  color: var(--we-text-dim);
+}
+#world-editor .we-card-edited { color: #ffce6a; }
+#world-editor .we-card.modified { border-color: rgba(255, 206, 106, 0.28); }
+#world-editor .we-card-reset {
+  appearance: none;
+  margin-top: 9px;
+  border: 1px solid var(--we-line);
+  background: transparent;
+  color: var(--we-text-dim);
+  font: inherit; font-size: calc(10.5px * var(--we-fs));
+  padding: 4px 10px; border-radius: 7px; cursor: pointer;
+}
+#world-editor .we-card-reset:hover { color: var(--we-text); border-color: var(--we-line-strong); }
+
+/* ── SPEC BLOCKS (the forms) ───────────────────────────────────────────── */
+#world-editor .we-block {
+  padding: 15px 15px 13px;
+  margin-bottom: 12px;
+  border: 1px solid var(--we-line);
+  border-radius: 13px;
+  background: var(--we-panel);
+}
+#world-editor .we-block-head { display: flex; align-items: center; gap: 8px; }
+#world-editor .we-block-label {
+  font-size: calc(15px * var(--we-fs));
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+#world-editor .we-block-desc {
+  margin-top: 5px;
+  font-size: calc(12.5px * var(--we-fs));
+  line-height: 1.55;
+  color: var(--we-text-dim);
+  max-width: 60ch;
+}
+#world-editor .we-cast-row { margin-top: 13px; }
+#world-editor .we-cast-label {
+  display: block;
+  font-size: calc(10px * var(--we-fs));
+  font-weight: 600;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  padding: 2px 5px;
-  border-radius: 3px;
+  color: var(--we-text-dim);
+  margin-bottom: 6px;
+}
+/* Help text appears when you're actually in the field — not as a permanent
+   second line under every input. */
+#world-editor .we-cast-help {
+  font-size: calc(11.5px * var(--we-fs));
+  line-height: 1.5;
+  color: var(--we-text-dim);
+  max-height: 0;
   opacity: 0;
-  transition: opacity 0.18s;
+  overflow: hidden;
+  transition: max-height 0.2s ease, opacity 0.2s ease, margin 0.2s ease;
 }
-#world-editor .we-layer.active .we-layer-risk { opacity: 1; }
-#world-editor .we-risk-contract { background: rgba(134, 200, 255, 0.16); color: #86c8ff; }
-#world-editor .we-risk-content { background: rgba(127, 208, 160, 0.14); color: #7fd0a0; }
-#world-editor .we-layer-aux { flex: 0 0 auto; min-width: 92px; }
-#world-editor .we-layer-aux .we-layer-glyph { color: rgba(232, 224, 200, 0.5); }
-#world-editor .we-tabs::-webkit-scrollbar { height: 0; }
+#world-editor .we-cast-row:hover .we-cast-help,
+#world-editor .we-cast-row:focus-within .we-cast-help {
+  max-height: 80px; opacity: 1; margin-top: 5px;
+}
+#world-editor .we-block input[type="text"],
+#world-editor .we-block textarea {
+  width: 100%;
+  box-sizing: border-box;
+  background: #0d0f12;
+  border: 1px solid var(--we-line);
+  border-radius: 9px;
+  color: var(--we-text);
+  font: inherit;
+  font-size: calc(13.5px * var(--we-fs));
+  line-height: 1.55;
+  padding: 9px 11px;
+  transition: border-color 0.15s, background 0.15s;
+}
+#world-editor .we-block textarea { min-height: calc(64px * var(--we-fs)); resize: vertical; }
+#world-editor .we-block input[type="text"]:focus,
+#world-editor .we-block textarea:focus {
+  outline: none;
+  border-color: var(--layer-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--layer-accent) 16%, transparent);
+}
+#world-editor .we-block input::placeholder,
+#world-editor .we-block textarea::placeholder { color: rgba(242, 244, 247, 0.26); }
 
-/* ── LAYER HEADER ───────────────────────────────────────────────────────── */
-#world-editor .we-layer-head { flex: 0 0 auto; }
-#world-editor .we-layer-head.hidden { display: none; }
-#world-editor .we-layer-intro {
-  --layer-accent: #ffd27a;
-  margin: 12px 12px 14px;
-  padding: 13px 14px 14px;
-  border: 1px solid rgba(232, 224, 200, 0.12);
-  border-left: 2px solid var(--layer-accent);
-  border-radius: 4px 10px 10px 4px;
-  background: linear-gradient(100deg,
-    color-mix(in srgb, var(--layer-accent) 9%, transparent), rgba(255, 255, 255, 0.012) 46%);
+/* Toggle: a real switch. */
+#world-editor .we-cast-toggle {
+  display: flex; align-items: center; gap: 10px; cursor: pointer;
+  padding: 9px 11px; border: 1px solid var(--we-line); border-radius: 9px;
+  background: #0d0f12;
 }
-#world-editor .we-layer-intro-head {
-  display: flex; align-items: baseline; gap: 9px; margin-bottom: 7px;
+#world-editor .we-cast-toggle:hover { border-color: var(--we-line-strong); }
+#world-editor .we-cast-toggle input { appearance: none; margin: 0; position: relative;
+  width: 34px; height: 20px; border-radius: 999px; background: rgba(255,255,255,0.12);
+  cursor: pointer; flex-shrink: 0; transition: background 0.2s; }
+#world-editor .we-cast-toggle input::after {
+  content: ""; position: absolute; top: 2px; left: 2px;
+  width: 16px; height: 16px; border-radius: 50%; background: #fff;
+  transition: transform 0.2s cubic-bezier(0.22, 1, 0.36, 1);
 }
-#world-editor .we-layer-intro-glyph {
-  color: var(--layer-accent); font-size: calc(16px * var(--we-fs)); line-height: 1;
-}
-#world-editor .we-layer-intro-title {
-  font-size: calc(15px * var(--we-fs)); font-weight: 600; letter-spacing: 0.14em;
-  text-transform: uppercase; color: #f6f1e2;
-}
-#world-editor .we-layer-intro-vol {
-  margin-left: auto; font-size: calc(10px * var(--we-fs)); letter-spacing: 0.08em;
-  color: rgba(232, 224, 200, 0.46); white-space: nowrap;
-}
-#world-editor .we-layer-intro-blurb {
-  margin: 0; font-size: calc(13.5px * var(--we-fs)); line-height: 1.6;
-  color: rgba(232, 224, 200, 0.76);
-}
-#world-editor .we-layer-intro-scope {
-  margin-top: 9px; font-size: calc(11.5px * var(--we-fs)); line-height: 1.5;
-  color: rgba(232, 224, 200, 0.5);
-}
-#world-editor .we-layer-intro.we-risk-contract .we-layer-intro-scope { color: #86c8ff; }
+#world-editor .we-cast-toggle input:checked { background: var(--layer-accent); }
+#world-editor .we-cast-toggle input:checked::after { transform: translateX(14px); }
+#world-editor .we-cast-toggle-text { display: flex; flex-direction: column; gap: 2px; }
+#world-editor .we-cast-toggle-label { font-size: calc(13px * var(--we-fs)); }
+#world-editor .we-cast-toggle .we-cast-help { max-height: none; opacity: 1; }
 
-/* ── LEVEL GALLERY ──────────────────────────────────────────────────────── */
-#world-editor .we-levels { margin: 0 12px 16px; }
-#world-editor .we-levels-head {
-  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 9px;
+/* Segmented mode picker. */
+#world-editor .we-mode-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+#world-editor .we-mode {
+  appearance: none; text-align: left; cursor: pointer;
+  padding: 10px 11px; border-radius: 9px;
+  border: 1px solid var(--we-line); background: #0d0f12;
+  color: var(--we-text-mid); font: inherit;
+  display: flex; flex-direction: column; gap: 3px;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
 }
+#world-editor .we-mode:hover { border-color: var(--we-line-strong); color: var(--we-text); }
+#world-editor .we-mode.active {
+  border-color: var(--layer-accent); color: var(--we-text);
+  background: color-mix(in srgb, var(--layer-accent) 12%, #0d0f12);
+}
+#world-editor .we-mode-name { font-size: calc(13px * var(--we-fs)); font-weight: 550; }
+#world-editor .we-mode-tag { font-size: calc(11px * var(--we-fs)); color: var(--we-text-dim); }
+
+/* ── REFERENCE PLATES ──────────────────────────────────────────────────── */
+#world-editor .we-plate-zone { margin-top: 15px; }
+#world-editor .we-plate-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+#world-editor .we-plate-title {
+  font-size: calc(10px * var(--we-fs)); font-weight: 600;
+  letter-spacing: 0.12em; text-transform: uppercase; color: var(--we-text-dim);
+}
+#world-editor .we-plate-head .we-more-info { margin-top: 0; }
+#world-editor .we-plates {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
+  gap: 8px;
+  margin-top: 9px;
+  border-radius: 11px;
+  transition: box-shadow 0.16s;
+}
+#world-editor .we-plates.dragover {
+  box-shadow: 0 0 0 2px var(--layer-accent), 0 0 26px -6px var(--layer-accent);
+}
+#world-editor .we-plate {
+  position: relative; margin: 0;
+  aspect-ratio: 4 / 3;
+  border-radius: 10px; overflow: hidden;
+  border: 1px solid var(--we-line);
+  background: #0d0f12;
+}
+#world-editor .we-plate img { width: 100%; height: 100%; object-fit: cover; display: block; }
+#world-editor .we-plate-remove {
+  position: absolute; top: 5px; right: 5px;
+  appearance: none; width: 22px; height: 22px; border-radius: 50%;
+  border: 0; cursor: pointer;
+  background: rgba(0, 0, 0, 0.62); color: #fff;
+  font-size: 10px; line-height: 1;
+  opacity: 0; transition: opacity 0.15s;
+  backdrop-filter: blur(4px);
+}
+#world-editor .we-plate:hover .we-plate-remove { opacity: 1; }
+#world-editor .we-plate-add {
+  appearance: none; cursor: pointer;
+  aspect-ratio: 4 / 3;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px;
+  border: 1px dashed var(--we-line-strong);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--we-text-dim);
+  font: inherit;
+  transition: border-color 0.16s, color 0.16s, background 0.16s;
+}
+#world-editor .we-plate-add:hover {
+  border-color: var(--layer-accent); color: var(--we-text);
+  background: color-mix(in srgb, var(--layer-accent) 8%, transparent);
+}
+#world-editor .we-plate-add-mark { font-size: calc(19px * var(--we-fs)); line-height: 1; }
+#world-editor .we-plate-add-text { font-size: calc(10.5px * var(--we-fs)); }
+
+/* ── LEVEL GALLERY ─────────────────────────────────────────────────────── */
+#world-editor .we-levels { padding: 15px 16px 4px; }
+#world-editor .we-levels-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 10px; }
 #world-editor .we-levels-title {
-  font-size: calc(10.5px * var(--we-fs)); letter-spacing: 0.18em;
-  color: rgba(232, 224, 200, 0.56);
+  font-size: calc(10px * var(--we-fs)); font-weight: 600;
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--we-text-dim);
 }
-#world-editor .we-levels-note {
-  font-size: calc(11px * var(--we-fs)); color: rgba(232, 224, 200, 0.4);
-}
-#world-editor .we-levels-save { display: flex; gap: 8px; margin-bottom: 11px; }
+#world-editor .we-levels-note { font-size: calc(11.5px * var(--we-fs)); color: var(--we-text-dim); }
+#world-editor .we-levels-save { display: flex; gap: 8px; margin-bottom: 12px; }
 #world-editor .we-levels-save input {
   flex: 1 1 auto; min-width: 0;
-  background: rgba(0, 0, 0, 0.34);
-  border: 1px solid rgba(232, 224, 200, 0.16);
-  border-radius: 7px; color: #f0e7d4;
-  font: inherit; font-size: calc(13px * var(--we-fs)); padding: 8px 10px;
+  background: #0d0f12; border: 1px solid var(--we-line);
+  border-radius: 9px; color: var(--we-text);
+  font: inherit; font-size: calc(13px * var(--we-fs)); padding: 9px 11px;
 }
 #world-editor .we-levels-save input:focus {
-  outline: none; border-color: rgba(157, 140, 240, 0.55);
+  outline: none; border-color: var(--layer-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--layer-accent) 16%, transparent);
 }
 #world-editor .we-levels-empty {
   font-size: calc(12.5px * var(--we-fs)); line-height: 1.6;
-  color: rgba(232, 224, 200, 0.42);
-  padding: 12px 13px; border-radius: 9px;
-  border: 1px dashed rgba(232, 224, 200, 0.16);
+  color: var(--we-text-dim);
+  padding: 16px; border-radius: 11px;
+  border: 1px dashed var(--we-line-strong);
+  max-width: 56ch;
 }
 #world-editor .we-level-cards {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(196px, 1fr)); gap: 9px;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(184px, 1fr)); gap: 10px;
 }
 #world-editor .we-level-card {
-  display: flex; flex-direction: column; gap: 5px;
-  padding: 11px 12px 10px;
-  border: 1px solid rgba(232, 224, 200, 0.13);
-  border-radius: 10px;
-  background: linear-gradient(165deg, rgba(157, 140, 240, 0.07), rgba(255, 255, 255, 0.012));
-  transition: border-color 0.18s, transform 0.18s, box-shadow 0.18s;
+  display: flex; flex-direction: column;
+  border: 1px solid var(--we-line);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--we-panel);
+  transition: border-color 0.16s, transform 0.16s, box-shadow 0.16s;
 }
 #world-editor .we-level-card:hover {
-  border-color: rgba(157, 140, 240, 0.42);
-  transform: translateY(-1px);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.34);
+  border-color: var(--we-line-strong);
+  transform: translateY(-2px);
+  box-shadow: 0 12px 28px -12px rgba(0, 0, 0, 0.8);
 }
-#world-editor .we-level-card.off { opacity: 0.62; }
+#world-editor .we-level-card.off { opacity: 0.6; }
+#world-editor .we-level-art {
+  aspect-ratio: 16 / 10;
+  background-size: cover;
+  background-position: center;
+  border-bottom: 1px solid var(--we-line);
+}
+#world-editor .we-level-art-empty {
+  background-image:
+    linear-gradient(135deg, rgba(122, 162, 255, 0.1), transparent 60%),
+    repeating-linear-gradient(45deg, rgba(255,255,255,0.02) 0 6px, transparent 6px 12px);
+}
+#world-editor .we-level-body { padding: 11px 12px 11px; display: flex; flex-direction: column; gap: 5px; }
 #world-editor .we-level-card-top { display: flex; align-items: baseline; gap: 7px; }
 #world-editor .we-level-card-name {
-  font-size: calc(13.5px * var(--we-fs)); font-weight: 600; color: #f2ecda;
+  font-size: calc(13.5px * var(--we-fs)); font-weight: 600; letter-spacing: -0.008em;
 }
 #world-editor .we-level-card-off {
-  margin-left: auto; font-size: calc(8.5px * var(--we-fs)); letter-spacing: 0.1em;
-  text-transform: uppercase; color: rgba(232, 224, 200, 0.44);
-  border: 1px solid rgba(232, 224, 200, 0.18); border-radius: 3px; padding: 1px 4px;
-}
-#world-editor .we-level-card-place {
-  font-size: calc(10.5px * var(--we-fs)); letter-spacing: 0.06em;
-  color: #9d8cf0;
+  margin-left: auto; font-size: calc(9px * var(--we-fs));
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--we-text-dim);
+  border: 1px solid var(--we-line); border-radius: 4px; padding: 1px 5px;
 }
 #world-editor .we-level-card-sum {
-  font-size: calc(12px * var(--we-fs)); line-height: 1.5;
-  color: rgba(232, 224, 200, 0.62);
+  font-size: calc(12px * var(--we-fs)); line-height: 1.5; color: var(--we-text-dim);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
-#world-editor .we-level-card-meta {
-  font-size: calc(10px * var(--we-fs)); color: rgba(232, 224, 200, 0.38);
-}
-#world-editor .we-level-card-acts { display: flex; gap: 6px; margin-top: 5px; }
-#world-editor .we-level-card-acts .we-btn { padding: 5px 10px; font-size: calc(10.5px * var(--we-fs)); }
+#world-editor .we-level-card-meta { font-size: calc(10px * var(--we-fs)); color: var(--we-text-dim); }
+#world-editor .we-level-card-acts { display: flex; gap: 6px; margin-top: 4px; }
+#world-editor .we-level-card-acts .we-btn { padding: 5px 11px; font-size: calc(10.5px * var(--we-fs)); }
 
-@media (prefers-reduced-motion: reduce) {
-  #world-editor .we-layer,
-#world-editor .we-level-card { transition: none; }
-  #world-editor .we-level-card:hover { transform: none; }
+/* ── Worlds ("Builds") tab ─────────────────────────────────────────────── */
+#world-editor .we-worlds { padding: 15px 16px 0; }
+#world-editor .we-worlds.hidden { display: none; }
+#world-editor .we-worlds-save { display: flex; gap: 8px; margin-bottom: 10px; }
+#world-editor .we-worlds-save input {
+  flex: 1 1 auto; min-width: 0; background: #0d0f12;
+  border: 1px solid var(--we-line); border-radius: 9px; color: var(--we-text);
+  font: inherit; font-size: calc(13px * var(--we-fs)); padding: 9px 11px;
 }
+#world-editor .we-worlds-hint {
+  font-size: calc(11.5px * var(--we-fs)); line-height: 1.55;
+  color: var(--we-text-dim); margin-bottom: 12px; max-width: 58ch;
+}
+#world-editor .we-worlds-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 7px; }
+#world-editor .we-world {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; border: 1px solid var(--we-line);
+  border-radius: 10px; background: var(--we-panel);
+}
+#world-editor .we-world-name { font-size: calc(13px * var(--we-fs)); font-weight: 550; }
+#world-editor .we-world-meta { font-size: calc(10.5px * var(--we-fs)); color: var(--we-text-dim); }
+#world-editor .we-world-acts { margin-left: auto; display: flex; gap: 6px; }
+#world-editor .we-world-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+#world-editor .we-world-acts .we-btn { padding: 5px 11px; font-size: calc(11px * var(--we-fs)); }
+#world-editor .we-empty {
+  font-size: calc(12.5px * var(--we-fs)); line-height: 1.6; color: var(--we-text-dim);
+  padding: 16px; border-radius: 11px; border: 1px dashed var(--we-line-strong);
+}
+#world-editor .we-card-vars { color: var(--we-text-dim); }
+#world-editor .we-more-compiled { margin-top: 12px; }
 
-#world-editor .we-scroll {
-  flex: 1 1 auto; min-height: 0; overflow-y: auto;
-  padding: 16px 18px 10px;
+/* ── Buttons, footer, toast ────────────────────────────────────────────── */
+#world-editor .we-btn {
+  appearance: none; cursor: pointer;
+  border: 1px solid var(--we-line-strong);
+  background: var(--we-raise);
+  color: var(--we-text);
+  font: inherit; font-size: calc(12.5px * var(--we-fs)); font-weight: 550;
+  padding: 8px 14px; border-radius: 9px;
+  transition: background 0.15s, border-color 0.15s, transform 0.12s;
 }
-#world-editor .we-scroll::-webkit-scrollbar { width: 8px; }
-#world-editor .we-scroll::-webkit-scrollbar-thumb {
-  background: rgba(255, 210, 122, 0.18); border-radius: 4px;
+#world-editor .we-btn:hover { background: #1e222a; }
+#world-editor .we-btn:active { transform: translateY(1px); }
+#world-editor .we-btn-primary {
+  background: var(--we-accent); border-color: transparent; color: #08101f;
 }
+#world-editor .we-btn-primary:hover { background: #93b3ff; }
+#world-editor .we-btn-accent { background: #ffce6a; border-color: transparent; color: #241a05; }
+#world-editor .we-btn-accent:hover { background: #ffd982; }
+#world-editor .we-btn-ghost { background: transparent; border-color: var(--we-line); color: var(--we-text-mid); }
+#world-editor .we-btn-ghost:hover { color: var(--we-text); border-color: var(--we-line-strong); }
+#world-editor .we-foot {
+  flex: 0 0 auto;
+  display: flex; align-items: center; gap: 9px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--we-line);
+  background: rgba(0, 0, 0, 0.3);
+}
+#world-editor .we-foot-main { margin-left: auto; display: flex; gap: 8px; }
+#world-editor .we-toast {
+  position: absolute; left: 50%; bottom: 70px;
+  transform: translateX(-50%) translateY(8px);
+  padding: 8px 14px; border-radius: 999px;
+  background: rgba(0, 0, 0, 0.86); border: 1px solid var(--we-line-strong);
+  font-size: calc(12px * var(--we-fs)); color: var(--we-text);
+  opacity: 0; pointer-events: none;
+  transition: opacity 0.2s, transform 0.2s;
+}
+#world-editor .we-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+#world-editor .we-toast.warn { border-color: rgba(255, 143, 143, 0.5); color: #ff9f9f; }
 
-/* A prompt field card */
-#world-editor .we-field {
-  margin-bottom: 16px;
-  border: 1px solid rgba(232, 224, 200, 0.1);
-  border-radius: 10px;
-  padding: 12px 12px 10px;
-  background: rgba(255, 255, 255, 0.015);
-  transition: border-color 0.2s;
-}
-#world-editor .we-field.modified { border-color: rgba(255, 210, 122, 0.36); }
-#world-editor .we-field-top {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
-}
-#world-editor .we-field-label {
-  font-size: calc(16px * var(--we-fs)); font-weight: 600; color: #f2ecda; letter-spacing: 0.01em;
-}
-#world-editor .we-chips { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
-#world-editor .we-chip {
-  font-size: calc(9.5px * var(--we-fs)); letter-spacing: 0.1em; text-transform: uppercase;
-  padding: 2px 6px; border-radius: 4px; white-space: nowrap;
-}
-#world-editor .we-chip-live { background: rgba(134, 200, 255, 0.16); color: #86c8ff; }
-#world-editor .we-chip-restart { background: rgba(255, 210, 122, 0.16); color: #ffd27a; }
-#world-editor .we-mod-dot { color: #ffd27a; font-size: calc(12px * var(--we-fs)); opacity: 0; transition: opacity 0.2s; }
-#world-editor .we-field.modified .we-mod-dot { opacity: 1; }
-#world-editor .we-field-desc {
-  font-size: calc(14px * var(--we-fs)); line-height: 1.5; color: rgba(232, 224, 200, 0.62);
-  margin: 6px 0 9px;
-}
-#world-editor .we-field textarea {
-  width: 100%; box-sizing: border-box;
-  /* Tall enough to hold a real paragraph of prompt. Anything longer belongs in
-     the pop-out editor (the EXPAND button / double-click). */
-  min-height: calc(320px * var(--we-fs)); resize: vertical;
-  background: rgba(0, 0, 0, 0.34);
-  border: 1px solid rgba(232, 224, 200, 0.14);
-  border-radius: 7px; color: #f0e7d4;
-  font-family: 'Share Tech Mono', ui-monospace, monospace;
-  font-size: calc(16px * var(--we-fs)); line-height: 1.65; padding: 12px 13px;
-  transition: border-color 0.15s;
-  tab-size: 2;
-}
-#world-editor .we-field textarea:focus {
-  outline: none; border-color: rgba(255, 210, 122, 0.5);
-}
-/* EXPAND affordance sits in the field header so it's found before the scroll. */
-#world-editor .we-expand {
-  appearance: none; border: 1px solid rgba(134, 200, 255, 0.4);
-  background: rgba(134, 200, 255, 0.1); color: #86c8ff;
-  font: inherit; font-size: calc(11px * var(--we-fs)); letter-spacing: 0.1em; text-transform: uppercase;
-  padding: 4px 9px; border-radius: 6px; cursor: pointer; white-space: nowrap;
-}
-#world-editor .we-expand:hover { background: rgba(134, 200, 255, 0.22); }
-#world-editor .we-field-hint {
-  font-size: calc(12px * var(--we-fs)); color: rgba(232, 224, 200, 0.34); margin-top: 5px;
-  font-style: italic;
-}
-/* A hint that opens with ⚠ is reporting a disconnected shared placeholder —
-   read it as a warning, not as help text. */
-#world-editor .we-field-hint.warn {
-  color: #ffc9a0; font-style: normal;
-}
-#world-editor .we-field-foot {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 8px; margin-top: 7px;
-}
-#world-editor .we-legend {
-  font-size: calc(11px * var(--we-fs)); color: rgba(232, 224, 200, 0.4);
-  font-family: 'Share Tech Mono', monospace;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-#world-editor .we-legend b { color: rgba(134, 200, 255, 0.7); font-weight: 400; }
-#world-editor .we-field-reset {
-  background: none; border: none; color: rgba(232, 224, 200, 0.42);
-  cursor: pointer; font-size: calc(12px * var(--we-fs)); letter-spacing: 0.06em; flex-shrink: 0;
-  padding: 2px 4px;
-}
-#world-editor .we-field-reset:hover { color: #ffd27a; }
+/* ── Warnings + advanced disclosure ────────────────────────────────────── */
 #world-editor .we-warn {
-  margin-top: 6px; font-size: calc(12.5px * var(--we-fs)); line-height: 1.4;
-  color: #ffb4a0; background: rgba(255, 90, 60, 0.08);
-  border-left: 2px solid rgba(255, 120, 90, 0.6);
-  padding: 5px 8px; border-radius: 0 4px 4px 0;
+  margin-top: 9px; padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 143, 143, 0.09);
+  border: 1px solid rgba(255, 143, 143, 0.24);
+  font-size: calc(11.5px * var(--we-fs)); line-height: 1.5; color: #ffb0b0;
 }
 #world-editor .we-warn.hidden { display: none; }
-
-/* The prompt-field column. It has always been given a `.hidden` class when the
-   Cast or Worlds tab is active, but never a rule to go with it — which only
-   stayed invisible because it happened to be empty on first load. Switch to a
-   prompt tab and back and the prompts stayed on screen under the cast form. */
-#world-editor .we-fields.hidden { display: none; }
-
-/* One line of framing above a tab's fields. */
-#world-editor .we-blurb {
-  font-size: 11.5px; line-height: 1.5; color: rgba(232, 224, 200, 0.55);
-  margin: 0 0 14px; padding-bottom: 10px;
-  border-bottom: 1px solid rgba(232, 224, 200, 0.09);
-}
-
-/* The single "N advanced …" reveal shared by the prompt tabs and the cast
-   cards, so both disclose their machinery the same way. */
 #world-editor .we-more {
-  display: block; width: 100%; text-align: left;
-  background: none; border: 0; cursor: pointer;
-  font-family: inherit; font-size: 10.5px; letter-spacing: 0.06em;
-  text-transform: uppercase; color: rgba(134, 200, 255, 0.65);
-  padding: 8px 0; margin: 2px 0 10px;
+  appearance: none; cursor: pointer;
+  display: block; width: 100%;
+  margin: 4px 0 12px;
+  padding: 8px 12px;
+  border: 1px dashed var(--we-line-strong);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--we-text-dim);
+  font: inherit; font-size: calc(11.5px * var(--we-fs));
+  text-align: left;
+  transition: color 0.15s, border-color 0.15s;
 }
-#world-editor .we-more:hover { color: #86c8ff; }
-
-/* ── Cast & Camera tab ─────────────────────────────────────────────
-   Structured spec (character / level / camera) rather than a prompt body,
-   so it needs typed inputs, a perspective picker, and image drop zones. */
-#world-editor .we-cast.hidden { display: none; }
-#world-editor .we-cast-block { margin-bottom: 18px; }
-#world-editor .we-cast-row { margin-bottom: 10px; }
-#world-editor .we-cast-label {
-  display: block; font-size: calc(11px * var(--we-fs)); letter-spacing: 0.1em; text-transform: uppercase;
-  color: rgba(232, 224, 200, 0.5); margin-bottom: 4px;
-}
-#world-editor .we-cast-row input[type="text"],
-#world-editor .we-cast-row textarea {
-  width: 100%; box-sizing: border-box;
-  background: rgba(0, 0, 0, 0.32);
-  border: 1px solid rgba(232, 224, 200, 0.14);
-  border-radius: 7px; color: #eee4cf; font: inherit; font-size: calc(14px * var(--we-fs));
-  line-height: 1.5; padding: 8px 10px;
-}
-#world-editor .we-cast-row textarea { min-height: calc(78px * var(--we-fs)); resize: vertical; font-family: 'Share Tech Mono', ui-monospace, monospace; }
-#world-editor .we-cast-row input[type="text"]:focus,
-#world-editor .we-cast-row textarea:focus { outline: none; border-color: rgba(255, 210, 122, 0.5); }
-#world-editor .we-cast-help { font-size: calc(12px * var(--we-fs)); line-height: 1.4; color: rgba(232, 224, 200, 0.42); margin-top: 4px; }
-
-#world-editor .we-cast-toggle {
-  display: flex; align-items: center; gap: 9px; cursor: pointer;
-  border: 1px solid rgba(232, 224, 200, 0.12); border-radius: 8px;
-  padding: 9px 11px; background: rgba(255, 255, 255, 0.015);
-}
-#world-editor .we-cast-toggle input { accent-color: #ffd27a; width: 15px; height: 15px; cursor: pointer; }
-#world-editor .we-cast-toggle .we-cast-toggle-label { font-size: calc(14px * var(--we-fs)); color: #f2ecda; }
-
-#world-editor .we-mode-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-#world-editor .we-mode {
-  appearance: none; text-align: left; cursor: pointer;
-  border: 1px solid rgba(232, 224, 200, 0.14);
-  background: rgba(255, 255, 255, 0.02); color: rgba(232, 224, 200, 0.7);
-  border-radius: 8px; padding: 9px 10px; font: inherit;
-  transition: border-color 0.15s, background 0.15s, color 0.15s;
-}
-#world-editor .we-mode:hover { background: rgba(255, 255, 255, 0.05); color: #e8e0c8; }
-#world-editor .we-mode.active {
-  border-color: rgba(255, 210, 122, 0.5); background: rgba(255, 210, 122, 0.1); color: #ffd27a;
-}
-#world-editor .we-mode-name { display: block; font-size: calc(13.5px * var(--we-fs)); font-weight: 600; }
-#world-editor .we-mode-tag { display: block; font-size: calc(11px * var(--we-fs)); line-height: 1.35; color: rgba(232, 224, 200, 0.45); margin-top: 2px; }
-
-#world-editor .we-plates { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
-#world-editor .we-plate { position: relative; width: 72px; height: 72px; border-radius: 7px; overflow: hidden; border: 1px solid rgba(232, 224, 200, 0.14); }
-#world-editor .we-plate img { width: 100%; height: 100%; object-fit: cover; display: block; }
-#world-editor .we-plate-remove {
-  position: absolute; top: 2px; right: 2px; width: 18px; height: 18px; line-height: 16px;
-  border: none; border-radius: 50%; cursor: pointer;
-  background: rgba(0, 0, 0, 0.7); color: #fff; font-size: calc(12px * var(--we-fs)); padding: 0;
-}
-#world-editor .we-plate-remove:hover { background: rgba(255, 90, 60, 0.85); }
-#world-editor .we-drop {
-  border: 1px dashed rgba(232, 224, 200, 0.24); border-radius: 8px;
-  padding: 13px 10px; text-align: center; cursor: pointer;
-  font-size: calc(12.5px * var(--we-fs)); line-height: 1.45; color: rgba(232, 224, 200, 0.5);
-  transition: border-color 0.15s, background 0.15s, color 0.15s;
-}
-#world-editor .we-drop:hover,
-#world-editor .we-drop.dragover {
-  border-color: rgba(255, 210, 122, 0.55); background: rgba(255, 210, 122, 0.06); color: #ffd27a;
-}
+#world-editor .we-more:hover { color: var(--we-text); border-color: var(--layer-accent); }
 #world-editor .we-compiled {
-  background: rgba(0, 0, 0, 0.32); border: 1px solid rgba(134, 200, 255, 0.2);
-  border-radius: 7px; padding: 9px 10px; margin-top: 8px;
-  font-family: 'Share Tech Mono', ui-monospace, monospace;
-  font-size: calc(12px * var(--we-fs)); line-height: 1.55; color: rgba(232, 224, 200, 0.62);
-  max-height: calc(260px * var(--we-fs)); overflow-y: auto; white-space: pre-wrap;
+  margin-top: 6px; padding: 10px 11px;
+  border-radius: 9px; background: #0d0f12; border: 1px solid var(--we-line);
+  font-family: var(--we-mono); font-size: calc(11px * var(--we-fs)); line-height: 1.6;
+  color: var(--we-text-mid);
+  white-space: pre-wrap; max-height: 220px; overflow-y: auto;
 }
+#world-editor .we-cast-reset { margin: 4px 0 14px; }
 
-@media (max-width: 560px) {
-  #world-editor .we-mode-grid { grid-template-columns: 1fr; }
-}
+#btn-editor.active { color: var(--we-accent, #7aa2ff); }
 
-/* Worlds tab */
-#world-editor .we-worlds.hidden { display: none; }
-#world-editor .we-worlds-save { display: flex; gap: 8px; }
-#world-editor .we-worlds-save input {
-  flex: 1 1 auto; box-sizing: border-box;
-  background: rgba(0, 0, 0, 0.32);
-  border: 1px solid rgba(232, 224, 200, 0.16);
-  border-radius: 7px; color: #eee4cf; font: inherit; font-size: calc(14px * var(--we-fs));
-  padding: 8px 10px;
+@media (max-width: 760px) {
+  #world-editor { --we-width: 100vw; border-right: 0; }
+  #world-editor .we-level-cards { grid-template-columns: 1fr 1fr; }
 }
-#world-editor .we-worlds-save input:focus { outline: none; border-color: rgba(255, 210, 122, 0.5); }
-#world-editor .we-worlds-hint {
-  font-size: calc(12.5px * var(--we-fs)); color: rgba(232, 224, 200, 0.45); margin: 8px 2px 12px;
+@media (prefers-reduced-motion: reduce) {
+  #world-editor,
+  #world-editor .we-card,
+  #world-editor .we-level-card,
+  #world-editor .we-layer::after { transition: none; }
+  #world-editor .we-card:hover,
+  #world-editor .we-level-card:hover { transform: none; }
 }
-#world-editor .we-worlds-list { list-style: none; margin: 0; padding: 0; }
-#world-editor .we-world {
-  display: flex; align-items: center; gap: 8px;
-  padding: 10px 10px; margin-bottom: 8px;
-  border: 1px solid rgba(232, 224, 200, 0.1); border-radius: 9px;
-  background: rgba(255, 255, 255, 0.015);
-}
-#world-editor .we-world-info { flex: 1 1 auto; min-width: 0; }
-#world-editor .we-world-name { font-size: calc(16px * var(--we-fs)); color: #f2ecda; font-weight: 600; }
-#world-editor .we-world-meta { font-size: calc(12px * var(--we-fs)); color: rgba(232, 224, 200, 0.42); margin-top: 2px; }
-#world-editor .we-world-actions { display: flex; gap: 6px; flex-shrink: 0; }
-#world-editor .we-empty { font-size: calc(13px * var(--we-fs)); color: rgba(232, 224, 200, 0.4); text-align: center; padding: 20px 0; }
-
-/* Buttons */
-#world-editor .we-btn {
-  appearance: none; border: 1px solid rgba(232, 224, 200, 0.2);
-  background: rgba(255, 255, 255, 0.03); color: #e8e0c8;
-  font: inherit; font-size: calc(13px * var(--we-fs)); letter-spacing: 0.08em; text-transform: uppercase;
-  padding: 8px 14px; border-radius: 8px; cursor: pointer; white-space: nowrap;
-  transition: background 0.15s, border-color 0.15s, transform 0.1s;
-}
-#world-editor .we-btn:hover { background: rgba(255, 255, 255, 0.07); }
-#world-editor .we-btn:active { transform: scale(0.97); }
-#world-editor .we-btn:disabled { opacity: 0.4; cursor: default; }
-#world-editor .we-btn-primary { border-color: rgba(134, 200, 255, 0.5); color: #86c8ff; background: rgba(134, 200, 255, 0.1); }
-#world-editor .we-btn-primary:hover { background: rgba(134, 200, 255, 0.2); }
-#world-editor .we-btn-accent { border-color: rgba(255, 210, 122, 0.55); color: #ffd27a; background: rgba(255, 210, 122, 0.12); }
-#world-editor .we-btn-accent:hover { background: rgba(255, 210, 122, 0.22); }
-#world-editor .we-btn-ghost { border-color: transparent; color: rgba(232, 224, 200, 0.55); background: none; }
-#world-editor .we-btn-ghost:hover { color: #e8e0c8; background: rgba(255, 255, 255, 0.05); }
-#world-editor .we-btn-sm { font-size: calc(12px * var(--we-fs)); padding: 6px 10px; }
-
-/* Footer */
-#world-editor .we-foot {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  padding: 12px 14px; border-top: 1px solid rgba(255, 210, 122, 0.16);
-  background: rgba(0, 0, 0, 0.28);
-  flex: 0 0 auto;
-}
-#world-editor .we-foot-main { display: flex; gap: 8px; }
-
-/* Toast */
-#world-editor .we-toast {
-  position: absolute; left: 14px; right: 14px; bottom: 64px;
-  background: rgba(20, 30, 24, 0.96); border: 1px solid rgba(134, 200, 255, 0.4);
-  color: #d6f0e4; font-size: calc(14px * var(--we-fs)); padding: 10px 12px; border-radius: 8px;
-  text-align: center; opacity: 0; transform: translateY(6px);
-  transition: opacity 0.2s, transform 0.2s; pointer-events: none;
-}
-#world-editor .we-toast.show { opacity: 1; transform: translateY(0); }
 
 /* ══ POP-OUT PROMPT EDITOR ══════════════════════════════════════════════
    A prompt is a 2,000+ character document. The side panel is fine for reading

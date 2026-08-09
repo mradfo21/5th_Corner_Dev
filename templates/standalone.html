@@ -641,22 +641,6 @@
       </div>
     </header>
 
-    <!-- CONTROLS — the movement scheme for the live world. DOOM (A/D turn) vs
-         FPS (A/D strafe + mouse look). Populated by InputProfileUi; mirrored in
-         the WORLD MODEL panel. Persisted per browser. -->
-    <div id="we-input-opts" class="we-input-opts">
-      <span class="we-input-label">CONTROLS</span>
-      <div id="we-input-profile" class="rt-ho-seg" role="group" aria-label="Movement control mode"></div>
-      <!-- Mouse-look sensitivity (FPS mode). Live — no reload, no rebuild. -->
-      <span class="we-input-sens" id="we-input-sens-wrap">
-        <label class="we-input-label" for="we-input-sens">LOOK</label>
-        <input id="we-input-sens" type="range" min="0.5" max="12" step="0.5"
-               aria-label="Mouse look sensitivity" />
-        <output id="we-input-sens-val" class="we-input-sens-val" for="we-input-sens"></output>
-      </span>
-      <span id="we-input-hint" class="we-input-hint"></span>
-    </div>
-
     <nav class="we-tabs" id="we-tabs" role="tablist"></nav>
 
     <div class="we-scroll">
@@ -682,6 +666,22 @@
         <div class="we-worlds-hint">Snapshots every prompt — plus your character, level, and camera — as a named world you can switch between.</div>
         <ul id="we-worlds-list" class="we-worlds-list" aria-live="polite"></ul>
       </div>
+    </div>
+
+    <!-- CONTROLS — how you DRIVE the live world (DOOM turn vs FPS strafe + mouse
+         look), not what the game is. Deliberately the last thing in the panel:
+         it used to sit above the layer stack, where the first thing you saw on
+         opening a level editor was a mouse-sensitivity slider. -->
+    <div id="we-input-opts" class="we-input-opts">
+      <span class="we-input-label">CONTROLS</span>
+      <div id="we-input-profile" class="rt-ho-seg" role="group" aria-label="Movement control mode"></div>
+      <span class="we-input-sens" id="we-input-sens-wrap">
+        <label class="we-input-label" for="we-input-sens">LOOK</label>
+        <input id="we-input-sens" type="range" min="0.5" max="12" step="0.5"
+               aria-label="Mouse look sensitivity" />
+        <output id="we-input-sens-val" class="we-input-sens-val" for="we-input-sens"></output>
+      </span>
+      <span id="we-input-hint" class="we-input-hint"></span>
     </div>
 
     <footer class="we-foot" id="we-foot">

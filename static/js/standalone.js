@@ -3822,97 +3822,140 @@
         .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
     }
 
-    // The header a layer opens with: what it is, what it costs to get wrong.
+    // The header a layer opens with. One line by default — the long version is
+    // behind a disclosure, because a paragraph of explanation on every panel is
+    // what made this read as documentation rather than a tool.
     function layerIntro(layer) {
       const wrap = document.createElement("div");
-      wrap.className = "we-layer-intro we-risk-" + (layer.risk || "content");
-      wrap.style.setProperty("--layer-accent", layer.accent || "#ffd27a");
-      wrap.innerHTML =
-        '<div class="we-layer-intro-head">' +
-          '<span class="we-layer-intro-glyph" aria-hidden="true">' + (layer.icon || "") + "</span>" +
-          '<span class="we-layer-intro-title">' + esc(layer.label) + "</span>" +
-          '<span class="we-layer-intro-vol">' + esc(layer.volatility || "") + "</span>" +
-        "</div>" +
-        '<p class="we-layer-intro-blurb">' + esc(layer.blurb || "") + "</p>" +
-        '<div class="we-layer-intro-scope">' +
-          (layer.risk === "contract"
-            ? "\u26A0 These values are parsed by code. A careless edit stops turns resolving."
-            : "\u25C7 " + esc(layer.scope || "")) +
-        "</div>";
+      wrap.className = "we-lhead we-risk-" + (layer.risk || "content");
+      wrap.style.setProperty("--layer-accent", layer.accent || "#7aa2ff");
+
+      const row = document.createElement("div");
+      row.className = "we-lhead-row";
+      row.innerHTML =
+        '<span class="we-lhead-dot" aria-hidden="true"></span>' +
+        '<span class="we-lhead-title">' + esc(layer.label) + "</span>" +
+        '<span class="we-lhead-tag">' + esc(layer.tagline || layer.question || "") + "</span>";
+
+      const more = document.createElement("details");
+      more.className = "we-more-info";
+      const sum = document.createElement("summary");
+      sum.textContent = "What this layer controls";
+      const body = document.createElement("div");
+      body.className = "we-more-info-body";
+      body.textContent = (layer.blurb || "") +
+        (layer.risk === "contract"
+          ? " These values are parsed by code, so a careless edit can stop turns resolving."
+          : " " + (layer.scope || ""));
+      more.appendChild(sum);
+      more.appendChild(body);
+
+      wrap.appendChild(row);
+      wrap.appendChild(more);
       return wrap;
     }
 
+    // A prompt is a 2,000+ character document. Rendering a dozen of them as
+    // open 320px textareas turned every layer into a wall of prose you had to
+    // scroll past to find anything. Each is now a CARD showing its first couple
+    // of lines; the full writing surface is the pop-out editor, which already
+    // has line numbers, a diff against factory, and validation.
     function makeField(f) {
       const key = f.id;
       const wrap = document.createElement("div");
       const modified = valOf(key) !== defOf(key);
-      wrap.className = "we-field" + (modified ? " modified" : "");
+      wrap.className = "we-card" + (modified ? " modified" : "");
       wrap.dataset.key = key;
+      wrap.tabIndex = 0;
+      wrap.setAttribute("role", "button");
+      wrap.setAttribute("aria-label", "Edit " + (f.label || key));
 
-      const top = document.createElement("div");
-      top.className = "we-field-top";
+      const head = document.createElement("div");
+      head.className = "we-card-head";
       const label = document.createElement("span");
-      label.className = "we-field-label";
+      label.className = "we-card-label";
       label.textContent = f.label || key;
-      const chips = document.createElement("span");
-      chips.className = "we-chips";
-      const dot = document.createElement("span");
-      dot.className = "we-mod-dot"; dot.textContent = "●"; dot.title = "Changed from default";
-      const chip = document.createElement("span");
       const isRestart = RESTART_KEYS.has(key);
-      chip.className = "we-chip " + (isRestart ? "we-chip-restart" : "we-chip-live");
+      const chip = document.createElement("span");
+      chip.className = "we-tag " + (isRestart ? "we-tag-restart" : "we-tag-live");
       chip.textContent = isRestart ? "restart" : "live";
       chip.title = isRestart
-        ? "Seeds the world — start a fresh run (Save & Restart) to see it"
-        : "Re-steers the sim on the next turn (Apply Live)";
-      const expand = document.createElement("button");
-      expand.className = "we-expand"; expand.type = "button"; expand.textContent = "⤢ Expand";
-      expand.title = "Open this prompt in the full-screen editor";
-      expand.addEventListener("click", () => openPromptModal(key));
-      chips.appendChild(dot); chips.appendChild(chip); chips.appendChild(expand);
-      top.appendChild(label); top.appendChild(chips);
+        ? "Seeds the world — start a fresh run to see it"
+        : "Re-steers the sim on the next turn";
+      head.appendChild(label);
+      head.appendChild(chip);
 
-      const desc = document.createElement("div");
-      desc.className = "we-field-desc";
-      desc.textContent = f.description || "";
+      const value = String(valOf(key) || "");
+      const preview = document.createElement("div");
+      preview.className = "we-card-preview";
+      preview.textContent = value.replace(/\s+/g, " ").trim() || "Empty";
 
-      const ta = document.createElement("textarea");
-      ta.value = valOf(key);
-      ta.spellcheck = false;
-      ta.addEventListener("input", () => {
-        const base = (content.prompts && content.prompts[key] != null) ? content.prompts[key] : "";
-        if (ta.value === base) delete edits[key]; else edits[key] = ta.value;
-        wrap.classList.toggle("modified", ta.value !== defOf(key));
-        // Keep the shared-wiring note honest while a placeholder is being
-        // typed or deleted, not just after a save.
-        setHint(hint, key);
-        refreshDirtyBadge();
-      });
-      // Double-click anywhere in the text is the fastest route to the big editor.
-      ta.addEventListener("dblclick", (e) => { e.preventDefault(); openPromptModal(key); });
-
-      const foot = document.createElement("div");
-      foot.className = "we-field-foot";
-      const legend = document.createElement("span");
-      legend.className = "we-legend";
+      const meta = document.createElement("div");
+      meta.className = "we-card-meta";
+      const size = document.createElement("span");
+      size.textContent = value.length.toLocaleString("en-US") + " chars";
+      meta.appendChild(size);
       if (Array.isArray(f.format_vars) && f.format_vars.length) {
-        legend.innerHTML = "vars: " + f.format_vars.map((v) => "<b>{" + v + "}</b>").join(" ");
+        const vars = document.createElement("span");
+        vars.className = "we-card-vars";
+        vars.textContent = f.format_vars.length + " variables";
+        vars.title = f.format_vars.map((v) => "{" + v + "}").join("  ");
+        meta.appendChild(vars);
       }
-      const reset = document.createElement("button");
-      reset.className = "we-field-reset"; reset.type = "button"; reset.textContent = "reset";
-      reset.title = "Reset this field to its factory default";
-      reset.addEventListener("click", () => resetField(key));
-      foot.appendChild(legend); foot.appendChild(reset);
+      if (modified) {
+        const edited = document.createElement("span");
+        edited.className = "we-card-edited";
+        edited.textContent = "edited";
+        meta.appendChild(edited);
+      }
+
+      const open = () => openPromptModal(key);
+      wrap.addEventListener("click", (e) => {
+        if (e.target.closest(".we-more-info, .we-card-reset")) return;
+        open();
+      });
+      wrap.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
+      });
+
+      wrap.appendChild(head);
+      wrap.appendChild(preview);
+      wrap.appendChild(meta);
+
+      // What it does, and how it's wired — available, not imposed.
+      if (f.description) {
+        const more = document.createElement("details");
+        more.className = "we-more-info";
+        const sum = document.createElement("summary");
+        sum.textContent = "What this does";
+        const body = document.createElement("div");
+        body.className = "we-more-info-body";
+        body.textContent = f.description;
+        const wiring = sharedWiringNote(key);
+        if (wiring) {
+          const w = document.createElement("div");
+          w.className = "we-more-wiring";
+          w.textContent = wiring;
+          body.appendChild(w);
+        }
+        more.appendChild(sum);
+        more.appendChild(body);
+        wrap.appendChild(more);
+      }
+
+      if (modified) {
+        const reset = document.createElement("button");
+        reset.className = "we-card-reset";
+        reset.type = "button";
+        reset.textContent = "Reset";
+        reset.title = "Restore the factory default";
+        reset.addEventListener("click", (e) => { e.stopPropagation(); resetField(key); });
+        wrap.appendChild(reset);
+      }
 
       const warn = document.createElement("div");
       warn.className = "we-warn hidden";
-
-      const hint = document.createElement("div");
-      hint.className = "we-field-hint";
-      setHint(hint, key);
-
-      wrap.appendChild(top); wrap.appendChild(desc); wrap.appendChild(ta);
-      wrap.appendChild(foot); wrap.appendChild(warn); wrap.appendChild(hint);
+      wrap.appendChild(warn);
       return wrap;
     }
 
@@ -3943,6 +3986,13 @@
       if (!el.weFields || !layer) return;
       el.weFields.innerHTML = "";
 
+      // The active layer's accent drives the whole panel — focus rings, the
+      // primary button, the plate hover — so which layer you're in is legible
+      // from any corner without a badge repeating it.
+      if (el.worldEditor) {
+        el.worldEditor.style.setProperty("--layer-accent", layer.accent || "#7aa2ff");
+        el.worldEditor.style.setProperty("--we-accent", layer.accent || "#7aa2ff");
+      }
       if (el.weLayerHead) {
         el.weLayerHead.appendChild(layerIntro(layer));
         // The Level layer leads with its gallery — what makes a level a level
@@ -4032,16 +4082,20 @@
       const bits = [];
       if (lv.era) bits.push(lv.era);
       if (lv.has_opening_shot) bits.push("opening shot");
-      if (lv.plate_count) bits.push(lv.plate_count + " plate" + (lv.plate_count > 1 ? "s" : ""));
-      card.innerHTML =
-        '<div class="we-level-card-top">' +
-          '<span class="we-level-card-name">' + esc(lv.name) + "</span>" +
-          (lv.enabled ? "" : '<span class="we-level-card-off">off</span>') +
-        "</div>" +
-        (lv.place && lv.place !== lv.name
-          ? '<div class="we-level-card-place">' + esc(lv.place) + "</div>" : "") +
-        '<div class="we-level-card-sum">' + esc(lv.summary || "No description yet.") + "</div>" +
-        (bits.length ? '<div class="we-level-card-meta">' + esc(bits.join(" \u00B7 ")) + "</div>" : "");
+      // A level you can SEE beats a level you have to read. When the level has
+      // reference art, the first plate becomes the card.
+      const art = (lv.plates && lv.plates[0])
+        ? '<div class="we-level-art" style="background-image:url(\'' + lv.plates[0] + '\')"></div>'
+        : '<div class="we-level-art we-level-art-empty" aria-hidden="true"></div>';
+      card.innerHTML = art +
+        '<div class="we-level-body">' +
+          '<div class="we-level-card-top">' +
+            '<span class="we-level-card-name">' + esc(lv.name) + "</span>" +
+            (lv.enabled ? "" : '<span class="we-level-card-off">off</span>') +
+          "</div>" +
+          '<div class="we-level-card-sum">' + esc(lv.summary || "No description yet.") + "</div>" +
+          (bits.length ? '<div class="we-level-card-meta">' + esc(bits.join(" \u00B7 ")) + "</div>" : "") +
+        "</div>";
 
       const acts = document.createElement("div");
       acts.className = "we-level-card-acts";
@@ -4073,7 +4127,7 @@
       });
       acts.appendChild(load);
       acts.appendChild(del);
-      card.appendChild(acts);
+      (card.querySelector(".we-level-body") || card).appendChild(acts);
       return card;
     }
 
@@ -4729,24 +4783,23 @@
 
     function makeCastBlock(block) {
       const wrap = document.createElement("div");
-      wrap.className = "we-cast-block we-field";
+      wrap.className = "we-block";
+      wrap.dataset.block = block.id;
 
       const top = document.createElement("div");
-      top.className = "we-field-top";
+      top.className = "we-block-head";
       const label = document.createElement("span");
-      label.className = "we-field-label";
-      label.textContent = (block.icon ? block.icon + " " : "") + block.label;
-      const chip = document.createElement("span");
-      chip.className = "we-chip we-chip-live";
-      chip.textContent = "live";
-      chip.title = "Re-steers the sim on the next turn";
-      top.appendChild(label); top.appendChild(chip);
+      label.className = "we-block-label";
+      label.textContent = block.label;
+      top.appendChild(label);
 
-      const desc = document.createElement("div");
-      desc.className = "we-field-desc";
-      desc.textContent = block.description || "";
-
-      wrap.appendChild(top); wrap.appendChild(desc);
+      wrap.appendChild(top);
+      if (block.description) {
+        const desc = document.createElement("div");
+        desc.className = "we-block-desc";
+        desc.textContent = block.description;
+        wrap.appendChild(desc);
+      }
 
       const essential = block.fields.filter((f) => f.tier !== "advanced");
       const advanced = block.fields.filter((f) => f.tier === "advanced");
@@ -4765,13 +4818,20 @@
         wrap.appendChild(warn);
       });
 
+      // The exact text this compiles to. Worth being able to check; not worth
+      // reading every time you open the panel.
       const compiled = compiledFor(block.id);
       if (compiled) {
-        wrap.appendChild(castLabel("What this sends to the model"));
+        const more = document.createElement("details");
+        more.className = "we-more-info we-more-compiled";
+        const sum = document.createElement("summary");
+        sum.textContent = "What the model receives";
         const pane = document.createElement("div");
         pane.className = "we-compiled";
         pane.textContent = compiled;
-        wrap.appendChild(pane);
+        more.appendChild(sum);
+        more.appendChild(pane);
+        wrap.appendChild(more);
       }
       return wrap;
     }
@@ -4779,25 +4839,24 @@
     function makePlateZone(block) {
       const slot = block.id === "player_character" ? "character" : "setting";
       const holder = document.createElement("div");
-      holder.className = "we-cast-row";
-      holder.appendChild(castLabel(block.images_label || "Reference images"));
-      if (block.images_hint) holder.appendChild(castHelp(block.images_hint));
+      holder.className = "we-plate-zone";
 
-      const grid = document.createElement("div");
-      grid.className = "we-plates";
-      plateThumbs(block.id).forEach((p) => {
-        const cell = document.createElement("div");
-        cell.className = "we-plate";
-        const img = document.createElement("img");
-        img.src = p.url; img.alt = p.label || ""; img.title = p.label || p.id;
-        const rm = document.createElement("button");
-        rm.type = "button"; rm.className = "we-plate-remove"; rm.textContent = "✕";
-        rm.title = "Remove";
-        rm.addEventListener("click", () => deletePlate(p.id));
-        cell.appendChild(img); cell.appendChild(rm);
-        grid.appendChild(cell);
-      });
-      holder.appendChild(grid);
+      const head = document.createElement("div");
+      head.className = "we-plate-head";
+      head.innerHTML = '<span class="we-plate-title">' +
+        esc(block.images_label || "Reference") + "</span>";
+      if (block.images_hint) {
+        const more = document.createElement("details");
+        more.className = "we-more-info";
+        const sum = document.createElement("summary");
+        sum.textContent = "How these are used";
+        const body = document.createElement("div");
+        body.className = "we-more-info-body";
+        body.textContent = block.images_hint;
+        more.appendChild(sum); more.appendChild(body);
+        head.appendChild(more);
+      }
+      holder.appendChild(head);
 
       const file = document.createElement("input");
       file.type = "file"; file.accept = "image/*"; file.style.display = "none";
@@ -4806,22 +4865,47 @@
         file.value = "";
       });
 
-      const drop = document.createElement("div");
-      drop.className = "we-drop";
-      drop.textContent = "Drop an image here, or tap to choose one";
-      drop.addEventListener("click", () => file.click());
-      ["dragenter", "dragover"].forEach((ev) => drop.addEventListener(ev, (e) => {
-        e.preventDefault(); drop.classList.add("dragover");
+      // One grid: the plates you have, then a tile to add another. The old
+      // version put a full-width "Drop an image here, or tap to choose one"
+      // sentence under every block, which read as instructions rather than a
+      // place to put a picture.
+      const grid = document.createElement("div");
+      grid.className = "we-plates";
+      plateThumbs(block.id).forEach((pl) => {
+        const cell = document.createElement("figure");
+        cell.className = "we-plate";
+        const img = document.createElement("img");
+        img.src = pl.url; img.alt = pl.label || "Reference image";
+        img.loading = "lazy";
+        const rm = document.createElement("button");
+        rm.type = "button"; rm.className = "we-plate-remove";
+        rm.innerHTML = "&#10005;";
+        rm.title = "Remove this reference";
+        rm.addEventListener("click", () => deletePlate(pl.id));
+        cell.appendChild(img); cell.appendChild(rm);
+        grid.appendChild(cell);
+      });
+
+      const add = document.createElement("button");
+      add.type = "button";
+      add.className = "we-plate-add";
+      add.innerHTML = '<span class="we-plate-add-mark" aria-hidden="true">+</span>' +
+                      '<span class="we-plate-add-text">Add reference</span>';
+      add.title = "Choose an image, or drop one here";
+      add.addEventListener("click", () => file.click());
+      ["dragenter", "dragover"].forEach((ev) => grid.addEventListener(ev, (e) => {
+        e.preventDefault(); grid.classList.add("dragover");
       }));
-      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => {
-        e.preventDefault(); drop.classList.remove("dragover");
+      ["dragleave", "drop"].forEach((ev) => grid.addEventListener(ev, (e) => {
+        e.preventDefault(); grid.classList.remove("dragover");
       }));
-      drop.addEventListener("drop", (e) => {
+      grid.addEventListener("drop", (e) => {
         const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
         if (f) uploadPlate(f, slot);
       });
+      grid.appendChild(add);
 
-      holder.appendChild(drop);
+      holder.appendChild(grid);
       holder.appendChild(file);
       return holder;
     }
@@ -4842,17 +4926,17 @@
       if (!rows.length) return null;
 
       const wrap = document.createElement("div");
-      wrap.className = "we-cast-block we-field";
+      wrap.className = "we-block";
       const top = document.createElement("div");
-      top.className = "we-field-top";
+      top.className = "we-block-head";
       const label = document.createElement("span");
-      label.className = "we-field-label";
-      label.textContent = "🛰️ Where else this reaches";
+      label.className = "we-block-label";
+      label.textContent = "Where else this reaches";
       top.appendChild(label);
       wrap.appendChild(top);
 
       const desc = document.createElement("div");
-      desc.className = "we-field-desc";
+      desc.className = "we-block-desc";
       desc.textContent =
         "The same sheet, compressed for the surfaces that only get a sentence or two.";
       wrap.appendChild(desc);
@@ -4967,7 +5051,7 @@
         const li = document.createElement("li");
         li.className = "we-world";
         const info = document.createElement("div");
-        info.className = "we-world-info";
+        info.className = "we-world-main";
         const nm = document.createElement("div");
         nm.className = "we-world-name"; nm.textContent = w.name || w.slug;
         const meta = document.createElement("div");
@@ -4975,17 +5059,17 @@
         meta.textContent = (w.field_count || 0) + " prompts" + (w.note ? " · " + w.note : "");
         info.appendChild(nm); info.appendChild(meta);
         const actions = document.createElement("div");
-        actions.className = "we-world-actions";
+        actions.className = "we-world-acts";
         const load = document.createElement("button");
-        load.className = "we-btn we-btn-sm we-btn-primary"; load.type = "button"; load.textContent = "Load";
+        load.className = "we-btn we-btn-primary"; load.type = "button"; load.textContent = "Load";
         load.title = "Apply this world's prompts (live, next turn)";
         load.addEventListener("click", () => loadWorld(w.slug, false));
         const play = document.createElement("button");
-        play.className = "we-btn we-btn-sm we-btn-accent"; play.type = "button"; play.textContent = "Play";
+        play.className = "we-btn we-btn-accent"; play.type = "button"; play.textContent = "Play";
         play.title = "Load this world and start a fresh run";
         play.addEventListener("click", () => loadWorld(w.slug, true));
         const del = document.createElement("button");
-        del.className = "we-btn we-btn-sm we-btn-ghost"; del.type = "button"; del.textContent = "✕";
+        del.className = "we-btn we-btn-ghost"; del.type = "button"; del.textContent = "✕";
         del.title = "Delete this world";
         del.addEventListener("click", () => deleteWorld(w.slug, w.name));
         actions.appendChild(load); actions.appendChild(play); actions.appendChild(del);
