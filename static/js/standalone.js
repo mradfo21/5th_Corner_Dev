@@ -5392,19 +5392,31 @@
     // actually moved the mouse, always winds down on its own, and jitter (which
     // nets ~zero and drains away) can never hold the camera.
     const MOUSE_SUBTLE = {
-      sensitivity: 3.0,    // mouse px -> queued turn px (tunable in the editor)
-      holdPx: 12,          // queued turn under this = camera at rest
-      drainPxPerMs: 0.4,   // bleed-off rate
-      // The ceiling is expressed in TIME, not pixels: however sensitive the
-      // mouse is, one wild flick can never buy more than this much rotation.
-      // Raising sensitivity therefore reaches a given turn SOONER rather than
-      // spinning for longer — which is what "more sensitive" should mean.
-      maxHoldMs: 600,
-      maxIntensity: 0.5,   // caps the turn-rate contribution (subtle)
+      sensitivity: 8.0,    // mouse px -> queued turn px (tunable in the editor)
+      // Both of these scale WITH sensitivity, and they have to. At 8x a 1px hand
+      // tremor deposits 8px per event; against the old 0.4px/ms drain that was
+      // enough to sustain a turn indefinitely, which is the exact bug the budget
+      // model was built to kill. Draining faster keeps tremor inert (it deposits
+      // ~0 net and bleeds off) while a deliberate sweep still outruns it.
+      holdPx: 40,          // queued turn under this = camera at rest
+      drainPxPerMs: 2.0,   // bleed-off rate
+      // On Happy Oyster the turn RATE is the model's, not ours — there's no
+      // rotation-speed knob — so the only thing sensitivity can buy is how LONG
+      // the look is held. A 600ms ceiling therefore capped how far you could
+      // ever turn in one sweep, which is what made it feel dead no matter what
+      // the slider said. The ceiling exists to stop a flick spinning forever,
+      // and the budget model already handles that: motion deposits, stillness
+      // drains, reversing cancels. So it can be generous.
+      // Sized as MOMENTUM, not a spin: a long sweep keeps turning for up to this
+      // long after your hand stops, which is what buys extra turn on a model
+      // whose rate we can't change. 2600 felt like the camera had opinions of
+      // its own; a flick still only earns a fraction of it.
+      maxHoldMs: 1400,
+      maxIntensity: 1.0,   // full turn-rate range on models that have the knob
       invertY: false,
     };
     const SENS_KEY = "input_look_sens";
-    const SENS_MIN = 0.5, SENS_MAX = 12;
+    const SENS_MIN = 1, SENS_MAX = 30;
     let sensitivity = MOUSE_SUBTLE.sensitivity;
     const PROFILES = {
       // Doom: the tank-style scheme — A/D swing the view, no mouse capture.
@@ -5916,13 +5928,11 @@
     // it's easy to aim and never disorients — well under the model default of 5.
     const ROT_MIN = 1.875;           // deg/latent-frame at a gentle push (2.5x the prior 0.75)
     const ROT_MAX = 5;               // deg/latent-frame at a full push (2.5x the prior 2; 0..30 allowed)
-    // Mouse look uses a gentler band — latent lag punishes fast turns.
-    const MOUSE_ROT_MIN = 1.0;
-    const MOUSE_ROT_MAX = 2.75;
-    // Full H+V cycle when interleaving a diagonal on a one-look-axis model. Long
-    // enough that each slice actually moves the latent picture, short enough to
-    // read as one diagonal sweep rather than two separate turns.
-    const DIAGONAL_CYCLE_MS = 320;
+    // Mouse look on models WITH a turn-rate knob (LingBot). This used to top out
+    // at 2.75 deg/frame while a keyboard tap got 5, so the mouse was capped
+    // slower than the keys it replaced.
+    const MOUSE_ROT_MIN = 1.5;
+    const MOUSE_ROT_MAX = 6.0;
     const KEY_INTENSITY = 0.5;       // fixed push level for keyboard turning (no analog)
     const FALLBACK_SEND_MS = 950;    // prompt-fallback (non-native-nav) re-steer cadence
 
@@ -5935,6 +5945,9 @@
     let pointerActive = false;
     let pointerId = null;
     const keys = new Set();          // held drive tokens
+    // Press order, newest last. On a model with a single move slot, "what did
+    // you just ask for" is the only answer that keeps the camera travelling.
+    const keyOrder = [];
     let engaged = false;
     let rampStart = 0;
     let loopTimer = null;
@@ -5973,13 +5986,6 @@
         return !!(window.ReactorRenderer.movesOneAxisAtATime &&
                   window.ReactorRenderer.movesOneAxisAtATime());
       } catch (_) { return false; }
-    }
-    // Which half of the interleave cycle we're in. `hShare` (0..1) is horizontal's
-    // slice of the cycle, so a mostly-sideways sweep spends most of it turning.
-    function diagonalPhase(hShare, offsetMs) {
-      const share = Math.min(0.85, Math.max(0.15, hShare)); // always give V a turn
-      const t = (Date.now() + (offsetMs || 0)) % DIAGONAL_CYCLE_MS;
-      return (t / DIAGONAL_CYCLE_MS) < share;
     }
 
     // Compose the desired DRIVE state from keyboard + stick + mouse-look.
@@ -6022,9 +6028,12 @@
           lv = ml.lookV || "idle";
           mouseIntensity = ml.intensity || 0;
           fromMouse = lh !== "idle" || lv !== "idle";
+          // Same single-slot trap as movement: alternating Mouse_Left and
+          // Mouse_Up restarts the rotation every slice, so a diagonal sweep
+          // turned far LESS than a straight one. Commit to the axis the mouse
+          // actually travelled further on.
           if (lh !== "idle" && lv !== "idle" && oneLookAxisOnly()) {
-            const hShare = (ml.hMag || 0) / ((ml.hMag || 0) + (ml.vMag || 0) || 1);
-            if (diagonalPhase(hShare)) lv = "idle";
+            if ((ml.hMag || 0) >= (ml.vMag || 0)) lv = "idle";
             else lh = "idle";
           }
         }
@@ -6043,13 +6052,25 @@
       // What the player is ASKING for, before any per-model slicing. The readout
       // and the joystick show this, so the HUD never flickers mid-interleave.
       const raw = { longitudinal: lon, lateral: lat, lookH: lh, lookV: lv };
-      // Forward + strafe (W+A) on a model that holds only ONE move direction:
-      // interleave them, or the renderer picks longitudinal and the strafe is
-      // silently dropped. Offset half a cycle from the look interleave so the
-      // move and look slices don't stall in lockstep.
+      // Forward + strafe (W+A) on a model that holds only ONE move direction.
+      // Alternating the two in time slices seemed like a way to fake a diagonal,
+      // and it is not: every switch REPLACES the held direction, so the camera
+      // spent 2 seconds restarting (Front, Left, Front, Left...) and travelled
+      // nowhere. Since holding W+A is ordinary FPS movement, that read as A/D
+      // being dead. One slot means one direction, so the newest press wins —
+      // you always move, in the direction you just asked for, and letting go of
+      // the strafe hands the slot straight back to forward.
       if (lon !== "idle" && lat !== "idle" && oneMoveAxisOnly()) {
-        if (diagonalPhase(0.5, DIAGONAL_CYCLE_MS / 2)) lat = "idle";
-        else lon = "idle";
+        const LAT = ["strafeL", "strafeR"];
+        let newestLat = -1, newestLon = -1;
+        for (let i = 0; i < keyOrder.length; i++) {
+          if (LAT.indexOf(keyOrder[i]) !== -1) newestLat = i;
+          else if (keyOrder[i] === "fwd" || keyOrder[i] === "back") newestLon = i;
+        }
+        // Stick pushes have no press order; treat them as the older intent so a
+        // deliberate key press always wins the slot.
+        if (newestLat > newestLon) lon = "idle";
+        else lat = "idle";
       }
       return { longitudinal: lon, lateral: lat, lookH: lh, lookV: lv, rot: rot, raw: raw };
     }
@@ -6202,6 +6223,7 @@
       pointerActive = false;
       pointerId = null;
       keys.clear();
+      keyOrder.length = 0;
       vec.x = 0; vec.y = 0; mag = 0;
       stopLoop();
       if (el.movePad) el.movePad.classList.remove("engaged");
@@ -6268,6 +6290,7 @@
       if (!enabled() || !tok) return false;
       if (!keys.has(tok)) {
         keys.add(tok);
+        keyOrder.push(tok);
         engage();
         tick();
       }
@@ -6276,12 +6299,15 @@
     function releaseKey(tok) {
       if (!tok || !keys.has(tok)) return;
       keys.delete(tok);
+      const at = keyOrder.indexOf(tok);
+      if (at !== -1) keyOrder.splice(at, 1);
       if (!anyDriver()) disengage();
       else tick();
     }
     function releaseAll() {
       try { MouseLook.releaseLock(); } catch (_) {}
       keys.clear();
+      keyOrder.length = 0;
       if (engaged) disengage();
     }
 
