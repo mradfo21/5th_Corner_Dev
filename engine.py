@@ -621,6 +621,17 @@ import prompts_store
 import game_identity
 game_identity.ensure_spec_keys()
 
+# On-device object detection for the SCAN tool (see local_vision.py). Optional
+# in exactly the way flask_sock is optional: if `mediapipe` isn't installed or
+# the .tflite is missing, `local_vision` reports itself unavailable and
+# _detect_objects falls back to the Gemini path. Never let its absence break
+# boot.
+try:
+    import local_vision
+except Exception as _lv_err:  # noqa: BLE001
+    local_vision = None
+    print(f"[ENGINE INIT] local_vision unavailable: {_lv_err}", flush=True)
+
 # Game constants - Structured time/atmosphere tracking
 INITIAL_TIME_OF_DAY = "6:30pm | weather: clear, warm light | mood: tense anticipation"  # Start time matching world_initial_state
 
@@ -1159,6 +1170,21 @@ client      = _client(OPENAI_API_KEY, API_BASE)
 LLM_ENABLED = True
 
 VISION_ENABLED = True  # ENABLED for production
+
+# ── Which detector answers /api/detect ───────────────────────────────────────
+#   "local"  — on-device MediaPipe + scene-prompt fusion (local_vision.py).
+#              ~30 ms, no network, no bill, and it works with no GEMINI_API_KEY
+#              at all, which means SCAN is finally alive in mock/offline dev.
+#   "gemini" — the original Gemini vision call. Open-vocabulary and better at
+#              naming things the lexicon has never heard of, at ~1-3 s and a
+#              per-scan cost.
+#   "auto"   — local when it can run, Gemini otherwise.
+# Local is the default; set DETECT_BACKEND=gemini to put the old path back
+# without a deploy.
+DETECT_BACKEND = (os.getenv("DETECT_BACKEND") or "local").strip().lower()
+if DETECT_BACKEND not in ("local", "gemini", "auto"):
+    print(f"[ENGINE INIT] unknown DETECT_BACKEND={DETECT_BACKEND!r}; using 'local'", flush=True)
+    DETECT_BACKEND = "local"
 
 # LEGACY boot variable only — NOT used for routing. Actual per-frame image
 # generation routes on ai_provider_manager.get_image_provider() (see _gen_image),
@@ -2638,6 +2664,91 @@ def _detect_self_rule() -> str:
     )
 
 
+def _normalize_detections(parsed: list, max_items: int = 8) -> list:
+    """Turn raw detector output into the wire shape the client consumes.
+
+    Shared by every backend on purpose. Both Gemini and ``local_vision`` hand
+    back the same intermediate shape — a list of
+    ``{"label", "box_2d": [ymin, xmin, ymax, xmax] on a 0-1000 grid, "kind",
+    "speaks"}`` — so all the rules that decide what a player is actually allowed
+    to see live here, once, and apply identically no matter who did the looking:
+    the underwhelming-label filter, the player's-own-body geometry backstop,
+    degenerate-box rejection, dedupe, the speaks/kind classifier and the cap.
+
+    Returns a list of at most ``max_items`` dicts:
+        {"label": str, "cx": float, "cy": float, "w": float, "h": float,
+         "kind": str, "speaks": bool}
+    where cx/cy are the box CENTER and w/h its size, all normalized 0..1
+    relative to the frame.
+    """
+    if not isinstance(parsed, list):
+        return []
+
+    objects = []
+    seen = set()
+    for entry in parsed:
+        if not isinstance(entry, dict):
+            continue
+        label = str(entry.get("label") or "").strip().lower()
+        box = entry.get("box_2d") or entry.get("box") or entry.get("bbox")
+        if not label or not isinstance(box, (list, tuple)) or len(box) < 4:
+            continue
+        # Drop underwhelming labels before they cost a max_items slot: the
+        # player's own hands/gear/vehicle-interior, never worth a tag.
+        if _is_underwhelming_label(label):
+            continue
+        try:
+            ymin, xmin, ymax, xmax = (float(box[0]), float(box[1]), float(box[2]), float(box[3]))
+        except Exception:
+            continue
+        # Normalize the 0-1000 grid to 0..1, guarding against swapped bounds.
+        ymin, ymax = sorted((ymin / 1000.0, ymax / 1000.0))
+        xmin, xmax = sorted((xmin / 1000.0, xmax / 1000.0))
+        cx = max(0.0, min(1.0, (xmin + xmax) / 2.0))
+        cy = max(0.0, min(1.0, (ymin + ymax) / 2.0))
+        w = max(0.0, min(1.0, xmax - xmin))
+        h = max(0.0, min(1.0, ymax - ymin))
+        # Drop degenerate or full-frame boxes (not useful as a tag point).
+        if w <= 0.001 or h <= 0.001 or (w >= 0.98 and h >= 0.98):
+            continue
+        # GEOMETRY BACKSTOP for the camera operator's own body/gear. In this
+        # first-person, camera-in-hand conceit the player's arm / hand / held
+        # camcorder juts up from the very bottom of the frame in EVERY shot,
+        # and the model sometimes labels it something the word filter misses
+        # ("grip", "device", "object"). Such a blob is unmistakable by shape:
+        # it runs off the bottom edge and is tall. Reject it so it can never
+        # become a "photograph the hand" tag/objective. Conservative bounds
+        # (must touch the very bottom AND be tall) so a real low foreground
+        # subject — a body on the ground, a creature lunging — still tags.
+        # The held-camera/arm blob is a TALL, NARROW column rising from the
+        # bottom; requiring h > w (taller than wide) keeps WIDE foreground
+        # subjects (a sprawled victim, a hulking creature) taggable — which
+        # matters because "Capture A Victim" is a real objective.
+        if ymax >= 0.9 and h >= 0.5 and h > w:
+            continue
+        key = label[:24]
+        if key in seen:
+            continue
+        seen.add(key)
+        # Classify whether this thing can be TALKED to. Trust the detector's
+        # own call, but backstop it with a label heuristic so the TALK
+        # affordance still appears when the field is omitted/undercalled.
+        kind, speaks = _classify_speaker(label, entry.get("kind"), entry.get("speaks"))
+        objects.append({
+            "label": label[:40],
+            "cx": round(cx, 4),
+            "cy": round(cy, 4),
+            "w": round(w, 4),
+            "h": round(h, 4),
+            "kind": kind,
+            "speaks": speaks,
+        })
+        if len(objects) >= max_items:
+            break
+
+    return objects
+
+
 def _detect_objects(image_path: str = None,
                     max_items: int = 8,
                     image_bytes: bytes = None,
@@ -2645,10 +2756,16 @@ def _detect_objects(image_path: str = None,
                     scene_prompt: str = "") -> list:
     """Realtime object recognition for the live scene.
 
-    Ask Gemini for the prominent, interactable things visible in a frame and
-    their 2D bounding boxes, so the standalone UI can float "starfield" tags
-    over the live video where each object actually sits. This powers the SCAN
-    tool: the player drags across the scene and the world names what it sees.
+    Names the prominent, interactable things visible in a frame and boxes them,
+    so the standalone UI can float "starfield" tags over the live video where
+    each object actually sits. This powers the SCAN tool: the player drags
+    across the scene and the world names what it sees.
+
+    Two backends answer this, selected by ``DETECT_BACKEND``: on-device
+    MediaPipe fused with the scene prompt (``local_vision``, the default, ~30 ms
+    and free) or the original Gemini vision call (~1-3 s, open vocabulary).
+    Both return the same wire shape, and both are filtered by the same
+    ``_normalize_detections`` rules.
 
     Callers can pass either ``image_path`` (legacy) or the raw frame directly
     via ``image_bytes`` + ``mime_type`` (preferred from ``api_detect``, which
@@ -2656,34 +2773,74 @@ def _detect_objects(image_path: str = None,
     second base64 encode per call). When both are given, bytes win.
 
     ``scene_prompt`` is the exact text the world model was steered with for
-    this frame (``state['current_image_prompt']``). Passing it as extra context
-    gives Gemini strong priors ("weathered valve wheel" vs "handle") without
-    changing the response schema.
+    this frame (``state['current_image_prompt']``). Gemini takes it as a prior
+    for sharper labels; the local backend leans on it much harder, using it as
+    the open vocabulary that COCO's 80 classes cannot supply.
 
-    Returns a list of dicts (at most ``max_items``), each:
-        {"label": str, "cx": float, "cy": float, "w": float, "h": float,
-         "kind": str, "speaks": bool}
-    where cx/cy are the box CENTER and w/h its size, all normalized 0..1
-    relative to the frame. ``kind`` is one of person/character/creature/
-    animal/machine/object and ``speaks`` marks whether the thing can be TALKED
-    to (drives the SCAN "TALK" affordance). Returns [] on any failure (never
-    raises).
+    Returns a list of dicts (at most ``max_items``) — see
+    ``_normalize_detections`` for the exact shape. Returns [] on any failure
+    (never raises).
+    """
+    if not VISION_ENABLED:
+        return []
+
+    if image_bytes is None:
+        image_bytes, mime_type = _read_detect_image_bytes(image_path)
+        if image_bytes is None:
+            return []
+    if not mime_type:
+        mime_type = "image/jpeg"
+
+    use_local = (
+        DETECT_BACKEND in ("local", "auto")
+        and local_vision is not None
+        and local_vision.available()
+    )
+    if use_local:
+        try:
+            parsed = local_vision.detect(
+                image_bytes,
+                mime_type=mime_type,
+                max_items=max_items,
+                scene_prompt=scene_prompt,
+            )
+            return _normalize_detections(parsed, max_items)
+        except Exception as e:  # noqa: BLE001 — never raise into a request
+            safe_e = str(e).encode("ascii", "replace").decode("ascii")
+            log_error(f"[DETECT] local detection failed: {safe_e}")
+            if DETECT_BACKEND == "local":
+                return []
+            # In "auto" a local failure is exactly when Gemini should cover.
+
+    if DETECT_BACKEND == "local":
+        # Asked for local, and local can't run. Say so once per call rather than
+        # silently degrading to a paid backend the operator opted out of.
+        log_error("[DETECT] DETECT_BACKEND=local but local_vision is unavailable "
+                  f"({local_vision.status() if local_vision else 'module not imported'})")
+        return []
+
+    parsed = _detect_objects_gemini(image_bytes, mime_type, max_items, scene_prompt)
+    return _normalize_detections(parsed, max_items)
+
+
+def _detect_objects_gemini(image_bytes: bytes,
+                           mime_type: str,
+                           max_items: int = 8,
+                           scene_prompt: str = "") -> list:
+    """Ask Gemini to name and box what's in the frame.
+
+    Returns the raw parsed entries ({"label", "box_2d", "kind", "speaks"}) for
+    ``_normalize_detections`` to filter, or [] on any failure.
     """
     import base64
     import json as _json
     import random as _random
     import time as _time
 
-    if not LLM_ENABLED or not VISION_ENABLED or not GEMINI_API_KEY:
+    if not LLM_ENABLED or not GEMINI_API_KEY:
         return []
 
     try:
-        if image_bytes is None:
-            image_bytes, mime_type = _read_detect_image_bytes(image_path)
-            if image_bytes is None:
-                return []
-        if not mime_type:
-            mime_type = "image/jpeg"
         image_b64 = base64.b64encode(image_bytes).decode("utf-8")
 
         detect_instructions = (
@@ -2810,70 +2967,7 @@ def _detect_objects(image_path: str = None,
 
         if not isinstance(parsed, list):
             return []
-
-        objects = []
-        seen = set()
-        for entry in parsed:
-            if not isinstance(entry, dict):
-                continue
-            label = str(entry.get("label") or "").strip().lower()
-            box = entry.get("box_2d") or entry.get("box") or entry.get("bbox")
-            if not label or not isinstance(box, (list, tuple)) or len(box) < 4:
-                continue
-            # Drop underwhelming labels before they cost a max_items slot: the
-            # player's own hands/gear/vehicle-interior, never worth a tag.
-            if _is_underwhelming_label(label):
-                continue
-            try:
-                ymin, xmin, ymax, xmax = (float(box[0]), float(box[1]), float(box[2]), float(box[3]))
-            except Exception:
-                continue
-            # Normalize the 0-1000 grid to 0..1, guarding against swapped bounds.
-            ymin, ymax = sorted((ymin / 1000.0, ymax / 1000.0))
-            xmin, xmax = sorted((xmin / 1000.0, xmax / 1000.0))
-            cx = max(0.0, min(1.0, (xmin + xmax) / 2.0))
-            cy = max(0.0, min(1.0, (ymin + ymax) / 2.0))
-            w = max(0.0, min(1.0, xmax - xmin))
-            h = max(0.0, min(1.0, ymax - ymin))
-            # Drop degenerate or full-frame boxes (not useful as a tag point).
-            if w <= 0.001 or h <= 0.001 or (w >= 0.98 and h >= 0.98):
-                continue
-            # GEOMETRY BACKSTOP for the camera operator's own body/gear. In this
-            # first-person, camera-in-hand conceit the player's arm / hand / held
-            # camcorder juts up from the very bottom of the frame in EVERY shot,
-            # and the model sometimes labels it something the word filter misses
-            # ("grip", "device", "object"). Such a blob is unmistakable by shape:
-            # it runs off the bottom edge and is tall. Reject it so it can never
-            # become a "photograph the hand" tag/objective. Conservative bounds
-            # (must touch the very bottom AND be tall) so a real low foreground
-            # subject — a body on the ground, a creature lunging — still tags.
-            # The held-camera/arm blob is a TALL, NARROW column rising from the
-            # bottom; requiring h > w (taller than wide) keeps WIDE foreground
-            # subjects (a sprawled victim, a hulking creature) taggable — which
-            # matters because "Capture A Victim" is a real objective.
-            if ymax >= 0.9 and h >= 0.5 and h > w:
-                continue
-            key = label[:24]
-            if key in seen:
-                continue
-            seen.add(key)
-            # Classify whether this thing can be TALKED to. Trust the model's
-            # own call, but backstop it with a label heuristic so the TALK
-            # affordance still appears when the model omits/undercalls the field.
-            kind, speaks = _classify_speaker(label, entry.get("kind"), entry.get("speaks"))
-            objects.append({
-                "label": label[:40],
-                "cx": round(cx, 4),
-                "cy": round(cy, 4),
-                "w": round(w, 4),
-                "h": round(h, 4),
-                "kind": kind,
-                "speaks": speaks,
-            })
-            if len(objects) >= max_items:
-                break
-
-        return objects
+        return parsed
     except requests.exceptions.HTTPError as e:
         safe_e = str(e).encode("ascii", "replace").decode("ascii")
         log_error(f"[DETECT] Gemini API HTTP error: {safe_e}")

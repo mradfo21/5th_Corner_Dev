@@ -11,3 +11,8 @@ google-genai>=1.52.0
 anthropic
 flask-sock
 stripe>=10.0.0
+# On-device object detection for the SCAN tool (local_vision.py). Ships the
+# TFLite runtime; the model itself is vendored in models/ so nothing is fetched
+# at boot. Optional at runtime — engine falls back to the Gemini detector if
+# this import fails — but installed by default because it is the default backend.
+mediapipe>=0.10
