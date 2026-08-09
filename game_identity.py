@@ -1057,6 +1057,82 @@ def world_anchor(
     return ". ".join(p for p in parts if p) + "."
 
 
+def motion_clause(spec: Optional[Dict[str, Any]] = None) -> str:
+    """How to phrase "the player just did X" for the live world model.
+
+    One clause, no trailing action: callers append the verb phrase. Shared by
+    the server's :func:`engine.realtime_action_beat` and the browser's live
+    re-steers, which is the point — the browser used to hardcode the
+    first-person half of this and quietly argue with the camera on every
+    movement between turns.
+    """
+    if shows_character(spec):
+        return f"the camera follows as {display_name(spec)}"
+    return "the view shifts as you"
+
+
+def movement_clause(spec: Optional[Dict[str, Any]] = None) -> str:
+    """The style note appended to a camera-motion re-steer."""
+    cfg = mode_config(spec)
+    if not cfg["shows_body"]:
+        return "Smooth continuous first-person motion, the environment flowing past."
+    who = display_name(spec)
+    return (
+        f"Smooth continuous {cfg['phrase']} motion, the camera travelling with "
+        f"{who}, who stays in frame as the environment flows past."
+    )
+
+
+def scene_floor(spec: Optional[Dict[str, Any]] = None) -> str:
+    """The neutral "we have no scene yet" prompt a live re-steer can build on."""
+    cfg = mode_config(spec)
+    if not cfg["shows_body"]:
+        return "First-person cinematic view of the current scene."
+    phrase = cfg["phrase"]
+    return (
+        f"{phrase[0].upper()}{phrase[1:]} cinematic view of the current scene, "
+        f"{display_name(spec)} in frame."
+    )
+
+
+# The live world model only distinguishes first from third person — it has one
+# `perspective` argument at world creation and no vocabulary for over-the-
+# shoulder vs locked-off. Every mode that puts the body on screen therefore
+# maps to "third_person"; the finer framing is carried by the prompt.
+def world_model_perspective(spec: Optional[Dict[str, Any]] = None) -> str:
+    return "third_person" if shows_character(spec) else "first_person"
+
+
+def live_camera_contract(spec: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Everything the browser needs to keep the live world on the authored camera.
+
+    The realtime renderer is not a passive display: it BUILDS the navigable
+    world (``create_world`` takes its own ``perspective``) and re-steers it on
+    every movement, nudge, and idle drift between turns. All of that ran on
+    hardcoded first-person text and a per-browser localStorage toggle, so
+    selecting a third-person camera in the editor changed every still frame and
+    none of the live video — the one surface the player is actually looking at.
+
+    Handed to the client as ready-made clauses rather than raw spec fields, so
+    the phrasing has exactly one home.
+    """
+    spec = spec or get_spec()
+    cfg = mode_config(spec)
+    return {
+        "mode": camera_mode(spec),
+        "label": cfg["label"],
+        "phrase": cfg["phrase"],
+        # What create_world is given. First vs third is all it understands.
+        "perspective": world_model_perspective(spec),
+        "shows_character": shows_character(spec),
+        "subject": display_name(spec) if character_enabled(spec) else "",
+        "vantage": vantage(spec),
+        "motion_clause": motion_clause(spec),
+        "movement_clause": movement_clause(spec),
+        "scene_floor": scene_floor(spec),
+    }
+
+
 def structure_lines(spec: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
     """WHO / WHERE / ENVIRONMENT / TONE for the world-evolution template.
 
@@ -1522,6 +1598,10 @@ def preview() -> Dict[str, Any]:
         # legitimately be having no effect.
         "blocks": block_preview(spec),
         "notes": wiring_notes(spec),
+        # The camera as the live world model and the browser's re-steers need
+        # it. Carried in the preview so an editor save can push the new camera
+        # straight into a running world instead of waiting for a reconnect.
+        "camera": live_camera_contract(spec),
         # The short forms the non-image surfaces receive (live world model,
         # vision analysis, camp, talk). Shown so the editor can prove the cast
         # sheet reaches more than the still frames.

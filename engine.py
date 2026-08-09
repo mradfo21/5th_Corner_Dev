@@ -4101,10 +4101,7 @@ def realtime_action_beat(choice: str = "") -> str:
     if not c or c.lower() in ("intro", "initialize simulation"):
         return ""
     action = c[0].lower() + c[1:]
-    if game_identity.shows_character():
-        who = game_identity.display_name()
-        return f"Motion: the camera follows as {who} {action}."
-    return f"Motion: the view shifts as you {action}."
+    return f"Motion: {game_identity.motion_clause()} {action}."
 
 
 def build_realtime_base(visual_scene: str = "", narrative: str = "") -> str:
@@ -5003,13 +5000,24 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                 print(f"[IMG] Calling generate_frame_via_video with frame_idx={frame_idx}", flush=True)
                 
                 # Pass reference frames for visual continuity (like img2img)
-                # Use the same reference frames we collected for img2img
-                reference_frames_for_veo = prev_img_paths_list if prev_img_paths_list else []
+                # Use the same reference frames we collected for img2img, plus
+                # the player's own plates — Veo weights its references the same
+                # way, and without them the character sheet reached every
+                # provider except the one generating actual motion.
+                reference_frames_for_veo = list(prev_img_paths_list) if prev_img_paths_list else []
+                for plate in identity_plates:
+                    if plate not in reference_frames_for_veo:
+                        reference_frames_for_veo.append(plate)
+                        print(f"[IDENTITY] Attached plate as Veo reference: {os.path.basename(plate)}")
                 if reference_frames_for_veo:
                     print(f"[IMG] Passing {len(reference_frames_for_veo)} reference frames to Veo for continuity", flush=True)
-                
+
                 result_path, veo_prompt, video_path = generate_frame_via_video(
                     prompt=prompt_str,
+                    # Deliberately NOT seeded from a plate: this is the literal
+                    # first frame of a generated video, and a portrait there
+                    # produces eight seconds of that portrait. Plates ride in
+                    # `reference_frames`, where they describe rather than start.
                     first_frame_path=prev_img_paths_list[0] if prev_img_paths_list else None,
                     caption=caption,
                     frame_idx=frame_idx,
@@ -5339,6 +5347,25 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                     # FRESH frame still lands. We lose pixel-perfect img2img
                     # continuity for that one turn, but the world keeps moving —
                     # which mirrors the Krea/fal branches' existing Gemini safety net.
+                    if not result_path and identity_plates:
+                        # Drop the accumulated continuity frames (the usual
+                        # suspects for a timeout or a reference-driven safety
+                        # block) but KEEP the player's own plates: falling all
+                        # the way back to text-to-image is what silently drops
+                        # the character sheet, so the recovery frame is the one
+                        # frame in the run their character isn't in.
+                        print(f"[IMG GENERATION] img2img returned no image - retrying from the "
+                              f"{len(identity_plates)} identity plate(s) alone", flush=True)
+                        result_path = generate_gemini_img2img(
+                            prompt=prompt_str,
+                            caption=caption,
+                            reference_image_path=identity_plates,
+                            world_prompt=world_prompt,
+                            time_of_day=use_time_of_day,
+                            action_context=choice,
+                            hd_mode=use_hq_for_this_frame,
+                            output_dir=img_dir,
+                        )
                     if not result_path:
                         print(f"[IMG GENERATION] img2img returned no image - falling back to text-to-image so the scene still advances", flush=True)
                         result_path = generate_with_gemini(
@@ -5684,11 +5711,36 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                             ref_images_to_use.append(live_frame)
                         print(f"[IMG GENERATION] Krea realtime dual-ref: guide still PRIMARY + live frame SECONDARY")
 
+                # Identity plates ride behind the continuity frame(s), exactly
+                # as on the Gemini path — the most recent frame has to stay the
+                # primary style anchor or the scene snaps back to whatever the
+                # plate depicts.
+                for plate in identity_plates:
+                    if plate not in ref_images_to_use and len(ref_images_to_use) < 4:
+                        ref_images_to_use.append(plate)
+                        print(f"[IDENTITY] Attached plate as Krea reference: {os.path.basename(plate)}")
+
                 print(f"[IMG GENERATION] Krea img2img (style transfer) with {len(ref_images_to_use)} reference(s)")
                 result_path = generate_krea_img2img(
                     prompt=prompt_str,
                     caption=caption,
                     reference_image_path=ref_images_to_use,
+                    world_prompt=world_prompt,
+                    time_of_day=use_time_of_day,
+                    action_context=choice,
+                    hd_mode=use_hq_for_this_frame,
+                    output_dir=img_dir,
+                )
+            elif identity_plates:
+                # No history, but the player supplied art. Same call the Gemini
+                # branch makes on frame 0: build the opening frame out of their
+                # plates instead of the model's guess at the same words.
+                print(f"[IDENTITY] No history — seeding this Krea frame from "
+                      f"{len(identity_plates)} reference plate(s)", flush=True)
+                result_path = generate_krea_img2img(
+                    prompt=prompt_str,
+                    caption=caption,
+                    reference_image_path=identity_plates,
                     world_prompt=world_prompt,
                     time_of_day=use_time_of_day,
                     action_context=choice,
@@ -5753,6 +5805,22 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                     action_context=choice,
                     output_dir=img_dir,
                 )
+            elif identity_plates:
+                # SDXL takes exactly ONE reference, so continuity always wins
+                # the slot once there is a frame to continue from. With no
+                # history there is nothing to lose by spending it on the
+                # player's own art, which is the whole point of frame 0.
+                print(f"[IDENTITY] No history — seeding this fal frame from "
+                      f"{os.path.basename(identity_plates[0])}", flush=True)
+                result_path = generate_fal_img2img(
+                    prompt=prompt_str,
+                    caption=caption,
+                    reference_image_path=identity_plates[0],
+                    world_prompt=world_prompt,
+                    time_of_day=use_time_of_day,
+                    action_context=choice,
+                    output_dir=img_dir,
+                )
             else:
                 print(f"[IMG GENERATION] fal text-to-image (no reference anchor)")
                 result_path = generate_with_fal(
@@ -5799,14 +5867,21 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                 print("[OPENAI IMG] Set environment variable OPENAI_API_KEY or add to config.json")
                 return (None, "", None)
             
-            # Try IMG2IMG if we have reference images AND it's enabled
-            use_img2img = (OPENAI_IMG2IMG_ENABLED and prev_img_paths_list and len(prev_img_paths_list) > 0 and frame_idx > 0)
+            # Try IMG2IMG if we have reference images AND it's enabled. The
+            # player's own plates count as references, so an authored character
+            # routes the opening frame through /images/edits too.
+            openai_refs = list(prev_img_paths_list[:OPENAI_IMG2IMG_REFERENCE_COUNT]) \
+                if (prev_img_paths_list and frame_idx > 0) else []
+            for plate in identity_plates:
+                if plate not in openai_refs:
+                    openai_refs.append(plate)
+            use_img2img = bool(OPENAI_IMG2IMG_ENABLED and openai_refs)
             img2img_success = False
             
             if use_img2img:
                 # IMG2IMG MODE - Use /images/edits with previous frames as reference
                 # Using raw requests because Python SDK doesn't support multiple images properly
-                print(f"[OPENAI IMG2IMG] Attempting img2img with {len(prev_img_paths_list)} reference image(s)")
+                print(f"[OPENAI IMG2IMG] Attempting img2img with {len(openai_refs)} reference image(s)")
                 print(f"[OPENAI IMG2IMG] Wrapping prompt with VHS aesthetic instructions...")
                 
                 # Wrap with VHS styling (same as Gemini)
@@ -5814,7 +5889,7 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                 
                 # Build multipart form-data with multiple images
                 files = []
-                for idx, img_path in enumerate(prev_img_paths_list[:OPENAI_IMG2IMG_REFERENCE_COUNT]):
+                for idx, img_path in enumerate(openai_refs):
                     if os.path.exists(img_path):
                         try:
                             files.append(('image[]', (os.path.basename(img_path), open(img_path, 'rb'), 'image/png')))

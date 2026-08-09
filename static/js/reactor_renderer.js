@@ -98,9 +98,27 @@
     const v = rstate.hoExperience || readOpt("experience", "happy_oyster_experience", "__HAPPY_OYSTER_MODE__") || "adventure";
     return (v === "director" || v === "directing") ? "director" : "adventure";
   }
+  function normPerspective(v) {
+    return String(v || "").toLowerCase() === "third_person" ? "third_person" : "first_person";
+  }
+  // Which camera the world gets BUILT with. Happy Oyster fixes this at
+  // create_world, so it is the difference between walking around as your
+  // character and walking around as a pair of eyes.
+  //
+  // Resolution order, most explicit first:
+  //   ?perspective= / window global — a deliberate override for this page load
+  //   the VIEW switch in the WORLD MODEL panel (this browser, remembered)
+  //   the authored camera from the cast sheet (/api/camera) — the game's answer
+  //   first person
+  //
+  // The authored camera used to be absent from that list entirely: the cast
+  // sheet compiled third-person prompts and third-person stills while the world
+  // itself was still built first person, so the character the player wrote was
+  // never in the live frame and nothing on screen explained why.
   function happyOysterPerspective() {
-    const v = rstate.hoPerspective || readOpt("perspective", "happy_oyster_perspective", "__HAPPY_OYSTER_PERSPECTIVE__") || "first_person";
-    return v === "third_person" ? "third_person" : "first_person";
+    const explicit = readOpt("perspective", "happy_oyster_perspective", "__HAPPY_OYSTER_PERSPECTIVE__");
+    const v = rstate.hoPerspective || explicit || rstate.authoredPerspective || "first_person";
+    return normPerspective(v);
   }
   // Director-experience create_world knobs (Directing worlds only). Overridable
   // via window globals; sane Happy Oyster defaults otherwise.
@@ -218,7 +236,9 @@
     hoWorldsByImage: Object.create(null), // scene guide-image URL -> { id, prompt } (revisit cache)
     hoStagingPrompt: null,     // prompt of the world currently being built (for the cache key)
     hoExperience: null,        // resolved experience for this session ("adventure"|"director")
-    hoPerspective: null,       // resolved perspective ("first_person"|"third_person")
+    hoPerspective: null,       // VIEW switch override ("first_person"|"third_person")
+    authoredPerspective: null, // camera authored in the cast sheet (from /api/camera)
+    camera: null,              // full authored camera contract (see /api/camera)
     cfg: { model_name: FALLBACK_MODEL, enabled: false },
     connecting: false,
     connectedAt: 0,        // Date.now() a session actually went live (for cost-usage reporting)
@@ -591,6 +611,17 @@
     }
   }
 
+  // Adopt the authored camera (from /api/reactor/config or a live editor save).
+  // Returns true when the perspective the next world would be built with has
+  // actually changed, so the caller can decide whether a rebuild is warranted.
+  function applyCamera(camera) {
+    if (!camera) return false;
+    const before = happyOysterPerspective();
+    rstate.camera = camera;
+    rstate.authoredPerspective = normPerspective(camera.perspective);
+    return happyOysterPerspective() !== before;
+  }
+
   async function loadConfig() {
     try {
       const r = await fetch("/api/reactor/config");
@@ -598,6 +629,7 @@
         rstate.cfg = await r.json();
         if (typeof rstate.cfg.allow_custom_models === "boolean") rstate.allowCustom = rstate.cfg.allow_custom_models;
         if (rstate.cfg.sdk_name_prefix) rstate.sdkPrefix = rstate.cfg.sdk_name_prefix;
+        if (rstate.cfg.camera) applyCamera(rstate.cfg.camera);
         if (Array.isArray(rstate.cfg.available_models) && rstate.cfg.available_models.length) {
           rstate.models = rstate.cfg.available_models.map((m) => ({
             id: m.id,
@@ -2225,11 +2257,27 @@
       return v;
     },
     setPerspective: (v) => {
-      v = (v === "third_person") ? "third_person" : "first_person";
+      v = normPerspective(v);
       rstate.hoPerspective = v;
       try { localStorage.setItem("happy_oyster_perspective", v); } catch (_) {}
       return v;
     },
+    // The camera the cast sheet authored, pushed in after an editor save (the
+    // config fetch only happens at connect). Clears the per-browser VIEW
+    // override: picking a camera in the editor is a more deliberate act than a
+    // toggle flipped in some earlier session, and leaving a stale override in
+    // place is exactly how "I selected third person and nothing happened"
+    // happens. Returns true if the next world build would differ.
+    setAuthoredCamera: (camera) => {
+      const before = happyOysterPerspective();
+      rstate.hoPerspective = null;
+      try { localStorage.removeItem("happy_oyster_perspective"); } catch (_) {}
+      applyCamera(camera);
+      return happyOysterPerspective() !== before;
+    },
+    // The authored camera contract, for callers that compose their own live
+    // re-steer text (see standalone.js Camera).
+    getCamera: () => (rstate.camera ? Object.assign({}, rstate.camera) : null),
     // Register a custom / brand-new Reactor model at runtime (from the UI's
     // "add model" field), then it's selectable like any other. Returns the id.
     addModel: (id, label, opts) => {
