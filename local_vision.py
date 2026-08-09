@@ -676,11 +676,12 @@ def _clause_hints(clause: str) -> Tuple[Optional[str], Optional[str], Optional[s
 
 
 def prompt_nouns(scene_prompt: str, limit: int = 24) -> List[PromptNoun]:
-    """Extract candidate objects, in prompt order, from a scene prompt.
+    """Extract candidate objects from a scene prompt, best tag first.
 
     Deduplicated on the head noun, so "the silo" and "that rusted silo" later in
     the same prompt produce one tag, keeping the FIRST (usually most specific)
-    phrasing.
+    phrasing. Ordered by _CATEGORY_PRIORITY, with position in the prompt breaking
+    ties — see that table for why word order alone ranks badly.
     """
     text = (scene_prompt or "").strip()
     if not text:
@@ -711,11 +712,15 @@ def prompt_nouns(scene_prompt: str, limit: int = 24) -> List[PromptNoun]:
 
         horizontal, vertical, depth = _clause_hints(_sentence_around(text, match))
         noun = PromptNoun(phrase[:40], head, category, order, horizontal, depth)
-        if vertical == "high":
-            noun.category = "sky" if category in ("terrain", "hazard") else category
-        found.append(noun)
-        if vertical == "low" and category not in ("terrain",):
+        # "smoke above the treeline" is up in the sky, not down on the ground, so
+        # let an explicit vertical cue move ground-hugging categories up there.
+        if vertical == "high" and category in ("terrain", "hazard"):
+            noun.category = "sky"
+        # "at your feet" means near, which sizes the box up. Terrain is already
+        # anchored low by default, so the cue tells us nothing new about it.
+        elif vertical == "low" and category != "terrain":
             noun.depth = noun.depth or "near"
+        found.append(noun)
         if len(found) >= limit:
             break
 
@@ -870,7 +875,14 @@ def _overlap(a: Tuple[float, float, float, float],
 def _anchor(noun: PromptNoun, sal, occupied: List[Tuple[float, float, float, float]]):
     """Place a prompt noun on the frame: the most salient free spot in its zone.
 
-    Returns (x0, y0, x1, y1) in 0..1, or None if the zone is already taken.
+    ``sal`` is a WORKING COPY of the saliency grid and is mutated: the footprint
+    of whatever gets placed is suppressed so the next noun is pushed to a
+    genuinely different region. Without that suppression, nouns sharing a
+    category all share a vertical band and a footprint size, so after the first
+    two the rest keep landing on the same bright ridge and get rejected for
+    overlap — measured as 2 tags emitted where 6 were available.
+
+    Returns (x0, y0, x1, y1) in 0..1, or None if nowhere in the zone is free.
     """
     import numpy as np
 
@@ -903,14 +915,15 @@ def _anchor(noun: PromptNoun, sal, occupied: List[Tuple[float, float, float, flo
     row_lo = int(y_lo * grid_h)
     row_hi = max(row_lo + 1, int(y_hi * grid_h))
 
+    # A view, so suppression below writes through to the caller's working grid.
     window = sal[row_lo:row_hi, col_lo:col_hi]
     if window.size == 0:
         return None
 
-    # Walk the zone's peaks from brightest down until one lands somewhere not
-    # already claimed by another tag.
-    flat = np.argsort(window.ravel())[::-1]
-    for idx in flat[:48]:
+    for _attempt in range(64):
+        idx = int(np.argmax(window))
+        if window.ravel()[idx] <= _SUPPRESSED:
+            return None  # every peak in this zone is spoken for
         row, col = np.unravel_index(idx, window.shape)
         cx = (col_lo + col + 0.5) / float(grid_w)
         cy = (row_lo + row + 0.5) / float(grid_h)
@@ -920,8 +933,27 @@ def _anchor(noun: PromptNoun, sal, occupied: List[Tuple[float, float, float, flo
         y1 = min(1.0, cy + base_h / 2.0)
         candidate = (x0, y0, x1, y1)
         if all(_overlap(candidate, taken) < 0.45 for taken in occupied):
+            _suppress(sal, candidate)
             return candidate
+        # This peak is inside something already tagged. Blank it and look again.
+        window[row, col] = _SUPPRESSED
     return None
+
+
+# Sentinel written into the saliency working copy to mark "already used". Below
+# any real saliency value, which is normalized to 0..1.
+_SUPPRESSED = -1.0
+
+
+def _suppress(sal, box: Tuple[float, float, float, float]) -> None:
+    """Blank a placed box's footprint so the next tag is pushed elsewhere."""
+    grid_h, grid_w = sal.shape
+    x0, y0, x1, y1 = box
+    r0 = max(0, int(y0 * grid_h))
+    r1 = min(grid_h, max(r0 + 1, int(y1 * grid_h)))
+    c0 = max(0, int(x0 * grid_w))
+    c1 = min(grid_w, max(c0 + 1, int(x1 * grid_w)))
+    sal[r0:r1, c0:c1] = _SUPPRESSED
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1033,6 +1065,10 @@ def detect(image_bytes: bytes,
             _log(f"saliency failed: {type(e).__name__}: {e}")
             sal = None
         if sal is not None:
+            # Pixel-measured boxes own their ground: blank them so a prompt tag
+            # never gets stacked on top of a thing already labelled.
+            for taken in occupied:
+                _suppress(sal, taken)
             for noun in unclaimed:
                 if len(results) >= max_items:
                     break
