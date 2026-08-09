@@ -2,6 +2,8 @@
 
 **Status:** opt-in experiment behind `DETECT_LIVE_API=1`. Not wired into the default `/api/detect` path, not enabled in production, safe to merge as a probe.
 
+> **Superseded for the latency problem this was chasing.** `/api/detect` now defaults to on-device detection (`local_vision.py`, ~20 ms, no network, no key) — see `LOCAL_OBJECT_DETECTION.md`. This prototype was an attempt to cut the round-trip cost of a *remote* detector; removing the round trip entirely beats shortening it. The notes below stay relevant if the Gemini path is ever re-selected via `DETECT_BACKEND=gemini`, since it remains the only open-vocabulary option.
+
 ## What this is
 
 An alternate implementation of the SCAN detection call that keeps a persistent Gemini Live-API WebSocket session open per game session and streams frames into it, instead of doing one-shot HTTP round-trips against `gemini-3.1-flash-lite:generateContent` (the current default in `engine._detect_objects`).
