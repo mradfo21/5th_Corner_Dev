@@ -27,17 +27,14 @@
     "reference_images": []
   },
   "setting_reference": {
-    "enabled": true,
-    "name": "Neon Bazaar",
-    "summary": "A night market under failing sodium light.",
-    "era": "1993",
+    "enabled": false,
+    "name": "",
+    "summary": "",
+    "era": "",
     "palette": "",
-    "landmarks": "the third rail, a drowned ticket hall",
-    "opening_shot": "Water lapping the third rail, torchlight skimming it.",
-    "reference_images": [
-      "setting_308754527605",
-      "setting_b684cf88a7d6"
-    ]
+    "landmarks": "",
+    "opening_shot": "",
+    "reference_images": []
   },
   "camera_perspective": {
     "mode": "first_person",
