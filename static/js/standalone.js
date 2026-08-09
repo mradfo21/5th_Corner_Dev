@@ -3761,6 +3761,74 @@
              ", so edits to that shared field won't reach this render path.";
     }
 
+    // ── INFO POPOVERS ──────────────────────────────────────────────────────
+    // Every long explanation in this panel goes through here. Inline prose was
+    // the whole problem: a layer paragraph, a description under every block, a
+    // help line under every input and a "what this does" note on every prompt
+    // meant the editor had to be READ before it could be used. The text still
+    // exists — it's one click away, on the thing it describes, and it closes
+    // when you look away.
+    let popNode = null;
+    let popOwner = null;
+
+    function popEl() {
+      if (popNode && popNode.isConnected) return popNode;
+      popNode = document.createElement("div");
+      popNode.className = "we-pop";
+      popNode.setAttribute("role", "dialog");
+      popNode.innerHTML =
+        '<div class="we-pop-title"></div><div class="we-pop-body"></div>';
+      (el.worldEditor || document.body).appendChild(popNode);
+      return popNode;
+    }
+
+    function closePop() {
+      if (popNode) popNode.classList.remove("show");
+      if (popOwner) popOwner.setAttribute("aria-expanded", "false");
+      popOwner = null;
+    }
+
+    function openPop(btn, title, body) {
+      const node = popEl();
+      node.querySelector(".we-pop-title").textContent = title || "";
+      node.querySelector(".we-pop-body").textContent = body || "";
+      popOwner = btn;
+      btn.setAttribute("aria-expanded", "true");
+      node.classList.add("show");
+      // Anchor under the button, then pull back inside the panel if it would
+      // hang off either edge.
+      const host = (el.worldEditor || document.body).getBoundingClientRect();
+      const r = btn.getBoundingClientRect();
+      const w = node.offsetWidth;
+      let left = r.left - host.left + r.width / 2 - w / 2;
+      left = Math.max(10, Math.min(left, host.width - w - 10));
+      node.style.left = left + "px";
+      let top = r.bottom - host.top + 8;
+      if (top + node.offsetHeight > host.height - 10) {
+        top = Math.max(10, r.top - host.top - node.offsetHeight - 8);
+      }
+      node.style.top = top + "px";
+    }
+
+    // A small ⓘ that carries the long version. Returns null when there's
+    // nothing to say, so callers can append unconditionally.
+    function infoBtn(title, body) {
+      if (!body) return null;
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "we-info";
+      b.setAttribute("aria-label", "About " + (title || "this"));
+      b.setAttribute("aria-expanded", "false");
+      b.textContent = "\u24D8";
+      b.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (popOwner === b) { closePop(); return; }
+        openPop(b, title || "", body);
+      });
+      return b;
+    }
+
     function refreshDirtyBadge() {
       if (el.weDirty) el.weDirty.classList.toggle("hidden", !anyDirty());
     }
@@ -3837,21 +3905,13 @@
         '<span class="we-lhead-title">' + esc(layer.label) + "</span>" +
         '<span class="we-lhead-tag">' + esc(layer.tagline || layer.question || "") + "</span>";
 
-      const more = document.createElement("details");
-      more.className = "we-more-info";
-      const sum = document.createElement("summary");
-      sum.textContent = "What this layer controls";
-      const body = document.createElement("div");
-      body.className = "we-more-info-body";
-      body.textContent = (layer.blurb || "") +
+      const info = infoBtn(layer.label, (layer.blurb || "") +
         (layer.risk === "contract"
           ? " These values are parsed by code, so a careless edit can stop turns resolving."
-          : " " + (layer.scope || ""));
-      more.appendChild(sum);
-      more.appendChild(body);
+          : " " + (layer.scope || "")));
+      if (info) row.appendChild(info);
 
       wrap.appendChild(row);
-      wrap.appendChild(more);
       return wrap;
     }
 
@@ -3883,12 +3943,19 @@
         ? "Seeds the world — start a fresh run to see it"
         : "Re-steers the sim on the next turn";
       head.appendChild(label);
+      const wiring = sharedWiringNote(key);
+      const about = infoBtn(f.label || key,
+        [f.description, wiring].filter(Boolean).join("\n\n"));
+      if (about) head.appendChild(about);
       head.appendChild(chip);
 
       const value = String(valOf(key) || "");
       const preview = document.createElement("div");
       preview.className = "we-card-preview";
-      preview.textContent = value.replace(/\s+/g, " ").trim() || "Empty";
+      // Truncate in JS, not just with a CSS line clamp. A clamp still puts the
+      // whole 15,000-character contract in the DOM to render two lines of it.
+      const flat = value.replace(/\s+/g, " ").trim();
+      preview.textContent = flat ? flat.slice(0, 240) : "Empty";
 
       const meta = document.createElement("div");
       meta.className = "we-card-meta";
@@ -3911,7 +3978,7 @@
 
       const open = () => openPromptModal(key);
       wrap.addEventListener("click", (e) => {
-        if (e.target.closest(".we-more-info, .we-card-reset")) return;
+        if (e.target.closest(".we-info, .we-pop, .we-card-reset")) return;
         open();
       });
       wrap.addEventListener("keydown", (e) => {
@@ -3921,27 +3988,6 @@
       wrap.appendChild(head);
       wrap.appendChild(preview);
       wrap.appendChild(meta);
-
-      // What it does, and how it's wired — available, not imposed.
-      if (f.description) {
-        const more = document.createElement("details");
-        more.className = "we-more-info";
-        const sum = document.createElement("summary");
-        sum.textContent = "What this does";
-        const body = document.createElement("div");
-        body.className = "we-more-info-body";
-        body.textContent = f.description;
-        const wiring = sharedWiringNote(key);
-        if (wiring) {
-          const w = document.createElement("div");
-          w.className = "we-more-wiring";
-          w.textContent = wiring;
-          body.appendChild(w);
-        }
-        more.appendChild(sum);
-        more.appendChild(body);
-        wrap.appendChild(more);
-      }
 
       if (modified) {
         const reset = document.createElement("button");
@@ -3960,6 +4006,7 @@
     }
 
     function render() {
+      closePop();
       renderTabs();
       const showWorlds = activeTab === "worlds";
       const layer = layerById(activeTab);
@@ -4024,9 +4071,13 @@
 
       const head = document.createElement("div");
       head.className = "we-levels-head";
-      head.innerHTML =
-        '<span class="we-levels-title">YOUR LEVELS</span>' +
-        '<span class="we-levels-note">Switching a level leaves the engine, the game and your character alone.</span>';
+      head.innerHTML = '<span class="we-levels-title">LEVELS</span>';
+      const about = infoBtn("Levels",
+        "A level is one place: its brief and its setting plate. Saving snapshots " +
+        "only those, so opening a different level leaves the engine, the game and " +
+        "your character exactly as they were \u2014 which is what lets you build a " +
+        "set of levels for one game and switch between them.");
+      if (about) head.appendChild(about);
       wrap.appendChild(head);
 
       const row = document.createElement("div");
@@ -4067,8 +4118,7 @@
       if (!levels.length) {
         const empty = document.createElement("div");
         empty.className = "we-levels-empty";
-        empty.textContent = "No saved levels yet. Describe a place below, then save it — " +
-          "then change it and save that too, and you have two levels for the same game.";
+        empty.textContent = "No levels yet. Describe a place below, then name and save it.";
         list.appendChild(empty);
       }
       levels.forEach((lv) => list.appendChild(makeLevelCard(lv)));
@@ -4708,16 +4758,20 @@
       return row;
     }
 
+    // A field label, with the long help behind an ⓘ rather than printed under
+    // every input.
+    function castLabelWithHelp(text, help) {
+      const row = document.createElement("div");
+      row.className = "we-cast-labelrow";
+      row.appendChild(castLabel(text));
+      const info = infoBtn(text, help);
+      if (info) row.appendChild(info);
+      return row;
+    }
+
     function castLabel(text) {
       const s = document.createElement("span");
       s.className = "we-cast-label";
-      s.textContent = text;
-      return s;
-    }
-
-    function castHelp(text) {
-      const s = document.createElement("div");
-      s.className = "we-cast-help";
       s.textContent = text;
       return s;
     }
@@ -4732,14 +4786,17 @@
         cb.type = "checkbox";
         cb.checked = !!value;
         cb.addEventListener("change", () => saveIdentity(blockId, { [field.id]: cb.checked }));
-        const text = document.createElement("span");
         const name = document.createElement("span");
         name.className = "we-cast-toggle-label";
         name.textContent = field.label;
-        text.appendChild(name);
-        if (field.help) text.appendChild(castHelp(field.help));
-        label.appendChild(cb); label.appendChild(text);
-        return castRow([label]);
+        label.appendChild(cb);
+        label.appendChild(name);
+        const row = castRow([label]);
+        // The ⓘ sits outside the <label> so clicking it can't flip the switch.
+        const info = infoBtn(field.label, field.help);
+        if (info) row.appendChild(info);
+        row.classList.add("we-cast-togglerow");
+        return row;
       }
 
       if (field.type === "mode") {
@@ -4757,7 +4814,7 @@
           b.addEventListener("click", () => saveIdentity(blockId, { mode: o.id }));
           grid.appendChild(b);
         });
-        return castRow([castLabel(field.label), grid]);
+        return castRow([castLabelWithHelp(field.label, field.help), grid]);
       }
 
       const isLong = field.type === "longtext";
@@ -4776,9 +4833,7 @@
       if (!isLong) {
         input.addEventListener("keydown", (e) => { if (e.key === "Enter") input.blur(); });
       }
-      const kids = [castLabel(field.label), input];
-      if (field.help) kids.push(castHelp(field.help));
-      return castRow(kids);
+      return castRow([castLabelWithHelp(field.label, field.help), input]);
     }
 
     function makeCastBlock(block) {
@@ -4793,13 +4848,9 @@
       label.textContent = block.label;
       top.appendChild(label);
 
+      const about = infoBtn(block.label, block.description);
+      if (about) top.appendChild(about);
       wrap.appendChild(top);
-      if (block.description) {
-        const desc = document.createElement("div");
-        desc.className = "we-block-desc";
-        desc.textContent = block.description;
-        wrap.appendChild(desc);
-      }
 
       const essential = block.fields.filter((f) => f.tier !== "advanced");
       const advanced = block.fields.filter((f) => f.tier === "advanced");
@@ -4845,17 +4896,8 @@
       head.className = "we-plate-head";
       head.innerHTML = '<span class="we-plate-title">' +
         esc(block.images_label || "Reference") + "</span>";
-      if (block.images_hint) {
-        const more = document.createElement("details");
-        more.className = "we-more-info";
-        const sum = document.createElement("summary");
-        sum.textContent = "How these are used";
-        const body = document.createElement("div");
-        body.className = "we-more-info-body";
-        body.textContent = block.images_hint;
-        more.appendChild(sum); more.appendChild(body);
-        head.appendChild(more);
-      }
+      const hint = infoBtn(block.images_label || "Reference", block.images_hint);
+      if (hint) head.appendChild(hint);
       holder.appendChild(head);
 
       const file = document.createElement("input");
@@ -4933,13 +4975,12 @@
       label.className = "we-block-label";
       label.textContent = "Where else this reaches";
       top.appendChild(label);
+      const about = infoBtn("Where else this reaches",
+        "The same sheet, compressed for the surfaces that only get a sentence or " +
+        "two: the live world model, the vision loop that decides what the next " +
+        "frame looks like, camp, and anyone you talk to.");
+      if (about) top.appendChild(about);
       wrap.appendChild(top);
-
-      const desc = document.createElement("div");
-      desc.className = "we-block-desc";
-      desc.textContent =
-        "The same sheet, compressed for the surfaces that only get a sentence or two.";
-      wrap.appendChild(desc);
 
       rows.forEach(([name, text]) => {
         wrap.appendChild(castLabel(name));
@@ -5146,6 +5187,7 @@
     }
     function close() {
       if (!open_) return;
+      closePop();
       open_ = false;
       document.body.classList.remove("world-editor-on");
       if (el.btnEditor) el.btnEditor.classList.remove("active");
@@ -5158,6 +5200,14 @@
     function isOpen() { return open_; }
 
     function init() {
+      // Any click that isn't the popover or its own ⓘ dismisses it.
+      if (el.worldEditor) {
+        el.worldEditor.addEventListener("click", (e) => {
+          if (!popOwner) return;
+          if (e.target.closest(".we-pop") || e.target.closest(".we-info")) return;
+          closePop();
+        });
+      }
       if (el.weClose) el.weClose.addEventListener("click", close);
       if (el.weApply) el.weApply.addEventListener("click", applyLive);
       if (el.weRestart) el.weRestart.addEventListener("click", saveAndRestart);

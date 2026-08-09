@@ -6713,18 +6713,78 @@ body.we-resizing { cursor: col-resize; user-select: none; }
   box-shadow: 0 0 10px var(--layer-accent);
   align-self: center;
 }
+#world-editor .we-lhead-tag {
+  font-size: calc(12.5px * var(--we-fs));
+  color: var(--we-text-dim);
+}
 #world-editor .we-lhead-title {
   font-size: calc(19px * var(--we-fs));
   font-weight: 600;
   letter-spacing: -0.012em;
   color: var(--we-text);
 }
-#world-editor .we-lhead-tag {
-  font-size: calc(12.5px * var(--we-fs));
+
+/* ── INFO ⓘ + POPOVER: the whole text-volume strategy ─────────────────────
+   Inline prose was the problem — a paragraph per layer, a description per
+   block, a help line per input. The text lives here now: one small ⓘ on the
+   thing it describes, one popover, dismissed by looking away. */
+#world-editor .we-info {
+  appearance: none;
+  flex: 0 0 auto;
+  width: 17px; height: 17px;
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 0; border: 0; border-radius: 50%;
+  background: transparent;
   color: var(--we-text-dim);
+  font-size: 13px; line-height: 1;
+  cursor: help;
+  transition: color 0.15s, background 0.15s;
+}
+#world-editor .we-info:hover,
+#world-editor .we-info[aria-expanded="true"] {
+  color: var(--we-text);
+  background: rgba(255, 255, 255, 0.08);
+}
+#world-editor .we-info:focus-visible {
+  outline: none; color: var(--we-text);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--layer-accent) 45%, transparent);
+}
+#world-editor .we-pop {
+  position: absolute;
+  z-index: 60;
+  width: min(300px, calc(100% - 20px));
+  padding: 11px 13px 12px;
+  border-radius: 11px;
+  background: #1a1d23;
+  border: 1px solid var(--we-line-strong);
+  box-shadow: 0 18px 44px -14px rgba(0, 0, 0, 0.9);
+  opacity: 0;
+  transform: translateY(-4px);
+  pointer-events: none;
+  transition: opacity 0.16s ease, transform 0.16s ease;
+}
+#world-editor .we-pop.show { opacity: 1; transform: translateY(0); pointer-events: auto; }
+#world-editor .we-pop-title {
+  font-size: calc(11px * var(--we-fs));
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--layer-accent);
+  margin-bottom: 5px;
+}
+#world-editor .we-pop-body {
+  font-size: calc(12.5px * var(--we-fs));
+  line-height: 1.62;
+  color: var(--we-text-mid);
+  white-space: pre-line;
 }
 
-/* ── Disclosures: the whole text-volume strategy ───────────────────────── */
+/* A label and its ⓘ sit on one line. */
+#world-editor .we-cast-labelrow { display: flex; align-items: center; gap: 4px; margin-bottom: 6px; }
+#world-editor .we-cast-labelrow .we-cast-label { margin-bottom: 0; }
+#world-editor .we-cast-togglerow { display: flex; align-items: center; gap: 6px; }
+#world-editor .we-cast-togglerow .we-cast-toggle { flex: 1 1 auto; }
+
 #world-editor .we-more-info { margin-top: 9px; }
 #world-editor .we-more-info > summary {
   display: inline-flex; align-items: center; gap: 5px;
@@ -6863,13 +6923,6 @@ body.we-resizing { cursor: col-resize; user-select: none; }
   font-weight: 600;
   letter-spacing: -0.01em;
 }
-#world-editor .we-block-desc {
-  margin-top: 5px;
-  font-size: calc(12.5px * var(--we-fs));
-  line-height: 1.55;
-  color: var(--we-text-dim);
-  max-width: 60ch;
-}
 #world-editor .we-cast-row { margin-top: 13px; }
 #world-editor .we-cast-label {
   display: block;
@@ -6879,21 +6932,6 @@ body.we-resizing { cursor: col-resize; user-select: none; }
   text-transform: uppercase;
   color: var(--we-text-dim);
   margin-bottom: 6px;
-}
-/* Help text appears when you're actually in the field — not as a permanent
-   second line under every input. */
-#world-editor .we-cast-help {
-  font-size: calc(11.5px * var(--we-fs));
-  line-height: 1.5;
-  color: var(--we-text-dim);
-  max-height: 0;
-  opacity: 0;
-  overflow: hidden;
-  transition: max-height 0.2s ease, opacity 0.2s ease, margin 0.2s ease;
-}
-#world-editor .we-cast-row:hover .we-cast-help,
-#world-editor .we-cast-row:focus-within .we-cast-help {
-  max-height: 80px; opacity: 1; margin-top: 5px;
 }
 #world-editor .we-block input[type="text"],
 #world-editor .we-block textarea {
@@ -6936,9 +6974,7 @@ body.we-resizing { cursor: col-resize; user-select: none; }
 }
 #world-editor .we-cast-toggle input:checked { background: var(--layer-accent); }
 #world-editor .we-cast-toggle input:checked::after { transform: translateX(14px); }
-#world-editor .we-cast-toggle-text { display: flex; flex-direction: column; gap: 2px; }
 #world-editor .we-cast-toggle-label { font-size: calc(13px * var(--we-fs)); }
-#world-editor .we-cast-toggle .we-cast-help { max-height: none; opacity: 1; }
 
 /* Segmented mode picker. */
 #world-editor .we-mode-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
