@@ -5959,7 +5959,8 @@ body.agent-log-on #agent-log { display: flex; }
   color: rgba(142, 255, 193, 0.6);
 }
 
-/* (Tape/auto-play/renderer/reset/sound buttons now live in #control-rail.) */
+/* (Reset lives in #control-rail; tape/auto-play/renderer/narrator/debug/vhs/
+   sound live in the World Editor's ENGINE layer — see .we-sys-btn above.) */
 
 /* ---------- Tape playback overlay ---------- */
 
@@ -7124,6 +7125,10 @@ body.we-resizing { cursor: col-resize; user-select: none; }
 /* ── Worlds ("Builds") tab ─────────────────────────────────────────────── */
 #world-editor .we-worlds { padding: 15px 16px 0; }
 #world-editor .we-worlds.hidden { display: none; }
+/* Holding pen for the engine controls (see #we-sys-src in the markup): stays
+   hidden here at all times — WorldEditor.makeEngineControls() moves the
+   actual buttons out into the ENGINE tab's panel, it never unhides this. */
+#we-sys-src.hidden { display: none; }
 #world-editor .we-worlds-save { display: flex; gap: 8px; margin-bottom: 10px; }
 #world-editor .we-worlds-save input {
   flex: 1 1 auto; min-width: 0; background: #0d0f12;
@@ -7151,6 +7156,62 @@ body.we-resizing { cursor: col-resize; user-select: none; }
 }
 #world-editor .we-card-vars { color: var(--we-text-dim); }
 #world-editor .we-more-compiled { margin-top: 12px; }
+
+/* ── Engine layer: system controls ────────────────────────────────────────
+   Renderer, world/image model switchers, autoplay, tape, narrator, debug
+   log, VHS + sound — re-homed here from the old top-right icon rail (see
+   #we-sys-src in the markup + WorldEditor.makeEngineControls in
+   standalone.js). These are the same <button> elements the rail used to
+   show, just re-laid-out as a settings list, so the existing state classes
+   (.on/.off/.active/.pending, all scoped by id) keep driving their color —
+   the rules below are deliberately LOW-specificity (bare classes) so those
+   id-scoped rules always win regardless of source order. */
+#world-editor .we-sys { padding: 2px 16px 18px; }
+#world-editor .we-sys-title {
+  margin: 15px 0 7px;
+  font-size: calc(10px * var(--we-fs)); font-weight: 600;
+  letter-spacing: 0.14em; text-transform: uppercase; color: var(--we-text-dim);
+}
+#world-editor .we-sys-title:first-child { margin-top: 0; }
+.we-sys-btn {
+  display: flex;
+  flex-direction: row;
+  justify-content: flex-start;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 0;
+  margin: 0 0 7px;
+  padding: 10px 12px;
+  background: var(--we-panel, #121418);
+  border: 1px solid var(--we-line, rgba(255, 255, 255, 0.07));
+  border-radius: 11px;
+  text-align: left;
+  text-shadow: none;
+}
+.we-sys-btn:last-child { margin-bottom: 0; }
+.we-sys-btn:hover {
+  background: #171a20;
+  border-color: var(--we-line-strong, rgba(255, 255, 255, 0.13));
+}
+#world-editor .we-sys-btn .rail-ico {
+  flex: 0 0 auto; width: 20px;
+  font-size: 16px; text-align: center;
+}
+#world-editor .we-sys-btn .we-sys-text {
+  display: flex; flex-direction: column; gap: 2px; min-width: 0;
+}
+#world-editor .we-sys-btn .we-sys-text .rail-lbl {
+  display: block;
+  font-size: calc(12.5px * var(--we-fs));
+  letter-spacing: 0.005em;
+  text-transform: none;
+}
+#world-editor .we-sys-desc {
+  font-size: calc(11px * var(--we-fs));
+  line-height: 1.4;
+  color: var(--we-text-dim);
+}
 
 /* ── Buttons, footer, toast ────────────────────────────────────────────── */
 #world-editor .we-btn {

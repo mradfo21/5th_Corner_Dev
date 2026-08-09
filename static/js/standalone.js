@@ -4045,6 +4045,11 @@
         // The Level layer leads with its gallery — what makes a level a level
         // rather than "the current settings" is that you can keep several.
         if (activeTab === "level") el.weLayerHead.appendChild(makeLevelGallery());
+        // The Engine layer leads with the runtime controls that used to be a
+        // wall of icon buttons over the scene (renderer, model switchers,
+        // autoplay, tape, narrator, debug log, VHS, sound) — "how does this
+        // machine run" is exactly what this layer answers.
+        if (activeTab === "engine") el.weLayerHead.appendChild(makeEngineControls());
       }
 
       // Structured forms (spec blocks) come before prompt bodies: answering
@@ -4062,6 +4067,31 @@
         if (showAdvanced) advanced.forEach((f) => el.weFields.appendChild(makeField(f)));
       }
       refreshDirtyBadge();
+    }
+
+    // ---- ENGINE controls: the runtime knobs, re-homed from the old rail ----
+    // These buttons are defined once in the markup (#we-sys-src, kept out of
+    // the flow so their ids/listeners resolve at startup) and physically
+    // moved in here — no cloning, so every existing click handler and state
+    // class (`.on` / `.off` / `.active` / `.pending`) keeps working untouched.
+    const ENGINE_CONTROL_GROUPS = [
+      { title: "Renderer", buttons: ["rendererBtn", "btnModel", "btnImgModel"] },
+      { title: "Session", buttons: ["autoplayBtn", "tapeBtn", "narratorBtn"] },
+      { title: "Diagnostics", buttons: ["agentDebugBtn", "btnVhs", "btnSnd"] },
+    ];
+    function makeEngineControls() {
+      const wrap = document.createElement("div");
+      wrap.className = "we-sys";
+      ENGINE_CONTROL_GROUPS.forEach((group) => {
+        const nodes = group.buttons.map((key) => el[key]).filter(Boolean);
+        if (!nodes.length) return;
+        const title = document.createElement("div");
+        title.className = "we-sys-title";
+        title.textContent = group.title;
+        wrap.appendChild(title);
+        nodes.forEach((node) => wrap.appendChild(node));
+      });
+      return wrap;
     }
 
     // ---- LEVEL gallery: save the current level, switch between saved ones ----
@@ -12123,7 +12153,7 @@
   function setAutoPlay(on) {
     state.autoPlay = on;
     el.autoplayBtn.classList.toggle("on", on);
-    el.autoplayLabel.textContent = on ? "STOP" : "AUTO";
+    el.autoplayLabel.textContent = on ? "Stop" : "Auto-play";
     el.autoplayBtn.title = on ? "Stop auto-play (P)" : "Auto-play — advance on its own (P)";
     if (on) {
       // In realtime, let the current video play a watch window (and never advance
