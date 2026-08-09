@@ -20,6 +20,16 @@ or advance a turn — indistinguishable from the game freezing. Capture is also
 refused until the live world has actually revealed, so a slow first scene can
 never combine with a hidden cursor to look like a black freeze.
 
+`A`/`D` strafe while you're moving forward. Happy Oyster holds a single move verb
+and its renderer lets longitudinal win, so `W`+`A` — ordinary FPS movement — sent
+only `move:Front` and dropped the strafe, making `A`/`D` look broken. Forward and
+strafe are interleaved the same way a diagonal look is.
+
+Steering the camera no longer **burns a scan**. Tapping the world fires a paid
+detection pass, and the mouseup that ends a look-drag is a real click on the
+scene, so every release bought a scan. A gesture that moved now eats its own
+click; a stationary tap still scans.
+
 Mouse look steers **both axes at once** — sweeping up-and-left looks up and left.
 Models with independent look axes (LingBot) hold a true diagonal; Happy Oyster
 can only hold one look verb at a time, so the two are interleaved in short time

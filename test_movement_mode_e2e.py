@@ -552,6 +552,83 @@ class TestMovementMode(unittest.TestCase):
         finally:
             page.close()
 
+    def test_fps_strafe_works_while_moving_forward(self):
+        """Regression: holding W+A (ordinary FPS movement) sent only move:Front on
+        Happy Oyster — it holds ONE move verb and longitudinal wins, so the strafe
+        was silently dropped and A/D looked broken. Forward and strafe must now be
+        interleaved. LingBot holds both natively."""
+        page = self._new_realtime_page(mode="fps")
+        try:
+            self._boot_live(page, model="happy-oyster")
+            self.assertTrue(page.evaluate("() => window.ReactorRenderer.movesOneAxisAtATime()"))
+            self._reset_cmd_log(page)
+            page.keyboard.down("w")
+            self._wait_cmd(page, "move", "direction", "Front")
+            page.keyboard.down("a")
+            page.wait_for_function(
+                """() => {
+                    const d = (window.__MOCK_CMD_LOG__||[])
+                        .filter(c => c.name === 'move').map(c => c.data.direction);
+                    return d.includes('Front') && d.includes('Left');
+                }""", timeout=6000)
+            page.keyboard.up("a")
+            page.keyboard.up("w")
+            self._wait_cmd(page, "stop")
+        except Exception:
+            print("\n=== CONSOLE LOG (strafe-with-forward) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
+        page = self._new_realtime_page(mode="fps")
+        try:
+            self._boot_live(page, model="lingbot-world-2")
+            self._reset_cmd_log(page)
+            page.keyboard.down("w")
+            page.keyboard.down("a")
+            self._wait_cmd(page, "set_move_longitudinal", "move_longitudinal", "forward")
+            self._wait_cmd(page, "set_move_lateral", "move_lateral", "left")
+            page.keyboard.up("a")
+            page.keyboard.up("w")
+        except Exception:
+            print("\n=== CONSOLE LOG (strafe-lingbot) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
+    def test_look_drag_release_does_not_burn_a_scan(self):
+        """Regression: tapping the world fires a PAID detection pass, and the
+        mouseup ending a look-drag is a real click on the scene — so steering the
+        camera bought a scan every time you let go. A gesture that MOVED must eat
+        its click, while a stationary tap still scans."""
+        page = self._new_realtime_page(mode="fps")
+        detects = []
+
+        def on_detect(route):
+            detects.append(route.request.url)
+            route.fulfill(status=200, content_type="application/json",
+                          body=json.dumps({"objects": [
+                              {"label": "crate", "cx": 0.3, "cy": 0.4, "w": 0.2, "h": 0.2}]}))
+        page.route("**/api/detect", on_detect)
+        try:
+            self._boot_live(page, model="happy-oyster")
+            # Steering the camera must not scan.
+            self._look_drag(page, dx=-220)
+            page.mouse.up()
+            page.wait_for_timeout(1500)
+            self.assertEqual(len(detects), 0,
+                             f"a look-drag must not trigger a scan, got {len(detects)}")
+            # A deliberate stationary tap still scans (unchanged behaviour).
+            page.mouse.click(620, 300)
+            page.wait_for_timeout(1800)
+            self.assertEqual(len(detects), 1,
+                             f"a stationary world tap should still scan, got {len(detects)}")
+        except Exception:
+            print("\n=== CONSOLE LOG (scan-gate) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
     def test_world_editor_switches_control_mode(self):
         """The CONTROLS switch lives in the WORLD EDITOR: it lists both modes,
         marks the active one, actually re-binds the keys, and persists."""

@@ -5223,6 +5223,9 @@
       "#scan-tutorial, #narrator-bar, #guide-thumb, #capture-thumb, " +
       "#moment-overlay, .renderer-toast, #tape-overlay";
 
+    // Movement past this makes a gesture a LOOK, not a tap.
+    const DRAG_SLOP_PX = 8;
+
     let locked = false;         // pointer lock held
     let dragging = false;       // left button held on the world
     let budgetX = 0;            // signed px of turn still owed to the player
@@ -5230,6 +5233,7 @@
     let drainedAt = 0;          // wall clock of the last budget bleed
     let lastClient = null;      // previous cursor pos (drag-look delta source)
     let downAt = null;          // where the button went down (drag vs click)
+    let draggedFar = false;     // this gesture moved -> it steered, it didn't tap
     let hinted = false;
     let reticle = null;
 
@@ -5386,6 +5390,7 @@
       dragging = true;
       lastClient = { x: e.clientX, y: e.clientY };
       downAt = { x: e.clientX, y: e.clientY };
+      draggedFar = false;
       paint();
       if (!hinted) {
         hinted = true;
@@ -5406,6 +5411,26 @@
       if (!allowed()) return;
       if (lastClient) feed(e.clientX - lastClient.x, e.clientY - lastClient.y);
       lastClient = { x: e.clientX, y: e.clientY };
+      if (downAt && Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) > DRAG_SLOP_PX) {
+        draggedFar = true;
+      }
+    }
+
+    // Tapping the world fires a PAID detection pass (onWorldTap -> triggerScan),
+    // and the mouseup ending a look-drag produces a real click on the scene — so
+    // steering the camera was buying a scan every time you let go. A gesture that
+    // MOVED now eats its own click. Also swallowed: the second click of the
+    // double-click that takes pointer capture, and clicks while captured (their
+    // coordinates are frozen at the lock point, so they'd scan a stale spot).
+    // A stationary tap on the world is untouched and still scans.
+    function onClickCapture(e) {
+      if (!modeOn()) return;
+      const steering = draggedFar || locked || (e.detail || 0) >= 2;
+      draggedFar = false;
+      if (!steering) return;
+      e.stopImmediatePropagation();
+      e.stopPropagation();
+      e.preventDefault();
     }
     // Explicit opt-in for full capture. A single click is left alone: the game
     // uses clicks, and stealing the cursor from one looked like a freeze.
@@ -5430,6 +5455,9 @@
       document.addEventListener("mouseup", onMouseUp, true);
       document.addEventListener("mousemove", onMouseMove);
       document.addEventListener("dblclick", onDblClick, true);
+      // Capture phase on window: runs before the bubble-phase world-tap scan
+      // handler, which is the only way to cancel it.
+      window.addEventListener("click", onClickCapture, true);
       window.addEventListener("blur", onBlur);
       paint();
     }
