@@ -515,7 +515,7 @@ GROUP_BLURBS: Dict[str, str] = {
 # through their own form (see game_identity.IDENTITY_SCHEMA), so they're absent
 # from PROMPT_SCHEMA but are still legitimate keys in the file. Named here so
 # `unwired_keys` doesn't flag them; game_identity remains the source of truth.
-SPEC_BLOCK_KEYS = ("player_character", "setting_reference", "camera_perspective")
+SPEC_BLOCK_KEYS = ("game_design", "player_character", "setting_reference", "camera_perspective")
 
 
 def primary_keys() -> List[str]:

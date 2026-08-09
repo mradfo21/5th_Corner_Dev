@@ -86,7 +86,13 @@ REFERENCES_DIR = Path(
 CHARACTER_KEY = "player_character"
 SETTING_KEY = "setting_reference"
 CAMERA_KEY = "camera_perspective"
-SPEC_KEYS = (CHARACTER_KEY, SETTING_KEY, CAMERA_KEY)
+# The GAME layer: what kind of game this is, independent of any one level. Genre,
+# tone, how it treats the player, and the anchor the live world model steers
+# from. Before this existed those facts had no home, so they were written as
+# prose inside the level's world seed — which meant every new level either
+# restated the game's identity or quietly contradicted it.
+GAME_KEY = "game_design"
+SPEC_KEYS = (GAME_KEY, CHARACTER_KEY, SETTING_KEY, CAMERA_KEY)
 
 _LOCK = threading.Lock()
 
@@ -308,7 +314,21 @@ CAMERA_DEFAULTS: Dict[str, Any] = {
     "notes": "",
 }
 
+# GAME layer. `world_anchor` is the one field here that overrides rather than
+# adds: the live world model's style anchor used to be a hardcoded constant in
+# engine.py, so the single most visible surface in the game — the streaming
+# video — was the one thing an author could not touch.
+GAME_DEFAULTS: Dict[str, Any] = {
+    "enabled": False,
+    "genre": "",
+    "tone": "",
+    "threat_model": "",
+    "win_condition": "",
+    "world_anchor": "",
+}
+
 _DEFAULTS_BY_KEY = {
+    GAME_KEY: GAME_DEFAULTS,
     CHARACTER_KEY: CHARACTER_DEFAULTS,
     SETTING_KEY: SETTING_DEFAULTS,
     CAMERA_KEY: CAMERA_DEFAULTS,
@@ -368,6 +388,7 @@ def get_spec() -> Dict[str, Dict[str, Any]]:
     next call with no restart (same hot-reload contract as every other prompt).
     """
     return {
+        GAME_KEY: _normalize(GAME_KEY, PROMPTS.get(GAME_KEY)),
         CHARACTER_KEY: _normalize(CHARACTER_KEY, PROMPTS.get(CHARACTER_KEY)),
         SETTING_KEY: _normalize(SETTING_KEY, PROMPTS.get(SETTING_KEY)),
         CAMERA_KEY: _normalize(CAMERA_KEY, PROMPTS.get(CAMERA_KEY)),
@@ -376,6 +397,7 @@ def get_spec() -> Dict[str, Dict[str, Any]]:
 
 def default_spec() -> Dict[str, Dict[str, Any]]:
     return {
+        GAME_KEY: dict(GAME_DEFAULTS),
         CHARACTER_KEY: dict(CHARACTER_DEFAULTS),
         SETTING_KEY: dict(SETTING_DEFAULTS),
         CAMERA_KEY: dict(CAMERA_DEFAULTS),
@@ -461,6 +483,39 @@ TIER_ESSENTIAL = "essential"
 TIER_ADVANCED = "advanced"
 
 IDENTITY_SCHEMA: List[Dict[str, Any]] = [
+    {
+        "id": GAME_KEY,
+        "label": "The Game",
+        "icon": "\u25C8",
+        "description": (
+            "What kind of game this is, independent of any single level. Set it "
+            "once and every level you build inherits it."
+        ),
+        "supports_images": False,
+        "fields": [
+            {"id": "enabled", "label": "Use this game sheet", "type": "toggle",
+             "tier": TIER_ESSENTIAL,
+             "help": "Off means the shipped genre, tone and look apply."},
+            {"id": "genre", "label": "Genre", "type": "text", "tier": TIER_ESSENTIAL,
+             "placeholder": "found-footage survival horror",
+             "help": "One phrase. Steers how consequences are written and what actions get offered."},
+            {"id": "tone", "label": "Tone", "type": "longtext", "tier": TIER_ESSENTIAL,
+             "placeholder": "Dread over gore. The camera is a witness, never a weapon.",
+             "help": "How the game treats the player. Reaches the writing and the between-turn world rewrite."},
+            {"id": "threat_model", "label": "What threatens the player", "type": "longtext",
+             "tier": TIER_ESSENTIAL,
+             "placeholder": "The place itself: cold, water rising, no way back the way you came.",
+             "help": "Tells the consequence pass what danger means here, so it stops inventing its own."},
+            {"id": "win_condition", "label": "What winning looks like", "type": "longtext",
+             "tier": TIER_ADVANCED,
+             "placeholder": "Get out with proof of what you saw.",
+             "help": "Gives the choice writer a direction to push toward."},
+            {"id": "world_anchor", "label": "Live world anchor", "type": "longtext",
+             "tier": TIER_ADVANCED,
+             "placeholder": "First-person handheld VHS camcorder footage, 1993, degraded tape",
+             "help": "REPLACES the shipped look for the live video model. One sentence: medium, era, film stock."},
+        ],
+    },
     {
         "id": CHARACTER_KEY,
         "label": "Your Character",
@@ -635,15 +690,35 @@ def display_name(spec: Optional[Dict[str, Any]] = None) -> str:
     return character_name(spec) or "the player character"
 
 
+# The GAME block counts as authored once it is switched on AND says something,
+# mirroring how character/setting decide the same question: a block that is on
+# but blank compiles to nothing, so it must not flip the pipeline into active.
+_GAME_INTENT_FIELDS = ("genre", "tone", "threat_model", "win_condition", "world_anchor")
+
+# Stand-in for engine.REALTIME_STYLE_ANCHOR, used only so the editor can preview
+# what the live-video anchor compiles to. Importing engine here would be a cycle.
+SHIPPED_ANCHOR_SAMPLE = (
+    "First-person handheld VHS camcorder footage, 1993, degraded tape, "
+    "heavy grain and chromatic bleed"
+)
+
+
+def game_enabled(spec: Optional[Dict[str, Any]] = None) -> bool:
+    spec = spec or get_spec()
+    block = spec.get(GAME_KEY) or {}
+    return bool(block.get("enabled")) and any(block.get(f) for f in _GAME_INTENT_FIELDS)
+
+
 def is_active(spec: Optional[Dict[str, Any]] = None) -> bool:
-    """True when the cast sheet is doing anything at all.
+    """True when the design sheet is doing anything at all.
 
     When False every helper here is a no-op and the game behaves exactly as it
     did before this module existed.
     """
     spec = spec or get_spec()
     return (
-        character_enabled(spec)
+        game_enabled(spec)
+        or character_enabled(spec)
         or setting_enabled(spec)
         or camera_mode(spec) != DEFAULT_MODE
         or not hands_visible(spec)
@@ -788,7 +863,22 @@ def narrative_directive(spec: Optional[Dict[str, Any]] = None) -> str:
     cfg = mode_config(spec)
     char = spec[CHARACTER_KEY]
 
-    lines: List[str] = [f"CAMERA: {cfg['label']} — {cfg['tagline']}", cfg["narrative_rule"]]
+    lines: List[str] = []
+
+    # GAME layer first: genre and stakes frame how every other line is read.
+    if game_enabled(spec):
+        game = spec[GAME_KEY]
+        if game.get("genre"):
+            lines.append(f"THIS GAME IS: {game['genre']}.")
+        if game.get("tone"):
+            lines.append(f"TONE: {game['tone']}")
+        if game.get("threat_model"):
+            lines.append(f"WHAT THREATENS THE PLAYER: {game['threat_model']}")
+        if game.get("win_condition"):
+            lines.append(f"WHAT WINNING LOOKS LIKE: {game['win_condition']}")
+
+    lines.append(f"CAMERA: {cfg['label']} — {cfg['tagline']}")
+    lines.append(cfg["narrative_rule"])
 
     if character_enabled(spec):
         who = display_name(spec)
@@ -943,7 +1033,11 @@ def world_anchor(
     spec = spec or get_spec()
     if not is_active(spec):
         return default
-    parts = [retune(default, spec).strip().rstrip(". ")]
+    # An authored GAME anchor replaces the shipped one outright — it is the
+    # answer to "what does this game look like", and appending it to a
+    # contradictory default would just make the live model average the two.
+    authored = (spec.get(GAME_KEY) or {}).get("world_anchor", "").strip() if game_enabled(spec) else ""
+    parts = [retune(authored or default, spec).strip().rstrip(". ")]
     if include_vantage:
         parts.append(vantage(spec))
 
@@ -990,6 +1084,15 @@ def structure_lines(spec: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
         out["tone"] = ", ".join(
             p for p in (setting.get("era"), setting.get("palette")) if p
         )
+
+    # The world rewrite is authoritative for the next turn, so the game's own
+    # tone has to appear in the skeleton or a few turns of drift walk the world
+    # off-genre even when the level itself stays put.
+    if game_enabled(spec):
+        game = spec[GAME_KEY]
+        game_tone = ", ".join(p for p in (game.get("genre"), game.get("tone")) if p)
+        if game_tone:
+            out["tone"] = f"{out['tone']}, {game_tone}" if out["tone"] else game_tone
     return out
 
 
@@ -1303,6 +1406,10 @@ def block_preview(spec: Optional[Dict[str, Any]] = None) -> Dict[str, Dict[str, 
     """
     spec = spec or get_spec()
     return {
+        GAME_KEY: {
+            "narrative": narrative_directive(spec),
+            "anchor": world_anchor(SHIPPED_ANCHOR_SAMPLE, spec) if game_enabled(spec) else "",
+        },
         CHARACTER_KEY: {
             "image": character_visual_sheet(spec) if (shows_character(spec) or hands_visible(spec)) else "",
             "narrative": narrative_directive(spec),
@@ -1327,9 +1434,27 @@ def wiring_notes(spec: Optional[Dict[str, Any]] = None) -> Dict[str, List[str]]:
     invisible from the form, and both read as "the editor is inconsistent".
     """
     spec = spec or get_spec()
-    notes: Dict[str, List[str]] = {CHARACTER_KEY: [], SETTING_KEY: [], CAMERA_KEY: []}
+    notes: Dict[str, List[str]] = {
+        GAME_KEY: [], CHARACTER_KEY: [], SETTING_KEY: [], CAMERA_KEY: [],
+    }
     char = spec[CHARACTER_KEY]
     setting = spec[SETTING_KEY]
+    game = spec[GAME_KEY]
+
+    if game.get("enabled") and not game_enabled(spec):
+        notes[GAME_KEY].append(
+            "This game sheet is switched on but every field is blank, so nothing is sent. "
+            "Start with the genre and what threatens the player."
+        )
+    if not game.get("enabled") and any(game.get(f) for f in _GAME_INTENT_FIELDS):
+        notes[GAME_KEY].append(
+            "Switched off, so none of this is being used — the shipped genre and look apply."
+        )
+    if game_enabled(spec) and game.get("world_anchor"):
+        notes[GAME_KEY].append(
+            "Your world anchor REPLACES the shipped look for the live video model. "
+            "Describe medium, era and film stock in one sentence, as a camera would see it."
+        )
 
     if char.get("enabled") and not character_enabled(spec):
         notes[CHARACTER_KEY].append(

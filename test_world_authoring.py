@@ -490,13 +490,21 @@ class CastSheetSurfaceTestCase(unittest.TestCase):
         self.assertIn("mode", essential[gi.CAMERA_KEY])
 
     def test_the_default_form_stays_small(self):
-        """A cap, not a target. Twenty equal-looking inputs is where the sheet
-        stops reading as 'who am I and where am I'."""
-        shown = sum(
-            1 for block in gi.identity_schema()
-            for f in block["fields"] if f["tier"] == gi.TIER_ESSENTIAL
-        )
-        self.assertLessEqual(shown, 12)
+        """A cap, not a target — and now enforced PER BLOCK.
+
+        This used to cap the whole sheet at 12 essential inputs, which was the
+        right guard while every block lived in one scrolling form. The design
+        surface is now four separate layers (Engine / Game / Level / Character),
+        each opened on its own, so the thing that actually protects readability
+        is that no single block becomes a wall of inputs. A global total would
+        instead mean adding the Game layer had to make the Character sheet
+        worse, which is the opposite of the point."""
+        for block in gi.identity_schema():
+            shown = [f["id"] for f in block["fields"] if f["tier"] == gi.TIER_ESSENTIAL]
+            self.assertLessEqual(
+                len(shown), 6,
+                f"{block['id']} shows {len(shown)} essential fields ({shown}) — "
+                "split it or demote some to advanced.")
 
 
 class WorldEvolutionTestCase(_AuthoredWorldFixture):
