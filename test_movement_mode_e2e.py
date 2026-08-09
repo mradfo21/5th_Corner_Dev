@@ -552,30 +552,121 @@ class TestMovementMode(unittest.TestCase):
         finally:
             page.close()
 
-    def test_fps_strafe_works_while_moving_forward(self):
-        """Regression: holding W+A (ordinary FPS movement) sent only move:Front on
-        Happy Oyster — it holds ONE move verb and longitudinal wins, so the strafe
-        was silently dropped and A/D looked broken. Forward and strafe must now be
-        interleaved. LingBot holds both natively."""
+    # Every distinct move/look direction the world model was actually told,
+    # in order, normalised across the two native navigation schemes.
+    _DRIVE_SNAPSHOT = """() => {
+        const out = [];
+        (window.__MOCK_CMD_LOG__ || []).forEach((c) => {
+            let s = null;
+            if (c.name === 'move') s = 'move:' + c.data.direction;
+            else if (c.name === 'look') s = 'look:' + c.data.direction;
+            else if (c.name === 'set_move_lateral') s = 'lat:' + c.data.move_lateral;
+            else if (c.name === 'set_move_longitudinal') s = 'lon:' + c.data.move_longitudinal;
+            else if (c.name === 'set_look_horizontal') s = 'lookH:' + c.data.look_horizontal;
+            if (s && !out.includes(s)) out.push(s);
+        });
+        return out;
+    }"""
+
+    def _hold(self, page, keys, hold_ms=900):
+        """Hold a key combination, return what the model was told, then release."""
+        self._reset_cmd_log(page)
+        for k in keys:
+            page.keyboard.down(k)
+            page.wait_for_timeout(120)
+        page.wait_for_timeout(hold_ms)
+        got = page.evaluate(self._DRIVE_SNAPSHOT)
+        for k in reversed(keys):
+            page.keyboard.up(k)
+        page.wait_for_timeout(250)
+        return got
+
+    def _assert_drive(self, page, model, mode, cases):
+        for keys, expected in cases:
+            got = self._hold(page, keys)
+            for want in expected:
+                self.assertIn(
+                    want, got,
+                    f"{model}/{mode}: holding {'+'.join(keys)} should drive {want}, got {got}")
+
+    def test_strafe_matrix_on_happy_oyster(self):
+        """Strafe on Happy Oyster, whose native scheme is a HELD move verb with
+        only one slot — the reason W+A used to send just move:Front and drop the
+        strafe entirely. FPS: A/D strafe. DOOM: A/D turn instead and Q/E strafe.
+        Either way strafe must survive being combined with forward/back."""
+        for mode, cases in (
+            ("fps", [
+                (["a"], ["move:Left"]),
+                (["d"], ["move:Right"]),
+                (["w", "a"], ["move:Front", "move:Left"]),
+                (["w", "d"], ["move:Front", "move:Right"]),
+                (["s", "a"], ["move:Back", "move:Left"]),
+                (["q"], ["move:Left"]),
+                (["e"], ["move:Right"]),
+            ]),
+            ("doom", [
+                (["a"], ["look:Mouse_Left"]),      # DOOM turns, doesn't strafe
+                (["d"], ["look:Mouse_Right"]),
+                (["q"], ["move:Left"]),            # strafe lives on Q/E here
+                (["e"], ["move:Right"]),
+                (["w", "q"], ["move:Front", "move:Left"]),
+            ]),
+        ):
+            page = self._new_realtime_page(mode=mode)
+            try:
+                self._boot_live(page, model="happy-oyster")
+                self._assert_drive(page, "happy-oyster", mode, cases)
+            except Exception:
+                print(f"\n=== CONSOLE LOG (strafe happy-oyster/{mode}) ===\n" + self._dump_logs())
+                raise
+            finally:
+                page.close()
+
+    def test_strafe_matrix_on_lingbot(self):
+        """Strafe on LingBot, whose native scheme is independent persistent axes,
+        so forward and strafe genuinely hold at once. Same key contract as Happy
+        Oyster from the player's side."""
+        for mode, cases in (
+            ("fps", [
+                (["a"], ["lat:left"]),
+                (["d"], ["lat:right"]),
+                (["w", "a"], ["lon:forward", "lat:left"]),
+                (["w", "d"], ["lon:forward", "lat:right"]),
+                (["s", "a"], ["lon:back", "lat:left"]),
+                (["q"], ["lat:left"]),
+                (["e"], ["lat:right"]),
+            ]),
+            ("doom", [
+                (["a"], ["lookH:left"]),
+                (["d"], ["lookH:right"]),
+                (["q"], ["lat:left"]),
+                (["e"], ["lat:right"]),
+                (["w", "q"], ["lon:forward", "lat:left"]),
+            ]),
+        ):
+            page = self._new_realtime_page(mode=mode)
+            try:
+                self._boot_live(page, model="lingbot-world-2")
+                self._assert_drive(page, "lingbot-world-2", mode, cases)
+            except Exception:
+                print(f"\n=== CONSOLE LOG (strafe lingbot/{mode}) ===\n" + self._dump_logs())
+                raise
+            finally:
+                page.close()
+
+    def test_strafe_releases_on_key_up(self):
+        """A held strafe MUST be released, or the camera keeps sliding sideways
+        forever. Happy Oyster releases with a global stop; LingBot idles the axis."""
         page = self._new_realtime_page(mode="fps")
         try:
             self._boot_live(page, model="happy-oyster")
-            self.assertTrue(page.evaluate("() => window.ReactorRenderer.movesOneAxisAtATime()"))
             self._reset_cmd_log(page)
-            page.keyboard.down("w")
-            self._wait_cmd(page, "move", "direction", "Front")
             page.keyboard.down("a")
-            page.wait_for_function(
-                """() => {
-                    const d = (window.__MOCK_CMD_LOG__||[])
-                        .filter(c => c.name === 'move').map(c => c.data.direction);
-                    return d.includes('Front') && d.includes('Left');
-                }""", timeout=6000)
+            self._wait_cmd(page, "move", "direction", "Left")
             page.keyboard.up("a")
-            page.keyboard.up("w")
             self._wait_cmd(page, "stop")
         except Exception:
-            print("\n=== CONSOLE LOG (strafe-with-forward) ===\n" + self._dump_logs())
+            print("\n=== CONSOLE LOG (strafe release oyster) ===\n" + self._dump_logs())
             raise
         finally:
             page.close()
@@ -584,14 +675,12 @@ class TestMovementMode(unittest.TestCase):
         try:
             self._boot_live(page, model="lingbot-world-2")
             self._reset_cmd_log(page)
-            page.keyboard.down("w")
             page.keyboard.down("a")
-            self._wait_cmd(page, "set_move_longitudinal", "move_longitudinal", "forward")
             self._wait_cmd(page, "set_move_lateral", "move_lateral", "left")
             page.keyboard.up("a")
-            page.keyboard.up("w")
+            self._wait_cmd(page, "set_move_lateral", "move_lateral", "idle")
         except Exception:
-            print("\n=== CONSOLE LOG (strafe-lingbot) ===\n" + self._dump_logs())
+            print("\n=== CONSOLE LOG (strafe release lingbot) ===\n" + self._dump_logs())
             raise
         finally:
             page.close()
