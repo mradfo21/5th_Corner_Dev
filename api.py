@@ -2544,6 +2544,8 @@ def admin_studio_content():
     try:
         import prompts_store
         import game_identity
+        import prompt_layers
+        import levels_store
         game_identity.ensure_spec_keys()
         spec = game_identity.get_spec()
         return jsonify(success_response({
@@ -2561,6 +2563,13 @@ def admin_studio_content():
             "identity_schema": game_identity.identity_schema(),
             "identity_defaults": game_identity.default_spec(),
             "identity_preview": game_identity.preview(),
+            # The design surface, filed as Engine / Game / Level / Character:
+            # which layer owns which prompt, what question each answers, and
+            # whether editing it is a contract change or just content. Lets a
+            # client lay the editor out without hardcoding the taxonomy.
+            "layers": prompt_layers.layer_manifest(),
+            "level_keys": levels_store.level_keys(),
+            "levels": levels_store.list_levels(),
         }))
     except Exception as e:
         traceback.print_exc()
@@ -2874,6 +2883,96 @@ def admin_studio_worlds_delete():
     except Exception as e:
         traceback.print_exc()
         return error_response("Failed to delete world", str(e))
+
+
+# ═══════════════════════════════════════════════════════════════════
+# LEVELS — the LEVEL LAYER only
+#
+# A world snapshots every editable prompt; a level snapshots just the place.
+# That difference is the point: loading a level must leave the engine's
+# contracts, the game's identity and the cast exactly as they were, so a
+# designer can build a set of levels for one game and flip between them.
+# ═══════════════════════════════════════════════════════════════════
+
+@app.route('/api/admin/studio/levels', methods=['GET'])
+def admin_studio_levels_list():
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import levels_store
+        return jsonify(success_response({
+            "levels": levels_store.list_levels(),
+            "level_keys": levels_store.level_keys(),
+        }))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to list levels", str(e))
+
+
+@app.route('/api/admin/studio/levels', methods=['POST'])
+def admin_studio_levels_save():
+    """Snapshot the current level layer under a name."""
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import levels_store
+        body = request.get_json(silent=True) or {}
+        name = body.get('name')
+        if not name:
+            return error_response("Body must include 'name'.", code=400)
+        info = levels_store.save_level(name, body.get('note', ''))
+        return jsonify(success_response(
+            {"level": info, "levels": levels_store.list_levels()},
+            f"Saved level '{info['name']}'"))
+    except ValueError as e:
+        return error_response(str(e), code=400)
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to save level", str(e))
+
+
+@app.route('/api/admin/studio/levels/load', methods=['POST'])
+def admin_studio_levels_load():
+    """Swap in a saved level, leaving every other layer untouched."""
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import levels_store
+        import prompts_store
+        import game_identity
+        body = request.get_json(silent=True) or {}
+        slug = body.get('slug') or body.get('name')
+        if not slug:
+            return error_response("Body must include 'slug'.", code=400)
+        info = levels_store.load_level(slug)
+        return jsonify(success_response({
+            "level": info,
+            "prompts": dict(prompts_store.PROMPTS),
+            "identity": game_identity.get_spec(),
+            "identity_preview": game_identity.preview(),
+        }, f"Loaded level '{info['name']}'"))
+    except KeyError as e:
+        return error_response(str(e), code=404)
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to load level", str(e))
+
+
+@app.route('/api/admin/studio/levels', methods=['DELETE'])
+def admin_studio_levels_delete():
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import levels_store
+        body = request.get_json(silent=True) or {}
+        slug = body.get('slug') or body.get('name')
+        if not slug:
+            return error_response("Body must include 'slug'.", code=400)
+        ok = levels_store.delete_level(slug)
+        return jsonify(success_response({"deleted": ok, "levels": levels_store.list_levels()}))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to delete level", str(e))
 
 
 # ═══════════════════════════════════════════════════════════════════

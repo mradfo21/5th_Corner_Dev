@@ -6665,8 +6665,18 @@ body.we-resizing #scene-frame, body.we-resizing iframe { pointer-events: none; }
   gap: 8px;
   flex: 0 0 auto;
   margin: 0 12px;
-  padding: 9px 0 10px;
+  padding: 7px 0 8px;
   border-bottom: 1px solid rgba(232, 224, 200, 0.1);
+  /* Subordinate to the layer stack below: this is how YOU drive, not what the
+     game IS. Full strength on hover so it stays usable. */
+  opacity: 0.62;
+  transition: opacity 0.18s;
+}
+#world-editor .we-input-opts:hover,
+#world-editor .we-input-opts:focus-within { opacity: 1; }
+#world-editor .we-input-opts .rt-ho-btn {
+  font-size: calc(9.5px * var(--we-fs));
+  padding: 3px 9px;
 }
 #world-editor .we-input-label {
   font-size: calc(10.5px * var(--we-fs));
@@ -6725,39 +6735,224 @@ body.we-resizing #scene-frame, body.we-resizing iframe { pointer-events: none; }
   color: rgba(232, 224, 200, 0.7);
 }
 
+/* ── LAYER STACK ─────────────────────────────────────────────────────────
+   Not a tab strip. Four rails, each carrying its own accent, the question it
+   answers, and whether editing it is a contract change or content — so reading
+   the stack top to bottom teaches the model before you touch anything. The
+   accent is passed in per-rail as --layer-accent from the manifest, so adding a
+   fifth layer needs no CSS. */
 #world-editor .we-tabs {
   display: flex;
-  gap: 4px;
-  padding: 10px 12px 0;
-  /* MUST NOT shrink. The panel is a flex column, so the default `flex: 0 1 auto`
-     let this row be squeezed in a short window — and because `overflow-x: auto`
-     silently promotes `overflow-y` from visible to auto, the squeeze CLIPPED the
-     tab labels down to an unreadable sliver instead of overflowing visibly. */
+  gap: 6px;
+  padding: 12px 12px 2px;
   flex: 0 0 auto;
   flex-wrap: nowrap;
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: none;
 }
-#world-editor .we-tabs::-webkit-scrollbar { height: 0; }
-#world-editor .we-tab {
+#world-editor .we-layer {
+  --layer-accent: #ffd27a;
   appearance: none;
-  border: 1px solid rgba(232, 224, 200, 0.14);
-  background: rgba(255, 255, 255, 0.02);
-  color: rgba(232, 224, 200, 0.78);
-  font: inherit; font-size: calc(13.5px * var(--we-fs)); letter-spacing: 0.06em;
-  padding: 8px 14px; border-radius: 7px 7px 0 0; cursor: pointer;
-  white-space: nowrap; flex: 0 0 auto;
-  transition: color 0.15s, background 0.15s, border-color 0.15s;
+  position: relative;
+  flex: 1 1 0;
+  min-width: 132px;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  text-align: left;
+  padding: 9px 10px 10px;
+  border: 1px solid rgba(232, 224, 200, 0.12);
+  border-bottom-color: transparent;
+  border-radius: 9px 9px 0 0;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(0, 0, 0, 0.18));
+  color: rgba(232, 224, 200, 0.66);
+  font: inherit;
+  cursor: pointer;
+  transition: color 0.18s, background 0.18s, border-color 0.18s, transform 0.18s;
 }
-#world-editor .we-tab:hover { color: #e8e0c8; }
-#world-editor .we-tab.active {
-  color: #ffd27a;
-  border-color: rgba(255, 210, 122, 0.4);
-  background: rgba(255, 210, 122, 0.08);
+#world-editor .we-layer::before {
+  /* The signal line: a layer's accent runs along its top edge and lights up
+     when active, which is what makes the stack read as a pipeline. */
+  content: "";
+  position: absolute;
+  left: 9px; right: 9px; top: 0;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--layer-accent);
+  opacity: 0.22;
+  transition: opacity 0.2s, box-shadow 0.2s;
+}
+#world-editor .we-layer:hover {
+  color: #f2ecda;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(0, 0, 0, 0.16));
+}
+#world-editor .we-layer:hover::before { opacity: 0.5; }
+#world-editor .we-layer.active {
+  color: #f6f1e2;
+  border-color: rgba(232, 224, 200, 0.2);
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--layer-accent) 14%, transparent),
+    rgba(0, 0, 0, 0.28));
+}
+#world-editor .we-layer.active::before {
+  opacity: 1;
+  box-shadow: 0 0 12px var(--layer-accent);
+}
+#world-editor .we-layer-glyph {
+  font-size: calc(15px * var(--we-fs));
+  line-height: 1.15;
+  color: var(--layer-accent);
+  flex-shrink: 0;
+  opacity: 0.85;
+}
+#world-editor .we-layer-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+#world-editor .we-layer-name {
+  font-size: calc(12.5px * var(--we-fs));
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+#world-editor .we-layer-q {
+  font-size: calc(10px * var(--we-fs));
+  line-height: 1.28;
+  color: rgba(232, 224, 200, 0.44);
+  /* Wrap to a second line rather than truncating. "How doe…" tells a designer
+     nothing, and the question is the whole reason the rail exists. */
+  white-space: normal;
+  text-wrap: balance;
+}
+#world-editor .we-layer-risk {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: calc(8.5px * var(--we-fs));
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 2px 5px;
+  border-radius: 3px;
+  opacity: 0;
+  transition: opacity 0.18s;
+}
+#world-editor .we-layer.active .we-layer-risk { opacity: 1; }
+#world-editor .we-risk-contract { background: rgba(134, 200, 255, 0.16); color: #86c8ff; }
+#world-editor .we-risk-content { background: rgba(127, 208, 160, 0.14); color: #7fd0a0; }
+#world-editor .we-layer-aux { flex: 0 0 auto; min-width: 92px; }
+#world-editor .we-layer-aux .we-layer-glyph { color: rgba(232, 224, 200, 0.5); }
+#world-editor .we-tabs::-webkit-scrollbar { height: 0; }
+
+/* ── LAYER HEADER ───────────────────────────────────────────────────────── */
+#world-editor .we-layer-head { flex: 0 0 auto; }
+#world-editor .we-layer-head.hidden { display: none; }
+#world-editor .we-layer-intro {
+  --layer-accent: #ffd27a;
+  margin: 12px 12px 14px;
+  padding: 13px 14px 14px;
+  border: 1px solid rgba(232, 224, 200, 0.12);
+  border-left: 2px solid var(--layer-accent);
+  border-radius: 4px 10px 10px 4px;
+  background: linear-gradient(100deg,
+    color-mix(in srgb, var(--layer-accent) 9%, transparent), rgba(255, 255, 255, 0.012) 46%);
+}
+#world-editor .we-layer-intro-head {
+  display: flex; align-items: baseline; gap: 9px; margin-bottom: 7px;
+}
+#world-editor .we-layer-intro-glyph {
+  color: var(--layer-accent); font-size: calc(16px * var(--we-fs)); line-height: 1;
+}
+#world-editor .we-layer-intro-title {
+  font-size: calc(15px * var(--we-fs)); font-weight: 600; letter-spacing: 0.14em;
+  text-transform: uppercase; color: #f6f1e2;
+}
+#world-editor .we-layer-intro-vol {
+  margin-left: auto; font-size: calc(10px * var(--we-fs)); letter-spacing: 0.08em;
+  color: rgba(232, 224, 200, 0.46); white-space: nowrap;
+}
+#world-editor .we-layer-intro-blurb {
+  margin: 0; font-size: calc(13.5px * var(--we-fs)); line-height: 1.6;
+  color: rgba(232, 224, 200, 0.76);
+}
+#world-editor .we-layer-intro-scope {
+  margin-top: 9px; font-size: calc(11.5px * var(--we-fs)); line-height: 1.5;
+  color: rgba(232, 224, 200, 0.5);
+}
+#world-editor .we-layer-intro.we-risk-contract .we-layer-intro-scope { color: #86c8ff; }
+
+/* ── LEVEL GALLERY ──────────────────────────────────────────────────────── */
+#world-editor .we-levels { margin: 0 12px 16px; }
+#world-editor .we-levels-head {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 9px;
+}
+#world-editor .we-levels-title {
+  font-size: calc(10.5px * var(--we-fs)); letter-spacing: 0.18em;
+  color: rgba(232, 224, 200, 0.56);
+}
+#world-editor .we-levels-note {
+  font-size: calc(11px * var(--we-fs)); color: rgba(232, 224, 200, 0.4);
+}
+#world-editor .we-levels-save { display: flex; gap: 8px; margin-bottom: 11px; }
+#world-editor .we-levels-save input {
+  flex: 1 1 auto; min-width: 0;
+  background: rgba(0, 0, 0, 0.34);
+  border: 1px solid rgba(232, 224, 200, 0.16);
+  border-radius: 7px; color: #f0e7d4;
+  font: inherit; font-size: calc(13px * var(--we-fs)); padding: 8px 10px;
+}
+#world-editor .we-levels-save input:focus {
+  outline: none; border-color: rgba(157, 140, 240, 0.55);
+}
+#world-editor .we-levels-empty {
+  font-size: calc(12.5px * var(--we-fs)); line-height: 1.6;
+  color: rgba(232, 224, 200, 0.42);
+  padding: 12px 13px; border-radius: 9px;
+  border: 1px dashed rgba(232, 224, 200, 0.16);
+}
+#world-editor .we-level-cards {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(196px, 1fr)); gap: 9px;
+}
+#world-editor .we-level-card {
+  display: flex; flex-direction: column; gap: 5px;
+  padding: 11px 12px 10px;
+  border: 1px solid rgba(232, 224, 200, 0.13);
+  border-radius: 10px;
+  background: linear-gradient(165deg, rgba(157, 140, 240, 0.07), rgba(255, 255, 255, 0.012));
+  transition: border-color 0.18s, transform 0.18s, box-shadow 0.18s;
+}
+#world-editor .we-level-card:hover {
+  border-color: rgba(157, 140, 240, 0.42);
+  transform: translateY(-1px);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.34);
+}
+#world-editor .we-level-card.off { opacity: 0.62; }
+#world-editor .we-level-card-top { display: flex; align-items: baseline; gap: 7px; }
+#world-editor .we-level-card-name {
+  font-size: calc(13.5px * var(--we-fs)); font-weight: 600; color: #f2ecda;
+}
+#world-editor .we-level-card-off {
+  margin-left: auto; font-size: calc(8.5px * var(--we-fs)); letter-spacing: 0.1em;
+  text-transform: uppercase; color: rgba(232, 224, 200, 0.44);
+  border: 1px solid rgba(232, 224, 200, 0.18); border-radius: 3px; padding: 1px 4px;
+}
+#world-editor .we-level-card-place {
+  font-size: calc(10.5px * var(--we-fs)); letter-spacing: 0.06em;
+  color: #9d8cf0;
+}
+#world-editor .we-level-card-sum {
+  font-size: calc(12px * var(--we-fs)); line-height: 1.5;
+  color: rgba(232, 224, 200, 0.62);
+}
+#world-editor .we-level-card-meta {
+  font-size: calc(10px * var(--we-fs)); color: rgba(232, 224, 200, 0.38);
+}
+#world-editor .we-level-card-acts { display: flex; gap: 6px; margin-top: 5px; }
+#world-editor .we-level-card-acts .we-btn { padding: 5px 10px; font-size: calc(10.5px * var(--we-fs)); }
+
+@media (prefers-reduced-motion: reduce) {
+  #world-editor .we-layer,
+  #world-editor .we-level-card { transition: none; }
+  #world-editor .we-level-card:hover { transform: none; }
 }
 
-/* Scroll body */
 #world-editor .we-scroll {
   flex: 1 1 auto; min-height: 0; overflow-y: auto;
   padding: 16px 18px 10px;

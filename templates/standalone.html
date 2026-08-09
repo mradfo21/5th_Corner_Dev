@@ -700,13 +700,18 @@
     <nav class="we-tabs" id="we-tabs" role="tablist"></nav>
 
     <div class="we-scroll">
-      <!-- PROMPT fields (schema-driven) render here, grouped by tab. -->
-      <div id="we-fields" class="we-fields"></div>
+      <!-- The active LAYER's header (what it answers, what an edit costs) and,
+           for the Level layer, the saved-level gallery. -->
+      <div id="we-layer-head" class="we-layer-head"></div>
 
-      <!-- CAST & CAMERA tab content: the structured spec (who you play, the
-           level, the perspective) with reference-image drop zones. Rendered by
-           WorldEditor from /api/admin/studio/identity. -->
+      <!-- STRUCTURED forms for the spec blocks this layer owns (the game sheet,
+           the level plate, the character sheet, the camera), with reference-image
+           drop zones. A form is easier to answer than a blank page, so these sit
+           ABOVE the prose fields they elaborate into. -->
       <div id="we-cast" class="we-cast hidden"></div>
+
+      <!-- PROMPT bodies belonging to this layer. -->
+      <div id="we-fields" class="we-fields"></div>
 
       <!-- WORLDS tab content (hidden unless the Worlds tab is active). -->
       <div id="we-worlds" class="we-worlds hidden">

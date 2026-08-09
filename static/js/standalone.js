@@ -203,6 +203,7 @@
     weClose: document.getElementById("we-close"),
     weTabs: document.getElementById("we-tabs"),
     weFields: document.getElementById("we-fields"),
+    weLayerHead: document.getElementById("we-layer-head"),
     weCast: document.getElementById("we-cast"),
     weWide: document.getElementById("we-wide"),
     weFontDown: document.getElementById("we-font-down"),
@@ -3653,8 +3654,9 @@
     let content = null;            // {prompts, prompts_defaults, schema, groups}
     let sessionSnapshot = null;    // editable values captured on first load (Revert target)
     let edits = {};                // key -> current textarea value (unsaved)
-    let tabs = [];                 // [{id,label}] incl. leading "cast" + trailing "worlds"
+    let tabs = [];                 // [{id,label,layer}] — one per layer, plus Worlds
     let activeTab = null;
+    let levels = [];               // saved LEVEL-layer snapshots (the gallery)
     let loaded = false;
     let loading = false;
     // Cast & Camera: the structured spec, its form definition, and what it
@@ -3763,32 +3765,81 @@
       if (el.weDirty) el.weDirty.classList.toggle("hidden", !anyDirty());
     }
 
+    function layerList() { return (content && content.layers) || []; }
+    function layerById(id) { return layerList().find((l) => l.id === id) || null; }
+
+    // One tab per LAYER — the four questions a game developer actually asks, in
+    // the order they depend on each other. LEVEL opens first: it's the layer you
+    // live in, and opening on the engine's JSON contracts is exactly what made
+    // this feel like someone else's codebase instead of your level editor.
     function buildTabs() {
-      const seen = [];
-      for (const f of schemaFields()) {
-        if (f.group && !seen.includes(f.group)) seen.push(f.group);
+      const layers = layerList();
+      tabs = layers.map((l) => ({ id: l.id, label: l.label, layer: l }));
+      tabs.push({ id: "worlds", label: "Builds" });
+      if (!activeTab || !tabs.find((t) => t.id === activeTab)) {
+        activeTab = layers.some((l) => l.id === "level") ? "level"
+                  : (tabs[0] && tabs[0].id);
       }
-      const labels = groupLabels();
-      tabs = seen.map((g) => ({ id: g, label: labels[g] || g }));
-      // Cast & Camera leads: "who am I and where's the camera" is the first
-      // question a player has, and it's the one the prompt tabs assume answered.
-      if (identitySchema.length) tabs.unshift({ id: "cast", label: "Cast & Camera" });
-      tabs.push({ id: "worlds", label: "Worlds" });
-      if (!activeTab || !tabs.find((t) => t.id === activeTab)) activeTab = tabs[0] && tabs[0].id;
     }
 
+    // The layer STACK, not a tab strip: each rail shows what the layer answers,
+    // how volatile it is, and whether editing it is a contract change. Reading
+    // it top to bottom is meant to teach the model in one glance.
     function renderTabs() {
       if (!el.weTabs) return;
       el.weTabs.innerHTML = "";
       tabs.forEach((t) => {
         const b = document.createElement("button");
-        b.className = "we-tab" + (t.id === activeTab ? " active" : "");
+        const isLayer = !!t.layer;
+        b.className = "we-layer" + (t.id === activeTab ? " active" : "") +
+                      (isLayer ? "" : " we-layer-aux");
         b.type = "button";
-        b.textContent = t.label;
         b.dataset.tab = t.id;
+        if (isLayer) {
+          b.style.setProperty("--layer-accent", t.layer.accent || "#ffd27a");
+          b.title = t.layer.question + " — " + t.layer.scope;
+          b.innerHTML =
+            '<span class="we-layer-glyph" aria-hidden="true">' + (t.layer.icon || "") + "</span>" +
+            '<span class="we-layer-text">' +
+              '<span class="we-layer-name">' + esc(t.layer.label) + "</span>" +
+              '<span class="we-layer-q">' + esc(t.layer.question) + "</span>" +
+            "</span>" +
+            '<span class="we-layer-risk we-risk-' + esc(t.layer.risk || "content") + '">' +
+              (t.layer.risk === "contract" ? "contract" : "content") + "</span>";
+        } else {
+          b.innerHTML = '<span class="we-layer-glyph" aria-hidden="true">\u25A6</span>' +
+            '<span class="we-layer-text"><span class="we-layer-name">Builds</span>' +
+            '<span class="we-layer-q">Snapshot everything</span></span>';
+        }
         b.addEventListener("click", () => { activeTab = t.id; render(); });
         el.weTabs.appendChild(b);
       });
+    }
+
+    function esc(s) {
+      return String(s == null ? "" : s)
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    }
+
+    // The header a layer opens with: what it is, what it costs to get wrong.
+    function layerIntro(layer) {
+      const wrap = document.createElement("div");
+      wrap.className = "we-layer-intro we-risk-" + (layer.risk || "content");
+      wrap.style.setProperty("--layer-accent", layer.accent || "#ffd27a");
+      wrap.innerHTML =
+        '<div class="we-layer-intro-head">' +
+          '<span class="we-layer-intro-glyph" aria-hidden="true">' + (layer.icon || "") + "</span>" +
+          '<span class="we-layer-intro-title">' + esc(layer.label) + "</span>" +
+          '<span class="we-layer-intro-vol">' + esc(layer.volatility || "") + "</span>" +
+        "</div>" +
+        '<p class="we-layer-intro-blurb">' + esc(layer.blurb || "") + "</p>" +
+        '<div class="we-layer-intro-scope">' +
+          (layer.risk === "contract"
+            ? "\u26A0 These values are parsed by code. A careless edit stops turns resolving."
+            : "\u25C7 " + esc(layer.scope || "")) +
+        "</div>";
+      return wrap;
     }
 
     function makeField(f) {
@@ -3868,28 +3919,44 @@
     function render() {
       renderTabs();
       const showWorlds = activeTab === "worlds";
-      const showCast = activeTab === "cast";
-      if (el.weFields) el.weFields.classList.toggle("hidden", showWorlds || showCast);
-      if (el.weCast) el.weCast.classList.toggle("hidden", !showCast);
+      const layer = layerById(activeTab);
+      // The cast form and the prompt column are both driven per LAYER now: a
+      // layer may own structured spec blocks, prompt bodies, or both.
+      const showCast = !!(layer && (layer.spec_blocks || []).length);
+      if (el.weFields) el.weFields.classList.toggle("hidden", showWorlds);
       if (el.weWorlds) el.weWorlds.classList.toggle("hidden", !showWorlds);
-      // Drop the prompt column's DOM when it isn't the active tab: dozens of
-      // textareas holding tens of thousands of characters have no business
-      // sitting behind the cast form.
-      if ((showWorlds || showCast) && el.weFields) el.weFields.innerHTML = "";
+      if (el.weCast) {
+        el.weCast.classList.toggle("hidden", !showCast);
+        // Drop the forms outright on a layer that owns none, rather than
+        // leaving the previous layer's sheet parked behind this one.
+        if (!showCast) el.weCast.innerHTML = "";
+      }
+      // Drop the prompt column's DOM when it isn't in play: dozens of textareas
+      // holding tens of thousands of characters have no business sitting behind
+      // another panel.
+      if (el.weLayerHead) {
+        el.weLayerHead.innerHTML = "";
+        el.weLayerHead.classList.toggle("hidden", showWorlds);
+      }
+      if (showWorlds && el.weFields) el.weFields.innerHTML = "";
       if (showWorlds) { renderWorlds(); refreshDirtyBadge(); return; }
-      if (showCast) { renderCast(); refreshDirtyBadge(); return; }
-      if (!el.weFields) return;
+      if (!el.weFields || !layer) return;
       el.weFields.innerHTML = "";
 
-      const blurb = groupBlurbs()[activeTab];
-      if (blurb) {
-        const b = document.createElement("div");
-        b.className = "we-blurb";
-        b.textContent = blurb;
-        el.weFields.appendChild(b);
+      if (el.weLayerHead) {
+        el.weLayerHead.appendChild(layerIntro(layer));
+        // The Level layer leads with its gallery — what makes a level a level
+        // rather than "the current settings" is that you can keep several.
+        if (activeTab === "level") el.weLayerHead.appendChild(makeLevelGallery());
       }
 
-      const fields = schemaFields().filter((f) => f.group === activeTab);
+      // Structured forms (spec blocks) come before prompt bodies: answering
+      // "which place is this" with a form is easier than writing prose, and the
+      // prose field below it is then an elaboration rather than a blank page.
+      if (showCast) renderCast(layer.spec_blocks);
+
+      const ids = layer.fields || [];
+      const fields = schemaFields().filter((f) => ids.indexOf(f.id) !== -1);
       const primary = fields.filter((f) => !isAdvanced(f));
       const advanced = fields.filter(isAdvanced);
       primary.forEach((f) => el.weFields.appendChild(makeField(f)));
@@ -3898,6 +3965,116 @@
         if (showAdvanced) advanced.forEach((f) => el.weFields.appendChild(makeField(f)));
       }
       refreshDirtyBadge();
+    }
+
+    // ---- LEVEL gallery: save the current level, switch between saved ones ----
+    function makeLevelGallery() {
+      const wrap = document.createElement("div");
+      wrap.className = "we-levels";
+
+      const head = document.createElement("div");
+      head.className = "we-levels-head";
+      head.innerHTML =
+        '<span class="we-levels-title">YOUR LEVELS</span>' +
+        '<span class="we-levels-note">Switching a level leaves the engine, the game and your character alone.</span>';
+      wrap.appendChild(head);
+
+      const row = document.createElement("div");
+      row.className = "we-levels-save";
+      const input = document.createElement("input");
+      input.type = "text";
+      input.placeholder = "Name this level\u2026";
+      input.maxLength = 64;
+      const save = document.createElement("button");
+      save.type = "button";
+      save.className = "we-btn we-btn-primary";
+      save.textContent = "SAVE LEVEL";
+      const commit = async () => {
+        const name = input.value.trim();
+        if (!name) { input.focus(); return; }
+        // Flush pending prompt edits so the snapshot is what's on screen.
+        const dirty = dirtyFields();
+        if (Object.keys(dirty).length) await saveFields(dirty);
+        const { ok, data } = await weFetch("POST", "/api/admin/studio/levels", { name });
+        const payload = (data && (data.data || data)) || {};
+        if (!ok) { toast("Couldn't save that level", "warn"); return; }
+        levels = payload.levels || levels;
+        edits = {};
+        input.value = "";
+        toast("Saved level \u201C" + name + "\u201D");
+        render();
+      };
+      save.addEventListener("click", commit);
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") { e.preventDefault(); commit(); }
+      });
+      row.appendChild(input);
+      row.appendChild(save);
+      wrap.appendChild(row);
+
+      const list = document.createElement("div");
+      list.className = "we-level-cards";
+      if (!levels.length) {
+        const empty = document.createElement("div");
+        empty.className = "we-levels-empty";
+        empty.textContent = "No saved levels yet. Describe a place below, then save it — " +
+          "then change it and save that too, and you have two levels for the same game.";
+        list.appendChild(empty);
+      }
+      levels.forEach((lv) => list.appendChild(makeLevelCard(lv)));
+      wrap.appendChild(list);
+      return wrap;
+    }
+
+    function makeLevelCard(lv) {
+      const card = document.createElement("div");
+      card.className = "we-level-card" + (lv.enabled ? "" : " off");
+      const bits = [];
+      if (lv.era) bits.push(lv.era);
+      if (lv.has_opening_shot) bits.push("opening shot");
+      if (lv.plate_count) bits.push(lv.plate_count + " plate" + (lv.plate_count > 1 ? "s" : ""));
+      card.innerHTML =
+        '<div class="we-level-card-top">' +
+          '<span class="we-level-card-name">' + esc(lv.name) + "</span>" +
+          (lv.enabled ? "" : '<span class="we-level-card-off">off</span>') +
+        "</div>" +
+        (lv.place && lv.place !== lv.name
+          ? '<div class="we-level-card-place">' + esc(lv.place) + "</div>" : "") +
+        '<div class="we-level-card-sum">' + esc(lv.summary || "No description yet.") + "</div>" +
+        (bits.length ? '<div class="we-level-card-meta">' + esc(bits.join(" \u00B7 ")) + "</div>" : "");
+
+      const acts = document.createElement("div");
+      acts.className = "we-level-card-acts";
+      const load = document.createElement("button");
+      load.type = "button";
+      load.className = "we-btn we-btn-primary";
+      load.textContent = "OPEN";
+      load.addEventListener("click", async () => {
+        const { ok, data } = await weFetch("POST", "/api/admin/studio/levels/load", { slug: lv.slug });
+        if (!ok) { toast("Couldn't open that level", "warn"); return; }
+        const payload = (data && (data.data || data)) || {};
+        if (payload.prompts && content) content.prompts = payload.prompts;
+        if (payload.identity) identity = payload.identity;
+        if (payload.identity_preview) identityPreview = payload.identity_preview;
+        edits = {};
+        toast("Now editing \u201C" + lv.name + "\u201D \u2014 restart to play it");
+        render();
+      });
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "we-btn we-btn-ghost";
+      del.textContent = "Delete";
+      del.addEventListener("click", async () => {
+        const { ok, data } = await weFetch("DELETE", "/api/admin/studio/levels", { slug: lv.slug });
+        if (!ok) { toast("Couldn't delete that level", "warn"); return; }
+        const payload = (data && (data.data || data)) || {};
+        levels = payload.levels || [];
+        render();
+      });
+      acts.appendChild(load);
+      acts.appendChild(del);
+      card.appendChild(acts);
+      return card;
     }
 
     async function loadContent(force) {
@@ -3917,7 +4094,9 @@
           schema: payload.schema || [],
           groups: payload.groups || {},
           group_blurbs: payload.group_blurbs || {},
+          layers: payload.layers || [],
         };
+        levels = payload.levels || [];
         identity = payload.identity || {};
         identitySchema = payload.identity_schema || [];
         identityPreview = payload.identity_preview || null;
@@ -4708,14 +4887,16 @@
       return row;
     }
 
-    function renderCast() {
+    // `only` limits rendering to the spec blocks the active layer owns, so the
+    // camera lands in Game, the level plate in Level, and the character sheet in
+    // Character, instead of all three stacked in one "Cast & Camera" scroll.
+    function renderCast(only) {
       if (!el.weCast) return;
       el.weCast.innerHTML = "";
-      const blurb = document.createElement("div");
-      blurb.className = "we-blurb";
-      blurb.textContent = "Who you play, where, and where the lens sits. Live on your next turn.";
-      el.weCast.appendChild(blurb);
-      identitySchema.forEach((block) => el.weCast.appendChild(makeCastBlock(block)));
+      const wanted = only && only.length
+        ? identitySchema.filter((b) => only.indexOf(b.id) !== -1)
+        : identitySchema;
+      wanted.forEach((block) => el.weCast.appendChild(makeCastBlock(block)));
       if (showAdvanced) {
         const reach = makeReachBlock();
         if (reach) el.weCast.appendChild(reach);
@@ -4727,7 +4908,7 @@
       if (!data) return;
       if (data.identity) identity = data.identity;
       if (data.preview) identityPreview = data.preview;
-      renderCast();
+      render();
       try { refreshDirective(true); } catch (_) {}
     }
 

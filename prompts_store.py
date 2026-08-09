@@ -357,11 +357,11 @@ TIER_ADVANCED = "advanced"
 PROMPT_SCHEMA: List[Dict[str, Any]] = [
     {
         "id": "world_initial_state",
-        "label": "The World",
+        "label": "Level Brief",
         "group": "world",
         "tier": TIER_PRIMARY,
         "type": "longtext",
-        "description": "What kind of place this is: setting, era, tone, what threatens you. Every turn's world state grows out of this. To pin down one specific location instead, use The Level in Cast & Camera — it overrides the geography here.",
+        "description": "This place, in prose: what it is, what's happening here, what's dangerous about it. The run's world state grows out of this and is rewritten from it every turn. The form above pins down the structured facts (name, landmarks, opening shot); this is where you write the situation they sit in.",
         "code_refs": ["engine.py"],
         "live": True,
     },

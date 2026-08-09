@@ -563,8 +563,10 @@ IDENTITY_SCHEMA: List[Dict[str, Any]] = [
         "label": "The Level",
         "icon": "🗺️",
         "description": (
-            "The one place this run happens in. Overrides the geography in The World prompt, "
-            "and its landmarks keep every later frame anchored to the same space."
+            "The structured facts about this place: what to call it, what's in it, "
+            "and the frame it opens on. Its landmarks keep every later frame "
+            "anchored to the same space. Write the situation itself in the Level "
+            "Brief below."
         ),
         "supports_images": True,
         "images_label": "Setting reference",
