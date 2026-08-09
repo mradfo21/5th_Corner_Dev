@@ -140,26 +140,23 @@ class TestLocalScanE2E(unittest.TestCase):
         page.keyboard.press("r")
         page.wait_for_selector(".choice-btn", state="attached", timeout=25000)
 
-        # The mock backend renders no images, so give the session the frame and
-        # the prompt a real turn would have produced. State is read from disk per
-        # request, so the running server picks this up on the next call.
+        # The mock backend renders no images, so give the session the scene prompt
+        # a real turn would have written — it is the local detector's vocabulary.
+        # State is read from disk per request, so the running server picks this up
+        # on the next /api/detect. (Only scalars are seeded this way. Injecting a
+        # feed item to get the frame PAINTED is not reliable from outside the
+        # server process: the client only renders feed items newer than the last
+        # id it saw, and ids come from a per-process counter. The frame does not
+        # need to be painted for this test — forceStill() hands the scan pass a
+        # decoded still directly, which is the input path under test.)
         import engine
         state = engine.get_state("default")
         state["current_image_prompt"] = SCENE_PROMPT
-        state["current_image_url"] = FRAME_URL
-        engine._feed_append(state, engine.create_feed_item(
-            type="scene_image", content="", image_url=FRAME_URL,
-            metadata={"prompt": SCENE_PROMPT}))
         engine._save_state(state, "default")
 
-        # Wait for the client to actually paint the frame (a CSS background on
-        # one of the two crossfading scene layers).
-        page.wait_for_function(
-            "() => [...document.querySelectorAll('*')].some(e =>"
-            " (e.style && e.style.backgroundImage || '').includes('scene_exterior'))",
-            timeout=25000)
-
-        page.evaluate(f"window.__SCAN__.forceStill('{FRAME_URL}')")
+        # Prime the still and fire the scan the player would fire.
+        self.assertTrue(page.evaluate(f"window.__SCAN__.forceStill('{FRAME_URL}')"),
+                        "the test frame failed to decode in the browser")
         page.wait_for_selector(".scan-tag", timeout=25000)
 
         self.assertTrue(detect_responses, "the client never called /api/detect")
