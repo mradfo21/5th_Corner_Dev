@@ -1,3 +1,43 @@
+# 🔧 CHANGELOG - August 9, 2026
+
+## 🛰️ SCAN detects on the box now, not over the network
+
+**Files:** `local_vision.py`, `engine.py`, `api.py`, `models/`,
+`requirements.txt`, `test_local_vision.py`, `test_local_vision_e2e.py`,
+`LOCAL_OBJECT_DETECTION.md`
+
+`/api/detect` was a Gemini request per scan: 1–3 s, a per-call bill, and dead
+entirely without `GEMINI_API_KEY`, which is why SCAN never worked in local dev.
+It is now answered on the box in ~20 ms by MediaPipe, with no key at all.
+
+Swapping in MediaPipe alone would have gutted the feature. Measured on this
+game's own frames, EfficientDet-Lite finds almost nothing usable and what it
+does find is wrong — a figure under a sodium lamp reads `tv`, a filling station
+reads as six phantom cars — because COCO's 80 classes contain no silos, gas
+pumps or chain-link fences. Worse, the single most confident detection in the
+flagship exterior render is the player's own flashlight hand, which SCAN would
+then offer to TALK to.
+
+So MediaPipe supplies the **boxes** and the scene prompt supplies the
+**labels**. The world was rendered from a prompt we wrote, so what is in frame
+is already known; only where it sits needs looking at. Each half checks the
+other: a COCO class only becomes a tag if it is one we trust outright (people,
+vehicles, animals) or one the prompt independently names. Prompt nouns the
+detector is blind to get anchored on the most salient region matching their
+spatial hint — except people, where silence really is evidence of absence and a
+guessed tag would offer a conversation with empty gravel.
+
+Both backends emit the same intermediate shape, so the underwhelming-label
+filter, the operator's-body backstop, dedupe and the `speaks`/`kind` classifier
+now live once in `_normalize_detections` and apply whoever did the looking. The
+client's wire contract is unchanged.
+
+`DETECT_BACKEND=gemini` puts the old path back without a deploy, and
+`/api/health` reports which backend is live. See `LOCAL_OBJECT_DETECTION.md` for
+the measurements and the reasoning.
+
+---
+
 # 🔧 CHANGELOG - August 5, 2026
 
 ## 🎮 Two control modes: DOOM and FPS

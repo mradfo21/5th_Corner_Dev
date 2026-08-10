@@ -9619,8 +9619,16 @@
 
   function scanAvailable() {
     if (scanInRealtime()) return true;
-    // Stills mode: scannable once the current scene still has decoded.
-    return Renderer.mode !== "reactor" && !!getStillImage();
+    // Otherwise scan the still, once it has decoded — INCLUDING when the
+    // realtime renderer is selected but not actually showing. Reactor stages a
+    // real still underneath the video as a floor, so while the stream is still
+    // connecting, has dropped, or never got through at all (a phone on one bar
+    // of signal is the common case), that still IS what's on screen and it is
+    // perfectly scannable. Requiring mode !== "reactor" here greyed SCAN out for
+    // exactly that window and left no way back until the stream arrived, which
+    // reads as the tool being broken. captureScanFrame already falls through to
+    // the same still, so the two agree.
+    return !!getStillImage();
   }
 
   // Grab the current scene as a JPEG data URL + its intrinsic size (for

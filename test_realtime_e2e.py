@@ -1076,6 +1076,54 @@ class TestRealtimeRenderer(unittest.TestCase):
         finally:
             page.close()
 
+    def test_scan_stays_available_when_the_realtime_stream_is_not_showing(self):
+        """A dropped/never-connected realtime stream must not disable SCAN.
+
+        Reactor stages a real still underneath the video as a floor, so while the
+        stream is connecting, has dropped, or never got through at all (a phone on
+        one bar of signal), that still is what's on screen — and it is perfectly
+        scannable. Requiring the renderer NOT be "reactor" greyed the tool out for
+        exactly that window with no way back until the stream arrived, which reads
+        as SCAN being broken. What makes a scene un-scannable is having no still to
+        read, not which renderer is selected.
+        """
+        page = self._new_realtime_page()
+        scene_items = [
+            {"id": 1, "type": "narrative", "content": "Intro."},
+            {"id": 2, "type": "scene_image", "content": "", "image_url": TINY_PNG_DATA_URL,
+             "metadata": {"prompt": "scene one", "base": "A dock.", "hard_transition": False}},
+            {"id": 3, "type": "player_choice_prompt", "content": "?", "choices": [{"text": "Go"}]},
+        ]
+        page.route("**/api/reset", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(scene_items)))
+        page.route("**/api/feed*", lambda r: r.fulfill(status=200, content_type="application/json", body="[]"))
+        try:
+            # ?talkdev exposes the client's own scan hooks (window.__SCAN__).
+            page.goto(f"{self.base_url}/realtime?talkdev", wait_until="domcontentloaded")
+            page.wait_for_function(
+                "window.ReactorRenderer && window.ReactorRenderer.isShowing() === true",
+                timeout=15000)
+            # The scene still delivered above is Reactor's floor, sitting under
+            # the video. Deliberately NOT primed via __SCAN__.primeStill(), which
+            # would flip the renderer to "image" and so defeat the very condition
+            # under test — the renderer must stay on "reactor" here.
+
+            # Now the stream stops showing — the exact reported condition.
+            page.evaluate("window.ReactorRenderer.isShowing = () => false")
+            page.wait_for_function("window.__SCAN__.available() === true", timeout=8000)
+
+            # And the button the player actually presses must be live, since a
+            # greyed-out SCAN with a scene plainly on screen is the bug report.
+            page.evaluate("window.__SCAN__.trigger()")
+            page.wait_for_timeout(300)
+            self.assertFalse(
+                page.evaluate("document.querySelector('#scan-btn').disabled"),
+                f"the SCAN button must be pressable. logs:\n{self._dump_logs()}")
+        except Exception:
+            print("\n=== REACTOR CONSOLE LOG (scan availability) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
     def test_tapping_the_world_triggers_a_scan(self):
         """Tapping the scene itself (when no instrument/mode is open) fires the
         same on-demand scan the button does, with a tactile ripple at the tap

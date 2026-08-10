@@ -194,6 +194,35 @@ except Exception:  # noqa: BLE001
     _sock = None
 
 
+def _detect_backend_status():
+    """Which detector /api/detect will use, for /api/health."""
+    info = {"backend": getattr(engine, "DETECT_BACKEND", "gemini")}
+    local = getattr(engine, "local_vision", None)
+    try:
+        info["local"] = local.status() if local is not None else {"available": False,
+                                                                  "error": "module not imported"}
+    except Exception as e:  # noqa: BLE001
+        info["local"] = {"available": False, "error": f"{type(e).__name__}: {e}"}
+    return info
+
+
+# Build the on-device detector now, on the main thread, before any request can
+# ask for it. Two reasons this is not left to the first /api/detect: it moves a
+# ~440 ms one-off (mediapipe import + TFLite graph build) off the critical path
+# of a player's first SCAN, and it keeps a heavy import out of a worker thread —
+# this codebase has already been bitten by a threaded import-lock hang (see the
+# warm-up block at the top of engine.py). Never fatal: if it can't load,
+# engine._detect_objects reports it and SCAN degrades per DETECT_BACKEND.
+if getattr(engine, "DETECT_BACKEND", "gemini") in ("local", "auto"):
+    try:
+        _lv = getattr(engine, "local_vision", None)
+        if _lv is not None:
+            print(f"[API INIT] local detection warmup: "
+                  f"{'ready' if _lv.warmup() else 'unavailable'}", flush=True)
+    except Exception as _lv_warm_err:  # noqa: BLE001
+        print(f"[API INIT] local detection warmup failed: {_lv_warm_err}", flush=True)
+
+
 # Allow embedding the game in an iframe on the main site.
 @app.after_request
 def add_embed_headers(response):
@@ -3008,7 +3037,11 @@ def api_health():
     """Health check endpoint"""
     return jsonify({
         "status": "healthy",
-        "service": "SOMEWHERE Game Engine API"
+        "service": "SOMEWHERE Game Engine API",
+        # Which detector is answering /api/detect, and whether the on-device one
+        # actually loaded. Worth surfacing here because a missing .tflite or an
+        # uninstalled mediapipe degrades SCAN silently otherwise.
+        "detect": _detect_backend_status(),
     })
 
 

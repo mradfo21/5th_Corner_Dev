@@ -82,7 +82,13 @@ class TestDetectObjectsFiltersUnderwhelmingLabels(unittest.TestCase):
     """Integration-style test: a mocked Gemini response mixing underwhelming
     and interesting labels must come back from _detect_objects with ONLY the
     interesting ones — matching the reported bug (hands/camcorder crowding out
-    industrial facility/organic growth)."""
+    industrial facility/organic growth).
+
+    Pins DETECT_BACKEND to "gemini": this exercises the Gemini path specifically,
+    and the default backend is now the on-device detector, which would never
+    reach the mocked HTTP session. The equivalent coverage for the local backend
+    lives in test_local_vision.py.
+    """
 
     def _mock_response(self, objects):
         resp = MagicMock()
@@ -103,7 +109,8 @@ class TestDetectObjectsFiltersUnderwhelmingLabels(unittest.TestCase):
             {"label": "industrial facility", "box_2d": [50, 50, 300, 900], "kind": "object", "speaks": False},
             {"label": "organic growth", "box_2d": [600, 700, 800, 950], "kind": "object", "speaks": False},
         ]
-        with patch.object(engine, "LLM_ENABLED", True), \
+        with patch.object(engine, "DETECT_BACKEND", "gemini"), \
+             patch.object(engine, "LLM_ENABLED", True), \
              patch.object(engine, "VISION_ENABLED", True), \
              patch.object(engine, "GEMINI_API_KEY", "test-key"), \
              patch.object(engine._GEMINI_HTTP_SESSION, "post", return_value=self._mock_response(raw)):

@@ -11,3 +11,12 @@ google-genai>=1.52.0
 anthropic
 flask-sock
 stripe>=10.0.0
+# On-device object detection for the SCAN tool (local_vision.py). Ships the
+# TFLite runtime; the model itself is vendored in models/ so nothing is fetched
+# at boot. Optional at runtime — engine falls back to the Gemini detector if
+# this import fails — but installed by default because it is the default backend.
+# mediapipe depends on opencv-contrib-python, which installs the same `cv2`
+# package as the opencv-python pinned above. contrib is a strict superset, so the
+# two coexist as long as pip resolves them to the SAME version — which it does,
+# since both are released in lockstep. Listed after opencv-python deliberately.
+mediapipe>=0.10
