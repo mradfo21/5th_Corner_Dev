@@ -126,6 +126,20 @@ class TestLocalScanE2E(unittest.TestCase):
         self.assertTrue((detect.get("local") or {}).get("available"),
                         f"local detector should be loaded: {detect}")
 
+    def test_health_reports_which_build_is_serving(self):
+        """"Did my push deploy?" must be answerable without reading behaviour.
+
+        The deploy dashboard's event list is easy to read stale, which makes a
+        live deploy look like a missing one. uptime_s is the tell either way: a
+        push restarts the worker, so an uptime older than the push means the new
+        commit is not live.
+        """
+        build = self.health.get("build") or {}
+        self.assertIn("commit", build)
+        self.assertIn("branch", build)
+        self.assertIsInstance(build.get("uptime_s"), (int, float))
+        self.assertGreaterEqual(build["uptime_s"], 0.0)
+
     def test_scan_tags_render_from_on_device_detections(self):
         page = self.browser.new_page(viewport={"width": 1280, "height": 720})
         detect_responses = []

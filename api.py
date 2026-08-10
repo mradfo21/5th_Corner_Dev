@@ -194,6 +194,27 @@ except Exception:  # noqa: BLE001
     _sock = None
 
 
+_BOOTED_AT = time.time()
+
+
+def _build_info():
+    """The commit this process is running, and how long it has been up.
+
+    Render injects RENDER_GIT_COMMIT / RENDER_GIT_BRANCH into the service
+    environment, so the running process can state its own provenance rather than
+    leaving us to infer it. `uptime_s` is the giveaway for a deploy that never
+    happened: a push restarts the worker, so an uptime older than your push means
+    the new commit is not live no matter what the dashboard shows.
+    """
+    commit = (os.getenv("RENDER_GIT_COMMIT") or "").strip()
+    return {
+        "commit": commit or None,
+        "commit_short": commit[:7] if commit else None,
+        "branch": (os.getenv("RENDER_GIT_BRANCH") or "").strip() or None,
+        "uptime_s": round(time.time() - _BOOTED_AT, 1),
+    }
+
+
 def _detect_backend_status():
     """Which detector /api/detect will use, for /api/health."""
     info = {"backend": getattr(engine, "DETECT_BACKEND", "gemini")}
@@ -3038,6 +3059,12 @@ def api_health():
     return jsonify({
         "status": "healthy",
         "service": "SOMEWHERE Game Engine API",
+        # WHICH BUILD IS ACTUALLY SERVING. Without this, "did my push deploy?"
+        # can only be answered by inferring it from behaviour, and the dashboard's
+        # event list is easy to read stale — so a live deploy looks like a missing
+        # one. Answer it directly instead: curl /api/health and compare `commit`
+        # to the SHA you pushed.
+        "build": _build_info(),
         # Which detector is answering /api/detect, and whether the on-device one
         # actually loaded. Worth surfacing here because a missing .tflite or an
         # uninstalled mediapipe degrades SCAN silently otherwise.
