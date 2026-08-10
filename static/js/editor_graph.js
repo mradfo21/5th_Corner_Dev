@@ -67,6 +67,7 @@
   let view = null;              // {cx, cy, r} currently on screen
   let anim = null;              // in-flight zoom
   let lastTap = { t: 0, x: 0, y: 0, id: null };
+  let hoverId = null;           // cell under the pointer, on desktop
   let hintTimer = null;
 
   function reduceMotion() {
@@ -452,6 +453,7 @@
     if (!els.world) return;
     root = buildTree();
     els.world.innerHTML = "";
+    hoverId = null;   // the highlighted node just stopped existing
 
     // Tethers first (under everything): a container's nucleus reaching out to
     // each child, so this is honestly a graph and not just nested bubbles.
@@ -706,6 +708,9 @@
 
   function activate(n) {
     if ((n.children || []).length) { setFocus(n.id, true); return; }
+    // A control has no window to open — double-tapping one is still just the
+    // switch, not an empty sheet.
+    if (n.kind === "control") { toggleControl(n); return; }
     openSheet(n);
   }
 
@@ -745,7 +750,6 @@
     openSheet(n);
   }
 
-  let hoverId = null;
   function setHover(id, cursor) {
     els.canvas.style.cursor = cursor || "default";
     if (id === hoverId) return;
