@@ -161,8 +161,8 @@
     <button id="btn-story" class="rail-btn" type="button" title="Story log — the detailed run chronicle (J)">
       <span class="rail-ico">&#8803;</span><span class="rail-lbl">STORY</span>
     </button>
-    <button id="btn-objectives" class="rail-btn" type="button" title="Objectives — the case board of active leads &amp; field goals (O)">
-      <span class="rail-ico">◈</span><span class="rail-lbl">GOALS</span>
+    <button id="btn-objectives" class="rail-btn" type="button" title="The case — what you're looking for (O)">
+      <span class="rail-ico">◈</span><span class="rail-lbl">CASE</span>
     </button>
     <button id="btn-editor" class="rail-btn" type="button" title="World Editor — tweak the prompts that drive the sim, live (` backtick)">
       <span class="rail-ico">✎</span><span class="rail-lbl">EDIT</span>
@@ -551,84 +551,44 @@
        FILE tray and fades. -->
   <div id="evidence-card" class="hidden" aria-hidden="true">
     <div class="evidence-photo"></div>
-    <div class="evidence-cap">● EVIDENCE GATHERED</div>
+    <div class="evidence-cap">FILED</div>
   </div>
 
-  <!-- OBJECTIVES HUD (top-right): a AAA-style objective tracker / case board.
-       It is driven by the GENERATIVE world (a model-authored "current lead"
-       that evolves with the story) and by the PHOTO loop (field bounties to
-       document the subjects the world model surfaces, plus standing challenge
-       goals). The spine is the CASE primary objective, mirrored from the
-       dossier census. Collapsible; toggled with O or the GOALS rail button. -->
-  <aside id="objectives-hud" class="hidden" aria-label="Objectives" aria-live="polite">
+  <!-- OBJECTIVES — a SHEET, not a permanent overlay.
+       This used to be an always-on case board stacking a primary objective, a
+       lead, three field bounties and two challenge goals, each with its own tag
+       and progress bar. Six lines of tracker text parked over the scene is the
+       opposite of being somewhere, so the tracker is now something you OPEN
+       (O, or the GOALS rail button) and everything ambient is carried by the
+       single counter below. -->
+  <aside id="objectives-hud" class="hidden" aria-label="Objectives">
     <div class="obj-head" id="obj-head">
-      <span class="obj-head-mark" aria-hidden="true">◈</span>
-      <span class="obj-head-title">OBJECTIVES</span>
-      <span class="obj-head-count" id="obj-count">0/0</span>
+      <span class="obj-head-title">THE CASE</span>
+      <span class="obj-head-count" id="obj-count"></span>
       <button id="obj-collapse" class="obj-collapse" type="button"
-              title="Collapse / expand objectives (O)" aria-label="Collapse objectives" aria-expanded="true">▾</button>
+              title="Close (O)" aria-label="Close objectives">&#10005;</button>
     </div>
-    <ol id="obj-list" class="obj-list" aria-live="polite"></ol>
+    <ol id="obj-list" class="obj-list"></ol>
   </aside>
-  <!-- Objective flourish banner: a brief cinematic "NEW OBJECTIVE" /
-       "OBJECTIVE COMPLETE" title that sweeps in under the tracker. -->
-  <div id="obj-banner" class="obj-banner hidden" aria-hidden="true">
-    <span class="obj-banner-kicker"></span>
-    <span class="obj-banner-title"></span>
+
+  <!-- The whole ambient HUD: how many good photographs you have, and how many
+       close the case. No score, no rank, no bar, no film gauge — a rank you
+       can't act on mid-run is just noise, and it all reads at the end anyway.
+       `obj-count` keeps its id so the objectives system has one place to write. -->
+  <div id="shot-tally" class="hidden" aria-live="polite" aria-label="Photographs kept">
+    <span class="tally-mark" aria-hidden="true">&#9635;</span>
+    <span class="tally-count" id="tally-count">0/8</span>
+    <span class="tally-word">kept</span>
   </div>
 
-  <!-- Dossier HUD (top-center): the run's EVIDENCE score + RANK, and the CASE
-       FILE census — distinct subjects documented toward closing the case (the
-       win condition). Revealed when the camera is first raised. -->
-  <div id="evidence-hud" class="hidden" aria-live="polite" aria-label="Evidence dossier">
-    <div class="ev-main">
-      <span class="ev-mark" aria-hidden="true">◆</span>
-      <span class="ev-label">EVIDENCE</span>
-      <span class="ev-total">0</span>
-      <span class="ev-rank" aria-label="Rank">RANK D</span>
-    </div>
-    <div class="ev-case">
-      <span class="ev-case-label">CASE FILE</span>
-      <div class="ev-bar" aria-hidden="true"><div class="ev-bar-fill"></div></div>
-      <span class="ev-case-count">0/8</span>
-    </div>
-    <!-- Stakes row: HEALTH (drained by the danger vignette) + FILM (a real,
-         depleting resource — every shot costs film, and the run ends when it's
-         out). Gives choices weight and photography a cost/pressure. -->
-    <div class="ev-stakes">
-      <span class="ev-stat ev-health" aria-label="Health">
-        <span class="ev-stat-mark" aria-hidden="true">✚</span>
-        <span class="ev-health-val">100</span>
-      </span>
-      <span class="ev-stat ev-film" aria-label="Film remaining">
-        <span class="ev-stat-mark" aria-hidden="true">▦</span>
-        <span class="ev-film-val">36</span><span class="ev-film-cap">/36</span>
-      </span>
-    </div>
-  </div>
-
-  <!-- Photo appraisal: the captured shot is shown LARGE at top-center (so you
-       can see what you framed) with the evidence readout overlaid directly on
-       the image — no opaque card — revealing each thing in frame item-by-item
-       with a sound + points, then a rating stamp. Purely informational, so
-       pointer-events are off and the live view stays visible around it. -->
-  <div id="photo-receipt" class="hidden" aria-hidden="true">
-    <div class="receipt-photo">
-      <div class="receipt-badge">
-        <span class="receipt-title">◉ FIELD PHOTO</span>
-        <span class="receipt-status">DEVELOPING…</span>
-      </div>
-      <div class="receipt-scrim">
-        <div class="receipt-caption"></div>
-        <ol class="receipt-items"></ol>
-        <div class="receipt-subtotal">
-          <span class="rs-label">SUBTOTAL</span>
-          <span class="rs-dots">····················</span>
-          <span class="rs-val">+0</span>
-        </div>
-      </div>
-      <div class="receipt-stamp"></div>
-    </div>
+  <!-- After a photograph: the picture holds full-screen (see #capture-cinema),
+       and then this says one quiet line. It replaces a scored receipt that
+       itemised every object with points, stars, NEW/RARE badges, bonus rows, a
+       running subtotal and a rubber stamp — a slot machine bolted onto the one
+       moment that should feel like looking at a photograph you just took. -->
+  <div id="photo-filed" class="hidden" aria-live="polite">
+    <span class="filed-mark" aria-hidden="true">&#9635;</span>
+    <span class="filed-text"></span>
   </div>
 
   <!-- Investigations tray: a subtle "case file" of specimen thumbnails captured
@@ -644,11 +604,11 @@
        first time a scene is readable; dismiss with the button, a tap, or Esc. -->
   <div id="scan-tutorial" class="hidden" role="dialog" aria-modal="true" aria-label="How to play">
     <div class="tut-card">
-      <div class="tut-kicker">◈ FIELD BRIEFING</div>
+      <div class="tut-kicker">YOU'RE HERE TO TAKE PICTURES</div>
       <div class="tut-body">
-        <p class="tut-lead"><b>Tap the scene</b> to <b>SCAN</b> for evidence.</p>
-        <p class="tut-sub">Then raise your <b>camera</b> and photograph what you find —
-           document <b><span id="tut-target">8</span> subjects</b> to close the case.</p>
+        <p class="tut-lead"><b>Tap the scene</b> to see what's worth shooting.</p>
+        <p class="tut-sub">Then raise your <b>camera</b> and take the picture.
+           <b><span id="tut-target">8</span> good photographs</b> closes the case.</p>
       </div>
       <button id="tut-dismiss" type="button">GOT IT</button>
       <div class="tut-hint">tap anywhere to begin</div>
@@ -681,22 +641,6 @@
       </div>
     </header>
 
-    <!-- CONTROLS — the movement scheme for the live world. DOOM (A/D turn) vs
-         FPS (A/D strafe + mouse look). Populated by InputProfileUi; mirrored in
-         the WORLD MODEL panel. Persisted per browser. -->
-    <div id="we-input-opts" class="we-input-opts">
-      <span class="we-input-label">CONTROLS</span>
-      <div id="we-input-profile" class="rt-ho-seg" role="group" aria-label="Movement control mode"></div>
-      <!-- Mouse-look sensitivity (FPS mode). Live — no reload, no rebuild. -->
-      <span class="we-input-sens" id="we-input-sens-wrap">
-        <label class="we-input-label" for="we-input-sens">LOOK</label>
-        <input id="we-input-sens" type="range" min="0.5" max="12" step="0.5"
-               aria-label="Mouse look sensitivity" />
-        <output id="we-input-sens-val" class="we-input-sens-val" for="we-input-sens"></output>
-      </span>
-      <span id="we-input-hint" class="we-input-hint"></span>
-    </div>
-
     <nav class="we-tabs" id="we-tabs" role="tablist"></nav>
 
     <div class="we-scroll">
@@ -719,9 +663,25 @@
           <input id="we-world-name" type="text" placeholder="Name this world…" maxlength="64" />
           <button id="we-world-save" type="button" class="we-btn we-btn-primary">SAVE WORLD</button>
         </div>
-        <div class="we-worlds-hint">Snapshots every prompt — plus your character, level, and camera — as a named world you can switch between.</div>
+        <div class="we-worlds-hint">A build snapshots everything: engine, game, level and cast.</div>
         <ul id="we-worlds-list" class="we-worlds-list" aria-live="polite"></ul>
       </div>
+    </div>
+
+    <!-- CONTROLS — how you DRIVE the live world (DOOM turn vs FPS strafe + mouse
+         look), not what the game is. Deliberately the last thing in the panel:
+         it used to sit above the layer stack, where the first thing you saw on
+         opening a level editor was a mouse-sensitivity slider. -->
+    <div id="we-input-opts" class="we-input-opts">
+      <span class="we-input-label">CONTROLS</span>
+      <div id="we-input-profile" class="rt-ho-seg" role="group" aria-label="Movement control mode"></div>
+      <span class="we-input-sens" id="we-input-sens-wrap">
+        <label class="we-input-label" for="we-input-sens">LOOK</label>
+        <input id="we-input-sens" type="range" min="1" max="30" step="0.5"
+               aria-label="Mouse look sensitivity" />
+        <output id="we-input-sens-val" class="we-input-sens-val" for="we-input-sens"></output>
+      </span>
+      <span id="we-input-hint" class="we-input-hint"></span>
     </div>
 
     <footer class="we-foot" id="we-foot">
@@ -822,18 +782,23 @@
        player start a fresh case or keep shooting. -->
   <div id="case-overlay" class="hidden">
     <div class="case-inner">
-      <div class="case-badge">● CASE CLOSED</div>
+      <div class="case-badge">CASE CLOSED</div>
       <div class="case-rank">RANK <span id="case-rank-letter">A</span></div>
+      <!-- Two facts, not four tallies. "Objectives cleared" and a raw evidence
+           number were scoreboard readouts for a game about looking at things;
+           the rank above already carries the scoring. `case-objectives` and
+           `case-evidence` stay in the DOM (hidden) so the win handler that
+           writes them needs no special-casing. -->
       <div class="case-stats">
-        <span><b id="case-subjects">0</b> subjects documented</span>
-        <span><b id="case-objectives">0</b> objectives cleared</span>
-        <span><b id="case-evidence">0</b> evidence</span>
-        <span><b id="case-shots">0</b> shots</span>
+        <span><b id="case-subjects">0</b> photographs kept</span>
+        <span><b id="case-shots">0</b> frames shot</span>
+        <span class="hidden"><b id="case-objectives">0</b></span>
+        <span class="hidden"><b id="case-evidence">0</b></span>
       </div>
-      <p id="case-flavor" class="case-flavor">The dossier is complete. The truth develops in the tray.</p>
+      <p id="case-flavor" class="case-flavor">That's the case.</p>
       <div class="case-actions">
-        <button id="case-continue" type="button">✕ KEEP SHOOTING</button>
-        <button id="case-restart" type="button">▶ NEW CASE</button>
+        <button id="case-continue" type="button">KEEP SHOOTING</button>
+        <button id="case-restart" type="button">NEW CASE</button>
       </div>
       <div class="case-hint">press R for a new case</div>
     </div>

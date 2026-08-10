@@ -152,15 +152,15 @@
     touchDof: document.getElementById("touch-dof"),
     evidenceCard: document.getElementById("evidence-card"),
     captureCinema: document.getElementById("capture-cinema"),
-    evidenceHud: document.getElementById("evidence-hud"),
+    shotTally: document.getElementById("shot-tally"),
+    tallyCount: document.getElementById("tally-count"),
     objectivesHud: document.getElementById("objectives-hud"),
     objHead: document.getElementById("obj-head"),
     objCount: document.getElementById("obj-count"),
     objList: document.getElementById("obj-list"),
     objCollapse: document.getElementById("obj-collapse"),
-    objBanner: document.getElementById("obj-banner"),
     btnObjectives: document.getElementById("btn-objectives"),
-    photoReceipt: document.getElementById("photo-receipt"),
+    photoFiled: document.getElementById("photo-filed"),
     caseOverlay: document.getElementById("case-overlay"),
     caseRankLetter: document.getElementById("case-rank-letter"),
     caseSubjects: document.getElementById("case-subjects"),
@@ -1220,8 +1220,8 @@
     state._introGoalShown = true;
     const target = (window.Evidence && Evidence.target && Evidence.target()) || 8;
     try {
-      showRendererToast("Raise your camera and DOCUMENT the evidence \u2014 photograph " +
-        target + " distinct subjects to close the case.", 6000);
+      showRendererToast("Raise your camera. " + target +
+        " good photographs closes the case.", 5000);
     } catch (_) {}
   }
 
@@ -3761,6 +3761,74 @@
              ", so edits to that shared field won't reach this render path.";
     }
 
+    // ── INFO POPOVERS ──────────────────────────────────────────────────────
+    // Every long explanation in this panel goes through here. Inline prose was
+    // the whole problem: a layer paragraph, a description under every block, a
+    // help line under every input and a "what this does" note on every prompt
+    // meant the editor had to be READ before it could be used. The text still
+    // exists — it's one click away, on the thing it describes, and it closes
+    // when you look away.
+    let popNode = null;
+    let popOwner = null;
+
+    function popEl() {
+      if (popNode && popNode.isConnected) return popNode;
+      popNode = document.createElement("div");
+      popNode.className = "we-pop";
+      popNode.setAttribute("role", "dialog");
+      popNode.innerHTML =
+        '<div class="we-pop-title"></div><div class="we-pop-body"></div>';
+      (el.worldEditor || document.body).appendChild(popNode);
+      return popNode;
+    }
+
+    function closePop() {
+      if (popNode) popNode.classList.remove("show");
+      if (popOwner) popOwner.setAttribute("aria-expanded", "false");
+      popOwner = null;
+    }
+
+    function openPop(btn, title, body) {
+      const node = popEl();
+      node.querySelector(".we-pop-title").textContent = title || "";
+      node.querySelector(".we-pop-body").textContent = body || "";
+      popOwner = btn;
+      btn.setAttribute("aria-expanded", "true");
+      node.classList.add("show");
+      // Anchor under the button, then pull back inside the panel if it would
+      // hang off either edge.
+      const host = (el.worldEditor || document.body).getBoundingClientRect();
+      const r = btn.getBoundingClientRect();
+      const w = node.offsetWidth;
+      let left = r.left - host.left + r.width / 2 - w / 2;
+      left = Math.max(10, Math.min(left, host.width - w - 10));
+      node.style.left = left + "px";
+      let top = r.bottom - host.top + 8;
+      if (top + node.offsetHeight > host.height - 10) {
+        top = Math.max(10, r.top - host.top - node.offsetHeight - 8);
+      }
+      node.style.top = top + "px";
+    }
+
+    // A small ⓘ that carries the long version. Returns null when there's
+    // nothing to say, so callers can append unconditionally.
+    function infoBtn(title, body) {
+      if (!body) return null;
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "we-info";
+      b.setAttribute("aria-label", "About " + (title || "this"));
+      b.setAttribute("aria-expanded", "false");
+      b.textContent = "\u24D8";
+      b.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (popOwner === b) { closePop(); return; }
+        openPop(b, title || "", body);
+      });
+      return b;
+    }
+
     function refreshDirtyBadge() {
       if (el.weDirty) el.weDirty.classList.toggle("hidden", !anyDirty());
     }
@@ -3822,101 +3890,123 @@
         .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
     }
 
-    // The header a layer opens with: what it is, what it costs to get wrong.
+    // The header a layer opens with. One line by default — the long version is
+    // behind a disclosure, because a paragraph of explanation on every panel is
+    // what made this read as documentation rather than a tool.
     function layerIntro(layer) {
       const wrap = document.createElement("div");
-      wrap.className = "we-layer-intro we-risk-" + (layer.risk || "content");
-      wrap.style.setProperty("--layer-accent", layer.accent || "#ffd27a");
-      wrap.innerHTML =
-        '<div class="we-layer-intro-head">' +
-          '<span class="we-layer-intro-glyph" aria-hidden="true">' + (layer.icon || "") + "</span>" +
-          '<span class="we-layer-intro-title">' + esc(layer.label) + "</span>" +
-          '<span class="we-layer-intro-vol">' + esc(layer.volatility || "") + "</span>" +
-        "</div>" +
-        '<p class="we-layer-intro-blurb">' + esc(layer.blurb || "") + "</p>" +
-        '<div class="we-layer-intro-scope">' +
-          (layer.risk === "contract"
-            ? "\u26A0 These values are parsed by code. A careless edit stops turns resolving."
-            : "\u25C7 " + esc(layer.scope || "")) +
-        "</div>";
+      wrap.className = "we-lhead we-risk-" + (layer.risk || "content");
+      wrap.style.setProperty("--layer-accent", layer.accent || "#7aa2ff");
+
+      const row = document.createElement("div");
+      row.className = "we-lhead-row";
+      row.innerHTML =
+        '<span class="we-lhead-dot" aria-hidden="true"></span>' +
+        '<span class="we-lhead-title">' + esc(layer.label) + "</span>" +
+        '<span class="we-lhead-tag">' + esc(layer.tagline || layer.question || "") + "</span>";
+
+      const info = infoBtn(layer.label, (layer.blurb || "") +
+        (layer.risk === "contract"
+          ? " These values are parsed by code, so a careless edit can stop turns resolving."
+          : " " + (layer.scope || "")));
+      if (info) row.appendChild(info);
+
+      wrap.appendChild(row);
       return wrap;
     }
 
+    // A prompt is a 2,000+ character document. Rendering a dozen of them as
+    // open 320px textareas turned every layer into a wall of prose you had to
+    // scroll past to find anything. Each is now a CARD showing its first couple
+    // of lines; the full writing surface is the pop-out editor, which already
+    // has line numbers, a diff against factory, and validation.
     function makeField(f) {
       const key = f.id;
       const wrap = document.createElement("div");
       const modified = valOf(key) !== defOf(key);
-      wrap.className = "we-field" + (modified ? " modified" : "");
+      wrap.className = "we-card" + (modified ? " modified" : "");
       wrap.dataset.key = key;
+      wrap.tabIndex = 0;
+      wrap.setAttribute("role", "button");
+      wrap.setAttribute("aria-label", "Edit " + (f.label || key));
 
-      const top = document.createElement("div");
-      top.className = "we-field-top";
+      const head = document.createElement("div");
+      head.className = "we-card-head";
       const label = document.createElement("span");
-      label.className = "we-field-label";
+      label.className = "we-card-label";
       label.textContent = f.label || key;
-      const chips = document.createElement("span");
-      chips.className = "we-chips";
-      const dot = document.createElement("span");
-      dot.className = "we-mod-dot"; dot.textContent = "●"; dot.title = "Changed from default";
-      const chip = document.createElement("span");
       const isRestart = RESTART_KEYS.has(key);
-      chip.className = "we-chip " + (isRestart ? "we-chip-restart" : "we-chip-live");
+      const chip = document.createElement("span");
+      chip.className = "we-tag " + (isRestart ? "we-tag-restart" : "we-tag-live");
       chip.textContent = isRestart ? "restart" : "live";
       chip.title = isRestart
-        ? "Seeds the world — start a fresh run (Save & Restart) to see it"
-        : "Re-steers the sim on the next turn (Apply Live)";
-      const expand = document.createElement("button");
-      expand.className = "we-expand"; expand.type = "button"; expand.textContent = "⤢ Expand";
-      expand.title = "Open this prompt in the full-screen editor";
-      expand.addEventListener("click", () => openPromptModal(key));
-      chips.appendChild(dot); chips.appendChild(chip); chips.appendChild(expand);
-      top.appendChild(label); top.appendChild(chips);
+        ? "Seeds the world — start a fresh run to see it"
+        : "Re-steers the sim on the next turn";
+      head.appendChild(label);
+      const wiring = sharedWiringNote(key);
+      const about = infoBtn(f.label || key,
+        [f.description, wiring].filter(Boolean).join("\n\n"));
+      if (about) head.appendChild(about);
+      head.appendChild(chip);
 
-      const desc = document.createElement("div");
-      desc.className = "we-field-desc";
-      desc.textContent = f.description || "";
+      const value = String(valOf(key) || "");
+      const preview = document.createElement("div");
+      preview.className = "we-card-preview";
+      // Truncate in JS, not just with a CSS line clamp. A clamp still puts the
+      // whole 15,000-character contract in the DOM to render two lines of it.
+      const flat = value.replace(/\s+/g, " ").trim();
+      preview.textContent = flat ? flat.slice(0, 240) : "Empty";
 
-      const ta = document.createElement("textarea");
-      ta.value = valOf(key);
-      ta.spellcheck = false;
-      ta.addEventListener("input", () => {
-        const base = (content.prompts && content.prompts[key] != null) ? content.prompts[key] : "";
-        if (ta.value === base) delete edits[key]; else edits[key] = ta.value;
-        wrap.classList.toggle("modified", ta.value !== defOf(key));
-        // Keep the shared-wiring note honest while a placeholder is being
-        // typed or deleted, not just after a save.
-        setHint(hint, key);
-        refreshDirtyBadge();
-      });
-      // Double-click anywhere in the text is the fastest route to the big editor.
-      ta.addEventListener("dblclick", (e) => { e.preventDefault(); openPromptModal(key); });
-
-      const foot = document.createElement("div");
-      foot.className = "we-field-foot";
-      const legend = document.createElement("span");
-      legend.className = "we-legend";
+      const meta = document.createElement("div");
+      meta.className = "we-card-meta";
+      const size = document.createElement("span");
+      size.textContent = value.length.toLocaleString("en-US") + " chars";
+      meta.appendChild(size);
       if (Array.isArray(f.format_vars) && f.format_vars.length) {
-        legend.innerHTML = "vars: " + f.format_vars.map((v) => "<b>{" + v + "}</b>").join(" ");
+        const vars = document.createElement("span");
+        vars.className = "we-card-vars";
+        vars.textContent = f.format_vars.length + " variables";
+        vars.title = f.format_vars.map((v) => "{" + v + "}").join("  ");
+        meta.appendChild(vars);
       }
-      const reset = document.createElement("button");
-      reset.className = "we-field-reset"; reset.type = "button"; reset.textContent = "reset";
-      reset.title = "Reset this field to its factory default";
-      reset.addEventListener("click", () => resetField(key));
-      foot.appendChild(legend); foot.appendChild(reset);
+      if (modified) {
+        const edited = document.createElement("span");
+        edited.className = "we-card-edited";
+        edited.textContent = "edited";
+        meta.appendChild(edited);
+      }
+
+      const open = () => openPromptModal(key);
+      wrap.addEventListener("click", (e) => {
+        if (e.target.closest(".we-info, .we-pop, .we-card-reset")) return;
+        open();
+      });
+      wrap.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") { e.preventDefault(); open(); }
+      });
+
+      wrap.appendChild(head);
+      wrap.appendChild(preview);
+      wrap.appendChild(meta);
+
+      if (modified) {
+        const reset = document.createElement("button");
+        reset.className = "we-card-reset";
+        reset.type = "button";
+        reset.textContent = "Reset";
+        reset.title = "Restore the factory default";
+        reset.addEventListener("click", (e) => { e.stopPropagation(); resetField(key); });
+        wrap.appendChild(reset);
+      }
 
       const warn = document.createElement("div");
       warn.className = "we-warn hidden";
-
-      const hint = document.createElement("div");
-      hint.className = "we-field-hint";
-      setHint(hint, key);
-
-      wrap.appendChild(top); wrap.appendChild(desc); wrap.appendChild(ta);
-      wrap.appendChild(foot); wrap.appendChild(warn); wrap.appendChild(hint);
+      wrap.appendChild(warn);
       return wrap;
     }
 
     function render() {
+      closePop();
       renderTabs();
       const showWorlds = activeTab === "worlds";
       const layer = layerById(activeTab);
@@ -3943,6 +4033,13 @@
       if (!el.weFields || !layer) return;
       el.weFields.innerHTML = "";
 
+      // The active layer's accent drives the whole panel — focus rings, the
+      // primary button, the plate hover — so which layer you're in is legible
+      // from any corner without a badge repeating it.
+      if (el.worldEditor) {
+        el.worldEditor.style.setProperty("--layer-accent", layer.accent || "#7aa2ff");
+        el.worldEditor.style.setProperty("--we-accent", layer.accent || "#7aa2ff");
+      }
       if (el.weLayerHead) {
         el.weLayerHead.appendChild(layerIntro(layer));
         // The Level layer leads with its gallery — what makes a level a level
@@ -3974,9 +4071,13 @@
 
       const head = document.createElement("div");
       head.className = "we-levels-head";
-      head.innerHTML =
-        '<span class="we-levels-title">YOUR LEVELS</span>' +
-        '<span class="we-levels-note">Switching a level leaves the engine, the game and your character alone.</span>';
+      head.innerHTML = '<span class="we-levels-title">LEVELS</span>';
+      const about = infoBtn("Levels",
+        "A level is one place: its brief and its setting plate. Saving snapshots " +
+        "only those, so opening a different level leaves the engine, the game and " +
+        "your character exactly as they were \u2014 which is what lets you build a " +
+        "set of levels for one game and switch between them.");
+      if (about) head.appendChild(about);
       wrap.appendChild(head);
 
       const row = document.createElement("div");
@@ -4017,8 +4118,7 @@
       if (!levels.length) {
         const empty = document.createElement("div");
         empty.className = "we-levels-empty";
-        empty.textContent = "No saved levels yet. Describe a place below, then save it — " +
-          "then change it and save that too, and you have two levels for the same game.";
+        empty.textContent = "No levels yet. Describe a place below, then name and save it.";
         list.appendChild(empty);
       }
       levels.forEach((lv) => list.appendChild(makeLevelCard(lv)));
@@ -4032,16 +4132,20 @@
       const bits = [];
       if (lv.era) bits.push(lv.era);
       if (lv.has_opening_shot) bits.push("opening shot");
-      if (lv.plate_count) bits.push(lv.plate_count + " plate" + (lv.plate_count > 1 ? "s" : ""));
-      card.innerHTML =
-        '<div class="we-level-card-top">' +
-          '<span class="we-level-card-name">' + esc(lv.name) + "</span>" +
-          (lv.enabled ? "" : '<span class="we-level-card-off">off</span>') +
-        "</div>" +
-        (lv.place && lv.place !== lv.name
-          ? '<div class="we-level-card-place">' + esc(lv.place) + "</div>" : "") +
-        '<div class="we-level-card-sum">' + esc(lv.summary || "No description yet.") + "</div>" +
-        (bits.length ? '<div class="we-level-card-meta">' + esc(bits.join(" \u00B7 ")) + "</div>" : "");
+      // A level you can SEE beats a level you have to read. When the level has
+      // reference art, the first plate becomes the card.
+      const art = (lv.plates && lv.plates[0])
+        ? '<div class="we-level-art" style="background-image:url(\'' + lv.plates[0] + '\')"></div>'
+        : '<div class="we-level-art we-level-art-empty" aria-hidden="true"></div>';
+      card.innerHTML = art +
+        '<div class="we-level-body">' +
+          '<div class="we-level-card-top">' +
+            '<span class="we-level-card-name">' + esc(lv.name) + "</span>" +
+            (lv.enabled ? "" : '<span class="we-level-card-off">off</span>') +
+          "</div>" +
+          '<div class="we-level-card-sum">' + esc(lv.summary || "No description yet.") + "</div>" +
+          (bits.length ? '<div class="we-level-card-meta">' + esc(bits.join(" \u00B7 ")) + "</div>" : "") +
+        "</div>";
 
       const acts = document.createElement("div");
       acts.className = "we-level-card-acts";
@@ -4073,7 +4177,7 @@
       });
       acts.appendChild(load);
       acts.appendChild(del);
-      card.appendChild(acts);
+      (card.querySelector(".we-level-body") || card).appendChild(acts);
       return card;
     }
 
@@ -4654,16 +4758,20 @@
       return row;
     }
 
+    // A field label, with the long help behind an ⓘ rather than printed under
+    // every input.
+    function castLabelWithHelp(text, help) {
+      const row = document.createElement("div");
+      row.className = "we-cast-labelrow";
+      row.appendChild(castLabel(text));
+      const info = infoBtn(text, help);
+      if (info) row.appendChild(info);
+      return row;
+    }
+
     function castLabel(text) {
       const s = document.createElement("span");
       s.className = "we-cast-label";
-      s.textContent = text;
-      return s;
-    }
-
-    function castHelp(text) {
-      const s = document.createElement("div");
-      s.className = "we-cast-help";
       s.textContent = text;
       return s;
     }
@@ -4678,14 +4786,17 @@
         cb.type = "checkbox";
         cb.checked = !!value;
         cb.addEventListener("change", () => saveIdentity(blockId, { [field.id]: cb.checked }));
-        const text = document.createElement("span");
         const name = document.createElement("span");
         name.className = "we-cast-toggle-label";
         name.textContent = field.label;
-        text.appendChild(name);
-        if (field.help) text.appendChild(castHelp(field.help));
-        label.appendChild(cb); label.appendChild(text);
-        return castRow([label]);
+        label.appendChild(cb);
+        label.appendChild(name);
+        const row = castRow([label]);
+        // The ⓘ sits outside the <label> so clicking it can't flip the switch.
+        const info = infoBtn(field.label, field.help);
+        if (info) row.appendChild(info);
+        row.classList.add("we-cast-togglerow");
+        return row;
       }
 
       if (field.type === "mode") {
@@ -4703,7 +4814,7 @@
           b.addEventListener("click", () => saveIdentity(blockId, { mode: o.id }));
           grid.appendChild(b);
         });
-        return castRow([castLabel(field.label), grid]);
+        return castRow([castLabelWithHelp(field.label, field.help), grid]);
       }
 
       const isLong = field.type === "longtext";
@@ -4722,31 +4833,24 @@
       if (!isLong) {
         input.addEventListener("keydown", (e) => { if (e.key === "Enter") input.blur(); });
       }
-      const kids = [castLabel(field.label), input];
-      if (field.help) kids.push(castHelp(field.help));
-      return castRow(kids);
+      return castRow([castLabelWithHelp(field.label, field.help), input]);
     }
 
     function makeCastBlock(block) {
       const wrap = document.createElement("div");
-      wrap.className = "we-cast-block we-field";
+      wrap.className = "we-block";
+      wrap.dataset.block = block.id;
 
       const top = document.createElement("div");
-      top.className = "we-field-top";
+      top.className = "we-block-head";
       const label = document.createElement("span");
-      label.className = "we-field-label";
-      label.textContent = (block.icon ? block.icon + " " : "") + block.label;
-      const chip = document.createElement("span");
-      chip.className = "we-chip we-chip-live";
-      chip.textContent = "live";
-      chip.title = "Re-steers the sim on the next turn";
-      top.appendChild(label); top.appendChild(chip);
+      label.className = "we-block-label";
+      label.textContent = block.label;
+      top.appendChild(label);
 
-      const desc = document.createElement("div");
-      desc.className = "we-field-desc";
-      desc.textContent = block.description || "";
-
-      wrap.appendChild(top); wrap.appendChild(desc);
+      const about = infoBtn(block.label, block.description);
+      if (about) top.appendChild(about);
+      wrap.appendChild(top);
 
       const essential = block.fields.filter((f) => f.tier !== "advanced");
       const advanced = block.fields.filter((f) => f.tier === "advanced");
@@ -4765,13 +4869,20 @@
         wrap.appendChild(warn);
       });
 
+      // The exact text this compiles to. Worth being able to check; not worth
+      // reading every time you open the panel.
       const compiled = compiledFor(block.id);
       if (compiled) {
-        wrap.appendChild(castLabel("What this sends to the model"));
+        const more = document.createElement("details");
+        more.className = "we-more-info we-more-compiled";
+        const sum = document.createElement("summary");
+        sum.textContent = "What the model receives";
         const pane = document.createElement("div");
         pane.className = "we-compiled";
         pane.textContent = compiled;
-        wrap.appendChild(pane);
+        more.appendChild(sum);
+        more.appendChild(pane);
+        wrap.appendChild(more);
       }
       return wrap;
     }
@@ -4779,25 +4890,15 @@
     function makePlateZone(block) {
       const slot = block.id === "player_character" ? "character" : "setting";
       const holder = document.createElement("div");
-      holder.className = "we-cast-row";
-      holder.appendChild(castLabel(block.images_label || "Reference images"));
-      if (block.images_hint) holder.appendChild(castHelp(block.images_hint));
+      holder.className = "we-plate-zone";
 
-      const grid = document.createElement("div");
-      grid.className = "we-plates";
-      plateThumbs(block.id).forEach((p) => {
-        const cell = document.createElement("div");
-        cell.className = "we-plate";
-        const img = document.createElement("img");
-        img.src = p.url; img.alt = p.label || ""; img.title = p.label || p.id;
-        const rm = document.createElement("button");
-        rm.type = "button"; rm.className = "we-plate-remove"; rm.textContent = "✕";
-        rm.title = "Remove";
-        rm.addEventListener("click", () => deletePlate(p.id));
-        cell.appendChild(img); cell.appendChild(rm);
-        grid.appendChild(cell);
-      });
-      holder.appendChild(grid);
+      const head = document.createElement("div");
+      head.className = "we-plate-head";
+      head.innerHTML = '<span class="we-plate-title">' +
+        esc(block.images_label || "Reference") + "</span>";
+      const hint = infoBtn(block.images_label || "Reference", block.images_hint);
+      if (hint) head.appendChild(hint);
+      holder.appendChild(head);
 
       const file = document.createElement("input");
       file.type = "file"; file.accept = "image/*"; file.style.display = "none";
@@ -4806,22 +4907,47 @@
         file.value = "";
       });
 
-      const drop = document.createElement("div");
-      drop.className = "we-drop";
-      drop.textContent = "Drop an image here, or tap to choose one";
-      drop.addEventListener("click", () => file.click());
-      ["dragenter", "dragover"].forEach((ev) => drop.addEventListener(ev, (e) => {
-        e.preventDefault(); drop.classList.add("dragover");
+      // One grid: the plates you have, then a tile to add another. The old
+      // version put a full-width "Drop an image here, or tap to choose one"
+      // sentence under every block, which read as instructions rather than a
+      // place to put a picture.
+      const grid = document.createElement("div");
+      grid.className = "we-plates";
+      plateThumbs(block.id).forEach((pl) => {
+        const cell = document.createElement("figure");
+        cell.className = "we-plate";
+        const img = document.createElement("img");
+        img.src = pl.url; img.alt = pl.label || "Reference image";
+        img.loading = "lazy";
+        const rm = document.createElement("button");
+        rm.type = "button"; rm.className = "we-plate-remove";
+        rm.innerHTML = "&#10005;";
+        rm.title = "Remove this reference";
+        rm.addEventListener("click", () => deletePlate(pl.id));
+        cell.appendChild(img); cell.appendChild(rm);
+        grid.appendChild(cell);
+      });
+
+      const add = document.createElement("button");
+      add.type = "button";
+      add.className = "we-plate-add";
+      add.innerHTML = '<span class="we-plate-add-mark" aria-hidden="true">+</span>' +
+                      '<span class="we-plate-add-text">Add reference</span>';
+      add.title = "Choose an image, or drop one here";
+      add.addEventListener("click", () => file.click());
+      ["dragenter", "dragover"].forEach((ev) => grid.addEventListener(ev, (e) => {
+        e.preventDefault(); grid.classList.add("dragover");
       }));
-      ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, (e) => {
-        e.preventDefault(); drop.classList.remove("dragover");
+      ["dragleave", "drop"].forEach((ev) => grid.addEventListener(ev, (e) => {
+        e.preventDefault(); grid.classList.remove("dragover");
       }));
-      drop.addEventListener("drop", (e) => {
+      grid.addEventListener("drop", (e) => {
         const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
         if (f) uploadPlate(f, slot);
       });
+      grid.appendChild(add);
 
-      holder.appendChild(drop);
+      holder.appendChild(grid);
       holder.appendChild(file);
       return holder;
     }
@@ -4842,20 +4968,19 @@
       if (!rows.length) return null;
 
       const wrap = document.createElement("div");
-      wrap.className = "we-cast-block we-field";
+      wrap.className = "we-block";
       const top = document.createElement("div");
-      top.className = "we-field-top";
+      top.className = "we-block-head";
       const label = document.createElement("span");
-      label.className = "we-field-label";
-      label.textContent = "🛰️ Where else this reaches";
+      label.className = "we-block-label";
+      label.textContent = "Where else this reaches";
       top.appendChild(label);
+      const about = infoBtn("Where else this reaches",
+        "The same sheet, compressed for the surfaces that only get a sentence or " +
+        "two: the live world model, the vision loop that decides what the next " +
+        "frame looks like, camp, and anyone you talk to.");
+      if (about) top.appendChild(about);
       wrap.appendChild(top);
-
-      const desc = document.createElement("div");
-      desc.className = "we-field-desc";
-      desc.textContent =
-        "The same sheet, compressed for the surfaces that only get a sentence or two.";
-      wrap.appendChild(desc);
 
       rows.forEach(([name, text]) => {
         wrap.appendChild(castLabel(name));
@@ -4967,7 +5092,7 @@
         const li = document.createElement("li");
         li.className = "we-world";
         const info = document.createElement("div");
-        info.className = "we-world-info";
+        info.className = "we-world-main";
         const nm = document.createElement("div");
         nm.className = "we-world-name"; nm.textContent = w.name || w.slug;
         const meta = document.createElement("div");
@@ -4975,17 +5100,17 @@
         meta.textContent = (w.field_count || 0) + " prompts" + (w.note ? " · " + w.note : "");
         info.appendChild(nm); info.appendChild(meta);
         const actions = document.createElement("div");
-        actions.className = "we-world-actions";
+        actions.className = "we-world-acts";
         const load = document.createElement("button");
-        load.className = "we-btn we-btn-sm we-btn-primary"; load.type = "button"; load.textContent = "Load";
+        load.className = "we-btn we-btn-primary"; load.type = "button"; load.textContent = "Load";
         load.title = "Apply this world's prompts (live, next turn)";
         load.addEventListener("click", () => loadWorld(w.slug, false));
         const play = document.createElement("button");
-        play.className = "we-btn we-btn-sm we-btn-accent"; play.type = "button"; play.textContent = "Play";
+        play.className = "we-btn we-btn-accent"; play.type = "button"; play.textContent = "Play";
         play.title = "Load this world and start a fresh run";
         play.addEventListener("click", () => loadWorld(w.slug, true));
         const del = document.createElement("button");
-        del.className = "we-btn we-btn-sm we-btn-ghost"; del.type = "button"; del.textContent = "✕";
+        del.className = "we-btn we-btn-ghost"; del.type = "button"; del.textContent = "✕";
         del.title = "Delete this world";
         del.addEventListener("click", () => deleteWorld(w.slug, w.name));
         actions.appendChild(load); actions.appendChild(play); actions.appendChild(del);
@@ -5062,6 +5187,7 @@
     }
     function close() {
       if (!open_) return;
+      closePop();
       open_ = false;
       document.body.classList.remove("world-editor-on");
       if (el.btnEditor) el.btnEditor.classList.remove("active");
@@ -5074,6 +5200,14 @@
     function isOpen() { return open_; }
 
     function init() {
+      // Any click that isn't the popover or its own ⓘ dismisses it.
+      if (el.worldEditor) {
+        el.worldEditor.addEventListener("click", (e) => {
+          if (!popOwner) return;
+          if (e.target.closest(".we-pop") || e.target.closest(".we-info")) return;
+          closePop();
+        });
+      }
       if (el.weClose) el.weClose.addEventListener("click", close);
       if (el.weApply) el.weApply.addEventListener("click", applyLive);
       if (el.weRestart) el.weRestart.addEventListener("click", saveAndRestart);
@@ -5258,19 +5392,31 @@
     // actually moved the mouse, always winds down on its own, and jitter (which
     // nets ~zero and drains away) can never hold the camera.
     const MOUSE_SUBTLE = {
-      sensitivity: 3.0,    // mouse px -> queued turn px (tunable in the editor)
-      holdPx: 12,          // queued turn under this = camera at rest
-      drainPxPerMs: 0.4,   // bleed-off rate
-      // The ceiling is expressed in TIME, not pixels: however sensitive the
-      // mouse is, one wild flick can never buy more than this much rotation.
-      // Raising sensitivity therefore reaches a given turn SOONER rather than
-      // spinning for longer — which is what "more sensitive" should mean.
-      maxHoldMs: 600,
-      maxIntensity: 0.5,   // caps the turn-rate contribution (subtle)
+      sensitivity: 8.0,    // mouse px -> queued turn px (tunable in the editor)
+      // Both of these scale WITH sensitivity, and they have to. At 8x a 1px hand
+      // tremor deposits 8px per event; against the old 0.4px/ms drain that was
+      // enough to sustain a turn indefinitely, which is the exact bug the budget
+      // model was built to kill. Draining faster keeps tremor inert (it deposits
+      // ~0 net and bleeds off) while a deliberate sweep still outruns it.
+      holdPx: 40,          // queued turn under this = camera at rest
+      drainPxPerMs: 2.0,   // bleed-off rate
+      // On Happy Oyster the turn RATE is the model's, not ours — there's no
+      // rotation-speed knob — so the only thing sensitivity can buy is how LONG
+      // the look is held. A 600ms ceiling therefore capped how far you could
+      // ever turn in one sweep, which is what made it feel dead no matter what
+      // the slider said. The ceiling exists to stop a flick spinning forever,
+      // and the budget model already handles that: motion deposits, stillness
+      // drains, reversing cancels. So it can be generous.
+      // Sized as MOMENTUM, not a spin: a long sweep keeps turning for up to this
+      // long after your hand stops, which is what buys extra turn on a model
+      // whose rate we can't change. 2600 felt like the camera had opinions of
+      // its own; a flick still only earns a fraction of it.
+      maxHoldMs: 1400,
+      maxIntensity: 1.0,   // full turn-rate range on models that have the knob
       invertY: false,
     };
     const SENS_KEY = "input_look_sens";
-    const SENS_MIN = 0.5, SENS_MAX = 12;
+    const SENS_MIN = 1, SENS_MAX = 30;
     let sensitivity = MOUSE_SUBTLE.sensitivity;
     const PROFILES = {
       // Doom: the tank-style scheme — A/D swing the view, no mouse capture.
@@ -5399,7 +5545,7 @@
       "[role='button'], [role='dialog'], [contenteditable='true'], " +
       "#move-pad, #verb-bar, #control-rail, #menu-toggle, #rt-log, #story-log, " +
       "#img-model, #agent-log, #world-editor, #we-modal, #talk-overlay, " +
-      "#touch-layer, #scan-layer, #action-wheel, #objectives-hud, #evidence-hud, " +
+      "#touch-layer, #scan-layer, #action-wheel, #objectives-hud, #shot-tally, " +
       "#investigations-tray, #case-overlay, #ceremony, #processing-veil, " +
       "#scan-tutorial, #narrator-bar, #guide-thumb, #capture-thumb, " +
       "#moment-overlay, .renderer-toast, #tape-overlay";
@@ -5782,13 +5928,11 @@
     // it's easy to aim and never disorients — well under the model default of 5.
     const ROT_MIN = 1.875;           // deg/latent-frame at a gentle push (2.5x the prior 0.75)
     const ROT_MAX = 5;               // deg/latent-frame at a full push (2.5x the prior 2; 0..30 allowed)
-    // Mouse look uses a gentler band — latent lag punishes fast turns.
-    const MOUSE_ROT_MIN = 1.0;
-    const MOUSE_ROT_MAX = 2.75;
-    // Full H+V cycle when interleaving a diagonal on a one-look-axis model. Long
-    // enough that each slice actually moves the latent picture, short enough to
-    // read as one diagonal sweep rather than two separate turns.
-    const DIAGONAL_CYCLE_MS = 320;
+    // Mouse look on models WITH a turn-rate knob (LingBot). This used to top out
+    // at 2.75 deg/frame while a keyboard tap got 5, so the mouse was capped
+    // slower than the keys it replaced.
+    const MOUSE_ROT_MIN = 1.5;
+    const MOUSE_ROT_MAX = 6.0;
     const KEY_INTENSITY = 0.5;       // fixed push level for keyboard turning (no analog)
     const FALLBACK_SEND_MS = 950;    // prompt-fallback (non-native-nav) re-steer cadence
 
@@ -5801,6 +5945,9 @@
     let pointerActive = false;
     let pointerId = null;
     const keys = new Set();          // held drive tokens
+    // Press order, newest last. On a model with a single move slot, "what did
+    // you just ask for" is the only answer that keeps the camera travelling.
+    const keyOrder = [];
     let engaged = false;
     let rampStart = 0;
     let loopTimer = null;
@@ -5839,13 +5986,6 @@
         return !!(window.ReactorRenderer.movesOneAxisAtATime &&
                   window.ReactorRenderer.movesOneAxisAtATime());
       } catch (_) { return false; }
-    }
-    // Which half of the interleave cycle we're in. `hShare` (0..1) is horizontal's
-    // slice of the cycle, so a mostly-sideways sweep spends most of it turning.
-    function diagonalPhase(hShare, offsetMs) {
-      const share = Math.min(0.85, Math.max(0.15, hShare)); // always give V a turn
-      const t = (Date.now() + (offsetMs || 0)) % DIAGONAL_CYCLE_MS;
-      return (t / DIAGONAL_CYCLE_MS) < share;
     }
 
     // Compose the desired DRIVE state from keyboard + stick + mouse-look.
@@ -5888,9 +6028,12 @@
           lv = ml.lookV || "idle";
           mouseIntensity = ml.intensity || 0;
           fromMouse = lh !== "idle" || lv !== "idle";
+          // Same single-slot trap as movement: alternating Mouse_Left and
+          // Mouse_Up restarts the rotation every slice, so a diagonal sweep
+          // turned far LESS than a straight one. Commit to the axis the mouse
+          // actually travelled further on.
           if (lh !== "idle" && lv !== "idle" && oneLookAxisOnly()) {
-            const hShare = (ml.hMag || 0) / ((ml.hMag || 0) + (ml.vMag || 0) || 1);
-            if (diagonalPhase(hShare)) lv = "idle";
+            if ((ml.hMag || 0) >= (ml.vMag || 0)) lv = "idle";
             else lh = "idle";
           }
         }
@@ -5909,13 +6052,25 @@
       // What the player is ASKING for, before any per-model slicing. The readout
       // and the joystick show this, so the HUD never flickers mid-interleave.
       const raw = { longitudinal: lon, lateral: lat, lookH: lh, lookV: lv };
-      // Forward + strafe (W+A) on a model that holds only ONE move direction:
-      // interleave them, or the renderer picks longitudinal and the strafe is
-      // silently dropped. Offset half a cycle from the look interleave so the
-      // move and look slices don't stall in lockstep.
+      // Forward + strafe (W+A) on a model that holds only ONE move direction.
+      // Alternating the two in time slices seemed like a way to fake a diagonal,
+      // and it is not: every switch REPLACES the held direction, so the camera
+      // spent 2 seconds restarting (Front, Left, Front, Left...) and travelled
+      // nowhere. Since holding W+A is ordinary FPS movement, that read as A/D
+      // being dead. One slot means one direction, so the newest press wins —
+      // you always move, in the direction you just asked for, and letting go of
+      // the strafe hands the slot straight back to forward.
       if (lon !== "idle" && lat !== "idle" && oneMoveAxisOnly()) {
-        if (diagonalPhase(0.5, DIAGONAL_CYCLE_MS / 2)) lat = "idle";
-        else lon = "idle";
+        const LAT = ["strafeL", "strafeR"];
+        let newestLat = -1, newestLon = -1;
+        for (let i = 0; i < keyOrder.length; i++) {
+          if (LAT.indexOf(keyOrder[i]) !== -1) newestLat = i;
+          else if (keyOrder[i] === "fwd" || keyOrder[i] === "back") newestLon = i;
+        }
+        // Stick pushes have no press order; treat them as the older intent so a
+        // deliberate key press always wins the slot.
+        if (newestLat > newestLon) lon = "idle";
+        else lat = "idle";
       }
       return { longitudinal: lon, lateral: lat, lookH: lh, lookV: lv, rot: rot, raw: raw };
     }
@@ -6068,6 +6223,7 @@
       pointerActive = false;
       pointerId = null;
       keys.clear();
+      keyOrder.length = 0;
       vec.x = 0; vec.y = 0; mag = 0;
       stopLoop();
       if (el.movePad) el.movePad.classList.remove("engaged");
@@ -6134,6 +6290,7 @@
       if (!enabled() || !tok) return false;
       if (!keys.has(tok)) {
         keys.add(tok);
+        keyOrder.push(tok);
         engage();
         tick();
       }
@@ -6142,12 +6299,15 @@
     function releaseKey(tok) {
       if (!tok || !keys.has(tok)) return;
       keys.delete(tok);
+      const at = keyOrder.indexOf(tok);
+      if (at !== -1) keyOrder.splice(at, 1);
       if (!anyDriver()) disengage();
       else tick();
     }
     function releaseAll() {
       try { MouseLook.releaseLock(); } catch (_) {}
       keys.clear();
+      keyOrder.length = 0;
       if (engaged) disengage();
     }
 
@@ -7633,25 +7793,12 @@
       try { localStorage.setItem(KEY, JSON.stringify({ total, shots, film, seen: [...seen], spent: [...spent] })); } catch (_) {}
     }
 
-    // Paint the FILM counter (exposures remaining) + flag low / empty.
-    function renderFilm() {
-      if (!el.evidenceHud) return;
-      const v = el.evidenceHud.querySelector(".ev-film-val");
-      const cap = el.evidenceHud.querySelector(".ev-film-cap");
-      const wrap = el.evidenceHud.querySelector(".ev-film");
-      if (v) v.textContent = String(Math.max(0, film));
-      if (cap) cap.textContent = "/" + FILM_START;
-      if (wrap) {
-        wrap.classList.toggle("low", film <= 8 && film > 0);
-        wrap.classList.toggle("out", film <= 0);
-      }
-    }
-
     function fmt(n) { return Math.round(n).toLocaleString("en-US"); }
 
-    // Photographer's grade from the evidence banked (shown live + on the win
-    // screen). Thresholds scale with the (larger) census so an S still means a
-    // genuinely thorough, well-shot case rather than an automatic clear.
+    // Photographer's grade from the evidence banked. Still tracked every shot —
+    // it's what grades the run on the case-closed screen — but no longer painted
+    // live: a rank you can't act on mid-run is decoration, and it was sitting in
+    // the corner of every frame competing with the world.
     function rankFor(t) {
       if (t >= 4800) return "S";
       if (t >= 3400) return "A";
@@ -7660,55 +7807,16 @@
       return "D";
     }
 
-    // Paint the RANK badge + the CASE FILE census bar.
-    function renderCase() {
-      if (!el.evidenceHud) return;
-      const rankEl = el.evidenceHud.querySelector(".ev-rank");
-      if (rankEl) {
-        const r = rankFor(total);
-        rankEl.textContent = "RANK " + r;
-        rankEl.className = "ev-rank rank-" + r;
-      }
-      const count = Math.min(seen.size, CASE_TARGET);
-      const fill = el.evidenceHud.querySelector(".ev-bar-fill");
-      if (fill) fill.style.width = Math.round((count / CASE_TARGET) * 100) + "%";
-      const countEl = el.evidenceHud.querySelector(".ev-case-count");
-      if (countEl) countEl.textContent = seen.size + "/" + CASE_TARGET;
-      el.evidenceHud.classList.toggle("case-complete", seen.size >= CASE_TARGET);
-    }
-
-    // Roll the HUD number from its current display value up to `total`, ticking
-    // as it climbs — so points visibly accrue rather than snapping.
-    function renderHud(animate) {
-      if (!el.evidenceHud) return;
-      el.evidenceHud.classList.remove("hidden");
-      renderCase();
-      const totalEl = el.evidenceHud.querySelector(".ev-total");
-      if (!totalEl) return;
-      const from = Number(totalEl.getAttribute("data-val")) || 0;
-      const to = total;
-      totalEl.setAttribute("data-val", String(to));
-      if (!animate || from === to || prefersReducedMotion()) {
-        totalEl.textContent = fmt(to);
-        return;
-      }
-      el.evidenceHud.classList.remove("bump");
-      void el.evidenceHud.offsetWidth;
-      el.evidenceHud.classList.add("bump");
-      const t0 = performance.now();
-      // Snappy roll — a quick, satisfying spin-up rather than a long casino tick.
-      const dur = Math.min(360, 120 + Math.abs(to - from) * 0.5);
-      let lastTick = 0;
-      function step(now) {
-        const p = Math.min(1, (now - t0) / dur);
-        const eased = 1 - Math.pow(1 - p, 3);
-        const v = from + (to - from) * eased;
-        totalEl.textContent = fmt(v);
-        if (now - lastTick > 70) { try { Sound.scoreTick(); } catch (_) {} lastTick = now; }
-        if (p < 1) requestAnimationFrame(step);
-        else totalEl.textContent = fmt(to);
-      }
-      requestAnimationFrame(step);
+    // The ONLY ambient readout: how many keepers you have, and how many close
+    // the case. Replaces a score, a rank badge, a progress bar and a film gauge.
+    function renderTally() {
+      if (!el.shotTally) return;
+      if (el.tallyCount) el.tallyCount.textContent = seen.size + "/" + CASE_TARGET;
+      el.shotTally.classList.toggle("case-complete", seen.size >= CASE_TARGET);
+      // Film only speaks up when it's actually a problem. A gauge that reads
+      // 36/36 for most of a run is telling you nothing.
+      el.shotTally.classList.toggle("film-low", film <= 8 && film > 0);
+      el.shotTally.classList.toggle("film-out", film <= 0);
     }
 
     return {
@@ -7727,31 +7835,28 @@
       filmCap: () => FILM_START,
       hasFilm: () => film > 0,
       addShot: () => {
-        shots += 1; film = Math.max(0, film - 1); persist(); renderFilm();
+        shots += 1; film = Math.max(0, film - 1); persist(); renderTally();
         if (film === 8) { try { showRendererToast("8 exposures left \u2014 make them count.", 3000); } catch (_) {} }
         else if (film === 0) { try { showRendererToast("That was your last frame.", 3000); } catch (_) {} }
       },
-      add(points) { total = Math.max(0, total + (Number(points) || 0)); persist(); renderHud(true); },
-      // Flash the HUD when a brand-new subject joins the case file.
+      add(points) { total = Math.max(0, total + (Number(points) || 0)); persist(); renderTally(); },
+      // A new keeper joined the file — one small pulse on the tally.
       pulseSubject() {
-        if (!el.evidenceHud) return;
-        el.evidenceHud.classList.remove("subject");
-        void el.evidenceHud.offsetWidth;
-        el.evidenceHud.classList.add("subject");
+        if (!el.shotTally) return;
+        el.shotTally.classList.remove("subject");
+        void el.shotTally.offsetWidth;
+        el.shotTally.classList.add("subject");
       },
-      // Show the dossier HUD even before the first point (so the goal is known).
-      reveal() { if (el.evidenceHud) { el.evidenceHud.classList.remove("hidden"); renderCase(); renderFilm(); } },
-      renderHud,
-      renderFilm,
+      // Show the tally as soon as the goal is knowable.
+      reveal() { if (el.shotTally) { el.shotTally.classList.remove("hidden"); renderTally(); } },
+      renderHud: renderTally,
+      renderFilm: renderTally,
       reset() {
         total = 0; shots = 0; film = FILM_START; seen = new Set(); spent = new Set(); persist();
-        if (el.evidenceHud) {
-          el.evidenceHud.classList.add("hidden");
-          el.evidenceHud.classList.remove("case-complete");
-          const t = el.evidenceHud.querySelector(".ev-total");
-          if (t) { t.textContent = "0"; t.setAttribute("data-val", "0"); }
-          renderCase();
-          renderFilm();
+        if (el.shotTally) {
+          el.shotTally.classList.add("hidden");
+          el.shotTally.classList.remove("case-complete", "film-low", "film-out");
+          renderTally();
         }
       },
     };
@@ -7781,7 +7886,7 @@
   // ------------------------------------------------------------------
   const Objectives = (function () {
     const KEY = "objectives_v1";
-    const COLLAPSE_KEY = "objectives_collapsed";
+    const OPEN_KEY = "objectives_open";
     const MAX_FIELD = 3;             // simultaneous field bounties (avoid clutter)
     const STALE_MISSES = 4;          // detection passes a subject can be absent before its bounty retires
     const ARCHIVE_MS = 4600;         // how long a completed side-goal lingers before filing away
@@ -7799,16 +7904,16 @@
     let nodes = new Map();           // id -> <li>
     let seq = 0;                     // creation order tiebreak
     let revealed = false;
-    let collapsed = false;
+    let open_ = false;
     let bannerTimer = null;
     const archiveTimers = new Map(); // id -> timeout
 
-    try { collapsed = localStorage.getItem(COLLAPSE_KEY) === "1"; } catch (_) {}
+    try { open_ = localStorage.getItem(OPEN_KEY) === "1"; } catch (_) {}
 
     function persist() {
       try {
         localStorage.setItem(KEY, JSON.stringify({ items }));
-        localStorage.setItem(COLLAPSE_KEY, collapsed ? "1" : "0");
+        localStorage.setItem(OPEN_KEY, open_ ? "1" : "0");
       } catch (_) {}
     }
 
@@ -7820,23 +7925,13 @@
     }
 
     // ---- Cinematic banner ("NEW OBJECTIVE" / "OBJECTIVE COMPLETE") ----
-    function banner(kicker, title, cls) {
-      const b = el.objBanner;
-      if (!b) return;
-      if (prefersReducedMotion()) return; // the tracker itself is enough motion
-      clearTimeout(bannerTimer);
-      const k = b.querySelector(".obj-banner-kicker");
-      const t = b.querySelector(".obj-banner-title");
-      if (k) k.textContent = kicker || "";
-      if (t) t.textContent = title || "";
-      b.className = "obj-banner" + (cls ? " " + cls : "");
-      b.classList.remove("hidden");
-      void b.offsetWidth;
-      b.classList.add("show");
-      bannerTimer = setTimeout(() => { b.classList.add("hidden"); b.classList.remove("show"); }, 2700);
-    }
+    // The cinematic "NEW OBJECTIVE" / "BOUNTY SECURED" / "CHALLENGE COMPLETE"
+    // banner is gone. A sweeping title card every time the world noticed an
+    // object is what made a quiet documentary game feel like a slot machine;
+    // objective changes are recorded in the story log instead, where you can
+    // read them if you care and ignore them if you don't.
+    function banner() {}
 
-    // ---- DOM ----
     function makeNode(o) {
       const li = document.createElement("li");
       li.className = "obj-item kind-" + o.kind;
@@ -7932,20 +8027,33 @@
       });
       if (el.objCount) {
         const done = items.filter((o) => o.status === "complete").length;
-        el.objCount.textContent = done + "/" + items.length;
+        el.objCount.textContent = done ? done + " done" : "";
       }
     }
 
+    // "Revealed" now means the case EXISTS and the tally can show, not that a
+    // panel is open over the scene. The sheet itself only appears when asked for
+    // (O / the CASE rail button), so being told your goal costs one line.
     function reveal() {
-      if (!el.objectivesHud) return;
-      el.objectivesHud.classList.remove("hidden");
-      el.objectivesHud.classList.toggle("collapsed", collapsed);
-      if (!revealed && !prefersReducedMotion()) {
-        el.objectivesHud.classList.remove("obj-in"); void el.objectivesHud.offsetWidth;
-        el.objectivesHud.classList.add("obj-in");
-      }
       revealed = true;
-      render();
+      try { Evidence.reveal(); } catch (_) {}
+      if (!open_) render();
+      syncRailButton();
+    }
+
+    // Open / close the case sheet.
+    function setOpen(next) {
+      open_ = !!next;
+      if (!el.objectivesHud) return;
+      el.objectivesHud.classList.toggle("hidden", !open_);
+      if (open_) {
+        render();
+        if (!prefersReducedMotion()) {
+          el.objectivesHud.classList.remove("obj-in"); void el.objectivesHud.offsetWidth;
+          el.objectivesHud.classList.add("obj-in");
+        }
+      }
+      persist();
       syncRailButton();
     }
 
@@ -7956,7 +8064,7 @@
     }
 
     function syncRailButton() {
-      if (el.btnObjectives) el.btnObjectives.classList.toggle("active", revealed && !collapsed);
+      if (el.btnObjectives) el.btnObjectives.classList.toggle("active", open_);
     }
 
     // Mirror an objective moment into the STORY LOG (the run chronicle), so the
@@ -8028,7 +8136,7 @@
         try { Sound.newSubject(); } catch (_) {}
         try { Haptics.select(); } catch (_) {}
         const cls = o.kind === "bonus" ? "bonus" : "complete";
-        const KICKER = { field: "Bounty Secured", bonus: "Challenge Complete", lead: "Lead Closed", primary: "Case File Complete" };
+        const KICKER = { field: "Photographed", bonus: "Done", lead: "Lead closed", primary: "Case closed" };
         banner(KICKER[o.kind] || "Objective Complete", o.title, cls);
         logBeat("objective_done", "\u2713", o.title);
       }
@@ -8070,13 +8178,8 @@
 
     // ---- Collapse / toggle (O key + GOALS rail button) ----
     function toggleCollapsed() {
-      if (!revealed) { collapsed = false; reveal(); return; }
-      collapsed = !collapsed;
-      el.objectivesHud.classList.toggle("collapsed", collapsed);
-      if (el.objCollapse) el.objCollapse.setAttribute("aria-expanded", String(!collapsed));
-      persist();
-      syncRailButton();
-      try { Sound.toggle(); } catch (_) {}
+      if (!revealed) reveal();
+      setOpen(!open_);
     }
 
     // ---- Generative LEAD (the evolving directive) ----
@@ -8107,8 +8210,8 @@
       if (!has("case")) {
         add({
           id: "case", kind: "primary",
-          title: "Close the case",
-          detail: "Document " + goal + " distinct subjects",
+          title: "Take " + goal + " good photographs",
+          detail: "Each has to be something new \u2014 the same subject twice only counts once",
           count, goal, quiet: true,
         });
       } else {
@@ -8132,7 +8235,7 @@
       if (window.Evidence && Evidence.isSpent && Evidence.isSpent(l)) return; // already documented
       if (window.Evidence && Evidence.isNew && !Evidence.isNew(l)) return;    // already on file
       if (activeFieldCount() >= MAX_FIELD) return;           // keep the board tidy
-      add({ id, kind: "field", title: fieldTitle(l, label), detail: "Photograph it for the case file" });
+      add({ id, kind: "field", title: fieldTitle(l, label), detail: "" });
     }
 
     // A little procedural variety in the phrasing so the board doesn't read as
@@ -8189,7 +8292,7 @@
         return "targeted";
       }
       if (activeFieldCount() >= MAX_FIELD) evictOldestField(id);
-      add({ id, kind: "field", title: fieldTitle(l, label), detail: "Photograph it for the case file" });
+      add({ id, kind: "field", title: fieldTitle(l, label), detail: "" });
       pulseHud();
       return "targeted";
     }
@@ -8254,12 +8357,12 @@
       syncCase();
       // Seed the LEAD so the board reads complete the instant it's revealed;
       // refreshDirective() upgrades it with a world-grounded directive shortly.
-      add({ id: LEAD_ID, kind: "lead", title: "Survey the area",
-            detail: "Read the scene and find your first subject.", quiet: true });
-      add({ id: "bonus:rare", kind: "bonus", title: "Secure a rare specimen",
-            detail: "Photograph a \u2605\u2605\u2605\u2605\u2605 subject", quiet: true });
-      add({ id: "bonus:perfect", kind: "bonus", title: "Land a perfect shot",
-            detail: "Nail PERFECT focus on any subject", quiet: true });
+      add({ id: LEAD_ID, kind: "lead", title: "Look around",
+            detail: "Find something worth photographing.", quiet: true });
+      add({ id: "bonus:rare", kind: "bonus", title: "Photograph something rare",
+            detail: "Something you won't get a second chance at", quiet: true });
+      add({ id: "bonus:perfect", kind: "bonus", title: "Get one perfectly sharp",
+            detail: "Centred and in focus", quiet: true });
       persist();
       syncRailButton();
     }
@@ -8285,7 +8388,7 @@
   // ------------------------------------------------------------------
   const LEAD_FALLBACKS = {
     normal: [
-      { t: "Survey the area", d: "Read the scene and find your first subject." },
+      { t: "Look around", d: "Find something worth photographing." },
       { t: "Document what you find", d: "Photograph anything that tells the story." },
       { t: "Press deeper", d: "Follow the scene to whatever it's hiding." },
     ],
@@ -8334,35 +8437,27 @@
   }
 
   // ------------------------------------------------------------------
-  // Photo — the reward loop that ties a capture to feedback + score. On capture
-  // it files the specimen to the CASE FILE (as before), then prints a "receipt"
-  // in the top-right: the shot develops, its contents are named and revealed
-  // one at a time (each with a rising chime + points), and a rating stamp lands.
-  // A newer capture cancels an in-flight reveal so receipts never stack.
+  // Photo — what happens after you press the shutter.
+  //
+  // This used to print a scored receipt: every object in frame itemised with
+  // points, a star rating, NEW / RARE / ON FILE badges, bonus rows for framing
+  // and focus, a running subtotal, and a rubber stamp that graded the shot
+  // SNAPSHOT through SMOKING GUN. All of it landed on top of the one moment in
+  // the game that should feel like looking at a photograph you just took.
+  //
+  // Now the picture holds full-screen on its own (see presentCapture), and when
+  // it fades we say one line: what you kept. The scoring still happens — it's
+  // what ranks the run at the end — it just stops narrating itself shot by shot.
   // ------------------------------------------------------------------
   const Photo = (function () {
-    const STAGGER_MS = 130;       // gap between item reveals — snappy rising combo
-    const HOLD_MS = 1900;         // how long the finished receipt lingers
+    const HOLD_MS = 2100;         // how long the "filed" line lingers
     const BASE_PER_INTEREST = 40; // points per interest point (1..5)
     const NOVELTY_BONUS = 60;     // first time a subject is photographed this run
     const RARE_BONUS = 80;        // a striking 5-star "rare find" premium
-    const CONSOLATION = 10;       // an "undeveloped" shot still pays a little
+    const CONSOLATION = 10;       // an unreadable shot still pays a little
     // FOCUS grade → payout multiplier. A crisp, centered frame is worth far more
-    // than a soft one — this is where the shooting skill turns into score.
+    // than a soft one; this is still where shooting skill turns into rank.
     const FOCUS_MULT = { PERFECT: 1.6, SHARP: 1.15, SOFT: 0.6 };
-
-    const TIERS = [
-      { min: 0,   tier: 0, label: "UNDEVELOPED" },
-      { min: 1,   tier: 1, label: "SNAPSHOT" },
-      { min: 150, tier: 2, label: "EVIDENCE" },
-      { min: 350, tier: 3, label: "KEY EVIDENCE" },
-      { min: 600, tier: 4, label: "SMOKING GUN" },
-    ];
-    function ratingFor(shotTotal) {
-      let r = TIERS[0];
-      for (const t of TIERS) if (shotTotal >= t.min) r = t;
-      return r;
-    }
 
     function clearTimers() {
       state.receiptTimers.forEach((t) => clearTimeout(t));
@@ -8371,30 +8466,17 @@
     function later(fn, ms) { const t = setTimeout(fn, ms); state.receiptTimers.push(t); return t; }
 
     function els() {
-      const r = el.photoReceipt;
+      const r = el.photoFiled;
       if (!r) return null;
-      return {
-        root: r,
-        photo: r.querySelector(".receipt-photo"),
-        status: r.querySelector(".receipt-status"),
-        caption: r.querySelector(".receipt-caption"),
-        items: r.querySelector(".receipt-items"),
-        subtotal: r.querySelector(".receipt-subtotal"),
-        subVal: r.querySelector(".receipt-subtotal .rs-val"),
-        stamp: r.querySelector(".receipt-stamp"),
-      };
+      return { root: r, text: r.querySelector(".filed-text") };
     }
 
     function hide() {
-      const r = el.photoReceipt;
+      const r = el.photoFiled;
       if (!r) return;
       clearTimers();
-      r.classList.add("leaving");
       r.classList.remove("show");
-      later(() => {
-        r.classList.add("hidden");
-        r.classList.remove("leaving", "developing", "tallied");
-      }, 320);
+      later(() => r.classList.add("hidden"), 320);
     }
 
     // Entry point from the two capture paths.
@@ -8402,12 +8484,9 @@
     function capture(spec) {
       if (!spec || !spec.texture) return;
       // OUT OF FILM: exposures are a finite resource. When the roll is spent you
-      // can't shoot — a hard stop that makes every earlier shot a real decision
-      // and turns "close the case before you run out" into genuine pressure.
+      // can't shoot — a hard stop that makes every earlier shot a real decision.
       if (window.Evidence && Evidence.hasFilm && !Evidence.hasFilm()) {
         try { Sound.miss && Sound.miss(); } catch (_) {}
-        // Accurate copy: the case only closes at the full census, so if you're
-        // out of film you can't finish THIS roll — press R for a fresh case.
         const closed = (window.Evidence && Evidence.uniqueCount && Evidence.target)
           ? Evidence.uniqueCount() >= Evidence.target() : false;
         try {
@@ -8417,229 +8496,114 @@
         } catch (_) {}
         return;
       }
-      // File the specimen exactly as before (case file + server mirror).
       try { Investigations.store(spec); } catch (_) {}
-      reveal(spec.texture, { zoom: spec.zoom || 1, focus: spec.focus, grade: spec.focusGrade, subject: spec.subject });
+      appraise(spec.texture, {
+        zoom: spec.zoom || 1, focus: spec.focus,
+        grade: spec.focusGrade, subject: spec.subject,
+      });
     }
 
-    function reveal(texture, shot) {
+    // Score the shot silently, then say one line about it. No UI opens until the
+    // answer is back, so nothing competes with the photo while it's on screen.
+    function appraise(texture, shot) {
       shot = shot || {};
-      const parts = els();
-      if (!parts) return;
-      const token = ++state.receiptToken; // invalidate any older reveal
+      const token = ++state.receiptToken; // invalidate any older appraisal
       clearTimers();
-
-      // Reset + open the receipt in its "developing" state.
-      parts.items.innerHTML = "";
-      parts.caption.textContent = "";
-      parts.stamp.textContent = "";
-      parts.stamp.className = "receipt-stamp";
-      if (parts.subVal) parts.subVal.textContent = "+0";
-      parts.status.textContent = "DEVELOPING\u2026";
-      if (parts.photo && texture) parts.photo.style.backgroundImage = `url('${texture}')`;
-      parts.root.classList.remove("hidden", "leaving", "tallied");
-      parts.root.classList.add("developing");
-      void parts.root.offsetWidth;
-      parts.root.classList.add("show");
-      try { Sound.receiptOpen(); } catch (_) {}
-
       postJSON("/api/photo", { frame: texture })
-        .then((res) => { if (token === state.receiptToken) printReceipt(token, res || {}, shot); })
+        .then((res) => { if (token === state.receiptToken) settle(token, res || {}, shot); })
         .catch((err) => {
           console.warn("[standalone] photo appraise failed:", err);
-          if (token === state.receiptToken) printReceipt(token, { items: [] }, shot); });
+          if (token === state.receiptToken) settle(token, { items: [] }, shot);
+        });
     }
 
-    function printReceipt(token, appraisal, shot) {
+    // One line, and the scoring behind it.
+    function settle(token, appraisal, shot) {
       shot = shot || {};
-      const zoom = shot.zoom || 1;
-      const grade = shot.grade || null;
-      const subject = shot.subject || null;
-      const parts = els();
-      if (!parts || token !== state.receiptToken) return;
-      parts.root.classList.remove("developing");
+      if (token !== state.receiptToken) return;
       const items = Array.isArray(appraisal.items) ? appraisal.items : [];
+      const subject = shot.subject || null;
       Evidence.addShot();
 
       if (!items.length) {
-        // Nothing legible — a gentle consolation so it never feels punishing.
-        // The POI is NOT spent here: an empty exposure never burns a subject, so
-        // you can line the shot up again.
-        parts.status.textContent = "NO CLEAR EVIDENCE";
-        if (appraisal.caption) parts.caption.textContent = appraisal.caption;
-        Evidence.add(CONSOLATION);   // a small pity payout so it never feels punishing
-        finishStamp(token, 0);       // ...but the shot itself rates UNDEVELOPED
-        scheduleDismiss(token);
+        // Nothing legible. The POI is NOT spent, so you can line the shot up
+        // again — and the copy says that rather than grading you for it.
+        Evidence.add(CONSOLATION);
+        say("Nothing came out \u2014 try again, closer.", { faint: true });
         return;
       }
 
-      // The shot developed real evidence — NOW the POI is documented (spent), so
-      // the credit (below) and the document-once lockout stay in lockstep. A
-      // cancelled receipt returns above before this runs, so a superseded shot
-      // never spends its subject.
+      // Real evidence developed, so NOW the subject counts as documented — the
+      // credit and the document-once lockout stay in lockstep.
       if (subject) {
         Evidence.spend(subject);
-        // The framed subject IS what the FIELD bounties are keyed on — complete
-        // its objective the instant it's documented (reliable match).
         try { Objectives.onSubjectDocumented(subject, { rare: false }); } catch (_) {}
-        if (state.touchMode === "aim") layoutPhotoTargets(); // dim its target to a ✓
+        if (state.touchMode === "aim") layoutPhotoTargets(); // dim its target to a check
       }
-
-      parts.status.textContent = "EVIDENCE LOGGED";
-      if (appraisal.caption) parts.caption.textContent = "\u201C" + appraisal.caption + "\u201D";
 
       let shotTotal = 0;
       let newCount = 0;
-      const reduced = prefersReducedMotion();
-      items.forEach((it, i) => {
-        const delay = reduced ? 0 : i * STAGGER_MS;
-        later(() => {
-          if (token !== state.receiptToken) return;
-          const label = String(it.label || "?");
-          const interest = Math.max(1, Math.min(5, Number(it.interest) || 2));
-          const isNew = Evidence.isNew(label);
-          const isRare = interest >= 5;
-          // DOCUMENT ONCE: a subject already in the dossier is worth nothing —
-          // no farming the same evidence. Only NEW finds pay out (novelty; rare
-          // 5-star finds pay a premium). Duplicates still show, flagged ON FILE.
-          let pts = isNew
-            ? interest * BASE_PER_INTEREST + NOVELTY_BONUS + (isRare ? RARE_BONUS : 0)
-            : 0;
-          Evidence.markSeen(label);
-          if (isNew) {
-            newCount += 1;
-            // Any NEW appraised subject can also satisfy a field bounty (by its
-            // own label) and — if striking — the rare-specimen challenge.
-            try { Objectives.onSubjectDocumented(label, { rare: isRare }); } catch (_) {}
-          }
+      const kept = [];
+      items.forEach((it) => {
+        const label = String(it.label || "?");
+        const interest = Math.max(1, Math.min(5, Number(it.interest) || 2));
+        const isNew = Evidence.isNew(label);
+        const isRare = interest >= 5;
+        // DOCUMENT ONCE: a subject already in the dossier is worth nothing, so
+        // there's no farming the same evidence.
+        const pts = isNew
+          ? interest * BASE_PER_INTEREST + NOVELTY_BONUS + (isRare ? RARE_BONUS : 0)
+          : 0;
+        Evidence.markSeen(label);
+        if (isNew) {
+          newCount += 1;
           shotTotal += pts;
-          appendItemRow(parts, { label, interest, note: it.note, pts, isNew, isRare, onFile: !isNew });
-          if (parts.subVal) parts.subVal.textContent = "+" + Math.round(shotTotal);
-          if (isNew) { try { Sound.newSubject(); } catch (_) {} Evidence.pulseSubject(); }
-          else { try { Sound.itemReveal(i); } catch (_) {} }
-          if (pts) Evidence.add(pts); // each new find visibly bumps the TOP score + case bar
-        }, delay);
+          kept.push(label);
+          try { Evidence.pulseSubject(); } catch (_) {}
+          if (isRare) { try { Objectives.complete("bonus:rare"); } catch (_) {} }
+        }
       });
 
-      // After the last item: composition + framing + FOCUS bonuses, then stamp.
-      const afterItems = reduced ? 10 : items.length * STAGGER_MS + 120;
-      later(() => {
-        if (token !== state.receiptToken) return;
-        parts.root.classList.add("tallied");
-        if (!newCount) {
-          // Every subject here was already on file — no points, no farming.
-          parts.status.textContent = "ALREADY ON FILE";
-          if (parts.subVal) parts.subVal.textContent = "+0";
-          finishStamp(token, 0);
-          scheduleDismiss(token);
-          return;
-        }
-        // Busier, well-composed shots earn an escalating combo on top.
-        if (newCount >= 2) {
-          const combo = Math.round(shotTotal * 0.15 * (newCount - 1));
-          shotTotal += combo;
-          appendBonusRow(parts, "composition \u00d7" + newCount, combo);
-          Evidence.add(combo);
-        }
-        // A tight, zoomed-in frame is a "detail shot" — rewards using the zoom.
-        if (zoom && zoom > 1.3) {
-          const framing = Math.round(shotTotal * 0.12 * Math.min(1.5, zoom - 1));
-          if (framing > 0) {
-            shotTotal += framing;
-            appendBonusRow(parts, "tight framing " + zoom.toFixed(1) + "\u00d7", framing);
-            Evidence.add(framing);
-          }
-        }
-        // FOCUS is the skill payoff: a crisp, centered frame pays a premium; a
-        // soft one is docked. (Ungated snapshots have no grade — left neutral.)
-        if (grade && FOCUS_MULT[grade] != null) {
-          const delta = Math.round(shotTotal * (FOCUS_MULT[grade] - 1));
-          if (delta !== 0) {
-            shotTotal += delta;
-            appendBonusRow(parts, grade.toLowerCase() + " focus", delta);
-            Evidence.add(delta);
-          }
-        }
-        if (parts.subVal) parts.subVal.textContent = "+" + Math.round(shotTotal);
-        finishStamp(token, shotTotal);
-        scheduleDismiss(token);
-        // Feed the objective tracker: a PERFECT frame satisfies the skill
-        // challenge, and the case primary follows the dossier census.
-        try { Objectives.onFocusGrade(grade); } catch (_) {}
-        try { Objectives.syncCase(); } catch (_) {}
-        // The win condition: enough distinct subjects closes the case.
-        maybeCloseCase();
-      }, afterItems);
+      // Composition and framing still pay, quietly.
+      if (newCount >= 2) shotTotal += Math.round(shotTotal * 0.15 * (newCount - 1));
+      const zoom = shot.zoom || 1;
+      if (zoom > 1.3) shotTotal += Math.round(shotTotal * 0.12 * Math.min(1.5, zoom - 1));
+      const mult = FOCUS_MULT[shot.grade];
+      if (mult) shotTotal += Math.round(shotTotal * (mult - 1));
+      if (shotTotal > 0) Evidence.add(shotTotal);
+      if (shot.grade) { try { Objectives.onFocusGrade(shot.grade); } catch (_) {} }
+      try { Objectives.syncCase(); } catch (_) {}
+
+      if (!kept.length) {
+        // Everything in frame is already in the file. Say so plainly instead of
+        // stamping ALREADY ON FILE across the picture.
+        say("Already in the file.", { faint: true });
+        return;
+      }
+      // Name what you actually kept — the photograph is the reward, this is the
+      // receipt for it. Two subjects read as a list; more than that would turn
+      // back into the inventory this replaced.
+      const named = kept.length <= 2
+        ? kept.join(" and ")
+        : kept.slice(0, 2).join(", ") + " +" + (kept.length - 2);
+      say("Filed \u2014 " + named);
+      try { maybeCloseCase(); } catch (_) {}
     }
 
-    function appendItemRow(parts, o) {
-      const li = document.createElement("li");
-      li.className = "receipt-item" + (o.onFile ? " on-file" : "");
-      const stars = "\u2605".repeat(o.interest) + "\u2606".repeat(5 - o.interest);
-      const label = document.createElement("span");
-      label.className = "ri-label";
-      label.textContent = o.label;
-      if (o.isNew) {
-        const nw = document.createElement("span");
-        nw.className = "ri-new";
-        nw.textContent = "NEW";
-        label.appendChild(nw);
-      }
-      if (o.isRare) {
-        const rr = document.createElement("span");
-        rr.className = "ri-rare";
-        rr.textContent = "RARE";
-        label.appendChild(rr);
-      }
-      if (o.onFile) {
-        const of = document.createElement("span");
-        of.className = "ri-onfile";
-        of.textContent = "ON FILE";
-        label.appendChild(of);
-      }
-      const pts = document.createElement("span");
-      pts.className = "ri-pts";
-      pts.textContent = o.pts > 0 ? "+" + Math.round(o.pts) : "\u2014";
-      const note = document.createElement("span");
-      note.className = "ri-note";
-      note.innerHTML = `<span class="ri-stars">${stars}</span>` + (o.note ? "  " + escapeHtml(o.note) : "");
-      li.appendChild(label);
-      li.appendChild(pts);
-      li.appendChild(note);
-      parts.items.appendChild(li);
-    }
-
-    function appendBonusRow(parts, labelText, pts) {
-      const li = document.createElement("li");
-      const neg = pts < 0;
-      li.className = "receipt-item receipt-bonus" + (neg ? " penalty" : "");
-      const label = document.createElement("span");
-      label.className = "ri-label";
-      label.textContent = labelText;
-      const p = document.createElement("span");
-      p.className = "ri-pts";
-      p.textContent = (neg ? "\u2212" : "+") + Math.round(Math.abs(pts));
-      li.appendChild(label);
-      li.appendChild(p);
-      parts.items.appendChild(li);
-    }
-
-    function finishStamp(token, shotTotal) {
+    function say(text, opts) {
+      opts = opts || {};
       const parts = els();
-      if (!parts || token !== state.receiptToken) return;
-      const r = ratingFor(shotTotal);
-      parts.stamp.textContent = r.label;
-      parts.stamp.className = "receipt-stamp tier-" + r.tier;
-      void parts.stamp.offsetWidth;
-      parts.stamp.classList.add("stamped");
-      try { Sound.stamp(); } catch (_) {}
+      if (!parts) return;
+      parts.text.textContent = text;
+      parts.root.classList.toggle("faint", !!opts.faint);
+      parts.root.classList.remove("hidden");
+      void parts.root.offsetWidth;
+      parts.root.classList.add("show");
+      try { Sound.receiptOpen(); } catch (_) {}
+      later(() => hide(), HOLD_MS);
     }
 
-    function scheduleDismiss(token) {
-      later(() => { if (token === state.receiptToken) hide(); }, HOLD_MS);
-    }
-
-    return { capture, reveal, hide, clearTimers };
+    return { capture, hide };
   })();
   window.Photo = Photo;
 
@@ -8649,12 +8613,15 @@
   // photographer's RANK. Fires once per run; the player can start a new case
   // or dismiss and keep shooting the same world.
   // ------------------------------------------------------------------
+  // One short line. These used to be full sentences of self-congratulation
+  // ("A flawless dossier. Every subject catalogued, the whole picture
+  // developed.") stacked under four stat readouts.
   const CASE_FLAVORS = {
-    S: "A flawless dossier. Every subject catalogued, the whole picture developed.",
-    A: "A sharp, thorough case. The story's in the details you caught.",
-    B: "A solid file — enough evidence to make the pattern undeniable.",
-    C: "The case holds together. A few more angles and it would sing.",
-    D: "Barely a case, but the shutter never lies. It's on the record now.",
+    S: "Not a frame wasted.",
+    A: "Sharp work. The story's in the details you caught.",
+    B: "Enough here to make the pattern undeniable.",
+    C: "It holds together. A few more angles and it would sing.",
+    D: "Thin, but the shutter never lies.",
   };
 
   // The reward screen is the payoff of COMPLETING THE PRIMARY OBJECTIVE (Close
@@ -12296,25 +12263,11 @@
         el.backendName.textContent = label;
       }
       if (typeof s.image_enabled === "boolean") state.imagesEnabled = s.image_enabled;
-      // HEALTH stakes meter (top-center dossier HUD). Server-authoritative;
-      // the danger vignette loop drains it. Hidden entirely while the damage
-      // system is disabled (health never changes, so a static "100" is just
-      // noise) — it returns automatically when DAMAGE_SYSTEM_ENABLED is on.
-      if (el.evidenceHud) {
-        const hEl = el.evidenceHud.querySelector(".ev-health");
-        if (!DAMAGE_SYSTEM_ENABLED) {
-          if (hEl) hEl.classList.add("hidden");
-        } else if (typeof s.health === "number") {
-          const hv = el.evidenceHud.querySelector(".ev-health-val");
-          const hp = Math.max(0, Math.min(100, Math.round(s.health)));
-          if (hv) hv.textContent = String(hp);
-          if (hEl) {
-            hEl.classList.remove("hidden");
-            hEl.classList.toggle("low", hp <= 50 && hp > 25);
-            hEl.classList.toggle("critical", hp <= 25);
-          }
-        }
-      }
+      // HEALTH has no readout. It used to sit in the dossier HUD next to the
+      // score, which meant carrying that whole panel for a number that never
+      // moves while DAMAGE_SYSTEM_ENABLED is false. When combat returns, health
+      // wants its own surface tied to the danger vignette that actually drains
+      // it — not a digit parked beside the photo tally.
       renderInventory(s.inventory);
       if (el.hudTimeWrap && el.hudTime) {
         if (s.time_of_day) {

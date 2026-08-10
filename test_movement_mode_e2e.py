@@ -297,23 +297,34 @@ class TestMovementMode(unittest.TestCase):
         finally:
             page.close()
 
-    def test_fps_mouse_look_drives_lingbot_axes_gently(self):
-        """The same mouse input drives the legacy LingBot axes, with a turn rate
-        well under the keyboard band (latent video punishes fast turns), and the
-        axis returns to idle on release so the camera actually halts."""
+    def test_fps_mouse_look_drives_lingbot_axes(self):
+        """The same mouse input drives the legacy LingBot axes, and the axis
+        returns to idle on release so the camera actually halts.
+
+        The rate bound here used to be 3.0 -- BELOW the 3.4 a single keyboard tap
+        gets -- so the mouse was capped slower than the keys it replaced, which
+        is a large part of why it felt like nothing was happening. It may now use
+        the model's real range, and is still bounded well under the 30 the API
+        allows."""
         page = self._new_realtime_page(mode="fps")
         try:
             self._boot_live(page, model="lingbot-world-2")
             self._reset_cmd_log(page)
-            self._look_drag(page, dx=240, start=(400, 360))
+            # A decisive sweep: the rate tracks how much turn is QUEUED, so a
+            # short flick legitimately reads low. Give the drive loop a tick to
+            # catch up before reading the rate it settled on.
+            self._look_drag(page, dx=420, steps=18, start=(300, 360))
             self._wait_cmd(page, "set_look_horizontal", "look_horizontal", "right")
+            page.wait_for_timeout(220)
             speeds = page.evaluate(
                 """() => (window.__MOCK_CMD_LOG__||[])
                        .filter(c => c.name==='set_rotation_speed_deg')
                        .map(c => c.data.rotation_speed_deg)"""
             )
             self.assertTrue(speeds, f"mouse look should set a rotation speed: {speeds}")
-            self.assertLessEqual(max(speeds), 3.0, f"mouse look must stay subtle: {speeds}")
+            self.assertLessEqual(max(speeds), 6.0, f"mouse look turn rate out of range: {speeds}")
+            self.assertGreater(max(speeds), 3.4,
+                               f"a mouse sweep should out-turn a keyboard tap: {speeds}")
             page.mouse.up()
             self._wait_cmd(page, "set_look_horizontal", "look_horizontal", "idle")
         except Exception:
@@ -426,8 +437,11 @@ class TestMovementMode(unittest.TestCase):
                 }"""
             )
             self.assertEqual(result["swept"], "left", "the sweep itself should look left")
-            # Only the tail of the sweep may still be draining; tremor adds nothing.
-            self.assertLess(result["turningFrames"], 40,
+            # A sweep is allowed a momentum tail (that's what buys turn on a model
+            # whose rate we can't set). What must NOT happen is tremor holding the
+            # camera open past it, so the invariant is: it reaches rest inside the
+            # window, and tremor never re-issues a look.
+            self.assertLess(result["turningFrames"], 90,
                             f"tremor kept the camera turning: {result}")
             self.assertTrue(result["resting"], f"camera never came to rest: {result}")
             self.assertEqual(result["looks"], ["Mouse_Left"],
@@ -468,7 +482,7 @@ class TestMovementMode(unittest.TestCase):
             self.assertGreater(result["big"], result["small"],
                                f"a longer sweep should owe a longer turn: {result}")
             # Bounded: a full-budget sweep unwinds fast enough to feel connected.
-            self.assertLess(result["big"], 900, f"wind-down too long: {result}")
+            self.assertLess(result["big"], 1800, f"wind-down too long: {result}")
         except Exception:
             print("\n=== CONSOLE LOG (proportional) ===\n" + self._dump_logs())
             raise
@@ -497,19 +511,17 @@ class TestMovementMode(unittest.TestCase):
         finally:
             page.close()
 
-        # Happy Oyster: one held verb at a time -> must interleave both.
+        # Happy Oyster holds ONE look direction, so a diagonal has to commit to
+        # the axis the mouse travelled further on. Alternating the two (the old
+        # behaviour) restarted the rotation every slice and turned less than a
+        # straight sweep did -- see test_a_diagonal_sweep_does_not_churn_the_look_slot.
         page = self._new_realtime_page(mode="fps")
         try:
             self._boot_live(page, model="happy-oyster")
             self.assertTrue(page.evaluate("() => window.ReactorRenderer.looksOneAxisAtATime()"))
             self._reset_cmd_log(page)
-            self._look_drag(page, dx=-260, dy=-260, steps=26)
-            page.wait_for_function(
-                """() => {
-                    const d = (window.__MOCK_CMD_LOG__||[])
-                        .filter(c => c.name === 'look').map(c => c.data.direction);
-                    return d.includes('Mouse_Left') && d.includes('Mouse_Up');
-                }""", timeout=6000)
+            self._look_drag(page, dx=-60, dy=-260, steps=14)   # mostly vertical
+            self._wait_cmd(page, "look", "direction", "Mouse_Up")
             page.mouse.up()
         except Exception:
             print("\n=== CONSOLE LOG (diagonal-oyster) ===\n" + self._dump_logs())
@@ -524,10 +536,10 @@ class TestMovementMode(unittest.TestCase):
         page = self._new_realtime_page(mode="fps")
         try:
             self._boot_live(page, model="happy-oyster")
-            self.assertEqual(page.evaluate("() => window.__InputBindings.sensitivity()"), 3)
+            self.assertEqual(page.evaluate("() => window.__InputBindings.sensitivity()"), 8)
             page.keyboard.press("`")
             page.wait_for_selector("#we-input-sens", timeout=8000)
-            self.assertEqual(page.evaluate("() => document.getElementById('we-input-sens').value"), "3")
+            self.assertEqual(page.evaluate("() => document.getElementById('we-input-sens').value"), "8")
             self.assertFalse(page.evaluate("() => document.getElementById('we-input-sens').disabled"),
                              "slider should be usable in FPS mode")
             # Drag the slider like a player would.
@@ -540,8 +552,8 @@ class TestMovementMode(unittest.TestCase):
             self.assertEqual(page.evaluate("() => localStorage.getItem('input_look_sens')"), "7")
             self.assertIn("7", page.evaluate("() => document.getElementById('we-input-sens-val').textContent"))
             # Clamped to the advertised range.
-            self.assertEqual(page.evaluate("() => window.__InputBindings.setSensitivity(9999)"), 12)
-            self.assertEqual(page.evaluate("() => window.__InputBindings.setSensitivity(-5)"), 0.5)
+            self.assertEqual(page.evaluate("() => window.__InputBindings.setSensitivity(9999)"), 30)
+            self.assertEqual(page.evaluate("() => window.__InputBindings.setSensitivity(-5)"), 1)
             # DOOM has no mouse look, so the control goes inert.
             page.click("#we-input-profile button[data-value='doom']")
             page.wait_for_function(
@@ -681,6 +693,107 @@ class TestMovementMode(unittest.TestCase):
             self._wait_cmd(page, "set_move_lateral", "move_lateral", "idle")
         except Exception:
             print("\n=== CONSOLE LOG (strafe release lingbot) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
+    # Every distinct move/look command IN ORDER, keeping repeats. The strafe
+    # tests below dedupe, which is exactly how a churn bug hid: a stream of
+    # Front, Left, Front, Left... dedupes to "both directions were driven" and
+    # looks like a pass.
+    _RAW_DRIVE = """() => (window.__MOCK_CMD_LOG__ || [])
+        .filter(c => ['move', 'look', 'stop'].includes(c.name))
+        .map(c => c.name + (c.data.direction ? ':' + c.data.direction : ''))"""
+
+    def test_holding_forward_and_strafe_does_not_churn_the_move_slot(self):
+        """Regression, and the reason A/D felt dead in normal play.
+
+        Happy Oyster has ONE move slot and each `move` REPLACES the held
+        direction. Alternating forward and strafe to fake a diagonal made the
+        camera restart every ~130ms -- 15 switches in 2 seconds -- so it
+        travelled nowhere in either direction. Since holding W+A is ordinary FPS
+        movement, that read as strafe being broken.
+
+        One slot means one direction: the newest press wins, and releasing it
+        hands the slot straight back. Four inputs, four commands, no churn."""
+        page = self._new_realtime_page(mode="fps")
+        try:
+            self._boot_live(page, model="happy-oyster")
+            self._reset_cmd_log(page)
+            page.keyboard.down("w")
+            self._wait_cmd(page, "move", "direction", "Front")
+            page.keyboard.down("a")
+            self._wait_cmd(page, "move", "direction", "Left")
+            page.wait_for_timeout(1600)          # hold both, as a player would
+            stream = page.evaluate(self._RAW_DRIVE)
+            # While both are held the slot must stay put, not oscillate.
+            self.assertLessEqual(
+                len(stream), 4,
+                f"the move slot is churning while W+A are held: {stream}")
+            self.assertEqual(stream[-1], "move:Left",
+                             f"the newest press should own the slot: {stream}")
+            # Releasing the strafe hands the slot back to forward.
+            page.keyboard.up("a")
+            self._wait_cmd(page, "move", "direction", "Front")
+            page.keyboard.up("w")
+            self._wait_cmd(page, "stop")
+        except Exception:
+            print("\n=== CONSOLE LOG (move-slot-churn) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
+    def test_a_diagonal_sweep_does_not_churn_the_look_slot(self):
+        """Same trap on the look axes: alternating Mouse_Left and Mouse_Up
+        restarted the rotation every slice, so a diagonal sweep turned LESS than
+        a straight one. It must commit to the axis the mouse travelled further
+        on."""
+        page = self._new_realtime_page(mode="fps")
+        try:
+            self._boot_live(page, model="happy-oyster")
+            self._reset_cmd_log(page)
+            self._look_drag(page, dx=-224, dy=-224, steps=14)
+            page.wait_for_timeout(200)
+            stream = page.evaluate(self._RAW_DRIVE)
+            looks = [s for s in stream if s.startswith("look:")]
+            self.assertTrue(looks, f"a diagonal sweep must steer: {stream}")
+            self.assertLessEqual(
+                len(set(looks)), 1,
+                f"the look slot is oscillating across a diagonal: {stream}")
+            page.mouse.up()
+            self._wait_cmd(page, "stop")
+        except Exception:
+            print("\n=== CONSOLE LOG (look-slot-churn) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
+    def test_a_sweep_earns_a_usable_amount_of_turn(self):
+        """On Happy Oyster the turn RATE is the model's -- there is no rotation
+        knob -- so the only thing a sweep can buy is how long the look is HELD.
+        A 600ms ceiling therefore capped how far you could ever turn in one
+        gesture, which is what made it feel dead whatever the slider said."""
+        page = self._new_realtime_page(mode="fps")
+        try:
+            self._boot_live(page, model="happy-oyster")
+            held = page.evaluate(
+                """async () => {
+                    const sleep = (m) => new Promise(r => setTimeout(r, m));
+                    for (let i = 0; i < 15; i++) { window.__MouseLook.__feed(-20, 0); await sleep(12); }
+                    const t0 = performance.now();
+                    for (let i = 0; i < 200; i++) {
+                        await sleep(25);
+                        if (!window.__MouseLook.intent()) return Math.round(performance.now() - t0);
+                    }
+                    return -1;
+                }"""
+            )
+            self.assertGreater(held, 900, f"a full sweep should keep turning: {held}ms")
+            # Still bounded — the endless-spin regression stays fixed.
+            self.assertLess(held, 2000, f"a sweep must not coast this long: {held}ms")
+            page.evaluate("() => window.__MouseLook.releaseLock()")
+        except Exception:
+            print("\n=== CONSOLE LOG (turn-amount) ===\n" + self._dump_logs())
             raise
         finally:
             page.close()
