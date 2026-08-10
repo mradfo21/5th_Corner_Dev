@@ -44,6 +44,7 @@ test_*.py
 !test_detect_filter.py
 !test_local_vision.py
 !test_local_vision_e2e.py
+!test_outbound_dns.py
 !test_providers.py
 !test_standalone_e2e.py
 !test_realtime_e2e.py

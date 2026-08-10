@@ -88,6 +88,51 @@ def _disable_netrc_lookup() -> None:
 
 
 _disable_netrc_lookup()
+
+
+# ── Outbound DNS: ask for IPv4 only ──────────────────────────────────────────
+# Every timeout we pass to `requests` covers connect and read. It does NOT cover
+# name resolution: `socket.getaddrinfo` is a blocking C call that no Python-level
+# timeout can interrupt. So when DNS stalls, a request with timeout=8 hangs for
+# as long as the resolver takes — unbounded.
+#
+# That is not hypothetical. Captured from the production worker via
+# /api/diag/stacks while the service was wedged:
+#
+#     engine.py in _detect_objects_gemini -> _GEMINI_HTTP_SESSION.post(...)
+#     urllib3/util/connection.py in create_connection -> socket.getaddrinfo(...)
+#     socket.py in getaddrinfo
+#
+# One hung lookup costs one of the worker's four threads. A couple of them and
+# the whole service is gone — no feed, no turn, no image — which is exactly how
+# it presents: "it freezes, never generating an image".
+#
+# urllib3 resolves with AF_UNSPEC, asking for A and AAAA together. On a container
+# with no working IPv6 route the AAAA half is what stalls, so restricting the
+# family to IPv4 removes the leg that hangs. Every API we call (Google, OpenAI,
+# ElevenLabs, Replicate, Stripe) is reachable over IPv4, so this costs us
+# nothing. Set FORCE_IPV4_DNS=0 to disable.
+#
+# This narrows the window rather than closing it — a sufficiently broken resolver
+# can still stall an A lookup, and the real belt-and-braces fix is resolving off
+# the request thread. The stall watchdog in api.py remains the backstop.
+def _force_ipv4_dns() -> None:
+    if (os.getenv("FORCE_IPV4_DNS", "1").strip().lower()
+            in ("0", "false", "no", "off")):
+        return
+    try:
+        import socket as _socket
+
+        import urllib3.util.connection as _u3conn
+        _u3conn.allowed_gai_family = lambda: _socket.AF_INET
+        print("[ENGINE] outbound DNS restricted to IPv4 "
+              "(getaddrinfo AAAA stalls are unkillable; see _force_ipv4_dns)",
+              flush=True)
+    except Exception as _dns_err:  # noqa: BLE001 — never block boot over this
+        print(f"[ENGINE] could not restrict DNS to IPv4: {_dns_err}", flush=True)
+
+
+_force_ipv4_dns()
 print("[ENGINE] stdlib imports complete", flush=True); sys.stdout.flush()
 
 import openai
