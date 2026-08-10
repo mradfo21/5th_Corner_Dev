@@ -6608,6 +6608,421 @@ body.we-resizing { cursor: col-resize; user-select: none; }
 #world-editor .we-fontstep .we-tool:first-child { border-radius: 7px 0 0 7px; }
 #world-editor .we-fontstep .we-tool:last-child { border-radius: 0 7px 7px 0; margin-left: -1px; }
 
+/* ═══════════════════════════════════════════════════════════════════════
+   THE ORGANISM — the editor as a recursive graph (editor_graph.js,
+   EDITOR_GRAPH_PLAN.md). One circle is THE GAME; double-tapping a cell
+   frames it as the whole view and its children appear inside it. The
+   parent's membrane stays visible as a halo at the periphery, which is both
+   the depth cue and the way back up.
+
+   Everything is drawn in ONE svg whose viewBox is animated, so a dive scales
+   the actual diagram instead of swapping screens. Sizes are in world units
+   (see drawNode) and only colour/opacity live here.
+   ═══════════════════════════════════════════════════════════════════════ */
+#world-editor .we-graph {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  display: none;
+  /* A cell under a microscope: light pooling in the middle, dark at the rim. */
+  background:
+    radial-gradient(115% 80% at 50% 38%, rgba(122, 162, 255, 0.055), transparent 70%),
+    radial-gradient(90% 70% at 50% 108%, rgba(0, 0, 0, 0.6), transparent 60%),
+    #08090b;
+}
+/* The graph replaces the flat column; the list keeps working behind the
+   header toggle, and both stay in the DOM so neither can drift. */
+body.we-graph-mode #world-editor .we-graph { display: block; }
+body.we-graph-mode #world-editor .we-scroll,
+body.we-graph-mode #world-editor .we-tabs { display: none; }
+
+#world-editor .eg-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: manipulation;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+/* Hit-testing is done in world coordinates (see hit()), so nothing inside
+   competes for the pointer. */
+#world-editor .eg-canvas * { pointer-events: none; }
+
+/* ── The mathematical furniture: guide rings + spokes for the focused cell.
+   Faint, slowly turning, and only there to keep the register geometric
+   rather than bubbly. ──────────────────────────────────────────────────── */
+#world-editor .eg-field { pointer-events: none; }
+#world-editor .eg-guide {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.055);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+#world-editor .eg-spokes {
+  transform-box: fill-box;
+  transform-origin: 50% 50%;
+  animation: eg-turn 240s linear infinite;
+}
+#world-editor .eg-spoke {
+  stroke: rgba(255, 255, 255, 0.035);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+@keyframes eg-turn { to { transform: rotate(360deg); } }
+
+/* ── Tethers: a nucleus reaching out to each child, so this reads as a graph
+   (nodes and edges) and not just nested bubbles. ──────────────────────── */
+#world-editor .eg-tether {
+  stroke: rgba(255, 255, 255, 0.06);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+  opacity: 0;
+  transition: opacity 0.4s ease;
+}
+#world-editor .eg-tether.is-live { opacity: 1; }
+
+/* ── Cells ─────────────────────────────────────────────────────────────── */
+#world-editor .eg-node {
+  --eg-accent: var(--we-accent);
+  transition: opacity 0.42s ease;
+}
+#world-editor .eg-cell {
+  fill: url(#eg-cell-fill);
+  stroke: var(--eg-accent);
+  stroke-opacity: 0.34;
+  stroke-width: 1.25;
+  vector-effect: non-scaling-stroke;
+  transition: stroke-opacity 0.3s ease, fill-opacity 0.3s ease;
+}
+#world-editor .eg-cell-in {
+  fill: none;
+  stroke: var(--eg-accent);
+  stroke-opacity: 0.12;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+#world-editor .eg-nucleus { fill: var(--eg-accent); fill-opacity: 0.5; }
+/* Vertices are solid: there is nothing inside them, and they read as objects
+   you can pick up rather than places you can enter. */
+#world-editor .eg-node:not(.eg-container) .eg-cell {
+  fill: url(#eg-leaf-fill);
+  stroke-opacity: 0.45;
+}
+
+#world-editor .eg-glyph {
+  fill: var(--eg-accent);
+  fill-opacity: 0.85;
+  text-anchor: middle;
+  dominant-baseline: middle;
+  font-family: var(--we-ui);
+}
+#world-editor .eg-name {
+  fill: var(--we-text);
+  text-anchor: middle;
+  dominant-baseline: middle;
+  font-family: var(--we-ui);
+  font-weight: 600;
+  letter-spacing: 0.005em;
+}
+#world-editor .eg-meta {
+  fill: var(--we-text-dim);
+  text-anchor: middle;
+  dominant-baseline: middle;
+  font-family: var(--we-ui);
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+}
+#world-editor .eg-label { transition: opacity 0.32s ease; }
+
+/* ── Depth states, relative to where you're standing ───────────────────── */
+/* The cell you're inside: its own name is in the HUD, so it doesn't shout it
+   at you at screen size. */
+#world-editor .eg-node.is-focus > .eg-cell { stroke-opacity: 0.5; }
+#world-editor .eg-node.is-focus > .eg-label { opacity: 0; }
+#world-editor .eg-node.is-child { opacity: 1; }
+/* Grandchildren: organelles. Visible detail you can't read yet — which is
+   exactly what tells you there's something in there. */
+#world-editor .eg-node.is-deep { opacity: 0.42; }
+#world-editor .eg-node.is-deep .eg-name,
+#world-editor .eg-node.is-deep .eg-meta,
+#world-editor .eg-node.is-tiny .eg-label { opacity: 0; }
+/* Ancestors and siblings crowding the periphery: the halo you tap to surface. */
+#world-editor .eg-node.is-outside { opacity: 0.16; }
+#world-editor .eg-node.is-outside .eg-label { opacity: 0; }
+/* The cell you're inside — the wall around everything. Brighter than the rest
+   of the periphery so "out" is legible as a direction. */
+#world-editor .eg-node.is-parent { opacity: 0.5; }
+#world-editor .eg-node.is-parent > .eg-cell { stroke-opacity: 0.5; }
+
+#world-editor .eg-node.is-selected > .eg-cell {
+  stroke-opacity: 1;
+  stroke-width: 2;
+  filter: drop-shadow(0 0 14px var(--eg-accent));
+}
+#world-editor .eg-node.is-open > .eg-cell { stroke-opacity: 1; stroke-width: 2; }
+
+/* A prompt with unsaved text, and one that no longer matches the factory
+   default: the two things you want to see without opening anything. */
+#world-editor .eg-node.is-dirty > .eg-cell {
+  stroke: #ffce6a;
+  stroke-opacity: 0.95;
+  stroke-dasharray: 5 4;
+  animation: eg-breathe 2.6s ease-in-out infinite;
+}
+#world-editor .eg-node.is-modified:not(.is-dirty) > .eg-cell { stroke-opacity: 0.72; }
+/* Contract layers stop turns resolving if you break them — dashed inner ring. */
+#world-editor .eg-node.is-contract > .eg-cell-in { stroke-dasharray: 3 7; stroke-opacity: 0.2; }
+/* A runtime knob that's currently on. */
+#world-editor .eg-node.is-on > .eg-cell {
+  fill: var(--eg-accent);
+  fill-opacity: 0.18;
+  stroke-opacity: 0.95;
+}
+#world-editor .eg-node.is-off > .eg-cell { stroke-dasharray: 2 6; }
+@keyframes eg-breathe {
+  0%, 100% { stroke-opacity: 0.55; }
+  50% { stroke-opacity: 1; }
+}
+
+/* ── HUD: the trail you came down, and what's under your finger ─────────── */
+#world-editor .eg-hud {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  z-index: 2;
+  padding: 10px 14px 14px;
+  pointer-events: none;
+  background: linear-gradient(180deg, rgba(8, 9, 11, 0.92) 30%, transparent);
+}
+#world-editor .eg-trail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  pointer-events: auto;
+}
+#world-editor .eg-crumb { display: flex; align-items: center; }
+#world-editor .eg-crumb + .eg-crumb::before {
+  content: "\203A";
+  margin: 0 3px;
+  color: var(--we-text-dim);
+  font-size: calc(10px * var(--we-fs));
+}
+#world-editor .eg-crumb button {
+  appearance: none;
+  border: 0;
+  background: none;
+  padding: 2px 3px;
+  font: inherit;
+  font-size: calc(9.5px * var(--we-fs));
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--we-text-dim);
+  cursor: pointer;
+}
+#world-editor .eg-crumb button:hover { color: var(--we-text-mid); }
+#world-editor .eg-crumb.is-here button {
+  color: var(--eg-accent, var(--we-accent));
+  cursor: default;
+}
+#world-editor .eg-caption { margin-top: 5px; }
+#world-editor .eg-caption-name {
+  display: block;
+  font-size: calc(19px * var(--we-fs));
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--we-text);
+}
+#world-editor .eg-caption-sub {
+  display: block;
+  margin-top: 2px;
+  max-width: 46ch;
+  font-size: calc(11.5px * var(--we-fs));
+  line-height: 1.42;
+  color: var(--we-text-dim);
+}
+#world-editor .eg-hint {
+  position: absolute;
+  left: 0; right: 0; bottom: 10px;
+  z-index: 2;
+  text-align: center;
+  pointer-events: none;
+  font-size: calc(9.5px * var(--we-fs));
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: rgba(242, 244, 247, 0.28);
+  transition: opacity 0.3s;
+}
+#world-editor .we-graph.has-sheet .eg-hint { opacity: 0; }
+
+/* ── The window that animates up at a vertex ────────────────────────────── */
+#world-editor .eg-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  background: rgba(4, 5, 6, 0.62);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.34s ease;
+}
+#world-editor .eg-scrim.is-open { opacity: 1; pointer-events: auto; }
+#world-editor .eg-sheet {
+  --eg-accent: var(--we-accent);
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  max-height: min(84%, 660px);
+  background: linear-gradient(180deg, #15181d, #0c0e11 62%);
+  border: 1px solid var(--we-line);
+  border-bottom: 0;
+  border-radius: 16px 16px 0 0;
+  box-shadow: 0 -30px 90px -24px rgba(0, 0, 0, 0.95);
+  transform: translateY(102%);
+  transition: transform 0.44s cubic-bezier(0.22, 1, 0.36, 1);
+}
+#world-editor .eg-sheet.is-open { transform: none; }
+#world-editor .eg-sheet::before {
+  content: "";
+  position: absolute;
+  top: 7px; left: 50%;
+  width: 42px; height: 3px;
+  margin-left: -21px;
+  border-radius: 2px;
+  background: var(--we-line-strong);
+}
+#world-editor .eg-sheet-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 11px;
+  flex: 0 0 auto;
+  padding: 18px 14px 12px;
+  border-bottom: 1px solid var(--we-line);
+}
+#world-editor .eg-sheet-glyph {
+  flex: 0 0 auto;
+  width: calc(30px * var(--we-fs));
+  height: calc(30px * var(--we-fs));
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--eg-accent);
+  border-radius: 50%;
+  color: var(--eg-accent);
+  font-size: calc(14px * var(--we-fs));
+}
+#world-editor .eg-sheet-id { min-width: 0; flex: 1 1 auto; }
+#world-editor .eg-sheet-title {
+  font-size: calc(15px * var(--we-fs));
+  font-weight: 600;
+  color: var(--we-text);
+}
+#world-editor .eg-sheet-sub {
+  margin-top: 2px;
+  font-size: calc(10.5px * var(--we-fs));
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--we-text-dim);
+}
+#world-editor .eg-sheet-close {
+  appearance: none;
+  flex: 0 0 auto;
+  border: 1px solid var(--we-line);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--we-text-mid);
+  font: inherit;
+  font-size: calc(12px * var(--we-fs));
+  padding: 5px 9px;
+  cursor: pointer;
+}
+#world-editor .eg-sheet-close:hover { background: var(--we-raise); color: var(--we-text); }
+#world-editor .eg-sheet-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 14px 14px calc(18px + env(safe-area-inset-bottom, 0px));
+  overscroll-behavior: contain;
+}
+/* The spec sheet mounted here is the real cast form, so it arrives wearing the
+   editor's .we-block card. Inside a window that already names it, the card and
+   its repeated title are one frame too many. */
+#world-editor .eg-spec .we-block {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+#world-editor .eg-spec .we-block-head { display: none; }
+#world-editor .eg-spec .we-cast-row:first-of-type { margin-top: 0; }
+#world-editor .eg-note {
+  margin: 0 0 12px;
+  font-size: calc(12.5px * var(--we-fs));
+  line-height: 1.5;
+  color: var(--we-text-mid);
+}
+#world-editor .eg-note.is-meta {
+  font-size: calc(10.5px * var(--we-fs));
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--we-text-dim);
+}
+#world-editor .eg-note.is-warn { color: #ffce6a; }
+#world-editor .eg-text {
+  display: block;
+  width: 100%;
+  min-height: 34vh;
+  padding: 11px 12px;
+  background: #0a0b0d;
+  border: 1px solid var(--we-line);
+  border-radius: 10px;
+  color: var(--we-text);
+  font-family: var(--we-mono);
+  font-size: calc(12.5px * var(--we-fs));
+  line-height: 1.55;
+  resize: vertical;
+}
+#world-editor .eg-text:focus { outline: none; border-color: var(--eg-accent); }
+#world-editor .eg-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+#world-editor .eg-row-foot { margin-top: 7px; justify-content: flex-end; }
+#world-editor .eg-count {
+  font-size: calc(10px * var(--we-fs));
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--we-text-dim);
+}
+#world-editor .eg-acts { margin-top: 13px; }
+#world-editor .eg-art {
+  height: calc(132px * var(--we-fs));
+  margin-bottom: 13px;
+  border: 1px solid var(--we-line);
+  border-radius: 11px;
+  background: #0a0b0d center/cover no-repeat;
+}
+#world-editor .eg-name-form { display: flex; gap: 8px; flex-wrap: wrap; }
+#world-editor .eg-name-form input {
+  flex: 1 1 180px;
+  min-width: 0;
+  padding: 10px 12px;
+  background: #0a0b0d;
+  border: 1px solid var(--we-line);
+  border-radius: 9px;
+  color: var(--we-text);
+  font: inherit;
+  font-size: calc(13px * var(--we-fs));
+}
+#world-editor .eg-name-form input:focus { outline: none; border-color: var(--eg-accent); }
+
+@media (prefers-reduced-motion: reduce) {
+  #world-editor .eg-spokes { animation: none; }
+  #world-editor .eg-node.is-dirty > .eg-cell { animation: none; }
+  #world-editor .eg-sheet { transition: none; }
+}
+
 /* ── CONTROLS row (how you drive, not what the game is) ────────────────── */
 #world-editor .we-input-opts {
   display: flex; align-items: center; flex-wrap: wrap; gap: 8px;
