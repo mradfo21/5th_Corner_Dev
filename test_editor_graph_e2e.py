@@ -287,6 +287,25 @@ class TestEditorGraphE2E(unittest.TestCase):
         # Nothing was written to disk: the buffer is in-memory until you save.
         self.assertNotIn("A NOTE FROM THE GRAPH", self._studio_content()["prompts"][key])
 
+    def test_the_window_hands_off_to_the_full_editor(self):
+        """Long prose needs the pop-out editor (line numbers, diff, Ctrl+S), so
+        the window hands the same prompt over rather than reimplementing it."""
+        self._dive("layer:engine")
+        key = self.page.evaluate(
+            """() => (Array.from(document.querySelectorAll('#eg-world .eg-node.is-child'))
+                       .map(g => g.getAttribute('data-id'))
+                       .find(id => id.indexOf('prompt:') === 0) || '').slice(7)""")
+        self._tap("prompt:" + key)
+        self.page.wait_for_selector("#eg-sheet.is-open", timeout=4000)
+        self.page.click('#eg-sheet .eg-acts button:has-text("Full editor")')
+        self.page.wait_for_selector("#we-modal.open", timeout=4000)
+        self.assertTrue(len(self.page.input_value("#wem-text")) > 50)
+        # Esc cancels the modal, and the graph is still where you left it.
+        self.page.keyboard.press("Escape")
+        self.page.wait_for_selector("#we-modal.open", state="hidden", timeout=4000)
+        self._settle()
+        self.assertEqual(self._trail(), ["The Game", "Engine"])
+
     def test_saving_from_the_window_persists_and_clears_the_badge(self):
         self._dive("layer:engine")
         key = self.page.evaluate(

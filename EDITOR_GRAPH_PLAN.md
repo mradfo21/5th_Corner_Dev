@@ -82,11 +82,15 @@ bubbles, plus faint concentric guide rings and radial spokes for the
 
 ## Zoom
 
-A single `viewBox` animation on one `<svg>`. The focus node is framed at
-`1.19 × diameter`, which is the whole trick behind going back up: the extra 19%
-is the parent's interior, visible as a halo of membrane (and the crowded edges
-of your sibling cells) around the current one. Tap it → focus moves to the
-parent. Easing is a 620 ms cubic; `prefers-reduced-motion` cuts it to a snap.
+A single `viewBox` animation on one `<svg>`. The focused cell spans 87% of the
+view's shorter axis, and that remaining 13% is the whole trick behind going
+back up: it's the parent's interior, visible as a halo of membrane (and the
+crowded edges of your sibling cells) around the current one. Tap it → focus
+moves to the parent. The viewBox matches the canvas's aspect exactly, so on a
+phone the long axis fills with the parent rather than with letterboxed nothing.
+The root is the exception — it has no parent to reveal, so it opens edge to
+edge. Easing is a 620 ms cubic, with the scale interpolated in log space or the
+descent lurches at the end; `prefers-reduced-motion` cuts it to a snap.
 
 Because everything is in world units, apparent text size is kept constant by
 sizing labels relative to each node's own radius (`≈0.15r`): a child of the
@@ -103,14 +107,20 @@ view, are dropped from the frame.
 
 | Gesture | On a container | On a vertex (leaf) |
 | --- | --- | --- |
-| tap | select — HUD shows what it is + "double-tap to enter" | **opens its window** |
+| tap | select — HUD shows what it is + "double-tap to go inside" | **opens its window** |
+| tap again (any delay) | zoom in | — |
 | double-tap | zoom in | opens its window |
 | tap the halo / periphery | up one level | up one level |
 | `Esc` | up one level (closes the editor at the root) | closes the window |
 
+Double-tap is the gesture, but a *slow* second tap on a selected cell enters it
+too: a control that only responds under 340 ms reads as broken.
+
 Breadcrumbs in the HUD are tappable for a direct jump to any ancestor. A
 control vertex is the exception that proves the rule: it has nothing to
-configure, so tapping it just *is* the toggle — the circle lights up.
+configure, so tapping it just *is* the toggle — the circle lights up. With a
+mouse, the cursor names the gesture before you commit to it (`zoom-in` over a
+container, `pointer` over a vertex, `zoom-out` over the periphery).
 
 ## The window
 
@@ -118,8 +128,8 @@ A bottom sheet (`#eg-sheet`) that animates up over the graph, dimming it.
 Header: glyph, name, one line of what it does, close. Body by vertex kind:
 
 - **prompt** → description, a live textarea bound to the same `edits` buffer the
-  list view uses, char count, `Reset to default`, and `Expand ⤢` into the
-  existing full-screen prompt editor (line numbers + diff, untouched)
+  list view uses, char count, `Reset to default`, and `Full editor` handing the
+  same key to the existing pop-out editor (line numbers + diff, untouched)
 - **spec** → the real cast form for that block, mounted by the existing
   `renderCast`, saving on blur exactly as before
 - **level / build** → its metadata plus `Open` / `Delete`

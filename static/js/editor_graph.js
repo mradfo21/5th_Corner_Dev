@@ -45,6 +45,9 @@
   // phone the longer axis gets much more of it, which is why entering a cell
   // never feels like a screen swap.
   const FRAME_FILL = 0.87;
+  // The root has no parent to reveal, so it opens edge to edge instead of
+  // floating inside a margin of nothing.
+  const ROOT_FILL = 0.98;
   // Breathing room between packed siblings, as a fraction of the tight fit.
   const PACK_GAP = 0.9;
   const ZOOM_MS = 620;
@@ -236,7 +239,9 @@
           label: lv.name || lv.slug,
           glyph: "\u25F0",
           accent: accent,
-          meta: lv.era || (lv.enabled ? "on" : "off"),
+          // A saved level is never "off" — that flag belongs to its plate, and
+          // reading OFF on a place you saved is just alarming.
+          meta: lv.era || (lv.plate_count ? lv.plate_count + " plates" : "no art"),
           art: (lv.plates && lv.plates[0]) || null,
           data: { level: lv },
         }));
@@ -411,8 +416,11 @@
     glyph.textContent = n.glyph || "";
     lab.appendChild(glyph);
 
-    const nameSize = n.r * 0.19;
-    const lines = wrapLabel(n.label, 15, 2);
+    const lines = wrapLabel(n.label, 14, 2);
+    // Shrink a long name until it fits the cell rather than letting it spill
+    // over the membrane.
+    const longest = lines.reduce((m, l) => Math.max(m, l.length), 0);
+    const nameSize = n.r * 0.19 * Math.min(1, 12 / Math.max(9, longest));
     const name = mk("text", {
       x: n.cx, y: n.cy + n.r * (lines.length > 1 ? 0.02 : 0.08),
       "font-size": nameSize,
@@ -500,7 +508,7 @@
     const childIds = Object.create(null);
     (f.children || []).forEach((k) => { childIds[k.id] = true; });
     // Projected pixels per world unit, along the axis the cell is inscribed in.
-    const scale = viewportPx() * FRAME_FILL / (2 * ((view && view.r) || f.r));
+    const scale = viewportPx() / (2 * ((view && view.half) || f.r));
 
     els.world.querySelectorAll(".eg-node").forEach((g) => {
       const n = nodesById[g.getAttribute("data-id")];
@@ -524,9 +532,10 @@
     els.world.querySelectorAll(".eg-tether").forEach((line) => {
       line.classList.toggle("is-live", line.getAttribute("data-parent") === f.id);
     });
-    if (els.graph) {
-      els.graph.classList.toggle("is-root", f.id === root.id);
-      els.graph.classList.toggle("is-deep", f.depth >= 2);
+    // You are inside this: light the periphery in the parent's colour.
+    if (els.rim) {
+      els.rim.classList.toggle("is-on", !!f.parent);
+      if (f.parent) els.rim.style.setProperty("--eg-accent", f.parent.accent || "#7aa2ff");
     }
     drawField(f);
     renderHud(f);
@@ -548,30 +557,43 @@
   // ZOOM — one interpolated viewBox. Radius is interpolated in log space so
   // the descent feels even rather than lurching at the end.
   // ══════════════════════════════════════════════════════════════════
-  // The viewBox matches the canvas's aspect exactly, so the cell is inscribed
-  // in the shorter axis and the longer one fills with the parent it sits in
-  // (rather than with letterboxed nothing).
+  // `view.half` is the world half-extent along the view's shorter axis. The
+  // viewBox matches the canvas's aspect exactly, so the cell is inscribed in
+  // that axis and the longer one fills with the parent it sits in, rather than
+  // with letterboxed nothing.
   function applyView(v) {
     view = v;
     const box = els.canvas.getBoundingClientRect();
     const w = box.width || 1, h = box.height || 1;
-    const half = v.r / FRAME_FILL;
-    const hx = w >= h ? half * (w / h) : half;
-    const hy = h >= w ? half * (h / w) : half;
+    const hx = w >= h ? v.half * (w / h) : v.half;
+    const hy = h >= w ? v.half * (h / w) : v.half;
     els.canvas.setAttribute("viewBox",
       (v.cx - hx) + " " + (v.cy - hy) + " " + (hx * 2) + " " + (hy * 2));
   }
 
+  function frameOf(n) {
+    return { cx: n.cx, cy: n.cy, half: n.r / (n.parent ? FRAME_FILL : ROOT_FILL) };
+  }
+
+  // Labels are sized in world units, so during a zoom they'd scale with the
+  // diagram — a name arriving at four times its final size, shrinking into
+  // place. They ride out the motion hidden and fade in once it lands.
+  function setZooming(on) {
+    if (els.graph) els.graph.classList.toggle("is-zooming", !!on);
+  }
+
   function frame(n, animate) {
-    const to = { cx: n.cx, cy: n.cy, r: n.r };
+    const to = frameOf(n);
     if (!view || !animate || reduceMotion()) {
       if (anim) { cancelAnimationFrame(anim.raf); anim = null; }
+      setZooming(false);
       applyView(to);
       return;
     }
-    const from = { cx: view.cx, cy: view.cy, r: view.r };
+    const from = view;
     const t0 = performance.now();
     if (anim) cancelAnimationFrame(anim.raf);
+    setZooming(true);
     const step = (now) => {
       const p = Math.min(1, (now - t0) / ZOOM_MS);
       // cubic in-out
@@ -579,10 +601,11 @@
       applyView({
         cx: from.cx + (to.cx - from.cx) * e,
         cy: from.cy + (to.cy - from.cy) * e,
-        r: Math.exp(Math.log(from.r) + (Math.log(to.r) - Math.log(from.r)) * e),
+        // Scale interpolates in log space, or the descent lurches at the end.
+        half: Math.exp(Math.log(from.half) + (Math.log(to.half) - Math.log(from.half)) * e),
       });
       if (p < 1) anim = { raf: requestAnimationFrame(step) };
-      else { anim = null; paint(); }
+      else { anim = null; setZooming(false); paint(); }
     };
     anim = { raf: requestAnimationFrame(step) };
   }
@@ -592,7 +615,6 @@
     if (!n) return;
     focusId = id;
     selectedId = null;
-    if (els.graph) els.graph.classList.toggle("is-root", n.id === root.id);
     frame(n, animate !== false);
     paint();
   }
@@ -721,6 +743,26 @@
     // for them the tap is the toggle itself.
     if (n.kind === "control") { toggleControl(n); return; }
     openSheet(n);
+  }
+
+  let hoverId = null;
+  function setHover(id, cursor) {
+    els.canvas.style.cursor = cursor || "default";
+    if (id === hoverId) return;
+    hoverId = id;
+    els.world.querySelectorAll(".eg-node.is-hover")
+      .forEach((g) => g.classList.remove("is-hover"));
+    if (!id) return;
+    const g = els.world.querySelector('.eg-node[data-id="' + id + '"]');
+    if (g) g.classList.add("is-hover");
+  }
+
+  function onHover(evt) {
+    const h = hitAt(evt.clientX, evt.clientY);
+    if (!h) return setHover(null);
+    if (h.where === "outside") return setHover(null, nodesById[focusId].parent ? "zoom-out" : "default");
+    if (h.where === "focus") return setHover(null);
+    setHover(h.node.id, (h.node.children || []).length ? "zoom-in" : "pointer");
   }
 
   function toggleControl(n) {
@@ -993,6 +1035,7 @@
       trail: document.getElementById("eg-trail"),
       captionName: document.getElementById("eg-caption-name"),
       captionSub: document.getElementById("eg-caption-sub"),
+      rim: document.getElementById("eg-rim"),
       hint: document.getElementById("eg-hint"),
       sheet: document.getElementById("eg-sheet"),
       scrim: document.getElementById("eg-scrim"),
@@ -1005,9 +1048,13 @@
     if (!els.canvas || !els.world) return;
 
     els.canvas.addEventListener("click", onTap);
-    // Suppress the browser's own double-click selection; our tap handler
-    // already resolves single vs double itself.
+    // Our tap handler resolves single vs double itself, so the browser's own
+    // double-click behaviour (selecting the label text) is just noise.
     els.canvas.addEventListener("dblclick", (e) => e.preventDefault());
+    // With a mouse, say what a click will do before it happens: the cursor
+    // names the gesture and the cell under the pointer lifts.
+    els.canvas.addEventListener("mousemove", onHover);
+    els.canvas.addEventListener("mouseleave", () => setHover(null));
     if (els.sheetClose) els.sheetClose.addEventListener("click", closeSheet);
     if (els.scrim) els.scrim.addEventListener("click", closeSheet);
     // The viewBox encodes the canvas aspect, so a resize has to re-frame.

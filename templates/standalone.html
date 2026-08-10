@@ -744,6 +744,11 @@
         <g id="eg-world" class="eg-world"></g>
       </svg>
 
+      <!-- The membrane of the cell you're inside, drawn at the edge of the view
+           where you can actually see it (a parent is several times the radius
+           of its children, so its own circle is usually off-frame). -->
+      <div id="eg-rim" class="eg-rim" aria-hidden="true"></div>
+
       <div id="eg-hint" class="eg-hint" aria-live="polite"></div>
 
       <!-- The window that animates up at a vertex: the prompt's text, a spec

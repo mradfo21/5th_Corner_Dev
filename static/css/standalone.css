@@ -6642,7 +6642,10 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
   width: 100%;
   height: 100%;
   touch-action: manipulation;
-  cursor: pointer;
+  /* A double-tap is navigation here, so the browser must not treat it as
+     "select that word". */
+  user-select: none;
+  -webkit-user-select: none;
   -webkit-tap-highlight-color: transparent;
 }
 /* Hit-testing is done in world coordinates (see hit()), so nothing inside
@@ -6733,7 +6736,19 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
   letter-spacing: 0.13em;
   text-transform: uppercase;
 }
-#world-editor .eg-label { transition: opacity 0.32s ease; }
+/* A name is only worth drawing on a cell you can act on, so a child of the
+   focus is the ONLY state that shows one. Hidden by default rather than hidden
+   per-state, which also means a rebuild can't fade a label out from full
+   opacity at focus scale — the old rebuild flashed "SYSTEM" across the whole
+   panel for a third of a second.
+   Names also ride out the zoom hidden and arrive at the end (see setZooming),
+   because they're sized in world units and would otherwise scale with it. */
+#world-editor .eg-label { opacity: 0; transition: opacity 0.32s ease; }
+#world-editor .eg-node.is-child .eg-label { opacity: 1; }
+#world-editor .eg-node.is-child.is-tiny .eg-label,
+#world-editor .we-graph.is-zooming .eg-label { opacity: 0; }
+/* The hint reads the state you're arriving at, so it waits for the motion too. */
+#world-editor .we-graph.is-zooming .eg-hint { opacity: 0; }
 
 /* ── Depth states, relative to where you're standing ───────────────────── */
 /* The cell you're inside: its own name is in the HUD, so it doesn't shout it
@@ -6744,17 +6759,39 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
 /* Grandchildren: organelles. Visible detail you can't read yet — which is
    exactly what tells you there's something in there. */
 #world-editor .eg-node.is-deep { opacity: 0.42; }
-#world-editor .eg-node.is-deep .eg-name,
-#world-editor .eg-node.is-deep .eg-meta,
-#world-editor .eg-node.is-tiny .eg-label { opacity: 0; }
 /* Ancestors and siblings crowding the periphery: the halo you tap to surface. */
 #world-editor .eg-node.is-outside { opacity: 0.16; }
-#world-editor .eg-node.is-outside .eg-label { opacity: 0; }
-/* The cell you're inside — the wall around everything. Brighter than the rest
-   of the periphery so "out" is legible as a direction. */
-#world-editor .eg-node.is-parent { opacity: 0.5; }
-#world-editor .eg-node.is-parent > .eg-cell { stroke-opacity: 0.5; }
+/* The cell you're inside. Its membrane is usually well outside the framed view
+   (a parent is three-odd times the radius of its children), so what actually
+   grounds the periphery is .eg-rim below; this just keeps it the brightest
+   thing out there when it does come into frame. */
+#world-editor .eg-node.is-parent { opacity: 0.6; }
+#world-editor .eg-node.is-parent > .eg-cell {
+  stroke-opacity: 0.5;
+  stroke-width: 2.5;
+}
 
+/* The wall of the cell you're standing in, drawn where you can actually see
+   it: a rim light around the whole view in that cell's colour. Without it the
+   framed cell floats in ungrounded space and "tap the edge to come back up"
+   is a claim about nothing. Fades away at the root, which has no outside. */
+#world-editor .eg-rim {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.5s ease;
+  box-shadow:
+    inset 0 0 0 1px var(--eg-accent, transparent),
+    inset 0 0 120px -34px var(--eg-accent, transparent);
+}
+#world-editor .eg-rim.is-on { opacity: 0.55; }
+
+/* Pointer feedback (desktop): the cell under the cursor lifts a little, and
+   the cursor itself says whether the click goes in, out, or opens a window. */
+#world-editor .eg-node.is-hover > .eg-cell { stroke-opacity: 0.8; }
+#world-editor .eg-node.is-hover .eg-glyph { fill-opacity: 1; }
 #world-editor .eg-node.is-selected > .eg-cell {
   stroke-opacity: 1;
   stroke-width: 2;
