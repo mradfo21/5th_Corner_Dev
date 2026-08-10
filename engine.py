@@ -1179,9 +1179,13 @@ VISION_ENABLED = True  # ENABLED for production
 #              naming things the lexicon has never heard of, at ~1-3 s and a
 #              per-scan cost.
 #   "auto"   — local when it can run, Gemini otherwise.
-# Local is the default; set DETECT_BACKEND=gemini to put the old path back
-# without a deploy.
-DETECT_BACKEND = (os.getenv("DETECT_BACKEND") or "local").strip().lower()
+# Gemini is the default until the local backend is proven on the deployment
+# target. It is NOT proven: on Render, inference that takes ~16 ms locally hangs
+# indefinitely, and because /api/detect is polled every ~2.5 s by photo
+# targeting, hung calls eat all four gunicorn threads and take the whole service
+# down with them. Set DETECT_BACKEND=local to opt in (it is solid locally, and
+# it is the only backend that works with no API key at all).
+DETECT_BACKEND = (os.getenv("DETECT_BACKEND") or "gemini").strip().lower()
 if DETECT_BACKEND not in ("local", "gemini", "auto"):
     print(f"[ENGINE INIT] unknown DETECT_BACKEND={DETECT_BACKEND!r}; using 'local'", flush=True)
     DETECT_BACKEND = "local"

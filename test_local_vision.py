@@ -14,6 +14,7 @@ Run with:
 """
 
 import io
+import time
 import unittest
 from unittest.mock import patch
 
@@ -236,6 +237,64 @@ class TestFailureModes(unittest.TestCase):
         with patch.object(local_vision, "_mediapipe_boxes", side_effect=RuntimeError("boom")):
             out = local_vision.detect(frame_bytes(), scene_prompt="A rusted silo rises.")
         self.assertIn("rusted silo", [o["label"] for o in out])
+
+
+class TestHangProtection(unittest.TestCase):
+    """A hung inference must never hold a request thread.
+
+    Observed in production: inference that takes ~16 ms locally never returned at
+    all on the deploy target. /api/detect is polled every ~2.5 s by photo
+    targeting against a worker with four threads, so a call that never returns
+    doesn't degrade SCAN — it takes the whole service down.
+    """
+
+    def setUp(self):
+        self._saved = (local_vision._timeouts, local_vision._breaker_open)
+        local_vision._timeouts = 0
+        local_vision._breaker_open = False
+
+    def tearDown(self):
+        local_vision._timeouts, local_vision._breaker_open = self._saved
+
+    def test_a_hung_inference_gives_up_instead_of_blocking(self):
+        def never_returns(_image):
+            time.sleep(30)
+
+        with patch.object(local_vision, "_run_detect", never_returns), \
+             patch.object(local_vision, "INFERENCE_TIMEOUT_S", 0.3):
+            t0 = time.time()
+            out = local_vision.detect(frame_bytes(), scene_prompt="A rusted silo rises.")
+            elapsed = time.time() - t0
+
+        self.assertLess(elapsed, 5.0,
+                        "detect() must abandon a hung inference, not wait on it")
+        # The prompt-anchored half still works: a wedged detector costs pixel
+        # accuracy, not the whole feature.
+        self.assertIn("rusted silo", [o["label"] for o in out])
+
+    def test_repeated_hangs_trip_the_breaker(self):
+        def never_returns(_image):
+            time.sleep(30)
+
+        with patch.object(local_vision, "_run_detect", never_returns), \
+             patch.object(local_vision, "INFERENCE_TIMEOUT_S", 0.2), \
+             patch.object(local_vision, "_MAX_TIMEOUTS", 2):
+            for _ in range(2):
+                local_vision.detect(frame_bytes(), scene_prompt="A silo.")
+
+        self.assertTrue(local_vision._breaker_open,
+                        "consecutive hangs must stop us leaking a thread per scan")
+        self.assertFalse(local_vision.available(),
+                         "a tripped breaker must report unavailable so "
+                         "DETECT_BACKEND=auto can fall back to Gemini")
+
+    def test_the_breaker_short_circuits_further_inference(self):
+        calls = []
+        local_vision._breaker_open = True
+        with patch.object(local_vision, "_run_detect",
+                          lambda image: calls.append(1)):
+            local_vision.detect(frame_bytes(), scene_prompt="A silo.")
+        self.assertEqual(calls, [], "no inference should be attempted once tripped")
 
 
 class TestEngineIntegration(unittest.TestCase):

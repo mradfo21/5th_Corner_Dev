@@ -556,8 +556,12 @@ def _load_detector():
 
 
 def available() -> bool:
-    """True if local detection can actually run right now."""
-    if _load_failed:
+    """True if local detection can actually run right now.
+
+    False once the timeout breaker has tripped, so DETECT_BACKEND=auto moves to
+    Gemini instead of paying a doomed 4 s wait on every scan.
+    """
+    if _load_failed or _breaker_open:
         return False
     with _detector_lock:
         return _load_detector() is not None
@@ -583,6 +587,9 @@ def status() -> Dict[str, Any]:
         "model_present": model_path().exists(),
         "min_score": MIN_SCORE,
         "anchor_prompt_nouns": ANCHOR_PROMPT_NOUNS,
+        "timeout_s": INFERENCE_TIMEOUT_S,
+        "timeouts": _timeouts,
+        "breaker_open": _breaker_open,
         "error": _load_error or None,
     }
 
@@ -754,18 +761,73 @@ def _decode_rgb(image_bytes: bytes):
     return arr, arr.shape[1], arr.shape[0]
 
 
+# Hard ceiling on one inference. Locally this work takes ~16 ms, so anything in
+# the seconds is already pathological — but on Render it was observed not slow
+# but HUNG, never returning at all. /api/detect is polled roughly every 2.5 s by
+# photo targeting against a worker with four threads, so a call that never
+# returns does not degrade SCAN, it takes the entire service down. A native
+# hang cannot be cancelled, so the deadline is enforced by waiting on a separate
+# thread: the request gives up and answers, and the stuck thread is abandoned
+# rather than being allowed to hold a request thread hostage.
+INFERENCE_TIMEOUT_S = float(os.getenv("DETECT_LOCAL_TIMEOUT_S", "4.0"))
+
+# After this many timeouts the backend stops being asked at all. One hang means
+# the next call almost certainly hangs too (it will queue behind the stuck one on
+# _detector_lock), and leaking a thread per attempt is how a slow box becomes a
+# dead one. Tripping the breaker degrades SCAN to empty results, or to Gemini
+# under DETECT_BACKEND=auto.
+_MAX_TIMEOUTS = int(os.getenv("DETECT_LOCAL_MAX_TIMEOUTS", "2"))
+_timeouts = 0
+_breaker_open = False
+
+
+def _run_detect(image):
+    """Inference under the process-wide lock. Called on a throwaway thread."""
+    with _detector_lock:
+        detector = _load_detector()
+        if detector is None:
+            return None
+        return detector.detect(image)
+
+
 def _mediapipe_boxes(rgb) -> List[Tuple[str, float, Tuple[float, float, float, float]]]:
     """Run the detector. Returns [(coco_label, score, (x0, y0, x1, y1) in 0..1)]."""
+    global _timeouts, _breaker_open
+
+    import concurrent.futures
+
     import mediapipe as mp
+
+    if _breaker_open:
+        return []
 
     height, width = rgb.shape[0], rgb.shape[1]
     image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
 
-    with _detector_lock:
-        detector = _load_detector()
-        if detector is None:
-            return []
-        result = detector.detect(image)
+    # A fresh single-use executor, NOT a shared pool: if the call hangs, its
+    # thread is unrecoverable, and a shared pool would be permanently one worker
+    # poorer each time until it had none left.
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1,
+                                                 thread_name_prefix="local-detect")
+    future = pool.submit(_run_detect, image)
+    try:
+        result = future.result(timeout=INFERENCE_TIMEOUT_S)
+    except concurrent.futures.TimeoutError:
+        _timeouts += 1
+        _log(f"inference exceeded {INFERENCE_TIMEOUT_S:.1f}s and was abandoned "
+             f"({_timeouts}/{_MAX_TIMEOUTS})")
+        if _timeouts >= _MAX_TIMEOUTS:
+            _breaker_open = True
+            _log("giving up on local detection for this process — every further "
+                 "call would queue behind the stuck one. SCAN will fall back "
+                 "per DETECT_BACKEND.")
+        return []
+    finally:
+        # Never block on a wedged thread while tearing the executor down.
+        pool.shutdown(wait=False)
+
+    if result is None:
+        return []
 
     out: List[Tuple[str, float, Tuple[float, float, float, float]]] = []
     for det in getattr(result, "detections", None) or []:

@@ -143,9 +143,20 @@ abandoned armored personnel carrier", "Photograph the rusted silos").
 
 ## Configuration
 
+> **Not on by default.** `DETECT_BACKEND` ships as `gemini`. On Render, inference
+> that takes ~16 ms locally was observed to **hang indefinitely** — and since
+> `/api/detect` is polled roughly every 2.5 s by photo targeting against a worker
+> with four threads, hung calls don't degrade SCAN, they take the whole service
+> down. Until that is understood, local is opt-in via `DETECT_BACKEND=local`.
+> It is solid locally, and it remains the only backend that works with no API key
+> at all. A 4 s deadline plus a two-strike breaker (below) means an opt-in can no
+> longer wedge a worker even if the hang recurs.
+
 | variable | default | meaning |
 |---|---|---|
-| `DETECT_BACKEND` | `local` | `local`, `gemini`, or `auto` (local when it can run, Gemini otherwise) |
+| `DETECT_BACKEND` | `gemini` | `local`, `gemini`, or `auto` (local when it can run, Gemini otherwise) |
+| `DETECT_LOCAL_TIMEOUT_S` | `4.0` | hard deadline on one inference; the stuck thread is abandoned, the request answers |
+| `DETECT_LOCAL_MAX_TIMEOUTS` | `2` | timeouts before local is switched off for the process |
 | `DETECT_MODEL_PATH` | `models/efficientdet_lite0_int8.tflite` | swap in another `.tflite` |
 | `DETECT_LOCAL_MIN_SCORE` | `0.22` | MediaPipe confidence floor |
 | `DETECT_LOCAL_ANCHOR` | `1` | `0` emits only pixel-measured tags, skipping step 6 |
@@ -187,6 +198,12 @@ anchored vertically — sky things high, terrain low, structures across the midd
 - **Detection is serialized.** MediaPipe's detector is not thread-safe, so one
   process-wide instance sits behind a lock. At 16 ms per call and a ~2.5 s scan
   cadence, threads effectively never queue.
+- **It hangs on Render, cause not yet identified.** The model loads
+  (`/api/health` reports `available: true`) and then `detect()` never returns,
+  while the same code and model answer in ~16 ms locally and survive 96
+  concurrent calls across 8 threads. Memory is a candidate — the backend adds
+  ~130 MB RSS (72 MB → 202 MB at boot) on a single-worker box — as is CPU quota
+  starving TFLite's XNNPACK thread pool. This is why the default is `gemini`.
 
 ## Why server-side and not in the browser
 
