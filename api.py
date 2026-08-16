@@ -1080,8 +1080,11 @@ def api_reactor_config():
 
     `available_models` lists the world models the client can switch between
     live, mid-game; `world_model` is the server default. `model_name` is kept
-    for back-compat (the SDK name of the default model).
+    for back-compat (the SDK name of the default model). `camera` is the
+    authored cast-sheet camera (see /api/camera), which the world build and
+    every live re-steer have to honour.
     """
+    import game_identity
     default_id = getattr(engine, "REACTOR_WORLD_MODEL", "happy-oyster")
     models = getattr(engine, "AVAILABLE_WORLD_MODELS", [])
     default_sdk = engine.world_model_sdk_name(default_id) if hasattr(engine, "world_model_sdk_name") \
@@ -1092,6 +1095,7 @@ def api_reactor_config():
         "model_name": default_sdk,
         "world_model": default_id,
         "available_models": models,
+        "camera": game_identity.live_camera_contract(),
         # When true the client may connect to ANY model name a tester types in,
         # even one not in available_models — so a newly shipped Reactor model is
         # usable the moment it exists, with no server change. It also tells the
@@ -2853,6 +2857,26 @@ def serve_studio_reference(ref_id):
     except Exception as e:
         traceback.print_exc()
         return error_response("Failed to serve the reference image", str(e))
+
+
+@app.route('/api/camera', methods=['GET'])
+def api_camera():
+    """The authored camera, as the PLAYING client needs it.
+
+    Not admin-gated, because the audience is the game itself rather than the
+    editor: the realtime renderer builds its world with a `perspective` of its
+    own and re-steers that world on every movement and nudge between turns, so
+    without this the browser was inventing first-person camera language while
+    the server sent third-person prompts. Carries no authored prose — just the
+    camera and the protagonist's name, both of which are already visible in the
+    scene the player is looking at.
+    """
+    try:
+        import game_identity
+        return jsonify(success_response({"camera": game_identity.live_camera_contract()}))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to read the camera", str(e))
 
 
 # ═══════════════════════════════════════════════════════════════════

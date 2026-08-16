@@ -2231,6 +2231,129 @@ class TestRealtimeRenderer(unittest.TestCase):
         finally:
             page.close()
 
+    # The cast sheet's camera, as the client receives it (/api/camera). Routed
+    # rather than written to the server's prompt file so the suite never mutates
+    # the committed simulation_prompts.json; the compile side of this contract is
+    # covered offline by test_world_authoring.LiveCameraContractTestCase.
+    THIRD_PERSON_CAMERA = {
+        "mode": "third_person",
+        "label": "Third person",
+        "phrase": "third-person",
+        "perspective": "third_person",
+        "shows_character": True,
+        "subject": "Wren Alvarez",
+        "vantage": "third-person follow-cam vantage, the camera several metres back",
+        "motion_clause": "the camera follows as Wren Alvarez",
+        "movement_clause": ("Smooth continuous third-person motion, the camera travelling "
+                            "with Wren Alvarez, who stays in frame as the environment flows past."),
+        "scene_floor": "Third-person cinematic view of the current scene, Wren Alvarez in frame.",
+    }
+
+    def _route_camera(self, page, camera):
+        page.route(
+            "**/api/camera*",
+            lambda route: route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps({"success": True, "data": {"camera": camera}}),
+            ),
+        )
+
+    def test_authored_third_person_camera_builds_a_third_person_world(self):
+        """The bug this exists for: authoring a character and a third-person
+        camera redirected every still frame and every server prompt, and the
+        world was still BUILT first person — so the character the player wrote
+        was never in the live frame.
+
+        Happy Oyster fixes `perspective` at create_world, so this is the whole
+        difference between walking around as your character and walking around
+        as a pair of eyes."""
+        page = self._new_realtime_page()
+        try:
+            self._route_camera(page, self.THIRD_PERSON_CAMERA)
+            self._seed_live_scene(page)
+            builds = page.evaluate(
+                "(window.__MOCK_CMD_LOG__||[]).filter(c => c.name === 'create_world')")
+            self.assertTrue(builds, f"world was never built. logs:\n{self._dump_logs()}")
+            self.assertEqual(
+                builds[0]["data"].get("perspective"), "third_person",
+                "the world was built with the wrong camera — the authored cast sheet "
+                "never reached create_world")
+        except Exception:
+            print("\n=== REACTOR CONSOLE LOG (authored-camera) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
+    def test_live_resteers_speak_the_authored_camera(self):
+        """Between turns the BROWSER writes the prompts: every movement, nudge
+        and scene floor. Those were hardcoded first person, so a third-person
+        world spent the whole gap being argued out of its own camera."""
+        page = self._new_realtime_page()
+        try:
+            self._route_camera(page, self.THIRD_PERSON_CAMERA)
+            self._seed_live_scene(page)
+
+            # Record what a live nudge would steer with.
+            page.evaluate("""() => {
+              window.__STEERED__ = [];
+              const inner = window.ReactorRenderer.applyScene;
+              window.ReactorRenderer.applyScene = (scene) => {
+                window.__STEERED__.push(scene && scene.prompt);
+                return inner(scene);
+              };
+            }""")
+            page.evaluate("window.Renderer.steerRealtime('push open the hatch')")
+            steered = page.evaluate("window.__STEERED__ || []")
+            self.assertTrue(steered, "the nudge never reached the renderer")
+            self.assertIn("the camera follows as Wren Alvarez", steered[-1])
+            self.assertNotIn("the view shifts as you", steered[-1])
+
+            # And the floor a re-steer builds on when there is no scene yet.
+            floor = page.evaluate("""() => {
+              const keep = { base: window.Renderer.lastBase, scene: window.Renderer.lastScene };
+              window.Renderer.lastBase = null;
+              window.Renderer.lastScene = null;
+              const prev = window.ReactorRenderer.getPrompt;
+              window.ReactorRenderer.getPrompt = () => null;
+              const out = window.Renderer.steerBase();
+              window.ReactorRenderer.getPrompt = prev;
+              window.Renderer.lastBase = keep.base;
+              window.Renderer.lastScene = keep.scene;
+              return out;
+            }""")
+            self.assertIn("Wren Alvarez", floor)
+            self.assertNotIn("First-person", floor)
+        except Exception:
+            print("\n=== REACTOR CONSOLE LOG (authored-camera-steer) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
+    def test_editor_camera_change_rebuilds_the_running_world(self):
+        """Picking a camera mid-run has to land on the turn you picked it, and
+        it has to beat a VIEW toggle flipped in some earlier session — a stale
+        per-browser override outliving the editor is exactly how "I selected
+        third person and nothing happened" happens."""
+        page = self._new_realtime_page()
+        try:
+            self._seed_live_scene(page)   # boots first person (server defaults)
+            page.evaluate("window.ReactorRenderer.setPerspective('first_person')")
+            self.assertEqual(page.evaluate("window.ReactorRenderer.getPerspective()"), "first_person")
+
+            page.evaluate("window.__MOCK_CMD_LOG__ = []")
+            page.evaluate("(c) => window.__Camera.apply(c)", self.THIRD_PERSON_CAMERA)
+            self.assertEqual(page.evaluate("window.ReactorRenderer.getPerspective()"), "third_person")
+            page.wait_for_function(
+                """() => (window.__MOCK_CMD_LOG__||[]).some(
+                     c => c.name === 'create_world' && c.data.perspective === 'third_person')""",
+                timeout=8000)
+        except Exception:
+            print("\n=== REACTOR CONSOLE LOG (editor-camera) ===\n" + self._dump_logs())
+            raise
+        finally:
+            page.close()
+
     def test_missing_guide_image_falls_back_to_stills_instead_of_black(self):
         """The "it just draws black" failure.
 

@@ -1730,6 +1730,78 @@
   }
 
   // ------------------------------------------------------------------
+  // Camera — the authored cast-sheet camera, on the client.
+  //
+  // The browser is not a passive display in realtime mode: it builds the world
+  // (create_world takes its own `perspective`) and re-steers it on every
+  // movement, nudge and idle drift between turns. All of that text used to be
+  // hardcoded first person — "the view shifts as you…", "Smooth continuous
+  // first-person motion" — so selecting a third-person camera in the editor
+  // changed every still frame and every server prompt, then lost the argument
+  // to the client on the very next step the player took.
+  //
+  // The server compiles the phrasing once (game_identity.live_camera_contract)
+  // and hands it over through /api/camera; everything here is a lookup with a
+  // first-person fallback identical to the strings this replaced, so a failed
+  // fetch degrades to the shipped behavior instead of an empty prompt.
+  // ------------------------------------------------------------------
+  const Camera = {
+    contract: null,
+
+    async load() {
+      try {
+        const data = await getJSON("/api/camera");
+        const payload = (data && (data.data || data)) || {};
+        if (payload.camera) this.apply(payload.camera);
+      } catch (err) {
+        console.warn("[standalone] camera fetch failed; assuming first person", err);
+      }
+      return this.contract;
+    },
+
+    // Adopt a camera (boot fetch, or an editor save pushing the new one in).
+    // Rebuilds the live world when the perspective it was BUILT with changes —
+    // Happy Oyster fixes that at creation, so without the rebuild the switch
+    // only takes effect at the next hard cut.
+    apply(camera) {
+      if (!camera) return false;
+      this.contract = camera;
+      let changed = false;
+      try {
+        if (Renderer.reactorAvailable() && window.ReactorRenderer.setAuthoredCamera) {
+          changed = window.ReactorRenderer.setAuthoredCamera(camera);
+        }
+      } catch (_) {}
+      try { HappyOysterOptions.update(); } catch (_) {}
+      if (changed) {
+        try { window.ReactorRenderer.rebuildWorld(); } catch (_) {}
+      }
+      return changed;
+    },
+
+    showsCharacter() { return !!(this.contract && this.contract.shows_character); },
+    // "the camera follows as Wren Alvarez" / "the view shifts as you"
+    motionClause() {
+      return (this.contract && this.contract.motion_clause) || "the view shifts as you";
+    },
+    movementClause() {
+      return (this.contract && this.contract.movement_clause) ||
+        "Smooth continuous first-person motion, the environment flowing past.";
+    },
+    sceneFloor() {
+      return (this.contract && this.contract.scene_floor) ||
+        "First-person cinematic view of the current scene.";
+    },
+    vantage() {
+      return (this.contract && this.contract.vantage) ||
+        "first-person eye-level walking vantage";
+    },
+    // The player character's name, or "" when nobody has been authored.
+    subject() { return (this.contract && this.contract.subject) || ""; },
+  };
+  try { window.__Camera = Camera; } catch (_) {}
+
+  // ------------------------------------------------------------------
   // Renderer facade — swap between the classic still-image renderer and the
   // Reactor realtime world-model renderer without the rest of the game caring.
   // "image"   -> Gemini still per turn (default; existing behavior).
@@ -2392,7 +2464,7 @@
         || (this.lastScene && this.lastScene.prompt)
         || (typeof state !== "undefined" && state.lastScenePrompt)
         || fromReactor
-        || "First-person cinematic view of the current scene.";
+        || Camera.sceneFloor();
     },
 
     steerRealtime(text, where) {
@@ -2423,7 +2495,9 @@
       //         the world, not instructions about itself.
       //     So we append the concrete event sentence as-is, anchored in physical
       //     space (see objectAnchorPhrase), and let it carry its own weight.
-      //   • default (freeform SHAPE tool): a first-person camera / POV nudge.
+      //   • default (freeform SHAPE tool): a camera / POV nudge, phrased for
+      //     the authored camera — the same clause the server uses for the
+      //     turn's own action beat (game_identity.motion_clause).
       let beat;
       if (where && where.kind === "event") {
         const sentence = anchor ? anchor + ", " + act : act;
@@ -2431,7 +2505,7 @@
       } else {
         beat = anchor
           ? "Motion: " + anchor + ", " + act + "."
-          : "Motion: the view shifts as you " + act + ".";
+          : "Motion: " + Camera.motionClause() + " " + act + ".";
       }
       window.ReactorRenderer.applyScene({
         prompt: base + " " + beat,
@@ -2465,7 +2539,8 @@
       return true;
     },
 
-    // MOVEMENT (joystick / WASD): steer the live video as a first-person CAMERA.
+    // MOVEMENT (joystick / WASD): steer the live video as a CAMERA, phrased for
+    // whichever camera the game was authored with (see Camera.movementClause).
     // Like steerRealtime, this is a prompt hot-swap on the running stream — no
     // new guide image, no backend turn — but the beat is a camera-motion clause
     // (`camera` describes where the viewpoint travels) so the world reads as a
@@ -4293,6 +4368,9 @@
         identity = payload.identity || {};
         identitySchema = payload.identity_schema || [];
         identityPreview = payload.identity_preview || null;
+        // Loading a world or a level can swap the camera out from under a
+        // running session; the renderer has to hear about that too.
+        if (identityPreview && identityPreview.camera) Camera.apply(identityPreview.camera);
         // Capture the run's starting prompts ONCE, as the Revert target. The
         // cast sheet lives in the same prompt file, so Revert has to restore it
         // too or you'd revert the writing and keep a mismatched protagonist.
@@ -5128,6 +5206,11 @@
       if (!data) return;
       if (data.identity) identity = data.identity;
       if (data.preview) identityPreview = data.preview;
+      // The camera is not just prompt text: the live world is BUILT with a
+      // perspective and re-steered with camera-specific language, so a save
+      // has to reach the renderer too or picking third person mid-run changes
+      // the stills and leaves the video exactly as it was.
+      if (data.preview && data.preview.camera) Camera.apply(data.preview.camera);
       render();
       try { refreshDirective(true); } catch (_) {}
     }
@@ -6286,8 +6369,7 @@
       lastFallbackKey = label; lastFallbackTs = now;
       const phrase = fallbackPhrase(st);
       if (!phrase) return;
-      const ok = Renderer.steerMovement("Camera: " + phrase +
-        ". Smooth continuous first-person motion, the environment flowing past.");
+      const ok = Renderer.steerMovement("Camera: " + phrase + ". " + Camera.movementClause());
       if (ok) RtLog.push("prompt", "\u25B8 camera \u00B7 " + label.toLowerCase());
       else if (!warnedNotReady) { warnedNotReady = true; showRendererToast("Live video is warming up \u2014 explore in a moment"); }
     }
@@ -6671,7 +6753,9 @@
   // ------------------------------------------------------------------
   // HappyOysterOptions — the two session-fixed knobs Happy Oyster exposes at
   // world creation, surfaced in the WORLD MODEL panel:
-  //   • VIEW — camera perspective: first-person (default) or third-person.
+  //   • VIEW — camera perspective. Follows the camera authored in the editor
+  //     (see Camera); flipping it here is a per-browser override of that,
+  //     until the editor sets a camera again.
   //   • MODE — the EXPERIENCE: Adventure (walk/look/interact — the game) or
   //     Director (steer the scene with text + pause/resume/rewind).
   // Both are fixed for a world's lifetime, so changing one persists the choice
@@ -10013,7 +10097,8 @@
     const rtPrompt = prompt ||
       "Night campsite in high-desert scrub. Campfire burns, embers drift, " +
       "a dusty red 1990s jeep parked at the edge of the firelight. " +
-      "First-person handheld view. Firelight flickers.";
+      Camera.vantage().charAt(0).toUpperCase() + Camera.vantage().slice(1) +
+      ", handheld. Firelight flickers.";
     try {
       Renderer.lastScene = {
         prompt: rtPrompt,
@@ -12180,8 +12265,12 @@
       const bridgeFocus = dest
         ? "The player has just committed to travel to the " + dest + ". Speak ONE short, tense bridging line \u2014 the trip in motion, the world closing behind them, the next place looming \u2014 as the scene fades to black."
         : "The player has just committed to travel to a new location. Speak ONE short, tense bridging line \u2014 the trip in motion, the world closing behind them, the next place looming \u2014 as the scene fades to black.";
+      // "the reporter" is the SHIPPED protagonist. Once someone has authored a
+      // character, naming them here is the difference between a confession from
+      // the player's own character and one from a stranger the game replaced.
+      const who = Camera.subject() || "the reporter";
       const truthFocus =
-        "REVEAL A DARK TRUTH. Speak ONE short first-person confession from the reporter \u2014 the BURIED reason they're really out here. Not the assignment, not the cover story: the private motive they haven't admitted to themselves. A guilt, a debt, a person they lost, a thing they did, a thing they're chasing that will destroy them. Concrete and specific to this world's premise + recent events. Ominous, quiet, honest. First person, one short sentence, no meta.";
+        "REVEAL A DARK TRUTH. Speak ONE short first-person confession from " + who + " \u2014 the BURIED reason they're really out here. Not the assignment, not the cover story: the private motive they haven't admitted to themselves. A guilt, a debt, a person they lost, a thing they did, a thing they're chasing that will destroy them. Concrete and specific to this world's premise + recent events. Ominous, quiet, honest. First person, one short sentence, no meta.";
       AgentLog.push("narrator", "transition\u2026", "bridge + dark truth");
       try {
         // One request carries BOTH focuses (follow_focus is appended server-
@@ -13946,6 +14035,9 @@
     Movement.refreshHints();
     VerbBar.init();
     HappyOysterOptions.init();
+    // Learn which camera the game was authored with before the first scene
+    // lands, so the world is BUILT with it rather than corrected afterwards.
+    Camera.load();
     document.addEventListener("keydown", onKeydown);
     // Release joystick directions on keyup so held W/A/S/D/Q/E/arrows stop the
     // moment the key lifts (movement is a "hold to travel" control). Shift ends

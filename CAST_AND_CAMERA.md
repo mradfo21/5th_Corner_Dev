@@ -173,6 +173,18 @@ A character sheet is only attached when the body or hands can appear; otherwise
 it just wastes a reference slot and tempts the model into putting a stranger in
 frame.
 
+Every image provider gets them, not just the default one — a plate that only
+survives on Gemini is a plate that vanishes the moment someone switches presets
+for speed:
+
+| Provider | How |
+|---|---|
+| Gemini | Behind the continuity frame(s); frame 0 is built out of the plates. If img2img comes back empty it retries from the plates **alone** rather than dropping to text-to-image, which used to make the recovery frame the one frame in the run without the character in it |
+| Krea | Behind the continuity frame(s) as style references; frame 0 seeded from them |
+| fal | SDXL takes exactly one reference, so continuity keeps the slot — but on frame 0 there is nothing to continue and the plate takes it |
+| Veo | As reference frames. Deliberately NOT as `first_frame_path`: that is the literal first frame of a generated video, and a portrait there produces eight seconds of that portrait |
+| OpenAI | Appended to the `/images/edits` reference list, which also routes an authored frame 0 through edits rather than a bare generate |
+
 ---
 
 ## The compact half of the sheet
@@ -190,6 +202,9 @@ yours. So each has a one-line counterpart:
 | Helper | What it is |
 |---|---|
 | `vantage()` | The camera rig as one clause: *"third-person over-the-shoulder vantage, the camera trailing a metre behind the character"* |
+| `motion_clause()` | How to say "the player just did X": *"the camera follows as Wren Alvarez"* / *"the view shifts as you"* |
+| `movement_clause()` | The style note on a camera-motion re-steer |
+| `scene_floor()` | The neutral prompt a live re-steer falls back to when there is no scene yet |
 | `place_line()` | The level with palette and landmarks |
 | `place_summary()` | Just the level's name and description, for prompts that carry their own look |
 | `protagonist_line()` | The character with appearance, wardrobe, and gear |
@@ -198,7 +213,49 @@ yours. So each has a one-line counterpart:
 | `structure_lines()` | WHO / WHERE / ENVIRONMENT / TONE for the world-evolution skeleton |
 
 All of them return `""` when nothing is authored, so callers concatenate
-unconditionally and the shipped text stands.
+unconditionally and the shipped text stands. (`motion_clause`,
+`movement_clause` and `scene_floor` are the exception: they always return a
+complete clause, because their callers are substituting them for a sentence
+rather than appending to one — at defaults it's the first-person sentence that
+was previously hardcoded there.)
+
+---
+
+## The half the browser writes
+
+The live world model is the default renderer, and the browser is not a passive
+display in front of it. It **builds** the world — `create_world` takes its own
+`perspective`, fixed for that world's lifetime — and it **re-steers** that world
+on every movement, nudge and idle drift between turns, composing those prompts
+itself so the video reacts now instead of at the end of the next turn.
+
+None of that knew a cast sheet existed. `perspective` came from a per-browser
+localStorage toggle defaulting to first person, and the re-steers were hardcoded
+first-person prose (*"the view shifts as you…"*, *"Smooth continuous
+first-person motion"*). So authoring a character and asking to see them
+redirected every still frame and every server prompt, and then the client built
+a first-person world out of them and spent the gaps between turns arguing it
+back — with nothing on screen explaining why the character never appeared.
+
+`game_identity.live_camera_contract()` is the fix: one small object, compiled
+server-side, carrying the perspective the world is built with plus the clauses
+the client composes re-steers from.
+
+| Delivered by | When |
+|---|---|
+| `GET /api/camera` | At boot, before the first scene lands, so the world is built with the right camera rather than corrected afterwards. Not admin-gated — the audience is the game, and it carries no authored prose |
+| `GET /api/reactor/config` | At connect, so the renderer has it without a second round trip |
+| `preview()["camera"]` | On every editor save, pushed straight into the running renderer — the client only fetches `/api/camera` once |
+
+The renderer resolves its perspective `?perspective=` → the **VIEW** switch in
+the WORLD MODEL panel → the authored camera → first person. Picking a camera in
+the editor clears the VIEW override and rebuilds the world, so the switch lands
+on the turn you made it: a toggle flipped in some earlier session outliving the
+editor is the same trap the `enabled` flag used to be.
+
+The world model has one first/third switch and no vocabulary for
+over-the-shoulder versus locked-off, so every mode that puts the body on screen
+maps to `third_person` and the finer framing rides in the prompt.
 
 ---
 
@@ -210,7 +267,9 @@ unconditionally and the shipped text stands.
 | `engine._gen_image_impl` | Attaches identity plates + their annotation; routes frame 0 through img2img when plates exist |
 | `engine._flipbook_camera_block` / `_flipbook_action_block` / `_flipbook_shot_block` | A 16-panel grid is ONE image, so its wrapper blocks are inherited by every panel. They shipped hard-wired to a chest-mounted body cam that invalidated "camera following a character" — the exact shot the third-person modes ask for |
 | `engine.build_realtime_base` | `world_anchor` + the level's geography. This path has no negative prompt, no directive, and no reference plates, so the anchor is the entire contract |
-| `engine.realtime_action_beat` | Follows the character instead of the eyes in third person |
+| `engine.realtime_action_beat` | Follows the character instead of the eyes in third person — off the same `motion_clause` the browser uses, so the two halves of the live loop can't drift apart |
+| `reactor_renderer.js` | `create_world({perspective})`, resolved from the authored camera |
+| `standalone.js` `Camera` | The contract on the client: the scene floor, the nudge beat, and the movement style note |
 | `engine._vision_analyze_all` | `scene_grounding` on top, and the worked example is no longer a Horizon truck on sandy desert. Its output is the spatial anchor for the NEXT frame, so this is a continuity loop — whatever vocabulary it answers in is what the next image is built from |
 | `engine._detect_self_rule` | SCAN ignores your hands in first person, and your character in third — otherwise the protagonist gets tagged as an anonymous figure you can walk up to and talk to |
 | `engine._perceive_danger` | Grades the danger to whoever the camera is actually watching |
@@ -254,6 +313,8 @@ rather than a space so removal stays surgical.
 | `/api/admin/studio/reference` | POST | Store a base64 data-URL plate; `attach` wires it into the slot |
 | `/api/admin/studio/reference` | DELETE | Delete a plate and unwire it |
 | `/api/studio/reference/<id>` | GET | Serve a plate (not admin-gated — inert images behind unguessable ids, rendered in plain `<img>` tags by an editor that has no token to attach) |
+| `/api/camera` | GET | The camera as the *playing* client needs it (not admin-gated — see "The half the browser writes") |
+| `/api/reactor/config` | GET | Now also carries `camera` |
 
 Every write normalizes through `game_identity._normalize`, so unknown fields are
 dropped, types are coerced, free text is capped at 600 chars, and reference ids

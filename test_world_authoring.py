@@ -218,6 +218,64 @@ class RealtimeWorldModelTestCase(_AuthoredWorldFixture):
         )
 
 
+class LiveCameraContractTestCase(_AuthoredWorldFixture):
+    """The camera as the BROWSER receives it.
+
+    The realtime renderer builds the navigable world itself (create_world takes
+    its own `perspective`, fixed for that world's lifetime) and re-steers it on
+    every movement and nudge between turns. All of that used to be hardcoded
+    first-person text on the client, so a third-person cast sheet redirected
+    every still frame and every server prompt and then lost the argument on the
+    player's next step. These are the strings that stop that happening.
+    """
+
+    def test_contract_is_first_person_at_defaults(self):
+        c = gi.live_camera_contract()
+        self.assertEqual(c["perspective"], "first_person")
+        self.assertFalse(c["shows_character"])
+        self.assertEqual(c["subject"], "")
+        self.assertEqual(c["motion_clause"], "the view shifts as you")
+        self.assertIn("first-person", c["movement_clause"])
+        self.assertEqual(c["scene_floor"], "First-person cinematic view of the current scene.")
+
+    def test_contract_carries_the_camera_and_the_subject(self):
+        self._author_world(mode="third_person")
+        c = gi.live_camera_contract()
+        self.assertEqual(c["perspective"], "third_person")
+        self.assertTrue(c["shows_character"])
+        self.assertEqual(c["subject"], "Wren Alvarez")
+        for clause in (c["motion_clause"], c["movement_clause"], c["scene_floor"]):
+            self.assertIn("Wren Alvarez", clause)
+            self.assertNotIn("first-person", clause.lower())
+
+    def test_every_mode_that_shows_a_body_builds_a_third_person_world(self):
+        """The world model has one first/third switch and no vocabulary for
+        over-the-shoulder vs locked-off, so the finer framing rides in the
+        prompt and the switch just has to be right."""
+        for mode, cfg in gi.PERSPECTIVE_MODES.items():
+            gi.save_spec({gi.CAMERA_KEY: {"mode": mode}})
+            expected = "third_person" if cfg["shows_body"] else "first_person"
+            self.assertEqual(gi.world_model_perspective(), expected, mode)
+
+    def test_client_and_server_phrase_an_action_identically(self):
+        """The client injects its own beat between turns; the server injects one
+        with the turn. Different wording for the same event is how a live world
+        gets talked out of the camera it was built with."""
+        for mode in ("first_person", "over_shoulder"):
+            self._author_world(mode=mode)
+            clause = gi.live_camera_contract()["motion_clause"]
+            self.assertEqual(
+                engine.realtime_action_beat("Vault the railing"),
+                f"Motion: {clause} vault the railing.",
+            )
+
+    def test_contract_rides_along_with_the_editor_preview(self):
+        """An editor save has to be able to push the new camera straight into a
+        running world — the client only fetches /api/camera at boot."""
+        self._author_world(mode="third_person")
+        self.assertEqual(gi.preview()["camera"], gi.live_camera_contract())
+
+
 class StillImagePromptTestCase(_AuthoredWorldFixture):
     """The full still-image prompt, composed the way a turn composes it:
     build_image_prompt() then the VHS wrapper."""
@@ -505,6 +563,173 @@ class CastSheetSurfaceTestCase(unittest.TestCase):
                 len(shown), 6,
                 f"{block['id']} shows {len(shown)} essential fields ({shown}) — "
                 "split it or demote some to advanced.")
+
+
+class ReferencePlateDeliveryTestCase(_AuthoredWorldFixture):
+    """Does the uploaded character sheet actually reach the image call?
+
+    Every other test here asserts on prompt TEXT. This one runs the real
+    `_gen_image_impl` with the providers stubbed at their module boundary and
+    asserts on the reference-image list they were handed — the part a player
+    checks by looking at the picture and finding a stranger in it. Three ways
+    it used to be dropped: only the Gemini branch attached plates at all, the
+    img2img recovery path fell back to text-to-image, and frame 0 on the
+    non-Gemini providers had a free reference slot it never spent.
+    """
+
+    PNG = (
+        "data:image/png;base64,"
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+    )
+
+    def setUp(self):
+        super().setUp()
+        self._orig_refs_dir = gi.REFERENCES_DIR
+        gi.REFERENCES_DIR = Path(self._tmpdir.name) / "references"
+        self.plate = gi.save_reference(self.PNG, "character", "portrait.png")
+        self.plate_path = str(gi.reference_path(self.plate["id"]))
+
+        # The image path summarizes world state through the LLM; stub it so a
+        # render never reaches the network.
+        self._orig_summaries = (engine.summarize_world_state,
+                                engine.summarize_world_prompt_for_image)
+        engine.summarize_world_state = lambda *a, **k: ""
+        engine.summarize_world_prompt_for_image = lambda *a, **k: ""
+
+        self._orig_provider = engine.ai_provider_manager.get_image_provider
+        self.calls = []
+
+    def tearDown(self):
+        gi.REFERENCES_DIR = self._orig_refs_dir
+        engine.summarize_world_state, engine.summarize_world_prompt_for_image = self._orig_summaries
+        engine.ai_provider_manager.get_image_provider = self._orig_provider
+        super().tearDown()
+
+    def _author_with_plate(self, mode="third_person"):
+        gi.save_spec({
+            gi.CHARACTER_KEY: dict(CHARACTER, reference_images=[self.plate["id"]]),
+            gi.CAMERA_KEY: {"mode": mode},
+        })
+
+    def _use_provider(self, name):
+        engine.ai_provider_manager.get_image_provider = lambda: name
+
+    def _record(self, label, out="/tmp/frame.png"):
+        """A stub provider that records the references it was given."""
+        def stub(*args, **kwargs):
+            refs = kwargs.get("reference_image_path") or kwargs.get("reference_frames") or []
+            if isinstance(refs, str):
+                refs = [refs]
+            self.calls.append((label, list(refs)))
+            return out
+        return stub
+
+    def _render(self, frame_idx=0, history=None):
+        return engine._gen_image_impl(
+            caption="Water sluices off the deck plating.",
+            mode="camcorder",
+            choice="Climb the gantry ladder",
+            frame_idx=frame_idx,
+            dispatch="Your boots find the rung.",
+            world_prompt="",
+            session_id="test_plates",
+            history_ref=history,
+        )
+
+    def _patch(self, module, **stubs):
+        for name, stub in stubs.items():
+            self.addCleanup(setattr, module, name, getattr(module, name))
+            setattr(module, name, stub)
+
+    def test_gemini_frame_zero_is_built_from_the_plate(self):
+        import gemini_image_utils as giu
+        self._author_with_plate()
+        self._use_provider("gemini")
+        self._patch(giu,
+                    generate_gemini_img2img=self._record("img2img"),
+                    generate_with_gemini=self._record("t2i"))
+        self._render(frame_idx=0)
+        self.assertEqual(self.calls, [("img2img", [self.plate_path])])
+
+    def test_gemini_recovery_keeps_the_plate_instead_of_dropping_to_text(self):
+        """img2img coming back empty (timeout, safety block) used to fall all
+        the way through to text-to-image, which made the recovery frame the one
+        frame in the run without the player's character in it."""
+        import gemini_image_utils as giu
+        self._author_with_plate()
+        self._use_provider("gemini")
+        failing = self._record("img2img", out=None)
+        self._patch(giu,
+                    generate_gemini_img2img=failing,
+                    generate_with_gemini=self._record("t2i"))
+        history = [{"choice": "Intro", "vision_dispatch": "A flooded yard.",
+                    "image": self.plate_path, "image_url": self.plate_path}]
+        self._render(frame_idx=1, history=history)
+        labels = [c[0] for c in self.calls]
+        self.assertEqual(labels, ["img2img", "img2img", "t2i"])
+        self.assertIn(self.plate_path, self.calls[0][1])
+        self.assertEqual(self.calls[1][1], [self.plate_path])
+
+    def test_krea_seeds_frame_zero_from_the_plate(self):
+        import krea_image_utils as kiu
+        self._author_with_plate()
+        self._use_provider("krea")
+        self._patch(kiu,
+                    generate_krea_img2img=self._record("krea_img2img"),
+                    generate_with_krea=self._record("krea_t2i"))
+        self._render(frame_idx=0)
+        self.assertEqual(self.calls, [("krea_img2img", [self.plate_path])])
+
+    def test_krea_keeps_the_plate_behind_the_continuity_frame(self):
+        import krea_image_utils as kiu
+        self._author_with_plate()
+        self._use_provider("krea")
+        self._patch(kiu,
+                    generate_krea_img2img=self._record("krea_img2img"),
+                    generate_with_krea=self._record("krea_t2i"))
+        history = [{"choice": "Intro", "vision_dispatch": "A flooded yard.",
+                    "image": self.plate_path, "image_url": self.plate_path}]
+        self._render(frame_idx=1, history=history)
+        label, refs = self.calls[0]
+        self.assertEqual(label, "krea_img2img")
+        self.assertIn(self.plate_path, refs)
+
+    def test_fal_spends_its_single_slot_on_the_plate_when_nothing_to_continue(self):
+        import fal_image_utils as fiu
+        self._author_with_plate()
+        self._use_provider("fal")
+        self._patch(fiu,
+                    generate_fal_img2img=self._record("fal_img2img"),
+                    generate_with_fal=self._record("fal_t2i"))
+        self._render(frame_idx=0)
+        self.assertEqual(self.calls, [("fal_img2img", [self.plate_path])])
+
+    def test_veo_gets_the_plate_as_a_reference_frame(self):
+        import veo_video_utils as vvu
+        self._author_with_plate()
+        self._use_provider("veo")
+
+        def stub(*args, **kwargs):
+            self.calls.append(("veo", list(kwargs.get("reference_frames") or [])))
+            return ("/tmp/frame.png", "veo prompt", None)
+        self._patch(vvu, generate_frame_via_video=stub)
+        self._render(frame_idx=0)
+        self.assertEqual(self.calls, [("veo", [self.plate_path])])
+
+    def test_no_plate_is_attached_when_the_camera_cannot_see_the_character(self):
+        """First person with hands hidden sees no part of the player, so a
+        character sheet there only wastes a reference slot and tempts the model
+        into putting a stranger in frame. (Hands visible still attaches it —
+        the hands in shot are theirs.)"""
+        import gemini_image_utils as giu
+        self._author_with_plate(mode="first_person")
+        gi.save_spec({gi.CAMERA_KEY: {"show_hands": False}})
+        self._use_provider("gemini")
+        self._patch(giu,
+                    generate_gemini_img2img=self._record("img2img"),
+                    generate_with_gemini=self._record("t2i"))
+        self._render(frame_idx=0)
+        self.assertEqual(self.calls, [("t2i", [])])
 
 
 class WorldEvolutionTestCase(_AuthoredWorldFixture):
