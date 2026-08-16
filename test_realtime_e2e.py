@@ -516,8 +516,15 @@ class TestRealtimeRenderer(unittest.TestCase):
             )
             page.wait_for_function("window.ReactorRenderer.isShowing() === true", timeout=15000)
             # The world-model log/selector now starts COLLAPSED behind the MODEL
-            # button — open it (via the menu) before asserting it's visible.
+            # control, which lives under the World Editor's ENGINE layer (see
+            # WorldEditor.makeEngineControls) rather than the top-right rail.
+            # The editor opens as the graph, so switch to the flat list first —
+            # test_editor_graph_e2e.py covers reaching the same control by
+            # diving ENGINE > SYSTEM in the graph.
             page.click("#menu-toggle")
+            page.click("#btn-editor")
+            page.click("#we-view")
+            page.click('#we-tabs [data-tab="engine"]')
             page.click("#btn-model")
             # The log panel exists and is shown once opened in realtime mode.
             self.assertNotEqual(page.evaluate("getComputedStyle(document.getElementById('rt-log')).display"), "none")
@@ -2188,8 +2195,12 @@ class TestRealtimeRenderer(unittest.TestCase):
         page = self._new_realtime_page()
         try:
             self._seed_live_scene(page)
-            # Open the WORLD MODEL panel; the Happy Oyster options are shown.
+            # Open the WORLD MODEL panel (under the World Editor's ENGINE
+            # layer); the Happy Oyster options are shown.
             page.click("#menu-toggle")
+            page.click("#btn-editor")
+            page.click("#we-view")
+            page.click('#we-tabs [data-tab="engine"]')
             page.click("#btn-model")
             page.wait_for_function("!document.getElementById('rt-ho-opts').classList.contains('hidden')", timeout=5000)
 

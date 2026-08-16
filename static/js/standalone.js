@@ -206,6 +206,7 @@
     weLayerHead: document.getElementById("we-layer-head"),
     weCast: document.getElementById("we-cast"),
     weWide: document.getElementById("we-wide"),
+    weView: document.getElementById("we-view"),
     weFontDown: document.getElementById("we-font-down"),
     weFontUp: document.getElementById("we-font-up"),
     weResize: document.getElementById("we-resize"),
@@ -3673,6 +3674,14 @@
     // in the UI rather than only in the descriptions.
     let showAdvanced = false;
     try { showAdvanced = localStorage.getItem("we_advanced") === "1"; } catch (_) {}
+    // GRAPH vs LIST. The editor's data is a tree — one game, four layers, and
+    // a handful of objects inside each — and rendering a tree as a single flat
+    // 100vw column of tabs, forms and 15,000-character textareas is what made
+    // this unusable on a phone. The graph (editor_graph.js, see
+    // EDITOR_GRAPH_PLAN.md) is the default; the list stays behind the header
+    // toggle. Two renderings, one state.
+    let graphMode = true;
+    try { graphMode = localStorage.getItem("we_view") !== "list"; } catch (_) {}
 
     async function weFetch(method, path, body) {
       const opts = { method, headers: {} };
@@ -3705,6 +3714,33 @@
       showAdvanced = !!on;
       try { localStorage.setItem("we_advanced", showAdvanced ? "1" : "0"); } catch (_) {}
       render();
+    }
+
+    // Which rendering is on screen. Both live in the DOM the whole time; the
+    // body class decides which one is shown, so switching is instant and
+    // neither view can hold state the other doesn't have.
+    function applyViewMode() {
+      document.body.classList.toggle("we-graph-mode", graphMode);
+      if (el.weView) {
+        // Labelled with where it takes you, not where you are.
+        el.weView.textContent = graphMode ? "List" : "Graph";
+        el.weView.title = graphMode
+          ? "Switch to the flat list of every layer and prompt"
+          : "Switch to the graph";
+      }
+    }
+
+    function setViewMode(mode) {
+      graphMode = mode !== "list";
+      try { localStorage.setItem("we_view", graphMode ? "graph" : "list"); } catch (_) {}
+      applyViewMode();
+      render();
+    }
+
+    // The graph reads its whole picture through the bridge, so anything that
+    // changes state (a save, a level load, a reset) just tells it to re-read.
+    function notifyGraph() {
+      try { if (window.EditorGraph) window.EditorGraph.sync(); } catch (_) {}
     }
 
     // The "N more" reveal shared by the prompt tabs and the cast cards, so
@@ -4007,6 +4043,15 @@
 
     function render() {
       closePop();
+      applyViewMode();
+      // In graph mode the tree IS the navigation, so don't also build the flat
+      // column behind it — a dozen prompt cards is a dozen 15,000-character
+      // strings in the DOM for a view nobody is looking at.
+      if (graphMode) {
+        refreshDirtyBadge();
+        notifyGraph();
+        return;
+      }
       renderTabs();
       const showWorlds = activeTab === "worlds";
       const layer = layerById(activeTab);
@@ -4045,6 +4090,11 @@
         // The Level layer leads with its gallery — what makes a level a level
         // rather than "the current settings" is that you can keep several.
         if (activeTab === "level") el.weLayerHead.appendChild(makeLevelGallery());
+        // The Engine layer leads with the runtime controls that used to be a
+        // wall of icon buttons over the scene (renderer, model switchers,
+        // autoplay, tape, narrator, debug log, VHS, sound) — "how does this
+        // machine run" is exactly what this layer answers.
+        if (activeTab === "engine") el.weLayerHead.appendChild(makeEngineControls());
       }
 
       // Structured forms (spec blocks) come before prompt bodies: answering
@@ -4062,6 +4112,31 @@
         if (showAdvanced) advanced.forEach((f) => el.weFields.appendChild(makeField(f)));
       }
       refreshDirtyBadge();
+    }
+
+    // ---- ENGINE controls: the runtime knobs, re-homed from the old rail ----
+    // These buttons are defined once in the markup (#we-sys-src, kept out of
+    // the flow so their ids/listeners resolve at startup) and physically
+    // moved in here — no cloning, so every existing click handler and state
+    // class (`.on` / `.off` / `.active` / `.pending`) keeps working untouched.
+    const ENGINE_CONTROL_GROUPS = [
+      { title: "Renderer", buttons: ["rendererBtn", "btnModel", "btnImgModel"] },
+      { title: "Session", buttons: ["autoplayBtn", "tapeBtn", "narratorBtn"] },
+      { title: "Diagnostics", buttons: ["agentDebugBtn", "btnVhs", "btnSnd"] },
+    ];
+    function makeEngineControls() {
+      const wrap = document.createElement("div");
+      wrap.className = "we-sys";
+      ENGINE_CONTROL_GROUPS.forEach((group) => {
+        const nodes = group.buttons.map((key) => el[key]).filter(Boolean);
+        if (!nodes.length) return;
+        const title = document.createElement("div");
+        title.className = "we-sys-title";
+        title.textContent = group.title;
+        wrap.appendChild(title);
+        nodes.forEach((node) => wrap.appendChild(node));
+      });
+      return wrap;
     }
 
     // ---- LEVEL gallery: save the current level, switch between saved ones ----
@@ -4093,17 +4168,7 @@
       const commit = async () => {
         const name = input.value.trim();
         if (!name) { input.focus(); return; }
-        // Flush pending prompt edits so the snapshot is what's on screen.
-        const dirty = dirtyFields();
-        if (Object.keys(dirty).length) await saveFields(dirty);
-        const { ok, data } = await weFetch("POST", "/api/admin/studio/levels", { name });
-        const payload = (data && (data.data || data)) || {};
-        if (!ok) { toast("Couldn't save that level", "warn"); return; }
-        levels = payload.levels || levels;
-        edits = {};
-        input.value = "";
-        toast("Saved level \u201C" + name + "\u201D");
-        render();
+        if (await saveLevelNamed(name)) input.value = "";
       };
       save.addEventListener("click", commit);
       input.addEventListener("keydown", (e) => {
@@ -4124,6 +4189,46 @@
       levels.forEach((lv) => list.appendChild(makeLevelCard(lv)));
       wrap.appendChild(list);
       return wrap;
+    }
+
+    // ---- LEVEL operations (shared by the gallery and the graph) ----
+    // A level is the current place: its brief plus its setting plate. Saving
+    // snapshots only those, which is what lets one game hold a set of levels.
+    async function saveLevelNamed(name) {
+      if (!name) return false;
+      // Flush pending prompt edits so the snapshot is what's on screen.
+      const dirty = dirtyFields();
+      if (Object.keys(dirty).length) await saveFields(dirty);
+      const { ok, data } = await weFetch("POST", "/api/admin/studio/levels", { name });
+      const payload = (data && (data.data || data)) || {};
+      if (!ok) { toast("Couldn't save that level", "warn"); return false; }
+      levels = payload.levels || levels;
+      edits = {};
+      toast("Saved level \u201C" + name + "\u201D");
+      render();
+      return true;
+    }
+
+    async function loadLevel(slug, name) {
+      const { ok, data } = await weFetch("POST", "/api/admin/studio/levels/load", { slug });
+      if (!ok) { toast("Couldn't open that level", "warn"); return false; }
+      const payload = (data && (data.data || data)) || {};
+      if (payload.prompts && content) content.prompts = payload.prompts;
+      if (payload.identity) identity = payload.identity;
+      if (payload.identity_preview) identityPreview = payload.identity_preview;
+      edits = {};
+      toast("Now editing \u201C" + (name || slug) + "\u201D \u2014 restart to play it");
+      render();
+      return true;
+    }
+
+    async function deleteLevel(slug) {
+      const { ok, data } = await weFetch("DELETE", "/api/admin/studio/levels", { slug });
+      if (!ok) { toast("Couldn't delete that level", "warn"); return false; }
+      const payload = (data && (data.data || data)) || {};
+      levels = payload.levels || [];
+      render();
+      return true;
     }
 
     function makeLevelCard(lv) {
@@ -4153,28 +4258,12 @@
       load.type = "button";
       load.className = "we-btn we-btn-primary";
       load.textContent = "OPEN";
-      load.addEventListener("click", async () => {
-        const { ok, data } = await weFetch("POST", "/api/admin/studio/levels/load", { slug: lv.slug });
-        if (!ok) { toast("Couldn't open that level", "warn"); return; }
-        const payload = (data && (data.data || data)) || {};
-        if (payload.prompts && content) content.prompts = payload.prompts;
-        if (payload.identity) identity = payload.identity;
-        if (payload.identity_preview) identityPreview = payload.identity_preview;
-        edits = {};
-        toast("Now editing \u201C" + lv.name + "\u201D \u2014 restart to play it");
-        render();
-      });
+      load.addEventListener("click", () => loadLevel(lv.slug, lv.name));
       const del = document.createElement("button");
       del.type = "button";
       del.className = "we-btn we-btn-ghost";
       del.textContent = "Delete";
-      del.addEventListener("click", async () => {
-        const { ok, data } = await weFetch("DELETE", "/api/admin/studio/levels", { slug: lv.slug });
-        if (!ok) { toast("Couldn't delete that level", "warn"); return; }
-        const payload = (data && (data.data || data)) || {};
-        levels = payload.levels || [];
-        render();
-      });
+      del.addEventListener("click", () => deleteLevel(lv.slug));
       acts.appendChild(load);
       acts.appendChild(del);
       (card.querySelector(".we-level-body") || card).appendChild(acts);
@@ -5015,18 +5104,24 @@
     // `only` limits rendering to the spec blocks the active layer owns, so the
     // camera lands in Game, the level plate in Level, and the character sheet in
     // Character, instead of all three stacked in one "Cast & Camera" scroll.
-    function renderCast(only) {
-      if (!el.weCast) return;
-      el.weCast.innerHTML = "";
+    // `target` lets the graph mount ONE block into its window — the same live
+    // form, saving through the same path, rather than a second implementation.
+    function renderCast(only, target) {
+      const host = target || el.weCast;
+      if (!host) return;
+      host.innerHTML = "";
       const wanted = only && only.length
         ? identitySchema.filter((b) => only.indexOf(b.id) !== -1)
         : identitySchema;
-      wanted.forEach((block) => el.weCast.appendChild(makeCastBlock(block)));
+      wanted.forEach((block) => host.appendChild(makeCastBlock(block)));
+      // "Reset Cast & Camera" clears every block at once, so it belongs to the
+      // whole scroll — not to a window showing one sheet.
+      if (target) return;
       if (showAdvanced) {
         const reach = makeReachBlock();
-        if (reach) el.weCast.appendChild(reach);
+        if (reach) host.appendChild(reach);
       }
-      el.weCast.appendChild(makeCastReset());
+      host.appendChild(makeCastReset());
     }
 
     function applyIdentityPayload(data) {
@@ -5118,16 +5213,20 @@
         el.weWorldsList.appendChild(li);
       });
     }
+    async function saveWorldNamed(name) {
+      if (!name) { toast("Name your world first.", "warn"); return false; }
+      // Persist any unsaved edits first so the snapshot reflects what's on screen.
+      if (anyDirty()) { const { ok } = await saveFields(dirtyFields()); if (!ok) return false; }
+      const { ok } = await weFetch("POST", "/api/admin/studio/worlds", { name });
+      if (!ok) { toast("Couldn't save world.", "warn"); return false; }
+      await loadWorlds();
+      if (graphMode) notifyGraph(); else renderWorlds();
+      toast("World saved: " + name);
+      return true;
+    }
     async function saveWorld() {
       const name = (el.weWorldName && el.weWorldName.value || "").trim();
-      if (!name) { toast("Name your world first.", "warn"); return; }
-      // Persist any unsaved edits first so the snapshot reflects what's on screen.
-      if (anyDirty()) { const { ok } = await saveFields(dirtyFields()); if (!ok) return; }
-      const { ok } = await weFetch("POST", "/api/admin/studio/worlds", { name });
-      if (!ok) { toast("Couldn't save world.", "warn"); return; }
-      if (el.weWorldName) el.weWorldName.value = "";
-      await loadWorlds(); renderWorlds();
-      toast("World saved: " + name);
+      if (await saveWorldNamed(name) && el.weWorldName) el.weWorldName.value = "";
     }
     async function loadWorld(slug, restart) {
       const { ok, data } = await weFetch("POST", "/api/admin/studio/worlds/load", { slug });
@@ -5151,7 +5250,8 @@
     async function deleteWorld(slug, name) {
       const { ok } = await weFetch("DELETE", "/api/admin/studio/worlds", { slug });
       if (!ok) { toast("Delete failed.", "warn"); return; }
-      await loadWorlds(); renderWorlds();
+      await loadWorlds();
+      if (graphMode) notifyGraph(); else renderWorlds();
       toast("Deleted " + (name || slug));
     }
 
@@ -5199,6 +5299,76 @@
     function toggle() { open_ ? close() : open(); }
     function isOpen() { return open_; }
 
+    // Esc in graph mode reads as "back out of where I am": close the open
+    // window, then surface one cell at a time, and only close the editor once
+    // you're looking at the whole organism again. Returns true when handled.
+    function onEscape() {
+      if (!graphMode) return false;
+      try { return !!(window.EditorGraph && window.EditorGraph.onEscape()); } catch (_) { return false; }
+    }
+
+    // ── Bridge for the graph view ─────────────────────────────────────
+    // editor_graph.js is a RENDERING of this module's state, not a second copy
+    // of it: it reads through these getters and writes through the very save
+    // paths the list uses, so there is one source of truth and one client for
+    // /api/admin/studio/*.
+    const bridge = {
+      isGraphMode: () => graphMode,
+      setViewMode,
+      // Structure
+      layers: () => layerList(),
+      layerById,
+      schema: () => schemaFields(),
+      fieldById: (id) => schemaFields().find((f) => f.id === id) || null,
+      levels: () => levels.slice(),
+      worlds: () => worlds.slice(),
+      identitySchema: () => identitySchema.slice(),
+      identityBlock: (id) => identitySchema.find((b) => b.id === id) || null,
+      identity: () => identity,
+      // The engine's runtime controls are live <button> elements (see
+      // #we-sys-src): the graph proxies taps to them rather than duplicating
+      // nine toggles, so their handlers and state classes stay authoritative.
+      engineControls: () => ENGINE_CONTROL_GROUPS.map((g) => ({
+        title: g.title,
+        buttons: g.buttons.map((k) => el[k]).filter(Boolean),
+      })),
+      // Prompts
+      isAdvanced,
+      showAdvanced: () => showAdvanced,
+      setAdvanced,
+      isRestartKey: (key) => RESTART_KEYS.has(key),
+      wiringNote: sharedWiringNote,
+      valOf,
+      defOf,
+      isDirty: (key) => key in edits,
+      anyDirty,
+      setEdit(key, value) {
+        const saved = (content && content.prompts && content.prompts[key] != null)
+          ? content.prompts[key] : "";
+        if (value === saved) delete edits[key]; else edits[key] = value;
+        refreshDirtyBadge();
+      },
+      async saveField(key, value) {
+        const res = await saveFields({ [key]: value });
+        // Same tail as Apply Live: the unsaved badge and the graph both have to
+        // hear that this key is committed.
+        if (res.ok) { render(); try { refreshDirective(true); } catch (_) {} }
+        return res;
+      },
+      resetField,
+      openPrompt: openPromptModal,
+      // Spec sheets — the real form, mounted wherever the graph asks for it.
+      renderSpecInto: (target, blockId) => renderCast([blockId], target),
+      // Levels + builds
+      saveLevel: saveLevelNamed,
+      loadLevel,
+      deleteLevel,
+      saveWorld: saveWorldNamed,
+      loadWorld,
+      deleteWorld,
+      toast,
+    };
+
     function init() {
       // Any click that isn't the popover or its own ⓘ dismisses it.
       if (el.worldEditor) {
@@ -5219,9 +5389,17 @@
       if (el.weWorldName) el.weWorldName.addEventListener("keydown", (e) => {
         if (e.key === "Enter") { e.preventDefault(); saveWorld(); }
       });
+      applyViewMode();
+      if (el.weView) {
+        el.weView.addEventListener("click", () => setViewMode(graphMode ? "list" : "graph"));
+      }
+      try { if (window.EditorGraph) window.EditorGraph.init(bridge); } catch (_) {}
     }
 
-    return { init, open, close, toggle, isOpen, modalIsOpen, openPrompt: openPromptModal };
+    return {
+      init, open, close, toggle, isOpen, modalIsOpen, onEscape,
+      openPrompt: openPromptModal,
+    };
   })();
 
   // ------------------------------------------------------------------
@@ -12131,7 +12309,7 @@
   function setAutoPlay(on) {
     state.autoPlay = on;
     el.autoplayBtn.classList.toggle("on", on);
-    el.autoplayLabel.textContent = on ? "STOP" : "AUTO";
+    el.autoplayLabel.textContent = on ? "Stop" : "Auto-play";
     el.autoplayBtn.title = on ? "Stop auto-play (P)" : "Auto-play — advance on its own (P)";
     if (on) {
       // In realtime, let the current video play a watch window (and never advance
@@ -12320,6 +12498,10 @@
   function toggleVhs() {
     state.vhsEnabled = !state.vhsEnabled;
     el.vhsOverlay.classList.toggle("vhs-on", state.vhsEnabled);
+    // Mark the button itself, not just the overlay: it's the only way to tell
+    // the grain is on without squinting at the scene, and the editor's graph
+    // reads this class to light the cell.
+    if (el.btnVhs) el.btnVhs.classList.toggle("on", state.vhsEnabled);
     Sound.toggle();
   }
 
@@ -12527,7 +12709,10 @@
         // closing the whole panel mid-sentence loses the thread of the edit.
         if (e.key === "Escape") {
           e.preventDefault();
-          if (_typing) _ae.blur(); else WorldEditor.close();
+          // In the graph, Esc first closes the open window, then surfaces one
+          // cell at a time; only at the root does it close the editor.
+          if (_typing) _ae.blur();
+          else if (!WorldEditor.onEscape()) WorldEditor.close();
           return;
         }
         if (_isEditorToggleKey(e) && !_typing) { e.preventDefault(); WorldEditor.close(); return; }
