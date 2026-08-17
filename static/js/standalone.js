@@ -207,6 +207,8 @@
     weCast: document.getElementById("we-cast"),
     weInputOpts: document.getElementById("we-input-opts"),
     weFoot: document.getElementById("we-foot"),
+    wePanelOpts: document.getElementById("we-panel-opts"),
+    weHeadTools: document.querySelector("#world-editor .we-head-tools"),
     weWide: document.getElementById("we-wide"),
     weView: document.getElementById("we-view"),
     weFontDown: document.getElementById("we-font-down"),
@@ -3757,8 +3759,18 @@
     // this unusable on a phone. The graph (editor_graph.js, see
     // EDITOR_GRAPH_PLAN.md) is the default; the list stays behind the header
     // toggle. Two renderings, one state.
+    // The dots are the editor. The flat list — the engine's contract prompts,
+    // the runtime knobs, the level and build galleries — is the machine room:
+    // ours to adjust, not something to hand a player a door to. `?dev=1` draws
+    // the door and is remembered per browser; without it there is no way into
+    // the list, and no way to be stranded in it either.
+    let devMode = false;
+    try {
+      if (/[?&]dev=1\b/.test(location.search)) localStorage.setItem("we_dev", "1");
+      devMode = localStorage.getItem("we_dev") === "1";
+    } catch (_) {}
     let graphMode = true;
-    try { graphMode = localStorage.getItem("we_view") !== "list"; } catch (_) {}
+    try { graphMode = !devMode || localStorage.getItem("we_view") !== "list"; } catch (_) {}
 
     async function weFetch(method, path, body) {
       const opts = { method, headers: {} };
@@ -3775,8 +3787,9 @@
     function toast(msg, kind) {
       if (!el.weToast) return;
       el.weToast.textContent = msg;
-      el.weToast.style.borderColor = kind === "warn"
-        ? "rgba(255, 180, 120, 0.6)" : "rgba(134, 200, 255, 0.4)";
+      // Ink, or red when something went wrong; the stylesheet owns both, and an
+      // inline colour here was still painting the old dark theme's blue.
+      el.weToast.classList.toggle("warn", kind === "warn");
       el.weToast.classList.add("show");
       clearTimeout(toast._t);
       toast._t = setTimeout(() => el.weToast.classList.remove("show"), 2600);
@@ -3798,12 +3811,13 @@
     // neither view can hold state the other doesn't have.
     function applyViewMode() {
       document.body.classList.toggle("we-graph-mode", graphMode);
+      document.body.classList.toggle("we-dev", devMode);
       if (el.weView) {
         // Labelled with where it takes you, not where you are.
-        el.weView.textContent = graphMode ? "List" : "Graph";
+        el.weView.textContent = graphMode ? "List" : "Dots";
         el.weView.title = graphMode
-          ? "Switch to the flat list of every layer and prompt"
-          : "Switch to the graph";
+          ? "Machine room: every layer, prompt and runtime knob"
+          : "Back to the dots";
       }
     }
 
@@ -5098,8 +5112,11 @@
 
       const head = document.createElement("div");
       head.className = "we-plate-head";
+      // "Setting reference" / "Character reference" name the block, which the
+      // window title already did. In here it is just: reference.
       head.innerHTML = '<span class="we-plate-title">' +
-        esc(block.images_label || "Reference") + "</span>";
+        esc((opts && opts.minimal) ? "Reference" : (block.images_label || "Reference")) +
+        "</span>";
       if (!(opts && opts.minimal)) {
         const hint = infoBtn(block.images_label || "Reference", block.images_hint);
         if (hint) head.appendChild(hint);
@@ -5259,7 +5276,9 @@
       const payload = data && (data.data || data);
       if (!ok || !payload) { toast("Couldn't save that.", "warn"); return; }
       applyIdentityPayload(payload);
-      toast("Saved — live on your next turn.");
+      // "live on your next turn" is the turn loop talking about itself. From a
+      // sheet, the only thing worth confirming is that it stuck.
+      toast("Saved.");
     }
 
     function uploadPlate(file, slot) {
@@ -5501,6 +5520,19 @@
         if (el.weFoot) el.worldEditor.insertBefore(el.weInputOpts, el.weFoot);
         else el.worldEditor.appendChild(el.weInputOpts);
       },
+      // Text size, width, and (with ?dev=1) the door to the machine room. Same
+      // loan: the header keeps only the way out.
+      mountPanelControls(target) {
+        if (!el.wePanelOpts || !target) return;
+        target.appendChild(el.wePanelOpts);
+        el.wePanelOpts.classList.add("is-loaned");
+      },
+      unmountPanelControls() {
+        if (!el.wePanelOpts || !el.weHeadTools) return;
+        if (!el.wePanelOpts.classList.contains("is-loaned")) return;
+        el.wePanelOpts.classList.remove("is-loaned");
+        el.weHeadTools.insertBefore(el.wePanelOpts, el.weHeadTools.firstChild);
+      },
       // Levels + builds
       saveLevel: saveLevelNamed,
       loadLevel,
@@ -5538,8 +5570,17 @@
       try { if (window.EditorGraph) window.EditorGraph.init(bridge); } catch (_) {}
     }
 
+    function toggleDev() {
+      devMode = !devMode;
+      try { localStorage.setItem("we_dev", devMode ? "1" : "0"); } catch (_) {}
+      // Turning it off can't leave you stranded in the list with no door back.
+      if (!devMode && !graphMode) { setViewMode("graph"); return; }
+      applyViewMode();
+      toast(devMode ? "Machine room unlocked." : "Machine room hidden.");
+    }
+
     return {
-      init, open, close, toggle, isOpen, modalIsOpen, onEscape,
+      init, open, close, toggle, isOpen, modalIsOpen, onEscape, toggleDev,
       openPrompt: openPromptModal,
     };
   })();
@@ -12864,6 +12905,14 @@
           return;
         }
         if (_isEditorToggleKey(e) && !_typing) { e.preventDefault(); WorldEditor.close(); return; }
+        // Shift+` — the machine room. Reveals the door to the flat list (every
+        // contract prompt, every runtime knob), which a player has no business
+        // being shown. Same switch as ?dev=1, without leaving the page.
+        if (e.key === "~" && !_typing) {
+          e.preventDefault();
+          if (WorldEditor.toggleDev) WorldEditor.toggleDev();
+          return;
+        }
         return; // typing passes through; all other shortcuts are blocked behind the editor
       } else if (_isEditorToggleKey(e) && !_typing) {
         e.preventDefault(); WorldEditor.open(); return;

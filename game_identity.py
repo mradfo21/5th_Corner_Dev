@@ -502,7 +502,7 @@ IDENTITY_SCHEMA: List[Dict[str, Any]] = [
             {"id": "tone", "label": "Tone", "type": "longtext", "tier": TIER_ESSENTIAL,
              "placeholder": "Dread over gore. The camera is a witness, never a weapon.",
              "help": "How the game treats the player. Reaches the writing and the between-turn world rewrite."},
-            {"id": "threat_model", "label": "What threatens the player", "type": "longtext",
+            {"id": "threat_model", "label": "What threatens you", "type": "longtext",
              "tier": TIER_ESSENTIAL,
              "placeholder": "The place itself: cold, water rising, no way back the way you came.",
              "help": "Tells the consequence pass what danger means here, so it stops inventing its own."},
@@ -581,7 +581,10 @@ IDENTITY_SCHEMA: List[Dict[str, Any]] = [
              "placeholder": "The Kettle Yard"},
             {"id": "summary", "label": "What it is", "type": "longtext", "tier": TIER_ESSENTIAL,
              "placeholder": "A flooded shipbreaking yard on a tidal flat, half the hulls still standing."},
-            {"id": "landmarks", "label": "Landmarks that must recur", "type": "longtext",
+            # "…that must recur" explained the prompt mechanism (these get
+            # re-injected every turn so the place stays the same place). That's
+            # our problem, not the author's; the placeholder shows what to write.
+            {"id": "landmarks", "label": "Landmarks", "type": "longtext",
              "tier": TIER_ESSENTIAL,
              "placeholder": "The listing tanker, the crane gantry, the pump house with the red door.",
              "help": "Named geography every frame keeps returning to, so the space feels real."},

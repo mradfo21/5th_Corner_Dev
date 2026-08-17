@@ -6652,6 +6652,36 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
    canvas. It's a real wired element, so it is moved rather than duplicated —
    hidden here, shown wherever it has been loaned to. */
 body.we-graph-mode #world-editor > .we-input-opts { display: none; }
+/* Same for text size and width: in the dots, the header carries the exit and
+   nothing else. Both strips are only visible where they've been loaned to. */
+body.we-graph-mode #world-editor .we-head-tools > .we-panel-opts { display: none; }
+/* Unless it's us. The machine room switch (Shift+`) puts our own tools back in
+   the header, because needing to open a window to find the door to the engine
+   is a tax on the person maintaining it, not on the player. */
+body.we-dev.we-graph-mode #world-editor .we-head-tools > .we-panel-opts {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+/* Inside a window called Controls, a row labelled CONTROLS is the interface
+   saying its own name twice. (LOOK, further along the row, still earns its.) */
+#world-editor .we-input-opts.is-loaned > .we-input-label:first-child { display: none; }
+/* Two modes, two equal halves — sized by content, DOOM came out wider than FPS
+   for no reason a reader could see. */
+#world-editor .we-input-opts.is-loaned .rt-ho-btn { flex: 1 1 0; }
+/* Width is a desktop idea; on a phone the panel is already the screen. */
+@media (max-width: 760px) {
+  #world-editor .we-panel-opts #we-wide { display: none; }
+}
+/* Revert · Apply Live · Save & Restart are the prompt pipeline's controls:
+   hot-swap the running instance, or tear it down and rebuild. That is the
+   simulator explaining itself. Nothing in the dots needs it — a sheet saves the
+   moment you leave the field — so the footer belongs to the machine room. */
+body.we-graph-mode #world-editor > .we-foot,
+body.we-graph-mode #world-editor .we-dirty { display: none; }
+/* The door to the machine room is only drawn for us (?dev=1). */
+#world-editor .we-tool.is-dev { display: none; }
+body.we-dev #world-editor .we-tool.is-dev { display: inline-flex; }
 
 #world-editor .eg-canvas {
   display: block;
@@ -6825,12 +6855,16 @@ body.we-graph-mode #world-editor > .we-input-opts { display: none; }
   letter-spacing: -0.01em;
   color: var(--we-text);
 }
-#world-editor .eg-sheet-sub {
-  margin-top: 2px;
-  font-size: calc(12px * var(--we-fs));
-  line-height: 1.42;
-  color: var(--we-text-dim);
+/* Groups inside the Controls window: one small-caps word, then the controls.
+   The window is already titled, so nothing here needs a sentence. */
+#world-editor .eg-group { margin-top: 16px; }
+#world-editor .we-panel-opts.is-loaned {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
 }
+#world-editor .we-panel-opts.is-loaned .we-tool { font-size: calc(12px * var(--we-fs)); }
 #world-editor .eg-sheet-close {
   appearance: none;
   flex: 0 0 auto;
@@ -6869,9 +6903,9 @@ body.we-graph-mode #world-editor > .we-input-opts { display: none; }
 #world-editor .we-input-opts.is-loaned {
   display: flex;
   opacity: 1;
-  padding: 14px 0 0;
-  margin-top: 4px;
-  border-top: 1px solid var(--we-line);
+  padding: 6px 0 0;
+  margin: 0;
+  border-top: 0;
 }
 
 @media (prefers-reduced-motion: reduce) {
