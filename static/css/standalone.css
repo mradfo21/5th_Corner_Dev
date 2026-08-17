@@ -6947,6 +6947,39 @@ body.we-dev #world-editor .we-tool.is-dev { display: inline-flex; }
   margin-top: 6px;
 }
 #world-editor .we-panel-opts.is-loaned .we-tool { font-size: calc(12px * var(--we-fs)); }
+/* A custom model id, typed in. */
+#world-editor .eg-name-form { display: flex; gap: 8px; margin-top: 9px; }
+#world-editor .eg-name-form input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 9px 11px;
+  background: var(--we-sunk);
+  border: 1px solid var(--we-line);
+  border-radius: 9px;
+  color: var(--we-text);
+  font: inherit;
+  font-size: calc(12.5px * var(--we-fs));
+}
+#world-editor .eg-name-form input:focus { outline: none; border-color: var(--we-red); }
+/* Segmented controls lent in from the live HUD wear the panel's clothes. */
+#world-editor .eg-group .rt-ho-seg { display: flex; gap: 6px; margin-top: 6px; }
+#world-editor .eg-group .rt-ho-btn {
+  flex: 1 1 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--we-line);
+  background: var(--we-sunk);
+  color: var(--we-text-mid);
+  font-family: var(--we-ui);
+  font-size: calc(11px * var(--we-fs));
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+#world-editor .eg-group .rt-ho-btn.on {
+  border-color: var(--we-red);
+  background: var(--we-red);
+  color: #ffffff;
+}
 #world-editor .eg-sheet-close {
   appearance: none;
   flex: 0 0 auto;
