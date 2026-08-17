@@ -1,6 +1,17 @@
 # Simplifying the core of the editor
 
-A plan, not a change. Nothing here has been implemented.
+**Status.** The surface — what a person meets when they open the editor — has
+shipped, out of order: the graph is now one red dot that blooms into Level,
+Character, Game and Controls, and the windows carry the essential fields only.
+That was Phase 5 plus the sheet minimisation, taken first because it is what the
+author actually touches.
+
+Everything behind the glass is still ahead: Phases 1–4 below (delete the dead
+prompts, one camera authority, contract-as-schema, split the rulebook from the
+direction) are unstarted, and the numbers in §6 for context size are therefore
+unchanged. The engine's contract prompts, the runtime knobs and the saved
+levels/builds were demoted rather than deleted — they live in the flat List
+behind the header toggle, which is the "machine room" this plan asks for.
 
 The question behind this document was: *why is the graph this complicated, what are we
 exposing that we don't need, and what is actually key to the innovation?* The answer
@@ -256,12 +267,12 @@ the mess. *Verify:* `test_editor_graph_e2e` gets rewritten against the new tree.
 
 ## 6. The measure of success
 
-| | Today | Target |
-|---|---:|---:|
-| Graph nodes | 37 | ~14 |
-| Nodes needing a 3+ level dive | 18 | 0 |
-| Editable prose in the default surface (chars) | ~57,000 | ~4,000 |
-| Structured fields | 21 | ~20 |
+| | Before | Target | Now |
+|---|---:|---:|---:|
+| Graph nodes | 37 | ~14 | **5** |
+| Nodes needing a 3+ level dive | 18 | 0 | **0** |
+| Editable prose in the default surface (chars) | ~57,000 | ~4,000 | **0** |
+| Structured fields in the default surface | 21 | ~20 | **15** |
 | Prompts that reach no model | 2 | 0 |
 | Places the camera law is stated | 4 | 1 |
 | Chars sent on a consequence call | ~17,700 | ~5,000 |
