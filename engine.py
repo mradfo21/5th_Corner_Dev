@@ -10397,11 +10397,38 @@ def _narrator_script(focus: str, multi: bool, session_id: str) -> list:
     # baseline mood-instructions overwhelm the focus and every follow-up line
     # collapses back into the same generic "I have to find out what happened
     # here" beat. With no focus, keep the original evocative baseline.
+    # WHO the narrator is and HOW they speak is authored (`narrator_direction`),
+    # not baked in here: it was three hardcoded f-strings, so the one voice that
+    # talks directly to the player was the one voice you couldn't write.
+    # Everything the engine knows — the place, your character, the premise, the
+    # scene, the last few beats, and any specific instruction for this line —
+    # goes in as a placeholder.
+    scene_block = (chr(10) + chr(10) + "CURRENT SCENE: " + scene) if scene else ""
+    focus_block_line = ""
+    if (focus or "").strip():
+        # Named separately from the mood note so an authored template can put it
+        # first: with the baseline mood ahead of it, every focused line collapsed
+        # back into the same generic beat.
+        focus_block_line = (
+            f"INSTRUCTIONS FOR THIS LINE: {focus.strip()}\n"
+            f"Follow these exactly, ahead of any mood note below.\n\n"
+        )
+    authored_dir = (PROMPTS.get("narrator_direction") or "").strip()
+    if authored_dir:
+        try:
+            return _narrator_one_line(authored_dir.format(
+                world=world_label, self=narrator_self, premise=premise,
+                scene=scene_block, recent=recent_block, focus=focus_block_line,
+            ), fallback)
+        except (KeyError, IndexError, ValueError) as fmt_err:
+            print(f"[NARRATOR] narrator_direction has a bad placeholder "
+                  f"({fmt_err}); using the shipped voice", flush=True)
+
     if (focus or "").strip():
         prompt = (
             f"You are the NARRATOR of {world_label} You are {narrator_self} "
             f"speaking quietly to yourself. PREMISE: {premise}"
-            f"{(chr(10)+chr(10)+'CURRENT SCENE: '+scene) if scene else ''}{recent_block}\n\n"
+            f"{scene_block}{recent_block}\n\n"
             f"INSTRUCTIONS FOR THIS LINE: {focus.strip()}\n\n"
             f"Speak in FIRST PERSON. Output EXACTLY ONE short, plain sentence — nothing more. "
             f"No meta, no stage directions, no purple prose. Follow the INSTRUCTIONS above exactly."
@@ -10415,9 +10442,16 @@ def _narrator_script(focus: str, multi: bool, session_id: str) -> list:
             f"afraid, uneasy, but determined. Make it clear you have to find out what happened here. "
             f"Output EXACTLY ONE SENTENCE. No meta, no stage directions, no purple prose."
         )
+    return _narrator_one_line(prompt, fallback)
+
+
+def _narrator_one_line(prompt: str, fallback: list) -> list:
+    """Ask for the narrator's line and clip it to one sentence. Shared by the
+    authored path and the shipped fallback so both behave identically."""
     line = _ask(prompt, temp=0.85, tokens=80, use_lore=True)
     if _talk_llm_failed(line):
-        return [{"character": s["character"], "text": _clip_narration_to_one_sentence(s["text"])} for s in fallback]
+        return [{"character": s["character"],
+                 "text": _clip_narration_to_one_sentence(s["text"])} for s in fallback]
     return [{"character": "narrator",
              "text": _clip_narration_to_one_sentence((line or "").strip()[:600])}]
 

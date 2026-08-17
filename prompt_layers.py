@@ -170,6 +170,7 @@ KEY_LAYERS: Dict[str, str] = {
     "image_negative_prompt": GAME,
     "camera_perspective": GAME,
     "camp_scene_prompt": GAME,
+    "narrator_direction": GAME,
     # ── LEVEL ──────────────────────────────────────────────────────────────
     "world_initial_state": LEVEL,
     "setting_reference": LEVEL,
