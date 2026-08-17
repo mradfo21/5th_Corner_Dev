@@ -77,6 +77,20 @@ class TestIsUnderwhelmingLabel(unittest.TestCase):
             self.assertFalse(engine._is_underwhelming_label(label),
                               f"{label!r} should NOT be filtered (word-boundary check)")
 
+    def test_evidence_on_the_ground_is_not_filtered_as_the_players_own_body(self):
+        """The filter used to run the whole body down to the footwear, so a boot
+        on the ground or a leg sticking out from under something — the most
+        interesting thing in a horror frame — was thrown away before it could be
+        tagged. Only what is genuinely in EVERY frame (the hands holding the
+        camera, and the arms attached) stays filtered."""
+        for label in ["boot", "boots", "shoe", "single shoe", "leg", "legs",
+                      "bare foot", "knee", "shoulder", "torn sleeve"]:
+            self.assertFalse(engine._is_underwhelming_label(label),
+                             f"{label!r} is evidence, not the player's own body")
+        for label in ["hand", "gloved hands", "forearm", "elbow", "jacket cuff"]:
+            self.assertTrue(engine._is_underwhelming_label(label),
+                            f"{label!r} is the camera operator and should stay filtered")
+
 
 class TestDetectObjectsFiltersUnderwhelmingLabels(unittest.TestCase):
     """Integration-style test: a mocked Gemini response mixing underwhelming
@@ -126,6 +140,57 @@ class TestDetectObjectsFiltersUnderwhelmingLabels(unittest.TestCase):
         self.assertNotIn("steering wheel", labels,
                           "underwhelming 'steering wheel' must be filtered out of /api/detect results")
         self.assertEqual(len(objects), 2)
+
+
+class TestPeopleSurviveTheFilters(unittest.TestCase):
+    """SCAN's whole point is naming what's out there, and the thing it was worst
+    at naming was a person. Two rules were eating them."""
+
+    def test_a_person_standing_in_front_of_you_is_not_mistaken_for_your_own_arm(self):
+        """The geometry backstop rejected anything touching the bottom edge that
+        was half the frame tall and taller than wide — which is the shape of the
+        camera operator's arm AND the shape of somebody standing a few metres
+        away. It was silently dropping the most interesting thing in the frame."""
+        person = {"label": "figure", "box_2d": [180, 340, 1000, 660],
+                  "kind": "person", "speaks": True}
+        objects = engine._normalize_detections([person])
+        self.assertEqual([o["label"] for o in objects], ["figure"])
+        self.assertTrue(objects[0]["speaks"])
+
+    def test_the_operators_own_camera_column_is_still_rejected(self):
+        """The backstop still has a job: a narrow column hugging the very bottom
+        of the frame, that the detector did NOT call a living thing."""
+        rig = {"label": "device", "box_2d": [350, 430, 1000, 560],
+               "kind": "object", "speaks": False}
+        self.assertEqual(engine._normalize_detections([rig]), [])
+
+    def test_a_crowd_does_not_collapse_into_one_tag(self):
+        """Dedupe keyed on the label alone, so three people — all of them
+        labelled 'person' — came back as one."""
+        crowd = [
+            {"label": "person", "box_2d": [300, 100, 700, 220],
+             "kind": "person", "speaks": True},
+            {"label": "person", "box_2d": [300, 450, 700, 570],
+             "kind": "person", "speaks": True},
+            {"label": "person", "box_2d": [300, 780, 700, 900],
+             "kind": "person", "speaks": True},
+        ]
+        self.assertEqual(len(engine._normalize_detections(crowd)), 3)
+
+    def test_the_same_thing_twice_in_one_place_still_dedupes(self):
+        """...but two boxes on the same label in the same spot are one thing
+        seen twice, which is what dedupe is for."""
+        double = [
+            {"label": "valve", "box_2d": [300, 300, 400, 400],
+             "kind": "object", "speaks": False},
+            {"label": "valve", "box_2d": [305, 302, 405, 402],
+             "kind": "object", "speaks": False},
+        ]
+        self.assertEqual(len(engine._normalize_detections(double)), 1)
+
+    def test_the_cap_leaves_room_for_people_and_props(self):
+        """Eight was spent on props before the people were reached."""
+        self.assertGreaterEqual(engine.DETECT_MAX_ITEMS, 12)
 
 
 class TestLiveVisionParseFiltersUnderwhelmingLabels(unittest.TestCase):
