@@ -1092,6 +1092,19 @@
     });
   }
 
+  // Why your own voices might not be in the list. Worth spelling out: the most
+  // likely cause is a key without the voices_read permission, which from the
+  // outside is indistinguishable from having no custom voices at all.
+  const LIBRARY_REASONS = {
+    no_api_key: "No ElevenLabs key on the server, so there is no library to read.",
+    key_cannot_read_voices:
+      "The ElevenLabs key can't list voices — it needs the voices_read " +
+      "permission. Showing the shipped voices until it does.",
+    rate_limited: "ElevenLabs is rate-limiting us. Try again in a moment.",
+    unreachable: "Couldn't reach ElevenLabs from the server.",
+    empty: "The ElevenLabs account has no voices on it yet.",
+  };
+
   // The endpoint answers in machine tokens. `no_api_key` on screen is the server
   // talking to itself.
   const REASONS = {
@@ -1150,9 +1163,7 @@
           label: v.name + (v.category && v.category !== "premade" ? "  \u2022 yours" : ""),
         }));
       if (!options.length) {
-        note(picks, (lib && lib.reason === "no_api_key")
-          ? "No ElevenLabs key on the server, so there is no library to read."
-          : "Couldn't reach the voice library.");
+        note(picks, LIBRARY_REASONS[lib && lib.reason] || "Couldn't read the voice library.");
       } else {
         selectRow(picks, spec.default_voice_id ? spec.default_voice_id.label : "Default voice",
           options, vals.default_voice_id,
@@ -1162,6 +1173,13 @@
           options, vals.narrator_voice_id,
           spec.narrator_voice_id && spec.narrator_voice_id.help,
           (v) => setTunable("narrator_voice_id", v));
+      }
+
+      // The stock list still fills the menus, but say WHY your own voices aren't
+      // in it — an empty library and a key that can't read one look identical.
+      if (!library.length && options.length) {
+        note(picks, LIBRARY_REASONS[lib && lib.reason] ||
+                    "Showing the shipped voices only.");
       }
 
       const yours = library.filter((v) => v.category && v.category !== "premade");
