@@ -4181,6 +4181,25 @@ _CAMP_CACHE_LOCK = threading.Lock()
 CAMP_COMPANION_CAP = 5
 CAMP_INCLUDE_JEEP = True
 
+# The shipped camp shot, used only if `camp_scene_prompt` is missing from the
+# prompt file or an edit to it broke a placeholder. Camp must still be able to
+# draw itself on a bad edit, so this is the floor — not a second copy anyone is
+# expected to maintain. Keep it in step with the default in
+# prompts/simulation_prompts.json.
+_CAMP_PROMPT_FALLBACK = (
+    "{vantage}: handheld establishing shot of a night campsite in {terrain}\n"
+    "4:3 frame matching the rest of the game. A small campfire burns in the mid-ground,\n"
+    "warm orange firelight pooling on the ground, embers drifting, deep blue-black night sky,\n"
+    "VHS analog grain, 1990s found-footage mood. Not a security camera, not a collage.\n"
+    "CRITICAL — THE RED JEEP MUST BE IN FRAME: a dusty bright-red 1990s Jeep "
+    "Cherokee/Wrangler parked at the RIGHT edge of the firelight, three-quarter "
+    "view, clearly readable silhouette and red paint, mud-caked tires. Do NOT "
+    "omit the jeep. Do NOT replace it with a truck or car. The jeep is as "
+    "important as the fire.\n"
+    "{who}\n"
+    "No text, no UI, no letterbox bars inside the image. Photoreal cinematic still."
+)
+
 # Fixed seat slots around the fire, keyed by attendee count. Approximate
 # tap-target positions (x_pct / y_pct of the establishing shot) — no vision.
 _CAMP_SEATS = {
@@ -9434,21 +9453,45 @@ def _build_camp_prompt(attendees: list, jeep_included: bool,
     jeep and #2..N are specific companion portraits — not anonymous faces.
     """
     attendee_labels = [a.get("label") for a in (attendees or []) if a.get("label")]
-    # Camp is a fixed Moment with its own art direction, but "which way is the
-    # camera pointing" and "what does the surrounding terrain look like" both
-    # belong to the player. Terrain follows the level when one is authored.
+    # Camp is a fixed Moment, but its art direction is NOT the engine's business
+    # — it was a wall of hardcoded strings in here, which meant the one scene the
+    # game composes for you was the one scene you could not direct. It now comes
+    # from the `camp_scene_prompt` key like any other look, with the runtime
+    # facts substituted in. Terrain follows the level when one is authored.
     terrain = game_identity.place_summary() or "remote Four Corners high-desert scrub"
-    bits = [
-        f"{game_identity.vantage().capitalize()}: handheld establishing shot of a night campsite in {terrain}",
-        "4:3 frame matching the rest of the game. A small campfire burns in the mid-ground,",
-        "warm orange firelight pooling on the ground, embers drifting, deep blue-black night sky,",
-        "VHS analog grain, 1990s found-footage mood. Not a security camera, not a collage.",
-        "CRITICAL — THE RED JEEP MUST BE IN FRAME: a dusty bright-red 1990s Jeep "
-        "Cherokee/Wrangler parked at the RIGHT edge of the firelight, three-quarter "
-        "view, clearly readable silhouette and red paint, mud-caked tires. Do NOT "
-        "omit the jeep. Do NOT replace it with a truck or car. The jeep is as "
-        "important as the fire.",
-    ]
+    # Who is at the fire. The names have to be enumerated here because the image
+    # model is being handed exactly these portraits as references.
+    if attendee_labels:
+        who = (
+            f"ALL of these companions are present around the flames (no extras, "
+            f"none missing): {', '.join(attendee_labels)}. Arrange them in a "
+            f"natural arc around the fire, faces firelit and readable, leaving "
+            f"the jeep clearly visible on the right. This is a cast reunion — "
+            f"every named companion must be visibly in frame."
+        )
+    else:
+        who = "No people — a quiet empty camp. Only the fire and the red jeep."
+
+    authored = (PROMPTS.get("camp_scene_prompt") or "").strip()
+    if authored:
+        try:
+            bits = authored.format(
+                vantage=game_identity.vantage().capitalize(),
+                terrain=terrain,
+                who=who,
+            ).split("\n")
+        except (KeyError, IndexError, ValueError) as fmt_err:
+            # A broken placeholder must not take camp down with it.
+            print(f"[CAMP] camp_scene_prompt has a bad placeholder ({fmt_err}); "
+                  f"using the shipped shot", flush=True)
+            authored = ""
+    if not authored:
+        bits = _CAMP_PROMPT_FALLBACK.format(
+            vantage=game_identity.vantage().capitalize(),
+            terrain=terrain,
+            who=who,
+        ).split("\n")
+
     if jeep_included:
         bits.append(
             "Match the jeep reference image's exact color, body shape, and wear."
@@ -9469,19 +9512,6 @@ def _build_camp_prompt(attendees: list, jeep_included: bool,
                     f"this person MUST be seated at the fire, matching face, hair, "
                     f"build, and clothing from that portrait."
                 )
-    if attendee_labels:
-        names = ", ".join(attendee_labels)
-        bits.append(
-            f"ALL of these companions are present around the flames (no extras, none missing): {names}. "
-            f"Arrange them in a natural arc around the fire, faces firelit and readable, "
-            f"leaving the jeep clearly visible on the right. This is a cast reunion — "
-            f"every named companion must be visibly in frame."
-        )
-    else:
-        bits.append(
-            "No people — a quiet empty camp. Only the fire and the red jeep."
-        )
-    bits.append("No text, no UI, no letterbox bars inside the image. Photoreal cinematic still.")
     if game_identity.shows_character() and game_identity.character_enabled():
         bits.append(
             f"The player's own character is at the fire too: {game_identity.protagonist_line()}"

@@ -454,6 +454,28 @@ PROMPT_SCHEMA: List[Dict[str, Any]] = [
         "live": True,
     },
     {
+        "id": "camp_scene_prompt",
+        "label": "The Camp Shot",
+        "group": "image",
+        # Advanced on purpose: the primary surface is the four fields that
+        # describe the whole game, and camp is one specific scene inside it. The
+        # editor's Camp window shows this regardless of tier — tier only governs
+        # what the flat list puts in front of you.
+        "tier": TIER_ADVANCED,
+        "type": "longtext",
+        "description": (
+            "How camp looks: the fire, the night, the vehicle, the mood. "
+            "{vantage} is your camera, {terrain} is the place you're in, and "
+            "{who} becomes the roster around the fire (or the empty-camp line "
+            "when you're travelling alone). The reference-image map is appended "
+            "by the engine, because it has to name the exact portraits being sent."
+        ),
+        "code_refs": ["engine.py"],
+        "live": True,
+        "format_safe_required": True,
+        "format_vars": ["vantage", "terrain", "who"],
+    },
+    {
         "id": "gemini_text_to_image_instructions",
         "label": "Template — First Frame",
         "group": "image",

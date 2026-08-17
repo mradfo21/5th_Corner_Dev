@@ -843,6 +843,41 @@
     return box;
   }
 
+  // A prompt, editable in place, sharing the very edits buffer the flat list
+  // uses — so the footer's Apply Live picks it up and the full-screen editor
+  // opens on the same text. Used where a look is authored rather than set.
+  function promptEditor(body, key, label) {
+    const field = B.fieldById(key);
+    if (!field) return null;
+    const host = group(body, label || field.label);
+    const ta = document.createElement("textarea");
+    ta.className = "eg-prompt";
+    ta.spellcheck = false;
+    ta.value = String(B.valOf(key) || "");
+    ta.setAttribute("aria-label", field.label || key);
+    host.appendChild(ta);
+    if (field.description) note(host, field.description);
+
+    const acts = document.createElement("div");
+    acts.className = "eg-row eg-acts";
+    host.appendChild(acts);
+    ta.addEventListener("input", () => B.setEdit(key, ta.value));
+    button(acts, "Save", "we-btn-primary", async () => {
+      const res = await B.saveField(key, ta.value);
+      if (res && res.ok) { B.toast("Saved."); sync(); }
+      else B.toast("Couldn't save that.", "warn");
+    });
+    button(acts, "Full editor", "", () => { closeSheet(); B.openPrompt(key); });
+    if (String(B.valOf(key) || "") !== String(B.defOf(key) || "")) {
+      button(acts, "Reset", "we-btn-ghost", async () => {
+        await B.resetField(key);
+        ta.value = String(B.valOf(key) || "");
+        B.toast("Back to the shipped shot.");
+      });
+    }
+    return ta;
+  }
+
   // Every knob goes through one endpoint, so every panel saves the same way and
   // reports failure the same way.
   let tunables = null;
@@ -937,6 +972,10 @@
       roster.forEach((p) => statusRow(who, p.name || p.label || p.slug || "someone",
                                       p.voice_id ? "voiced" : "silent", !p.voice_id));
     });
+    // How camp LOOKS. This was a wall of hardcoded strings in engine.py: the one
+    // scene the game composes for you was the one scene you couldn't direct.
+    promptEditor(body, "camp_scene_prompt", "The shot");
+
     // Camp caches its establishing shot against the roster, so changing the
     // seats does nothing until the shot is rebuilt. This is that button.
     const acts = group(body, "Image");

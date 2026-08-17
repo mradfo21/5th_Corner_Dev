@@ -99,6 +99,19 @@ class TestEditorDots(unittest.TestCase):
     def _identity(self, block: str) -> dict:
         return (self._studio_content().get("identity") or {}).get(block) or {}
 
+    def _prompt(self, key: str) -> str:
+        return (self._studio_content().get("prompts") or {}).get(key) or ""
+
+    def _put_prompt(self, key: str, value: str) -> None:
+        # The endpoint takes {"key","value"} or {"data": {...}} — not a bare map.
+        req = urllib.request.Request(
+            self.base_url + "/api/admin/studio/prompts",
+            data=json.dumps({"key": key, "value": value}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="PUT",
+        )
+        urllib.request.urlopen(req).read()
+
     def _tunables(self) -> dict:
         with urllib.request.urlopen(
                 self.base_url + "/api/admin/studio/tunables") as r:
@@ -659,6 +672,34 @@ class TestEditorDots(unittest.TestCase):
             self._put_tunables({"_clear": True})
             self.assertEqual(self._tunables().get("detect_backend"),
                              before.get("detect_backend"))
+
+    def test_camp_is_directable_not_hardcoded(self):
+        """Camp's establishing shot used to be a wall of strings in engine.py —
+        the one scene the game composes for you was the one you couldn't direct.
+        It's a prompt key now, editable in place, and an edit reaches the file."""
+        before = self._prompt("camp_scene_prompt")
+        self.assertTrue(before, "camp_scene_prompt should ship with a default")
+        try:
+            self._open_ring()
+            self._dive("dot:game")
+            self._dive("dot:mechanics")
+            self._open_leaf("dot:camp")
+            box = self.page.query_selector("#eg-sheet-body .eg-prompt")
+            self.assertIsNotNone(box, "camp should have a prompt to edit")
+            # The runtime facts are placeholders, not baked strings.
+            for var in ("{vantage}", "{terrain}", "{who}"):
+                self.assertIn(var, box.input_value())
+            box.click()
+            self.page.keyboard.press("End")
+            self.page.keyboard.type(" A dog sleeps by the fire.")
+            self.page.click(
+                "#eg-sheet-body .eg-acts .we-btn-primary")
+            self.page.wait_for_timeout(1500)
+            self.assertIn("A dog sleeps by the fire.",
+                          self._prompt("camp_scene_prompt"))
+        finally:
+            self._put_prompt("camp_scene_prompt", before)
+            self.assertEqual(self._prompt("camp_scene_prompt"), before)
 
     def test_clearing_everything_takes_two_taps(self):
         """One button to get out of a mess, and it asks first — it empties four
