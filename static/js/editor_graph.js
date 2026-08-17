@@ -418,13 +418,17 @@
       const isCore = n === f;
       const onStage = !!here[n.id];
       const isLeaving = !onStage && !!leaving[n.id];
+      g.classList.toggle("is-leaving", isLeaving);
+      g.style.display = (onStage || isLeaving) ? "" : "none";
+      // A dot on its way out keeps the face it had. Stripping is-core the
+      // instant you dive turned the outgoing nucleus from red to white WHILE it
+      // was shrinking, which read as the glow popping rather than receding.
+      if (isLeaving) return;
       g.classList.toggle("is-core", isCore && !collapsed);
       g.classList.toggle("is-alone", isCore && collapsed);
       g.classList.toggle("is-orbit", onStage && !isCore);
       g.classList.toggle("is-set", !!n.set);
       g.classList.toggle("is-open", n.id === sheetId);
-      g.classList.toggle("is-leaving", isLeaving);
-      g.style.display = (onStage || isLeaving) ? "" : "none";
     });
     if (els.graph) els.graph.classList.toggle("is-collapsed", collapsed);
     renderHud();
