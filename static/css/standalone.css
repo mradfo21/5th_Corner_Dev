@@ -6637,12 +6637,26 @@ body.we-resizing { cursor: col-resize; user-select: none; }
   min-height: 0;
   overflow: hidden;
   display: none;
-  /* Paper under a lamp: white in the middle, the faintest cool grey settling
-     at the edges so the dots have somewhere to sit. */
+  /* Paper under a lamp. White light in the middle, ink gathering in the corners.
+     Flat white was clean but airless — nothing sat ON anything, it was all cut
+     out of the same piece of card. The red pool is a layer of its own below. */
   background:
     radial-gradient(120% 82% at 50% 44%, #ffffff, transparent 64%),
+    radial-gradient(140% 110% at 50% 50%, transparent 52%, rgba(16, 16, 18, 0.075)),
     #f4f4f6;
 }
+/* The red bleed, on its own element so it can be dimmed. When a window is up it
+   pools directly behind that window's own top-edge spill, and the two multiply
+   into a saturated hotspot — so the room lights go down when the window opens. */
+#world-editor .we-graph::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(58% 38% at 50% 46%, rgba(224, 48, 28, 0.08), transparent 70%);
+  transition: opacity 0.45s ease;
+}
+#world-editor .we-graph.has-sheet::before { opacity: 0.22; }
 /* The dots replace the flat column; the list keeps working behind the header
    toggle, and both stay in the DOM so neither can drift from the other. */
 body.we-graph-mode #world-editor .we-graph { display: block; }
@@ -6706,7 +6720,11 @@ body.we-dev #world-editor .we-tool.is-dev { display: inline-flex; }
   stroke-opacity: 0.2;
   stroke-width: 1.25;
   vector-effect: non-scaling-stroke;
-  transition: fill 0.3s ease, stroke 0.3s ease, stroke-opacity 0.3s ease;
+  /* A dot casts a little light: enough that it reads as sitting ON the paper
+     rather than being punched out of it. */
+  filter: drop-shadow(0 3px 10px rgba(16, 16, 18, 0.10));
+  transition: fill 0.3s ease, stroke 0.3s ease, stroke-opacity 0.3s ease,
+              filter 0.3s ease;
   /* The idle breath scales the membrane only, so the word inside stays still. */
   transform-box: fill-box;
   transform-origin: 50% 50%;
@@ -6778,6 +6796,9 @@ body.we-dev #world-editor .we-tool.is-dev { display: inline-flex; }
   fill: var(--we-red);
   stroke: var(--we-red);
   stroke-opacity: 1;
+  /* The one source of light in here. */
+  filter: drop-shadow(0 3px 14px rgba(224, 48, 28, 0.34))
+          drop-shadow(0 0 34px rgba(224, 48, 28, 0.22));
 }
 #world-editor .eg-node.is-alone .eg-name { fill: #ffffff; }
 /* Once the ring is out the nucleus drops its name: the game holds a dot also
@@ -6791,15 +6812,25 @@ body.we-dev #world-editor .we-tool.is-dev { display: inline-flex; }
 #world-editor .eg-node.is-orbit.is-set .eg-cell {
   stroke: var(--we-red);
   stroke-opacity: 0.85;
+  filter: drop-shadow(0 3px 12px rgba(224, 48, 28, 0.16));
 }
 
-#world-editor .eg-node.is-hover .eg-cell { stroke-opacity: 0.55; }
-#world-editor .eg-node.is-orbit.is-hover.is-set .eg-cell { stroke-opacity: 1; }
+/* Under the pointer, a dot lifts: a little further off the page, a little
+   brighter at the edge. */
+#world-editor .eg-node.is-hover .eg-cell {
+  stroke-opacity: 0.55;
+  filter: drop-shadow(0 5px 16px rgba(16, 16, 18, 0.16));
+}
+#world-editor .eg-node.is-orbit.is-hover.is-set .eg-cell {
+  stroke-opacity: 1;
+  filter: drop-shadow(0 5px 16px rgba(224, 48, 28, 0.26));
+}
 #world-editor .eg-node.is-selected .eg-cell,
 #world-editor .eg-node.is-open .eg-cell {
   stroke: var(--we-red);
   stroke-opacity: 1;
   stroke-width: 2;
+  filter: drop-shadow(0 4px 18px rgba(224, 48, 28, 0.3));
 }
 
 /* ── HUD ───────────────────────────────────────────────────────────────── */
@@ -6843,14 +6874,18 @@ body.we-dev #world-editor .we-tool.is-dev { display: inline-flex; }
 #world-editor .we-graph.has-sheet .eg-hint { opacity: 0; }
 
 /* ── The window that animates up at a dot ──────────────────────────────── */
+/* The dots don't vanish behind the window, they sink: a wash that is heaviest
+   where the window is and thins out toward the top of the sheet. */
 #world-editor .eg-scrim {
   position: absolute;
   inset: 0;
   z-index: 3;
-  background: rgba(244, 244, 246, 0.72);
+  background:
+    linear-gradient(180deg, rgba(244, 244, 246, 0.5), rgba(244, 244, 246, 0.9)),
+    radial-gradient(80% 50% at 50% 100%, rgba(224, 48, 28, 0.06), transparent 70%);
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.34s ease;
+  transition: opacity 0.38s ease;
 }
 #world-editor .eg-scrim.is-open { opacity: 1; pointer-events: auto; }
 #world-editor .eg-sheet {
@@ -6860,15 +6895,25 @@ body.we-dev #world-editor .we-tool.is-dev { display: inline-flex; }
   display: flex;
   flex-direction: column;
   max-height: min(88%, 700px);
-  background: #ffffff;
+  /* Paper, with the faintest ink settling at the foot of it. */
+  background:
+    linear-gradient(180deg, #ffffff 62%, #fbfbfc),
+    #ffffff;
   border: 1px solid var(--we-line);
   border-bottom: 0;
   border-radius: 16px 16px 0 0;
-  box-shadow: 0 -24px 60px -28px rgba(16, 16, 18, 0.35);
+  /* Two shadows and a rim: the ink lifts it off the canvas, the red is the
+     light it is standing in. */
+  box-shadow:
+    0 -1px 0 rgba(224, 48, 28, 0.18),
+    0 -18px 44px -26px rgba(16, 16, 18, 0.4),
+    0 -40px 90px -50px rgba(224, 48, 28, 0.35);
   transform: translateY(102%);
-  transition: transform 0.44s cubic-bezier(0.22, 1, 0.36, 1);
+  opacity: 0.6;
+  transition: transform 0.46s cubic-bezier(0.22, 1, 0.36, 1),
+              opacity 0.3s ease;
 }
-#world-editor .eg-sheet.is-open { transform: none; }
+#world-editor .eg-sheet.is-open { transform: none; opacity: 1; }
 #world-editor .eg-sheet::before {
   content: "";
   position: absolute;
@@ -6893,6 +6938,41 @@ body.we-dev #world-editor .we-tool.is-dev { display: inline-flex; }
   letter-spacing: -0.01em;
   color: var(--we-text);
 }
+/* ── Window contents arrive, they don't appear ──────────────────────────────
+   The window slides up in 460ms; anything already at its final position when it
+   gets there was never really animated, it just rode along. So each block rises
+   the last few pixels on its own, in order. Async panels (the model lists, the
+   status reads) get this for free when their rows land, which turns a fetch into
+   something that looks intentional. */
+@keyframes eg-rise {
+  from { opacity: 0; transform: translateY(9px); }
+  to   { opacity: 1; transform: none; }
+}
+#world-editor .eg-sheet-body .eg-group,
+#world-editor .eg-sheet-body .we-cast-row,
+#world-editor .eg-sheet-body .we-plate-zone,
+#world-editor .eg-sheet-body .eg-stat,
+#world-editor .eg-sheet-body .eg-note,
+#world-editor .eg-sheet-body .eg-err,
+#world-editor .eg-sheet-body .eg-name-form {
+  animation: eg-rise 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+/* Staggered by position. Six steps is enough: past that the last row would be
+   waiting on the first, and a window that takes half a second to finish
+   assembling itself stops feeling quick. */
+#world-editor .eg-sheet-body > *:nth-child(1),
+#world-editor .eg-sheet-body .eg-group-body > *:nth-child(1) { animation-delay: 0.02s; }
+#world-editor .eg-sheet-body > *:nth-child(2),
+#world-editor .eg-sheet-body .eg-group-body > *:nth-child(2) { animation-delay: 0.06s; }
+#world-editor .eg-sheet-body > *:nth-child(3),
+#world-editor .eg-sheet-body .eg-group-body > *:nth-child(3) { animation-delay: 0.1s; }
+#world-editor .eg-sheet-body > *:nth-child(4),
+#world-editor .eg-sheet-body .eg-group-body > *:nth-child(4) { animation-delay: 0.14s; }
+#world-editor .eg-sheet-body > *:nth-child(5),
+#world-editor .eg-sheet-body .eg-group-body > *:nth-child(5) { animation-delay: 0.18s; }
+#world-editor .eg-sheet-body > *:nth-child(n + 6),
+#world-editor .eg-sheet-body .eg-group-body > *:nth-child(n + 6) { animation-delay: 0.22s; }
+
 /* Groups inside a window: one small-caps word, then the controls. The window is
    already titled, so nothing here needs a sentence. */
 #world-editor .eg-group { margin-top: 16px; }
@@ -6927,16 +7007,22 @@ body.we-dev #world-editor .we-tool.is-dev { display: inline-flex; }
 /* Whatever the server actually said, verbatim. Its own block and its own
    typeface, because a stack-trace fragment squeezed into a status row's value
    column read as a layout accident. */
+/* Verbatim, so the typeface stays monospace — but a hard-bordered red box in a
+   panel made of soft light was the one element still shouting. A left rule and a
+   wash carry "this is the error" without the cage. */
 #world-editor .eg-err {
-  margin: 10px 0 0;
-  padding: 9px 10px;
-  border-radius: 8px;
-  border: 1px solid rgba(224, 48, 28, 0.28);
-  background: var(--we-red-wash);
+  margin: 12px 0 0;
+  padding: 11px 13px;
+  border: 0;
+  border-left: 2px solid rgba(224, 48, 28, 0.5);
+  border-radius: 4px 12px 12px 4px;
+  background:
+    linear-gradient(90deg, rgba(224, 48, 28, 0.08), rgba(224, 48, 28, 0.03) 60%, transparent);
   color: var(--we-red-ink);
   font-family: var(--we-mono);
-  font-size: calc(11px * var(--we-fs));
-  line-height: 1.55;
+  font-size: calc(10.5px * var(--we-fs));
+  line-height: 1.65;
+  letter-spacing: 0.01em;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -7025,6 +7111,10 @@ body.we-dev #world-editor .we-tool.is-dev { display: inline-flex; }
 
 @media (prefers-reduced-motion: reduce) {
   #world-editor .eg-sheet { transition: none; }
+  #world-editor .eg-node .eg-cell { animation: none; }
+  #world-editor .eg-node-in.is-blooming,
+  #world-editor .eg-node.is-leaving .eg-node-in { animation: none; }
+  #world-editor .eg-sheet-body * { animation: none !important; }
 }
 
 /* ── CONTROLS row (how you drive, not what the game is) ────────────────── */
