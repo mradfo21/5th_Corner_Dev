@@ -99,6 +99,21 @@ class TestEditorDots(unittest.TestCase):
     def _identity(self, block: str) -> dict:
         return (self._studio_content().get("identity") or {}).get(block) or {}
 
+    def _tunables(self) -> dict:
+        with urllib.request.urlopen(
+                self.base_url + "/api/admin/studio/tunables") as r:
+            body = json.loads(r.read().decode())
+        return (body.get("data") or body).get("values") or {}
+
+    def _put_tunables(self, patch: dict) -> None:
+        req = urllib.request.Request(
+            self.base_url + "/api/admin/studio/tunables",
+            data=json.dumps(patch).encode(),
+            headers={"Content-Type": "application/json"},
+            method="PUT",
+        )
+        urllib.request.urlopen(req).read()
+
     def _put_identity(self, block: str, patch: dict) -> None:
         req = urllib.request.Request(
             self.base_url + "/api/admin/studio/identity",
@@ -232,32 +247,53 @@ class TestEditorDots(unittest.TestCase):
                 """() => getComputedStyle(document.querySelector(
                      '#eg-world .eg-node.is-core .eg-name')).display"""), "none")
 
-    def test_every_circle_is_the_same_size(self):
-        """Sizing each dot to its own word made a bag of different coins. One
-        radius everywhere, at every depth, is the thing that reads as designed."""
+    def test_one_size_per_level_and_smaller_as_you_go_in(self):
+        """Within a ring every circle matches — sizing each to its own word made a
+        bag of different coins. Between rings they step down, which is the only
+        thing on screen carrying depth."""
         self._open_ring()
-        radii = self.page.evaluate(
-            """() => Array.from(document.querySelectorAll('#eg-world .eg-node circle'))
-                          .map(c => Number(c.getAttribute('r')))""")
-        self.assertGreater(len(radii), 4)
-        self.assertEqual(len(set(radii)), 1, f"circles differ: {sorted(set(radii))}")
-        # And the labels are one size too, upper case, and they fit inside.
+
+        def radii():
+            # is-orbit is exactly "a satellite of the ring that is open", which
+            # display alone is not: a node that has never been painted has an
+            # empty style.display, not "none".
+            return self.page.evaluate(
+                """() => Array.from(document.querySelectorAll('#eg-world .eg-node.is-orbit'))
+                              .filter(g => !g.classList.contains('is-leaving'))
+                              .map(g => Number(g.querySelector('circle').getAttribute('r')))""")
+
+        top = radii()
+        self.assertGreater(len(top), 2)
+        self.assertEqual(len(set(top)), 1, f"circles in one ring differ: {set(top)}")
+        self._dive("dot:game")
+        mid = radii()
+        self.assertEqual(len(set(mid)), 1, f"circles in one ring differ: {set(mid)}")
+        self.assertLess(mid[0], top[0], "a level in should be a size smaller")
+        self._dive("dot:mechanics")
+        deep = radii()
+        self.assertLess(deep[0], mid[0], "and smaller again")
+        # And the wall of whatever you're inside is drawn.
+        self.assertEqual(
+            self.page.eval_on_selector_all("#eg-world .eg-shell", "els => els.length"), 1)
+        # Type scales with the level, so one size per ring — not one size in the
+        # whole tree, which is what it was before depth existed.
         sizes = self.page.evaluate(
-            """() => Array.from(document.querySelectorAll('#eg-world .eg-name'))
-                          .map(t => t.getAttribute('font-size'))""")
-        self.assertEqual(len(set(sizes)), 1)
+            """() => Array.from(document.querySelectorAll('#eg-world .eg-node.is-orbit'))
+                          .map(g => g.querySelector('.eg-name').getAttribute('font-size'))""")
+        self.assertEqual(len(set(sizes)), 1, f"type differs inside one ring: {set(sizes)}")
         self.assertEqual(
             self.page.evaluate(
                 """() => getComputedStyle(document.querySelector(
                      '#eg-world .eg-name')).textTransform"""), "uppercase")
-        widest, diameter = self.page.evaluate(
-            """() => {
-                 const ts = Array.from(document.querySelectorAll('#eg-world .eg-name'));
-                 const w = Math.max(...ts.map(t => t.getComputedTextLength()));
-                 const r = Number(document.querySelector('#eg-world circle').getAttribute('r'));
-                 return [w, r * 2];
-               }""")
-        self.assertLess(widest, diameter * 0.86,
+        # Every label, at every depth, still sits inside its own circle.
+        worst = self.page.evaluate(
+            """() => Math.max(...Array.from(
+                 document.querySelectorAll('#eg-world .eg-node')).map(g => {
+                   const t = g.querySelector('.eg-name');
+                   const r = Number(g.querySelector('circle').getAttribute('r'));
+                   return t.getComputedTextLength() / (r * 2);
+                 }))""")
+        self.assertLess(worst, 0.86,
                         "a label should sit inside its circle with room to spare")
 
     def test_no_spokes_to_the_middle(self):
@@ -449,14 +485,14 @@ class TestEditorDots(unittest.TestCase):
 
         self._open_leaf("dot:scan")
         rows = self._rows()
-        self.assertIn("Backend", rows)
+        self.assertIn("Answering", rows)
         self.assertIn("On device", rows)
         self.page.keyboard.press("Escape")
         self._settle(600)
 
         self._open_leaf("dot:npc")
         rows = self._rows()
-        for expected in ("Voice", "Agent", "API key", "Designed voices"):
+        for expected in ("Voice", "Agent", "API key"):
             self.assertIn(expected, rows)
         # A machine token is the server talking to itself, never the UI's words.
         values = self.page.eval_on_selector_all(
@@ -490,17 +526,17 @@ class TestEditorDots(unittest.TestCase):
         self.page.keyboard.press("Escape")
         self._settle(600)
 
-        # Voice lists the actual registry, not a count of it, with the default
-        # and the narrator picked out.
+        # Voice CASTS, it doesn't just report: two dropdowns over the whole
+        # library, falling back to the shipped registry with no key on the box.
         self._open_leaf("dot:voice")
-        rows = self._rows()
-        self.assertIn("Agent", rows)
-        self.assertGreater(len(rows), 4, "the voice cast should be listed")
-        marked = self.page.eval_on_selector_all(
-            "#eg-sheet-body .eg-stat.is-now .eg-stat-v",
-            "els => els.map(e => e.textContent)")
-        self.assertTrue([m for m in marked if "default" in m],
-                        f"one voice should be the default: {marked}")
+        self.assertEqual(
+            self.page.eval_on_selector_all(
+                "#eg-sheet-body .eg-field-k", "els => els.map(e => e.textContent)"),
+            ["Default voice", "Narrator"])
+        opts = self.page.eval_on_selector_all(
+            "#eg-sheet-body select", "els => els.map(s => s.options.length)")
+        self.assertEqual(len(opts), 2)
+        self.assertTrue(all(n > 1 for n in opts), f"voice menus look empty: {opts}")
 
     def test_controls_holds_the_movement_strip_and_a_key_card(self):
         """The CONTROLS strip is the panel's own wired element on loan, not a
@@ -512,7 +548,7 @@ class TestEditorDots(unittest.TestCase):
             self.page.eval_on_selector_all(
                 "#eg-sheet-body .eg-group > .we-cast-label",
                 "els => els.map(e => e.textContent)"),
-            ["Movement", "Keys", "Panel"])
+            ["Movement", "Keys", "Panel", "Start over"])
         self.assertTrue(self.page.evaluate(
             "!!document.querySelector('#eg-sheet-body #we-input-opts')"))
         rows = self._rows()
@@ -587,6 +623,55 @@ class TestEditorDots(unittest.TestCase):
         self.assertEqual(
             self.page.evaluate("([x, y]) => window.EditorGraph.probe(x, y).id",
                                [pt["x"], pt["y"]]), "dot:character")
+
+    def test_a_setting_is_a_control_not_a_paragraph(self):
+        """Scan and Camp were panels of facts you could read and not touch, which
+        is indistinguishable from a broken control. They now carry a real select,
+        a real slider and a real switch, and each one persists through
+        /api/admin/studio/tunables."""
+        before = self._tunables()
+        try:
+            self._open_ring()
+            self._dive("dot:game")
+            self._dive("dot:mechanics")
+
+            self._open_leaf("dot:scan")
+            self.assertEqual(
+                self.page.eval_on_selector_all("#eg-sheet-body select", "e => e.length"), 1)
+            self.assertEqual(
+                self.page.eval_on_selector_all(
+                    "#eg-sheet-body input[type=range]", "e => e.length"), 1)
+            # Picking the on-device detector actually lands on the server.
+            self.page.select_option("#eg-sheet-body select", "local")
+            self.page.wait_for_timeout(1400)
+            self.assertEqual(self._tunables().get("detect_backend"), "local")
+
+            self.page.keyboard.press("Escape")
+            self._settle(700)
+            self._open_leaf("dot:camp")
+            self.assertEqual(
+                self.page.eval_on_selector_all("#eg-sheet-body .eg-switch", "e => e.length"), 1)
+            self.page.click("#eg-sheet-body .eg-switch")
+            self.page.wait_for_timeout(1400)
+            self.assertFalse(self._tunables().get("camp_include_jeep"),
+                             "the jeep switch should reach the server")
+        finally:
+            self._put_tunables({"_clear": True})
+            self.assertEqual(self._tunables().get("detect_backend"),
+                             before.get("detect_backend"))
+
+    def test_clearing_everything_takes_two_taps(self):
+        """One button to get out of a mess, and it asks first — it empties four
+        sheets and every knob."""
+        self._open_ring()
+        self._dive("dot:game")
+        self._open_leaf("dot:controls")
+        btn = self.page.query_selector("#eg-sheet-body .eg-group:last-child .we-btn")
+        self.assertEqual(btn.text_content().strip(), "Clear everything")
+        btn.click()
+        self.page.wait_for_timeout(300)
+        self.assertIn("Sure?", btn.text_content(),
+                      "the first tap should arm it, not fire it")
 
     def test_the_flat_list_still_has_the_whole_surface(self):
         """Nothing was deleted, only demoted: with the machine room unlocked the

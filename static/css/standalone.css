@@ -6712,8 +6712,21 @@ body.we-dev #world-editor .we-tool.is-dev { display: inline-flex; }
    hitAt), so nothing inside competes for the pointer. */
 #world-editor .eg-canvas * { pointer-events: none; }
 
-/* ── Dots. Every circle is the same size at every depth (see DOT_R), so the
-   only variable left is what the label says. ───────────────────────────── */
+/* The wall of whatever you are currently inside. Barely there — it is a cue,
+   not a frame — and it fades out at the collapsed root, which has no outside. */
+#world-editor .eg-shell {
+  fill: none;
+  stroke: #101012;
+  stroke-opacity: 0.09;
+  stroke-width: 1.25;
+  vector-effect: non-scaling-stroke;
+  opacity: 1;
+  transition: opacity 0.5s ease;
+}
+#world-editor .we-graph.is-collapsed .eg-shell { opacity: 0; }
+
+/* ── Dots. One size per level, a step smaller each level down (see DOT_R and
+   DEPTH_SHRINK), so the only variable within a ring is what the label says. */
 #world-editor .eg-node .eg-cell {
   fill: #ffffff;
   stroke: #101012;
@@ -6756,25 +6769,27 @@ body.we-dev #world-editor .we-tool.is-dev { display: inline-flex; }
   transform-box: fill-box;
   transform-origin: 50% 50%;
 }
-/* Bloom: out of the nucleus, slightly past full size and back, staggered round
-   the ring by index so it arrives as a sequence. */
+/* Bloom: from NOTHING to full size, quickly, slightly past and back, staggered
+   round the ring by index so it arrives as a sequence. Starting at 0.3 meant
+   the dots popped into existence already most of the way there, which read as a
+   fade rather than a growth. */
 @keyframes eg-bloom {
-  0%   { transform: scale(0.3); opacity: 0; }
-  70%  { transform: scale(1.06); opacity: 1; }
+  0%   { transform: scale(0); opacity: 0; }
+  60%  { transform: scale(1.05); opacity: 1; }
   100% { transform: scale(1); opacity: 1; }
 }
 #world-editor .eg-node-in.is-blooming {
-  animation: eg-bloom 0.44s cubic-bezier(0.22, 1, 0.36, 1) both;
-  animation-delay: calc(var(--i, 0) * 52ms);
+  animation: eg-bloom 0.32s cubic-bezier(0.2, 1.1, 0.36, 1) both;
+  animation-delay: calc(var(--i, 0) * 40ms);
 }
-/* Wilt: back down into the middle, in the same order. */
+/* Wilt: all the way back to nothing, in the same order, faster still. */
 @keyframes eg-wilt {
   from { transform: scale(1); opacity: 1; }
-  to   { transform: scale(0.28); opacity: 0; }
+  to   { transform: scale(0); opacity: 0; }
 }
 #world-editor .eg-node.is-leaving .eg-node-in {
-  animation: eg-wilt 0.3s cubic-bezier(0.4, 0, 1, 1) both;
-  animation-delay: calc(var(--i, 0) * 34ms);
+  animation: eg-wilt 0.22s cubic-bezier(0.5, 0, 1, 1) both;
+  animation-delay: calc(var(--i, 0) * 26ms);
 }
 /* Idle: a slow breath, each dot on its own phase so the set never pulses in
    unison. Paired with the drift in the JS, this is what keeps a still screen
@@ -6998,6 +7013,122 @@ body.we-dev #world-editor .we-tool.is-dev { display: inline-flex; }
 }
 #world-editor .eg-stat.is-bad .eg-stat-v { color: var(--we-red-ink); }
 #world-editor .eg-stat.is-now .eg-stat-k { color: var(--we-red-ink); font-weight: 600; }
+
+/* ── Things you can actually change ────────────────────────────────────────
+   Deliberately a different shape from a status row: a status row is a fact with
+   its value flush right in plain text, a field has a control in it. When the two
+   looked alike, every panel read as text you couldn't touch. */
+#world-editor .eg-field {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 0 4px;
+  font-size: calc(12.5px * var(--we-fs));
+  cursor: pointer;
+}
+#world-editor .eg-field-k { flex: 0 0 auto; color: var(--we-text); }
+#world-editor .eg-field-help {
+  display: block;
+  margin: 0 0 6px;
+  font-size: calc(11px * var(--we-fs));
+  line-height: 1.45;
+  color: var(--we-text-dim);
+}
+#world-editor .eg-select {
+  appearance: none;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 8px 30px 8px 11px;
+  border: 1px solid var(--we-line-strong);
+  border-radius: 9px;
+  background: #ffffff;
+  /* The chevron, drawn rather than shipped as an asset. */
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--we-text-mid) 50%),
+    linear-gradient(135deg, var(--we-text-mid) 50%, transparent 50%);
+  background-position: right 15px center, right 10px center;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  color: var(--we-text);
+  font: inherit;
+  font-size: calc(12.5px * var(--we-fs));
+  cursor: pointer;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+#world-editor .eg-select:hover { border-color: var(--we-red); }
+#world-editor .eg-select:focus {
+  outline: none;
+  border-color: var(--we-red);
+  box-shadow: 0 0 0 3px var(--we-red-wash);
+}
+#world-editor .eg-range { flex: 1 1 auto; display: flex; align-items: center; gap: 10px; }
+#world-editor .eg-range input[type="range"] {
+  -webkit-appearance: none; appearance: none;
+  flex: 1 1 auto;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--we-line-strong);
+  outline: none;
+  cursor: pointer;
+}
+#world-editor .eg-range input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 15px; height: 15px; border-radius: 50%; border: 0;
+  background: var(--we-red);
+  box-shadow: 0 1px 4px rgba(224, 48, 28, 0.4);
+}
+#world-editor .eg-range input[type="range"]::-moz-range-thumb {
+  width: 15px; height: 15px; border-radius: 50%; border: 0;
+  background: var(--we-red);
+}
+#world-editor .eg-range-v {
+  flex: 0 0 auto;
+  min-width: 3ch;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--we-text-mid);
+}
+#world-editor .eg-switch {
+  appearance: none;
+  position: relative;
+  flex: 0 0 auto;
+  margin: 0 0 0 auto;
+  width: 38px; height: 22px;
+  border-radius: 999px;
+  background: rgba(16, 16, 18, 0.18);
+  cursor: pointer;
+  transition: background 0.2s;
+}
+#world-editor .eg-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 18px; height: 18px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(16, 16, 18, 0.3);
+  transition: transform 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+}
+#world-editor .eg-switch:checked { background: var(--we-red); }
+#world-editor .eg-switch:checked::after { transform: translateX(16px); }
+
+/* A companion: their name, and the two things you can do with them. */
+#world-editor .eg-person {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--we-line);
+  font-size: calc(12.5px * var(--we-fs));
+}
+#world-editor .eg-person:last-child { border-bottom: 0; }
+#world-editor .eg-person-n { flex: 1 1 auto; min-width: 0; color: var(--we-text); }
+#world-editor .eg-person-a { flex: 0 0 auto; display: flex; gap: 6px; }
+#world-editor .eg-person-a .we-btn {
+  padding: 6px 10px;
+  font-size: calc(11px * var(--we-fs));
+}
 #world-editor .eg-note {
   margin: 10px 0 0;
   font-size: calc(12px * var(--we-fs));

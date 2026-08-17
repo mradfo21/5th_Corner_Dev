@@ -80,3 +80,4 @@ voice_design_cache.json
 # Saved LEVELS (named level-layer snapshots) — runtime user data
 levels/*
 !levels/.gitkeep
+tunables.json

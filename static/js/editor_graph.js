@@ -40,14 +40,16 @@
   // relative to it, so the whole diagram scales with the viewBox and nothing
   // needs to know about pixels.
   const UNIT = 1000;
-  const LABEL = UNIT * 0.038;        // label type size — the SAME everywhere
-  // ONE radius for every dot at every depth. Sizing each dot to its own word
-  // was honest to "just big enough to cover the text" and looked like a bag of
-  // different coins: LEVEL a marble, CHARACTER a saucer. A set of identical
-  // circles is the thing that reads as designed, so the radius is fixed to fit
-  // the longest label we allow (nine characters, upper case) and every dot gets
-  // it — satellites and nucleus alike.
+  const LABEL = UNIT * 0.038;        // label type size at the top level
+  // ONE radius per level, for every dot on it. Sizing each dot to its own word
+  // looked like a bag of different coins: LEVEL a marble, CHARACTER a saucer.
   const DOT_R = LABEL * 4.2;
+  // ...and each level down is a step smaller, type and all. The view no longer
+  // rescales to fit the ring (see VIEW_HALF), so this is visible as depth: the
+  // game is the biggest thing there is, and a knob three levels inside it is a
+  // detail. Without it, every level rendered at exactly the same size and the
+  // whole tree read as flat.
+  const DEPTH_SHRINK = 0.9;
   // Upper-case glyphs in the UI font, as a fraction of type size, including
   // tracking. Measuring in the DOM would be exact but forces layout on every
   // rebuild; being a few percent out only changes the breathing room.
@@ -57,7 +59,16 @@
   // How much room the view leaves around what it is framing. The collapsed
   // root has to read as "a small dot on a big sheet", so it gets a lot.
   const COLLAPSED_ZOOM = 4.6;
-  const EXPANDED_PAD = 1.1;
+  // The expanded view is a FIXED window on the world, the same at every depth.
+  // It used to be fitted to whichever ring was open, which silently cancelled
+  // the depth shrink: smaller dots in a proportionally smaller frame render at
+  // exactly the same size on screen.
+  const VIEW_HALF = DOT_R * 3.9;
+  // The enclosure you are inside. WIDER than the frame's short axis on purpose:
+  // its left and right run off the edge and only the top and bottom arcs curve
+  // through the view, which is what makes it read as a wall you are inside
+  // rather than a ring drawn around the dots.
+  const SHELL_R = VIEW_HALF * 1.3;
   const ZOOM_MS = 620;
 
   // ── Wobble. Small numbers on purpose: this should read as something alive
@@ -153,9 +164,9 @@
     });
   }
 
-  // Every dot is the same size; the only question is whether the word fits, and
-  // a label that doesn't is a naming problem, not a layout one.
-  function dotRadius() { return DOT_R; }
+  // One size per level, a step smaller each level down.
+  function scaleAt(depth) { return Math.pow(DEPTH_SHRINK, depth); }
+  function dotRadius(depth) { return DOT_R * scaleAt(depth); }
 
   function buildTree() {
     const spec = (d) => ({
@@ -206,8 +217,13 @@
   // ring when it is a satellite — and stepWobble picks by role. Laying the whole
   // tree out in one absolute space is what the first version did, and it left
   // everything below the second level with no coordinates at all.
-  function layout(node) {
-    node.r = dotRadius();
+  function layout(node, depth) {
+    depth = depth || 0;
+    node.depth = depth;
+    // A node's own size is the size of the level it LIVES on; its children are
+    // one step smaller, and its ring is sized for them.
+    node.r = dotRadius(depth);
+    node.label_size = LABEL * scaleAt(depth);
     node.cx = 0;
     node.cy = 0;
     node.slotX = 0;
@@ -217,10 +233,10 @@
     node.phase = node.phase || 0.4;
     node.wob = node.wob || 0.7;
     const kids = node.children || [];
-    kids.forEach(layout);
+    kids.forEach((k) => layout(k, depth + 1));
     if (!kids.length) return;
 
-    const maxR = DOT_R;
+    const maxR = dotRadius(depth + 1);
     // Two constraints: neighbours must not touch each other, and none may
     // swallow the nucleus. Take whichever ring is larger.
     const bySpan = kids.length > 1
@@ -372,7 +388,7 @@
     // Stagger, so the ring blooms as a sequence rather than a flashbulb.
     inner.style.setProperty("--i", String(index || 0));
     inner.appendChild(mk("circle", { cx: 0, cy: 0, r: n.r }, "eg-cell"));
-    const t = mk("text", { x: 0, y: 0, "font-size": LABEL }, "eg-name");
+    const t = mk("text", { x: 0, y: 0, "font-size": n.label_size || LABEL }, "eg-name");
     t.textContent = n.label;
     inner.appendChild(t);
     g.appendChild(inner);
@@ -386,6 +402,12 @@
     root = buildTree();
     els.world.innerHTML = "";
     hoverId = null;
+    // The enclosure. A single faint circle wider than the frame, so on a tall
+    // panel you see its top and bottom arcs and read the whole view as the
+    // inside of something. Without it the dots floated on an unbounded sheet and
+    // there was no hierarchy to feel, only labels to read.
+    els.world.appendChild(mk("circle", { cx: 0, cy: 0, r: SHELL_R }, "eg-shell"));
+
     // No tethers. Spokes from the middle to every satellite drew the one
     // relationship you can already see (these things are inside that thing) and
     // turned a constellation into a wheel.
@@ -445,7 +467,8 @@
     leaveTimer = setTimeout(() => {
       leaving = Object.create(null);
       paint();
-    }, reduceMotion() ? 0 : 380);
+      // Long enough for the last dot's staggered wilt (0.22s + 4 × 26ms).
+    }, reduceMotion() ? 0 : 340);
   }
 
   // ══════════════════════════════════════════════════════════════════
@@ -461,13 +484,11 @@
       (v.cx - hx) + " " + (v.cy - hy) + " " + (hx * 2) + " " + (hy * 2));
   }
 
+  // One window, every depth. Fitting it to the open ring is what made the depth
+  // shrink invisible: a smaller ring in a smaller frame is the same picture.
   function frameFor() {
-    if (openId === null) {
-      return { cx: 0, cy: 0, half: root.r * COLLAPSED_ZOOM };
-    }
-    const f = nodesById[openId] || root;
-    const maxR = (f.children || []).reduce((m, k) => Math.max(m, k.r), f.r);
-    return { cx: 0, cy: 0, half: ((f.ring || f.r * 3) + maxR) * EXPANDED_PAD };
+    if (openId === null) return { cx: 0, cy: 0, half: root.r * COLLAPSED_ZOOM };
+    return { cx: 0, cy: 0, half: VIEW_HALF };
   }
 
   function setZooming(on) {
@@ -518,7 +539,7 @@
     // gone and they can come straight in; going UP, the outgoing ring is still
     // shrinking through the same space, and both at once reads as a scramble —
     // so the arrival waits for the departure to clear.
-    bloom(visibleNodes().filter((n) => before.indexOf(n) === -1), up ? 210 : 0);
+    bloom(visibleNodes().filter((n) => before.indexOf(n) === -1), up ? 160 : 0);
   }
 
   // One level up: the nucleus is where you came from, and so is the paper.
@@ -694,6 +715,16 @@
     return p;
   }
 
+  function button(host, label, cls, onClick) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "we-btn " + (cls || "");
+    b.textContent = label;
+    b.addEventListener("click", onClick);
+    host.appendChild(b);
+    return b;
+  }
+
   // A row of choices, one of them current. Used for every model picker, so they
   // all behave the same way and none of them invents a new idiom.
   function picker(host, options, currentId, onPick) {
@@ -730,65 +761,262 @@
     } catch (_) { return null; }
   }
 
+  async function putJson(url, payload) {
+    try {
+      const r = await fetch(url, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const body = await r.json().catch(() => null);
+      if (!r.ok) return { ok: false, error: (body && body.message) || "failed" };
+      return { ok: true, data: (body && body.data) || body };
+    } catch (_) { return { ok: false, error: "failed" }; }
+  }
+
+  // ── Real controls ─────────────────────────────────────────────────────
+  // A row that LOOKS like the status rows above it but can actually be changed.
+  // The panels were all facts and no handles: correct information, presented as
+  // dead text, which is indistinguishable from a broken control.
+  function fieldRow(host, label, help) {
+    const row = document.createElement("label");
+    row.className = "eg-field";
+    const k = document.createElement("span");
+    k.className = "eg-field-k";
+    k.textContent = label;
+    row.appendChild(k);
+    host.appendChild(row);
+    if (help) {
+      const h = document.createElement("span");
+      h.className = "eg-field-help";
+      h.textContent = help;
+      host.appendChild(h);
+    }
+    return row;
+  }
+
+  function selectRow(host, label, options, value, help, onPick) {
+    const row = fieldRow(host, label, help);
+    const sel = document.createElement("select");
+    sel.className = "eg-select";
+    options.forEach((o) => {
+      const opt = document.createElement("option");
+      opt.value = o.id;
+      opt.textContent = o.label;
+      if (String(o.id) === String(value)) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    sel.addEventListener("change", () => onPick(sel.value));
+    row.appendChild(sel);
+    return sel;
+  }
+
+  function numberRow(host, label, spec, value, help, onSet) {
+    const row = fieldRow(host, label, help);
+    const wrap = document.createElement("span");
+    wrap.className = "eg-range";
+    const input = document.createElement("input");
+    input.type = "range";
+    input.min = spec.min;
+    input.max = spec.max;
+    input.step = spec.step || 1;
+    input.value = value;
+    const out = document.createElement("span");
+    out.className = "eg-range-v";
+    out.textContent = value;
+    input.addEventListener("input", () => { out.textContent = input.value; });
+    input.addEventListener("change", () => onSet(input.value));
+    wrap.appendChild(input);
+    wrap.appendChild(out);
+    row.appendChild(wrap);
+    return input;
+  }
+
+  function switchRow(host, label, value, help, onSet) {
+    const row = fieldRow(host, label, help);
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.className = "eg-switch";
+    box.checked = !!value;
+    box.addEventListener("change", () => onSet(box.checked));
+    row.appendChild(box);
+    return box;
+  }
+
+  // Every knob goes through one endpoint, so every panel saves the same way and
+  // reports failure the same way.
+  let tunables = null;
+  async function loadTunables(force) {
+    if (tunables && !force) return tunables;
+    tunables = await getJson("/api/admin/studio/tunables");
+    return tunables;
+  }
+
+  async function setTunable(name, value) {
+    const res = await putJson("/api/admin/studio/tunables", { [name]: value });
+    if (!res.ok) { B.toast(res.error || "Couldn't save that.", "warn"); return false; }
+    tunables = res.data;
+    B.toast("Saved.");
+    return true;
+  }
+
   // ── Mechanics ─────────────────────────────────────────────────────────
-  // SCAN's backend is chosen by an environment variable on the server, so there
-  // is nothing here to set. What there IS to know is which detector answered and
-  // why the fast one didn't load — which until now only existed in a boot log.
   function sheetScan(n, body) {
-    const host = group(body, "Detector");
-    statusRow(host, "Backend", "…");
-    getJson("/api/health").then((h) => {
-      host.innerHTML = "";
+    const knobs = group(body, "Detector");
+    const state = group(body, "Right now");
+    Promise.all([loadTunables(true), getJson("/api/health")]).then(([t, h]) => {
+      knobs.innerHTML = "";
+      state.innerHTML = "";
+      const spec = (t && t.schema) || {};
+      const vals = (t && t.values) || {};
+      if (spec.detect_backend) {
+        selectRow(knobs, spec.detect_backend.label,
+          spec.detect_backend.options.map((o) => ({
+            id: o,
+            label: { gemini: "Ask the image model", local: "On the box",
+                     auto: "On the box, fall back" }[o] || o,
+          })),
+          vals.detect_backend, spec.detect_backend.help,
+          (v) => setTunable("detect_backend", v).then((ok) => {
+            if (ok && sheetId === n.id) openSheet(n);
+          }));
+      }
+      if (spec.detect_min_score) {
+        numberRow(knobs, spec.detect_min_score.label, spec.detect_min_score,
+          vals.detect_min_score, spec.detect_min_score.help,
+          (v) => setTunable("detect_min_score", v));
+      }
       const d = (h && h.detect) || {};
       const local = d.local || {};
       const onDevice = d.backend === "local" || d.backend === "auto";
-      statusRow(host, "Backend", d.backend || "unknown");
-      statusRow(host, "On device", local.available ? "ready" : "unavailable",
+      statusRow(state, "Answering", d.backend || "unknown");
+      statusRow(state, "On device", local.available ? "ready" : "unavailable",
                 onDevice && !local.available);
-      if (local.min_score != null) statusRow(host, "Min score", local.min_score);
-      if (local.timeouts) statusRow(host, "Timeouts", local.timeouts, true);
-      if (local.breaker_open) statusRow(host, "Breaker", "open", true);
-      // A stack-trace fragment is not a value in a two-column row; it needs its
-      // own block, in the typeface it came from.
-      if (local.error) {
+      if (local.timeouts) statusRow(state, "Timeouts", local.timeouts, true);
+      if (local.breaker_open) statusRow(state, "Breaker", "open", true);
+      // A stack-trace fragment is not a value in a two-column row.
+      if (local.error && onDevice) {
         const pre = document.createElement("pre");
         pre.className = "eg-err";
         pre.textContent = local.error;
-        host.appendChild(pre);
+        state.appendChild(pre);
       }
-      note(body, onDevice && !local.available
-        ? "The on-device detector didn't load, so SCAN is asking the image model instead. Slower, and it costs a call per scan."
-        : "SCAN reads the frame on the box. Nothing to tune from here — the backend is set on the server.");
+      if (onDevice && !local.available) {
+        note(state, "The on-device detector didn't load, so SCAN is asking the " +
+                    "image model instead. Slower, and it costs a call per scan.");
+      }
     });
   }
 
   function sheetCamp(n, body) {
-    const host = group(body, "At the fire");
+    const knobs = group(body, "The fire");
+    loadTunables(true).then((t) => {
+      knobs.innerHTML = "";
+      const spec = (t && t.schema) || {};
+      const vals = (t && t.values) || {};
+      if (spec.camp_companion_cap) {
+        numberRow(knobs, spec.camp_companion_cap.label, spec.camp_companion_cap,
+          vals.camp_companion_cap, spec.camp_companion_cap.help,
+          (v) => setTunable("camp_companion_cap", v));
+      }
+      if (spec.camp_include_jeep) {
+        switchRow(knobs, spec.camp_include_jeep.label, vals.camp_include_jeep,
+          spec.camp_include_jeep.help,
+          (v) => setTunable("camp_include_jeep", v));
+      }
+    });
+    const who = group(body, "Who comes");
     getJson("/api/companions").then((c) => {
-      host.innerHTML = "";
+      who.innerHTML = "";
       const roster = (c && (c.companions || c.roster)) || [];
       if (!roster.length) {
-        note(body, "Nobody yet. Companions join at a camp moment, and each one " +
-                   "keeps the portrait and voice it was given.");
+        note(who, "Nobody yet. Companions join as you meet them, and each keeps " +
+                  "the portrait and the voice it was given.");
         return;
       }
-      roster.forEach((p) => statusRow(host, p.name || p.slug || "someone",
-                                      p.voice_id ? "has a voice" : "no voice yet",
-                                      !p.voice_id));
+      roster.forEach((p) => statusRow(who, p.name || p.label || p.slug || "someone",
+                                      p.voice_id ? "voiced" : "silent", !p.voice_id));
     });
+    // Camp caches its establishing shot against the roster, so changing the
+    // seats does nothing until the shot is rebuilt. This is that button.
+    const acts = group(body, "Image");
+    button(acts, "Rebuild the camp shot", "", async () => {
+      B.toast("Rebuilding camp\u2026");
+      try {
+        await fetch("/api/camp/enter", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: "default", force: true }),
+        });
+        B.toast("Camp redrawn.");
+      } catch (_) { B.toast("Couldn't redraw camp.", "warn"); }
+    });
+    note(acts, "The establishing shot is cached against who is there, so it only " +
+               "changes when the roster does — or when you ask.");
   }
 
   function sheetNpc(n, body) {
-    const host = group(body, "Conversation");
+    const state = group(body, "Conversation");
     getJson("/api/health").then((h) => {
-      host.innerHTML = "";
+      state.innerHTML = "";
       const t = (h && h.talk) || {};
-      statusRow(host, "Voice", t.voice ? "ready" : "text only", !t.voice);
-      statusRow(host, "Agent", t.agent ? "set" : "missing", !t.agent);
-      statusRow(host, "API key", t.api_key ? "set" : "not set", false);
-      statusRow(host, "Overrides", t.overrides ? "on" : "off", false);
-      statusRow(host, "Designed voices", t.designed_voices || 0);
-      if (t.reason && t.reason !== "ready") note(body, t.reason);
+      statusRow(state, "Voice", t.voice ? "ready" : "text only", !t.voice);
+      statusRow(state, "Agent", t.agent ? "set" : "missing", !t.agent);
+      statusRow(state, "API key", t.api_key ? "set" : "not set", false);
+      if (t.reason && t.reason !== "ready") note(state, t.reason);
+    });
+    // The party. /api/companions is the roster; place() puts one into the scene
+    // you are standing in, and regenerate_voice recasts them.
+    const party = group(body, "The party");
+    getJson("/api/companions").then((c) => {
+      party.innerHTML = "";
+      const roster = (c && (c.companions || c.roster)) || [];
+      if (!roster.length) {
+        note(party, "Nobody travelling with you yet. Talk to someone and they " +
+                    "join the roster.");
+        return;
+      }
+      roster.forEach((p) => {
+        const label = p.name || p.label || p.slug || "someone";
+        const row = document.createElement("div");
+        row.className = "eg-person";
+        const nm = document.createElement("span");
+        nm.className = "eg-person-n";
+        nm.textContent = label;
+        row.appendChild(nm);
+        const acts = document.createElement("span");
+        acts.className = "eg-person-a";
+        button(acts, "Bring in", "", async () => {
+          B.toast("Bringing " + label + " in\u2026");
+          try {
+            const r = await fetch("/api/companions/place", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ label: label, session_id: "default" }),
+            });
+            const d = await r.json().catch(() => null);
+            B.toast(d && d.image_url ? label + " is here."
+                                     : "Couldn't place them right now.",
+                    d && d.image_url ? "" : "warn");
+          } catch (_) { B.toast("Couldn't place them.", "warn"); }
+        });
+        button(acts, "Recast voice", "we-btn-ghost", async () => {
+          B.toast("Designing a voice for " + label + "\u2026");
+          try {
+            const r = await fetch("/api/companions/regenerate_voice", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ label: label, session_id: "default" }),
+            });
+            const d = await r.json().catch(() => null);
+            B.toast(d && (d.voice_id || d.status === "queued")
+              ? "Recasting " + label + "." : "Couldn't recast that voice.",
+              d && (d.voice_id || d.status === "queued") ? "" : "warn");
+          } catch (_) { B.toast("Couldn't recast that voice.", "warn"); }
+        });
+        row.appendChild(acts);
+        party.appendChild(row);
+      });
     });
     // The narrator is a live button; the graph proxies to it rather than owning
     // a second copy of its state.
@@ -797,12 +1025,9 @@
       .find((b) => b.id === "narrator-btn");
     if (btn) {
       const acts = group(body, "Narrator");
-      const b = document.createElement("button");
-      b.type = "button";
-      b.className = "we-btn";
-      b.textContent = "Speak the last line";
-      b.addEventListener("click", () => { try { btn.click(); } catch (_) {} });
-      acts.appendChild(b);
+      button(acts, "Speak the last line", "", () => {
+        try { btn.click(); } catch (_) {}
+      });
     }
   }
 
@@ -904,30 +1129,55 @@
   }
 
   function sheetVoice(n, body) {
-    const host = group(body, "Conversation");
-    getJson("/api/health").then((h) => {
-      host.innerHTML = "";
-      const t = (h && h.talk) || {};
-      statusRow(host, "Agent", t.agent ? "set" : "missing", !t.agent);
-      statusRow(host, "Designed voices", t.designed_voices || 0);
-      if (!t.agent) note(host, "Without an ElevenLabs agent, everyone is on text.");
-    });
-    // The actual catalogue, not a count of it: voices.json is what a character
-    // can be cast from, and the default and narrator are picked out of it.
-    const cast = group(body, "Cast");
-    getJson("/api/talk/voices").then((v) => {
-      cast.innerHTML = "";
-      const list = (v && v.voices) || [];
-      if (!list.length) { note(cast, "No voices in the registry."); return; }
-      list.forEach((entry) => {
-        const marks = [];
-        if (entry.id === (v && v.default)) marks.push("default");
-        if (entry.id === (v && v.narrator)) marks.push("narrator");
-        const row = statusRow(cast, entry.name || entry.id,
-                              marks.length ? marks.join(" \u00B7 ") : (entry.tag || entry.gender || ""));
-        if (marks.length) row.classList.add("is-now");
+    const picks = group(body, "Casting");
+    // The WHOLE account, not the eleven stock ids baked into voices.json —
+    // custom voices designed in ElevenLabs were invisible from in here, which
+    // made the panel look like it was showing someone else's voices.
+    Promise.all([
+      loadTunables(true),
+      getJson("/api/talk/voices/library"),
+      getJson("/api/talk/voices"),
+    ]).then(([t, lib, reg]) => {
+      picks.innerHTML = "";
+      const vals = (t && t.values) || {};
+      const spec = (t && t.schema) || {};
+      const library = (lib && lib.voices) || [];
+      // Fall back to the shipped registry if the account can't be reached, so
+      // the menu is never empty.
+      const options = (library.length ? library : ((reg && reg.voices) || []))
+        .map((v) => ({
+          id: v.id,
+          label: v.name + (v.category && v.category !== "premade" ? "  \u2022 yours" : ""),
+        }));
+      if (!options.length) {
+        note(picks, (lib && lib.reason === "no_api_key")
+          ? "No ElevenLabs key on the server, so there is no library to read."
+          : "Couldn't reach the voice library.");
+      } else {
+        selectRow(picks, spec.default_voice_id ? spec.default_voice_id.label : "Default voice",
+          options, vals.default_voice_id,
+          spec.default_voice_id && spec.default_voice_id.help,
+          (v) => setTunable("default_voice_id", v));
+        selectRow(picks, spec.narrator_voice_id ? spec.narrator_voice_id.label : "Narrator",
+          options, vals.narrator_voice_id,
+          spec.narrator_voice_id && spec.narrator_voice_id.help,
+          (v) => setTunable("narrator_voice_id", v));
+      }
+
+      const yours = library.filter((v) => v.category && v.category !== "premade");
+      const all = group(body, library.length
+        ? ("Library \u00B7 " + library.length + (yours.length ? " (" + yours.length + " yours)" : ""))
+        : "Library");
+      library.forEach((v) => {
+        const row = statusRow(all, v.name, v.description || v.category || "");
+        if (v.id === vals.default_voice_id || v.id === vals.narrator_voice_id) {
+          row.classList.add("is-now");
+        }
       });
-      note(cast, "A character is given one the first time they speak, and keeps it.");
+      if (library.length) {
+        note(all, "A character is cast from this list the first time they speak, " +
+                  "and keeps that voice.");
+      }
     });
   }
 
@@ -977,6 +1227,42 @@
       statusRow(keys, "Editor", "` opens it \u00B7 Esc goes back");
     }
     try { B.mountPanelControls(group(body, "Panel")); } catch (_) {}
+
+    // One button that puts the whole thing back to how it shipped: the four
+    // sheets AND every runtime knob. Getting out of a mess used to mean
+    // emptying a dozen fields by hand.
+    const reset = group(body, "Start over");
+    let armed = false;
+    const b = button(reset, "Clear everything", "we-btn-ghost", async () => {
+      if (!armed) {
+        armed = true;
+        b.classList.add("we-btn-primary");
+        b.textContent = "Sure? This clears every setting";
+        setTimeout(() => {
+          if (!armed) return;
+          armed = false;
+          b.classList.remove("we-btn-primary");
+          b.textContent = "Clear everything";
+        }, 4000);
+        return;
+      }
+      armed = false;
+      b.disabled = true;
+      try {
+        await fetch("/api/admin/studio/identity/reset", { method: "POST" });
+        await putJson("/api/admin/studio/tunables", { _clear: true });
+        tunables = null;
+        B.toast("Cleared.");
+        closeSheet();
+        setOpen(null, true);
+        sync();
+      } catch (_) {
+        B.toast("Couldn't clear that.", "warn");
+      }
+      b.disabled = false;
+    });
+    note(reset, "Empties the game, level, character and camera sheets, and puts " +
+                "every setting back to how it shipped.");
   }
 
   // Returns the CONTENT of the group, not the group: every async panel in here
