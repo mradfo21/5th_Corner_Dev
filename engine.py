@@ -1230,6 +1230,11 @@ VISION_ENABLED = True  # ENABLED for production
 # targeting, hung calls eat all four gunicorn threads and take the whole service
 # down with them. Set DETECT_BACKEND=local to opt in (it is solid locally, and
 # it is the only backend that works with no API key at all).
+# How many things one SCAN may name. Was 8, spread across four call sites as a
+# literal. Eight sounds generous until the frame has three people and a jeep in
+# it and the props win — the cap was doing quiet filtering of its own.
+DETECT_MAX_ITEMS = int(os.getenv("DETECT_MAX_ITEMS") or 12)
+
 DETECT_BACKEND = (os.getenv("DETECT_BACKEND") or "gemini").strip().lower()
 if DETECT_BACKEND not in ("local", "gemini", "auto"):
     print(f"[ENGINE INIT] unknown DETECT_BACKEND={DETECT_BACKEND!r}; using 'local'", flush=True)
@@ -2563,17 +2568,19 @@ _UNDERWHELMING_LABELS = frozenset({
     "sunlight", "horizon",
 })
 _UNDERWHELMING_PART_RE = re.compile(
+    # ONLY the parts of the camera operator that are genuinely in every single
+    # frame of a found-footage game: the hands holding the camera and the arms
+    # attached to them.
+    #
+    # This list used to run all the way down the body — leg, knee, shin, foot,
+    # boot, shoe, shoulder, sleeve — on the theory that "photograph the boot" is
+    # a weak tag. But in a horror game a boot on the ground, a leg sticking out
+    # from under something, a single shoe: those are the most interesting things
+    # in the frame, and they were being thrown away before they could be tagged.
+    # Same reasoning that already kept "chest" and "torso" off this list.
     r"\b(glove|gloves|hand|hands|finger|fingers|thumb|thumbs|palm|palms|"
     r"wrist|wrists|knuckle|knuckles|fist|fists|arm|arms|forearm|forearms|"
-    r"elbow|elbows|"
-    # More of the camera operator's own body / clothing that reads as a
-    # meaningless FPS-foreground tag ("photograph the leg/boot"). Deliberately
-    # EXCLUDES words that double as real evidence in this world — "chest"
-    # (a supply/medical chest = a container) and "torso" (a victim's remains) —
-    # so genuine case subjects still tag.
-    r"leg|legs|thigh|thighs|knee|knees|shin|shins|foot|feet|boot|boots|"
-    r"shoe|shoes|shoulder|shoulders|sleeve|sleeves|"
-    r"strap|jacket cuff|cuff)\b"
+    r"elbow|elbows|jacket cuff|cuff)\b"
 )
 
 
@@ -2713,7 +2720,7 @@ def _detect_self_rule() -> str:
     )
 
 
-def _normalize_detections(parsed: list, max_items: int = 8) -> list:
+def _normalize_detections(parsed: list, max_items: int = DETECT_MAX_ITEMS) -> list:
     """Turn raw detector output into the wire shape the client consumes.
 
     Shared by every backend on purpose. Both Gemini and ``local_vision`` hand
@@ -2760,22 +2767,27 @@ def _normalize_detections(parsed: list, max_items: int = 8) -> list:
         # Drop degenerate or full-frame boxes (not useful as a tag point).
         if w <= 0.001 or h <= 0.001 or (w >= 0.98 and h >= 0.98):
             continue
-        # GEOMETRY BACKSTOP for the camera operator's own body/gear. In this
-        # first-person, camera-in-hand conceit the player's arm / hand / held
-        # camcorder juts up from the very bottom of the frame in EVERY shot,
-        # and the model sometimes labels it something the word filter misses
-        # ("grip", "device", "object"). Such a blob is unmistakable by shape:
-        # it runs off the bottom edge and is tall. Reject it so it can never
-        # become a "photograph the hand" tag/objective. Conservative bounds
-        # (must touch the very bottom AND be tall) so a real low foreground
-        # subject — a body on the ground, a creature lunging — still tags.
-        # The held-camera/arm blob is a TALL, NARROW column rising from the
-        # bottom; requiring h > w (taller than wide) keeps WIDE foreground
-        # subjects (a sprawled victim, a hulking creature) taggable — which
-        # matters because "Capture A Victim" is a real objective.
-        if ymax >= 0.9 and h >= 0.5 and h > w:
+        # GEOMETRY BACKSTOP for the camera operator's own body/gear: the held
+        # camcorder or an arm juts up from the bottom of the frame in this
+        # conceit, and the model sometimes labels it something the word filter
+        # misses ("grip", "device", "object").
+        #
+        # This used to reject anything touching the bottom that was half the
+        # frame tall and taller than wide — which is ALSO the exact shape of a
+        # person standing in front of you. It was quietly eating the single most
+        # interesting thing SCAN can find. Now it has to be a NARROW column
+        # hugging the very bottom edge, and it never applies to something the
+        # detector already called a living subject: if it says person, it is not
+        # the player's own elbow.
+        kind_raw = str(entry.get("kind") or "").strip().lower()
+        subject = kind_raw in ("person", "character", "creature", "animal")
+        if (not subject) and ymax >= 0.97 and h >= 0.62 and w <= 0.22:
             continue
-        key = label[:24]
+        # Dedupe on label AND rough position: keying on the label alone meant a
+        # frame with three people in it — all of them labelled "person" — came
+        # back with one tag. Two things twenty percent of the frame apart are two
+        # things, whatever they are called.
+        key = (label[:24], round(cx * 5), round(cy * 5))
         if key in seen:
             continue
         seen.add(key)
@@ -2799,7 +2811,7 @@ def _normalize_detections(parsed: list, max_items: int = 8) -> list:
 
 
 def _detect_objects(image_path: str = None,
-                    max_items: int = 8,
+                    max_items: int = DETECT_MAX_ITEMS,
                     image_bytes: bytes = None,
                     mime_type: str = None,
                     scene_prompt: str = "") -> list:
@@ -2874,7 +2886,7 @@ def _detect_objects(image_path: str = None,
 
 def _detect_objects_gemini(image_bytes: bytes,
                            mime_type: str,
-                           max_items: int = 8,
+                           max_items: int = DETECT_MAX_ITEMS,
                            scene_prompt: str = "") -> list:
     """Ask Gemini to name and box what's in the frame.
 
@@ -2907,6 +2919,14 @@ def _detect_objects_gemini(image_bytes: bytes,
             "character, sentient creature, or a talking machine (radio, phone, "
             "intercom, robot, terminal with a voice). Set it false for inert "
             "objects, scenery, tools, and plain animals that would not speak. "
+            # People first, explicitly. A figure in the frame is the most
+            # interesting thing SCAN can find and the most likely to be
+            # undercalled — the model would happily return eight props and skip
+            # the person standing among them.
+            "ALWAYS include every person, figure, body, face or creature you can "
+            "see, even partly visible, even in shadow, even at a distance — list "
+            "them FIRST, before any props. If there are several, return each one "
+            "separately with its own box. "
             "Prefer specific, concrete labels over vague ones. "
             "Skip generic background like 'sky', 'ground', 'wall' unless notable. "
             + _detect_self_rule() +
@@ -8214,7 +8234,7 @@ def _talk_vision_snapshot(session_id: str = "default") -> dict:
     scene_prompt = (st.get("current_image_prompt") or "").strip()
     visible = []
     try:
-        visible = _detect_objects(str(resolved), max_items=8,
+        visible = _detect_objects(str(resolved), max_items=DETECT_MAX_ITEMS,
                                   scene_prompt=scene_prompt) or []
     except Exception:
         visible = []

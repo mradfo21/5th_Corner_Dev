@@ -79,10 +79,16 @@ DEFAULT_MODEL_PATH = ROOT / "models" / "efficientdet_lite0_int8.tflite"
 # would use on photographs: these frames are dark, grainy, VHS-degraded video,
 # so true positives come back weak. The corroboration rule below — not the
 # threshold — is what keeps precision up.
-MIN_SCORE = float(os.getenv("DETECT_LOCAL_MIN_SCORE", "0.22"))
+# 0.22 was still too strict for the footage this game actually produces: a
+# figure at the edge of firelight comes back at 0.15-0.2 and was being thrown
+# away silently. The corroboration rule is what keeps precision up, so the
+# threshold can afford to be generous.
+MIN_SCORE = float(os.getenv("DETECT_LOCAL_MIN_SCORE", "0.15"))
 
-# How many raw boxes to pull before filtering. Cheap, so ask for slack.
-MAX_RAW_RESULTS = 12
+# How many raw boxes to pull before filtering. Cheap, so ask for slack — and
+# at twelve, a frame with a few people in it could spend the whole budget on
+# props before the filters even ran.
+MAX_RAW_RESULTS = 32
 
 # Set DETECT_LOCAL_ANCHOR=0 to emit ONLY pixel-backed tags (step 1-3) and skip
 # the prompt-anchored ones (step 4). Anchored tags are what make SCAN feel alive
@@ -1023,7 +1029,7 @@ def _suppress(sal, box: Tuple[float, float, float, float]) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 def detect(image_bytes: bytes,
            mime_type: Optional[str] = None,
-           max_items: int = 8,
+           max_items: int = 12,
            scene_prompt: str = "") -> List[Dict[str, Any]]:
     """Detect objects in a frame, locally.
 
