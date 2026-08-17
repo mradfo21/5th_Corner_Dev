@@ -130,9 +130,9 @@
               sub: "Where the camera stands." },
             { id: "scan", kind: "scan", label: "Scan",
               sub: "Finding objects in the frame." },
-            { id: "camp", kind: "camp", label: "Camp",
+            { id: "camp", kind: "camp", prompt: "camp_scene_prompt", label: "Camp",
               sub: "Who is at the fire with you." },
-            { id: "narrator", kind: "narrator", label: "Narrator",
+            { id: "narrator", kind: "narrator", prompt: "narrator_direction", label: "Narrator",
               sub: "The voice that talks to you." },
           ],
         },
@@ -151,17 +151,30 @@
     },
   ];
 
-  // Does this sheet actually say anything yet? An empty sheet reaches no model,
-  // so "has content" is the one piece of state a dot needs to show.
-  function blockIsSet(blockId) {
+  // Have YOU changed this from how it shipped? That is the one piece of state a
+  // dot carries, and it used to be "does this have any content", which is a
+  // different question with a misleading answer: the shipped character sheet has
+  // a name and a look in it, so Character glowed on a game nobody had touched.
+  function blockIsChanged(blockId) {
     const spec = (B.identity() || {})[blockId] || {};
+    const base = (B.identityDefaults() || {})[blockId] || {};
     const schema = B.identityBlock(blockId);
     if (!schema) return false;
     return (schema.fields || []).some((f) => {
-      if (f.type === "toggle" || f.type === "mode") return false;
-      const v = spec[f.id];
-      return typeof v === "string" && v.trim() !== "";
+      const now = spec[f.id];
+      const was = base[f.id];
+      if (f.type === "toggle") return !!now !== !!was;
+      // A blank field and a missing one are the same thing to the compiler, so
+      // they must not read as a change here either.
+      return String(now == null ? "" : now).trim() !==
+             String(was == null ? "" : was).trim();
     });
+  }
+
+  // Same question for a dot backed by a prompt rather than a sheet.
+  function promptIsChanged(key) {
+    if (!key || !B.fieldById(key)) return false;
+    return String(B.valOf(key) || "").trim() !== String(B.defOf(key) || "").trim();
   }
 
   // One size per level, a step smaller each level down.
@@ -175,15 +188,17 @@
       label: d.label,
       sub: d.sub,
       block: d.block || null,
-      // The one piece of state a dot carries: is this steering the game? Only
-      // sheets can answer it; a container inherits it from what's inside.
-      set: d.block ? blockIsSet(d.block) : false,
+      prompt: d.prompt || null,
+      // Changed from how it shipped. A sheet answers from its own fields, a
+      // prompt-backed dot from its key, and a container inherits from whatever
+      // is inside it — so a glow at the top means "something in there is yours".
+      changed: d.block ? blockIsChanged(d.block) : promptIsChanged(d.prompt),
       children: (d.children || []).map(spec),
     });
     const kids = DOTS.map(spec);
     (function inherit(n) {
       (n.children || []).forEach(inherit);
-      if ((n.children || []).length) n.set = n.children.some((k) => k.set);
+      if ((n.children || []).length) n.changed = n.children.some((k) => k.changed);
     })({ children: kids });
     const tree = {
       id: "game",
@@ -449,7 +464,7 @@
       g.classList.toggle("is-core", isCore && !collapsed);
       g.classList.toggle("is-alone", isCore && collapsed);
       g.classList.toggle("is-orbit", onStage && !isCore);
-      g.classList.toggle("is-set", !!n.set);
+      g.classList.toggle("is-changed", !!n.changed);
       g.classList.toggle("is-open", n.id === sheetId);
     });
     if (els.graph) els.graph.classList.toggle("is-collapsed", collapsed);

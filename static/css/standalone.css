@@ -6822,9 +6822,11 @@ body.we-dev #world-editor .we-tool.is-dev { display: inline-flex; }
 #world-editor .eg-node.is-core .eg-name { display: none; }
 #world-editor .eg-node.is-core { opacity: 0.9; }
 
-/* A dot with words in its sheet is steering the game; an empty one isn't.
-   That is the only state a dot needs to carry, and it earns the red. */
-#world-editor .eg-node.is-orbit.is-set .eg-cell {
+/* The glow means YOU changed this from how it shipped — the only state a dot
+   carries, and the only thing that earns the red. It used to mean "has any
+   content", which lit Character up on a game nobody had touched, because the
+   shipped character sheet comes with a name and a look already in it. */
+#world-editor .eg-node.is-orbit.is-changed .eg-cell {
   stroke: var(--we-red);
   stroke-opacity: 0.85;
   filter: drop-shadow(0 3px 12px rgba(224, 48, 28, 0.16));
@@ -6836,7 +6838,7 @@ body.we-dev #world-editor .we-tool.is-dev { display: inline-flex; }
   stroke-opacity: 0.55;
   filter: drop-shadow(0 5px 16px rgba(16, 16, 18, 0.16));
 }
-#world-editor .eg-node.is-orbit.is-hover.is-set .eg-cell {
+#world-editor .eg-node.is-orbit.is-hover.is-changed .eg-cell {
   stroke-opacity: 1;
   filter: drop-shadow(0 5px 16px rgba(224, 48, 28, 0.26));
 }

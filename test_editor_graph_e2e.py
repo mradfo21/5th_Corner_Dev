@@ -424,26 +424,25 @@ class TestEditorDots(unittest.TestCase):
                 "name": before.get("name", ""),
             })
 
-    def test_a_dot_with_words_in_it_is_marked(self):
-        """The one piece of state a dot carries: is this steering the game?"""
+    def test_the_glow_means_you_changed_it(self):
+        """Not "has content" — the shipped character sheet HAS content, so that
+        rule lit Character up on a game nobody had touched. The glow is yours."""
+        def glows(node_id):
+            return self.page.evaluate(
+                """(id) => document.querySelector(
+                     '#eg-world .eg-node[data-id="' + id + '"]')
+                       .classList.contains('is-changed')""", node_id)
+
         before = self._identity("game_design")
         try:
-            self._put_identity("game_design", {"genre": "", "tone": "",
-                                               "threat_model": "", "enabled": False})
-            self.page.reload()
-            self.page.keyboard.press("r")
-            self.page.wait_for_selector(".choice-btn", state="attached", timeout=20000)
-            self.page.keyboard.press("`")
-            self.page.wait_for_selector("#we-graph", state="visible", timeout=10000)
-            self._settle()
+            # Untouched: nothing on the top ring is claiming to be yours.
             self._open_ring()
-            self.assertFalse(self.page.evaluate(
-                """() => document.querySelector('#eg-world .eg-node[data-id="dot:game"]')
-                                 .classList.contains('is-set')"""),
-                "an empty sheet should not be marked")
+            for node_id in DOTS:
+                self.assertFalse(glows(node_id),
+                                 f"{node_id} glows on an untouched game")
 
-            # Through the window, the way a person would: the mark has to appear
-            # off the back of the save, without a reload.
+            # Change one field, the way a person would, and the mark appears off
+            # the back of the save with no reload.
             self._dive("dot:game")
             self._open_leaf("dot:story")
             box = self.page.query_selector("#eg-sheet-body input[type='text']")
@@ -453,18 +452,13 @@ class TestEditorDots(unittest.TestCase):
             self.page.wait_for_timeout(1200)
             self.page.keyboard.press("Escape")
             self._settle(600)
-            self.assertTrue(self.page.evaluate(
-                """() => document.querySelector('#eg-world .eg-node[data-id="dot:story"]')
-                                 .classList.contains('is-set')"""),
-                "a sheet with words in it should be marked")
+            self.assertTrue(glows("dot:story"), "an edited sheet should glow")
             # And a container wears what is inside it, so you can see from the
-            # top that something in there is set.
+            # top that something in there is yours.
             self.page.keyboard.press("Escape")
             self._settle()
-            self.assertTrue(self.page.evaluate(
-                """() => document.querySelector('#eg-world .eg-node[data-id="dot:game"]')
-                                 .classList.contains('is-set')"""),
-                "a container should inherit the mark from its children")
+            self.assertTrue(glows("dot:game"),
+                            "a container should inherit the glow from its children")
         finally:
             self._put_identity("game_design", {
                 "genre": before.get("genre", ""),
