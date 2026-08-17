@@ -7112,6 +7112,31 @@ body.we-dev #world-editor .we-tool.is-dev { display: inline-flex; }
 #world-editor .eg-switch:checked { background: var(--we-red); }
 #world-editor .eg-switch:checked::after { transform: translateX(16px); }
 
+/* An authored prompt, edited in place. Monospace because whitespace and the
+   {placeholders} matter, and tall enough to see a paragraph at a time. */
+#world-editor .eg-prompt {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  min-height: calc(150px * var(--we-fs));
+  margin-top: 6px;
+  padding: 11px 12px;
+  background: var(--we-sunk);
+  border: 1px solid var(--we-line);
+  border-radius: 10px;
+  color: var(--we-text);
+  font-family: var(--we-mono);
+  font-size: calc(12px * var(--we-fs));
+  line-height: 1.6;
+  resize: vertical;
+}
+#world-editor .eg-prompt:focus {
+  outline: none;
+  border-color: var(--we-red);
+  box-shadow: 0 0 0 3px var(--we-red-wash);
+}
+#world-editor .eg-acts { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+
 /* A companion: their name, and the two things you can do with them. */
 #world-editor .eg-person {
   display: flex;
