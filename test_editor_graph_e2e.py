@@ -39,8 +39,12 @@ except ImportError:  # pragma: no cover
     HAVE_PW = False
 
 PHONE = {"width": 430, "height": 932}
-# The four dots, in ring order starting at 12 o'clock.
-DOTS = ["dot:level", "dot:character", "dot:game", "dot:controls"]
+# The top ring, in order starting at 12 o'clock.
+DOTS = ["dot:level", "dot:character", "dot:game"]
+# Inside GAME, and inside its two containers.
+GAME_RING = ["dot:story", "dot:mechanics", "dot:models", "dot:controls"]
+MECHANICS = ["dot:camera", "dot:scan", "dot:camp", "dot:npc"]
+MODELS = ["dot:world", "dot:image", "dot:voice"]
 
 
 def _find_free_port() -> int:
@@ -166,11 +170,27 @@ class TestEditorDots(unittest.TestCase):
         self.page.wait_for_timeout(250)
         self.page.wait_for_selector("#we-view", state="visible", timeout=3000)
 
+    def _dive(self, node_id: str):
+        """Into a container. One click is enough; a double is the same gesture."""
+        self._tap(node_id)
+        self._settle()
+
     def _shown(self):
+        """On stage — excluding anything mid-wilt on its way off."""
         return self.page.evaluate(
             """() => Array.from(document.querySelectorAll('#eg-world .eg-node'))
-                          .filter(g => g.style.display !== 'none')
+                          .filter(g => g.style.display !== 'none' &&
+                                       !g.classList.contains('is-leaving'))
                           .map(g => g.getAttribute('data-id'))""")
+
+    def _open_leaf(self, node_id: str):
+        self._tap(node_id)
+        self.page.wait_for_selector("#eg-sheet.is-open", timeout=4000)
+        self._settle(700)
+
+    def _rows(self):
+        return self.page.eval_on_selector_all(
+            "#eg-sheet-body .eg-stat .eg-stat-k", "els => els.map(e => e.textContent)")
 
     def _labels(self):
         return self.page.evaluate(
@@ -201,25 +221,80 @@ class TestEditorDots(unittest.TestCase):
             self.page.evaluate(
                 "getComputedStyle(document.querySelector('.we-scroll')).display"), "none")
 
-    def test_the_dot_opens_into_exactly_four(self):
-        """Level, Character, Game, Controls — the four things you direct."""
+    def test_the_dot_opens_into_the_three_things_you_author(self):
+        """A place, a person, and the game itself."""
         self._open_ring()
         self.assertEqual(sorted(self._shown()), sorted(["game"] + DOTS))
-        self.assertEqual(self._labels(), ["Level", "Character", "Game", "Controls"])
+        self.assertEqual(self._labels(), ["Level", "Character", "Game"])
         # The nucleus drops its name once the ring is out, so "Game" appears once.
         self.assertEqual(
             self.page.evaluate(
                 """() => getComputedStyle(document.querySelector(
                      '#eg-world .eg-node.is-core .eg-name')).display"""), "none")
 
+    def test_every_circle_is_the_same_size(self):
+        """Sizing each dot to its own word made a bag of different coins. One
+        radius everywhere, at every depth, is the thing that reads as designed."""
+        self._open_ring()
+        radii = self.page.evaluate(
+            """() => Array.from(document.querySelectorAll('#eg-world .eg-node circle'))
+                          .map(c => Number(c.getAttribute('r')))""")
+        self.assertGreater(len(radii), 4)
+        self.assertEqual(len(set(radii)), 1, f"circles differ: {sorted(set(radii))}")
+        # And the labels are one size too, upper case, and they fit inside.
+        sizes = self.page.evaluate(
+            """() => Array.from(document.querySelectorAll('#eg-world .eg-name'))
+                          .map(t => t.getAttribute('font-size'))""")
+        self.assertEqual(len(set(sizes)), 1)
+        self.assertEqual(
+            self.page.evaluate(
+                """() => getComputedStyle(document.querySelector(
+                     '#eg-world .eg-name')).textTransform"""), "uppercase")
+        widest, diameter = self.page.evaluate(
+            """() => {
+                 const ts = Array.from(document.querySelectorAll('#eg-world .eg-name'));
+                 const w = Math.max(...ts.map(t => t.getComputedTextLength()));
+                 const r = Number(document.querySelector('#eg-world circle').getAttribute('r'));
+                 return [w, r * 2];
+               }""")
+        self.assertLess(widest, diameter * 0.86,
+                        "a label should sit inside its circle with room to spare")
+
+    def test_no_spokes_to_the_middle(self):
+        """Lines from the nucleus to every satellite drew the one relationship
+        you can already see, and turned a constellation into a wheel."""
+        self._open_ring()
+        self.assertEqual(
+            self.page.eval_on_selector_all("#eg-world line", "els => els.length"), 0)
+
+    def test_game_holds_mechanics_models_and_controls(self):
+        """The depth: inside GAME are the story, the mechanics, the models that
+        generate it, and how you drive."""
+        self._open_ring()
+        self._dive("dot:game")
+        self.assertEqual(sorted(self._shown()), sorted(["dot:game"] + GAME_RING))
+        self.assertEqual(self._labels(), ["Story", "Mechanics", "Models", "Controls"])
+
+        self._dive("dot:mechanics")
+        self.assertEqual(sorted(self._shown()), sorted(["dot:mechanics"] + MECHANICS))
+        self.assertEqual(self._labels(), ["Camera", "Scan", "Camp", "NPC"])
+
+        # Back up one level at a time, not straight to the top.
+        self.page.keyboard.press("Escape")
+        self._settle()
+        self.assertEqual(sorted(self._shown()), sorted(["dot:game"] + GAME_RING))
+
+        self._dive("dot:models")
+        self.assertEqual(sorted(self._shown()), sorted(["dot:models"] + MODELS))
+        self.assertEqual(self._labels(), ["World", "Image", "Voice"])
+
     def test_the_engine_is_not_in_here_any_more(self):
-        """The rulebook, the runtime knobs and the galleries are gone from the
-        dots. They are still in the flat list; they are just not what you meet."""
+        """The contract prompts, the runtime knob grid and the galleries are gone
+        from the dots. They are still in the flat list; just not what you meet."""
         self._open_ring()
         ids = self.page.evaluate(
             """() => Array.from(document.querySelectorAll('#eg-world .eg-node'))
                           .map(g => g.getAttribute('data-id'))""")
-        self.assertEqual(sorted(ids), sorted(["game"] + DOTS))
         for gone in ("prompt:", "control:", "build:", "level:", "group:", "layer:", "new:"):
             self.assertFalse([i for i in ids if i.startswith(gone)],
                              f"{gone}* should not be in the dots any more")
@@ -228,7 +303,7 @@ class TestEditorDots(unittest.TestCase):
         """With dots this small there is more paper than dot, which makes
         leaving easier than arriving — the right way round."""
         self._open_ring()
-        self.assertEqual(len(self._shown()), 5)
+        self.assertEqual(len(self._shown()), 4)
         self._tap_paper()
         self.assertEqual(self._shown(), ["game"])
 
@@ -320,9 +395,8 @@ class TestEditorDots(unittest.TestCase):
 
             # Through the window, the way a person would: the mark has to appear
             # off the back of the save, without a reload.
-            self._tap("dot:game")
-            self.page.wait_for_selector("#eg-sheet.is-open", timeout=4000)
-            self._settle(500)
+            self._dive("dot:game")
+            self._open_leaf("dot:story")
             box = self.page.query_selector("#eg-sheet-body input[type='text']")
             box.click()
             box.fill("found-footage horror")
@@ -331,9 +405,17 @@ class TestEditorDots(unittest.TestCase):
             self.page.keyboard.press("Escape")
             self._settle(600)
             self.assertTrue(self.page.evaluate(
-                """() => document.querySelector('#eg-world .eg-node[data-id="dot:game"]')
+                """() => document.querySelector('#eg-world .eg-node[data-id="dot:story"]')
                                  .classList.contains('is-set')"""),
                 "a sheet with words in it should be marked")
+            # And a container wears what is inside it, so you can see from the
+            # top that something in there is set.
+            self.page.keyboard.press("Escape")
+            self._settle()
+            self.assertTrue(self.page.evaluate(
+                """() => document.querySelector('#eg-world .eg-node[data-id="dot:game"]')
+                                 .classList.contains('is-set')"""),
+                "a container should inherit the mark from its children")
         finally:
             self._put_identity("game_design", {
                 "genre": before.get("genre", ""),
@@ -342,23 +424,86 @@ class TestEditorDots(unittest.TestCase):
                 "enabled": bool(before.get("enabled")),
             })
 
-    def test_controls_holds_the_camera_and_the_real_movement_strip(self):
-        """How you see it and how you move, in one window. The CONTROLS strip is
-        the panel's own wired element on loan, not a second copy of it."""
+    def test_camera_is_a_mechanic_with_four_perspectives(self):
+        """Where the camera stands is a mechanic, not a preference."""
         self._open_ring()
-        self._tap("dot:controls")
-        self.page.wait_for_selector("#eg-sheet.is-open", timeout=4000)
-        self._settle(500)
-        # Four perspectives, by name only — the taglines are teaching copy.
+        self._dive("dot:game")
+        self._dive("dot:mechanics")
+        self._open_leaf("dot:camera")
+        # By name only — the taglines are teaching copy.
         self.assertEqual(
             self.page.eval_on_selector_all(
                 "#eg-sheet-body .we-mode-name", "els => els.map(e => e.textContent)"),
             ["First person", "Over the shoulder", "Third person", "Fixed cinematic"])
         self.assertEqual(
             self.page.eval_on_selector_all("#eg-sheet-body .we-mode-tag", "e => e.length"), 0)
-        # The live strip itself, moved in.
+
+    def test_scan_and_npc_report_what_is_actually_wrong(self):
+        """Neither has a knob to turn: SCAN's backend is set on the server and
+        conversation needs an agent id in the environment. What they DO have is
+        the answer to "why isn't this working", which until now lived in a boot
+        log nobody reads."""
+        self._open_ring()
+        self._dive("dot:game")
+        self._dive("dot:mechanics")
+
+        self._open_leaf("dot:scan")
+        rows = self._rows()
+        self.assertIn("Backend", rows)
+        self.assertIn("On device", rows)
+        self.page.keyboard.press("Escape")
+        self._settle(600)
+
+        self._open_leaf("dot:npc")
+        rows = self._rows()
+        for expected in ("Voice", "Agent", "API key", "Designed voices"):
+            self.assertIn(expected, rows)
+        # A machine token is the server talking to itself, never the UI's words.
+        values = self.page.eval_on_selector_all(
+            "#eg-sheet-body .eg-stat-v", "els => els.map(e => e.textContent)")
+        self.assertFalse([v for v in values if "_" in v and v.islower()],
+                         f"raw reason codes leaked into the panel: {values}")
+
+    def test_models_pick_from_what_the_server_advertises(self):
+        """The world and image pickers are the real lists, and the world panel
+        says whether realtime can actually connect right now."""
+        self._open_ring()
+        self._dive("dot:game")
+        self._dive("dot:models")
+
+        self._open_leaf("dot:world")
+        picks = self.page.eval_on_selector_all(
+            "#eg-sheet-body .we-mode-name", "els => els.map(e => e.textContent)")
+        self.assertGreater(len(picks), 1, "the world models should be listed")
+        self.assertIn("Realtime", self._rows())
+        self.page.keyboard.press("Escape")
+        self._settle(600)
+
+        self._open_leaf("dot:image")
+        picks = self.page.eval_on_selector_all(
+            "#eg-sheet-body .we-mode-name", "els => els.map(e => e.textContent)")
+        self.assertGreater(len(picks), 1, "the image presets should be listed")
+        # Exactly one of them is current.
+        self.assertEqual(
+            self.page.eval_on_selector_all(
+                "#eg-sheet-body .we-mode.active", "els => els.length"), 1)
+
+    def test_controls_holds_the_movement_strip_and_a_key_card(self):
+        """The CONTROLS strip is the panel's own wired element on loan, not a
+        second copy of it, and the bindings are finally written down."""
+        self._open_ring()
+        self._dive("dot:game")
+        self._open_leaf("dot:controls")
+        self.assertEqual(
+            self.page.eval_on_selector_all(
+                "#eg-sheet-body .eg-group > .we-cast-label",
+                "els => els.map(e => e.textContent)"),
+            ["Movement", "Keys", "Panel"])
         self.assertTrue(self.page.evaluate(
             "!!document.querySelector('#eg-sheet-body #we-input-opts')"))
+        rows = self._rows()
+        self.assertIn("DOOM", rows)
+        self.assertIn("FPS", rows)
 
         self.page.click("#eg-sheet-body #we-input-profile button:nth-child(2)")
         self.page.wait_for_timeout(300)
@@ -384,18 +529,12 @@ class TestEditorDots(unittest.TestCase):
         # The footer's Revert / Apply Live / Save & Restart is the prompt
         # pipeline's control panel. Nothing in the dots needs it.
         self.assertFalse(self.page.is_visible("#we-foot"))
-        # And they are all still there, inside Controls.
+        # And they are all still there, inside Game > Controls.
         self._open_ring()
-        self._tap("dot:controls")
-        self.page.wait_for_selector("#eg-sheet.is-open", timeout=4000)
-        self._settle(500)
+        self._dive("dot:game")
+        self._open_leaf("dot:controls")
         self.assertTrue(self.page.evaluate(
             "!!document.querySelector('#eg-sheet-body #we-panel-opts')"))
-        self.assertEqual(
-            self.page.eval_on_selector_all(
-                "#eg-sheet-body .eg-group .we-cast-label",
-                "els => els.map(e => e.textContent)"),
-            ["Movement", "Panel"])
 
     def test_the_machine_room_is_not_offered_to_a_player(self):
         """The flat list holds the engine's contract prompts and the runtime

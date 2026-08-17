@@ -530,18 +530,22 @@ class TestMovementMode(unittest.TestCase):
             page.close()
 
     def _open_controls(self, page):
-        """CONTROLS is inside the editor's Controls dot now, not stapled under
-        the canvas: open the editor, double-tap the game dot to bloom the ring,
-        then tap Controls. The strip itself is the same wired element, moved."""
+        """CONTROLS lives at Game > Controls in the editor now, not stapled under
+        the canvas. Open the editor, bloom the ring off the game dot, dive into
+        GAME, then tap CONTROLS. The strip is the same wired element, moved."""
         page.keyboard.press("`")
         page.wait_for_selector("#we-graph", state="visible", timeout=8000)
         page.wait_for_function(
             "() => !!(window.EditorGraph && window.EditorGraph.dotAt('game'))", timeout=8000)
-        pt = page.evaluate("() => window.EditorGraph.dotAt('game')")
-        page.mouse.dblclick(pt["x"], pt["y"])
-        page.wait_for_timeout(900)
-        pt = page.evaluate("() => window.EditorGraph.dotAt('dot:controls')")
-        page.mouse.click(pt["x"], pt["y"])
+
+        def tap(node_id):
+            pt = page.evaluate("(id) => window.EditorGraph.dotAt(id)", node_id)
+            page.mouse.click(pt["x"], pt["y"])
+            page.wait_for_timeout(950)
+
+        tap("game")            # the ring blooms
+        tap("dot:game")        # into the game itself
+        tap("dot:controls")    # and its window comes up
         page.wait_for_selector("#eg-sheet.is-open", timeout=4000)
         page.wait_for_selector("#we-input-sens", timeout=4000)
 

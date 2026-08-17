@@ -5425,6 +5425,8 @@
       try { InputProfileUi.paint(); } catch (_) {}
       const ok = await loadContent(false);
       if (ok) { await loadWorlds(); render(); }
+      // The dots play their entrance on open, not on every save.
+      try { if (window.EditorGraph) window.EditorGraph.onOpen(); } catch (_) {}
     }
     function close() {
       if (!open_) return;
@@ -5519,6 +5521,13 @@
         // Home is immediately before the footer, where it has always lived.
         if (el.weFoot) el.worldEditor.insertBefore(el.weInputOpts, el.weFoot);
         else el.worldEditor.appendChild(el.weInputOpts);
+      },
+      // The movement schemes and which one is live, for the Controls window's
+      // reference card. Read-only: the bindings are fixed per scheme.
+      inputBindings: () => {
+        try {
+          return { current: InputBindings.current(), list: InputBindings.list() };
+        } catch (_) { return null; }
       },
       // Text size, width, and (with ?dev=1) the door to the machine room. Same
       // loan: the header keeps only the way out.
