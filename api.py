@@ -259,6 +259,15 @@ def _detect_backend_status():
     return info
 
 
+# Saved runtime knobs, before anything reads them — a detector chosen in the
+# editor has to survive the restart that follows Save & Restart, and the warm-up
+# below needs to know which backend it is warming up for.
+try:
+    import tunables as _tunables
+    _tunables.apply_all()
+except Exception as _tun_err:  # noqa: BLE001
+    print(f"[API INIT] tunables not applied: {_tun_err}", flush=True)
+
 # Build the on-device detector now, on the main thread, before any request can
 # ask for it. Two reasons this is not left to the first /api/detect: it moves a
 # ~440 ms one-off (mediapipe import + TFLite graph build) off the critical path
@@ -3084,6 +3093,58 @@ def admin_studio_levels_delete():
 # ═══════════════════════════════════════════════════════════════════
 # INFO & HEALTH ENDPOINTS
 # ═══════════════════════════════════════════════════════════════════
+
+@app.route('/api/admin/studio/tunables', methods=['GET'])
+def studio_tunables_get():
+    """The runtime knobs, their schema, and what each is actually set to.
+
+    See tunables.py. These were environment variables read once at boot, which
+    meant the editor could report that SCAN had fallen back to Gemini but not do
+    anything about it.
+    """
+    try:
+        import tunables
+        return jsonify({"data": {
+            "schema": tunables.schema(),
+            "values": tunables.current(),
+        }})
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        return error_response("Failed to read settings", str(e))
+
+
+@app.route('/api/admin/studio/tunables', methods=['PUT'])
+def studio_tunables_put():
+    """Set knobs. Body is `{name: value}`; a null clears one back to the
+    environment's value. Validated against the schema — this is browser
+    reachable, so out-of-range is a 400 rather than a surprise.
+    """
+    body = request.get_json(silent=True) or {}
+    try:
+        import tunables
+        values = tunables.clear() if body.get("_clear") else tunables.update(body)
+        return jsonify({"data": {"schema": tunables.schema(), "values": values}})
+    except ValueError as e:
+        return jsonify({"error": "invalid", "message": str(e)}), 400
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        return error_response("Failed to save settings", str(e))
+
+
+@app.route('/api/talk/voices/library', methods=['GET'])
+def talk_voice_library():
+    """Every voice on the ElevenLabs account, including the ones you designed
+    there. `voices.json` is a curated list of stock ids baked into the repo, so
+    without this a workspace full of custom voices is invisible in game.
+    """
+    try:
+        import voice_design
+        force = request.args.get("refresh") in ("1", "true", "yes")
+        return jsonify({"data": voice_design.voice_library(force=force)})
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        return jsonify({"data": {"ok": False, "reason": str(e)[:120], "voices": []}})
+
 
 @app.route('/api/info', methods=['GET'])
 def api_info():

@@ -4175,6 +4175,12 @@ _PORTRAIT_SPEND: dict = {}  # session_id -> count of generations this session
 _CAMP_CACHE: dict = {}
 _CAMP_CACHE_LOCK = threading.Lock()
 
+# How many companions come to the fire, and whether the jeep takes one of the
+# image model's six reference slots. Editable while a game is running — see
+# tunables.py, which writes straight onto these.
+CAMP_COMPANION_CAP = 5
+CAMP_INCLUDE_JEEP = True
+
 # Fixed seat slots around the fire, keyed by attendee count. Approximate
 # tap-target positions (x_pct / y_pct of the establishing shot) — no vision.
 _CAMP_SEATS = {
@@ -9536,14 +9542,17 @@ def api_camp_enter():
             st = {}
 
         # ALL companions with resolvable portrait files (session-scoped paths).
-        # Gemini img2img accepts up to 6 refs: 1 jeep + up to 5 companion plates.
+        # Gemini img2img accepts up to 6 refs: the jeep plus up to five plates,
+        # so the seat count is capped there. Both the cap and whether the jeep
+        # takes one of the slots are editable at runtime (see tunables.py).
         roster = _collect_camp_companions(session_id, st)
-        attendees_src = roster[:5]
-        if len(roster) > 5:
+        cap = max(1, min(5, int(CAMP_COMPANION_CAP)))
+        attendees_src = roster[:cap]
+        if len(roster) > cap:
             print(f"[CAMP] {len(roster)} companions on roster; "
-                  f"img2img using the 5 most recently seen (+ jeep)", flush=True)
+                  f"img2img using the {cap} most recently seen", flush=True)
 
-        jeep = _ensure_jeep_prop(session_id)
+        jeep = _ensure_jeep_prop(session_id) if CAMP_INCLUDE_JEEP else None
         jeep_url = (jeep or {}).get("portrait_url") or ""
         jeep_path = None
         if jeep_url:

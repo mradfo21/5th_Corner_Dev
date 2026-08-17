@@ -605,6 +605,53 @@ def _list_workspace_voices() -> List[Dict[str, Any]]:
         return []
 
 
+_LIBRARY_CACHE: Dict[str, Any] = {"at": 0.0, "voices": []}
+_LIBRARY_TTL_S = 120.0
+
+
+def voice_library(force: bool = False) -> Dict[str, Any]:
+    """Every voice on the ElevenLabs account — the stock ones AND the custom ones
+    you designed there — as `{ok, voices: [{id, name, category, description}],
+    reason?}`.
+
+    The editor only ever showed `voices.json`, a curated list of eleven stock
+    ids baked into the repo, so a workspace full of hand-made voices was
+    invisible from inside the game. This is the same GET /v1/voices the sweeper
+    already uses, shaped for a menu and cached for two minutes because it is a
+    network round trip behind a UI panel. Never returns the key.
+    """
+    if not API_KEY:
+        return {"ok": False, "reason": "no_api_key", "voices": []}
+    now = time.time()
+    if not force and _LIBRARY_CACHE["voices"] and (now - _LIBRARY_CACHE["at"]) < _LIBRARY_TTL_S:
+        return {"ok": True, "voices": _LIBRARY_CACHE["voices"], "cached": True}
+    raw = _list_workspace_voices()
+    if not raw:
+        return {"ok": False, "reason": "unreachable_or_empty", "voices": []}
+    out = []
+    for v in raw:
+        if not isinstance(v, dict) or not v.get("voice_id"):
+            continue
+        labels = v.get("labels") if isinstance(v.get("labels"), dict) else {}
+        # A one-line description for the menu: whatever ElevenLabs gave us, else
+        # the labels it was tagged with.
+        desc = (v.get("description") or "").strip()
+        if not desc:
+            desc = ", ".join(str(x) for x in labels.values() if x)
+        out.append({
+            "id": v.get("voice_id"),
+            "name": v.get("name") or v.get("voice_id"),
+            # "cloned" / "generated" / "premade" — which is how you tell your own
+            # from the stock ones.
+            "category": (v.get("category") or "").strip(),
+            "description": desc[:120],
+        })
+    out.sort(key=lambda e: (e["category"] == "premade", (e["name"] or "").lower()))
+    _LIBRARY_CACHE["voices"] = out
+    _LIBRARY_CACHE["at"] = now
+    return {"ok": True, "voices": out}
+
+
 def _get_subscription_slots() -> Tuple[int, int]:
     """Return (used, limit) from GET /v1/user/subscription. Zeros on failure."""
     if not API_KEY:
