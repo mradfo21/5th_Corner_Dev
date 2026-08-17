@@ -104,6 +104,9 @@ _URL_DESIGN = _API_BASE + "/v1/text-to-voice/design"
 _URL_SAVE_TPL = _API_BASE + "/v1/text-to-voice/{gvid}"
 _URL_DELETE_TPL = _API_BASE + "/v1/voices/{voice_id}"
 _URL_LIST_VOICES = _API_BASE + "/v1/voices"
+# v1 hands back the entire workspace in one response and starts 400-ing once it
+# is large; v2 is paged. See _list_workspace_voices, which tries v2 first.
+_URL_LIST_VOICES_V2 = _API_BASE + "/v2/voices"
 _URL_SUBSCRIPTION = _API_BASE + "/v1/user/subscription"
 
 
@@ -599,11 +602,30 @@ def _list_workspace_voices(with_reason: bool = False):
         return out([], "no_api_key")
     try:
         import requests
-        resp = requests.get(
-            _URL_LIST_VOICES,
-            headers={"xi-api-key": API_KEY},
-            timeout=15,
-        )
+        headers = {"xi-api-key": API_KEY}
+        # v2 first, and paged. v1 returns the whole workspace in one response and
+        # a 400 once that gets big, which is exactly the account this is for:
+        # somebody with a lot of designed voices could not list any of them.
+        voices: List[Dict[str, Any]] = []
+        token = None
+        for _ in range(10):                       # 10 × 100 is plenty
+            params = {"page_size": 100}
+            if token:
+                params["next_page_token"] = token
+            resp = requests.get(_URL_LIST_VOICES_V2, headers=headers,
+                                params=params, timeout=15)
+            if resp.status_code != 200:
+                break
+            data = resp.json() or {}
+            voices.extend(list(data.get("voices") or []))
+            token = data.get("next_page_token")
+            if not data.get("has_more") or not token:
+                return out(voices, "ok" if voices else "empty")
+        if voices:
+            return out(voices, "ok")
+
+        # Older deployments / smaller accounts: the v1 shape.
+        resp = requests.get(_URL_LIST_VOICES, headers=headers, timeout=15)
         if resp.status_code == 200:
             data = resp.json() or {}
             voices = list(data.get("voices") or [])
