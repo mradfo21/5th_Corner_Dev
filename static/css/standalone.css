@@ -6829,14 +6829,16 @@ body.we-dev #world-editor .we-tool.is-dev { display: inline-flex; }
 }
 #world-editor .eg-hint {
   position: absolute;
-  left: 0; right: 0; bottom: 12px;
+  left: 0; right: 0; bottom: 26px;
   z-index: 2;
   text-align: center;
   pointer-events: none;
-  font-size: calc(9.5px * var(--we-fs));
+  font-size: calc(10px * var(--we-fs));
   letter-spacing: 0.18em;
   text-transform: uppercase;
-  color: rgba(16, 16, 18, 0.34);
+  /* It was set so faint, and so close to the trim, that the one instruction in
+     the whole editor was the hardest thing on screen to read. */
+  color: rgba(16, 16, 18, 0.48);
 }
 #world-editor .we-graph.has-sheet .eg-hint { opacity: 0; }
 
@@ -6921,6 +6923,22 @@ body.we-dev #world-editor .we-tool.is-dev { display: inline-flex; }
   font-size: calc(12px * var(--we-fs));
   line-height: 1.5;
   color: var(--we-text-dim);
+}
+/* Whatever the server actually said, verbatim. Its own block and its own
+   typeface, because a stack-trace fragment squeezed into a status row's value
+   column read as a layout accident. */
+#world-editor .eg-err {
+  margin: 10px 0 0;
+  padding: 9px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(224, 48, 28, 0.28);
+  background: var(--we-red-wash);
+  color: var(--we-red-ink);
+  font-family: var(--we-mono);
+  font-size: calc(11px * var(--we-fs));
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 #world-editor .we-panel-opts.is-loaned {
   display: flex;

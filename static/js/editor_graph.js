@@ -496,15 +496,25 @@
     anim = { raf: requestAnimationFrame(step) };
   }
 
+  function depthOf(id) {
+    let d = 0;
+    for (let n = nodesById[id]; n && n.parent; n = n.parent) d++;
+    return id === null ? -1 : d;
+  }
+
   function setOpen(id, animate) {
     const before = visibleNodes();
+    const up = depthOf(id) < depthOf(openId);
     openId = id;
     beginLeave(before);
     seat();
     frame(animate !== false);
     paint();
-    // Arriving dots replay their bloom.
-    bloom(visibleNodes().filter((n) => before.indexOf(n) === -1));
+    // Arriving dots replay their bloom. Going DOWN, the old ring is already
+    // gone and they can come straight in; going UP, the outgoing ring is still
+    // shrinking through the same space, and both at once reads as a scramble —
+    // so the arrival waits for the departure to clear.
+    bloom(visibleNodes().filter((n) => before.indexOf(n) === -1), up ? 210 : 0);
   }
 
   // One level up: the nucleus is where you came from, and so is the paper.
@@ -731,10 +741,17 @@
       statusRow(host, "Backend", d.backend || "unknown");
       statusRow(host, "On device", local.available ? "ready" : "unavailable",
                 onDevice && !local.available);
-      if (local.error) statusRow(host, "Error", local.error, true);
       if (local.min_score != null) statusRow(host, "Min score", local.min_score);
       if (local.timeouts) statusRow(host, "Timeouts", local.timeouts, true);
       if (local.breaker_open) statusRow(host, "Breaker", "open", true);
+      // A stack-trace fragment is not a value in a two-column row; it needs its
+      // own block, in the typeface it came from.
+      if (local.error) {
+        const pre = document.createElement("pre");
+        pre.className = "eg-err";
+        pre.textContent = local.error;
+        host.appendChild(pre);
+      }
       note(body, onDevice && !local.available
         ? "The on-device detector didn't load, so SCAN is asking the image model instead. Slower, and it costs a call per scan."
         : "SCAN reads the frame on the box. Nothing to tune from here — the backend is set on the server.");
@@ -975,11 +992,14 @@
     startWobble();
   }
 
-  function bloom(nodes) {
+  // Restarting a CSS animation needs the class off for a frame, or the browser
+  // sees no change and does nothing.
+  function bloom(nodes, waitMs) {
+    if (!nodes.length) return;
     nodes.forEach((n) => { if (n.gi) n.gi.classList.remove("is-blooming"); });
-    requestAnimationFrame(() => {
-      nodes.forEach((n) => { if (n.gi) n.gi.classList.add("is-blooming"); });
-    });
+    const go = () => nodes.forEach((n) => { if (n.gi) n.gi.classList.add("is-blooming"); });
+    if (waitMs && !reduceMotion()) setTimeout(go, waitMs);
+    else requestAnimationFrame(go);
   }
 
   function init(bridge) {
