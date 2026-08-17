@@ -3140,7 +3140,20 @@ def talk_voice_library():
     try:
         import voice_design
         force = request.args.get("refresh") in ("1", "true", "yes")
-        return jsonify({"data": voice_design.voice_library(force=force)})
+        out = voice_design.voice_library(force=force)
+        # A 400 from BOTH listing endpoints is almost never the request; it is
+        # usually the key. engine already knows how to spot the classic mistake
+        # (an agent id pasted into ELEVENLABS_API_KEY), so ask it rather than
+        # leaving "http_400" on screen for someone to guess at.
+        if not out.get("ok"):
+            try:
+                problem = engine.elevenlabs_key_problem()
+            except Exception:  # noqa: BLE001
+                problem = None
+            if problem:
+                out["reason"] = "bad_key"
+                out["detail"] = str(problem)[:200]
+        return jsonify({"data": out})
     except Exception as e:  # noqa: BLE001
         traceback.print_exc()
         return jsonify({"data": {"ok": False, "reason": str(e)[:120], "voices": []}})

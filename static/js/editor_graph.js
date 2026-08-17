@@ -1103,6 +1103,10 @@
     rate_limited: "ElevenLabs is rate-limiting us. Try again in a moment.",
     unreachable: "Couldn't reach ElevenLabs from the server.",
     empty: "The ElevenLabs account has no voices on it yet.",
+    bad_key: "The ElevenLabs key on the server looks wrong, so the library " +
+             "can't be read. Showing the shipped voices until it's fixed.",
+    http_400: "ElevenLabs rejected the request for the voice list. Usually the " +
+              "key: it needs to be an API key (sk_\u2026), not an agent id.",
   };
 
   // The endpoint answers in machine tokens. `no_api_key` on screen is the server
@@ -1180,6 +1184,12 @@
       if (!library.length && options.length) {
         note(picks, LIBRARY_REASONS[lib && lib.reason] ||
                     "Showing the shipped voices only.");
+        if (lib && lib.detail) {
+          const pre = document.createElement("pre");
+          pre.className = "eg-err";
+          pre.textContent = lib.detail;
+          picks.appendChild(pre);
+        }
       }
 
       const yours = library.filter((v) => v.category && v.category !== "premade");
