@@ -3746,6 +3746,7 @@
     let identity = {};
     let identitySchema = [];
     let identityPreview = null;
+    let identityDefaults = {};
     // One switch for the whole editor. Off (the default) shows the four
     // prompts and the dozen cast fields that actually redirect the game; on
     // reveals the mechanical rulebooks underneath them. Twelve equal-looking
@@ -4380,6 +4381,10 @@
         identity = payload.identity || {};
         identitySchema = payload.identity_schema || [];
         identityPreview = payload.identity_preview || null;
+        // What these sheets look like untouched. Needed to answer "has this been
+        // changed?", which is not the same question as "does this have content?"
+        // — the shipped character has content.
+        identityDefaults = payload.identity_defaults || {};
         // Loading a world or a level can swap the camera out from under a
         // running session; the renderer has to hear about that too.
         if (identityPreview && identityPreview.camera) Camera.apply(identityPreview.camera);
@@ -5473,6 +5478,7 @@
       identitySchema: () => identitySchema.slice(),
       identityBlock: (id) => identitySchema.find((b) => b.id === id) || null,
       identity: () => identity,
+      identityDefaults: () => identityDefaults,
       // The engine's runtime controls are live <button> elements (see
       // #we-sys-src): the graph proxies taps to them rather than duplicating
       // nine toggles, so their handlers and state classes stay authoritative.
