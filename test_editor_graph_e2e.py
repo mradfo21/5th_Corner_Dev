@@ -43,8 +43,24 @@ PHONE = {"width": 430, "height": 932}
 DOTS = ["dot:level", "dot:character", "dot:game"]
 # Inside GAME, and inside its two containers.
 GAME_RING = ["dot:story", "dot:mechanics", "dot:models", "dot:controls"]
-MECHANICS = ["dot:camera", "dot:scan", "dot:camp", "dot:narrator"]
+MECHANICS = ["dot:camera", "dot:scan", "dot:camp", "dot:narrator", "dot:music"]
 MODELS = ["dot:world", "dot:image", "dot:voice"]
+
+
+def _tiny_wav() -> bytes:
+    """Two seconds of a sine, as a real WAV — the upload path checks the type."""
+    import math
+    import struct
+    import wave
+    from io import BytesIO
+    buf = BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(8000)
+        w.writeframes(b"".join(
+            struct.pack("<h", int(3000 * math.sin(i / 18))) for i in range(16000)))
+    return buf.getvalue()
 
 
 def _find_free_port() -> int:
@@ -98,6 +114,16 @@ class TestEditorDots(unittest.TestCase):
 
     def _identity(self, block: str) -> dict:
         return (self._studio_content().get("identity") or {}).get(block) or {}
+
+    def _scene_audio(self, prompt: str) -> dict:
+        req = urllib.request.Request(
+            self.base_url + "/api/scene_audio",
+            data=json.dumps({"prompt": prompt, "session": "default"}).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req) as r:
+            return json.loads(r.read().decode())
 
     def _prompt(self, key: str) -> str:
         return (self._studio_content().get("prompts") or {}).get(key) or ""
@@ -326,7 +352,8 @@ class TestEditorDots(unittest.TestCase):
 
         self._dive("dot:mechanics")
         self.assertEqual(sorted(self._shown()), sorted(["dot:mechanics"] + MECHANICS))
-        self.assertEqual(self._labels(), ["Camera", "Scan", "Camp", "Narrator"])
+        self.assertEqual(self._labels(),
+                         ["Camera", "Scan", "Camp", "Narrator", "Music"])
 
         # Back up one level at a time, not straight to the top.
         self.page.keyboard.press("Escape")
@@ -729,6 +756,59 @@ class TestEditorDots(unittest.TestCase):
         finally:
             self._put_prompt("camp_scene_prompt", before)
             self.assertEqual(self._prompt("camp_scene_prompt"), before)
+
+    def test_music_can_be_written_or_brought(self):
+        """The score was the one part of the soundtrack you couldn't touch: it
+        derived itself from each scene and that was that. Now a loop you upload
+        or generate takes over, and it takes over for EVERY caller — the
+        override lives in get_scene_audio, not in one player."""
+        try:
+            self._open_ring()
+            self._dive("dot:game")
+            self._dive("dot:mechanics")
+            self._open_leaf("dot:music")
+            self.assertEqual(
+                self.page.eval_on_selector_all(
+                    "#eg-sheet-body .eg-group > .we-cast-label",
+                    "els => els.map(e => e.textContent)")[:3],
+                ["Playing", "Write it", "Or bring your own"])
+            # Both ways in are actually here.
+            self.assertTrue(self.page.evaluate(
+                "!!document.querySelector('#eg-sheet-body .eg-prompt')"))
+            self.assertTrue(self.page.evaluate(
+                "!!document.querySelector('#eg-sheet-body .eg-file')"))
+            self.assertIn("follows each scene",
+                          self.page.text_content("#eg-sheet-body"))
+
+            # Upload a real WAV the way a person would.
+            self.page.set_input_files("#eg-sheet-body .eg-file", {
+                "name": "my-loop.wav",
+                "mimeType": "audio/wav",
+                "buffer": _tiny_wav(),
+            })
+            self.page.wait_for_timeout(2200)
+            body = self.page.text_content("#eg-sheet-body")
+            self.assertIn("your upload", body)
+            self.assertIn("my-loop.wav", body)
+            self.assertTrue(self.page.evaluate(
+                "!!document.querySelector('#eg-sheet-body .eg-audio')"),
+                "you should be able to hear what you just chose")
+
+            # And the scene endpoint every player already uses now hands that
+            # loop back instead of scoring the scene.
+            # One loop, one filename — the extension follows the file you gave it.
+            self.assertEqual(
+                self._scene_audio("a dark corridor").get("audio_url"),
+                "/audio/loop.wav")
+
+            # Back to per-scene, and the endpoint follows.
+            self.page.click("#eg-sheet-body .we-btn-ghost")
+            self.page.wait_for_timeout(1500)
+            self.assertIn("follows each scene",
+                          self.page.text_content("#eg-sheet-body"))
+        finally:
+            urllib.request.urlopen(urllib.request.Request(
+                self.base_url + "/api/music", method="DELETE")).read()
 
     def test_clearing_everything_takes_two_taps(self):
         """One button to get out of a mess, and it asks first — it empties four

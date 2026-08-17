@@ -81,3 +81,5 @@ voice_design_cache.json
 levels/*
 !levels/.gitkeep
 tunables.json
+assets/music/*
+!assets/music/.gitkeep

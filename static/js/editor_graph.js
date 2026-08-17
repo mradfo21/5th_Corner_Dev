@@ -134,6 +134,8 @@
               sub: "Who is at the fire with you." },
             { id: "narrator", kind: "narrator", prompt: "narrator_direction", label: "Narrator",
               sub: "The voice that talks to you." },
+            { id: "music", kind: "music", label: "Music",
+              sub: "What the place sounds like." },
           ],
         },
         {
@@ -695,6 +697,7 @@
       scan: sheetScan,
       camp: sheetCamp,
       narrator: sheetNarrator,
+      music: sheetMusic,
       world: sheetWorld,
       image: sheetImage,
       voice: sheetVoice,
@@ -1063,6 +1066,124 @@
       statusRow(state, "Out loud", t.voice ? "ready" : "text only", !t.voice);
       if (!t.voice && t.reason) note(state, t.reason);
     });
+  }
+
+  // Music scores itself from each scene, which is the right default and was
+  // also the only part of the soundtrack you couldn't touch. Two ways to take
+  // it over: write the music prompt yourself, or bring your own loop.
+  function sheetMusic(n, body) {
+    const now = group(body, "Playing");
+    const write = group(body, "Write it");
+    const bring = group(body, "Or bring your own");
+
+    const draw = (state) => {
+      now.innerHTML = "";
+      const loop = state && state.loop;
+      if (!loop) {
+        statusRow(now, "Score", "follows each scene");
+        note(now, "Every new scene is scored as it arrives. Set a loop below and " +
+                  "it plays instead, everywhere.");
+      } else {
+        statusRow(now, "Score", loop.source === "upload" ? "your upload" : "your prompt");
+        if (loop.name) statusRow(now, "File", loop.name);
+        if (loop.prompt) statusRow(now, "Prompt", loop.prompt);
+        const audio = document.createElement("audio");
+        audio.className = "eg-audio";
+        audio.controls = true;
+        audio.loop = true;
+        audio.preload = "none";
+        // Cache-bust: the file keeps its name, so the browser would happily
+        // replay the previous loop for ever.
+        audio.src = loop.url + "?t=" + (loop.created_at || Date.now());
+        now.appendChild(audio);
+        button(now, "Back to per-scene music", "we-btn-ghost", async () => {
+          try {
+            await fetch("/api/music", { method: "DELETE" });
+            B.toast("Back to scoring each scene.");
+            load();
+          } catch (_) { B.toast("Couldn't clear that.", "warn"); }
+        });
+      }
+
+      write.innerHTML = "";
+      const ta = document.createElement("textarea");
+      ta.className = "eg-prompt is-short";
+      ta.spellcheck = false;
+      ta.placeholder = "slow detuned piano, tape hiss, no drums, uneasy";
+      ta.value = (loop && loop.source === "generated" && loop.prompt) || "";
+      write.appendChild(ta);
+      const wacts = document.createElement("div");
+      wacts.className = "eg-row eg-acts";
+      write.appendChild(wacts);
+      const gen = button(wacts, "Generate a loop", "we-btn-primary", async () => {
+        const prompt = ta.value.trim();
+        if (!prompt) { ta.focus(); return; }
+        gen.disabled = true;
+        gen.textContent = "Generating\u2026";
+        B.toast("Writing music\u2026");
+        try {
+          const r = await fetch("/api/music/generate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ prompt: prompt, seconds: 12 }),
+          });
+          const d = await r.json().catch(() => null);
+          if (r.ok) { B.toast("Music ready."); load(); }
+          else B.toast((d && d.message) || "Couldn't generate that.", "warn");
+        } catch (_) { B.toast("Couldn't generate that.", "warn"); }
+        gen.disabled = false;
+        gen.textContent = "Generate a loop";
+      });
+      if (state && !state.can_generate) {
+        gen.disabled = true;
+        note(write, "Generating needs a GEMINI_API_KEY on the server. Uploading " +
+                    "works either way.");
+      }
+
+      bring.innerHTML = "";
+      const file = document.createElement("input");
+      file.type = "file";
+      file.accept = "audio/*";
+      file.className = "eg-file";
+      file.addEventListener("change", () => {
+        const f = file.files && file.files[0];
+        if (!f) return;
+        if (f.size > (state && state.max_bytes ? state.max_bytes : 12582912)) {
+          B.toast("That file is too big.", "warn");
+          file.value = "";
+          return;
+        }
+        const reader = new FileReader();
+        reader.onload = async () => {
+          B.toast("Uploading\u2026");
+          try {
+            const r = await fetch("/api/music/upload", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ audio: reader.result, name: f.name }),
+            });
+            const d = await r.json().catch(() => null);
+            if (r.ok) { B.toast("That's your loop now."); load(); }
+            else B.toast((d && d.message) || "Couldn't use that file.", "warn");
+          } catch (_) { B.toast("Couldn't use that file.", "warn"); }
+          file.value = "";
+        };
+        reader.readAsDataURL(f);
+      });
+      bring.appendChild(file);
+      note(bring, "Any audio file: " +
+                  ((state && state.accepts) || ["wav", "mp3"]).join(", ") +
+                  ". It loops seamlessly if the file does.");
+    };
+
+    const load = () => getJson("/api/music").then(draw);
+    load();
+
+    // The volume presets are the live HUD's, borrowed in.
+    const seg = document.getElementById("rt-music-opts");
+    if (seg && seg.children.length) {
+      try { B.borrow(seg, group(body, "Level")); } catch (_) {}
+    }
   }
 
   // ── Models ────────────────────────────────────────────────────────────

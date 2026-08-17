@@ -7138,6 +7138,40 @@ body.we-dev #world-editor .we-tool.is-dev { display: inline-flex; }
   box-shadow: 0 0 0 3px var(--we-red-wash);
 }
 #world-editor .eg-acts { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+/* A music prompt is a line or two, not a page. */
+#world-editor .eg-prompt.is-short { min-height: calc(62px * var(--we-fs)); }
+#world-editor .eg-audio {
+  display: block;
+  width: 100%;
+  margin-top: 10px;
+  height: 34px;
+}
+#world-editor .eg-file {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+  padding: 12px;
+  border: 1px dashed var(--we-line-strong);
+  border-radius: 10px;
+  background: var(--we-sunk);
+  color: var(--we-text-mid);
+  font: inherit;
+  font-size: calc(12px * var(--we-fs));
+  cursor: pointer;
+}
+#world-editor .eg-file:hover { border-color: var(--we-red); }
+#world-editor .eg-file::file-selector-button {
+  margin-right: 10px;
+  padding: 6px 11px;
+  border: 0;
+  border-radius: 7px;
+  background: var(--we-red);
+  color: #ffffff;
+  font: inherit;
+  font-size: calc(11.5px * var(--we-fs));
+  font-weight: 600;
+  cursor: pointer;
+}
 
 /* A companion: their name, and the two things you can do with them. */
 #world-editor .eg-person {
@@ -7206,8 +7240,10 @@ body.we-dev #world-editor .we-tool.is-dev { display: inline-flex; }
 }
 #world-editor .eg-name-form input:focus { outline: none; border-color: var(--we-red); }
 /* Segmented controls lent in from the live HUD wear the panel's clothes. */
-#world-editor .eg-group .rt-ho-seg { display: flex; gap: 6px; margin-top: 6px; }
-#world-editor .eg-group .rt-ho-btn {
+#world-editor .eg-group .rt-ho-seg,
+#world-editor .eg-group .rt-music-opts { display: flex; gap: 6px; margin-top: 6px; }
+#world-editor .eg-group .rt-ho-btn,
+#world-editor .eg-group .rt-music-btn {
   flex: 1 1 0;
   padding: 8px 10px;
   border-radius: 8px;
@@ -7219,7 +7255,9 @@ body.we-dev #world-editor .we-tool.is-dev { display: inline-flex; }
   font-weight: 600;
   letter-spacing: 0.04em;
 }
-#world-editor .eg-group .rt-ho-btn.on {
+#world-editor .eg-group .rt-ho-btn.on,
+#world-editor .eg-group .rt-music-btn.on,
+#world-editor .eg-group .rt-music-btn.active {
   border-color: var(--we-red);
   background: var(--we-red);
   color: #ffffff;

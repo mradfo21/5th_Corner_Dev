@@ -139,6 +139,13 @@ def _scene_to_music_prompt(scene_prompt: str, mode: str = "scene"):
     low = scene.lower()
     mode = (mode or "scene").strip().lower()
 
+    # "verbatim" is a music prompt somebody wrote, not a scene to interpret, so
+    # it goes to Lyria as-is. Deriving mood cues from it would be second-guessing
+    # the person who typed "slow detuned piano, tape hiss, no drums".
+    if mode == "verbatim":
+        return ([{"text": scene, "weight": 1.0}],
+                {"bpm": 80, "temperature": 1.0, "guidance": 4.0})
+
     if mode == "conversation":
         mood_phrase = "warm, intimate, hushed cinematic conversation underscore"
         bpm = 74
@@ -315,6 +322,101 @@ _INFLIGHT_LOCK = threading.Lock()
 _INFLIGHT = {}
 
 
+# ────────────────────────────────────────────────────────────────────────────
+# THE CHOSEN LOOP
+#
+# Per-scene scoring is the default and it re-scores itself as the world changes,
+# which is the right behaviour — right up until you have a track you want. Then
+# it is the only part of the soundtrack you cannot touch.
+#
+# So: one loop, either uploaded or generated from a music prompt you wrote,
+# which takes precedence over scene scoring until you clear it. It lives beside
+# the reference art rather than in a session dir, so a reset or a session sweep
+# can't take your music with it.
+# ────────────────────────────────────────────────────────────────────────────
+MUSIC_DIR = ROOT / "assets" / "music"
+_LOOP_META = MUSIC_DIR / "loop.json"
+# What a browser may hand us. WAV and MP3 cover recordings and exports; OGG and
+# M4A cover most of what a phone produces.
+LOOP_EXTS = {"wav": "audio/wav", "mp3": "audio/mpeg", "ogg": "audio/ogg",
+             "m4a": "audio/mp4", "mp4": "audio/mp4", "webm": "audio/webm"}
+MAX_LOOP_BYTES = 12 * 1024 * 1024
+
+
+def custom_loop() -> dict | None:
+    """The chosen loop as {url, source, prompt, name, seconds?}, or None."""
+    try:
+        if not _LOOP_META.exists():
+            return None
+        meta = json.loads(_LOOP_META.read_text(encoding="utf-8")) or {}
+        fname = Path(str(meta.get("file") or "")).name
+        if not fname or not (MUSIC_DIR / fname).exists():
+            return None
+        meta["url"] = f"/audio/{fname}"
+        return meta
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _write_loop(data: bytes, ext: str, source: str,
+                prompt: str = "", name: str = "") -> dict:
+    ext = (ext or "wav").lower().lstrip(".")
+    if ext not in LOOP_EXTS:
+        raise ValueError(f"unsupported audio type {ext!r}")
+    if not data or len(data) > MAX_LOOP_BYTES:
+        raise ValueError("audio is empty or too large")
+    MUSIC_DIR.mkdir(parents=True, exist_ok=True)
+    # One loop at a time: clear whatever was there so the directory can't grow
+    # a graveyard of old tracks.
+    for old in MUSIC_DIR.glob("loop.*"):
+        try:
+            old.unlink()
+        except OSError:
+            pass
+    fname = f"loop.{ext}"
+    (MUSIC_DIR / fname).write_bytes(data)
+    meta = {"file": fname, "source": source, "prompt": prompt[:400],
+            "name": (name or "")[:80], "bytes": len(data),
+            "created_at": time.time()}
+    _LOOP_META.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    meta["url"] = f"/audio/{fname}"
+    return meta
+
+
+def set_uploaded_loop(data: bytes, ext: str, name: str = "") -> dict:
+    """Adopt a file the player uploaded as the loop."""
+    return _write_loop(data, ext, "upload", name=name)
+
+
+def generate_loop(prompt: str, seconds: int = DEFAULT_CLIP_SECONDS) -> dict | None:
+    """Generate a loop from a MUSIC prompt and adopt it.
+
+    Note the difference from get_scene_audio: that takes a description of a
+    scene and derives music direction from it. This takes the music direction
+    itself, verbatim, because you wrote it.
+    """
+    if not is_available():
+        return None
+    prompt = (prompt or "").strip()
+    if not prompt:
+        return None
+    seconds = max(4, min(30, int(seconds or DEFAULT_CLIP_SECONDS)))
+    pcm = _run_stream_blocking(prompt, seconds, mode="verbatim")
+    if not pcm:
+        return None
+    return _write_loop(_pcm_to_wav_bytes(pcm), "wav", "generated",
+                       prompt=prompt, name="")
+
+
+def clear_custom_loop() -> None:
+    """Back to scoring each scene as it comes."""
+    try:
+        for old in MUSIC_DIR.glob("loop.*"):
+            old.unlink()
+    except OSError:
+        pass
+
+
 def get_scene_audio(scene_prompt: str, session_id: str = "default",
                     seconds: int = DEFAULT_CLIP_SECONDS,
                     mode: str = "scene") -> dict | None:
@@ -323,6 +425,14 @@ def get_scene_audio(scene_prompt: str, session_id: str = "default",
 
     ``mode="conversation"`` selects the intimate Conversation Moment profile.
     """
+    # A chosen loop wins over scene scoring, and it wins HERE rather than in the
+    # client: every existing caller — scenes, conversation moments, the realtime
+    # renderer — already loops whatever URL this hands back, so the override
+    # needs no playback changes anywhere.
+    loop = custom_loop()
+    if loop:
+        return {"audio_url": loop["url"], "cached": True, "mode": mode,
+                "source": loop.get("source") or "custom"}
     if not is_available():
         return None
 
@@ -387,10 +497,17 @@ def get_scene_audio(scene_prompt: str, session_id: str = "default",
 
 
 def resolve_audio_path(filename: str, session_id: str = "default") -> Path | None:
-    """Resolve a served '/audio/<filename>' back to disk (path-traversal safe)."""
+    """Resolve a served '/audio/<filename>' back to disk (path-traversal safe).
+
+    Looks in the session's scratch dir first, then the chosen loop — which lives
+    outside any session so a reset can't delete somebody's music.
+    """
     safe = Path(filename).name
     candidate = _get_audio_dir(session_id) / safe
-    return candidate if candidate.exists() else None
+    if candidate.exists():
+        return candidate
+    loop = MUSIC_DIR / safe
+    return loop if (safe.startswith("loop.") and loop.exists()) else None
 
 
 # ────────────────────────────────────────────────────────────────────────────
