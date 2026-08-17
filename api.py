@@ -3,6 +3,7 @@ API wrapper for the SOMEWHERE game engine.
 Provides RESTful endpoints for game state management, session control, and asset serving.
 """
 
+import base64
 import os
 import json
 import sys
@@ -3093,6 +3094,87 @@ def admin_studio_levels_delete():
 # ═══════════════════════════════════════════════════════════════════
 # INFO & HEALTH ENDPOINTS
 # ═══════════════════════════════════════════════════════════════════
+
+@app.route('/api/music', methods=['GET'])
+def api_music_get():
+    """What is scoring the game: a loop you chose, or the per-scene generator."""
+    try:
+        loop = scene_audio.custom_loop()
+        return jsonify({"data": {
+            "loop": loop,
+            "can_generate": scene_audio.is_available(),
+            "accepts": sorted(scene_audio.LOOP_EXTS.keys()),
+            "max_bytes": scene_audio.MAX_LOOP_BYTES,
+        }})
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        return error_response("Failed to read music", str(e))
+
+
+@app.route('/api/music/generate', methods=['POST'])
+def api_music_generate():
+    """Write the music yourself: {prompt, seconds?} straight to Lyria.
+
+    Distinct from /api/scene_audio, which derives music direction from a scene
+    description. Here the prompt IS the direction.
+    """
+    body = request.get_json(silent=True) or {}
+    prompt = (body.get("prompt") or "").strip()
+    if not prompt:
+        return jsonify({"error": "invalid", "message": "Write a prompt first."}), 400
+    try:
+        loop = scene_audio.generate_loop(prompt, seconds=body.get("seconds") or 12)
+        if not loop:
+            return jsonify({"error": "unavailable", "message":
+                            "Couldn't generate that — no GEMINI_API_KEY, or the "
+                            "stream failed."}), 502
+        return jsonify({"data": {"loop": loop}})
+    except ValueError as e:
+        return jsonify({"error": "invalid", "message": str(e)}), 400
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        return error_response("Failed to generate music", str(e))
+
+
+@app.route('/api/music/upload', methods=['POST'])
+def api_music_upload():
+    """Adopt a file the player uploaded: {audio: <data-url>, name?}."""
+    body = request.get_json(silent=True) or {}
+    raw = str(body.get("audio") or "")
+    try:
+        if "," in raw and raw.strip().lower().startswith("data:"):
+            header, b64 = raw.split(",", 1)
+        else:
+            header, b64 = "", raw
+        data = base64.b64decode(b64 or "", validate=False)
+        # Trust the filename's extension over the data URL's mime type: browsers
+        # are inconsistent about the latter (audio/mp3 vs audio/mpeg vs empty).
+        name = str(body.get("name") or "")
+        ext = (name.rsplit(".", 1)[-1] if "." in name else "").lower()
+        if ext not in scene_audio.LOOP_EXTS:
+            for candidate, mime in scene_audio.LOOP_EXTS.items():
+                if mime in header:
+                    ext = candidate
+                    break
+        loop = scene_audio.set_uploaded_loop(data, ext or "wav", name=name)
+        return jsonify({"data": {"loop": loop}})
+    except ValueError as e:
+        return jsonify({"error": "invalid", "message": str(e)}), 400
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        return error_response("Failed to save that audio", str(e))
+
+
+@app.route('/api/music', methods=['DELETE'])
+def api_music_clear():
+    """Back to scoring each scene as it comes."""
+    try:
+        scene_audio.clear_custom_loop()
+        return jsonify({"data": {"loop": None}})
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        return error_response("Failed to clear music", str(e))
+
 
 @app.route('/api/admin/studio/tunables', methods=['GET'])
 def studio_tunables_get():
