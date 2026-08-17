@@ -3975,7 +3975,6 @@
         b.type = "button";
         b.dataset.tab = t.id;
         if (isLayer) {
-          b.style.setProperty("--layer-accent", t.layer.accent || "#ffd27a");
           b.title = t.layer.question + " — " + t.layer.scope;
           b.innerHTML =
             '<span class="we-layer-glyph" aria-hidden="true">' + (t.layer.icon || "") + "</span>" +
@@ -4007,7 +4006,6 @@
     function layerIntro(layer) {
       const wrap = document.createElement("div");
       wrap.className = "we-lhead we-risk-" + (layer.risk || "content");
-      wrap.style.setProperty("--layer-accent", layer.accent || "#7aa2ff");
 
       const row = document.createElement("div");
       row.className = "we-lhead-row";
@@ -4153,13 +4151,11 @@
       if (!el.weFields || !layer) return;
       el.weFields.innerHTML = "";
 
-      // The active layer's accent drives the whole panel — focus rings, the
-      // primary button, the plate hover — so which layer you're in is legible
-      // from any corner without a badge repeating it.
-      if (el.worldEditor) {
-        el.worldEditor.style.setProperty("--layer-accent", layer.accent || "#7aa2ff");
-        el.worldEditor.style.setProperty("--we-accent", layer.accent || "#7aa2ff");
-      }
+      // The panel used to repaint itself in the active layer's hue, which meant
+      // five unrelated colours over the course of one session and no way to
+      // tell "this is the Level layer" from "this is unsaved". The layer is
+      // named in the header and drawn in the graph; the one red the editor owns
+      // is reserved for state, so the accent no longer follows the layer.
       if (el.weLayerHead) {
         el.weLayerHead.appendChild(layerIntro(layer));
         // The Level layer leads with its gallery — what makes a level a level

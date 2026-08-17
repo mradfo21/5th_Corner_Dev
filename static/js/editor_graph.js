@@ -148,7 +148,7 @@
     return spec;
   }
 
-  function promptNode(field, accent) {
+  function promptNode(field) {
     const key = field.id;
     const text = String(B.valOf(key) || "");
     return node({
@@ -156,7 +156,6 @@
       kind: "prompt",
       label: field.label || key,
       glyph: "\u2261",
-      accent: accent,
       meta: text.length > 999
         ? (text.length / 1000).toFixed(1) + "k chars"
         : text.length + " chars",
@@ -166,7 +165,7 @@
     });
   }
 
-  function specNode(block, accent) {
+  function specNode(block) {
     const spec = (B.identity() || {})[block.id] || {};
     const count = (block.fields || []).length;
     return node({
@@ -177,7 +176,6 @@
       // line-art diagram looks like a sticker, so the graph keeps one
       // geometric glyph for "a sheet you fill in".
       glyph: "\u25A6",
-      accent: accent,
       meta: spec.enabled === false ? "off" : count + " fields",
       off: spec.enabled === false,
       data: { block: block },
@@ -190,7 +188,6 @@
     const kids = [];
 
     layers.forEach((layer) => {
-      const accent = layer.accent || "#7aa2ff";
       const inner = [];
 
       // The engine owns the runtime knobs: nine live <button> elements the
@@ -206,7 +203,6 @@
               kind: "control",
               label: (lbl && lbl.textContent) || btn.id,
               glyph: (btn.querySelector(".rail-ico") || {}).textContent || "\u25CB",
-              accent: accent,
               meta: group.title,
               sub: (desc && desc.textContent) || btn.title || "",
               // The buttons own their state; the graph only reflects it. Some
@@ -224,7 +220,6 @@
             kind: "group",
             label: "System",
             glyph: "\u25A4",
-            accent: accent,
             sub: "The engine's runtime knobs \u2014 renderer, models, sound.",
             children: controls,
           }));
@@ -239,7 +234,6 @@
           kind: "level",
           label: lv.name || lv.slug,
           glyph: "\u25F0",
-          accent: accent,
           // A saved level is never "off" — that flag belongs to its plate, and
           // reading OFF on a place you saved is just alarming.
           meta: lv.era || (lv.plate_count ? lv.plate_count + " plates" : "no art"),
@@ -251,7 +245,6 @@
           kind: "new-level",
           label: "Save this level",
           glyph: "+",
-          accent: accent,
           meta: "new",
         }));
         inner.push(node({
@@ -259,7 +252,6 @@
           kind: "group",
           label: "Levels",
           glyph: "\u25A4",
-          accent: accent,
           sub: "Every place you've saved. Opening one leaves the rest of the game alone.",
           children: levels,
         }));
@@ -268,7 +260,7 @@
       // Spec sheets first — a form is easier to answer than a blank page.
       (layer.spec_blocks || []).forEach((id) => {
         const block = B.identityBlock(id);
-        if (block) inner.push(specNode(block, accent));
+        if (block) inner.push(specNode(block));
       });
 
       // Prompt bodies: the essential ones as cells, the mechanical rulebooks
@@ -276,7 +268,7 @@
       const fields = (layer.fields || [])
         .map((id) => schema.find((f) => f.id === id))
         .filter(Boolean);
-      fields.filter((f) => !B.isAdvanced(f)).forEach((f) => inner.push(promptNode(f, accent)));
+      fields.filter((f) => !B.isAdvanced(f)).forEach((f) => inner.push(promptNode(f)));
       const advanced = fields.filter((f) => B.isAdvanced(f));
       if (advanced.length) {
         inner.push(node({
@@ -284,9 +276,8 @@
           kind: "group",
           label: "Advanced",
           glyph: "\u25B8",
-          accent: accent,
           sub: "The mechanical rulebooks underneath this layer. A careless edit here stops turns resolving.",
-          children: advanced.map((f) => promptNode(f, accent)),
+          children: advanced.map((f) => promptNode(f)),
         }));
       }
 
@@ -295,7 +286,6 @@
         kind: "layer",
         label: layer.label || layer.id,
         glyph: layer.icon || "\u25C8",
-        accent: accent,
         sub: layer.question || "",
         tag: layer.tagline || "",
         risk: layer.risk || "content",
@@ -307,13 +297,11 @@
 
     // Builds sit beside the layers, not inside one: a build is a snapshot of
     // all of them at once.
-    const buildAccent = "#cfd6e6";
     const builds = (B.worlds() || []).map((w) => node({
       id: "build:" + w.slug,
       kind: "build",
       label: w.name || w.slug,
       glyph: "\u25A3",
-      accent: buildAccent,
       meta: (w.field_count || 0) + " prompts",
       data: { world: w },
     }));
@@ -322,7 +310,6 @@
       kind: "new-build",
       label: "Save a build",
       glyph: "+",
-      accent: buildAccent,
       meta: "new",
     }));
     kids.push(node({
@@ -330,7 +317,6 @@
       kind: "group",
       label: "Builds",
       glyph: "\u25A3",
-      accent: buildAccent,
       sub: "A snapshot of everything: engine, game, level and character.",
       children: builds,
     }));
@@ -340,7 +326,6 @@
       kind: "root",
       label: "The Game",
       glyph: "\u25C9",
-      accent: "#eafff2",
       sub: "Everything the simulation reads, one cell at a time.",
       children: kids,
     });
@@ -390,7 +375,6 @@
 
   function drawNode(n) {
     const g = mk("g", { "data-id": n.id }, "eg-node eg-kind-" + n.kind);
-    g.style.setProperty("--eg-accent", n.accent || "#7aa2ff");
     const container = (n.children || []).length > 0;
     if (container) g.classList.add("eg-container");
     if (n.risk === "contract") g.classList.add("is-contract");
@@ -478,28 +462,47 @@
     els.world.appendChild(layer);
   }
 
-  // ── Guide furniture for the focused cell: concentric rings + radial
-  // spokes. Faint, slowly rotating, and purely to give the geometry a
-  // mathematical register rather than a bubbly one.
+  // ── The interior of the focused cell: a halftone lattice. Dots sit on a
+  // grid rotated 45°, and a dot's radius decays with its distance from the
+  // nucleus, so density reads as depth — the cytoplasm is thickest at the
+  // centre and thins to nothing at the membrane.
+  //
+  // This replaced concentric rings plus twelve rotating spokes, which on white
+  // paper stopped reading as geometry and started reading as a clock. Dots
+  // carry the same "this was measured, not drawn" register without putting a
+  // single straight line behind the labels.
+  const FIELD_STEPS = 15;          // dots per half-axis; 31×31 lattice, clipped
+  const FIELD_DOT = 0.34;          // biggest dot radius, as a fraction of pitch
   function drawField(f) {
     if (!els.field) return;
     els.field.innerHTML = "";
-    [0.34, 0.67, 1].forEach((k) => {
-      els.field.appendChild(mk("circle", {
-        cx: f.cx, cy: f.cy, r: f.r * k,
-      }, "eg-guide"));
-    });
-    const spokes = mk("g", null, "eg-spokes");
-    for (let i = 0; i < 12; i++) {
-      const a = (i / 12) * Math.PI * 2;
-      spokes.appendChild(mk("line", {
-        x1: f.cx + Math.cos(a) * f.r * 0.1,
-        y1: f.cy + Math.sin(a) * f.r * 0.1,
-        x2: f.cx + Math.cos(a) * f.r,
-        y2: f.cy + Math.sin(a) * f.r,
-      }, "eg-spoke"));
+
+    // One hairline at the membrane, to close the cell.
+    els.field.appendChild(mk("circle", { cx: f.cx, cy: f.cy, r: f.r }, "eg-guide"));
+
+    const dots = mk("g", null, "eg-dots");
+    const step = f.r / FIELD_STEPS;
+    const COS = Math.SQRT1_2, SIN = Math.SQRT1_2;   // the 45° rotation
+    for (let i = -FIELD_STEPS; i <= FIELD_STEPS; i++) {
+      for (let j = -FIELD_STEPS; j <= FIELD_STEPS; j++) {
+        const gx = i * step, gy = j * step;
+        const x = gx * COS - gy * SIN;
+        const y = gx * SIN + gy * COS;
+        // Distance from the nucleus, 0 at the centre and 1 at the membrane.
+        const t = Math.hypot(x, y) / f.r;
+        if (t > 0.985) continue;
+        // Linear falloff. Anything steeper collapses to a single dot at the
+        // middle: the lattice has to survive out to the children to read as a
+        // field rather than a speck.
+        const k = 1 - t;
+        const r = FIELD_DOT * step * k;
+        if (r < step * 0.055) continue;
+        const d = mk("circle", { cx: f.cx + x, cy: f.cy + y, r: r }, "eg-dot");
+        d.setAttribute("fill-opacity", (0.08 + 0.34 * k).toFixed(3));
+        dots.appendChild(d);
+      }
     }
-    els.field.appendChild(spokes);
+    els.field.appendChild(dots);
   }
 
   // ── Per-node state relative to the focus. Recomputed on focus change (not
@@ -537,7 +540,6 @@
     // You are inside this: light the periphery in the parent's colour.
     if (els.rim) {
       els.rim.classList.toggle("is-on", !!f.parent);
-      if (f.parent) els.rim.style.setProperty("--eg-accent", f.parent.accent || "#7aa2ff");
     }
     drawField(f);
     renderHud(f);
@@ -635,7 +637,6 @@
         const b = document.createElement("button");
         b.type = "button";
         b.textContent = n.label;
-        b.style.setProperty("--eg-accent", n.accent || "#7aa2ff");
         if (i === chain.length - 1) b.setAttribute("aria-current", "true");
         else b.addEventListener("click", () => setFocus(n.id, true));
         li.appendChild(b);
@@ -645,7 +646,6 @@
     const shown = (selectedId && nodesById[selectedId]) || f;
     if (els.captionName) {
       els.captionName.textContent = shown.label;
-      els.captionName.style.setProperty("--eg-accent", shown.accent || "#7aa2ff");
     }
     if (els.captionSub) {
       els.captionSub.textContent = shown.sub || shown.tag || shown.meta || "";
@@ -790,9 +790,7 @@
     els.scrim.classList.add("is-open");
     els.graph.classList.add("has-sheet");
     els.sheetGlyph.textContent = n.glyph || "";
-    els.sheetGlyph.style.setProperty("--eg-accent", n.accent || "#7aa2ff");
     els.sheetTitle.textContent = n.label;
-    els.sheet.style.setProperty("--eg-accent", n.accent || "#7aa2ff");
     els.sheetBody.innerHTML = "";
     els.sheetBody.scrollTop = 0;
     const fill = {
