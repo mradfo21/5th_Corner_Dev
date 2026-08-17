@@ -584,10 +584,19 @@ def _delete_voice(voice_id: str) -> bool:
         return False
 
 
-def _list_workspace_voices() -> List[Dict[str, Any]]:
-    """GET /v1/voices — return the raw voice list (may be empty on failure)."""
+def _list_workspace_voices(with_reason: bool = False):
+    """GET /v1/voices — the raw voice list, empty on failure.
+
+    With ``with_reason`` returns ``(voices, reason)``. The reason matters to the
+    editor: a key that exists but lacks `voices_read` fails exactly like a
+    network problem from the outside, and "couldn't reach it" sends you looking
+    in the wrong place.
+    """
+    def out(voices, reason):
+        return (voices, reason) if with_reason else voices
+
     if not API_KEY:
-        return []
+        return out([], "no_api_key")
     try:
         import requests
         resp = requests.get(
@@ -597,12 +606,17 @@ def _list_workspace_voices() -> List[Dict[str, Any]]:
         )
         if resp.status_code == 200:
             data = resp.json() or {}
-            return list(data.get("voices") or [])
+            voices = list(data.get("voices") or [])
+            return out(voices, "ok" if voices else "empty")
         print(f"[VOICE DESIGN] list http {resp.status_code}", flush=True)
-        return []
+        if resp.status_code in (401, 403):
+            return out([], "key_cannot_read_voices")
+        if resp.status_code == 429:
+            return out([], "rate_limited")
+        return out([], f"http_{resp.status_code}")
     except Exception as e:  # noqa: BLE001
         print(f"[VOICE DESIGN] list exception: {e}", flush=True)
-        return []
+        return out([], "unreachable")
 
 
 _LIBRARY_CACHE: Dict[str, Any] = {"at": 0.0, "voices": []}
@@ -625,9 +639,9 @@ def voice_library(force: bool = False) -> Dict[str, Any]:
     now = time.time()
     if not force and _LIBRARY_CACHE["voices"] and (now - _LIBRARY_CACHE["at"]) < _LIBRARY_TTL_S:
         return {"ok": True, "voices": _LIBRARY_CACHE["voices"], "cached": True}
-    raw = _list_workspace_voices()
+    raw, reason = _list_workspace_voices(with_reason=True)
     if not raw:
-        return {"ok": False, "reason": "unreachable_or_empty", "voices": []}
+        return {"ok": False, "reason": reason, "voices": []}
     out = []
     for v in raw:
         if not isinstance(v, dict) or not v.get("voice_id"):
