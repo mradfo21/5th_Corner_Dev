@@ -215,6 +215,38 @@ def _build_info():
     }
 
 
+def _talk_status():
+    """Can NPC conversation actually work right now, and if not, what's missing?
+
+    Booleans only — never the key or the agent id. TALK degrades silently today:
+    a missing ELEVENLABS_AGENT_ID drops you to text with no explanation, and a
+    key that is actually an agent id looks identical from the outside. The
+    editor's NPC panel reads this so the answer is on screen instead of in the
+    boot log.
+    """
+    info = {}
+    try:
+        info["agent"] = bool(getattr(engine, "ELEVENLABS_AGENT_ID", ""))
+        info["api_key"] = bool(getattr(engine, "ELEVENLABS_API_KEY", ""))
+        info["overrides"] = bool(getattr(engine, "ELEVENLABS_ALLOW_OVERRIDES", False))
+        # A public agent connects with no key; a private one cannot.
+        info["voice"] = bool(info["agent"])
+        if not info["agent"]:
+            info["reason"] = "ELEVENLABS_AGENT_ID is not set — conversation falls back to text."
+        elif not info["api_key"]:
+            info["reason"] = "No ELEVENLABS_API_KEY: works only if the agent is public."
+        else:
+            info["reason"] = "ready"
+    except Exception as e:  # noqa: BLE001
+        info = {"voice": False, "reason": f"{type(e).__name__}: {e}"}
+    try:
+        import voice_design as _vd
+        info["designed_voices"] = len((_vd.cache_snapshot() or {}).get("entries") or [])
+    except Exception:  # noqa: BLE001
+        info["designed_voices"] = 0
+    return info
+
+
 def _detect_backend_status():
     """Which detector /api/detect will use, for /api/health."""
     info = {"backend": getattr(engine, "DETECT_BACKEND", "gemini")}
@@ -3093,6 +3125,8 @@ def api_health():
         # actually loaded. Worth surfacing here because a missing .tflite or an
         # uninstalled mediapipe degrades SCAN silently otherwise.
         "detect": _detect_backend_status(),
+        # Whether NPC conversation can connect, and why not when it can't.
+        "talk": _talk_status(),
     })
 
 
