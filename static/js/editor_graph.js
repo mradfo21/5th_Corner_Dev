@@ -1,73 +1,86 @@
 /* ============================================================
-   SOMEWHERE // THE ORGANISM — the World Editor as a recursive graph
+   SOMEWHERE // THE ORGANISM — the editor as four dots and a nucleus
 
-   The editor's data is a tree: one game, four layers, and inside each layer
-   a handful of objects (spec sheets, prompts, saved levels, runtime knobs).
-   The old panel flattened all of it onto one 100vw column of tabs, forms and
-   15,000-character textareas, so the only way to see the shape of what you
-   were editing was to scroll past every part of it.
+   The first version of this graph mirrored the prompt file: every key in
+   storage became a vertex, which is how it ended up with 37 nodes, 18 of them
+   three levels down. Navigating your own game meant spelunking, and the things
+   you actually art-direct were buried next to the engine's rulebook.
 
-   Here the hierarchy IS the navigation. One circle is THE GAME. Double-tap it
-   and it becomes the screen — you're inside the cell, and its children are
-   the circles arranged within. Double-tap one of those and the same thing
-   happens, as deep as the tree goes. The parent's membrane stays visible as a
-   halo at the periphery; tapping it surfaces you back up a level. At the
-   vertices — prompts, spec sheets, saved levels and builds, where there is
-   nothing left to dive into — a tap animates a window up with that object's
-   editable options.
+   So this is the whole editor now:
 
-   Geometry, not physics: children are packed in symmetric rings (see pack()),
-   zoom is one interpolated viewBox, and depth costs one order of magnitude of
-   scale per level, which is what makes entering a cell read as *entering* it.
+       ONE red dot — the game.
+       Double-tap it and four dots bloom around it:
+       Level · Character · Game · Controls.
+       Tap one and its window comes up with the few fields that matter.
+
+   Everything else — the engine's contract prompts, the runtime knobs, saved
+   levels and builds — is still there, still editable, in the flat List behind
+   the header toggle. It just stopped being the first thing you meet.
+
+   The dots are sized to their own labels (a dot is a word with a circle round
+   it, nothing more) and they never sit still: each is sprung to its slot on the
+   ring, drifts on its own slow Lissajous figure, and pushes off any neighbour
+   that comes too close. The composition holds; the surface breathes.
 
    This file owns no state of its own. Everything is read and written through
-   WorldEditor's bridge (see the `bridge` object in standalone.js), so the
-   graph and the flat list are two renderings of one truth, sharing one client
-   for /api/admin/studio/*.
+   WorldEditor's bridge (see `bridge` in standalone.js), so the dots and the
+   flat list are two renderings of one truth.
 
    window.EditorGraph facade:
        init(bridge)   wire up once, at startup
        sync()         re-read the state and redraw (after any save/load)
-       onEscape()     close the window, else surface a level; false at the root
-       focusId()      current cell id (tests / debugging)
+       onEscape()     close the window, else collapse; false at the top
    ============================================================ */
 (function () {
   "use strict";
 
   const SVG = "http://www.w3.org/2000/svg";
 
-  // The root cell's radius in world units. Everything else is a fraction of
-  // it, so one number sets the whole coordinate space.
-  const ROOT_R = 1000;
-  // The focused cell spans this much of the view's SHORTER axis. The rest is
-  // the parent's interior, showing as a halo of membrane around the cell —
-  // which is both the depth cue and the target you tap to come back up. On a
-  // phone the longer axis gets much more of it, which is why entering a cell
-  // never feels like a screen swap.
-  const FRAME_FILL = 0.87;
-  // The root has no parent to reveal, so it opens edge to edge instead of
-  // floating inside a margin of nothing.
-  const ROOT_FILL = 0.98;
-  // Breathing room between packed siblings, as a fraction of the tight fit.
-  const PACK_GAP = 0.9;
+  // ── World units. One number sets the coordinate space; everything below is
+  // relative to it, so the whole diagram scales with the viewBox and nothing
+  // needs to know about pixels.
+  const UNIT = 1000;
+  const LABEL = UNIT * 0.052;        // label type size
+  const PAD = UNIT * 0.030;          // ink between the text and its membrane
+  const MIN_R = UNIT * 0.072;        // a one-word dot is still a dot
+  // Average glyph width as a fraction of type size, for the UI font at these
+  // sizes. Measuring in the DOM would be exact but forces layout on every
+  // rebuild; being 5% out just changes the padding, which nobody can see.
+  const GLYPH_W = 0.56;
+
+  // How much room the view leaves around what it is framing. The collapsed
+  // root has to read as "a small dot on a big sheet", so it gets a lot.
+  const COLLAPSED_ZOOM = 4.6;
+  const EXPANDED_PAD = 1.1;
   const ZOOM_MS = 620;
-  // Below this projected size a cell isn't worth drawing (and its label
-  // certainly isn't legible), so it's culled from the frame.
-  const CULL_PX = 1.4;
   const TAP_SLOP_PX = 26;
   const DBL_TAP_MS = 340;
 
-  let B = null;                 // the WorldEditor bridge
+  // ── Wobble. Small numbers on purpose: this should read as something alive
+  // rather than something loose.
+  const DRIFT = 0.055;               // Lissajous amplitude, × ring radius
+  const DRIFT_HZ = 0.055;            // base frequency; each dot offsets from it
+  const SPRING = 0.006;              // pull back to the slot
+  const DAMP = 0.90;
+  const REPEL_GAP = 1.22;            // start pushing at this multiple of r1+r2
+  const REACH_GAP = 1.9;             // start pulling past this multiple
+  const REPEL = 0.030;
+  const ATTRACT = 0.012;
+
+  let B = null;                      // the WorldEditor bridge
   let els = {};
-  let root = null;              // tree root
+  let root = null;
   let nodesById = Object.create(null);
-  let focusId = "game";
-  let selectedId = null;
-  let sheetId = null;           // which vertex's window is open
-  let view = null;              // {cx, cy, r} currently on screen
-  let anim = null;              // in-flight zoom
+  // The node whose children are on screen, or null for the collapsed root —
+  // one red dot, nothing else.
+  let openId = null;
+  let sheetId = null;
+  let view = null;                   // {cx, cy, half} currently on screen
+  let anim = null;                   // in-flight zoom
+  let raf = null;                    // wobble loop
+  let t0 = 0;
   let lastTap = { t: 0, x: 0, y: 0, id: null };
-  let hoverId = null;           // cell under the pointer, on desktop
+  let hoverId = null;
   let hintTimer = null;
 
   function reduceMotion() {
@@ -76,274 +89,207 @@
   }
 
   // ══════════════════════════════════════════════════════════════════
-  // GEOMETRY — symmetric ring packing inside a unit circle
-  //
-  // Deliberately not a physics pack: the point is that it looks composed.
-  // Returns n frames {x, y, r} in a unit circle centred on the origin, with
-  // the first child at 12 o'clock so the layout is stable between renders.
+  // THE TREE — four things you can direct, and the game they belong to
   // ══════════════════════════════════════════════════════════════════
-  // The classic result: m equal circles on one ring inside a unit circle are
-  // largest when neighbour-tangency and shell-tangency coincide, at
-  // r = sin(π/m) / (1 + sin(π/m)), centres at 1 − r.
-  function bestRing(m) {
-    if (m === 1) return { rho: 0, r: 0.54 };
-    const s = Math.sin(Math.PI / m);
-    const r = (s / (1 + s)) * PACK_GAP;
-    return { rho: 1 - r / PACK_GAP, r: r };
-  }
+  // Which identity block each dot edits, in the order they ring the nucleus.
+  const DOTS = [
+    { id: "level", block: "setting_reference", label: "Level",
+      sub: "Where this happens." },
+    { id: "character", block: "player_character", label: "Character",
+      sub: "Who you are in it." },
+    { id: "game", block: "game_design", label: "Game",
+      sub: "Genre, tone, and what threatens you." },
+    { id: "controls", block: null, label: "Controls",
+      sub: "How you see it and how you move." },
+  ];
 
-  function ring(m, rho, r, phase, out) {
-    for (let i = 0; i < m; i++) {
-      const a = phase + (i / m) * Math.PI * 2;
-      out.push({ x: Math.cos(a) * rho, y: Math.sin(a) * rho, r: r });
-    }
-  }
-
-  function pack(n) {
-    const out = [];
-    if (n <= 0) return out;
-    const top = -Math.PI / 2;                 // first child at 12 o'clock
-    if (n === 1) return [{ x: 0, y: 0, r: 0.54 }];
-    if (n <= 6) {
-      const b = bestRing(n);
-      ring(n, b.rho, b.r, top, out);
-      return out;
-    }
-    if (n <= 12) {
-      // A nucleus plus a ring: keeps the middle of the cell alive instead of
-      // leaving a hole, and holds every sibling at one size.
-      const b = bestRing(n - 1);
-      out.push({ x: 0, y: 0, r: Math.min(b.r, b.rho - b.r * 1.1) });
-      ring(n - 1, b.rho, b.r, top, out);
-      return out;
-    }
-    // Two concentric rings for a crowded cell (a game with many saved levels).
-    const outerN = Math.ceil(n * 0.62);
-    const innerN = n - outerN;
-    const b = bestRing(outerN);
-    const rhoIn = Math.max(b.r * 1.1, b.rho - b.r * 2.1);
-    const rIn = Math.min(b.r, rhoIn * Math.sin(Math.PI / Math.max(2, innerN)) * PACK_GAP);
-    ring(innerN, rhoIn, rIn, top + Math.PI / innerN, out);
-    ring(outerN, b.rho, b.r, top, out);
-    return out;
-  }
-
-  // Absolute frames, computed once per data change: a child's world frame is
-  // its unit frame scaled into its parent's.
-  function layout(node, cx, cy, r) {
-    node.cx = cx; node.cy = cy; node.r = r;
-    const kids = node.children || [];
-    const frames = pack(kids.length);
-    kids.forEach((kid, i) => {
-      const f = frames[i];
-      layout(kid, cx + f.x * r, cy + f.y * r, f.r * r);
+  // Does this sheet actually say anything yet? An empty sheet reaches no model,
+  // so "has content" is the one piece of state a dot needs to show.
+  function blockIsSet(blockId) {
+    const spec = (B.identity() || {})[blockId] || {};
+    const schema = B.identityBlock(blockId);
+    if (!schema) return false;
+    return (schema.fields || []).some((f) => {
+      if (f.type === "toggle" || f.type === "mode") return false;
+      const v = spec[f.id];
+      return typeof v === "string" && v.trim() !== "";
     });
   }
 
-  // ══════════════════════════════════════════════════════════════════
-  // THE TREE — derived from the bridge, never stored
-  // ══════════════════════════════════════════════════════════════════
-  function node(spec) {
-    spec.children = spec.children || [];
-    return spec;
-  }
-
-  function promptNode(field) {
-    const key = field.id;
-    const text = String(B.valOf(key) || "");
-    return node({
-      id: "prompt:" + key,
-      kind: "prompt",
-      label: field.label || key,
-      glyph: "\u2261",
-      meta: text.length > 999
-        ? (text.length / 1000).toFixed(1) + "k chars"
-        : text.length + " chars",
-      dirty: B.isDirty(key),
-      modified: text !== String(B.defOf(key) || ""),
-      data: { key: key, field: field },
-    });
-  }
-
-  function specNode(block) {
-    const spec = (B.identity() || {})[block.id] || {};
-    const count = (block.fields || []).length;
-    return node({
-      id: "spec:" + block.id,
-      kind: "spec",
-      label: block.label || block.id,
-      // The schema's icons are emoji (🧍 🗺️ 🎥); a coloured pictogram in a
-      // line-art diagram looks like a sticker, so the graph keeps one
-      // geometric glyph for "a sheet you fill in".
-      glyph: "\u25A6",
-      meta: spec.enabled === false ? "off" : count + " fields",
-      off: spec.enabled === false,
-      data: { block: block },
-    });
+  function dotRadius(label) {
+    const w = String(label || "").length * GLYPH_W * LABEL;
+    return Math.max(MIN_R, w / 2 + PAD);
   }
 
   function buildTree() {
-    const layers = B.layers() || [];
-    const schema = B.schema() || [];
-    const kids = [];
-
-    layers.forEach((layer) => {
-      const inner = [];
-
-      // The engine owns the runtime knobs: nine live <button> elements the
-      // graph proxies taps to (see bridge.engineControls).
-      if (layer.id === "engine") {
-        const controls = [];
-        (B.engineControls() || []).forEach((group) => {
-          group.buttons.forEach((btn) => {
-            const lbl = btn.querySelector(".rail-lbl");
-            const desc = btn.querySelector(".we-sys-desc");
-            controls.push(node({
-              id: "control:" + btn.id,
-              kind: "control",
-              label: (lbl && lbl.textContent) || btn.id,
-              glyph: (btn.querySelector(".rail-ico") || {}).textContent || "\u25CB",
-              meta: group.title,
-              sub: (desc && desc.textContent) || btn.title || "",
-              // The buttons own their state; the graph only reflects it. Some
-              // are switches ("on"/"active"/"off"), others just open a panel
-              // and carry no state at all.
-              on: btn.classList.contains("on") || btn.classList.contains("active"),
-              off: btn.classList.contains("off"),
-              data: { button: btn },
-            }));
-          });
-        });
-        if (controls.length) {
-          inner.push(node({
-            id: "group:system",
-            kind: "group",
-            label: "System",
-            glyph: "\u25A4",
-            sub: "The engine's runtime knobs \u2014 renderer, models, sound.",
-            children: controls,
-          }));
-        }
-      }
-
-      // The level layer keeps a gallery: a level is a place you can hold
-      // several of, so they're cells in their own right.
-      if (layer.id === "level") {
-        const levels = (B.levels() || []).map((lv) => node({
-          id: "level:" + lv.slug,
-          kind: "level",
-          label: lv.name || lv.slug,
-          glyph: "\u25F0",
-          // A saved level is never "off" — that flag belongs to its plate, and
-          // reading OFF on a place you saved is just alarming.
-          meta: lv.era || (lv.plate_count ? lv.plate_count + " plates" : "no art"),
-          art: (lv.plates && lv.plates[0]) || null,
-          data: { level: lv },
-        }));
-        levels.push(node({
-          id: "new:level",
-          kind: "new-level",
-          label: "Save this level",
-          glyph: "+",
-          meta: "new",
-        }));
-        inner.push(node({
-          id: "group:levels",
-          kind: "group",
-          label: "Levels",
-          glyph: "\u25A4",
-          sub: "Every place you've saved. Opening one leaves the rest of the game alone.",
-          children: levels,
-        }));
-      }
-
-      // Spec sheets first — a form is easier to answer than a blank page.
-      (layer.spec_blocks || []).forEach((id) => {
-        const block = B.identityBlock(id);
-        if (block) inner.push(specNode(block));
-      });
-
-      // Prompt bodies: the essential ones as cells, the mechanical rulebooks
-      // behind one more dive so a layer never opens as twelve equal walls.
-      const fields = (layer.fields || [])
-        .map((id) => schema.find((f) => f.id === id))
-        .filter(Boolean);
-      fields.filter((f) => !B.isAdvanced(f)).forEach((f) => inner.push(promptNode(f)));
-      const advanced = fields.filter((f) => B.isAdvanced(f));
-      if (advanced.length) {
-        inner.push(node({
-          id: "group:advanced:" + layer.id,
-          kind: "group",
-          label: "Advanced",
-          glyph: "\u25B8",
-          sub: "The mechanical rulebooks underneath this layer. A careless edit here stops turns resolving.",
-          children: advanced.map((f) => promptNode(f)),
-        }));
-      }
-
-      kids.push(node({
-        id: "layer:" + layer.id,
-        kind: "layer",
-        label: layer.label || layer.id,
-        glyph: layer.icon || "\u25C8",
-        sub: layer.question || "",
-        tag: layer.tagline || "",
-        risk: layer.risk || "content",
-        volatility: layer.volatility || "",
-        blurb: layer.blurb || "",
-        children: inner,
-      }));
-    });
-
-    // Builds sit beside the layers, not inside one: a build is a snapshot of
-    // all of them at once.
-    const builds = (B.worlds() || []).map((w) => node({
-      id: "build:" + w.slug,
-      kind: "build",
-      label: w.name || w.slug,
-      glyph: "\u25A3",
-      meta: (w.field_count || 0) + " prompts",
-      data: { world: w },
+    const kids = DOTS.map((d) => ({
+      id: "dot:" + d.id,
+      kind: d.block ? "spec" : "controls",
+      label: d.label,
+      sub: d.sub,
+      block: d.block,
+      set: d.block ? blockIsSet(d.block) : false,
+      children: [],
     }));
-    builds.push(node({
-      id: "new:build",
-      kind: "new-build",
-      label: "Save a build",
-      glyph: "+",
-      meta: "new",
-    }));
-    kids.push(node({
-      id: "group:builds",
-      kind: "group",
-      label: "Builds",
-      glyph: "\u25A3",
-      sub: "A snapshot of everything: engine, game, level and character.",
-      children: builds,
-    }));
-
-    const tree = node({
+    const tree = {
       id: "game",
       kind: "root",
-      label: "The Game",
-      glyph: "\u25C9",
-      sub: "Everything the simulation reads, one cell at a time.",
+      label: "Game",
+      sub: "Everything the simulation reads.",
       children: kids,
-    });
-
-    // Index + parent links, then place it all in world space.
+    };
+    layout(tree);
     nodesById = Object.create(null);
-    (function index(n, parent, depth) {
-      n.parent = parent;
-      n.depth = depth;
+    (function walk(n, parent) {
+      n.parent = parent || null;
       nodesById[n.id] = n;
-      (n.children || []).forEach((k) => index(k, n, depth + 1));
-    })(tree, null, 0);
-    layout(tree, 0, 0, ROOT_R);
+      (n.children || []).forEach((k) => walk(k, n));
+    })(tree, null);
     return tree;
   }
 
   // ══════════════════════════════════════════════════════════════════
-  // DRAWING
+  // GEOMETRY — a nucleus, and its children on one ring
+  //
+  // Each dot is only as big as its own word. The ring is then sized so the
+  // widest pair of neighbours still clears, which means the layout adapts if
+  // the labels ever change without anyone tuning a constant.
+  // ══════════════════════════════════════════════════════════════════
+  function layout(node) {
+    node.r = dotRadius(node.label);
+    node.cx = 0;
+    node.cy = 0;
+    const kids = node.children || [];
+    if (!kids.length) return;
+    kids.forEach((k) => { k.r = dotRadius(k.label); });
+
+    const maxR = kids.reduce((m, k) => Math.max(m, k.r), 0);
+    // Two constraints: neighbours must not touch each other, and none may
+    // swallow the nucleus. Take whichever ring is larger.
+    const bySpan = kids.length > 1
+      ? (maxR * REPEL_GAP) / Math.sin(Math.PI / kids.length)
+      : maxR * 2;
+    const byCore = node.r + maxR * 1.9;
+    const ring = Math.max(bySpan, byCore);
+    node.ring = ring;
+    const top = -Math.PI / 2;                       // first dot at 12 o'clock
+    kids.forEach((k, i) => {
+      const a = top + (i / kids.length) * Math.PI * 2;
+      k.slotX = Math.cos(a) * ring;
+      k.slotY = Math.sin(a) * ring;
+      k.cx = k.slotX;
+      k.cy = k.slotY;
+      k.vx = 0; k.vy = 0;
+      // Each dot drifts on its own figure, so they never pulse in unison.
+      k.phase = i * 1.7;
+      k.wob = 0.82 + (i % 3) * 0.14;
+    });
+    node.slotX = 0; node.slotY = 0; node.vx = 0; node.vy = 0;
+    node.phase = 0.4; node.wob = 0.7;
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // WOBBLE — spring to slot, drift, repel, lean together
+  // ══════════════════════════════════════════════════════════════════
+  function visibleNodes() {
+    if (!root) return [];
+    if (openId === null) return [root];
+    const f = nodesById[openId] || root;
+    return [f].concat(f.children || []);
+  }
+
+  function stepWobble(now) {
+    const f = nodesById[openId] || root;
+    const ring = f.ring || f.r * 3;
+    const amp = ring * DRIFT;
+    const t = (now - t0) / 1000;
+    const live = visibleNodes();
+
+    live.forEach((n) => {
+      // The nucleus breathes a quarter as far as its satellites: enough that a
+      // single dot alone on the sheet is alive, not enough to look adrift.
+      const a = n === f ? amp * 0.25 : amp;
+      const ax = n.slotX + Math.cos(t * DRIFT_HZ * 6.283 * n.wob + n.phase) * a;
+      const ay = n.slotY + Math.sin(t * DRIFT_HZ * 6.283 * (n.wob * 1.37) + n.phase * 1.9) * a;
+      n.vx += (ax - n.cx) * SPRING;
+      n.vy += (ay - n.cy) * SPRING;
+    });
+
+    // Pairwise, and only pairwise: a dot pushes off a neighbour that comes
+    // inside REPEL_GAP and reaches for one that has drifted past REACH_GAP.
+    // The first version pulled every dot toward the group's centre of mass,
+    // which is a force with nothing opposing it — the ring quietly collapsed
+    // inward until the satellites were sitting on the nucleus.
+    const orbit = live.filter((n) => n !== f);
+    for (let i = 0; i < orbit.length; i++) {
+      for (let j = i + 1; j < orbit.length; j++) {
+        const a = orbit[i], b = orbit[j];
+        let dx = b.cx - a.cx, dy = b.cy - a.cy;
+        const d = Math.hypot(dx, dy) || 0.001;
+        dx /= d; dy /= d;
+        const near = (a.r + b.r) * REPEL_GAP;
+        const far = (a.r + b.r) * REACH_GAP;
+        let f2 = 0;
+        if (d < near) f2 = -(near - d) * REPEL;
+        else if (d > far) f2 = Math.min(d - far, far) * ATTRACT;
+        else continue;
+        a.vx += dx * f2; a.vy += dy * f2;
+        b.vx -= dx * f2; b.vy -= dy * f2;
+      }
+    }
+    // Nothing may sit on the nucleus. It doesn't move, so the shove is
+    // one-sided.
+    orbit.forEach((n) => {
+      let dx = n.cx - f.cx, dy = n.cy - f.cy;
+      const d = Math.hypot(dx, dy) || 0.001;
+      const want = (n.r + f.r) * REPEL_GAP;
+      if (d >= want) return;
+      n.vx += (dx / d) * (want - d) * REPEL * 2;
+      n.vy += (dy / d) * (want - d) * REPEL * 2;
+    });
+
+    live.forEach((n) => {
+      n.vx *= DAMP; n.vy *= DAMP;
+      n.cx += n.vx; n.cy += n.vy;
+    });
+  }
+
+  function place() {
+    visibleNodes().forEach((n) => {
+      if (n.g) n.g.setAttribute("transform",
+        "translate(" + n.cx.toFixed(2) + " " + n.cy.toFixed(2) + ")");
+    });
+    const f = nodesById[openId] || root;
+    (f.children || []).forEach((k) => {
+      if (!k.line) return;
+      k.line.setAttribute("x1", f.cx.toFixed(2));
+      k.line.setAttribute("y1", f.cy.toFixed(2));
+      k.line.setAttribute("x2", k.cx.toFixed(2));
+      k.line.setAttribute("y2", k.cy.toFixed(2));
+    });
+  }
+
+  function loop(now) {
+    if (!t0) t0 = now;
+    stepWobble(now);
+    place();
+    raf = requestAnimationFrame(loop);
+  }
+
+  function startWobble() {
+    if (raf || reduceMotion()) { place(); return; }
+    t0 = 0;
+    raf = requestAnimationFrame(loop);
+  }
+
+  function stopWobble() {
+    if (raf) cancelAnimationFrame(raf);
+    raf = null;
+  }
+
+  // ══════════════════════════════════════════════════════════════════
+  // DRAWING — every dot is drawn at the origin and moved by a transform, so
+  // the wobble costs one attribute per dot per frame.
   // ══════════════════════════════════════════════════════════════════
   function mk(name, attrs, cls) {
     const n = document.createElementNS(SVG, name);
@@ -352,84 +298,13 @@
     return n;
   }
 
-  // Two lines of ~14 characters is what fits inside a child cell at the label
-  // size below; past that the name is clipped with an ellipsis.
-  function wrapLabel(text, maxChars, maxLines) {
-    const words = String(text || "").trim().split(/\s+/);
-    const lines = [];
-    let line = "";
-    words.forEach((w) => {
-      const next = line ? line + " " + w : w;
-      if (next.length <= maxChars) { line = next; return; }
-      if (line) lines.push(line);
-      line = w.length > maxChars ? w.slice(0, maxChars - 1) + "\u2026" : w;
-    });
-    if (line) lines.push(line);
-    if (lines.length > maxLines) {
-      const cut = lines.slice(0, maxLines);
-      cut[maxLines - 1] = cut[maxLines - 1].slice(0, maxChars - 1) + "\u2026";
-      return cut;
-    }
-    return lines;
-  }
-
   function drawNode(n) {
     const g = mk("g", { "data-id": n.id }, "eg-node eg-kind-" + n.kind);
-    const container = (n.children || []).length > 0;
-    if (container) g.classList.add("eg-container");
-    if (n.risk === "contract") g.classList.add("is-contract");
-    if (n.dirty) g.classList.add("is-dirty");
-    if (n.modified) g.classList.add("is-modified");
-    if (n.on) g.classList.add("is-on");
-    if (n.off) g.classList.add("is-off");
-
-    // The membrane. Containers get a second, inset ring so they read as
-    // something you can be *inside* rather than a filled dot.
-    g.appendChild(mk("circle", { cx: n.cx, cy: n.cy, r: n.r }, "eg-cell"));
-    if (container) {
-      g.appendChild(mk("circle", { cx: n.cx, cy: n.cy, r: n.r * 0.955 }, "eg-cell-in"));
-      g.appendChild(mk("circle", { cx: n.cx, cy: n.cy, r: Math.max(1, n.r * 0.018) }, "eg-nucleus"));
-    }
-
-    // Label block, sized off the node's own radius so its apparent size stays
-    // constant: a child of the focus is always ~a third of the view.
-    const lab = mk("g", null, "eg-label");
-    const glyph = mk("text", {
-      x: n.cx, y: n.cy - n.r * (container ? 0.30 : 0.26),
-      "font-size": n.r * (container ? 0.30 : 0.34),
-    }, "eg-glyph");
-    glyph.textContent = n.glyph || "";
-    lab.appendChild(glyph);
-
-    const lines = wrapLabel(n.label, 14, 2);
-    // Shrink a long name until it fits the cell rather than letting it spill
-    // over the membrane.
-    const longest = lines.reduce((m, l) => Math.max(m, l.length), 0);
-    const nameSize = n.r * 0.19 * Math.min(1, 12 / Math.max(9, longest));
-    const name = mk("text", {
-      x: n.cx, y: n.cy + n.r * (lines.length > 1 ? 0.02 : 0.08),
-      "font-size": nameSize,
-    }, "eg-name");
-    lines.forEach((ln, i) => {
-      const t = mk("tspan", { x: n.cx, dy: i === 0 ? 0 : nameSize * 1.12 });
-      t.textContent = ln;
-      name.appendChild(t);
-    });
-    lab.appendChild(name);
-
-    const metaText = container
-      ? (n.children.length + " inside")
-      : (n.meta || "");
-    if (metaText) {
-      const meta = mk("text", {
-        x: n.cx,
-        y: n.cy + n.r * (lines.length > 1 ? 0.46 : 0.36),
-        "font-size": n.r * 0.135,
-      }, "eg-meta");
-      meta.textContent = metaText;
-      lab.appendChild(meta);
-    }
-    g.appendChild(lab);
+    g.appendChild(mk("circle", { cx: 0, cy: 0, r: n.r }, "eg-cell"));
+    const t = mk("text", { x: 0, y: 0, "font-size": LABEL }, "eg-name");
+    t.textContent = n.label;
+    g.appendChild(t);
+    n.g = g;
     return g;
   }
 
@@ -437,134 +312,51 @@
     if (!els.world) return;
     root = buildTree();
     els.world.innerHTML = "";
-    hoverId = null;   // the highlighted node just stopped existing
+    hoverId = null;
 
-    // Tethers first (under everything): a container's nucleus reaching out to
-    // each child, so this is honestly a graph and not just nested bubbles.
-    const tethers = mk("g", null, "eg-tethers");
-    (function walk(n) {
-      (n.children || []).forEach((k) => {
-        const line = mk("line", {
-          x1: n.cx, y1: n.cy, x2: k.cx, y2: k.cy,
-          "data-parent": n.id,
-        }, "eg-tether");
-        tethers.appendChild(line);
-        walk(k);
-      });
-    })(root);
-    els.world.appendChild(tethers);
+    // Tethers under everything: the nucleus reaching out to each dot, which is
+    // what makes this a graph rather than a menu in a circle.
+    const wires = mk("g", null, "eg-tethers");
+    (root.children || []).forEach((k) => {
+      k.line = mk("line", { x1: 0, y1: 0, x2: 0, y2: 0 }, "eg-tether");
+      wires.appendChild(k.line);
+    });
+    els.world.appendChild(wires);
 
     const layer = mk("g", null, "eg-nodes");
-    (function walk(n) {
-      layer.appendChild(drawNode(n));
-      (n.children || []).forEach(walk);
-    })(root);
+    layer.appendChild(drawNode(root));
+    (root.children || []).forEach((k) => layer.appendChild(drawNode(k)));
     els.world.appendChild(layer);
   }
 
-  // ── The interior of the focused cell: a halftone lattice. Dots sit on a
-  // grid rotated 45°, and a dot's radius decays with its distance from the
-  // nucleus, so density reads as depth — the cytoplasm is thickest at the
-  // centre and thins to nothing at the membrane.
-  //
-  // This replaced concentric rings plus twelve rotating spokes, which on white
-  // paper stopped reading as geometry and started reading as a clock. Dots
-  // carry the same "this was measured, not drawn" register without putting a
-  // single straight line behind the labels.
-  const FIELD_STEPS = 15;          // dots per half-axis; 31×31 lattice, clipped
-  const FIELD_DOT = 0.34;          // biggest dot radius, as a fraction of pitch
-  function drawField(f) {
-    if (!els.field) return;
-    els.field.innerHTML = "";
-
-    // One hairline at the membrane, to close the cell.
-    els.field.appendChild(mk("circle", { cx: f.cx, cy: f.cy, r: f.r }, "eg-guide"));
-
-    const dots = mk("g", null, "eg-dots");
-    const step = f.r / FIELD_STEPS;
-    const COS = Math.SQRT1_2, SIN = Math.SQRT1_2;   // the 45° rotation
-    for (let i = -FIELD_STEPS; i <= FIELD_STEPS; i++) {
-      for (let j = -FIELD_STEPS; j <= FIELD_STEPS; j++) {
-        const gx = i * step, gy = j * step;
-        const x = gx * COS - gy * SIN;
-        const y = gx * SIN + gy * COS;
-        // Distance from the nucleus, 0 at the centre and 1 at the membrane.
-        const t = Math.hypot(x, y) / f.r;
-        if (t > 0.985) continue;
-        // Linear falloff. Anything steeper collapses to a single dot at the
-        // middle: the lattice has to survive out to the children to read as a
-        // field rather than a speck.
-        const k = 1 - t;
-        const r = FIELD_DOT * step * k;
-        if (r < step * 0.055) continue;
-        const d = mk("circle", { cx: f.cx + x, cy: f.cy + y, r: r }, "eg-dot");
-        d.setAttribute("fill-opacity", (0.08 + 0.34 * k).toFixed(3));
-        dots.appendChild(d);
-      }
-    }
-    els.field.appendChild(dots);
-  }
-
-  // ── Per-node state relative to the focus. Recomputed on focus change (not
-  // per frame): who's interactive, who shows a label, who's just texture.
+  // Per-node state relative to where you are. Recomputed on change, not per
+  // frame — the frame loop only moves things.
   function paint() {
-    const f = nodesById[focusId] || root;
-    if (!f) return;
-    const childIds = Object.create(null);
-    (f.children || []).forEach((k) => { childIds[k.id] = true; });
-    // Projected pixels per world unit, along the axis the cell is inscribed in.
-    const scale = viewportPx() / (2 * ((view && view.half) || f.r));
-
+    const collapsed = openId === null;
+    const f = nodesById[openId] || root;
     els.world.querySelectorAll(".eg-node").forEach((g) => {
       const n = nodesById[g.getAttribute("data-id")];
       if (!n) return;
-      const isFocus = n.id === f.id;
-      const isChild = !!childIds[n.id];
-      const isInside = !isFocus && within(n, f);
-      g.classList.toggle("is-focus", isFocus);
-      g.classList.toggle("is-child", isChild);
-      g.classList.toggle("is-deep", isInside && !isChild);
-      g.classList.toggle("is-outside", !isFocus && !isInside);
-      // The cell you're standing in sits inside another one: its membrane is
-      // the halo at the periphery, so it stays readable as a wall.
-      g.classList.toggle("is-parent", !!f.parent && n.id === f.parent.id);
-      g.classList.toggle("is-selected", n.id === selectedId);
+      const isCore = n === f;
+      g.classList.toggle("is-core", isCore && !collapsed);
+      g.classList.toggle("is-alone", isCore && collapsed);
+      g.classList.toggle("is-orbit", !isCore);
+      g.classList.toggle("is-set", !!n.set);
       g.classList.toggle("is-open", n.id === sheetId);
-      // Cull anything too small to read or to matter.
-      g.classList.toggle("is-tiny", n.r * scale < CULL_PX * 8);
-      g.style.display = (n.r * scale < CULL_PX) ? "none" : "";
+      // Collapsed, the ring does not exist yet.
+      g.style.display = (collapsed && !isCore) ? "none" : "";
     });
     els.world.querySelectorAll(".eg-tether").forEach((line) => {
-      line.classList.toggle("is-live", line.getAttribute("data-parent") === f.id);
+      line.classList.toggle("is-live", !collapsed);
     });
-    // You are inside this: light the periphery in the parent's colour.
-    if (els.rim) {
-      els.rim.classList.toggle("is-on", !!f.parent);
-    }
-    drawField(f);
-    renderHud(f);
-  }
-
-  function within(n, ancestor) {
-    let p = n.parent;
-    while (p) { if (p.id === ancestor.id) return true; p = p.parent; }
-    return false;
-  }
-
-  function viewportPx() {
-    if (!els.canvas) return 600;
-    const r = els.canvas.getBoundingClientRect();
-    return Math.max(120, Math.min(r.width || 600, r.height || 600));
+    if (els.graph) els.graph.classList.toggle("is-collapsed", collapsed);
+    renderHud();
+    place();
   }
 
   // ══════════════════════════════════════════════════════════════════
-  // ZOOM — one interpolated viewBox. Radius is interpolated in log space so
-  // the descent feels even rather than lurching at the end.
+  // ZOOM — one interpolated viewBox, scale in log space so the descent is even
   // ══════════════════════════════════════════════════════════════════
-  // `view.half` is the world half-extent along the view's shorter axis. The
-  // viewBox matches the canvas's aspect exactly, so the cell is inscribed in
-  // that axis and the longer one fills with the parent it sits in, rather than
-  // with letterboxed nothing.
   function applyView(v) {
     view = v;
     const box = els.canvas.getBoundingClientRect();
@@ -575,19 +367,21 @@
       (v.cx - hx) + " " + (v.cy - hy) + " " + (hx * 2) + " " + (hy * 2));
   }
 
-  function frameOf(n) {
-    return { cx: n.cx, cy: n.cy, half: n.r / (n.parent ? FRAME_FILL : ROOT_FILL) };
+  function frameFor() {
+    if (openId === null) {
+      return { cx: 0, cy: 0, half: root.r * COLLAPSED_ZOOM };
+    }
+    const f = nodesById[openId] || root;
+    const maxR = (f.children || []).reduce((m, k) => Math.max(m, k.r), f.r);
+    return { cx: 0, cy: 0, half: ((f.ring || f.r * 3) + maxR) * EXPANDED_PAD };
   }
 
-  // Labels are sized in world units, so during a zoom they'd scale with the
-  // diagram — a name arriving at four times its final size, shrinking into
-  // place. They ride out the motion hidden and fade in once it lands.
   function setZooming(on) {
     if (els.graph) els.graph.classList.toggle("is-zooming", !!on);
   }
 
-  function frame(n, animate) {
-    const to = frameOf(n);
+  function frame(animate) {
+    const to = frameFor();
     if (!view || !animate || reduceMotion()) {
       if (anim) { cancelAnimationFrame(anim.raf); anim = null; }
       setZooming(false);
@@ -595,92 +389,55 @@
       return;
     }
     const from = view;
-    const t0 = performance.now();
+    const start = performance.now();
     if (anim) cancelAnimationFrame(anim.raf);
     setZooming(true);
     const step = (now) => {
-      const p = Math.min(1, (now - t0) / ZOOM_MS);
-      // cubic in-out
+      const p = Math.min(1, (now - start) / ZOOM_MS);
       const e = p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2;
       applyView({
         cx: from.cx + (to.cx - from.cx) * e,
         cy: from.cy + (to.cy - from.cy) * e,
-        // Scale interpolates in log space, or the descent lurches at the end.
         half: Math.exp(Math.log(from.half) + (Math.log(to.half) - Math.log(from.half)) * e),
       });
       if (p < 1) anim = { raf: requestAnimationFrame(step) };
-      else { anim = null; setZooming(false); paint(); }
+      else { anim = null; setZooming(false); }
     };
     anim = { raf: requestAnimationFrame(step) };
   }
 
-  function setFocus(id, animate) {
-    const n = nodesById[id];
-    if (!n) return;
-    focusId = id;
-    selectedId = null;
-    frame(n, animate !== false);
+  function setOpen(id, animate) {
+    openId = id;
+    frame(animate !== false);
     paint();
   }
 
   // ══════════════════════════════════════════════════════════════════
-  // HUD — the trail you came down, and what's under your finger
+  // HUD
   // ══════════════════════════════════════════════════════════════════
-  function renderHud(f) {
-    if (els.trail) {
-      els.trail.innerHTML = "";
-      const chain = [];
-      for (let n = f; n; n = n.parent) chain.unshift(n);
-      chain.forEach((n, i) => {
-        const li = document.createElement("li");
-        li.className = "eg-crumb" + (i === chain.length - 1 ? " is-here" : "");
-        const b = document.createElement("button");
-        b.type = "button";
-        b.textContent = n.label;
-        if (i === chain.length - 1) b.setAttribute("aria-current", "true");
-        else b.addEventListener("click", () => setFocus(n.id, true));
-        li.appendChild(b);
-        els.trail.appendChild(li);
-      });
-    }
-    const shown = (selectedId && nodesById[selectedId]) || f;
-    if (els.captionName) {
-      els.captionName.textContent = shown.label;
-    }
-    if (els.captionSub) {
-      els.captionSub.textContent = shown.sub || shown.tag || shown.meta || "";
-    }
+  // Two lines: what you are looking at, and what it is for. A breadcrumb of one
+  // item was the third thing saying "Game" on a screen with one dot on it.
+  function renderHud() {
+    const collapsed = openId === null;
+    const f = nodesById[openId] || root;
+    const shown = (hoverId && nodesById[hoverId]) || f;
+    if (els.captionName) els.captionName.textContent = shown.label;
+    if (els.captionSub) els.captionSub.textContent = shown.sub || "";
     if (els.hint && !hintTimer) {
-      els.hint.textContent = defaultHint(shown, f);
+      els.hint.textContent = collapsed ? "double-tap the dot" : "tap a dot to direct it";
     }
-  }
-
-  function defaultHint(shown, f) {
-    const container = (shown.children || []).length > 0;
-    if (shown !== f && container) return "double-tap to go inside";
-    if (shown !== f) return shown.kind === "control" ? "tap to toggle" : "tap to edit";
-    if (f.parent) return "tap the edge to come back up";
-    return "double-tap a cell to go inside";
   }
 
   function say(msg) {
     if (!els.hint) return;
     els.hint.textContent = msg;
     clearTimeout(hintTimer);
-    hintTimer = setTimeout(() => { hintTimer = null; renderHud(nodesById[focusId] || root); }, 2200);
+    hintTimer = setTimeout(() => { hintTimer = null; renderHud(); }, 2200);
   }
 
   // ══════════════════════════════════════════════════════════════════
   // INTERACTION
-  //
-  // Only the focused cell's children are live: you act on what you can see,
-  // and going deeper is an explicit dive. Everything outside the focus — the
-  // parent's halo and the crowded edges of your siblings — surfaces you up.
   // ══════════════════════════════════════════════════════════════════
-  // Client pixels → world units, straight off the viewBox. (getScreenCTM would
-  // do this too, but its notion of "screen" drifts from client coordinates
-  // under device emulation and page zoom — enough to miss a small cell while
-  // still landing inside a big one.)
   function toWorld(clientX, clientY) {
     const box = els.canvas.getBoundingClientRect();
     if (!box.width || !box.height) return null;
@@ -692,62 +449,53 @@
     };
   }
 
+  // Hit tested against LIVE positions, not the slots — the dots are moving, so
+  // anything else would mean aiming at where a dot used to be.
   function hitAt(clientX, clientY) {
     const p = toWorld(clientX, clientY);
     if (!p) return null;
-    const f = nodesById[focusId] || root;
     let found = null;
-    (f.children || []).forEach((k) => {
-      const d = Math.hypot(p.x - k.cx, p.y - k.cy);
-      if (d <= k.r) found = k;
+    visibleNodes().forEach((n) => {
+      if (Math.hypot(p.x - n.cx, p.y - n.cy) <= n.r) found = n;
     });
-    if (found) return { node: found, where: "child" };
-    const df = Math.hypot(p.x - f.cx, p.y - f.cy);
-    return { node: f, where: df <= f.r ? "focus" : "outside" };
+    if (found) return { node: found, where: found.id === (openId || root.id) ? "core" : "orbit" };
+    return { node: null, where: "empty" };
   }
 
   function activate(n) {
-    if ((n.children || []).length) { setFocus(n.id, true); return; }
-    // A control has no window to open — double-tapping one is still just the
-    // switch, not an empty sheet.
-    if (n.kind === "control") { toggleControl(n); return; }
+    if ((n.children || []).length) { setOpen(n.id, true); return; }
     openSheet(n);
   }
 
   function onTap(evt) {
     const h = hitAt(evt.clientX, evt.clientY);
     if (!h) return;
+    const id = h.node ? h.node.id : "";
     const now = performance.now();
     const isDouble = (now - lastTap.t) < DBL_TAP_MS &&
       Math.hypot(evt.clientX - lastTap.x, evt.clientY - lastTap.y) < TAP_SLOP_PX &&
-      lastTap.id === h.node.id;
-    lastTap = { t: now, x: evt.clientX, y: evt.clientY, id: h.node.id };
+      lastTap.id === id;
+    lastTap = { t: now, x: evt.clientX, y: evt.clientY, id: id };
 
-    if (h.where === "outside") {
-      const f = nodesById[focusId] || root;
-      if (f.parent) setFocus(f.parent.id, true);
-      else say("this is the whole game \u2014 double-tap a cell");
+    // Empty paper is the way back out. With dots this small there is far more
+    // of it than there is of them, which makes leaving easier than arriving —
+    // the right way round.
+    if (h.where === "empty") {
+      if (openId !== null) setOpen(null, true);
       return;
     }
-    if (h.where === "focus") { selectedId = null; paint(); return; }
-
-    const n = h.node;
-    const container = (n.children || []).length > 0;
-    if (isDouble) { activate(n); return; }
-    if (container) {
-      // One tap selects, so the HUD can tell you what this is before you commit
-      // to it; the next tap dives in. A double-tap does both at once, and a
-      // slow second tap still works — a gesture that only counts under 340ms
-      // reads as a broken control.
-      if (selectedId === n.id) { activate(n); return; }
-      selectedId = n.id;
-      paint();
+    if (h.where === "core") {
+      // The nucleus toggles the ring. A double-tap is ONE intent, so the second
+      // half of it is dropped — otherwise double-tapping opens the ring and
+      // then instantly closes it again, which is what it did the first time.
+      if (isDouble) return;
+      setOpen(openId === null ? root.id : null, true);
       return;
     }
-    // A vertex: the tap IS the edit. Controls have nothing to configure, so
-    // for them the tap is the toggle itself.
-    if (n.kind === "control") { toggleControl(n); return; }
-    openSheet(n);
+    // A dot is a window. The second half of a double-tap would just re-open the
+    // one that is already up.
+    if (isDouble && sheetId === h.node.id) return;
+    activate(h.node);
   }
 
   function setHover(id, cursor) {
@@ -763,63 +511,32 @@
 
   function onHover(evt) {
     const h = hitAt(evt.clientX, evt.clientY);
-    if (!h) return setHover(null);
-    if (h.where === "outside") return setHover(null, nodesById[focusId].parent ? "zoom-out" : "default");
-    if (h.where === "focus") return setHover(null);
-    setHover(h.node.id, (h.node.children || []).length ? "zoom-in" : "pointer");
-  }
-
-  function toggleControl(n) {
-    const btn = n.data && n.data.button;
-    if (!btn) return;
-    try { btn.click(); } catch (_) {}
-    // The button owns its state classes, so re-read them rather than guess.
-    // Twice: some switches settle immediately, others (the live renderer)
-    // land on their state a connection later.
-    setTimeout(() => { sync(); say(n.label + (btn.classList.contains("on") ? " on" : "")); }, 40);
-    setTimeout(sync, 600);
+    if (!h || h.where === "empty") {
+      return setHover(null, openId === null ? "default" : "zoom-out");
+    }
+    if (h.where === "core") return setHover(h.node.id, openId === null ? "zoom-in" : "default");
+    setHover(h.node.id, "pointer");
   }
 
   // ══════════════════════════════════════════════════════════════════
-  // THE WINDOW — animates up at a vertex with that object's options
+  // THE WINDOW — the few fields that steer this dot, and nothing else
   // ══════════════════════════════════════════════════════════════════
   function openSheet(n) {
     sheetId = n.id;
+    // The window names itself; the HUD behind it should go back to saying where
+    // you are rather than echoing the title through the scrim.
+    hoverId = null;
     els.sheet.classList.add("is-open");
     els.sheet.setAttribute("aria-hidden", "false");
     els.scrim.classList.add("is-open");
     els.graph.classList.add("has-sheet");
-    els.sheetGlyph.textContent = n.glyph || "";
     els.sheetTitle.textContent = n.label;
+    els.sheetSub.textContent = n.sub || "";
     els.sheetBody.innerHTML = "";
     els.sheetBody.scrollTop = 0;
-    const fill = {
-      prompt: sheetPrompt,
-      spec: sheetSpec,
-      level: sheetLevel,
-      build: sheetBuild,
-      "new-level": sheetNewLevel,
-      "new-build": sheetNewBuild,
-    }[n.kind];
-    els.sheetSub.textContent = sheetSub(n);
-    if (fill) fill(n, els.sheetBody);
+    if (n.kind === "controls") sheetControls(els.sheetBody);
+    else sheetSpec(n, els.sheetBody);
     paint();
-  }
-
-  // The header's second line is set in small caps, so it carries short
-  // metadata only — anything prose-shaped goes in the body as a note.
-  function sheetSub(n) {
-    if (n.kind === "prompt") {
-      return (B.isRestartKey(n.data.key) ? "restart to take effect" : "live next turn") +
-        " \u00B7 " + n.meta;
-    }
-    if (n.kind === "spec") {
-      const inLayer = n.parent && n.parent.kind === "layer" ? n.parent.label + " layer \u00B7 " : "";
-      return inLayer + n.meta;
-    }
-    if (n.kind === "level") return "saved level";
-    if (n.kind === "build") return "saved build \u00B7 " + (n.meta || "");
-    return "";
   }
 
   function closeSheet() {
@@ -829,171 +546,31 @@
     els.sheet.setAttribute("aria-hidden", "true");
     els.scrim.classList.remove("is-open");
     els.graph.classList.remove("has-sheet");
+    // The CONTROLS strip is a real, wired element on loan from the panel; it
+    // has to go home or its listeners leave with the innerHTML.
+    try { B.unmountInputControls(); } catch (_) {}
     els.sheetBody.innerHTML = "";
     paint();
     return true;
   }
 
-  function row(parent, cls) {
-    const d = document.createElement("div");
-    d.className = cls || "eg-row";
-    parent.appendChild(d);
-    return d;
-  }
-
-  function button(parent, label, cls, onClick) {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.className = "we-btn " + (cls || "");
-    b.textContent = label;
-    b.addEventListener("click", onClick);
-    parent.appendChild(b);
-    return b;
-  }
-
-  function note(parent, text, cls) {
-    if (!text) return null;
-    const p = document.createElement("p");
-    p.className = cls || "eg-note";
-    p.textContent = text;
-    parent.appendChild(p);
-    return p;
-  }
-
-  // A prompt vertex: the text itself, editable in place, sharing the very
-  // `edits` buffer the list view uses — so Apply Live in the footer picks it
-  // up, and Expand hands off to the full-screen editor unchanged.
-  function sheetPrompt(n, body) {
-    const key = n.data.key;
-    const field = n.data.field;
-    note(body, field.description);
-    const wiring = B.wiringNote(key);
-    if (wiring) note(body, wiring, "eg-note" + (wiring.indexOf("\u26a0") === 0 ? " is-warn" : ""));
-
-    const ta = document.createElement("textarea");
-    ta.className = "eg-text";
-    ta.spellcheck = false;
-    ta.value = String(B.valOf(key) || "");
-    ta.setAttribute("aria-label", field.label || key);
-    body.appendChild(ta);
-
-    const foot = row(body, "eg-row eg-row-foot");
-    const count = document.createElement("span");
-    count.className = "eg-count";
-    const setCount = () => {
-      count.textContent = ta.value.length.toLocaleString("en-US") + " chars" +
-        (B.isDirty(key) ? " \u00B7 unsaved" : "");
-    };
-    setCount();
-    ta.addEventListener("input", () => { B.setEdit(key, ta.value); setCount(); });
-    foot.appendChild(count);
-
-    const acts = row(body, "eg-row eg-acts");
-    button(acts, "Save", "we-btn-primary", async () => {
-      const res = await B.saveField(key, ta.value);
-      if (res && res.ok) { say("saved \u2014 live next turn"); sync(); }
-    });
-    button(acts, "Full editor", "", () => { closeSheet(); B.openPrompt(key); });
-    if (n.modified) {
-      button(acts, "Reset to default", "we-btn-ghost", async () => {
-        await B.resetField(key);
-        sync();
-        const fresh = nodesById[n.id];
-        if (fresh) openSheet(fresh);
-      });
-    }
-  }
-
-  // A spec sheet: the real cast form, mounted here by WorldEditor, saving on
-  // blur through the same endpoint as before.
+  // One sheet is the identity form itself, mounted minimal: the essential
+  // fields, their placeholders, and nothing to read.
   function sheetSpec(n, body) {
-    note(body, n.data.block.description);
     const host = document.createElement("div");
     host.className = "eg-spec";
     body.appendChild(host);
-    B.renderSpecInto(host, n.data.block.id);
+    B.renderSpecInto(host, n.block, { minimal: true });
   }
 
-  function sheetLevel(n, body) {
-    const lv = n.data.level;
-    if (lv.plates && lv.plates[0]) {
-      const art = document.createElement("div");
-      art.className = "eg-art";
-      art.style.backgroundImage = "url('" + lv.plates[0] + "')";
-      body.appendChild(art);
-    }
-    note(body, lv.summary || "No description yet.");
-    const bits = [];
-    if (lv.era) bits.push(lv.era);
-    if (lv.has_opening_shot) bits.push("opening shot");
-    if (lv.plate_count) bits.push(lv.plate_count + " plates");
-    if (!lv.enabled) bits.push("plate off");
-    note(body, bits.join(" \u00B7 "), "eg-note is-meta");
-    const acts = row(body, "eg-row eg-acts");
-    button(acts, "Open", "we-btn-primary", async () => {
-      if (await B.loadLevel(lv.slug, lv.name)) { closeSheet(); say("now editing " + lv.name); }
-    });
-    button(acts, "Delete", "we-btn-ghost", async () => {
-      if (await B.deleteLevel(lv.slug)) { closeSheet(); setFocus("group:levels", false); }
-    });
-  }
-
-  function sheetBuild(n, body) {
-    const w = n.data.world;
-    note(body, "A build snapshots every layer at once: engine, game, level and character.");
-    note(body, (w.field_count || 0) + " prompts" + (w.note ? " \u00B7 " + w.note : ""), "eg-note is-meta");
-    const acts = row(body, "eg-row eg-acts");
-    button(acts, "Load", "we-btn-primary", async () => { await B.loadWorld(w.slug, false); closeSheet(); });
-    button(acts, "Play", "we-btn-accent", async () => { await B.loadWorld(w.slug, true); });
-    button(acts, "Delete", "we-btn-ghost", async () => {
-      await B.deleteWorld(w.slug, w.name);
-      closeSheet();
-      setFocus("group:builds", false);
-    });
-  }
-
-  function nameForm(body, placeholder, label, onSave) {
-    const form = document.createElement("form");
-    form.className = "eg-name-form";
-    form.autocomplete = "off";
-    const input = document.createElement("input");
-    input.type = "text";
-    input.placeholder = placeholder;
-    input.maxLength = 64;
-    form.appendChild(input);
-    const save = document.createElement("button");
-    save.type = "submit";
-    save.className = "we-btn we-btn-primary";
-    save.textContent = label;
-    form.appendChild(save);
-    form.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const name = input.value.trim();
-      if (!name) { input.focus(); return; }
-      if (await onSave(name)) { closeSheet(); }
-    });
-    body.appendChild(form);
-    setTimeout(() => input.focus(), 320);
-  }
-
-  function sheetNewLevel(n, body) {
-    note(body, "Saves this place \u2014 its brief and its setting plate \u2014 as a level you " +
-      "can come back to. The engine, the game and your character are left alone.");
-    nameForm(body, "Name this level\u2026", "SAVE LEVEL", async (name) => {
-      const ok = await B.saveLevel(name);
-      if (ok) { sync(); say("saved level \u201C" + name + "\u201D"); }
-      return ok;
-    });
-  }
-
-  function sheetNewBuild(n, body) {
-    note(body, "Saves everything at once: engine, game, level and character, as one " +
-      "build you can load or play later.");
-    nameForm(body, "Name this build\u2026", "SAVE BUILD", async (name) => {
-      const ok = await B.saveWorld(name);
-      if (ok) { sync(); say("saved build \u201C" + name + "\u201D"); }
-      return ok;
-    });
+  // The other is how you see and drive: perspective, then the movement scheme
+  // and look speed, borrowed live from the panel.
+  function sheetControls(body) {
+    const host = document.createElement("div");
+    host.className = "eg-spec";
+    body.appendChild(host);
+    B.renderSpecInto(host, "camera_perspective", { minimal: true });
+    try { B.mountInputControls(body); } catch (_) {}
   }
 
   // ══════════════════════════════════════════════════════════════════
@@ -1001,29 +578,29 @@
   // ══════════════════════════════════════════════════════════════════
   function sync() {
     if (!B || !els.world) return;
-    if (!B.isGraphMode()) return;
-    const openId = sheetId;
+    // Switching to the flat list has to give the CONTROLS strip back, or it
+    // leaves with the window it was borrowed into.
+    if (!B.isGraphMode()) { stopWobble(); closeSheet(); return; }
+    const openSheetId = sheetId;
     const active = document.activeElement;
     const typing = active && (active.tagName === "TEXTAREA" || active.tagName === "INPUT") &&
       els.sheetBody.contains(active);
-    // Where you were, deepest first — if the cell you're standing in has just
-    // been deleted, you surface to the nearest ancestor that still exists.
-    const wasChain = [];
-    for (let n = nodesById[focusId]; n; n = n.parent) wasChain.push(n.id);
+    // Don't tear down a window the player is typing in; the dots behind it can
+    // wait for the next save.
+    if (openSheetId && typing) return;
+    if (openSheetId) { try { B.unmountInputControls(); } catch (_) {} }
     build();
-    focusId = wasChain.find((id) => nodesById[id]) || root.id;
-    frame(nodesById[focusId], false);
+    if (openId !== null && !nodesById[openId]) openId = root.id;
+    frame(false);
     paint();
-    // Re-mount the open window against the fresh tree, unless the player is
-    // mid-sentence in it.
-    if (openId && nodesById[openId] && !typing) openSheet(nodesById[openId]);
-    else if (openId && !nodesById[openId]) closeSheet();
+    startWobble();
+    if (openSheetId && nodesById[openSheetId]) openSheet(nodesById[openSheetId]);
+    else if (openSheetId) closeSheet();
   }
 
   function onEscape() {
     if (closeSheet()) return true;
-    const f = nodesById[focusId];
-    if (f && f.parent) { setFocus(f.parent.id, true); return true; }
+    if (openId !== null) { setOpen(null, true); return true; }
     return false;
   }
 
@@ -1033,15 +610,11 @@
       graph: document.getElementById("we-graph"),
       canvas: document.getElementById("eg-canvas"),
       world: document.getElementById("eg-world"),
-      field: document.getElementById("eg-field"),
-      trail: document.getElementById("eg-trail"),
       captionName: document.getElementById("eg-caption-name"),
       captionSub: document.getElementById("eg-caption-sub"),
-      rim: document.getElementById("eg-rim"),
       hint: document.getElementById("eg-hint"),
       sheet: document.getElementById("eg-sheet"),
       scrim: document.getElementById("eg-scrim"),
-      sheetGlyph: document.getElementById("eg-sheet-glyph"),
       sheetTitle: document.getElementById("eg-sheet-title"),
       sheetSub: document.getElementById("eg-sheet-sub"),
       sheetBody: document.getElementById("eg-sheet-body"),
@@ -1050,30 +623,43 @@
     if (!els.canvas || !els.world) return;
 
     els.canvas.addEventListener("click", onTap);
-    // Our tap handler resolves single vs double itself, so the browser's own
-    // double-click behaviour (selecting the label text) is just noise.
     els.canvas.addEventListener("dblclick", (e) => e.preventDefault());
-    // With a mouse, say what a click will do before it happens: the cursor
-    // names the gesture and the cell under the pointer lifts.
     els.canvas.addEventListener("mousemove", onHover);
     els.canvas.addEventListener("mouseleave", () => setHover(null));
     if (els.sheetClose) els.sheetClose.addEventListener("click", closeSheet);
     if (els.scrim) els.scrim.addEventListener("click", closeSheet);
-    // The viewBox encodes the canvas aspect, so a resize has to re-frame.
-    window.addEventListener("resize", () => { if (view) { applyView(view); paint(); } });
+    window.addEventListener("resize", () => { if (view) applyView(view); });
+    // A hidden panel doesn't need a frame loop running behind it.
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) stopWobble();
+      else if (B.isGraphMode()) startWobble();
+    });
   }
 
   window.EditorGraph = {
     init: init,
     sync: sync,
     onEscape: onEscape,
-    focusId: () => focusId,
     isSheetOpen: () => !!sheetId,
-    // What a tap at these client coordinates would land on — the graph's hit
-    // test, exposed so tests and the console can ask without clicking.
+    // Where you are: null while collapsed, else the open node's id.
+    openId: () => openId,
+    // What a tap at these client coordinates would land on, without clicking.
     probe: (x, y) => {
       const h = hitAt(x, y);
-      return h ? { id: h.node.id, where: h.where } : null;
+      return h ? { id: h.node ? h.node.id : null, where: h.where } : null;
+    },
+    // Live centre of a dot in client pixels — the dots move, so tests and the
+    // console need to ask where one is right now.
+    dotAt: (id) => {
+      const n = nodesById[id];
+      const box = els.canvas && els.canvas.getBoundingClientRect();
+      const vb = els.canvas && els.canvas.viewBox.baseVal;
+      if (!n || !box || !vb || !vb.width) return null;
+      return {
+        x: box.left + (n.cx - vb.x) * (box.width / vb.width),
+        y: box.top + (n.cy - vb.y) * (box.height / vb.height),
+        r: n.r * (box.width / vb.width),
+      };
     },
   };
 })();
