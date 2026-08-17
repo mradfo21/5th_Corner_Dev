@@ -6502,18 +6502,30 @@ body.touch-aiming .touch-zoom { opacity: 0.9; }
 
 :root { --we-fs: 1; }
 
+/* PAPER, INK, ONE RED.
+   The editor is the only part of this product that is a tool rather than a
+   film, and it was wearing the film's costume: five layer hues over near-black,
+   which on a phone reads as a christmas tree of unrelated signals. So: white
+   paper, black ink, and a single vermilion reserved for meaning — what you
+   picked, what is on, what is unsaved. Nothing else in here is allowed to be
+   coloured, which is what lets the red actually say something. */
 #world-editor {
   --we-width: clamp(440px, 46vw, 760px);
-  --we-bg: #0b0c0e;
-  --we-panel: #121418;
-  --we-raise: #171a1f;
-  --we-line: rgba(255, 255, 255, 0.07);
-  --we-line-strong: rgba(255, 255, 255, 0.13);
-  --we-text: #f2f4f7;
-  --we-text-mid: rgba(242, 244, 247, 0.66);
-  --we-text-dim: rgba(242, 244, 247, 0.4);
-  --we-accent: #7aa2ff;
-  --layer-accent: #7aa2ff;
+  --we-bg: #ffffff;
+  --we-panel: #ffffff;
+  --we-raise: #f2f2f3;
+  --we-sunk: #fafafa;
+  --we-line: rgba(16, 16, 18, 0.11);
+  --we-line-strong: rgba(16, 16, 18, 0.24);
+  --we-text: #101012;
+  --we-text-mid: rgba(16, 16, 18, 0.62);
+  --we-text-dim: rgba(16, 16, 18, 0.40);
+  --we-red: #e0301c;
+  /* Small type needs more contrast than a fill does to hit 4.5:1 on white. */
+  --we-red-ink: #c22916;
+  --we-red-wash: rgba(224, 48, 28, 0.09);
+  --we-accent: var(--we-red);
+  --layer-accent: var(--we-red);
   --we-ui: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Inter, system-ui, sans-serif;
   --we-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', 'Share Tech Mono', monospace;
 
@@ -6580,10 +6592,10 @@ body.we-resizing { cursor: col-resize; user-select: none; }
   font-weight: 500;
   letter-spacing: 0.04em;
   text-transform: none;
-  color: #ffce6a;
+  color: var(--we-red-ink);
   padding: 2px 8px;
   border-radius: 999px;
-  background: rgba(255, 206, 106, 0.12);
+  background: var(--we-red-wash);
 }
 #world-editor .we-dirty.hidden { display: none; }
 #world-editor .we-head-tools { margin-left: auto; display: flex; align-items: center; gap: 6px; }
@@ -6625,11 +6637,11 @@ body.we-resizing { cursor: col-resize; user-select: none; }
   min-height: 0;
   overflow: hidden;
   display: none;
-  /* A cell under a microscope: light pooling in the middle, dark at the rim. */
+  /* Paper under a lamp: the sheet is white, with the faintest cool grey
+     settling at the edges so the circle in the middle has somewhere to sit. */
   background:
-    radial-gradient(115% 80% at 50% 38%, rgba(122, 162, 255, 0.055), transparent 70%),
-    radial-gradient(90% 70% at 50% 108%, rgba(0, 0, 0, 0.6), transparent 60%),
-    #08090b;
+    radial-gradient(120% 82% at 50% 40%, #ffffff, transparent 62%),
+    #f4f4f6;
 }
 /* The graph replaces the flat column; the list keeps working behind the
    header toggle, and both stay in the DOM so neither can drift. */
@@ -6652,32 +6664,24 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
    competes for the pointer. */
 #world-editor .eg-canvas * { pointer-events: none; }
 
-/* ── The mathematical furniture: guide rings + spokes for the focused cell.
-   Faint, slowly turning, and only there to keep the register geometric
-   rather than bubbly. ──────────────────────────────────────────────────── */
+/* ── The mathematical furniture: a halftone lattice inside the focused cell,
+   dots on a 45° grid whose radius decays with distance from the nucleus. It
+   replaced a set of rotating spokes, which on white read as a clock face.
+   Printed rather than drawn: it gives the cell an interior without putting a
+   single hard line anywhere near the labels. Built in drawField(). ─────── */
 #world-editor .eg-field { pointer-events: none; }
 #world-editor .eg-guide {
   fill: none;
-  stroke: rgba(255, 255, 255, 0.055);
+  stroke: rgba(16, 16, 18, 0.07);
   stroke-width: 1;
   vector-effect: non-scaling-stroke;
 }
-#world-editor .eg-spokes {
-  transform-box: fill-box;
-  transform-origin: 50% 50%;
-  animation: eg-turn 240s linear infinite;
-}
-#world-editor .eg-spoke {
-  stroke: rgba(255, 255, 255, 0.035);
-  stroke-width: 1;
-  vector-effect: non-scaling-stroke;
-}
-@keyframes eg-turn { to { transform: rotate(360deg); } }
+#world-editor .eg-dot { fill: var(--we-red); }
 
 /* ── Tethers: a nucleus reaching out to each child, so this reads as a graph
    (nodes and edges) and not just nested bubbles. ──────────────────────── */
 #world-editor .eg-tether {
-  stroke: rgba(255, 255, 255, 0.06);
+  stroke: rgba(16, 16, 18, 0.13);
   stroke-width: 1;
   vector-effect: non-scaling-stroke;
   opacity: 0;
@@ -6687,38 +6691,41 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
 
 /* ── Cells ─────────────────────────────────────────────────────────────── */
 #world-editor .eg-node {
-  --eg-accent: var(--we-accent);
+  --eg-accent: var(--we-red);
   transition: opacity 0.42s ease;
 }
+/* A container is an enclosure: white, so you read it as space you can be
+   inside, held by one hairline of ink. */
 #world-editor .eg-cell {
-  fill: url(#eg-cell-fill);
-  stroke: var(--eg-accent);
-  stroke-opacity: 0.34;
+  fill: #ffffff;
+  stroke: #101012;
+  stroke-opacity: 0.16;
   stroke-width: 1.25;
   vector-effect: non-scaling-stroke;
-  transition: stroke-opacity 0.3s ease, fill-opacity 0.3s ease;
+  transition: stroke-opacity 0.3s ease, fill 0.3s ease, stroke 0.3s ease;
 }
 #world-editor .eg-cell-in {
   fill: none;
-  stroke: var(--eg-accent);
-  stroke-opacity: 0.12;
+  stroke: #101012;
+  stroke-opacity: 0.09;
   stroke-width: 1;
   vector-effect: non-scaling-stroke;
 }
-#world-editor .eg-nucleus { fill: var(--eg-accent); fill-opacity: 0.5; }
-/* Vertices are solid: there is nothing inside them, and they read as objects
-   you can pick up rather than places you can enter. */
+#world-editor .eg-nucleus { fill: var(--we-red); fill-opacity: 0.9; }
+/* A vertex has no interior, so it is a solid chip you pick up rather than a
+   room you enter — the one place tone does the work instead of line. */
 #world-editor .eg-node:not(.eg-container) .eg-cell {
-  fill: url(#eg-leaf-fill);
-  stroke-opacity: 0.45;
+  fill: #f0f0f2;
+  stroke-opacity: 0.10;
 }
 
 #world-editor .eg-glyph {
-  fill: var(--eg-accent);
-  fill-opacity: 0.85;
+  fill: #101012;
+  fill-opacity: 0.5;
   text-anchor: middle;
   dominant-baseline: middle;
   font-family: var(--we-ui);
+  transition: fill 0.25s ease, fill-opacity 0.25s ease;
 }
 #world-editor .eg-name {
   fill: var(--we-text);
@@ -6753,22 +6760,49 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
 /* ── Depth states, relative to where you're standing ───────────────────── */
 /* The cell you're inside: its own name is in the HUD, so it doesn't shout it
    at you at screen size. */
-#world-editor .eg-node.is-focus > .eg-cell { stroke-opacity: 0.5; }
+/* The cell you're standing in has no fill: its interior is the paper, and the
+   halftone lattice is drawn underneath. A white disc here would simply bury
+   the field it is supposed to contain. */
+#world-editor .eg-node.is-focus > .eg-cell { fill: none; stroke-opacity: 0.22; }
 #world-editor .eg-node.is-focus > .eg-label { opacity: 0; }
 #world-editor .eg-node.is-child { opacity: 1; }
 /* Grandchildren: organelles. Visible detail you can't read yet — which is
    exactly what tells you there's something in there. */
-#world-editor .eg-node.is-deep { opacity: 0.42; }
+#world-editor .eg-node.is-deep { opacity: 0.45; }
 /* Ancestors and siblings crowding the periphery: the halo you tap to surface. */
-#world-editor .eg-node.is-outside { opacity: 0.16; }
+#world-editor .eg-node.is-outside { opacity: 0.14; }
+/* Whatever is inside a child is texture, not content, and on white it lands
+   right behind that child's name. Drop the ring to a whisper and keep only
+   enough tone to say "there is something in here". */
+#world-editor .eg-node.is-deep > .eg-cell { fill: #f7f7f8; stroke-opacity: 0.07; }
+#world-editor .eg-node.is-deep > .eg-cell-in,
+#world-editor .eg-node.is-deep > .eg-nucleus { display: none; }
+/* A nucleus is a red dot, and the parent's sits wherever its centre happens to
+   fall — which, when you are inside a cell near the parent's rim, is a stray
+   red mark halfway across the view. Only the cell you are in and the ones you
+   can act on get one. */
+#world-editor .eg-node.is-parent > .eg-nucleus,
+#world-editor .eg-node.is-outside > .eg-nucleus { display: none; }
+/* A switch that happens to be ON two levels down is still just texture. Left
+   filled, it lands as an unexplained red blob inside a layer you haven't
+   opened — the state only means something once you can read the label. */
+#world-editor .eg-node.is-deep.is-on > .eg-cell,
+#world-editor .eg-node.is-outside.is-on > .eg-cell {
+  fill: #f0f0f2;
+  stroke: #101012;
+  stroke-opacity: 0.07;
+}
 /* The cell you're inside. Its membrane is usually well outside the framed view
    (a parent is three-odd times the radius of its children), so what actually
    grounds the periphery is .eg-rim below; this just keeps it the brightest
    thing out there when it does come into frame. */
+/* The parent's own arc is ink: the red at the periphery is .eg-rim below, and
+   two different reds out there compete for the same meaning. */
 #world-editor .eg-node.is-parent { opacity: 0.6; }
 #world-editor .eg-node.is-parent > .eg-cell {
-  stroke-opacity: 0.5;
-  stroke-width: 2.5;
+  stroke: #101012;
+  stroke-opacity: 0.3;
+  stroke-width: 2;
 }
 
 /* The wall of the cell you're standing in, drawn where you can actually see
@@ -6782,40 +6816,56 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
   pointer-events: none;
   opacity: 0;
   transition: opacity 0.5s ease;
+  /* On paper this is ink pooling at the trim, not a neon edge: a hairline of
+     red and a wide, very soft wash inside it. */
   box-shadow:
-    inset 0 0 0 1px var(--eg-accent, transparent),
-    inset 0 0 120px -34px var(--eg-accent, transparent);
+    inset 0 0 0 1px rgba(224, 48, 28, 0.5),
+    inset 0 0 90px -50px rgba(224, 48, 28, 0.9);
 }
-#world-editor .eg-rim.is-on { opacity: 0.55; }
+#world-editor .eg-rim.is-on { opacity: 1; }
 
 /* Pointer feedback (desktop): the cell under the cursor lifts a little, and
    the cursor itself says whether the click goes in, out, or opens a window. */
-#world-editor .eg-node.is-hover > .eg-cell { stroke-opacity: 0.8; }
-#world-editor .eg-node.is-hover .eg-glyph { fill-opacity: 1; }
+#world-editor .eg-node.is-hover > .eg-cell { stroke-opacity: 0.42; }
+#world-editor .eg-node.is-hover .eg-glyph { fill-opacity: 0.9; }
+/* Picked. The one thing on the sheet allowed to be red — everything red on
+   screen at once is either your selection or a warning. */
 #world-editor .eg-node.is-selected > .eg-cell {
+  stroke: var(--we-red);
   stroke-opacity: 1;
   stroke-width: 2;
-  filter: drop-shadow(0 0 14px var(--eg-accent));
 }
-#world-editor .eg-node.is-open > .eg-cell { stroke-opacity: 1; stroke-width: 2; }
+#world-editor .eg-node.is-selected .eg-glyph { fill: var(--we-red); fill-opacity: 1; }
+#world-editor .eg-node.is-selected .eg-name { fill: var(--we-red-ink); }
+#world-editor .eg-node.is-open > .eg-cell {
+  stroke: var(--we-red);
+  stroke-opacity: 1;
+  stroke-width: 2;
+}
 
 /* A prompt with unsaved text, and one that no longer matches the factory
    default: the two things you want to see without opening anything. */
 #world-editor .eg-node.is-dirty > .eg-cell {
-  stroke: #ffce6a;
+  stroke: var(--we-red);
   stroke-opacity: 0.95;
   stroke-dasharray: 5 4;
   animation: eg-breathe 2.6s ease-in-out infinite;
 }
-#world-editor .eg-node.is-modified:not(.is-dirty) > .eg-cell { stroke-opacity: 0.72; }
-/* Contract layers stop turns resolving if you break them — dashed inner ring. */
-#world-editor .eg-node.is-contract > .eg-cell-in { stroke-dasharray: 3 7; stroke-opacity: 0.2; }
-/* A runtime knob that's currently on. */
-#world-editor .eg-node.is-on > .eg-cell {
-  fill: var(--eg-accent);
-  fill-opacity: 0.18;
-  stroke-opacity: 0.95;
+#world-editor .eg-node.is-modified:not(.is-dirty) > .eg-cell {
+  stroke: #101012;
+  stroke-opacity: 0.42;
 }
+/* Contract layers stop turns resolving if you break them — dashed inner ring. */
+#world-editor .eg-node.is-contract > .eg-cell-in { stroke-dasharray: 3 7; stroke-opacity: 0.18; }
+/* A runtime knob that's currently on: filled, the way a switch is filled. */
+#world-editor .eg-node.is-on > .eg-cell {
+  fill: var(--we-red);
+  stroke: var(--we-red);
+  stroke-opacity: 1;
+}
+#world-editor .eg-node.is-on .eg-glyph { fill: #ffffff; fill-opacity: 1; }
+#world-editor .eg-node.is-on .eg-name { fill: #ffffff; }
+#world-editor .eg-node.is-on .eg-meta { fill: rgba(255, 255, 255, 0.72); }
 #world-editor .eg-node.is-off > .eg-cell { stroke-dasharray: 2 6; }
 @keyframes eg-breathe {
   0%, 100% { stroke-opacity: 0.55; }
@@ -6829,7 +6879,7 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
   z-index: 2;
   padding: 10px 14px 14px;
   pointer-events: none;
-  background: linear-gradient(180deg, rgba(8, 9, 11, 0.92) 30%, transparent);
+  background: linear-gradient(180deg, #ffffff 32%, rgba(255, 255, 255, 0));
 }
 #world-editor .eg-trail {
   display: flex;
@@ -6862,7 +6912,7 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
 }
 #world-editor .eg-crumb button:hover { color: var(--we-text-mid); }
 #world-editor .eg-crumb.is-here button {
-  color: var(--eg-accent, var(--we-accent));
+  color: var(--we-red-ink);
   cursor: default;
 }
 #world-editor .eg-caption { margin-top: 5px; }
@@ -6890,7 +6940,7 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
   font-size: calc(9.5px * var(--we-fs));
   letter-spacing: 0.18em;
   text-transform: uppercase;
-  color: rgba(242, 244, 247, 0.28);
+  color: rgba(16, 16, 18, 0.34);
   transition: opacity 0.3s;
 }
 #world-editor .we-graph.has-sheet .eg-hint { opacity: 0; }
@@ -6900,25 +6950,25 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
   position: absolute;
   inset: 0;
   z-index: 3;
-  background: rgba(4, 5, 6, 0.62);
+  background: rgba(244, 244, 246, 0.72);
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.34s ease;
 }
 #world-editor .eg-scrim.is-open { opacity: 1; pointer-events: auto; }
 #world-editor .eg-sheet {
-  --eg-accent: var(--we-accent);
+  --eg-accent: var(--we-red);
   position: absolute;
   left: 0; right: 0; bottom: 0;
   z-index: 4;
   display: flex;
   flex-direction: column;
   max-height: min(84%, 660px);
-  background: linear-gradient(180deg, #15181d, #0c0e11 62%);
+  background: #ffffff;
   border: 1px solid var(--we-line);
   border-bottom: 0;
   border-radius: 16px 16px 0 0;
-  box-shadow: 0 -30px 90px -24px rgba(0, 0, 0, 0.95);
+  box-shadow: 0 -24px 60px -28px rgba(16, 16, 18, 0.35);
   transform: translateY(102%);
   transition: transform 0.44s cubic-bezier(0.22, 1, 0.36, 1);
 }
@@ -6946,9 +6996,10 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
   height: calc(30px * var(--we-fs));
   display: grid;
   place-items: center;
-  border: 1px solid var(--eg-accent);
+  border: 1px solid var(--we-red);
   border-radius: 50%;
-  color: var(--eg-accent);
+  background: var(--we-red);
+  color: #ffffff;
   font-size: calc(14px * var(--we-fs));
 }
 #world-editor .eg-sheet-id { min-width: 0; flex: 1 1 auto; }
@@ -7008,13 +7059,13 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
   text-transform: uppercase;
   color: var(--we-text-dim);
 }
-#world-editor .eg-note.is-warn { color: #ffce6a; }
+#world-editor .eg-note.is-warn { color: var(--we-red-ink); }
 #world-editor .eg-text {
   display: block;
   width: 100%;
   min-height: 34vh;
   padding: 11px 12px;
-  background: #0a0b0d;
+  background: var(--we-sunk);
   border: 1px solid var(--we-line);
   border-radius: 10px;
   color: var(--we-text);
@@ -7038,14 +7089,14 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
   margin-bottom: 13px;
   border: 1px solid var(--we-line);
   border-radius: 11px;
-  background: #0a0b0d center/cover no-repeat;
+  background: var(--we-raise) center/cover no-repeat;
 }
 #world-editor .eg-name-form { display: flex; gap: 8px; flex-wrap: wrap; }
 #world-editor .eg-name-form input {
   flex: 1 1 180px;
   min-width: 0;
   padding: 10px 12px;
-  background: #0a0b0d;
+  background: var(--we-sunk);
   border: 1px solid var(--we-line);
   border-radius: 9px;
   color: var(--we-text);
@@ -7055,7 +7106,6 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
 #world-editor .eg-name-form input:focus { outline: none; border-color: var(--eg-accent); }
 
 @media (prefers-reduced-motion: reduce) {
-  #world-editor .eg-spokes { animation: none; }
   #world-editor .eg-node.is-dirty > .eg-cell { animation: none; }
   #world-editor .eg-sheet { transition: none; }
 }
@@ -7078,8 +7128,24 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
   color: var(--we-text-dim);
 }
 #world-editor .we-input-hint { flex: 1 1 100%; font-size: calc(10.5px * var(--we-fs)); color: var(--we-text-dim); }
+/* These segmented buttons are the live HUD's, borrowed into the editor, so
+   they arrive wearing the game's phosphor green and amber. On paper they get
+   the panel's own two states: ink outline, or filled red when selected. */
 #world-editor .we-input-opts .rt-ho-btn {
   font-size: calc(10px * var(--we-fs)); padding: 3px 10px; border-radius: 6px;
+  border: 1px solid var(--we-line);
+  background: var(--we-sunk);
+  color: var(--we-text-mid);
+  font-family: var(--we-ui);
+  font-weight: 600;
+}
+#world-editor .we-input-opts .rt-ho-btn:hover {
+  border-color: var(--we-line-strong); color: var(--we-text);
+}
+#world-editor .we-input-opts .rt-ho-btn.on {
+  border-color: var(--we-red);
+  background: var(--we-red);
+  color: #ffffff;
 }
 #world-editor .we-input-sens { display: inline-flex; align-items: center; gap: 8px; }
 #world-editor .we-input-sens.off { opacity: 0.4; }
@@ -7112,7 +7178,7 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
 }
 #world-editor .we-tabs::-webkit-scrollbar { height: 0; }
 #world-editor .we-layer {
-  --layer-accent: #7aa2ff;
+  --layer-accent: var(--we-red);
   appearance: none;
   position: relative;
   flex: 1 1 0;
@@ -7141,7 +7207,7 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
   transform-origin: left;
   transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
 }
-#world-editor .we-layer:hover { color: var(--we-text-mid); background: rgba(255, 255, 255, 0.02); }
+#world-editor .we-layer:hover { color: var(--we-text-mid); background: rgba(16, 16, 18, 0.04); }
 #world-editor .we-layer.active { color: var(--we-text); }
 #world-editor .we-layer.active::after { transform: scaleX(1); }
 #world-editor .we-layer-glyph { display: none; }
@@ -7196,7 +7262,7 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
 #world-editor .we-info:hover,
 #world-editor .we-info[aria-expanded="true"] {
   color: var(--we-text);
-  background: rgba(255, 255, 255, 0.08);
+  background: rgba(16, 16, 18, 0.07);
 }
 #world-editor .we-info:focus-visible {
   outline: none; color: var(--we-text);
@@ -7208,27 +7274,30 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
   width: min(300px, calc(100% - 20px));
   padding: 11px 13px 12px;
   border-radius: 11px;
-  background: #1a1d23;
-  border: 1px solid var(--we-line-strong);
-  box-shadow: 0 18px 44px -14px rgba(0, 0, 0, 0.9);
+  background: #101012;
+  border: 1px solid #101012;
+  box-shadow: 0 18px 44px -18px rgba(16, 16, 18, 0.5);
   opacity: 0;
   transform: translateY(-4px);
   pointer-events: none;
   transition: opacity 0.16s ease, transform 0.16s ease;
 }
 #world-editor .we-pop.show { opacity: 1; transform: translateY(0); pointer-events: auto; }
+/* The popover is the one inverted surface in here: an explanation is an aside,
+   and reversing it out to black separates it from the sheet without inventing
+   another colour. */
 #world-editor .we-pop-title {
   font-size: calc(11px * var(--we-fs));
   font-weight: 600;
   letter-spacing: 0.09em;
   text-transform: uppercase;
-  color: var(--layer-accent);
+  color: #ff6a55;
   margin-bottom: 5px;
 }
 #world-editor .we-pop-body {
   font-size: calc(12.5px * var(--we-fs));
   line-height: 1.62;
-  color: var(--we-text-mid);
+  color: rgba(255, 255, 255, 0.76);
   white-space: pre-line;
 }
 
@@ -7282,7 +7351,7 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
 }
 #world-editor .we-scroll::-webkit-scrollbar { width: 10px; }
 #world-editor .we-scroll::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.1); border-radius: 6px;
+  background: rgba(16, 16, 18, 0.18); border-radius: 6px;
   border: 3px solid transparent; background-clip: content-box;
 }
 #world-editor .we-fields, #world-editor .we-cast { padding: 14px 16px 0; }
@@ -7329,8 +7398,10 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
   padding: 2px 7px;
   border-radius: 999px;
 }
-#world-editor .we-tag-live { background: rgba(122, 162, 255, 0.14); color: #9bb8ff; }
-#world-editor .we-tag-restart { background: rgba(255, 206, 106, 0.14); color: #ffce6a; }
+/* LIVE is the ordinary case, so it is ink; RESTART costs you the running
+   game, so it gets the red. */
+#world-editor .we-tag-live { background: rgba(16, 16, 18, 0.07); color: var(--we-text-mid); }
+#world-editor .we-tag-restart { background: var(--we-red-wash); color: var(--we-red-ink); }
 #world-editor .we-card-preview {
   margin-top: 7px;
   font-family: var(--we-mono);
@@ -7349,7 +7420,7 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
   font-variant-numeric: tabular-nums;
   color: var(--we-text-dim);
 }
-#world-editor .we-card-edited { color: #ffce6a; }
+#world-editor .we-card-edited { color: var(--we-red-ink); }
 #world-editor .we-card.modified { border-color: rgba(255, 206, 106, 0.28); }
 #world-editor .we-card-reset {
   appearance: none;
@@ -7390,7 +7461,7 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
 #world-editor .we-block textarea {
   width: 100%;
   box-sizing: border-box;
-  background: #0d0f12;
+  background: var(--we-sunk);
   border: 1px solid var(--we-line);
   border-radius: 9px;
   color: var(--we-text);
@@ -7408,17 +7479,17 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--layer-accent) 16%, transparent);
 }
 #world-editor .we-block input::placeholder,
-#world-editor .we-block textarea::placeholder { color: rgba(242, 244, 247, 0.26); }
+#world-editor .we-block textarea::placeholder { color: rgba(16, 16, 18, 0.30); }
 
 /* Toggle: a real switch. */
 #world-editor .we-cast-toggle {
   display: flex; align-items: center; gap: 10px; cursor: pointer;
   padding: 9px 11px; border: 1px solid var(--we-line); border-radius: 9px;
-  background: #0d0f12;
+  background: var(--we-sunk);
 }
 #world-editor .we-cast-toggle:hover { border-color: var(--we-line-strong); }
 #world-editor .we-cast-toggle input { appearance: none; margin: 0; position: relative;
-  width: 34px; height: 20px; border-radius: 999px; background: rgba(255,255,255,0.12);
+  width: 34px; height: 20px; border-radius: 999px; background: rgba(16, 16, 18, 0.18);
   cursor: pointer; flex-shrink: 0; transition: background 0.2s; }
 #world-editor .we-cast-toggle input::after {
   content: ""; position: absolute; top: 2px; left: 2px;
@@ -7434,7 +7505,7 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
 #world-editor .we-mode {
   appearance: none; text-align: left; cursor: pointer;
   padding: 10px 11px; border-radius: 9px;
-  border: 1px solid var(--we-line); background: #0d0f12;
+  border: 1px solid var(--we-line); background: var(--we-sunk);
   color: var(--we-text-mid); font: inherit;
   display: flex; flex-direction: column; gap: 3px;
   transition: border-color 0.15s, background 0.15s, color 0.15s;
@@ -7442,7 +7513,7 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
 #world-editor .we-mode:hover { border-color: var(--we-line-strong); color: var(--we-text); }
 #world-editor .we-mode.active {
   border-color: var(--layer-accent); color: var(--we-text);
-  background: color-mix(in srgb, var(--layer-accent) 12%, #0d0f12);
+  background: var(--we-red-wash);
 }
 #world-editor .we-mode-name { font-size: calc(13px * var(--we-fs)); font-weight: 550; }
 #world-editor .we-mode-tag { font-size: calc(11px * var(--we-fs)); color: var(--we-text-dim); }
@@ -7471,7 +7542,7 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
   aspect-ratio: 4 / 3;
   border-radius: 10px; overflow: hidden;
   border: 1px solid var(--we-line);
-  background: #0d0f12;
+  background: var(--we-sunk);
 }
 #world-editor .we-plate img { width: 100%; height: 100%; object-fit: cover; display: block; }
 #world-editor .we-plate-remove {
@@ -7513,7 +7584,7 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
 #world-editor .we-levels-save { display: flex; gap: 8px; margin-bottom: 12px; }
 #world-editor .we-levels-save input {
   flex: 1 1 auto; min-width: 0;
-  background: #0d0f12; border: 1px solid var(--we-line);
+  background: var(--we-sunk); border: 1px solid var(--we-line);
   border-radius: 9px; color: var(--we-text);
   font: inherit; font-size: calc(13px * var(--we-fs)); padding: 9px 11px;
 }
@@ -7552,9 +7623,9 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
   border-bottom: 1px solid var(--we-line);
 }
 #world-editor .we-level-art-empty {
+  background-color: var(--we-sunk);
   background-image:
-    linear-gradient(135deg, rgba(122, 162, 255, 0.1), transparent 60%),
-    repeating-linear-gradient(45deg, rgba(255,255,255,0.02) 0 6px, transparent 6px 12px);
+    repeating-linear-gradient(45deg, rgba(16, 16, 18, 0.045) 0 6px, transparent 6px 12px);
 }
 #world-editor .we-level-body { padding: 11px 12px 11px; display: flex; flex-direction: column; gap: 5px; }
 #world-editor .we-level-card-top { display: flex; align-items: baseline; gap: 7px; }
@@ -7583,7 +7654,7 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
 #we-sys-src.hidden { display: none; }
 #world-editor .we-worlds-save { display: flex; gap: 8px; margin-bottom: 10px; }
 #world-editor .we-worlds-save input {
-  flex: 1 1 auto; min-width: 0; background: #0d0f12;
+  flex: 1 1 auto; min-width: 0; background: var(--we-sunk);
   border: 1px solid var(--we-line); border-radius: 9px; color: var(--we-text);
   font: inherit; font-size: calc(13px * var(--we-fs)); padding: 9px 11px;
 }
@@ -7635,16 +7706,16 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
   min-height: 0;
   margin: 0 0 7px;
   padding: 10px 12px;
-  background: var(--we-panel, #121418);
-  border: 1px solid var(--we-line, rgba(255, 255, 255, 0.07));
+  background: var(--we-sunk, #fafafa);
+  border: 1px solid var(--we-line, rgba(16, 16, 18, 0.11));
   border-radius: 11px;
   text-align: left;
   text-shadow: none;
 }
 .we-sys-btn:last-child { margin-bottom: 0; }
 .we-sys-btn:hover {
-  background: #171a20;
-  border-color: var(--we-line-strong, rgba(255, 255, 255, 0.13));
+  background: #efeff1;
+  border-color: var(--we-line-strong, rgba(16, 16, 18, 0.24));
 }
 #world-editor .we-sys-btn .rail-ico {
   flex: 0 0 auto; width: 20px;
@@ -7675,14 +7746,17 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
   padding: 8px 14px; border-radius: 9px;
   transition: background 0.15s, border-color 0.15s, transform 0.12s;
 }
-#world-editor .we-btn:hover { background: #1e222a; }
+#world-editor .we-btn:hover { background: #e9e9eb; }
 #world-editor .we-btn:active { transform: translateY(1px); }
+/* Apply Live is the red one; Save & Restart is heavier but quieter, because
+   the loud colour should mark the reversible action, not the one that tears
+   the running game down. */
 #world-editor .we-btn-primary {
-  background: var(--we-accent); border-color: transparent; color: #08101f;
+  background: var(--we-red); border-color: transparent; color: #ffffff;
 }
-#world-editor .we-btn-primary:hover { background: #93b3ff; }
-#world-editor .we-btn-accent { background: #ffce6a; border-color: transparent; color: #241a05; }
-#world-editor .we-btn-accent:hover { background: #ffd982; }
+#world-editor .we-btn-primary:hover { background: #c9291a; }
+#world-editor .we-btn-accent { background: #101012; border-color: transparent; color: #ffffff; }
+#world-editor .we-btn-accent:hover { background: #2a2a2e; }
 #world-editor .we-btn-ghost { background: transparent; border-color: var(--we-line); color: var(--we-text-mid); }
 #world-editor .we-btn-ghost:hover { color: var(--we-text); border-color: var(--we-line-strong); }
 #world-editor .we-foot {
@@ -7690,28 +7764,28 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
   display: flex; align-items: center; gap: 9px;
   padding: 12px 16px;
   border-top: 1px solid var(--we-line);
-  background: rgba(0, 0, 0, 0.3);
+  background: #ffffff;
 }
 #world-editor .we-foot-main { margin-left: auto; display: flex; gap: 8px; }
 #world-editor .we-toast {
   position: absolute; left: 50%; bottom: 70px;
   transform: translateX(-50%) translateY(8px);
   padding: 8px 14px; border-radius: 999px;
-  background: rgba(0, 0, 0, 0.86); border: 1px solid var(--we-line-strong);
-  font-size: calc(12px * var(--we-fs)); color: var(--we-text);
+  background: #101012; border: 1px solid #101012;
+  font-size: calc(12px * var(--we-fs)); color: #ffffff;
   opacity: 0; pointer-events: none;
   transition: opacity 0.2s, transform 0.2s;
 }
 #world-editor .we-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
-#world-editor .we-toast.warn { border-color: rgba(255, 143, 143, 0.5); color: #ff9f9f; }
+#world-editor .we-toast.warn { background: var(--we-red); border-color: var(--we-red); color: #ffffff; }
 
 /* ── Warnings + advanced disclosure ────────────────────────────────────── */
 #world-editor .we-warn {
   margin-top: 9px; padding: 8px 10px;
   border-radius: 8px;
-  background: rgba(255, 143, 143, 0.09);
-  border: 1px solid rgba(255, 143, 143, 0.24);
-  font-size: calc(11.5px * var(--we-fs)); line-height: 1.5; color: #ffb0b0;
+  background: var(--we-red-wash);
+  border: 1px solid rgba(224, 48, 28, 0.28);
+  font-size: calc(11.5px * var(--we-fs)); line-height: 1.5; color: var(--we-red-ink);
 }
 #world-editor .we-warn.hidden { display: none; }
 #world-editor .we-more {
@@ -7730,14 +7804,16 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
 #world-editor .we-more:hover { color: var(--we-text); border-color: var(--layer-accent); }
 #world-editor .we-compiled {
   margin-top: 6px; padding: 10px 11px;
-  border-radius: 9px; background: #0d0f12; border: 1px solid var(--we-line);
+  border-radius: 9px;   background: var(--we-sunk); border: 1px solid var(--we-line);
   font-family: var(--we-mono); font-size: calc(11px * var(--we-fs)); line-height: 1.6;
   color: var(--we-text-mid);
   white-space: pre-wrap; max-height: 220px; overflow-y: auto;
 }
 #world-editor .we-cast-reset { margin: 4px 0 14px; }
 
-#btn-editor.active { color: var(--we-accent, #7aa2ff); }
+/* The rail sits on the dark game, so the editor's red is lifted a couple of
+   stops to survive there — same signal, readable background. */
+#btn-editor.active { color: #ff5a44; }
 
 @media (max-width: 760px) {
   #world-editor { --we-width: 100vw; border-right: 0; }
@@ -7760,11 +7836,16 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
 #we-modal {
   position: fixed; inset: 0; z-index: 96;
   display: flex; align-items: center; justify-content: center;
-  background: rgba(6, 5, 4, 0.76);
+  background: rgba(16, 16, 18, 0.55);
   backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);
   opacity: 0; pointer-events: none;
   transition: opacity 0.18s ease;
   font-family: 'Inter', system-ui, sans-serif;
+  --wm-line: rgba(16, 16, 18, 0.11);
+  --wm-ink: #101012;
+  --wm-ink-mid: rgba(16, 16, 18, 0.62);
+  --wm-ink-dim: rgba(16, 16, 18, 0.40);
+  --wm-red: #e0301c;
 }
 #we-modal.open { opacity: 1; pointer-events: auto; }
 #we-modal.hidden { display: none; }
@@ -7772,10 +7853,10 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
   width: 96vw; height: 94vh;
   max-width: 2400px;
   display: flex; flex-direction: column;
-  background: linear-gradient(180deg, rgba(20, 16, 12, 0.99), rgba(12, 10, 9, 0.99));
-  border: 1px solid rgba(255, 210, 122, 0.3);
+  background: #ffffff;
+  border: 1px solid var(--wm-line);
   border-radius: 12px;
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.7);
+  box-shadow: 0 24px 80px -20px rgba(16, 16, 18, 0.45);
   transform: scale(0.985); transition: transform 0.18s ease;
   overflow: hidden;
 }
@@ -7785,17 +7866,17 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
 #we-modal .wem-head {
   display: flex; align-items: flex-start; justify-content: space-between; gap: 14px;
   padding: 15px 18px 13px;
-  border-bottom: 1px solid rgba(255, 210, 122, 0.18);
+  border-bottom: 1px solid var(--wm-line);
   flex: 0 0 auto;
 }
 #we-modal .wem-head-left { min-width: 0; }
 #we-modal .wem-title-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 #we-modal .wem-title {
-  font-size: calc(17px * var(--we-fs)); font-weight: 600; color: #ffe6b0; letter-spacing: 0.02em;
+  font-size: calc(17px * var(--we-fs)); font-weight: 600; color: var(--wm-ink); letter-spacing: 0.02em;
 }
 #we-modal .wem-key {
   font-family: 'Share Tech Mono', monospace; font-size: calc(12.5px * var(--we-fs));
-  color: rgba(232, 224, 200, 0.4);
+  color: var(--wm-ink-dim);
 }
 /* The live/restart chip styles live under #world-editor; the modal is a
    sibling of that panel, so it needs its own copy. */
@@ -7803,73 +7884,73 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
   font-size: calc(9.5px * var(--we-fs)); letter-spacing: 0.1em; text-transform: uppercase;
   padding: 3px 7px; border-radius: 4px; white-space: nowrap;
 }
-#we-modal .we-chip-live { background: rgba(134, 200, 255, 0.16); color: #86c8ff; }
-#we-modal .we-chip-restart { background: rgba(255, 210, 122, 0.16); color: #ffd27a; }
+#we-modal .we-chip-live { background: rgba(16, 16, 18, 0.07); color: var(--wm-ink-mid); }
+#we-modal .we-chip-restart { background: rgba(224, 48, 28, 0.09); color: #c22916; }
 #we-modal .wem-desc {
-  font-size: calc(14px * var(--we-fs)); line-height: 1.55; color: rgba(232, 224, 200, 0.62);
+  font-size: calc(14px * var(--we-fs)); line-height: 1.55; color: var(--wm-ink-mid);
   margin-top: 7px; max-width: 92ch;
 }
 #we-modal .wem-close {
-  background: none; border: none; color: rgba(232, 224, 200, 0.5);
+  background: none; border: none; color: var(--wm-ink-dim);
   cursor: pointer; font-size: calc(22px * var(--we-fs)); line-height: 1; padding: 2px 6px; flex: 0 0 auto;
 }
-#we-modal .wem-close:hover { color: #ff8f8f; }
+#we-modal .wem-close:hover { color: var(--wm-red); }
 
 /* Toolbar: the dev-tool affordances */
 #we-modal .wem-bar {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   padding: 9px 18px;
-  border-bottom: 1px solid rgba(232, 224, 200, 0.1);
-  background: rgba(0, 0, 0, 0.24);
+  border-bottom: 1px solid var(--wm-line);
+  background: #fafafa;
   flex: 0 0 auto;
 }
 #we-modal .wem-bar-sep { flex: 1 1 auto; }
 #we-modal .wem-btn {
-  appearance: none; border: 1px solid rgba(232, 224, 200, 0.2);
-  background: rgba(255, 255, 255, 0.03); color: #e8e0c8;
+  appearance: none; border: 1px solid var(--wm-line);
+  background: #ffffff; color: var(--wm-ink-mid);
   font: inherit; font-size: calc(12.5px * var(--we-fs)); letter-spacing: 0.08em; text-transform: uppercase;
   padding: 7px 12px; border-radius: 7px; cursor: pointer; white-space: nowrap;
   transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
-#we-modal .wem-btn:hover { background: rgba(255, 255, 255, 0.08); }
-#we-modal .wem-btn.active { color: #ffd27a; border-color: rgba(255, 210, 122, 0.5); background: rgba(255, 210, 122, 0.1); }
-#we-modal .wem-btn-primary { border-color: rgba(134, 200, 255, 0.55); color: #86c8ff; background: rgba(134, 200, 255, 0.12); }
-#we-modal .wem-btn-primary:hover { background: rgba(134, 200, 255, 0.24); }
-#we-modal .wem-btn-danger { border-color: rgba(255, 120, 90, 0.4); color: #ffab96; }
-#we-modal .wem-btn-danger:hover { background: rgba(255, 90, 60, 0.14); }
+#we-modal .wem-btn:hover { background: #f0f0f2; color: var(--wm-ink); }
+#we-modal .wem-btn.active { color: #ffffff; border-color: var(--wm-ink); background: var(--wm-ink); }
+#we-modal .wem-btn-primary { border-color: var(--wm-red); color: #ffffff; background: var(--wm-red); }
+#we-modal .wem-btn-primary:hover { background: #c9291a; }
+#we-modal .wem-btn-danger { border-color: rgba(224, 48, 28, 0.4); color: #c22916; background: #ffffff; }
+#we-modal .wem-btn-danger:hover { background: rgba(224, 48, 28, 0.09); }
 #we-modal .wem-btn:disabled { opacity: 0.38; cursor: default; }
 #we-modal .wem-fontstep { display: flex; align-items: center; gap: 0; }
 #we-modal .wem-fontstep .wem-btn:first-child { border-radius: 7px 0 0 7px; }
 #we-modal .wem-fontstep .wem-btn:last-child { border-radius: 0 7px 7px 0; margin-left: -1px; }
 #we-modal .wem-counts {
   font-family: 'Share Tech Mono', monospace; font-size: calc(12.5px * var(--we-fs));
-  color: rgba(232, 224, 200, 0.45); white-space: nowrap;
+  color: var(--wm-ink-dim); white-space: nowrap;
 }
 
 /* Variable chips — click to insert a {placeholder} at the cursor */
 #we-modal .wem-vars {
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
-  padding: 9px 18px; border-bottom: 1px solid rgba(232, 224, 200, 0.08);
+  padding: 9px 18px; border-bottom: 1px solid var(--wm-line);
   flex: 0 0 auto;
 }
 #we-modal .wem-vars.hidden { display: none; }
 #we-modal .wem-vars-label {
   font-size: calc(10.5px * var(--we-fs)); letter-spacing: 0.12em; text-transform: uppercase;
-  color: rgba(232, 224, 200, 0.36);
+  color: var(--wm-ink-dim);
 }
 #we-modal .wem-var {
-  appearance: none; border: 1px solid rgba(134, 200, 255, 0.32);
-  background: rgba(134, 200, 255, 0.08); color: #9ed3ff;
+  appearance: none; border: 1px solid var(--wm-line);
+  background: #fafafa; color: var(--wm-ink);
   font-family: 'Share Tech Mono', monospace; font-size: calc(13px * var(--we-fs));
   padding: 3px 8px; border-radius: 5px; cursor: pointer;
 }
-#we-modal .wem-var:hover { background: rgba(134, 200, 255, 0.22); }
+#we-modal .wem-var:hover { background: rgba(224, 48, 28, 0.09); border-color: rgba(224, 48, 28, 0.4); color: #c22916; }
 
 /* The editor surface: line-number gutter + textarea, scrolling as one */
 #we-modal .wem-editor {
   flex: 1 1 auto; min-height: 0;
   display: flex; align-items: stretch;
-  background: rgba(0, 0, 0, 0.42);
+  background: #ffffff;
   position: relative;
 }
 #we-modal .wem-gutter {
@@ -7881,30 +7962,30 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
   padding: 16px 10px 16px 0;
   text-align: right;
   font-family: 'Share Tech Mono', monospace;
-  color: rgba(232, 224, 200, 0.26);
-  background: rgba(0, 0, 0, 0.3);
-  border-right: 1px solid rgba(232, 224, 200, 0.08);
+  color: rgba(16, 16, 18, 0.30);
+  background: #fafafa;
+  border-right: 1px solid var(--wm-line);
   user-select: none; white-space: pre;
 }
 #we-modal .wem-gutter.hidden { display: none; }
 #we-modal .wem-text {
   flex: 1 1 auto; min-width: 0;
   background: none; border: none; outline: none; resize: none;
-  color: #f4ecda;
+  color: var(--wm-ink);
   font-family: 'Share Tech Mono', ui-monospace, monospace;
   padding: 16px 20px 16px 14px;
   tab-size: 2;
   white-space: pre-wrap; overflow-wrap: break-word;
 }
 #we-modal .wem-text.nowrap { white-space: pre; overflow-wrap: normal; overflow-x: auto; }
-#we-modal .wem-text::selection { background: rgba(255, 210, 122, 0.3); }
-#we-modal .wem-editor.with-diff .wem-text { border-right: 1px solid rgba(232, 224, 200, 0.1); }
+#we-modal .wem-text::selection { background: rgba(224, 48, 28, 0.20); }
+#we-modal .wem-editor.with-diff .wem-text { border-right: 1px solid var(--wm-line); }
 
 /* Diff against the factory default, side by side with the editor */
 #we-modal .wem-diff {
   flex: 0 0 42%; min-width: 0; overflow: auto;
   padding: 14px 16px;
-  background: rgba(0, 0, 0, 0.28);
+  background: #fafafa;
   font-family: 'Share Tech Mono', monospace;
   font-size: calc(13.5px * var(--we-fs)); line-height: 1.6;
   white-space: pre-wrap; overflow-wrap: break-word;
@@ -7913,29 +7994,31 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
 #we-modal .wem-diff-head {
   font-family: 'Inter', system-ui, sans-serif;
   font-size: calc(10.5px * var(--we-fs)); letter-spacing: 0.12em; text-transform: uppercase;
-  color: rgba(232, 224, 200, 0.4); margin-bottom: 9px;
+  color: var(--wm-ink-dim); margin-bottom: 9px;
 }
+/* Added is ink on paper (this is what the prompt says now); removed is the red
+   one, struck through. A diff needs exactly two states, not two hues. */
 #we-modal .wem-dl { display: block; padding: 1px 4px; border-radius: 3px; }
-#we-modal .wem-dl-add { background: rgba(120, 220, 150, 0.14); color: #a9e8bf; }
-#we-modal .wem-dl-del { background: rgba(255, 110, 90, 0.14); color: #ffb0a0; text-decoration: line-through; }
-#we-modal .wem-dl-same { color: rgba(232, 224, 200, 0.4); }
+#we-modal .wem-dl-add { background: rgba(16, 16, 18, 0.07); color: var(--wm-ink); }
+#we-modal .wem-dl-del { background: rgba(224, 48, 28, 0.10); color: #c22916; text-decoration: line-through; }
+#we-modal .wem-dl-same { color: var(--wm-ink-dim); }
 
 /* Footer: warnings + commit actions */
 #we-modal .wem-foot {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
   padding: 12px 18px;
-  border-top: 1px solid rgba(255, 210, 122, 0.18);
-  background: rgba(0, 0, 0, 0.3);
+  border-top: 1px solid var(--wm-line);
+  background: #fafafa;
   flex: 0 0 auto;
 }
 #we-modal .wem-warn {
   flex: 1 1 260px; min-width: 0;
-  font-size: calc(13px * var(--we-fs)); line-height: 1.45; color: #ffb4a0;
+  font-size: calc(13px * var(--we-fs)); line-height: 1.45; color: #c22916;
 }
 #we-modal .wem-warn.hidden { display: none; }
 #we-modal .wem-keys {
   font-family: 'Share Tech Mono', monospace; font-size: calc(12px * var(--we-fs));
-  color: rgba(232, 224, 200, 0.32); white-space: nowrap;
+  color: var(--wm-ink-dim); white-space: nowrap;
 }
 #we-modal .wem-foot-actions { display: flex; gap: 8px; margin-left: auto; }
 
@@ -7952,7 +8035,7 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
 
 /* The EDIT rail button reads "armed" while the editor is open. */
 #btn-editor.active .rail-ico,
-#btn-editor.active .rail-lbl { color: #ffd27a; }
+#btn-editor.active .rail-lbl { color: #ff5a44; }
 
 @media (max-width: 560px) {
   #world-editor { width: 100vw; border-right: none; }
