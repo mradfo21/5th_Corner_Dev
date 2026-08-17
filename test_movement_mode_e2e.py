@@ -529,6 +529,22 @@ class TestMovementMode(unittest.TestCase):
         finally:
             page.close()
 
+    def _open_controls(self, page):
+        """CONTROLS is inside the editor's Controls dot now, not stapled under
+        the canvas: open the editor, double-tap the game dot to bloom the ring,
+        then tap Controls. The strip itself is the same wired element, moved."""
+        page.keyboard.press("`")
+        page.wait_for_selector("#we-graph", state="visible", timeout=8000)
+        page.wait_for_function(
+            "() => !!(window.EditorGraph && window.EditorGraph.dotAt('game'))", timeout=8000)
+        pt = page.evaluate("() => window.EditorGraph.dotAt('game')")
+        page.mouse.dblclick(pt["x"], pt["y"])
+        page.wait_for_timeout(900)
+        pt = page.evaluate("() => window.EditorGraph.dotAt('dot:controls')")
+        page.mouse.click(pt["x"], pt["y"])
+        page.wait_for_selector("#eg-sheet.is-open", timeout=4000)
+        page.wait_for_selector("#we-input-sens", timeout=4000)
+
     def test_editor_exposes_look_sensitivity(self):
         """Sensitivity is tunable from the editor CONTROLS row, defaults to 3x,
         persists, clamps, and is inert (disabled) in DOOM where there's no mouse
@@ -537,8 +553,7 @@ class TestMovementMode(unittest.TestCase):
         try:
             self._boot_live(page, model="happy-oyster")
             self.assertEqual(page.evaluate("() => window.__InputBindings.sensitivity()"), 8)
-            page.keyboard.press("`")
-            page.wait_for_selector("#we-input-sens", timeout=8000)
+            self._open_controls(page)
             self.assertEqual(page.evaluate("() => document.getElementById('we-input-sens').value"), "8")
             self.assertFalse(page.evaluate("() => document.getElementById('we-input-sens').disabled"),
                              "slider should be usable in FPS mode")
@@ -837,9 +852,7 @@ class TestMovementMode(unittest.TestCase):
         page = self._new_realtime_page()
         try:
             self._boot_live(page, model="happy-oyster")
-            # ` opens the editor (the EDIT rail button is behind the collapsed menu).
-            page.keyboard.press("`")
-            page.wait_for_selector("#we-input-profile button", timeout=8000)
+            self._open_controls(page)
             labels = page.evaluate(
                 """() => Array.from(document.querySelectorAll('#we-input-profile button'))
                        .map(b => b.textContent.trim())"""

@@ -6621,15 +6621,15 @@ body.we-resizing { cursor: col-resize; user-select: none; }
 #world-editor .we-fontstep .we-tool:last-child { border-radius: 0 7px 7px 0; margin-left: -1px; }
 
 /* ═══════════════════════════════════════════════════════════════════════
-   THE ORGANISM — the editor as a recursive graph (editor_graph.js,
-   EDITOR_GRAPH_PLAN.md). One circle is THE GAME; double-tapping a cell
-   frames it as the whole view and its children appear inside it. The
-   parent's membrane stays visible as a halo at the periphery, which is both
-   the depth cue and the way back up.
+   THE ORGANISM — the editor as four dots and a nucleus (editor_graph.js,
+   EDITOR_SIMPLIFICATION_PLAN.md).
 
-   Everything is drawn in ONE svg whose viewBox is animated, so a dive scales
-   the actual diagram instead of swapping screens. Sizes are in world units
-   (see drawNode) and only colour/opacity live here.
+   One red dot is the game. Double-tap it and four dots bloom around it, each
+   sized to its own word and each drifting on its own slow figure. Tap one and
+   its window comes up. Tapping the paper collapses it again.
+
+   Sizes are set in world units in the JS (a dot is a word plus padding); only
+   colour, weight and motion live here.
    ═══════════════════════════════════════════════════════════════════════ */
 #world-editor .we-graph {
   position: relative;
@@ -6637,17 +6637,21 @@ body.we-resizing { cursor: col-resize; user-select: none; }
   min-height: 0;
   overflow: hidden;
   display: none;
-  /* Paper under a lamp: the sheet is white, with the faintest cool grey
-     settling at the edges so the circle in the middle has somewhere to sit. */
+  /* Paper under a lamp: white in the middle, the faintest cool grey settling
+     at the edges so the dots have somewhere to sit. */
   background:
-    radial-gradient(120% 82% at 50% 40%, #ffffff, transparent 62%),
+    radial-gradient(120% 82% at 50% 44%, #ffffff, transparent 64%),
     #f4f4f6;
 }
-/* The graph replaces the flat column; the list keeps working behind the
-   header toggle, and both stay in the DOM so neither can drift. */
+/* The dots replace the flat column; the list keeps working behind the header
+   toggle, and both stay in the DOM so neither can drift from the other. */
 body.we-graph-mode #world-editor .we-graph { display: block; }
 body.we-graph-mode #world-editor .we-scroll,
 body.we-graph-mode #world-editor .we-tabs { display: none; }
+/* How you drive lives in the Controls window now, not stapled under the
+   canvas. It's a real wired element, so it is moved rather than duplicated —
+   hidden here, shown wherever it has been loaned to. */
+body.we-graph-mode #world-editor > .we-input-opts { display: none; }
 
 #world-editor .eg-canvas {
   display: block;
@@ -6660,219 +6664,79 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
   -webkit-user-select: none;
   -webkit-tap-highlight-color: transparent;
 }
-/* Hit-testing is done in world coordinates (see hit()), so nothing inside
-   competes for the pointer. */
+/* Hit-testing is done in world coordinates against live positions (see
+   hitAt), so nothing inside competes for the pointer. */
 #world-editor .eg-canvas * { pointer-events: none; }
 
-/* ── The mathematical furniture: a halftone lattice inside the focused cell,
-   dots on a 45° grid whose radius decays with distance from the nucleus. It
-   replaced a set of rotating spokes, which on white read as a clock face.
-   Printed rather than drawn: it gives the cell an interior without putting a
-   single hard line anywhere near the labels. Built in drawField(). ─────── */
-#world-editor .eg-field { pointer-events: none; }
-#world-editor .eg-guide {
-  fill: none;
-  stroke: rgba(16, 16, 18, 0.07);
-  stroke-width: 1;
-  vector-effect: non-scaling-stroke;
-}
-#world-editor .eg-dot { fill: var(--we-red); }
-
-/* ── Tethers: a nucleus reaching out to each child, so this reads as a graph
-   (nodes and edges) and not just nested bubbles. ──────────────────────── */
+/* ── Tethers: the nucleus reaching out to each dot, which is what makes this
+   a graph rather than a menu arranged in a circle. ─────────────────────── */
 #world-editor .eg-tether {
-  stroke: rgba(16, 16, 18, 0.13);
+  stroke: #101012;
+  stroke-opacity: 0.14;
   stroke-width: 1;
   vector-effect: non-scaling-stroke;
   opacity: 0;
-  transition: opacity 0.4s ease;
+  transition: opacity 0.45s ease;
 }
 #world-editor .eg-tether.is-live { opacity: 1; }
 
-/* ── Cells ─────────────────────────────────────────────────────────────── */
-#world-editor .eg-node {
-  --eg-accent: var(--we-red);
-  transition: opacity 0.42s ease;
-}
-/* A container is an enclosure: white, so you read it as space you can be
-   inside, held by one hairline of ink. */
-#world-editor .eg-cell {
+/* ── Dots ──────────────────────────────────────────────────────────────── */
+#world-editor .eg-node .eg-cell {
   fill: #ffffff;
   stroke: #101012;
-  stroke-opacity: 0.16;
+  stroke-opacity: 0.2;
   stroke-width: 1.25;
   vector-effect: non-scaling-stroke;
-  transition: stroke-opacity 0.3s ease, fill 0.3s ease, stroke 0.3s ease;
-}
-#world-editor .eg-cell-in {
-  fill: none;
-  stroke: #101012;
-  stroke-opacity: 0.09;
-  stroke-width: 1;
-  vector-effect: non-scaling-stroke;
-}
-#world-editor .eg-nucleus { fill: var(--we-red); fill-opacity: 0.9; }
-/* A vertex has no interior, so it is a solid chip you pick up rather than a
-   room you enter — the one place tone does the work instead of line. */
-#world-editor .eg-node:not(.eg-container) .eg-cell {
-  fill: #f0f0f2;
-  stroke-opacity: 0.10;
-}
-
-#world-editor .eg-glyph {
-  fill: #101012;
-  fill-opacity: 0.5;
-  text-anchor: middle;
-  dominant-baseline: middle;
-  font-family: var(--we-ui);
-  transition: fill 0.25s ease, fill-opacity 0.25s ease;
+  transition: fill 0.3s ease, stroke 0.3s ease, stroke-opacity 0.3s ease;
 }
 #world-editor .eg-name {
   fill: var(--we-text);
   text-anchor: middle;
-  dominant-baseline: middle;
+  dominant-baseline: central;
   font-family: var(--we-ui);
   font-weight: 600;
-  letter-spacing: 0.005em;
+  letter-spacing: 0.01em;
+  transition: fill 0.3s ease;
 }
-#world-editor .eg-meta {
-  fill: var(--we-text-dim);
-  text-anchor: middle;
-  dominant-baseline: middle;
-  font-family: var(--we-ui);
-  letter-spacing: 0.13em;
-  text-transform: uppercase;
-}
-/* A name is only worth drawing on a cell you can act on, so a child of the
-   focus is the ONLY state that shows one. Hidden by default rather than hidden
-   per-state, which also means a rebuild can't fade a label out from full
-   opacity at focus scale — the old rebuild flashed "SYSTEM" across the whole
-   panel for a third of a second.
-   Names also ride out the zoom hidden and arrive at the end (see setZooming),
-   because they're sized in world units and would otherwise scale with it. */
-#world-editor .eg-label { opacity: 0; transition: opacity 0.32s ease; }
-#world-editor .eg-node.is-child .eg-label { opacity: 1; }
-#world-editor .eg-node.is-child.is-tiny .eg-label,
-#world-editor .we-graph.is-zooming .eg-label { opacity: 0; }
-/* The hint reads the state you're arriving at, so it waits for the motion too. */
+/* Names are sized in world units, so during the open they would scale with the
+   diagram. They sit out the motion and arrive at the end. */
+#world-editor .we-graph.is-zooming .eg-name,
 #world-editor .we-graph.is-zooming .eg-hint { opacity: 0; }
+#world-editor .eg-name,
+#world-editor .eg-hint { transition: opacity 0.3s ease; }
 
-/* ── Depth states, relative to where you're standing ───────────────────── */
-/* The cell you're inside: its own name is in the HUD, so it doesn't shout it
-   at you at screen size. */
-/* The cell you're standing in has no fill: its interior is the paper, and the
-   halftone lattice is drawn underneath. A white disc here would simply bury
-   the field it is supposed to contain. */
-#world-editor .eg-node.is-focus > .eg-cell { fill: none; stroke-opacity: 0.22; }
-#world-editor .eg-node.is-focus > .eg-label { opacity: 0; }
-#world-editor .eg-node.is-child { opacity: 1; }
-/* Grandchildren: organelles. Visible detail you can't read yet — which is
-   exactly what tells you there's something in there. */
-#world-editor .eg-node.is-deep { opacity: 0.45; }
-/* Ancestors and siblings crowding the periphery: the halo you tap to surface. */
-#world-editor .eg-node.is-outside { opacity: 0.14; }
-/* Whatever is inside a child is texture, not content, and on white it lands
-   right behind that child's name. Drop the ring to a whisper and keep only
-   enough tone to say "there is something in here". */
-#world-editor .eg-node.is-deep > .eg-cell { fill: #f7f7f8; stroke-opacity: 0.07; }
-#world-editor .eg-node.is-deep > .eg-cell-in,
-#world-editor .eg-node.is-deep > .eg-nucleus { display: none; }
-/* A nucleus is a red dot, and the parent's sits wherever its centre happens to
-   fall — which, when you are inside a cell near the parent's rim, is a stray
-   red mark halfway across the view. Only the cell you are in and the ones you
-   can act on get one. */
-#world-editor .eg-node.is-parent > .eg-nucleus,
-#world-editor .eg-node.is-outside > .eg-nucleus { display: none; }
-/* A switch that happens to be ON two levels down is still just texture. Left
-   filled, it lands as an unexplained red blob inside a layer you haven't
-   opened — the state only means something once you can read the label. */
-#world-editor .eg-node.is-deep.is-on > .eg-cell,
-#world-editor .eg-node.is-outside.is-on > .eg-cell {
-  fill: #f0f0f2;
-  stroke: #101012;
-  stroke-opacity: 0.07;
-}
-/* The cell you're inside. Its membrane is usually well outside the framed view
-   (a parent is three-odd times the radius of its children), so what actually
-   grounds the periphery is .eg-rim below; this just keeps it the brightest
-   thing out there when it does come into frame. */
-/* The parent's own arc is ink: the red at the periphery is .eg-rim below, and
-   two different reds out there compete for the same meaning. */
-#world-editor .eg-node.is-parent { opacity: 0.6; }
-#world-editor .eg-node.is-parent > .eg-cell {
-  stroke: #101012;
-  stroke-opacity: 0.3;
-  stroke-width: 2;
-}
-
-/* The wall of the cell you're standing in, drawn where you can actually see
-   it: a rim light around the whole view in that cell's colour. Without it the
-   framed cell floats in ungrounded space and "tap the edge to come back up"
-   is a claim about nothing. Fades away at the root, which has no outside. */
-#world-editor .eg-rim {
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 0.5s ease;
-  /* On paper this is ink pooling at the trim, not a neon edge: a hairline of
-     red and a wide, very soft wash inside it. */
-  box-shadow:
-    inset 0 0 0 1px rgba(224, 48, 28, 0.5),
-    inset 0 0 90px -50px rgba(224, 48, 28, 0.9);
-}
-#world-editor .eg-rim.is-on { opacity: 1; }
-
-/* Pointer feedback (desktop): the cell under the cursor lifts a little, and
-   the cursor itself says whether the click goes in, out, or opens a window. */
-#world-editor .eg-node.is-hover > .eg-cell { stroke-opacity: 0.42; }
-#world-editor .eg-node.is-hover .eg-glyph { fill-opacity: 0.9; }
-/* Picked. The one thing on the sheet allowed to be red — everything red on
-   screen at once is either your selection or a warning. */
-#world-editor .eg-node.is-selected > .eg-cell {
-  stroke: var(--we-red);
-  stroke-opacity: 1;
-  stroke-width: 2;
-}
-#world-editor .eg-node.is-selected .eg-glyph { fill: var(--we-red); fill-opacity: 1; }
-#world-editor .eg-node.is-selected .eg-name { fill: var(--we-red-ink); }
-#world-editor .eg-node.is-open > .eg-cell {
-  stroke: var(--we-red);
-  stroke-opacity: 1;
-  stroke-width: 2;
-}
-
-/* A prompt with unsaved text, and one that no longer matches the factory
-   default: the two things you want to see without opening anything. */
-#world-editor .eg-node.is-dirty > .eg-cell {
-  stroke: var(--we-red);
-  stroke-opacity: 0.95;
-  stroke-dasharray: 5 4;
-  animation: eg-breathe 2.6s ease-in-out infinite;
-}
-#world-editor .eg-node.is-modified:not(.is-dirty) > .eg-cell {
-  stroke: #101012;
-  stroke-opacity: 0.42;
-}
-/* Contract layers stop turns resolving if you break them — dashed inner ring. */
-#world-editor .eg-node.is-contract > .eg-cell-in { stroke-dasharray: 3 7; stroke-opacity: 0.18; }
-/* A runtime knob that's currently on: filled, the way a switch is filled. */
-#world-editor .eg-node.is-on > .eg-cell {
+/* The game itself: the one dot on the sheet before you open anything, and the
+   nucleus once you have. Filled, because it is the thing all of this is. */
+#world-editor .eg-node.is-alone .eg-cell,
+#world-editor .eg-node.is-core .eg-cell {
   fill: var(--we-red);
   stroke: var(--we-red);
   stroke-opacity: 1;
 }
-#world-editor .eg-node.is-on .eg-glyph { fill: #ffffff; fill-opacity: 1; }
-#world-editor .eg-node.is-on .eg-name { fill: #ffffff; }
-#world-editor .eg-node.is-on .eg-meta { fill: rgba(255, 255, 255, 0.72); }
-#world-editor .eg-node.is-off > .eg-cell { stroke-dasharray: 2 6; }
-@keyframes eg-breathe {
-  0%, 100% { stroke-opacity: 0.55; }
-  50% { stroke-opacity: 1; }
+#world-editor .eg-node.is-alone .eg-name { fill: #ffffff; }
+/* Once the ring is out the nucleus drops its name: the game holds a dot also
+   called Game (genre, tone, threat), and two of the same word on screen reads
+   as a bug. The HUD says where you are, so the nucleus can just be the dot. */
+#world-editor .eg-node.is-core .eg-name { display: none; }
+#world-editor .eg-node.is-core { opacity: 0.9; }
+
+/* A dot with words in its sheet is steering the game; an empty one isn't.
+   That is the only state a dot needs to carry, and it earns the red. */
+#world-editor .eg-node.is-orbit.is-set .eg-cell {
+  stroke: var(--we-red);
+  stroke-opacity: 0.85;
 }
 
-/* ── HUD: the trail you came down, and what's under your finger ─────────── */
+#world-editor .eg-node.is-hover .eg-cell { stroke-opacity: 0.55; }
+#world-editor .eg-node.is-orbit.is-hover.is-set .eg-cell { stroke-opacity: 1; }
+#world-editor .eg-node.is-selected .eg-cell,
+#world-editor .eg-node.is-open .eg-cell {
+  stroke: var(--we-red);
+  stroke-opacity: 1;
+  stroke-width: 2;
+}
+
+/* ── HUD ───────────────────────────────────────────────────────────────── */
 #world-editor .eg-hud {
   position: absolute;
   top: 0; left: 0; right: 0;
@@ -6881,41 +6745,7 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
   pointer-events: none;
   background: linear-gradient(180deg, #ffffff 32%, rgba(255, 255, 255, 0));
 }
-#world-editor .eg-trail {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 2px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  pointer-events: auto;
-}
-#world-editor .eg-crumb { display: flex; align-items: center; }
-#world-editor .eg-crumb + .eg-crumb::before {
-  content: "\203A";
-  margin: 0 3px;
-  color: var(--we-text-dim);
-  font-size: calc(10px * var(--we-fs));
-}
-#world-editor .eg-crumb button {
-  appearance: none;
-  border: 0;
-  background: none;
-  padding: 2px 3px;
-  font: inherit;
-  font-size: calc(9.5px * var(--we-fs));
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--we-text-dim);
-  cursor: pointer;
-}
-#world-editor .eg-crumb button:hover { color: var(--we-text-mid); }
-#world-editor .eg-crumb.is-here button {
-  color: var(--we-red-ink);
-  cursor: default;
-}
-#world-editor .eg-caption { margin-top: 5px; }
+#world-editor .eg-caption { margin-top: 0; }
 #world-editor .eg-caption-name {
   display: block;
   font-size: calc(19px * var(--we-fs));
@@ -6933,7 +6763,7 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
 }
 #world-editor .eg-hint {
   position: absolute;
-  left: 0; right: 0; bottom: 10px;
+  left: 0; right: 0; bottom: 12px;
   z-index: 2;
   text-align: center;
   pointer-events: none;
@@ -6941,11 +6771,10 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
   letter-spacing: 0.18em;
   text-transform: uppercase;
   color: rgba(16, 16, 18, 0.34);
-  transition: opacity 0.3s;
 }
 #world-editor .we-graph.has-sheet .eg-hint { opacity: 0; }
 
-/* ── The window that animates up at a vertex ────────────────────────────── */
+/* ── The window that animates up at a dot ──────────────────────────────── */
 #world-editor .eg-scrim {
   position: absolute;
   inset: 0;
@@ -6957,13 +6786,12 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
 }
 #world-editor .eg-scrim.is-open { opacity: 1; pointer-events: auto; }
 #world-editor .eg-sheet {
-  --eg-accent: var(--we-red);
   position: absolute;
   left: 0; right: 0; bottom: 0;
   z-index: 4;
   display: flex;
   flex-direction: column;
-  max-height: min(84%, 660px);
+  max-height: min(88%, 700px);
   background: #ffffff;
   border: 1px solid var(--we-line);
   border-bottom: 0;
@@ -6990,29 +6818,17 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
   padding: 18px 14px 12px;
   border-bottom: 1px solid var(--we-line);
 }
-#world-editor .eg-sheet-glyph {
-  flex: 0 0 auto;
-  width: calc(30px * var(--we-fs));
-  height: calc(30px * var(--we-fs));
-  display: grid;
-  place-items: center;
-  border: 1px solid var(--we-red);
-  border-radius: 50%;
-  background: var(--we-red);
-  color: #ffffff;
-  font-size: calc(14px * var(--we-fs));
-}
 #world-editor .eg-sheet-id { min-width: 0; flex: 1 1 auto; }
 #world-editor .eg-sheet-title {
-  font-size: calc(15px * var(--we-fs));
+  font-size: calc(17px * var(--we-fs));
   font-weight: 600;
+  letter-spacing: -0.01em;
   color: var(--we-text);
 }
 #world-editor .eg-sheet-sub {
   margin-top: 2px;
-  font-size: calc(10.5px * var(--we-fs));
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
+  font-size: calc(12px * var(--we-fs));
+  line-height: 1.42;
   color: var(--we-text-dim);
 }
 #world-editor .eg-sheet-close {
@@ -7033,80 +6849,32 @@ body.we-graph-mode #world-editor .we-tabs { display: none; }
   min-height: 0;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
-  padding: 14px 14px calc(18px + env(safe-area-inset-bottom, 0px));
+  padding: 4px 14px calc(18px + env(safe-area-inset-bottom, 0px));
   overscroll-behavior: contain;
 }
-/* The spec sheet mounted here is the real cast form, so it arrives wearing the
-   editor's .we-block card. Inside a window that already names it, the card and
-   its repeated title are one frame too many. */
+
+/* The form mounted here is the real identity form, in minimal dress: the
+   window already names it, so it arrives without a card, a header, a switch or
+   anything to read. */
 #world-editor .eg-spec .we-block {
   margin: 0;
   padding: 0;
   border: 0;
   background: none;
 }
-#world-editor .eg-spec .we-block-head { display: none; }
 #world-editor .eg-spec .we-cast-row:first-of-type { margin-top: 0; }
-#world-editor .eg-note {
-  margin: 0 0 12px;
-  font-size: calc(12.5px * var(--we-fs));
-  line-height: 1.5;
-  color: var(--we-text-mid);
+
+/* The CONTROLS strip, on loan into the Controls window: no longer a quiet
+   footnote under the canvas, so it drops the dimming and stacks. */
+#world-editor .we-input-opts.is-loaned {
+  display: flex;
+  opacity: 1;
+  padding: 14px 0 0;
+  margin-top: 4px;
+  border-top: 1px solid var(--we-line);
 }
-#world-editor .eg-note.is-meta {
-  font-size: calc(10.5px * var(--we-fs));
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--we-text-dim);
-}
-#world-editor .eg-note.is-warn { color: var(--we-red-ink); }
-#world-editor .eg-text {
-  display: block;
-  width: 100%;
-  min-height: 34vh;
-  padding: 11px 12px;
-  background: var(--we-sunk);
-  border: 1px solid var(--we-line);
-  border-radius: 10px;
-  color: var(--we-text);
-  font-family: var(--we-mono);
-  font-size: calc(12.5px * var(--we-fs));
-  line-height: 1.55;
-  resize: vertical;
-}
-#world-editor .eg-text:focus { outline: none; border-color: var(--eg-accent); }
-#world-editor .eg-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-#world-editor .eg-row-foot { margin-top: 7px; justify-content: flex-end; }
-#world-editor .eg-count {
-  font-size: calc(10px * var(--we-fs));
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--we-text-dim);
-}
-#world-editor .eg-acts { margin-top: 13px; }
-#world-editor .eg-art {
-  height: calc(132px * var(--we-fs));
-  margin-bottom: 13px;
-  border: 1px solid var(--we-line);
-  border-radius: 11px;
-  background: var(--we-raise) center/cover no-repeat;
-}
-#world-editor .eg-name-form { display: flex; gap: 8px; flex-wrap: wrap; }
-#world-editor .eg-name-form input {
-  flex: 1 1 180px;
-  min-width: 0;
-  padding: 10px 12px;
-  background: var(--we-sunk);
-  border: 1px solid var(--we-line);
-  border-radius: 9px;
-  color: var(--we-text);
-  font: inherit;
-  font-size: calc(13px * var(--we-fs));
-}
-#world-editor .eg-name-form input:focus { outline: none; border-color: var(--eg-accent); }
 
 @media (prefers-reduced-motion: reduce) {
-  #world-editor .eg-node.is-dirty > .eg-cell { animation: none; }
   #world-editor .eg-sheet { transition: none; }
 }
 

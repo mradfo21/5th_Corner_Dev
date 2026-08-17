@@ -205,6 +205,8 @@
     weFields: document.getElementById("we-fields"),
     weLayerHead: document.getElementById("we-layer-head"),
     weCast: document.getElementById("we-cast"),
+    weInputOpts: document.getElementById("we-input-opts"),
+    weFoot: document.getElementById("we-foot"),
     weWide: document.getElementById("we-wide"),
     weView: document.getElementById("we-view"),
     weFontDown: document.getElementById("we-font-down"),
@@ -4939,8 +4941,26 @@
       return s;
     }
 
-    function makeCastField(blockId, field) {
+    // Writing into a minimal sheet turns that sheet on. The switch existed
+    // because the sheets shipped blank and had to be opt-in; the result was
+    // that you could fill in a whole character and see nothing change. Words in
+    // the fields ARE the opt-in, so the patch carries the switch with it.
+    function saveIdentityField(blockId, field, value, opts) {
+      const patch = { [field.id]: value };
+      const minimal = opts && opts.minimal;
+      const blank = typeof value !== "string" || value.trim() === "";
+      if (minimal && !blank) {
+        const block = identitySchema.find((b) => b.id === blockId);
+        const hasSwitch = block && (block.fields || []).some((f) => f.id === "enabled");
+        const off = !((identity[blockId] || {}).enabled);
+        if (hasSwitch && off) patch.enabled = true;
+      }
+      saveIdentity(blockId, patch);
+    }
+
+    function makeCastField(blockId, field, opts) {
       const value = (identity[blockId] || {})[field.id];
+      const minimal = !!(opts && opts.minimal);
 
       if (field.type === "toggle") {
         const label = document.createElement("label");
@@ -4956,8 +4976,10 @@
         label.appendChild(name);
         const row = castRow([label]);
         // The ⓘ sits outside the <label> so clicking it can't flip the switch.
-        const info = infoBtn(field.label, field.help);
-        if (info) row.appendChild(info);
+        if (!minimal) {
+          const info = infoBtn(field.label, field.help);
+          if (info) row.appendChild(info);
+        }
         row.classList.add("we-cast-togglerow");
         return row;
       }
@@ -4971,12 +4993,19 @@
           b.className = "we-mode" + (o.id === (value || "first_person") ? " active" : "");
           const nm = document.createElement("span");
           nm.className = "we-mode-name"; nm.textContent = o.label;
-          const tg = document.createElement("span");
-          tg.className = "we-mode-tag"; tg.textContent = o.tagline;
-          b.appendChild(nm); b.appendChild(tg);
+          b.appendChild(nm);
+          // The taglines ("Camera rides tight behind your character — Resident
+          // Evil 4…") are how you learn the options. Once you are picking, four
+          // names in a grid is the whole decision.
+          if (!minimal) {
+            const tg = document.createElement("span");
+            tg.className = "we-mode-tag"; tg.textContent = o.tagline;
+            b.appendChild(tg);
+          }
           b.addEventListener("click", () => saveIdentity(blockId, { mode: o.id }));
           grid.appendChild(b);
         });
+        if (minimal) return castRow([castLabel(field.label), grid]);
         return castRow([castLabelWithHelp(field.label, field.help), grid]);
       }
 
@@ -4991,39 +5020,51 @@
       input.addEventListener("blur", () => {
         const current = (identity[blockId] || {})[field.id] || "";
         if (input.value === current) return;
-        saveIdentity(blockId, { [field.id]: input.value });
+        saveIdentityField(blockId, field, input.value, opts);
       });
       if (!isLong) {
         input.addEventListener("keydown", (e) => { if (e.key === "Enter") input.blur(); });
       }
+      if (minimal) return castRow([castLabel(field.label), input]);
       return castRow([castLabelWithHelp(field.label, field.help), input]);
     }
 
-    function makeCastBlock(block) {
+    function makeCastBlock(block, opts) {
+      const minimal = !!(opts && opts.minimal);
       const wrap = document.createElement("div");
-      wrap.className = "we-block";
+      wrap.className = "we-block" + (minimal ? " is-minimal" : "");
       wrap.dataset.block = block.id;
 
-      const top = document.createElement("div");
-      top.className = "we-block-head";
-      const label = document.createElement("span");
-      label.className = "we-block-label";
-      label.textContent = block.label;
-      top.appendChild(label);
+      if (!minimal) {
+        const top = document.createElement("div");
+        top.className = "we-block-head";
+        const label = document.createElement("span");
+        label.className = "we-block-label";
+        label.textContent = block.label;
+        top.appendChild(label);
 
-      const about = infoBtn(block.label, block.description);
-      if (about) top.appendChild(about);
-      wrap.appendChild(top);
-
-      const essential = block.fields.filter((f) => f.tier !== "advanced");
-      const advanced = block.fields.filter((f) => f.tier === "advanced");
-      essential.forEach((f) => wrap.appendChild(makeCastField(block.id, f)));
-      if (advanced.length) {
-        wrap.appendChild(makeAdvancedToggle(advanced.length, "field"));
-        if (showAdvanced) advanced.forEach((f) => wrap.appendChild(makeCastField(block.id, f)));
+        const about = infoBtn(block.label, block.description);
+        if (about) top.appendChild(about);
+        wrap.appendChild(top);
       }
 
-      if (block.supports_images) wrap.appendChild(makePlateZone(block));
+      // Minimal shows the essential fields only, and not the switch: the window
+      // is already named by the dot you tapped, and typing turns the sheet on.
+      const shown = block.fields.filter((f) => {
+        if (f.tier === "advanced") return false;
+        if (minimal && f.type === "toggle" && f.id === "enabled") return false;
+        return true;
+      });
+      shown.forEach((f) => wrap.appendChild(makeCastField(block.id, f, opts)));
+      if (!minimal) {
+        const advanced = block.fields.filter((f) => f.tier === "advanced");
+        if (advanced.length) {
+          wrap.appendChild(makeAdvancedToggle(advanced.length, "field"));
+          if (showAdvanced) advanced.forEach((f) => wrap.appendChild(makeCastField(block.id, f)));
+        }
+      }
+
+      if (block.supports_images) wrap.appendChild(makePlateZone(block, opts));
 
       notesFor(block.id).forEach((note) => {
         const warn = document.createElement("div");
@@ -5034,7 +5075,7 @@
 
       // The exact text this compiles to. Worth being able to check; not worth
       // reading every time you open the panel.
-      const compiled = compiledFor(block.id);
+      const compiled = minimal ? "" : compiledFor(block.id);
       if (compiled) {
         const more = document.createElement("details");
         more.className = "we-more-info we-more-compiled";
@@ -5050,7 +5091,7 @@
       return wrap;
     }
 
-    function makePlateZone(block) {
+    function makePlateZone(block, opts) {
       const slot = block.id === "player_character" ? "character" : "setting";
       const holder = document.createElement("div");
       holder.className = "we-plate-zone";
@@ -5059,8 +5100,10 @@
       head.className = "we-plate-head";
       head.innerHTML = '<span class="we-plate-title">' +
         esc(block.images_label || "Reference") + "</span>";
-      const hint = infoBtn(block.images_label || "Reference", block.images_hint);
-      if (hint) head.appendChild(hint);
+      if (!(opts && opts.minimal)) {
+        const hint = infoBtn(block.images_label || "Reference", block.images_hint);
+        if (hint) head.appendChild(hint);
+      }
       holder.appendChild(head);
 
       const file = document.createElement("input");
@@ -5180,14 +5223,14 @@
     // Character, instead of all three stacked in one "Cast & Camera" scroll.
     // `target` lets the graph mount ONE block into its window — the same live
     // form, saving through the same path, rather than a second implementation.
-    function renderCast(only, target) {
+    function renderCast(only, target, opts) {
       const host = target || el.weCast;
       if (!host) return;
       host.innerHTML = "";
       const wanted = only && only.length
         ? identitySchema.filter((b) => only.indexOf(b.id) !== -1)
         : identitySchema;
-      wanted.forEach((block) => host.appendChild(makeCastBlock(block)));
+      wanted.forEach((block) => host.appendChild(makeCastBlock(block, opts)));
       // "Reset Cast & Camera" clears every block at once, so it belongs to the
       // whole scroll — not to a window showing one sheet.
       if (target) return;
@@ -5437,7 +5480,27 @@
       resetField,
       openPrompt: openPromptModal,
       // Spec sheets — the real form, mounted wherever the graph asks for it.
-      renderSpecInto: (target, blockId) => renderCast([blockId], target),
+      // `minimal` strips it back to the essential fields and their
+      // placeholders: no block header, no ⓘ, no advanced disclosure, no
+      // compiled-output pane, and no "use this sheet" switch (see
+      // makeCastField — a sheet with words in it is a sheet that's in use).
+      renderSpecInto: (target, blockId, opts) => renderCast([blockId], target, opts),
+      // The CONTROLS strip is one wired element, not a template: the graph
+      // borrows it into a window and gives it back, the same way the engine's
+      // runtime buttons are borrowed into the ENGINE layer.
+      mountInputControls(target) {
+        if (!el.weInputOpts || !target) return;
+        target.appendChild(el.weInputOpts);
+        el.weInputOpts.classList.add("is-loaned");
+      },
+      unmountInputControls() {
+        if (!el.weInputOpts || !el.worldEditor) return;
+        if (!el.weInputOpts.classList.contains("is-loaned")) return;
+        el.weInputOpts.classList.remove("is-loaned");
+        // Home is immediately before the footer, where it has always lived.
+        if (el.weFoot) el.worldEditor.insertBefore(el.weInputOpts, el.weFoot);
+        else el.worldEditor.appendChild(el.weInputOpts);
+      },
       // Levels + builds
       saveLevel: saveLevelNamed,
       loadLevel,

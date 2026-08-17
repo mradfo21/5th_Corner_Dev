@@ -703,51 +703,41 @@
     </div>
 
     <!-- ═══════════════════════════════════════════════════════════════════
-         THE ORGANISM — the editor as a recursive graph (see
-         EDITOR_GRAPH_PLAN.md). One circle is THE GAME; double-tapping a
-         circle frames it as the whole screen and reveals its children
-         inside it, as deep as the tree goes. The parent's membrane stays
-         visible as a halo at the periphery — tapping it surfaces back up.
-         At the vertices (prompts, spec sheets, saved levels/builds) a tap
-         animates #eg-sheet up with that object's editable options.
-         Built + driven by static/js/editor_graph.js, which reads and writes
-         through WorldEditor's bridge, so the graph and the flat list below
-         are two renderings of ONE state. -->
-    <div id="we-graph" class="we-graph" aria-label="Game structure graph">
-      <!-- Where you are: tappable ancestor trail + what's selected. -->
+         THE ORGANISM — the whole editor is one red dot. Double-tap it and
+         four dots bloom around it: Level, Character, Game, Controls. Tap one
+         and #eg-sheet comes up with the few fields that steer it. Tapping the
+         empty paper collapses back to the dot.
+
+         The engine's contract prompts, the runtime knobs and the saved
+         levels/builds are NOT here — they're in the flat list behind the
+         header's List toggle, which is the same state seen another way.
+
+         Built + driven by static/js/editor_graph.js through WorldEditor's
+         bridge. See EDITOR_SIMPLIFICATION_PLAN.md for why this shrank. -->
+    <div id="we-graph" class="we-graph" aria-label="Game dots">
       <div class="eg-hud">
-        <ol id="eg-trail" class="eg-trail" aria-label="Path"></ol>
         <div class="eg-caption">
           <span id="eg-caption-name" class="eg-caption-name"></span>
           <span id="eg-caption-sub" class="eg-caption-sub"></span>
         </div>
       </div>
 
-      <!-- The graph itself. One <svg>; zooming is a viewBox animation, so
-           entering a cell scales the whole diagram rather than swapping
-           screens. #eg-world holds every node; #eg-field holds the
-           mathematical furniture (guide rings + radial spokes). -->
+      <!-- One <svg>; opening the ring is a viewBox animation. Every dot is
+           drawn at the origin and positioned by a transform, so the wobble
+           costs one attribute per dot per frame. -->
       <svg id="eg-canvas" class="eg-canvas" viewBox="-1200 -1200 2400 2400"
            preserveAspectRatio="xMidYMid meet" role="application"
-           aria-label="Double-tap a circle to go deeper, tap the edge to come back up">
-        <g id="eg-field" class="eg-field" aria-hidden="true"></g>
+           aria-label="Double-tap the dot to open it, tap a dot to direct it">
         <g id="eg-world" class="eg-world"></g>
       </svg>
 
-      <!-- The membrane of the cell you're inside, drawn at the edge of the view
-           where you can actually see it (a parent is several times the radius
-           of its children, so its own circle is usually off-frame). -->
-      <div id="eg-rim" class="eg-rim" aria-hidden="true"></div>
-
       <div id="eg-hint" class="eg-hint" aria-live="polite"></div>
 
-      <!-- The window that animates up at a vertex: the prompt's text, a spec
-           sheet's form, or a saved level/build's actions. -->
+      <!-- The window that animates up at a dot. -->
       <div id="eg-scrim" class="eg-scrim" aria-hidden="true"></div>
       <section id="eg-sheet" class="eg-sheet" aria-hidden="true"
                role="dialog" aria-labelledby="eg-sheet-title">
         <header class="eg-sheet-head">
-          <span id="eg-sheet-glyph" class="eg-sheet-glyph" aria-hidden="true"></span>
           <div class="eg-sheet-id">
             <div id="eg-sheet-title" class="eg-sheet-title">—</div>
             <div id="eg-sheet-sub" class="eg-sheet-sub"></div>
