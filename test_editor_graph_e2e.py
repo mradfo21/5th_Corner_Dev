@@ -43,7 +43,7 @@ PHONE = {"width": 430, "height": 932}
 DOTS = ["dot:level", "dot:character", "dot:game"]
 # Inside GAME, and inside its two containers.
 GAME_RING = ["dot:story", "dot:mechanics", "dot:models", "dot:controls"]
-MECHANICS = ["dot:camera", "dot:scan", "dot:camp", "dot:npc"]
+MECHANICS = ["dot:camera", "dot:scan", "dot:camp", "dot:narrator"]
 MODELS = ["dot:world", "dot:image", "dot:voice"]
 
 
@@ -326,7 +326,7 @@ class TestEditorDots(unittest.TestCase):
 
         self._dive("dot:mechanics")
         self.assertEqual(sorted(self._shown()), sorted(["dot:mechanics"] + MECHANICS))
-        self.assertEqual(self._labels(), ["Camera", "Scan", "Camp", "NPC"])
+        self.assertEqual(self._labels(), ["Camera", "Scan", "Camp", "Narrator"])
 
         # Back up one level at a time, not straight to the top.
         self.page.keyboard.press("Escape")
@@ -503,15 +503,50 @@ class TestEditorDots(unittest.TestCase):
         self.page.keyboard.press("Escape")
         self._settle(600)
 
-        self._open_leaf("dot:npc")
-        rows = self._rows()
-        for expected in ("Voice", "Agent", "API key"):
-            self.assertIn(expected, rows)
+        self._open_leaf("dot:narrator")
+        self.assertIn("Out loud", self._rows())
         # A machine token is the server talking to itself, never the UI's words.
         values = self.page.eval_on_selector_all(
             "#eg-sheet-body .eg-stat-v", "els => els.map(e => e.textContent)")
         self.assertFalse([v for v in values if "_" in v and v.islower()],
                          f"raw reason codes leaked into the panel: {values}")
+
+    def test_the_narrator_is_writable_and_castable(self):
+        """The voice that talks straight to the player had neither: its wording
+        was three f-strings in engine.py and its voice was an environment
+        variable, so the panel was facts and a button you couldn't influence."""
+        before = self._prompt("narrator_direction")
+        self.assertTrue(before, "narrator_direction should ship with a default")
+        try:
+            self._open_ring()
+            self._dive("dot:game")
+            self._dive("dot:mechanics")
+            self._open_leaf("dot:narrator")
+
+            # Who reads it: a real menu over the voice library.
+            self.assertEqual(
+                self.page.eval_on_selector_all(
+                    "#eg-sheet-body .eg-field-k", "els => els.map(e => e.textContent)"),
+                ["Reads the story"])
+            self.assertGreater(
+                self.page.eval_on_selector("#eg-sheet-body select",
+                                           "s => s.options.length"), 1)
+
+            # What it says: the template, with its placeholders intact.
+            box = self.page.query_selector("#eg-sheet-body .eg-prompt")
+            self.assertIsNotNone(box, "the narrator should have a prompt to edit")
+            for var in ("{world}", "{premise}", "{focus}"):
+                self.assertIn(var, box.input_value())
+            box.click()
+            self.page.keyboard.press("End")
+            self.page.keyboard.type(" Never mention the weather.")
+            self.page.click("#eg-sheet-body .eg-acts .we-btn-primary")
+            self.page.wait_for_timeout(1500)
+            self.assertIn("Never mention the weather.",
+                          self._prompt("narrator_direction"))
+        finally:
+            self._put_prompt("narrator_direction", before)
+            self.assertEqual(self._prompt("narrator_direction"), before)
 
     def test_models_pick_from_what_the_server_advertises(self):
         """The world and image pickers are the real lists, and the world panel

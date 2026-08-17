@@ -132,8 +132,8 @@
               sub: "Finding objects in the frame." },
             { id: "camp", kind: "camp", label: "Camp",
               sub: "Who is at the fire with you." },
-            { id: "npc", kind: "npc", label: "NPC",
-              sub: "Talking to the people in it." },
+            { id: "narrator", kind: "narrator", label: "Narrator",
+              sub: "The voice that talks to you." },
           ],
         },
         {
@@ -679,7 +679,7 @@
       controls: sheetControls,
       scan: sheetScan,
       camp: sheetCamp,
-      npc: sheetNpc,
+      narrator: sheetNarrator,
       world: sheetWorld,
       image: sheetImage,
       voice: sheetVoice,
@@ -994,80 +994,60 @@
                "changes when the roster does — or when you ask.");
   }
 
-  function sheetNpc(n, body) {
-    const state = group(body, "Conversation");
-    getJson("/api/health").then((h) => {
-      state.innerHTML = "";
-      const t = (h && h.talk) || {};
-      statusRow(state, "Voice", t.voice ? "ready" : "text only", !t.voice);
-      statusRow(state, "Agent", t.agent ? "set" : "missing", !t.agent);
-      statusRow(state, "API key", t.api_key ? "set" : "not set", false);
-      if (t.reason && t.reason !== "ready") note(state, t.reason);
-    });
-    // The party. /api/companions is the roster; place() puts one into the scene
-    // you are standing in, and regenerate_voice recasts them.
-    const party = group(body, "The party");
-    getJson("/api/companions").then((c) => {
-      party.innerHTML = "";
-      const roster = (c && (c.companions || c.roster)) || [];
-      if (!roster.length) {
-        note(party, "Nobody travelling with you yet. Talk to someone and they " +
-                    "join the roster.");
+  // The one voice that talks straight to the player: what it says, and who says
+  // it. Both were unreachable — the wording was three f-strings in engine.py and
+  // the voice was an environment variable — so this panel was four facts and a
+  // button that did something you couldn't influence.
+  function sheetNarrator(n, body) {
+    const picks = group(body, "Voice");
+    Promise.all([
+      loadTunables(true),
+      getJson("/api/talk/voices/library"),
+      getJson("/api/talk/voices"),
+    ]).then(([t, lib, reg]) => {
+      picks.innerHTML = "";
+      const vals = (t && t.values) || {};
+      const spec = (t && t.schema) || {};
+      const library = (lib && lib.voices) || [];
+      const options = (library.length ? library : ((reg && reg.voices) || []))
+        .map((v) => ({
+          id: v.id,
+          label: v.name + (v.category && v.category !== "premade" ? "  \u2022 yours" : ""),
+        }));
+      if (!options.length) {
+        note(picks, LIBRARY_REASONS[lib && lib.reason] || "Couldn't read the voices.");
         return;
       }
-      roster.forEach((p) => {
-        const label = p.name || p.label || p.slug || "someone";
-        const row = document.createElement("div");
-        row.className = "eg-person";
-        const nm = document.createElement("span");
-        nm.className = "eg-person-n";
-        nm.textContent = label;
-        row.appendChild(nm);
-        const acts = document.createElement("span");
-        acts.className = "eg-person-a";
-        button(acts, "Bring in", "", async () => {
-          B.toast("Bringing " + label + " in\u2026");
-          try {
-            const r = await fetch("/api/companions/place", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ label: label, session_id: "default" }),
-            });
-            const d = await r.json().catch(() => null);
-            B.toast(d && d.image_url ? label + " is here."
-                                     : "Couldn't place them right now.",
-                    d && d.image_url ? "" : "warn");
-          } catch (_) { B.toast("Couldn't place them.", "warn"); }
-        });
-        button(acts, "Recast voice", "we-btn-ghost", async () => {
-          B.toast("Designing a voice for " + label + "\u2026");
-          try {
-            const r = await fetch("/api/companions/regenerate_voice", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ label: label, session_id: "default" }),
-            });
-            const d = await r.json().catch(() => null);
-            B.toast(d && (d.voice_id || d.status === "queued")
-              ? "Recasting " + label + "." : "Couldn't recast that voice.",
-              d && (d.voice_id || d.status === "queued") ? "" : "warn");
-          } catch (_) { B.toast("Couldn't recast that voice.", "warn"); }
-        });
-        row.appendChild(acts);
-        party.appendChild(row);
-      });
+      selectRow(picks, "Reads the story", options, vals.narrator_voice_id,
+        spec.narrator_voice_id && spec.narrator_voice_id.help,
+        (v) => setTunable("narrator_voice_id", v));
+      if (!library.length) {
+        note(picks, LIBRARY_REASONS[lib && lib.reason] ||
+                    "Showing the shipped voices only.");
+      }
     });
-    // The narrator is a live button; the graph proxies to it rather than owning
-    // a second copy of its state.
+
+    // What it says.
+    promptEditor(body, "narrator_direction", "What it says");
+
+    const acts = group(body, "Try it");
+    // The rail's narrator button owns the speaking; the graph proxies to it
+    // rather than keeping a second copy of that state.
     const btn = (B.engineControls() || [])
       .reduce((all, g) => all.concat(g.buttons), [])
       .find((b) => b.id === "narrator-btn");
     if (btn) {
-      const acts = group(body, "Narrator");
-      button(acts, "Speak the last line", "", () => {
-        try { btn.click(); } catch (_) {}
+      button(acts, "Speak a line now", "", () => {
+        try { btn.click(); B.toast("Narrating\u2026"); } catch (_) {}
       });
     }
+    const state = group(body, "Right now");
+    getJson("/api/health").then((h) => {
+      state.innerHTML = "";
+      const t = (h && h.talk) || {};
+      statusRow(state, "Out loud", t.voice ? "ready" : "text only", !t.voice);
+      if (!t.voice && t.reason) note(state, t.reason);
+    });
   }
 
   // ── Models ────────────────────────────────────────────────────────────

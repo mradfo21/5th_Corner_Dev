@@ -454,6 +454,25 @@ PROMPT_SCHEMA: List[Dict[str, Any]] = [
         "live": True,
     },
     {
+        "id": "narrator_direction",
+        "label": "The Narrator",
+        "group": "narrative",
+        "tier": TIER_ADVANCED,
+        "type": "longtext",
+        "description": (
+            "Who the narrator is and how they speak — the single line they say "
+            "when you ask for narration. {world} is the place, {self} is your "
+            "character, {premise} the story so far, {scene} what's on screen and "
+            "{recent} the last few beats. {focus} is filled in when something "
+            "specific has to be said (a travel beat, a reveal) and is empty "
+            "otherwise, so put it where it should take precedence."
+        ),
+        "code_refs": ["engine.py"],
+        "live": True,
+        "format_safe_required": True,
+        "format_vars": ["world", "self", "premise", "scene", "recent", "focus"],
+    },
+    {
         "id": "camp_scene_prompt",
         "label": "The Camp Shot",
         "group": "image",
