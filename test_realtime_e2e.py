@@ -523,6 +523,10 @@ class TestRealtimeRenderer(unittest.TestCase):
             # diving ENGINE > SYSTEM in the graph.
             page.click("#menu-toggle")
             page.click("#btn-editor")
+            # Shift+` unlocks the machine room (the flat list); the List door
+            # isn't drawn for a player. test_editor_graph_e2e covers that.
+            page.keyboard.press("~")
+            page.wait_for_selector("#we-view", state="visible", timeout=4000)
             page.click("#we-view")
             page.click('#we-tabs [data-tab="engine"]')
             page.click("#btn-model")
@@ -2199,6 +2203,10 @@ class TestRealtimeRenderer(unittest.TestCase):
             # layer); the Happy Oyster options are shown.
             page.click("#menu-toggle")
             page.click("#btn-editor")
+            # Shift+` unlocks the machine room (the flat list); the List door
+            # isn't drawn for a player. test_editor_graph_e2e covers that.
+            page.keyboard.press("~")
+            page.wait_for_selector("#we-view", state="visible", timeout=4000)
             page.click("#we-view")
             page.click('#we-tabs [data-tab="engine"]')
             page.click("#btn-model")

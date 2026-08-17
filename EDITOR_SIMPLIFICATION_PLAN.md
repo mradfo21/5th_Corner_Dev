@@ -272,7 +272,7 @@ the mess. *Verify:* `test_editor_graph_e2e` gets rewritten against the new tree.
 | Graph nodes | 37 | ~14 | **5** |
 | Nodes needing a 3+ level dive | 18 | 0 | **0** |
 | Editable prose in the default surface (chars) | ~57,000 | ~4,000 | **0** |
-| Structured fields in the default surface | 21 | ~20 | **15** |
+| Structured fields in the default surface | 21 | ~20 | **14** |
 | Prompts that reach no model | 2 | 0 |
 | Places the camera law is stated | 4 | 1 |
 | Chars sent on a consequence call | ~17,700 | ~5,000 |

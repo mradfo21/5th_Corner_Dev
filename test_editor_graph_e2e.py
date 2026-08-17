@@ -160,6 +160,12 @@ class TestEditorDots(unittest.TestCase):
         self.page.mouse.click(x, y)
         self._settle()
 
+    def _unlock_machine_room(self):
+        """Shift+` reveals the door to the flat list. A player never sees it."""
+        self.page.keyboard.press("~")
+        self.page.wait_for_timeout(250)
+        self.page.wait_for_selector("#we-view", state="visible", timeout=3000)
+
     def _shown(self):
         return self.page.evaluate(
             """() => Array.from(document.querySelectorAll('#eg-world .eg-node'))
@@ -248,7 +254,7 @@ class TestEditorDots(unittest.TestCase):
         self.assertEqual(
             self.page.eval_on_selector_all(
                 "#eg-sheet-body .we-cast-label", "els => els.map(e => e.textContent)"),
-            ["Name", "What it is", "Landmarks that must recur", "Opening shot"])
+            ["Name", "What it is", "Landmarks", "Opening shot"])
         body = "#eg-sheet-body "
         self.assertEqual(self.page.eval_on_selector_all(body + ".we-info", "e => e.length"), 0)
         self.assertEqual(self.page.eval_on_selector_all(body + ".we-more", "e => e.length"), 0)
@@ -365,9 +371,45 @@ class TestEditorDots(unittest.TestCase):
         self.assertTrue(self.page.evaluate(
             "!!document.querySelector('#world-editor > #we-input-opts')"),
             "the strip should be back in the panel after the window closes")
-        self.page.click("#we-view")           # and back to DOOM for the next run
-        self.page.wait_for_timeout(300)
         self.page.evaluate("localStorage.setItem('input_profile', 'doom')")
+
+    def test_the_header_carries_only_the_way_out(self):
+        """Text size, width and the machine-room door all moved into Controls.
+        A settings row you have to read past is the interface apologising."""
+        tools = self.page.eval_on_selector_all(
+            "#world-editor .we-head-tools button",
+            """els => els.filter(e => e.offsetParent !== null)
+                        .map(e => e.id)""")
+        self.assertEqual(tools, ["we-close"])
+        # The footer's Revert / Apply Live / Save & Restart is the prompt
+        # pipeline's control panel. Nothing in the dots needs it.
+        self.assertFalse(self.page.is_visible("#we-foot"))
+        # And they are all still there, inside Controls.
+        self._open_ring()
+        self._tap("dot:controls")
+        self.page.wait_for_selector("#eg-sheet.is-open", timeout=4000)
+        self._settle(500)
+        self.assertTrue(self.page.evaluate(
+            "!!document.querySelector('#eg-sheet-body #we-panel-opts')"))
+        self.assertEqual(
+            self.page.eval_on_selector_all(
+                "#eg-sheet-body .eg-group .we-cast-label",
+                "els => els.map(e => e.textContent)"),
+            ["Movement", "Panel"])
+
+    def test_the_machine_room_is_not_offered_to_a_player(self):
+        """The flat list holds the engine's contract prompts and the runtime
+        knobs. It stays reachable for us, and undrawn for everyone else."""
+        self.assertFalse(self.page.is_visible("#we-view"),
+                         "the List door should not be drawn by default")
+        self._unlock_machine_room()
+        self.assertTrue(self.page.is_visible("#we-view"))
+        self._unlock_machine_room_off()
+        self.assertFalse(self.page.is_visible("#we-view"))
+
+    def _unlock_machine_room_off(self):
+        self.page.keyboard.press("~")
+        self.page.wait_for_timeout(250)
 
     def test_the_dots_never_sit_still(self):
         """Sprung to a slot, drifting, pushing off each other — and still
@@ -394,8 +436,9 @@ class TestEditorDots(unittest.TestCase):
                                [pt["x"], pt["y"]]), "dot:character")
 
     def test_the_flat_list_still_has_the_whole_surface(self):
-        """Nothing was deleted, only demoted: the engine's prompts are one click
-        away, and the dots come back the same way."""
+        """Nothing was deleted, only demoted: with the machine room unlocked the
+        engine's prompts are one click away, and the dots come back the same."""
+        self._unlock_machine_room()
         self.page.click("#we-view")
         self.page.wait_for_timeout(400)
         self.assertFalse(self.page.evaluate(

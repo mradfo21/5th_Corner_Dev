@@ -611,14 +611,24 @@
         <span>WORLD EDITOR</span>
         <span id="we-dirty" class="we-dirty hidden" title="Unsaved edits">● unsaved</span>
       </div>
+      <!-- Everything except the exit lives inside the Controls dot now: text
+           size and width are how you see the panel, so they belong with
+           perspective and movement rather than in a row of chrome you have to
+           read past. This node is MOVED into that window (see
+           bridge.mountPanelControls), not copied, so it keeps its wiring. -->
       <div class="we-head-tools">
-        <span class="we-fontstep">
-          <button id="we-font-down" class="we-tool" type="button" title="Smaller editor text">A&minus;</button>
-          <button id="we-font-up" class="we-tool" type="button" title="Larger editor text (double-click either to reset)">A+</button>
+        <span id="we-panel-opts" class="we-panel-opts">
+          <span class="we-fontstep">
+            <button id="we-font-down" class="we-tool" type="button" title="Smaller editor text">A&minus;</button>
+            <button id="we-font-up" class="we-tool" type="button" title="Larger editor text (double-click either to reset)">A+</button>
+          </span>
+          <button id="we-wide" class="we-tool" type="button" title="Toggle near-full-width editing">Wide</button>
+          <!-- The flat list is the machine room: the engine's contract prompts,
+               the runtime knobs, the galleries. Not for a player, so the door is
+               only drawn with ?dev=1 (remembered per browser). -->
+          <button id="we-view" class="we-tool is-dev" type="button"
+                  title="Switch between the dots and the flat list">List</button>
         </span>
-        <button id="we-view" class="we-tool" type="button"
-                title="Switch between the graph and the flat list">List</button>
-        <button id="we-wide" class="we-tool" type="button" title="Toggle near-full-width editing">Wide</button>
         <button id="we-close" class="we-close" type="button" title="Close (`)" aria-label="Close editor">&#10005;</button>
       </div>
     </header>
@@ -740,7 +750,6 @@
         <header class="eg-sheet-head">
           <div class="eg-sheet-id">
             <div id="eg-sheet-title" class="eg-sheet-title">—</div>
-            <div id="eg-sheet-sub" class="eg-sheet-sub"></div>
           </div>
           <button id="eg-sheet-close" class="eg-sheet-close" type="button"
                   title="Close (Esc)" aria-label="Close">&#10005;</button>

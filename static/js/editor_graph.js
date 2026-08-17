@@ -92,13 +92,15 @@
   // THE TREE — four things you can direct, and the game they belong to
   // ══════════════════════════════════════════════════════════════════
   // Which identity block each dot edits, in the order they ring the nucleus.
+  // One short line each, and only when you are pointing at one. The editor is
+  // not the place to explain the simulator; it is the place to direct it.
   const DOTS = [
     { id: "level", block: "setting_reference", label: "Level",
       sub: "Where this happens." },
     { id: "character", block: "player_character", label: "Character",
       sub: "Who you are in it." },
     { id: "game", block: "game_design", label: "Game",
-      sub: "Genre, tone, and what threatens you." },
+      sub: "The kind of story this is." },
     { id: "controls", block: null, label: "Controls",
       sub: "How you see it and how you move." },
   ];
@@ -135,7 +137,9 @@
       id: "game",
       kind: "root",
       label: "Game",
-      sub: "Everything the simulation reads.",
+      // No sub: the dot is already named, and "everything the simulation reads"
+      // was the machinery introducing itself.
+      sub: "",
       children: kids,
     };
     layout(tree);
@@ -423,8 +427,10 @@
     const shown = (hoverId && nodesById[hoverId]) || f;
     if (els.captionName) els.captionName.textContent = shown.label;
     if (els.captionSub) els.captionSub.textContent = shown.sub || "";
+    // The one instruction worth printing is the one that isn't obvious: that
+    // the dot opens. Four labelled dots explain themselves.
     if (els.hint && !hintTimer) {
-      els.hint.textContent = collapsed ? "double-tap the dot" : "tap a dot to direct it";
+      els.hint.textContent = collapsed ? "double-tap the dot" : "";
     }
   }
 
@@ -531,7 +537,6 @@
     els.scrim.classList.add("is-open");
     els.graph.classList.add("has-sheet");
     els.sheetTitle.textContent = n.label;
-    els.sheetSub.textContent = n.sub || "";
     els.sheetBody.innerHTML = "";
     els.sheetBody.scrollTop = 0;
     if (n.kind === "controls") sheetControls(els.sheetBody);
@@ -546,9 +551,10 @@
     els.sheet.setAttribute("aria-hidden", "true");
     els.scrim.classList.remove("is-open");
     els.graph.classList.remove("has-sheet");
-    // The CONTROLS strip is a real, wired element on loan from the panel; it
-    // has to go home or its listeners leave with the innerHTML.
+    // Both strips are real, wired elements on loan from the panel; they have to
+    // go home or their listeners leave with the innerHTML.
     try { B.unmountInputControls(); } catch (_) {}
+    try { B.unmountPanelControls(); } catch (_) {}
     els.sheetBody.innerHTML = "";
     paint();
     return true;
@@ -563,14 +569,28 @@
     B.renderSpecInto(host, n.block, { minimal: true });
   }
 
-  // The other is how you see and drive: perspective, then the movement scheme
-  // and look speed, borrowed live from the panel.
+  // The other is every knob that isn't the world: how the camera sees, how you
+  // move, and how this panel reads. Three quiet groups rather than three
+  // windows — and the last two are the panel's own wired elements on loan, so
+  // the header above is left with nothing but the way out.
   function sheetControls(body) {
     const host = document.createElement("div");
     host.className = "eg-spec";
     body.appendChild(host);
     B.renderSpecInto(host, "camera_perspective", { minimal: true });
-    try { B.mountInputControls(body); } catch (_) {}
+    try { B.mountInputControls(group(body, "Movement")); } catch (_) {}
+    try { B.mountPanelControls(group(body, "Panel")); } catch (_) {}
+  }
+
+  function group(body, label) {
+    const wrap = document.createElement("div");
+    wrap.className = "eg-group";
+    const h = document.createElement("div");
+    h.className = "we-cast-label";
+    h.textContent = label;
+    wrap.appendChild(h);
+    body.appendChild(wrap);
+    return wrap;
   }
 
   // ══════════════════════════════════════════════════════════════════
@@ -588,7 +608,10 @@
     // Don't tear down a window the player is typing in; the dots behind it can
     // wait for the next save.
     if (openSheetId && typing) return;
-    if (openSheetId) { try { B.unmountInputControls(); } catch (_) {} }
+    if (openSheetId) {
+      try { B.unmountInputControls(); } catch (_) {}
+      try { B.unmountPanelControls(); } catch (_) {}
+    }
     build();
     if (openId !== null && !nodesById[openId]) openId = root.id;
     frame(false);
@@ -616,7 +639,6 @@
       sheet: document.getElementById("eg-sheet"),
       scrim: document.getElementById("eg-scrim"),
       sheetTitle: document.getElementById("eg-sheet-title"),
-      sheetSub: document.getElementById("eg-sheet-sub"),
       sheetBody: document.getElementById("eg-sheet-body"),
       sheetClose: document.getElementById("eg-sheet-close"),
     };
