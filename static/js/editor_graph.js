@@ -821,7 +821,39 @@
         catch (_) { B.toast("Couldn't switch the world model.", "warn"); }
         setTimeout(() => { if (sheetId === n.id) openSheet(n); }, 900);
       });
+      // A model that shipped after this build. The server says whether it will
+      // accept a name it hasn't advertised.
+      if (cfg && cfg.allow_custom_models) {
+        const form = document.createElement("form");
+        form.className = "eg-name-form";
+        form.autocomplete = "off";
+        const input = document.createElement("input");
+        input.type = "text";
+        input.placeholder = "another model id\u2026";
+        input.maxLength = 64;
+        const go = document.createElement("button");
+        go.type = "submit";
+        go.className = "we-btn we-btn-primary";
+        go.textContent = "Use";
+        form.appendChild(input);
+        form.appendChild(go);
+        form.addEventListener("submit", (e) => {
+          e.preventDefault();
+          const raw = input.value.trim();
+          if (!raw) { input.focus(); return; }
+          try {
+            window.ReactorRenderer.addModel(raw, raw);
+            window.ReactorRenderer.setModel(raw);
+            B.toast("Trying " + raw + "\u2026");
+          } catch (_) { B.toast("Couldn't use that model.", "warn"); }
+          setTimeout(() => { if (sheetId === n.id) openSheet(n); }, 900);
+        });
+        host.appendChild(form);
+      }
     });
+    // Adventure or Director — only while the model that has it is live.
+    const seg = B.experienceSeg && B.experienceSeg();
+    if (seg) { try { B.borrow(seg, group(body, "Experience")); } catch (_) {} }
     const health = group(body, "Right now");
     getJson("/api/reactor/health").then((h) => {
       health.innerHTML = "";
@@ -868,22 +900,30 @@
   }
 
   function sheetVoice(n, body) {
-    const host = group(body, "Voices");
+    const host = group(body, "Conversation");
     getJson("/api/health").then((h) => {
       host.innerHTML = "";
       const t = (h && h.talk) || {};
-      statusRow(host, "Designed voices", t.designed_voices || 0);
       statusRow(host, "Agent", t.agent ? "set" : "missing", !t.agent);
-      note(body, t.agent
-        ? "Each character is given a voice the first time they speak, and keeps it."
-        : "Without an ElevenLabs agent, everyone is on text.");
+      statusRow(host, "Designed voices", t.designed_voices || 0);
+      if (!t.agent) note(host, "Without an ElevenLabs agent, everyone is on text.");
     });
-    getJson("/api/companions").then((c) => {
-      const roster = (c && (c.companions || c.roster)) || [];
-      if (!roster.length) return;
-      const who = group(body, "Who has one");
-      roster.forEach((p) => statusRow(who, p.name || p.slug || "someone",
-                                      p.voice_id ? "voiced" : "silent", !p.voice_id));
+    // The actual catalogue, not a count of it: voices.json is what a character
+    // can be cast from, and the default and narrator are picked out of it.
+    const cast = group(body, "Cast");
+    getJson("/api/talk/voices").then((v) => {
+      cast.innerHTML = "";
+      const list = (v && v.voices) || [];
+      if (!list.length) { note(cast, "No voices in the registry."); return; }
+      list.forEach((entry) => {
+        const marks = [];
+        if (entry.id === (v && v.default)) marks.push("default");
+        if (entry.id === (v && v.narrator)) marks.push("narrator");
+        const row = statusRow(cast, entry.name || entry.id,
+                              marks.length ? marks.join(" \u00B7 ") : (entry.tag || entry.gender || ""));
+        if (marks.length) row.classList.add("is-now");
+      });
+      note(cast, "A character is given one the first time they speak, and keeps it.");
     });
   }
 
@@ -898,6 +938,7 @@
     // go home or their listeners leave with the innerHTML.
     try { B.unmountInputControls(); } catch (_) {}
     try { B.unmountPanelControls(); } catch (_) {}
+    try { B.giveBack(); } catch (_) {}
     els.sheetBody.innerHTML = "";
     paint();
     return true;
@@ -969,6 +1010,7 @@
     if (openSheetId) {
       try { B.unmountInputControls(); } catch (_) {}
       try { B.unmountPanelControls(); } catch (_) {}
+      try { B.giveBack(); } catch (_) {}
     }
     build();
     if (openId !== null && !nodesById[openId]) openId = root.id;

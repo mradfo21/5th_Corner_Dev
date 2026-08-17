@@ -487,6 +487,20 @@ class TestEditorDots(unittest.TestCase):
         self.assertEqual(
             self.page.eval_on_selector_all(
                 "#eg-sheet-body .we-mode.active", "els => els.length"), 1)
+        self.page.keyboard.press("Escape")
+        self._settle(600)
+
+        # Voice lists the actual registry, not a count of it, with the default
+        # and the narrator picked out.
+        self._open_leaf("dot:voice")
+        rows = self._rows()
+        self.assertIn("Agent", rows)
+        self.assertGreater(len(rows), 4, "the voice cast should be listed")
+        marked = self.page.eval_on_selector_all(
+            "#eg-sheet-body .eg-stat.is-now .eg-stat-v",
+            "els => els.map(e => e.textContent)")
+        self.assertTrue([m for m in marked if "default" in m],
+                        f"one voice should be the default: {marked}")
 
     def test_controls_holds_the_movement_strip_and_a_key_card(self):
         """The CONTROLS strip is the panel's own wired element on loan, not a

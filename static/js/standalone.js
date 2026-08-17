@@ -5455,6 +5455,11 @@
     // of it: it reads through these getters and writes through the very save
     // paths the list uses, so there is one source of truth and one client for
     // /api/admin/studio/*.
+    // Elements lent to a graph window, with where each one came from. Anything
+    // borrowed is MOVED, never copied — these are wired nodes, and a copy would
+    // be a second control with none of the handlers.
+    const borrowed = [];
+
     const bridge = {
       isGraphMode: () => graphMode,
       setViewMode,
@@ -5521,6 +5526,28 @@
         // Home is immediately before the footer, where it has always lived.
         if (el.weFoot) el.worldEditor.insertBefore(el.weInputOpts, el.weFoot);
         else el.worldEditor.appendChild(el.weInputOpts);
+      },
+      // ADVENTURE vs DIRECTOR is a real, persisted mode that rebuilds the world,
+      // and it only exists while Happy Oyster is live — so it is lent to the
+      // World window when it has options in it, and null the rest of the time.
+      experienceSeg() {
+        const seg = document.getElementById("rt-ho-experience");
+        return seg && seg.children.length ? seg : null;
+      },
+      borrow(el_, target) {
+        if (!el_ || !target) return;
+        if (!el_.dataset.homeParent) {
+          el_.dataset.homeParent = el_.parentNode ? "1" : "";
+          borrowed.push({ node: el_, parent: el_.parentNode, next: el_.nextSibling });
+        }
+        target.appendChild(el_);
+      },
+      giveBack() {
+        while (borrowed.length) {
+          const b = borrowed.pop();
+          delete b.node.dataset.homeParent;
+          if (b.parent) b.parent.insertBefore(b.node, b.next);
+        }
       },
       // The movement schemes and which one is live, for the Controls window's
       // reference card. Read-only: the bindings are fixed per scheme.
