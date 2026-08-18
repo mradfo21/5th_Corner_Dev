@@ -6484,7 +6484,7 @@ def extract_scene_elements(*args):
     return nouns
 
 # RENAMED from advance_turn
-def _process_turn_background(choice: str, initial_player_action_item_id: int, signal_file_path: Optional[str] = None, source: Optional[str] = None, session_id: str = 'default'):
+def _process_turn_background(choice: str, initial_player_action_item_id: int, signal_file_path: Optional[str] = None, source: Optional[str] = None, session_id: str = 'default', subject: Optional[str] = None):
     """Standalone feed turn — a thin adapter over the canonical two-phase
     session pipeline.
 
@@ -6546,6 +6546,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             # with the world, so they push threat harder and bias fate toward risk —
             # exactly the "interacting moves the story forward + raises stakes" goal.
             is_interaction = source in ("scan_interact", "scan_move")
+            is_move = source == "scan_move"
             risk_boost = 2 if is_interaction else 0
             dyn = advance_story_dynamics(session_id=SID, risk_boost=risk_boost)
             turn_fate = dyn.get("fate", "NORMAL")
@@ -6555,7 +6556,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             # ── PHASE 1: consequence dispatch only (fast text; NO image, async evolve) ──
             # Image and world-evolution run in the background so narrative + choices
             # return fast.
-            p1 = advance_turn_image_fast(choice, fate=turn_fate, is_timeout_penalty=False, session_id=SID, skip_image=True, skip_evolve=True, interaction=is_interaction, local_only=True)
+            p1 = advance_turn_image_fast(choice, fate=turn_fate, is_timeout_penalty=False, session_id=SID, skip_image=True, skip_evolve=True, interaction=is_interaction, local_only=True, subject=(subject or ""), is_move=is_move)
             turn_state = _load_state(SID)
             _sync_ambient_state(turn_state, SID)
 
@@ -6610,6 +6611,13 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                 st = _load_state(SID)
                 if _inventory_update is not None:
                     st["inventory"] = _inventory_update
+                # Written on EVERY turn, not only the ones that tapped something:
+                # a turn with no subject must clear any prior claim, or a
+                # permanence check whose reground never ran would be settled
+                # later against a frame nobody ever asked it about.
+                st["permanence"] = _permanence_record(
+                    subject or "", is_move, vision_dispatch_text
+                )
                 _feed_extend(st, turn_items)
                 _save_state(st, SID)
                 turn_state = st
@@ -7514,6 +7522,11 @@ def api_choose():
         # "scan_move") drive the story-escalation backend harder (see
         # _process_turn_background) so poking the world moves the plot + raises risk.
         action_source = data.get('source')
+        # The detection label the player actually tapped. It rides along so the
+        # consequence can be REQUIRED to keep that object in frame — see the
+        # OBJECT PERMANENCE block. Only SCAN taps carry one; a typed or generated
+        # choice has no identified subject and pins nothing.
+        action_subject = _permanence_subject(data.get('subject'))
         # LEAVE CAMP must arrive on foot — never in a cab/dashboard POV.
         player_choice_text = _normalize_camp_leave_choice(player_choice_text, action_source)
 
@@ -7603,7 +7616,8 @@ def api_choose():
             thread = threading.Thread(
                 target=_process_turn_background,
                 args=(player_choice_text, player_action_item['id'], str(temp_signal_file)),
-                kwargs={"source": action_source, "session_id": session_id},
+                kwargs={"source": action_source, "session_id": session_id,
+                        "subject": action_subject},
                 daemon=True,
             )
             thread.start()
@@ -10740,6 +10754,11 @@ def _spawn_observe_reground(fpath: str, web: str, session_id: str, prompt_id):
             with WORLD_STATE_LOCK:
                 st = _load_state(session_id)
                 st['current_observed_vision'] = vision
+                # This vision text describes the frame that was ACTUALLY
+                # rendered, which is the only honest answer to "did the object
+                # the player touched survive the turn?" — the consequence text
+                # is what we asked for, this is what we got.
+                _resolve_permanence(st, vision)
                 hist = _load_history(session_id)
                 if hist:
                     hist[-1]['vision_dispatch'] = vision
@@ -10906,8 +10925,110 @@ def api_regenerate_choices():
         return jsonify([error_item]), 500
 
 
+# ───────── OBJECT PERMANENCE ──────────────────────────────────────────────────
+# The world model has none. Every frame is regenerated from `visual_scene`, so a
+# noun that text does not name simply stops existing — which is what made SCAN
+# interactions feel inert. The player taps the steel door, commits to forcing it,
+# and the next frame is a corridor with no door in it. The action resolved in the
+# prose and vanished from the picture.
+#
+# So a turn issued by tapping a DETECTED object carries that object's label into
+# the consequence prompt as a requirement: `visual_scene` must still show it.
+# For exactly ONE turn. Pinning a noun for longer would freeze the scene and stop
+# the world evolving, which is the opposite of what this simulation is for — the
+# object has to survive the transition it was acted on, then it is free to go.
+#
+# Two things are then measured, because they fail independently:
+#   • in_text   — did the consequence LLM keep the noun in `visual_scene`?
+#                 (whether the model honoured the requirement)
+#   • in_pixels — does the rendered frame's vision pass still describe it?
+#                 (whether the image/world model drew what it was asked for)
+# Both are free. The first is a string check on text the turn already produced;
+# the second rides the reground pass that already analyses every new guide image.
+
+def _permanence_subject(raw) -> str:
+    """Normalize a tapped detection label into a comparable subject phrase."""
+    s = str(raw or "").strip().lower()
+    s = re.sub(r"[^a-z0-9\s\-]", "", s)
+    return re.sub(r"\s+", " ", s).strip()[:40]
+
+
+def _subject_in_text(subject: str, text: str) -> bool:
+    """Whether `subject` is still being talked about in `text`.
+
+    Tries the whole phrase, then its head noun: a model handed "rusted steel
+    door" routinely writes "the door", and scoring that as a miss would make the
+    measurement worthless. Plural head nouns count for the same reason.
+    """
+    subj = _permanence_subject(subject)
+    hay = str(text or "").lower()
+    if not subj or not hay:
+        return False
+    if re.search(rf"\b{re.escape(subj)}\b", hay):
+        return True
+    head = subj.split()[-1] if subj.split() else ""
+    return bool(len(head) >= 3 and re.search(rf"\b{re.escape(head)}s?\b", hay))
+
+
+def _permanence_directive(subject: str, is_move: bool) -> str:
+    """The requirement block naming the object this turn may not delete."""
+    subj = _permanence_subject(subject)
+    if not subj:
+        return ""
+    survives = (
+        f"the {subj} still visible and CLOSER — the player has travelled toward "
+        f"it, so it fills more of the frame than it did"
+        if is_move else
+        f"the {subj} still visible and CHANGED BY the action — opened, moved, "
+        f"damaged, reacting — not absent"
+    )
+    return (
+        f"\n\nOBJECT PERMANENCE: the player is acting on the \"{subj}\", which the "
+        f"scene detector confirmed is in the frame right now. Your `visual_scene` "
+        f"MUST name it and show {survives}. That text is the only thing the "
+        f"renderer sees, so a `visual_scene` that omits the {subj} deletes the "
+        f"very thing the player just reached out and touched.\n"
+    )
+
+
+def _permanence_record(subject: str, is_move: bool, visual_scene: str) -> Optional[dict]:
+    """The pending permanence claim for a turn, or None when nothing was tapped."""
+    subj = _permanence_subject(subject)
+    if not subj:
+        return None
+    kept = _subject_in_text(subj, visual_scene)
+    print(f"[PERMANENCE] subject='{subj}' kind={'move' if is_move else 'interact'} "
+          f"in_text={kept}", flush=True)
+    return {
+        "subject": subj,
+        "kind": "move" if is_move else "interact",
+        "in_text": kept,
+        "in_pixels": None,   # filled in by the reground pass; None = never checked
+        "pending": True,
+    }
+
+
+def _resolve_permanence(st: dict, vision_text: str) -> None:
+    """Settle this turn's permanence claim against the rendered frame.
+
+    Mutates `st` in place; the caller owns the lock and the save. Resolving is
+    one-shot: a claim the reground never reached stays pending until the next
+    turn overwrites it, so a stale subject can never be scored against a frame
+    it was never asked about.
+    """
+    rec = st.get("permanence")
+    if not isinstance(rec, dict) or not rec.get("pending"):
+        return
+    held = _subject_in_text(rec.get("subject", ""), vision_text)
+    rec["in_pixels"] = held
+    rec["pending"] = False
+    st["permanence"] = rec
+    print(f"[PERMANENCE] subject='{rec.get('subject')}' survived into the rendered "
+          f"frame: {held}", flush=True)
+
+
 # ───────── COMBINED dispatch generator (saves 1 API call) ─────────────────────
-def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = None, prev_vision: str = "", current_image: str = None, fate: str = "NORMAL", is_interaction: bool = False) -> tuple[str, str, bool]:
+def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = None, prev_vision: str = "", current_image: str = None, fate: str = "NORMAL", is_interaction: bool = False, subject: str = "", is_move: bool = False) -> tuple[str, str, bool]:
     """
     Generate BOTH narrative dispatch AND vision dispatch in ONE API call.
     Now supports multimodal input - can see the current frame!
@@ -11045,6 +11166,11 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
                 "answer with 'nothing happens' or a purely cosmetic result. Meddling with "
                 "the unknown here should carry real risk and push the mystery forward.\n"
             )
+            # …and it must still be THERE afterwards. The directive above asks for
+            # consequence, which a model can satisfy by cutting to somewhere new
+            # entirely — see the OBJECT PERMANENCE block above for why that reads
+            # as the action never landing.
+            interaction_directive += _permanence_directive(subject, is_move)
 
         grounding_block = (
             f"\n\nDISCOVERED ENTITIES (these are the only things on the board — "
@@ -11438,7 +11564,7 @@ def _phase_escalation_beat(phase: str) -> str:
     return random.choice(beats) if beats else ""
 
 # ───────── game loop ──────────────────────────────────────────────────────────
-def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalty: bool = False, session_id: str = 'default', skip_image: bool = False, skip_evolve: bool = False, interaction: bool = False, local_only: bool = False) -> dict:
+def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalty: bool = False, session_id: str = 'default', skip_image: bool = False, skip_evolve: bool = False, interaction: bool = False, local_only: bool = False, subject: str = "", is_move: bool = False) -> dict:
     """
     PHASE 1 (FAST): Generate dispatch and image, return immediately.
 
@@ -11446,6 +11572,11 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
     skip_evolve=True  -> run the world-evolution rewrite in the background
                          (it only affects the next turn), so the turn's
                          narrative + choices return fast.
+    subject           -> the detection label the player tapped to issue this
+                         action, if any. Required to survive into this turn's
+                         `visual_scene` — see the OBJECT PERMANENCE block.
+    is_move           -> the tap was MOVE TO rather than INTERACT, so the
+                         subject must end up closer rather than merely changed.
     local_only=True   -> operate entirely on LOCAL `state`/`history` variables
                          (loaded + saved per session_id) and never touch the
                          module-global mirrors. The web multi-user path passes
@@ -11508,7 +11639,7 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             # Generate dispatch using FULL StoryGen version (with fate modifier).
             # provisional_choices are produced in the SAME call so the turn loop
             # can skip the separate choice-generation round-trip.
-            dispatch, vision_dispatch, player_alive, provisional_choices = _generate_combined_dispatches(choice, state, prev_state, prev_vision, prev_image, fate, is_interaction=interaction)
+            dispatch, vision_dispatch, player_alive, provisional_choices = _generate_combined_dispatches(choice, state, prev_state, prev_vision, prev_image, fate, is_interaction=interaction, subject=subject, is_move=is_move)
         
         # SIMPLE DEATH SYSTEM: Just trust the LLM
         state['player_state']['alive'] = player_alive

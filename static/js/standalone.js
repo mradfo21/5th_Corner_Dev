@@ -7730,6 +7730,10 @@
     // for deliberate meddling — see _process_turn_background (engine.py).
     const actionSource = (opts && opts.source) || null;
     const moveTarget = (opts && opts.moveTarget) || null;
+    // The detected object this action was issued against, if any — see
+    // commitScanAction. Null for typed and generated choices, which name no
+    // specific thing the picture is obliged to keep.
+    const actionSubject = (opts && opts.subject) || null;
     closeFreeWill(true); // picking any action closes the free-will gate
     clearScanTags();      // the scene is about to change — drop stale scan tags
     Narrator.stop();      // stop narration about the scene we're leaving
@@ -7845,6 +7849,7 @@
         investigation_id: investigationId,
         investigation_frame: investigationFrame,
         source: actionSource,
+        subject: actionSubject,
       });
       renderItems(items); // immediately shows the player_action echo
       beginFastPolling();
@@ -10948,9 +10953,13 @@
     // risk and forces a consequential, plot-moving outcome (not an inert poke);
     // `moveTarget` is the object's own name, carried through to the MOVE TO
     // transition (fade-to-black + narrator bridging line) inside makeChoice.
+    // `subject` is the DETECTED label itself, sent so the consequence can be
+    // required to keep this object in the next frame (engine.py, OBJECT
+    // PERMANENCE). The action phrase alone isn't enough — it's prose the model
+    // may paraphrase away, whereas this is the exact noun detection found.
     const source = action.id === "move" ? "scan_move" : "scan_interact";
     const moveTarget = action.id === "move" ? obj.label : null;
-    makeChoice(phrase, null, { source, moveTarget });
+    makeChoice(phrase, null, { source, moveTarget, subject: obj.label });
   }
 
   // ------------------------------------------------------------------

@@ -66,6 +66,7 @@ test_*.py
 !test_talk_voice.py
 !test_camp_companions.py
 !test_editor_graph_e2e.py
+!test_object_permanence.py
 
 # Turn-thread scratch markers (swept at runtime; see _sweep_thread_signals)
 thread_signal_*.tmp
