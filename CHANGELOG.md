@@ -1,14 +1,17 @@
 # 🔧 CHANGELOG - August 18, 2026
 
-## 🎬 The Story sheet could describe a whole new game and the world never moved
+## 🎬 The Story sheet never moved the world — so it's gone
 
-**Files:** `game_identity.py`, `test_world_authoring.py`
+**Files:** `game_identity.py`, `prompts_store.py`, `prompt_layers.py`,
+`prompts/simulation_prompts.json`, `prompts/simulation_prompts.defaults.json`,
+`static/js/editor_graph.js`, `test_world_authoring.py`,
+`test_editor_graph_e2e.py`, `GAME_DESIGN_LAYERS_PLAN.md`
 
 Genre, Tone and "What threatens you" — the three fields the in-game World
-Editor's **Story** node actually shows you — only ever reached the *writing*:
+Editor's **Story** node actually showed you — only ever reached the *writing*:
 consequences, offered choices, and a soft tone hint fed to the between-turn
 world rewrite (`game_identity.narrative_directive` / `structure_lines`). None
-of the three touches a still image or the live video. The one field that does
+of the three touched a still image or the live video. The one field that did
 — `world_anchor` ("Live world anchor"), which **replaces** the shipped style
 anchor for the live world model (`engine.build_realtime_base`) — was tiered
 `advanced`, and the graph-based World Editor (the only one most players ever
@@ -18,14 +21,27 @@ Gun jet fighters / enemy MiGs" into Story, watch it save successfully, and the
 rendered world — images and streaming video alike — would never move, with no
 indication anything was missing.
 
-`world_anchor` is now an essential field, so it shows up right in the Story
-sheet next to Genre and Tone. Added a wiring note (`wiring_notes`) that fires
-whenever Genre/Tone/Threat are authored without a world anchor, explaining the
-split in-editor instead of leaving it to be discovered by staring at an
-unchanged screen. `test_essentials_alone_can_author_a_whole_world` — the test
-whose whole job is "essential fields must be able to author a complete world
-without opening a disclosure" — never actually checked the Game block; it does
-now.
+The first fix promoted `world_anchor` to essential so it would at least be
+reachable. On reflection that's still a knob that does almost nothing on its
+own (genre/tone still can't touch the level or the visuals) for a whole extra
+node in the editor and a whole spec block in `game_identity.py` — not a good
+trade. Removed instead:
+
+- `game_identity.py`: the `game_design` spec block (`GAME_KEY`, `GAME_DEFAULTS`,
+  its `IDENTITY_SCHEMA` entry, `game_enabled`), and every place it was
+  threaded through — `narrative_directive`, `world_anchor`, `structure_lines`,
+  `block_preview`, `wiring_notes`, `is_active`.
+- The **Story** node from the Game ring in the graph editor
+  (`static/js/editor_graph.js`) — Game now goes straight to Mechanics / Models
+  / Controls.
+- `game_design` from `prompts_store.SPEC_BLOCK_KEYS`, `prompt_layers.KEY_LAYERS`,
+  and both `prompts/simulation_prompts*.json` files.
+
+Nothing else changes: Character, Level, and Camera are untouched, and
+`game_identity` still degrades cleanly to shipped behavior with the block gone
+— that guarantee is exactly what made this a clean removal instead of a
+migration. `GAME_DESIGN_LAYERS_PLAN.md` gets a retraction note pointing here;
+the Engine/Game/Level/Character taxonomy it describes otherwise still stands.
 
 ---
 

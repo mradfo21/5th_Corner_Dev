@@ -42,7 +42,7 @@ PHONE = {"width": 430, "height": 932}
 # The top ring, in order starting at 12 o'clock.
 DOTS = ["dot:level", "dot:character", "dot:game"]
 # Inside GAME, and inside its two containers.
-GAME_RING = ["dot:story", "dot:mechanics", "dot:models", "dot:controls"]
+GAME_RING = ["dot:mechanics", "dot:models", "dot:controls"]
 MECHANICS = ["dot:camera", "dot:scan", "dot:camp", "dot:narrator", "dot:music"]
 MODELS = ["dot:world", "dot:image", "dot:voice"]
 
@@ -343,12 +343,12 @@ class TestEditorDots(unittest.TestCase):
             self.page.eval_on_selector_all("#eg-world line", "els => els.length"), 0)
 
     def test_game_holds_mechanics_models_and_controls(self):
-        """The depth: inside GAME are the story, the mechanics, the models that
+        """The depth: inside GAME are the mechanics, the models that
         generate it, and how you drive."""
         self._open_ring()
         self._dive("dot:game")
         self.assertEqual(sorted(self._shown()), sorted(["dot:game"] + GAME_RING))
-        self.assertEqual(self._labels(), ["Story", "Mechanics", "Models", "Controls"])
+        self.assertEqual(self._labels(), ["Mechanics", "Models", "Controls"])
 
         self._dive("dot:mechanics")
         self.assertEqual(sorted(self._shown()), sorted(["dot:mechanics"] + MECHANICS))
@@ -460,7 +460,7 @@ class TestEditorDots(unittest.TestCase):
                      '#eg-world .eg-node[data-id="' + id + '"]')
                        .classList.contains('is-changed')""", node_id)
 
-        before = self._identity("game_design")
+        before = self._identity("camera_perspective")
         try:
             # Untouched: nothing on the top ring is claiming to be yours.
             self._open_ring()
@@ -471,27 +471,29 @@ class TestEditorDots(unittest.TestCase):
             # Change one field, the way a person would, and the mark appears off
             # the back of the save with no reload.
             self._dive("dot:game")
-            self._open_leaf("dot:story")
-            box = self.page.query_selector("#eg-sheet-body input[type='text']")
-            box.click()
-            box.fill("found-footage horror")
-            self.page.keyboard.press("Enter")
+            self._dive("dot:mechanics")
+            self._open_leaf("dot:camera")
+            modes = self.page.query_selector_all("#eg-sheet-body .we-mode")
+            other = next(m for m in modes if "active" not in (m.get_attribute("class") or ""))
+            other.click()
             self.page.wait_for_timeout(1200)
             self.page.keyboard.press("Escape")
             self._settle(600)
-            self.assertTrue(glows("dot:story"), "an edited sheet should glow")
+            self.assertTrue(glows("dot:camera"), "an edited sheet should glow")
             # And a container wears what is inside it, so you can see from the
-            # top that something in there is yours.
+            # top that something in there is yours — two levels up, through
+            # Mechanics into Game.
+            self.page.keyboard.press("Escape")
+            self._settle()
+            self.assertTrue(glows("dot:mechanics"),
+                            "a container should inherit the glow from its children")
             self.page.keyboard.press("Escape")
             self._settle()
             self.assertTrue(glows("dot:game"),
-                            "a container should inherit the glow from its children")
+                            "a container should inherit the glow from its grandchildren")
         finally:
-            self._put_identity("game_design", {
-                "genre": before.get("genre", ""),
-                "tone": before.get("tone", ""),
-                "threat_model": before.get("threat_model", ""),
-                "enabled": bool(before.get("enabled")),
+            self._put_identity("camera_perspective", {
+                "mode": before.get("mode", "first_person"),
             })
 
     def test_camera_is_a_mechanic_with_four_perspectives(self):

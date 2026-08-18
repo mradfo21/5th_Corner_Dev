@@ -120,8 +120,6 @@
     {
       id: "game", kind: "group", label: "Game", sub: "The game itself.",
       children: [
-        { id: "story", kind: "spec", block: "game_design", label: "Story",
-          sub: "Genre, tone, what threatens you." },
         {
           id: "mechanics", kind: "group", label: "Mechanics",
           sub: "The things the game can do.",

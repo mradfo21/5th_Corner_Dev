@@ -15,7 +15,7 @@ by how often you touch them and how much a mistake costs:
                one stops the simulation working at all.
 
     GAME       What kind of game is this?      Once per product.
-               Genre, tone, threat model, the look, the live world anchor.
+               The camera, the look, the ambient direction the game gives you.
                Applies to every level; changing it changes all of them.
 
     LEVEL      Where am I, what's here?        Every level.
@@ -80,12 +80,11 @@ LAYERS: List[Dict[str, Any]] = [
         "id": GAME,
         "label": "Game",
         "question": "What kind of game is this?",
-        "tagline": "Genre, tone, threat, and the look — every level inherits it.",
+        "tagline": "The camera and the look — every level inherits it.",
         "blurb": (
             "Your product's identity. Set once and every level is tinted by it: "
-            "what genre this is, how it treats the player, what the camera is, "
-            "what the world looks like on film, and the anchor the live world "
-            "model steers from."
+            "what the camera is, what the world looks like on film, and the "
+            "voice that narrates it."
         ),
         "volatility": "Once per product",
         "risk": RISK_CONTENT,
@@ -140,8 +139,7 @@ LAYERS_BY_ID: Dict[str, Dict[str, Any]] = {l["id"]: l for l in LAYERS}
 #   world_initial_state -> LEVEL, not GAME. It reads as "the world" but what it
 #   actually contains is one place's geography and situation, and it is the seed
 #   the world document grows from for THIS run. Filing it under Level is what
-#   gives a designer somewhere to go; the cross-level identity that used to be
-#   tangled up in it now has its own home in the Game layer's `game_design`.
+#   gives a designer somewhere to go.
 #
 #   camera_perspective -> GAME. First vs third person is a property of the
 #   product, not of a room. Moving it per level would fight every image prompt.
@@ -165,7 +163,6 @@ KEY_LAYERS: Dict[str, str] = {
     "gemini_image_to_image_instructions": ENGINE,
     "gemini_flipbook_4panel_prefix": ENGINE,
     # ── GAME ───────────────────────────────────────────────────────────────
-    "game_design": GAME,
     "image_art_direction": GAME,
     "image_negative_prompt": GAME,
     "camera_perspective": GAME,

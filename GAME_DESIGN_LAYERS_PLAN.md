@@ -1,5 +1,17 @@
 # Engine / Game / Level / Character — a design surface you can think in
 
+> **Update:** The `game_design` spec block (Genre / Tone / What threatens you /
+> Win condition / Live world anchor — the in-game World Editor's "Story" node)
+> described below has been removed. In practice it only ever reached the
+> writing (consequences, choices, a soft tone hint in the world rewrite); the
+> one field that could reach what the player actually sees — `world_anchor` —
+> was tiered `advanced` and unreachable from the graph-based World Editor most
+> players use, so the sheet could be filled in completely and the rendered
+> world would never move. Rather than keep half-wired knobs around, the block
+> was removed; the four-layer taxonomy below (Engine / Game / Level /
+> Character) stands, with the GAME layer now covering camera, look and
+> narration only. See `CHANGELOG.md` for the removal entry.
+
 ## The problem, stated precisely
 
 The whole simulation is exposed and editable, and that is exactly why it's hard
