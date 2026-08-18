@@ -506,14 +506,23 @@ IDENTITY_SCHEMA: List[Dict[str, Any]] = [
              "tier": TIER_ESSENTIAL,
              "placeholder": "The place itself: cold, water rising, no way back the way you came.",
              "help": "Tells the consequence pass what danger means here, so it stops inventing its own."},
+            # Essential, not advanced: genre/tone/threat only reach the WRITING
+            # (consequences, choices, the between-turn world rewrite's tone hint).
+            # This is the one field that reaches what the player actually SEES —
+            # the live video's style anchor. Burying it behind the advanced
+            # disclosure meant the minimal Story sheet (the only one most players
+            # ever open) could say "flight simulator, Top Gun jets" and the
+            # rendered world would never move an inch: nothing they could type
+            # there reached the image or video pipeline at all.
+            {"id": "world_anchor", "label": "Live world anchor", "type": "longtext",
+             "tier": TIER_ESSENTIAL,
+             "placeholder": "First-person handheld VHS camcorder footage, 1993, degraded tape",
+             "help": "REPLACES the shipped look for the live video model. One sentence: medium, era, film stock. "
+                     "Genre and tone above only steer the WRITING — this is what makes the world actually look different."},
             {"id": "win_condition", "label": "What winning looks like", "type": "longtext",
              "tier": TIER_ADVANCED,
              "placeholder": "Get out with proof of what you saw.",
              "help": "Gives the choice writer a direction to push toward."},
-            {"id": "world_anchor", "label": "Live world anchor", "type": "longtext",
-             "tier": TIER_ADVANCED,
-             "placeholder": "First-person handheld VHS camcorder footage, 1993, degraded tape",
-             "help": "REPLACES the shipped look for the live video model. One sentence: medium, era, film stock."},
         ],
     },
     {
@@ -1535,6 +1544,16 @@ def wiring_notes(spec: Optional[Dict[str, Any]] = None) -> Dict[str, List[str]]:
         notes[GAME_KEY].append(
             "Your world anchor REPLACES the shipped look for the live video model. "
             "Describe medium, era and film stock in one sentence, as a camera would see it."
+        )
+    if (
+        game_enabled(spec)
+        and not game.get("world_anchor")
+        and any(game.get(f) for f in ("genre", "tone", "threat_model"))
+    ):
+        notes[GAME_KEY].append(
+            "Genre, tone and threat only steer the WRITING (consequences, choices, the "
+            "between-turn rewrite) — the rendered world and live video keep the shipped "
+            "look until you also fill in the world anchor below."
         )
 
     if char.get("enabled") and not character_enabled(spec):

@@ -1,3 +1,34 @@
+# 🔧 CHANGELOG - August 18, 2026
+
+## 🎬 The Story sheet could describe a whole new game and the world never moved
+
+**Files:** `game_identity.py`, `test_world_authoring.py`
+
+Genre, Tone and "What threatens you" — the three fields the in-game World
+Editor's **Story** node actually shows you — only ever reached the *writing*:
+consequences, offered choices, and a soft tone hint fed to the between-turn
+world rewrite (`game_identity.narrative_directive` / `structure_lines`). None
+of the three touches a still image or the live video. The one field that does
+— `world_anchor` ("Live world anchor"), which **replaces** the shipped style
+anchor for the live world model (`engine.build_realtime_base`) — was tiered
+`advanced`, and the graph-based World Editor (the only one most players ever
+see; `editor_graph.js` always mounts spec sheets with `minimal: true`) never
+renders advanced fields at all. So a player could type "flight simulator / Top
+Gun jet fighters / enemy MiGs" into Story, watch it save successfully, and the
+rendered world — images and streaming video alike — would never move, with no
+indication anything was missing.
+
+`world_anchor` is now an essential field, so it shows up right in the Story
+sheet next to Genre and Tone. Added a wiring note (`wiring_notes`) that fires
+whenever Genre/Tone/Threat are authored without a world anchor, explaining the
+split in-editor instead of leaving it to be discovered by staring at an
+unchanged screen. `test_essentials_alone_can_author_a_whole_world` — the test
+whose whole job is "essential fields must be able to author a complete world
+without opening a disclosure" — never actually checked the Game block; it does
+now.
+
+---
+
 # 🔧 CHANGELOG - August 9, 2026
 
 ## 🛰️ SCAN detects on the box now, not over the network

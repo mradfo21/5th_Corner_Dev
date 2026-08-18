@@ -546,6 +546,12 @@ class CastSheetSurfaceTestCase(unittest.TestCase):
                              essential[gi.SETTING_KEY])
         # The camera switch itself.
         self.assertIn("mode", essential[gi.CAMERA_KEY])
+        # Genre/tone/threat only reach the writing — world_anchor is the one
+        # field that reaches what the player actually SEES (the live video's
+        # style anchor). Burying it in advanced meant the Story sheet could be
+        # filled in start to finish and the rendered world would never move.
+        self.assertLessEqual({"enabled", "genre", "world_anchor"},
+                             essential[gi.GAME_KEY])
 
     def test_the_default_form_stays_small(self):
         """A cap, not a target — and now enforced PER BLOCK.
