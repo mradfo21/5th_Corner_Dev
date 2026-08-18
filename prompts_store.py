@@ -465,12 +465,17 @@ PROMPT_SCHEMA: List[Dict[str, Any]] = [
             "character, {premise} the story so far, {scene} what's on screen and "
             "{recent} the last few beats. {focus} is filled in when something "
             "specific has to be said (a travel beat, a reveal) and is empty "
-            "otherwise, so put it where it should take precedence."
+            "otherwise, so put it where it should take precedence. {avoid} lists "
+            "the lines already spoken this run — drop it and the narrator starts "
+            "repeating itself, because nothing else tells it what it just said. "
+            "Direct the VOICE here, not the content: an instruction to feel a "
+            "particular way, or to want a particular thing, is an instruction to "
+            "say the same line every time."
         ),
         "code_refs": ["engine.py"],
         "live": True,
         "format_safe_required": True,
-        "format_vars": ["world", "self", "premise", "scene", "recent", "focus"],
+        "format_vars": ["world", "self", "premise", "scene", "recent", "focus", "avoid"],
     },
     {
         "id": "camp_scene_prompt",

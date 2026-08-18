@@ -10372,7 +10372,38 @@ def _narrator_script(focus: str, multi: bool, session_id: str) -> list:
     except Exception:
         hist = []
     premise = _story_premise()
-    scene = (st.get("world_prompt") or "").strip()
+    # WHAT IS ACTUALLY ON SCREEN — not the world document.
+    #
+    # This used to be the whole `world_prompt`: a 1200-1500 word summary of the
+    # world at large, rewritten each turn but slow-moving at the top, pasted in
+    # under the label "CURRENT SCENE" with no clip at all. So the one voice that
+    # speaks directly to the player was handed a wall of background that barely
+    # changes between turns and almost nothing about the frame in front of them,
+    # and its bulk drowned the recent beats underneath it. A narrator generated
+    # from near-identical inputs every time says near-identical things.
+    #
+    # Freshest first: the vision pass over the frame that actually rendered
+    # (written every turn by the reground), then the prompt that frame was drawn
+    # from, then the world document as a last resort — clipped either way.
+    scene = ""
+    for _key in ("current_observed_vision", "current_image_prompt", "world_prompt"):
+        scene = (st.get(_key) or "").strip()
+        if scene:
+            break
+    scene = re.sub(r"\s+", " ", scene)[:400]
+    # The cheap signals that genuinely differ turn to turn. Without them the
+    # only thing separating two narrations is model temperature.
+    now = []
+    if (st.get("time_of_day") or "").strip():
+        now.append(str(st["time_of_day"]).strip()[:60])
+    phase = str(st.get("current_phase") or "").strip().lower()
+    if phase and phase != "normal":
+        now.append(f"the situation is {phase}")
+    injuries = [str(i).strip() for i in (st.get("injuries") or []) if str(i).strip()]
+    if injuries:
+        now.append("hurt: " + ", ".join(injuries[:3])[:80])
+    if now:
+        scene = (scene + " — " if scene else "") + "; ".join(now)
     recent = []
     for entry in hist[-3:]:
         d = (entry.get("dispatch") or "").strip()
@@ -10380,6 +10411,15 @@ def _narrator_script(focus: str, multi: bool, session_id: str) -> list:
             recent.append(d[:220])
     recent_block = ("\n\nRECENT EVENTS:\n- " + "\n- ".join(recent)) if recent else ""
     focus_block = f"\n\nFOCUS THIS NARRATION ON: {focus.strip()}" if (focus or "").strip() else ""
+    # What this narrator has already said. Asking a model not to be repetitive
+    # while showing it nothing it previously said is asking it to guess; the
+    # lines it must not land on again are the only reliable way to move it off
+    # them. Kept short — this is a nudge, not a transcript.
+    spoken = [str(s).strip() for s in (st.get("narrator_recent") or []) if str(s).strip()]
+    avoid_block = (
+        "\nALREADY SAID THIS RUN — do not repeat these, or any paraphrase of them:\n- "
+        + "\n- ".join(spoken[-4:]) + "\n"
+    ) if spoken else ""
 
     fallback = [{"character": "narrator",
                  "text": "My hands won't stop shaking. I have to find out what happened here."}]
@@ -10396,7 +10436,7 @@ def _narrator_script(focus: str, multi: bool, session_id: str) -> list:
         cast_names = ", ".join((VOICES_CONFIG.get("cast") or {}).keys()) or "narrator"
         prompt = (
             f"You script {world_label} PREMISE: {premise}"
-            f"{(chr(10)+chr(10)+'CURRENT SCENE: '+scene) if scene else ''}{recent_block}{focus_block}\n\n"
+            f"{(chr(10)+chr(10)+'CURRENT SCENE: '+scene) if scene else ''}{recent_block}{focus_block}\n{avoid_block}\n"
             f"Write a SHORT radio-play style world-building narration: 2 to 5 lines that hand off between "
             f"these voices where it fits: {cast_names}. Keep it atmospheric, ominous, concrete — no meta, "
             f"no stage directions. EACH LINE IS EXACTLY ONE SHORT SENTENCE. Respond with ONLY a JSON array, "
@@ -10453,6 +10493,7 @@ def _narrator_script(focus: str, multi: bool, session_id: str) -> list:
             return _narrator_one_line(authored_dir.format(
                 world=world_label, self=narrator_self, premise=premise,
                 scene=scene_block, recent=recent_block, focus=focus_block_line,
+                avoid=avoid_block,
             ), fallback)
         except (KeyError, IndexError, ValueError) as fmt_err:
             print(f"[NARRATOR] narrator_direction has a bad placeholder "
@@ -10463,18 +10504,26 @@ def _narrator_script(focus: str, multi: bool, session_id: str) -> list:
             f"You are the NARRATOR of {world_label} You are {narrator_self} "
             f"speaking quietly to yourself. PREMISE: {premise}"
             f"{scene_block}{recent_block}\n\n"
-            f"INSTRUCTIONS FOR THIS LINE: {focus.strip()}\n\n"
+            f"INSTRUCTIONS FOR THIS LINE: {focus.strip()}\n{avoid_block}\n"
             f"Speak in FIRST PERSON. Output EXACTLY ONE short, plain sentence — nothing more. "
             f"No meta, no stage directions, no purple prose. Follow the INSTRUCTIONS above exactly."
         )
     else:
+        # Direct the VOICE, never the content. The shipped line used to command
+        # the feeling and the intent — "say how you FEEL: afraid, uneasy, but
+        # determined; make it clear you have to find out what happened here" —
+        # so every unfocused narration was ordered to land on the same beat, and
+        # then did. Repetition was not the model drifting; it was the brief.
         prompt = (
             f"You are the NARRATOR of {world_label} You are {narrator_self} "
             f"speaking quietly to yourself. PREMISE: {premise}"
-            f"{(chr(10)+chr(10)+'CURRENT SCENE: '+scene) if scene else ''}{recent_block}\n\n"
-            f"Speak in FIRST PERSON. Use ONE short, plain sentence — nothing more. Say how you FEEL right now — "
-            f"afraid, uneasy, but determined. Make it clear you have to find out what happened here. "
-            f"Output EXACTLY ONE SENTENCE. No meta, no stage directions, no purple prose."
+            f"{scene_block}{recent_block}\n{avoid_block}\n"
+            f"Speak in FIRST PERSON. Output EXACTLY ONE short, plain sentence — nothing more. "
+            f"React to what is IN FRONT OF YOU RIGHT NOW: name something specific from the "
+            f"current scene, or from what just happened. Do NOT restate the mission, do NOT "
+            f"summarise the premise, and do NOT describe your general mood — the line must only "
+            f"make sense in THIS moment and nowhere else. "
+            f"No meta, no stage directions, no purple prose."
         )
     return _narrator_one_line(prompt, fallback)
 
@@ -10488,6 +10537,32 @@ def _narrator_one_line(prompt: str, fallback: list) -> list:
                  "text": _clip_narration_to_one_sentence(s["text"])} for s in fallback]
     return [{"character": "narrator",
              "text": _clip_narration_to_one_sentence((line or "").strip()[:600])}]
+
+
+NARRATOR_MEMORY = 6
+
+
+def _remember_narration(script: list, session_id: str) -> None:
+    """Keep the last few narrated lines so the next one can be told not to
+    repeat them.
+
+    Best-effort and never raises: a narration that fails to be remembered is a
+    slightly more repetitive next line, which must never be allowed to fail the
+    narration the player is waiting on.
+    """
+    try:
+        lines = [str((s or {}).get("text") or "").strip() for s in (script or [])]
+        lines = [ln for ln in lines if ln]
+        if not lines:
+            return
+        with WORLD_STATE_LOCK:
+            st = _load_state(session_id)
+            kept = [str(x) for x in (st.get("narrator_recent") or []) if str(x).strip()]
+            st["narrator_recent"] = (kept + lines)[-NARRATOR_MEMORY:]
+            _save_state(st, session_id)
+            _sync_ambient_state(st, session_id)
+    except Exception as e:
+        log_error(f"[NARRATOR] could not remember narration: {e}")
 
 
 def api_narrator_worldbuild():
@@ -10516,6 +10591,7 @@ def api_narrator_worldbuild():
         if follow_focus:
             follow_script = _narrator_script(follow_focus, False, session_id)
             script = list(script or []) + list(follow_script or [])
+        _remember_narration(script, session_id)
         # Attach the resolved voice per line so the client's generative agent
         # knows which voice to speak each segment in.
         for seg in script:
