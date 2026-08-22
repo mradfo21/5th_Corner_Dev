@@ -1,0 +1,14 @@
+{
+  "name": "somewhere-storygen",
+  "install": "bash .cursor/install.sh",
+  "terminals": [
+    {
+      "name": "game-server",
+      "command": "python3 run_local.py --mock --no-browser --port 5001",
+      "description": "SOMEWHERE standalone game server, offline mock backend — http://localhost:5001/standalone (no API keys required; set GEMINI_API_KEY/OPENAI_API_KEY/ANTHROPIC_API_KEY as secrets to use a real backend instead)"
+    }
+  ],
+  "ports": [
+    { "name": "game", "port": 5001 }
+  ]
+}

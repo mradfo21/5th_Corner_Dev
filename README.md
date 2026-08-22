@@ -75,6 +75,7 @@ python bot.py
 ## 📖 Documentation
 
 - **[AGENT_GUIDE.md](AGENT_GUIDE.md)** - Comprehensive technical guide for developers
+- **[CLOUD_AGENT_TESTING.md](CLOUD_AGENT_TESTING.md)** - Run and play the game fully offline/locally (no API keys, no Render) so it can actually be tested — by you or by an AI agent — instead of only by poking the deployed site
 - **[DEPLOYMENT.md](DEPLOYMENT.md)** - Cloud deployment instructions (Render, Railway, AWS, Docker)
 
 ---
