@@ -39,6 +39,26 @@ GEMINI_API_KEY = _get_api_key()
 # Load prompts — shared, hot-reloadable singleton (see prompts_store.py).
 from prompts_store import PROMPTS
 
+# Every prompt in the game reads this document, so its size is the game's
+# per-turn token floor. Measured after the static lore is appended.
+_WORLD_PROMPT_CAP = int(os.getenv("WORLD_PROMPT_CAP", "9000"))
+
+
+def _trim_to_sentence(text: str) -> str:
+    """Drop a trailing half-sentence.
+
+    The world state is regenerated against a hard token ceiling, so the reply
+    routinely stopped mid-word. That fragment then rode into every downstream
+    prompt for the rest of the turn.
+    """
+    t = (text or "").rstrip()
+    if not t or t[-1] in ".!?\"'»":
+        return t
+    cut = max(t.rfind(". "), t.rfind(".\n"), t.rfind("! "), t.rfind("? "))
+    if cut > len(t) * 0.5:
+        return t[:cut + 1]
+    return t
+
 def evolve_world_state(
     dispatches: List[Dict],
     consequence_summary: str,
@@ -133,6 +153,16 @@ def evolve_world_state(
     # rewrite the opening world state and watch this pass quietly walk it back.
     house_rules = (PROMPTS.get("world_evolution_instructions") or "").strip()
     house_rules_block = f"\n\nHOUSE RULES FOR HOW THIS WORLD CHANGES:\n{house_rules}\n" if house_rules else ""
+    try:
+        import experience_store
+        if experience_store.lore_brief():
+            house_rules_block += (
+                "\nLORE IS CANON. Historical background already in the current "
+                "world state (company, year, place, what they buried) is fixed. "
+                "Rewrite the living situation; do not invent a different setting.\n"
+            )
+    except Exception:
+        pass
 
     # Build evolution prompt
     prompt = f"""You are evolving a dynamic world state for a survival horror game.{cast_rule}{house_rules_block}
@@ -141,7 +171,7 @@ CRITICAL PHILOSOPHY:
 The world_prompt is a LIVING DOCUMENT that grows richer as the player progresses.
 It is NOT a static setting - it EVOLVES to reflect the player's journey.
 
-CURRENT WORLD STATE (1200-1500 words):
+CURRENT WORLD STATE:
 {old_world_prompt}
 
 RECENT EVENTS (last 10 turns):
@@ -163,14 +193,17 @@ VISION ANALYSIS (what your camera sees right now):
 {vision_description if vision_description else "[No visual analysis]"}
 
 YOUR TASK:
-Rewrite the ENTIRE world_prompt (1200-1500 words) to incorporate this new turn.
+Rewrite the ENTIRE world_prompt (500-650 words) to incorporate this new turn.
 
 CRITICAL RULES:
 1. PRESERVE the core setting and tone ({setting_line})
 2. INTEGRATE new discoveries, locations, threats from this turn
 3. UPDATE spatial position (where the protagonist is NOW)
 4. MAINTAIN narrative continuity (what's happened so far)
-5. KEEP it 1200-1500 words (rich but not bloated)
+5. KEEP it 500-650 words. This is the LIVING state — who is here, where they
+   are, what just changed, what is closing in. The static background (company,
+   year, region, what they buried, what the biome looks like) is appended
+   separately and is NOT your job to restate. Do not pad it back in.
 6. AMPLIFY tension and horror as story progresses
 7. CARRY the world's own drift forward — the player SAW those changes happen, so
    they are now facts about this place, not weather that resets
@@ -183,7 +216,8 @@ STRUCTURE (maintain these sections):
 - ENVIRONMENT: {environment_line}
 - TONE: {tone_line}
 
-Write the NEW world_prompt (1200-1500 words) that reflects everything up to this moment.
+Write the NEW world_prompt (500-650 words) that reflects everything up to this moment.
+End on a complete sentence.
 
 RETURN ONLY THE NEW WORLD PROMPT TEXT - NO PREAMBLE, NO EXPLANATION, JUST THE EVOLVED STATE.
 """
@@ -199,9 +233,14 @@ RETURN ONLY THE NEW WORLD PROMPT TEXT - NO PREAMBLE, NO EXPLANATION, JUST THE EV
             },
             json={
                 "contents": [{"parts": [{"text": prompt}]}],
-                "generationConfig": {"thinkingConfig": {"thinkingBudget": 0}, 
+                "generationConfig": {"thinkingConfig": {"thinkingBudget": 0},
                     "temperature": 0.7,
-                    "maxOutputTokens": 900  # trimmed for speed; still a substantial world update
+                    # Has to clear the word target with headroom. At 900 against
+                    # a "1200-1500 words" ask the reply was cut off mid-word
+                    # every turn, so the world document permanently ended in a
+                    # half-sentence ("...agitated by") that every downstream
+                    # prompt then read.
+                    "maxOutputTokens": 1100
                 }
             },
             timeout=20
@@ -213,16 +252,29 @@ RETURN ONLY THE NEW WORLD PROMPT TEXT - NO PREAMBLE, NO EXPLANATION, JUST THE EV
         
         result = response.json()
         new_world_prompt = result["candidates"][0]["content"]["parts"][0]["text"].strip()
-        
-        # Validate length (should be 1000-2000 words, ~5000-10000 chars)
+        new_world_prompt = _trim_to_sentence(new_world_prompt)
+
         if len(new_world_prompt) < 800:
             print(f"[WORLD EVOLUTION V3] WARNING: New world prompt too short ({len(new_world_prompt)} chars), keeping old")
             new_world_prompt = old_world_prompt
-        elif len(new_world_prompt) > 12000:
-            print(f"[WORLD EVOLUTION V3] WARNING: New world prompt too long ({len(new_world_prompt)} chars), truncating")
-            new_world_prompt = new_world_prompt[:12000] + "..."
-        
+
         print(f"[WORLD EVOLUTION V3] World prompt evolved: {len(old_world_prompt)} -> {len(new_world_prompt)} chars")
+        try:
+            import experience_store
+            lore_chars = len(experience_store.lore_brief())
+            new_world_prompt = experience_store.with_lore(new_world_prompt)
+            if lore_chars:
+                print(f"[WORLD EVOLUTION V3] + {lore_chars} chars static lore "
+                      f"= {len(new_world_prompt)} chars total")
+        except Exception:
+            pass
+
+        # The ceiling has to sit AFTER the lore append, or the one thing that
+        # actually makes this document huge is the one thing it never measures.
+        if len(new_world_prompt) > _WORLD_PROMPT_CAP:
+            print(f"[WORLD EVOLUTION V3] WARNING: world prompt {len(new_world_prompt)} chars "
+                  f"> cap {_WORLD_PROMPT_CAP}, truncating")
+            new_world_prompt = _trim_to_sentence(new_world_prompt[:_WORLD_PROMPT_CAP])
         
     except Exception as e:
         print(f"[WORLD EVOLUTION V3] Evolution failed: {e}")
@@ -240,16 +292,25 @@ RETURN ONLY THE NEW WORLD PROMPT TEXT - NO PREAMBLE, NO EXPLANATION, JUST THE EV
     # Update state with new world prompt
     state["world_prompt"] = new_world_prompt
     
-    # Add to recent events buffer (cap at 10)
+    # Add to recent events buffer (cap at 10). The turn loop may already
+    # have written this beat; do not append a second line.
     event_summary = f"{player_action} -> {consequence_summary[:80]}"
-    state["recent_events"].append(event_summary)
-    if len(state["recent_events"]) > 10:
-        state["recent_events"] = state["recent_events"][-10:]
+    existing = state.get("recent_events") or []
+    last = existing[-1] if existing else ""
+    if not (last and str(last).startswith(f"{player_action} ->")):
+        existing = list(existing)
+        existing.append(event_summary)
+        if len(existing) > 10:
+            existing = existing[-10:]
+        state["recent_events"] = existing
     
-    # Extract and update seen elements
-    new_entities = _extract_entities_from_text(consequence_summary, api_key=api_key)
-    if vision_description:
-        new_entities.extend(_extract_entities_from_text(vision_description, api_key=api_key))
+    # One extraction over both channels. These were two calls, and while the
+    # narrative and the caption were the same string it was the same request
+    # twice a turn for the same answer.
+    entity_source = "\n".join(
+        dict.fromkeys(t for t in (consequence_summary, vision_description) if t)
+    )
+    new_entities = _extract_entities_from_text(entity_source, api_key=api_key)
     
     if new_entities:
         state["seen_elements"].extend(new_entities)
