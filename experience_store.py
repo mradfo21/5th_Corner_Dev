@@ -26,6 +26,7 @@ picker can switch which file is active.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import threading
@@ -110,7 +111,12 @@ _LORE_MAX_NOTES = 80_000
 _LORE_MAX_TEXT = 200_000
 _LORE_MAX_IMAGE = 8 * 1024 * 1024
 # Horizon-scale story bibles are ~9k; leave room for extra notes/files.
-_LORE_BRIEF_CAP = 48_000
+# This brief is appended to the world document every turn, and the world
+# document is read by every prompt in the game, so at 48k the ceiling was not a
+# ceiling — one Experience's notes field was 9.4k characters on its own and made
+# up two thirds of the document. Bounded so the living world state, which is the
+# part that actually changes between turns, cannot be crowded out.
+_LORE_BRIEF_CAP = int(os.getenv("LORE_BRIEF_CAP", "6000"))
 _SLUG_RE = re.compile(r"[^a-zA-Z0-9_-]+")
 _LORE_NAME_RE = re.compile(r"[^a-zA-Z0-9._ -]+")
 

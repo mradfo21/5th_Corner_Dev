@@ -13971,11 +13971,11 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
         else:
             vision_dispatch = dispatch
         
-        # Hard cap at 400 characters
-        if len(dispatch) > 400:
-            dispatch = dispatch[:385] + "...(truncated)"
-        if len(vision_dispatch) > 400:
-            vision_dispatch = vision_dispatch[:385] + "...(truncated)"
+        # 400 was sized for a one-line caption. The narrative is 2-3 sentences
+        # of prose and was landing in the feed as "...(truncated)" mid-word;
+        # the caption keeps the tighter bound because it steers the renderer.
+        dispatch = _clip_sentence(dispatch, 700)
+        vision_dispatch = _clip_sentence(vision_dispatch, 400)
         
         return dispatch, vision_dispatch, player_alive, provisional_choices
         
@@ -14025,6 +14025,20 @@ _DIEGETIC_DISPATCHES = (
     "Static swallows the shot. You keep rolling on instinct; when the picture returns "
     "the shadows have rearranged themselves.",
 )
+
+
+def _clip_sentence(text: Optional[str], limit: int) -> str:
+    """Bound a beat without leaving a half-word in the feed."""
+    t = (text or "").strip()
+    if len(t) <= limit:
+        return t
+    cut = t[:limit]
+    end = max(cut.rfind(". "), cut.rfind("! "), cut.rfind("? "))
+    if end > limit * 0.5:
+        return cut[:end + 1]
+    if " " in cut:
+        cut = cut[:cut.rfind(" ")]
+    return cut.rstrip(" ,;:-") + "..."
 
 
 def _is_failure_dispatch(text: Optional[str]) -> bool:

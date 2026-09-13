@@ -41,7 +41,7 @@ from prompts_store import PROMPTS
 
 # Every prompt in the game reads this document, so its size is the game's
 # per-turn token floor. Measured after the static lore is appended.
-_WORLD_PROMPT_CAP = int(os.getenv("WORLD_PROMPT_CAP", "9000"))
+_WORLD_PROMPT_CAP = int(os.getenv("WORLD_PROMPT_CAP", "11000"))
 
 
 def _trim_to_sentence(text: str) -> str:

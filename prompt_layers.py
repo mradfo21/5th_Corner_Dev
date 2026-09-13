@@ -149,12 +149,16 @@ LAYERS_BY_ID: Dict[str, Dict[str, Any]] = {l["id"]: l for l in LAYERS}
 #   (A level still tints the frame through its own palette + era fields.)
 #
 #   image_camera_rules -> ENGINE, deliberately split from art direction: it is
-#   framing physics and no-text/no-border bans, i.e. a rulebook, not a look.
+#   framing physics, i.e. a rulebook, not a look.
 
 KEY_LAYERS: Dict[str, str] = {
     # ── ENGINE ─────────────────────────────────────────────────────────────
     "action_consequence_instructions": ENGINE,
     "player_choice_generation_instructions": ENGINE,
+    "encounter_brief_instructions": ENGINE,
+    "encounter_plate_anchor": ENGINE,
+    "encounter_choice_overlay": ENGINE,
+    "encounter_choice_instructions": ENGINE,
     "world_evolution_instructions": ENGINE,
     "situation_summary_instructions": ENGINE,
     "field_notes_format": ENGINE,

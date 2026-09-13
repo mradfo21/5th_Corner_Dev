@@ -197,11 +197,13 @@ def editable_keys(data: Optional[Dict[str, Any]] = None) -> List[str]:
 # redirecting how the world LOOKS meant editing the same paragraphs twice and
 # hoping they stayed in sync. The shared material now lives in two fields:
 #
-#   image_art_direction  — the creative dial: era, film stock, palette, horror
-#                          register. This is the ONE field you edit to redirect
-#                          the world's look.
-#   image_camera_rules   — the mechanical rulebook: POV, human body physics,
-#                          framing, what may be in frame, no-text bans.
+#   image_art_direction  — the creative dial: era, palette, horror register.
+#                          This is the ONE field you edit to redirect the
+#                          world's look. Camcorder / viewfinder / tape-HUD
+#                          language here burns interface into the frame.
+#   image_camera_rules   — the mechanical rulebook: human body physics, framing,
+#                          what may be in frame. Deliberately says NOTHING
+#                          about perspective — that is game_identity's job.
 #
 # Both are substituted into the two templates via {art_direction} and
 # {camera_rules}, leaving each template holding only its genuine delta (a first
@@ -221,6 +223,34 @@ IMAGE_TEMPLATE_KEYS = (
 SHARED_IMAGE_VARS = ("art_direction", "camera_rules")
 
 
+def _perspective_corrected(text: str) -> str:
+    """Retune + reconcile a shared block against the active camera mode.
+
+    `build_image_prompt` runs its scene text through `game_identity.apply`, but
+    the shared blocks are substituted in HERE, downstream of that — so they used
+    to reach the model exactly as written in JSON, never seeing the perspective
+    pipeline. In third person that meant every single frame shipped the cast
+    directive's "the PLAYER CHARACTER is fully visible — head to feet" and, a
+    thousand words later, `image_camera_rules`' "NEVER show your face, head, or
+    full body" / "no part of you exists in frame". The model was told to both
+    show and never show the protagonist on every render, which is why the mode
+    wouldn't stick and why framing flip-flopped between turns.
+
+    "raw" is retune + reconcile with no directive prepended — the scene text
+    already carries one, and stacking two was the other half of the problem.
+
+    Imported lazily: `game_identity` imports this module at import time.
+    """
+    if not text:
+        return text
+    try:
+        import game_identity
+        return game_identity.apply(text, "raw")
+    except Exception:
+        # Never let perspective correction be the reason an image doesn't render.
+        return text
+
+
 def render_image_template(template_key: str, prompt: str) -> str:
     """Render an image template with the scene and the shared direction blocks.
 
@@ -230,10 +260,16 @@ def render_image_template(template_key: str, prompt: str) -> str:
     written inline, and injecting it again would duplicate it.
     """
     template = PROMPTS.get(template_key, "") or ""
+    art = PROMPTS.get(ART_DIRECTION_KEY, "") or ""
+    try:
+        import game_identity
+        art = game_identity.authored_art_direction() or art
+    except Exception:
+        pass
     return template.format(
         prompt=prompt,
-        art_direction=PROMPTS.get(ART_DIRECTION_KEY, "") or "",
-        camera_rules=PROMPTS.get(CAMERA_RULES_KEY, "") or "",
+        art_direction=_perspective_corrected(art),
+        camera_rules=_perspective_corrected(PROMPTS.get(CAMERA_RULES_KEY, "") or ""),
     )
 
 
@@ -388,7 +424,7 @@ PROMPT_SCHEMA: List[Dict[str, Any]] = [
         "format_vars": [
             "dispatch", "seen_elements", "recent_choices", "caption",
             "image_description", "time_of_day", "beat_nudge",
-            "situation_summary", "injury_state",
+            "situation_summary",
         ],
     },
     {
@@ -397,7 +433,7 @@ PROMPT_SCHEMA: List[Dict[str, Any]] = [
         "group": "image",
         "tier": TIER_PRIMARY,
         "type": "longtext",
-        "description": "Era, film stock, palette, degradation, horror register. Reaches the first frame and every continuation at once — this is the field to edit to redirect the look.",
+        "description": "The look of every frame: era, palette, horror. Write how the world should photograph. Camcorder / viewfinder / tape-HUD language burns interface onto the picture. Reaches the first frame and every continuation.",
         "code_refs": ["gemini_image_utils.py", "krea_image_utils.py"],
         "live": True,
     },
@@ -422,6 +458,46 @@ PROMPT_SCHEMA: List[Dict[str, Any]] = [
         "live": True,
     },
     {
+        "id": "encounter_brief_instructions",
+        "label": "Encounter Brief",
+        "group": "narrative",
+        "tier": TIER_ADVANCED,
+        "type": "longtext",
+        "description": "Invent a new character and a concrete danger for the place the player is standing. Used when an Encounter Moment interrupts exploration.",
+        "code_refs": ["encounter.py", "engine.py"],
+        "live": True,
+    },
+    {
+        "id": "encounter_plate_anchor",
+        "label": "Encounter Plate",
+        "group": "image",
+        "tier": TIER_ADVANCED,
+        "type": "longtext",
+        "description": "Lens language for the confrontation restage — same place, new camera, character and danger visible.",
+        "code_refs": ["encounter.py"],
+        "live": True,
+    },
+    {
+        "id": "encounter_choice_overlay",
+        "label": "Encounter Choices",
+        "group": "narrative",
+        "tier": TIER_ADVANCED,
+        "type": "longtext",
+        "description": "Extra instructions layered on the usual choice slate so the three verbs address the character and the danger.",
+        "code_refs": ["encounter.py", "choices.py"],
+        "live": True,
+    },
+    {
+        "id": "encounter_choice_instructions",
+        "label": "Encounter Choice Rules",
+        "group": "narrative",
+        "tier": TIER_ADVANCED,
+        "type": "longtext",
+        "description": "The system prompt for the three confrontation verbs — one per lane (confront, evade, use). encounter.py reads this; it was missing from this registry, so the editor never offered it.",
+        "code_refs": ["encounter.py"],
+        "live": True,
+    },
+    {
         "id": "field_notes_format",
         "label": "Field Notes Voice",
         "group": "narrative",
@@ -439,7 +515,7 @@ PROMPT_SCHEMA: List[Dict[str, Any]] = [
         "group": "image",
         "tier": TIER_ADVANCED,
         "type": "longtext",
-        "description": "The mechanical rulebook shared by both image templates: framing distance, what may appear in frame, no-text and no-border bans. Perspective itself is a switch in Cast & Camera, not something to edit here.",
+        "description": "Framing, continuity, and what may appear. Keep this short — the look lives in How The World Looks. Perspective itself is a switch in Cast & Camera. Continuity editing (shot size, screen direction, follow grammar) belongs here.",
         "code_refs": ["gemini_image_utils.py", "krea_image_utils.py"],
         "live": True,
     },
