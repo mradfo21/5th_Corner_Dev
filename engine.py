@@ -339,26 +339,129 @@ ELEVENLABS_NARRATOR_AGENT_ID = (os.getenv("ELEVENLABS_NARRATOR_AGENT_ID")
                                 or ELEVENLABS_AGENT_ID or "").strip()
 
 
+def _library_voices() -> list:
+    """Live ElevenLabs library (your voices), or [] when the account can't
+    be read. Never raises — a failed list must not break TALK."""
+    try:
+        import voice_design as _vd
+        lib = _vd.voice_library()
+        if lib.get("ok"):
+            return list(lib.get("voices") or [])
+    except Exception:
+        pass
+    return []
+
+
+def _shipped_voice_ids() -> set:
+    known = {v.get("id") for v in (VOICES_CONFIG.get("voices") or []) if isinstance(v, dict)}
+    for c in (VOICES_CONFIG.get("cast") or {}).values():
+        if isinstance(c, dict) and c.get("voice_id"):
+            known.add(c["voice_id"])
+    known.add(VOICES_CONFIG.get("default_voice"))
+    known.add(VOICES_CONFIG.get("narrator_voice"))
+    known.discard(None)
+    known.discard("")
+    return known
+
+
+def _is_shipped_voice_id(vid: str) -> bool:
+    return bool(vid) and vid in _shipped_voice_ids()
+
+
+def _pick_named_library_voice(lib: list, needles) -> str:
+    for needle in needles:
+        n = (needle or "").lower()
+        if not n:
+            continue
+        for v in lib:
+            if n in (v.get("name") or "").lower() and v.get("id"):
+                return v["id"]
+    return ""
+
+
+_DEFAULT_LIBRARY_AVOID = (
+    "bread", "eas", "p.a", " pa", "pa ", "announcer", "commercial",
+    "dispatch", "fabricator", "sfx", "foley", "stinger", "pusher",
+)
+
+
+def _pick_default_library_voice(lib: list) -> str:
+    """A general character voice, not the first alphabetical novelty clip."""
+    for v in lib:
+        name = (v.get("name") or "").lower()
+        if "narrator" in name:
+            continue
+        if any(tok in name for tok in _DEFAULT_LIBRARY_AVOID):
+            continue
+        if v.get("id"):
+            return v["id"]
+    return (lib[0].get("id") if lib else "") or ""
+
+
+def _usable_explicit_voice(explicit: str, lib: list) -> str:
+    """An editor/env override wins unless it is a leftover stock id."""
+    vid = (explicit or "").strip()
+    if not vid:
+        return ""
+    if lib and _is_shipped_voice_id(vid) and not any(v.get("id") == vid for v in lib):
+        return ""
+    return vid
+
+
 def _default_voice_id() -> str:
-    return (ELEVENLABS_VOICE_ID or VOICES_CONFIG.get("default_voice") or "cjVigY5qzO86Huf0OWal").strip()
+    lib = _library_voices()
+    picked = _usable_explicit_voice(ELEVENLABS_VOICE_ID, lib)
+    if picked:
+        return picked
+    if lib:
+        return _pick_default_library_voice(lib) or (lib[0].get("id") or "").strip()
+    return (VOICES_CONFIG.get("default_voice") or "cjVigY5qzO86Huf0OWal").strip()
+
+
+def _narrator_voice_id() -> str:
+    """Who reads the story. A saved stock id must not beat Defect - Narrator."""
+    lib = _library_voices()
+    picked = _usable_explicit_voice(ELEVENLABS_NARRATOR_VOICE_ID, lib)
+    if picked:
+        return picked
+    if lib:
+        return _pick_named_library_voice(lib, ("narrator",)) or _default_voice_id()
+    return (ELEVENLABS_NARRATOR_VOICE_ID or VOICES_CONFIG.get("narrator_voice")
+            or _default_voice_id()).strip()
 
 
 def get_voice_registry() -> dict:
     """The client-facing voice catalog: the selectable voices, the resolved
-    defaults, and the per-kind + named-cast mappings. Safe to expose (no keys)."""
-    voices = VOICES_CONFIG.get("voices") or []
-    # Only surface well-formed entries.
-    clean = [
-        {"id": v.get("id"), "name": v.get("name") or v.get("id"),
-         "tag": v.get("tag", ""), "gender": v.get("gender", "")}
-        for v in voices if isinstance(v, dict) and v.get("id")
-    ]
+    defaults, and the per-kind + named-cast mappings. Safe to expose (no keys).
+
+    When the ElevenLabs account is readable this is YOUR library — the voices
+    you made there — not the eleven stock ids baked into voices.json. The
+    shipped roster is only the fallback for a missing/unusable key.
+    """
+    lib = _library_voices()
+    if lib:
+        clean = [
+            {"id": v.get("id"), "name": v.get("name") or v.get("id"),
+             "tag": v.get("tag") or v.get("description") or v.get("category") or "",
+             "gender": v.get("gender", ""),
+             "category": v.get("category", "")}
+            for v in lib if isinstance(v, dict) and v.get("id")
+        ]
+    else:
+        voices = VOICES_CONFIG.get("voices") or []
+        clean = [
+            {"id": v.get("id"), "name": v.get("name") or v.get("id"),
+             "tag": v.get("tag", ""), "gender": v.get("gender", ""),
+             "category": "premade"}
+            for v in voices if isinstance(v, dict) and v.get("id")
+        ]
     return {
         "voices": clean,
         "default": _default_voice_id(),
-        "narrator": ELEVENLABS_NARRATOR_VOICE_ID or _default_voice_id(),
+        "narrator": _narrator_voice_id(),
         "by_kind": VOICES_CONFIG.get("by_kind") or {},
         "cast": VOICES_CONFIG.get("cast") or {},
+        "source": "library" if lib else "shipped",
     }
 
 
@@ -366,27 +469,32 @@ def _valid_voice_id(voice_id) -> str:
     """Return voice_id if it's a known/registered id, else ''. Guards against a
     client sending an arbitrary/unknown voice into ElevenLabs.
 
-    "Known" now includes ids designed dynamically by ``voice_design`` and
-    cached in ``voice_design_cache.json`` — so a hot-swapped custom character
-    voice flows through the same validation as the static presets. When the
-    dynamic-voices module is unavailable/disabled, its cache lookup is a
-    quiet no-op and behavior falls back to today's static-only allowlist.
+    When the live library is readable, leftover stock ids (Eric, localStorage
+    talk_voice_id, a companion saved under the old roster) are rejected so a
+    relaunch cannot quietly go back to vanilla.
     """
     vid = str(voice_id or "").strip()
     if not vid:
         return ""
-    known = {v.get("id") for v in (VOICES_CONFIG.get("voices") or []) if isinstance(v, dict)}
-    # Also accept ids referenced by the cast (narrator characters).
-    for c in (VOICES_CONFIG.get("cast") or {}).values():
-        if isinstance(c, dict) and c.get("voice_id"):
-            known.add(c["voice_id"])
+    lib = _library_voices()
+    if lib:
+        if any(isinstance(v, dict) and v.get("id") == vid for v in lib):
+            return vid
+        try:
+            import voice_design as _vd
+            if _vd.is_ready_voice_id(vid):
+                return vid
+        except Exception:
+            pass
+        return ""
+    known = _shipped_voice_ids()
     if vid in known:
         return vid
-    # Accept designed voices from the dynamic-voices cache. Wrapped in a
-    # broad try so a missing module / corrupt cache never blocks a TTS call.
     try:
         import voice_design as _vd
         if _vd.is_ready_voice_id(vid):
+            return vid
+        if _vd.is_library_voice_id(vid):
             return vid
     except Exception:
         pass
@@ -395,6 +503,8 @@ def _valid_voice_id(voice_id) -> str:
 
 def resolve_voice_for_kind(kind: str) -> str:
     """Pick the default voice for a SCAN subject kind (person/creature/…)."""
+    if _library_voices():
+        return _default_voice_id()
     by_kind = VOICES_CONFIG.get("by_kind") or {}
     return (by_kind.get((kind or "").strip().lower()) or _default_voice_id()).strip()
 
@@ -452,6 +562,10 @@ def resolve_fallback_voice_for_subject(subject: dict) -> str:
     kind = str(subject.get("kind") or "").strip().lower()
 
     voices = VOICES_CONFIG.get("voices") or []
+    # When the account's own voices are readable, cast from those — not Eric.
+    lib = _library_voices()
+    if lib:
+        voices = lib
     # Exclude the narrator from the character pool — it's marked with a
     # distinctive "the archive voice" tag and would break the fiction.
     def _pool(pred):
@@ -467,9 +581,16 @@ def resolve_fallback_voice_for_subject(subject: dict) -> str:
                 return True
         return False
 
-    # Machines / voice-carriers: gender-neutral synthetic pool.
+    # Machines / voice-carriers: gender-neutral synthetic pool. Your library
+    # often has no `gender` label, so also match PA / EAS / announcer names.
     if kind == "machine" or _has_hint(_FALLBACK_MACHINE_HINTS):
         pool = _pool(lambda v: (v.get("gender") or "").lower() == "neutral")
+        if not pool and lib:
+            pool = _pool(lambda v: any(
+                tok in (v.get("name") or "").lower()
+                for tok in ("pa", "announcer", "eas", "dispatch", "radio",
+                            "intercom", "machine", "terminal")
+            ))
         if pool:
             return _hash_pick(label or "machine", pool)
 
@@ -495,6 +616,13 @@ def resolve_fallback_voice_for_subject(subject: dict) -> str:
     pool = _pool(lambda v: (v.get("gender") or "").lower() in ("male", "female"))
     if pool:
         return _hash_pick(label or kind, pool)
+
+    # Library voices rarely carry ElevenLabs gender labels. Hash the whole
+    # roster rather than falling back to stock Eric from by_kind.
+    if lib:
+        pool = _pool(lambda v: True)
+        if pool:
+            return _hash_pick(label or kind, pool)
 
     return resolve_voice_for_kind(kind)
 
@@ -637,18 +765,33 @@ def resolve_voice_for_subject(subject: dict, session_id: str = "default",
 
 def resolve_cast(character: str) -> dict:
     """Resolve a narrator 'character' name to its voice + TTS settings. Falls
-    back to the narrator voice for an unknown name so narration always speaks."""
+    back to the narrator voice for an unknown name so narration always speaks.
+
+    The NARRATOR is special: its voice is editor-owned (the `narrator_voice_id`
+    tunable writes ELEVENLABS_NARRATOR_VOICE_ID) and so has to be read live,
+    every call. It used to lose to `cast.narrator.voice_id` in voices.json,
+    because every caller resolved `cast["voice_id"] or ELEVENLABS_NARRATOR_...`
+    and the shipped registry names a narrator — so the fallback was never
+    reached and picking a voice in the editor did nothing at all, for ever.
+    The static entry still supplies the TTS settings (stability, speed); it
+    just no longer decides who speaks.
+
+    Byte-identical until someone actually changes it: the global is seeded from
+    voices.json's `narrator_voice`, which is that same id.
+    """
     cast = VOICES_CONFIG.get("cast") or {}
     key = (character or "narrator").strip().lower()
-    entry = cast.get(key)
-    if not isinstance(entry, dict) or not entry.get("voice_id"):
-        entry = {"voice_id": ELEVENLABS_NARRATOR_VOICE_ID or _default_voice_id()}
+    raw = cast.get(key)
+    # A copy: callers read settings off this, and handing out the registry's own
+    # dict invites a mutation that outlives the request.
+    entry = dict(raw) if isinstance(raw, dict) else {}
+    if key == "narrator":
+        entry["voice_id"] = _narrator_voice_id()
+    if not entry.get("voice_id"):
+        entry["voice_id"] = _narrator_voice_id()
     return entry
 
-# DEBUG: Log API keys at module initialization
 print(f"[ENGINE INIT] GEMINI_API_KEY loaded: {'YES' if GEMINI_API_KEY else 'NO (EMPTY!)'}")
-if GEMINI_API_KEY:
-    print(f"[ENGINE INIT] Key: {GEMINI_API_KEY[:20]}...{GEMINI_API_KEY[-8:]} (len={len(GEMINI_API_KEY)})")
 print(f"[ENGINE INIT] Source: os.getenv={bool(os.getenv('GEMINI_API_KEY'))}, config={bool(CONFIG.get('GEMINI_API_KEY'))}")
 
 # Load prompts — shared, hot-reloadable singleton (see prompts_store.py).
@@ -678,7 +821,18 @@ except Exception as _lv_err:  # noqa: BLE001
     print(f"[ENGINE INIT] local_vision unavailable: {_lv_err}", flush=True)
 
 # Game constants - Structured time/atmosphere tracking
-INITIAL_TIME_OF_DAY = "6:30pm | weather: clear, warm light | mood: tense anticipation"  # Start time matching world_initial_state
+# Start time matching world_initial_state. Named lighting ("golden hour") is
+# the evening of the run — image generation reads this string and should not
+# see it rewritten mid-session. Also the format example for
+# _generate_random_starting_time.
+INITIAL_TIME_OF_DAY = "6:30pm | weather: clear golden hour light | mood: tense anticipation"
+
+# Detection floors. The logic that moves these lives further down with the rest
+# of the turn simulation (see "detection"); only the constants are up here,
+# because _load_state runs during import and has to be able to backfill a save
+# that predates the system.
+DETECT_HIDDEN, DETECT_SUSPICIOUS, DETECT_ALERTED, DETECT_HUNTED = range(4)
+DETECT_NAMES = ("hidden", "suspicious", "alerted", "hunted")
 
 # NOTE: engine.py no longer owns a Flask app. The feed-based game loop
 # functions below (api_reset / api_feed / api_choose / api_regenerate_choices)
@@ -1203,6 +1357,288 @@ def apply_experience_mode(mode: str, session_id: str = "default") -> bool:
     )
     return True
 
+
+# ── Experience graph (worlds + transitions) ───────────────────────────────
+# Distinct from EXPERIENCE_MODES above (flipbook / stills). This is the
+# designer-authored graph: multiple Worlds stitched by conditions the turn
+# loop can actually evaluate. See experience_store.py.
+
+
+def _cutscene_feed_item(info: dict) -> dict:
+    dest = (info or {}).get("to") or {}
+    pending = (info or {}).get("cutscene") or {}
+    name = dest.get("name") or pending.get("name") or "Cutscene"
+    return create_feed_item(
+        type="cutscene",
+        content=name,
+        metadata={
+            "cutscene_id": dest.get("id") or pending.get("cutscene_id"),
+            "name": name,
+            "mood": dest.get("mood") or pending.get("mood") or "threshold",
+            "status": pending.get("status") or "pending",
+            "from_world": ((info or {}).get("from") or {}).get("id"),
+            "shots": pending.get("shots") or [],
+            "duration_ms": pending.get("duration_ms") or 1600,
+        },
+    )
+
+
+def apply_experience_cutscene(
+    state: dict, cutscene_id: str, session_id: str = "default"
+) -> Optional[dict]:
+    """Land on a Cutscene node. Does not load a World snapshot.
+
+    Generation happens when the client POSTs /api/cutscene/play — the hop
+    only stamps pending_cutscene so the feed can start the Moment.
+    """
+    try:
+        import experience_store
+    except Exception as e:
+        logging.warning(f"[EXPERIENCE GRAPH] apply cutscene skipped: {e}")
+        return None
+    exp = experience_store.get_experience()
+    dest = experience_store.cutscene_by_id(exp, cutscene_id)
+    if not dest:
+        return None
+    src = experience_store.world_by_id(exp, state.get("experience_world_id") or "")
+    pending = {
+        "cutscene_id": dest["id"],
+        "name": dest.get("name") or "Cutscene",
+        "mood": dest.get("mood") or "threshold",
+        "source": dest.get("source") or "incoming",
+        "shot_brief": dest.get("shot_brief") or "",
+        "status": "pending",
+        "graph": True,
+    }
+    state["experience_id"] = exp.get("id") or "default"
+    state["experience_cutscene_id"] = dest["id"]
+    state["pending_cutscene"] = pending
+    return {
+        "from": src or {},
+        "to": dest,
+        "kind": "cutscene",
+        "cutscene": pending,
+        "transition": None,
+    }
+
+
+def complete_cutscene(state: dict, session_id: str = "default") -> Optional[dict]:
+    """Leave the current Cutscene and follow its outgoing edge, if any."""
+    try:
+        import experience_store
+    except Exception as e:
+        logging.warning(f"[EXPERIENCE GRAPH] complete cutscene skipped: {e}")
+        return None
+    cid = str(state.get("experience_cutscene_id") or "").strip()
+    pending = state.get("pending_cutscene") or {}
+    to_world = str(pending.get("to_world") or "").strip()
+    state["experience_cutscene_id"] = ""
+    state["pending_cutscene"] = None
+    exp = experience_store.get_experience()
+    hit = None
+    if cid and not cid.startswith("play-"):
+        hit = experience_store.matched_transition(
+            exp, cid, world_turn_count=0, player_alive=True,
+        )
+    dest_id = (hit or {}).get("to") or to_world
+    if not dest_id:
+        return {"kind": "resume"}
+    if experience_store.cutscene_by_id(exp, dest_id):
+        info = apply_experience_cutscene(state, dest_id, session_id)
+        if info:
+            info["transition"] = hit
+            info["kind"] = "cutscene"
+            return info
+        return {"kind": "resume"}
+    info = apply_experience_world(state, dest_id, session_id)
+    if info:
+        info["transition"] = hit
+        info["kind"] = "world"
+        return info
+    return {"kind": "resume"}
+
+
+def _world_transition_feed_item(info: dict) -> dict:
+    dest = (info or {}).get("to") or {}
+    src = (info or {}).get("from") or {}
+    name = dest.get("name") or "another world"
+    left = src.get("name") or "this world"
+    return create_feed_item(
+        type="world_transition",
+        content=f"You leave {left} and enter {name}.",
+        metadata={
+            "from_world": src.get("id"),
+            "to_world": dest.get("id"),
+            "transition_id": ((info or {}).get("transition") or {}).get("id"),
+        },
+    )
+
+
+def apply_experience_start(state: dict, session_id: str = "default") -> dict:
+    """Bind a fresh run to the active Experience's start World.
+
+    A start World with a slug is a bound identity — Play / Watch / reset
+    load that snapshot so the run cannot silently drift off the designed
+    beginning (SOMEWHERE is locked this way). Empty slug means "use the
+    live prompt file" (the Create scratch pad).
+    """
+    try:
+        import experience_store
+        import worlds_store
+    except Exception as e:
+        logging.warning(f"[EXPERIENCE GRAPH] start bind skipped: {e}")
+        return state
+    exp = experience_store.get_experience()
+    start_id = experience_store.start_node_id(exp)
+    cut = experience_store.opening_cutscene(exp)
+    land_from = (cut or {}).get("id") or start_id
+    start = experience_store.landing_world(exp, land_from)
+    if start is None and exp.get("worlds"):
+        start = exp["worlds"][0]
+    if start and start.get("slug"):
+        try:
+            worlds_store.load_world(start["slug"])
+        except KeyError:
+            logging.warning(
+                f"[EXPERIENCE GRAPH] start world '{start.get('slug')}' missing"
+            )
+    state["experience_id"] = exp.get("id") or "default"
+    state["experience_world_id"] = (start or {}).get("id") or ""
+    state["world_turn_count"] = 0
+    state["pending_world_transition"] = False
+    if cut:
+        pending = {
+            "cutscene_id": cut["id"],
+            "name": cut.get("name") or "Cutscene",
+            "mood": cut.get("mood") or "threshold",
+            "source": cut.get("source") or "incoming",
+            "shot_brief": cut.get("shot_brief") or "",
+            "status": "pending",
+            "graph": True,
+        }
+        state["experience_cutscene_id"] = cut["id"]
+        state["pending_cutscene"] = pending
+        dest_slug = str((start or {}).get("slug") or "")
+        if dest_slug:
+            try:
+                import world_frames
+                rec = world_frames.record(dest_slug)
+                if rec.get("url"):
+                    state["current_image_url"] = rec["url"]
+            except Exception:
+                pass
+    else:
+        state["experience_cutscene_id"] = ""
+        state["pending_cutscene"] = None
+    return state
+
+
+def apply_experience_world(state: dict, world_id: str, session_id: str = "default") -> Optional[dict]:
+    """Load a World snapshot into the live prompts and re-seed world_prompt."""
+    try:
+        import experience_store
+        import worlds_store
+    except Exception as e:
+        logging.warning(f"[EXPERIENCE GRAPH] apply world skipped: {e}")
+        return None
+    exp = experience_store.get_experience()
+    dest = experience_store.world_by_id(exp, world_id)
+    if not dest:
+        return None
+    src = experience_store.world_by_id(exp, state.get("experience_world_id") or "")
+    if dest.get("slug"):
+        try:
+            worlds_store.load_world(dest["slug"])
+        except KeyError:
+            logging.warning(
+                f"[EXPERIENCE GRAPH] world '{dest.get('slug')}' missing"
+            )
+            return None
+    state["experience_id"] = exp.get("id") or "default"
+    state["experience_world_id"] = dest["id"]
+    state["world_turn_count"] = 0
+    state["pending_world_transition"] = True
+    state["world_prompt"] = experience_store.with_lore(
+        game_identity.world_brief(
+            PROMPTS.get("world_initial_state", "Default world starting point.")
+        )
+    )
+    # Land on the destination's cached first frame so a world stitch isn't a
+    # black cut while the next turn renders.
+    dest_slug = str(dest.get("slug") or "")
+    if dest_slug:
+        try:
+            import world_frames
+            rec = world_frames.record(dest_slug)
+            if rec.get("url"):
+                state["current_image_url"] = rec["url"]
+        except Exception:
+            pass
+    return {"from": src or {}, "to": dest, "transition": None}
+
+
+def maybe_apply_world_transition(
+    state: dict,
+    session_id: str = "default",
+    *,
+    player_alive: bool = True,
+) -> Optional[dict]:
+    """If the current World's outgoing condition is met, stitch to the target.
+
+    The turn that fired the condition has already been written in the source
+    World. The next turn (and ``world_prompt``) use the destination.
+    """
+    try:
+        import experience_store
+    except Exception as e:
+        logging.warning(f"[EXPERIENCE GRAPH] evaluate skipped: {e}")
+        return None
+    if str(state.get("experience_cutscene_id") or "").strip():
+        return None
+    exp = experience_store.get_experience()
+    wid = state.get("experience_world_id") or exp.get("start_world")
+    if not wid:
+        return None
+    hit = experience_store.matched_transition(
+        exp,
+        wid,
+        world_turn_count=int(state.get("world_turn_count") or 0),
+        player_alive=player_alive,
+    )
+    if not hit:
+        return None
+    dest_id = hit["to"]
+    if experience_store.cutscene_by_id(exp, dest_id):
+        info = apply_experience_cutscene(state, dest_id, session_id)
+    else:
+        info = apply_experience_world(state, dest_id, session_id)
+    if not info:
+        return None
+    info["transition"] = hit
+    info.setdefault(
+        "kind",
+        "cutscene" if experience_store.cutscene_by_id(exp, dest_id) else "world",
+    )
+    logging.info(
+        f"[EXPERIENCE GRAPH] {wid} → {hit['to']} "
+        f"via {((hit.get('condition') or {}).get('type'))} "
+        f"({info.get('kind')})"
+    )
+    return info
+
+
+def _tick_world_and_maybe_transition(
+    state: dict,
+    session_id: str,
+    *,
+    player_alive: bool = True,
+) -> Optional[dict]:
+    """Count a turn against the current World, then evaluate outgoing edges."""
+    state["world_turn_count"] = int(state.get("world_turn_count") or 0) + 1
+    return maybe_apply_world_transition(
+        state, session_id, player_alive=player_alive
+    )
+
 # OpenAI img2img consistency settings
 OPENAI_IMG2IMG_ENABLED = True  # Set to False to always use text-to-image (more variation, less consistency)
 OPENAI_IMG2IMG_REFERENCE_COUNT = 2  # Set to 1 if consistency is poor with 2 frames
@@ -1273,7 +1709,9 @@ class _BoundedLRUCache(OrderedDict):
 
     def __setitem__(self, key, value):
         with _vision_cache_lock:
-            if key in self:
+            # Must use super().__contains__ — `key in self` re-enters
+            # __contains__ and deadlocks this non-reentrant lock.
+            if super().__contains__(key):
                 super().move_to_end(key)
             super().__setitem__(key, value)
             while len(self) > self._maxsize:
@@ -1432,12 +1870,23 @@ def _load_state(session_id='default') -> dict:
                     st = json.load(f)
                 # Ensure essential keys exist after loading
                 st.setdefault('player_state', {'alive': True})
+                # A save written before detection was simulated doesn't have it,
+                # and every consumer would then read its own hardcoded default.
+                # Backfill once, here, so there is one answer.
+                st.setdefault('detection', {'heat': 0, 'level': DETECT_HIDDEN,
+                                            'since_turn': 0})
                 st.setdefault('feed_log', [])
                 st.setdefault('current_image_url', None)
                 st.setdefault('choices', []) # Ensure choices list is present
                 # Default to Full Frame (flipbook off) to match the UI default;
                 # apply_experience_mode flips this on when Flipbook is chosen.
                 st.setdefault('flipbook_mode', False)
+                st.setdefault('experience_id', 'default')
+                st.setdefault('experience_world_id', '')
+                st.setdefault('world_turn_count', 0)
+                st.setdefault('pending_world_transition', False)
+                st.setdefault('experience_cutscene_id', '')
+                st.setdefault('pending_cutscene', None)
                 return st
             except json.JSONDecodeError as e_json:
                 logging.error(f"JSONDecodeError in _load_state for {state_path}: {e_json}. File might be corrupt or empty.")
@@ -1470,7 +1919,13 @@ def _load_state(session_id='default') -> dict:
             "turn_count": 0, # Initialize turn_count
             "interim_index": 0, # Initialize interim_index
             "time_of_day": INITIAL_TIME_OF_DAY,
-            "flipbook_mode": False  # Full Frame default; Flipbook opt-in via experience mode
+            "flipbook_mode": False,  # Full Frame default; Flipbook opt-in via experience mode
+            "experience_id": "default",
+            "experience_world_id": "",
+            "world_turn_count": 0,
+            "pending_world_transition": False,
+            "experience_cutscene_id": "",
+            "pending_cutscene": None,
         }
 
 # Module-global state backing the standalone feed UI. It mirrors the
@@ -1495,6 +1950,7 @@ except Exception as e:
         "seen_elements": [],
         "inventory": [],  # Player inventory
         "player_state": {"alive": True},
+        "detection": {"heat": 0, "level": DETECT_HIDDEN, "since_turn": 0},
         "feed_log": [],
         "current_image_url": None,
         "choices": [],
@@ -1504,7 +1960,13 @@ except Exception as e:
         "in_combat": False,
         "threat_level": 0,
         "time_of_day": INITIAL_TIME_OF_DAY,
-        "flipbook_mode": False  # Full Frame default; Flipbook opt-in via experience mode
+        "flipbook_mode": False,  # Full Frame default; Flipbook opt-in via experience mode
+        "experience_id": "default",
+        "experience_world_id": "",
+        "world_turn_count": 0,
+        "pending_world_transition": False,
+        "experience_cutscene_id": "",
+        "pending_cutscene": None,
     }
     print("[ENGINE INIT] Created default fallback state", flush=True)
 
@@ -1899,7 +2361,7 @@ def _call(fn, *a, **kw):
             print("LLM disabled:", e, file=sys.stderr, flush=True)
         raise
 
-def _ask(prompt: str, model="gemini", temp=1.0, tokens=90, image_path: str = None, use_lore: bool = True) -> str:
+def _ask(prompt: str, model="gemini", temp=1.0, tokens=90, image_path: str = None, use_lore: bool = True, response_schema: Optional[dict] = None) -> str:
     """Flexible text generation supporting multiple AI providers.
     
     Args:
@@ -1911,25 +2373,37 @@ def _ask(prompt: str, model="gemini", temp=1.0, tokens=90, image_path: str = Non
         use_lore: Whether to include lore cache (default True). Set False for mechanical/vision tasks.
     """
     if not LLM_ENABLED:
-        return random.choice([
-            "System communications remain static; awaiting new data.",
-            "Narrative paused until resources are replenished.",
-            "The world holds its breath for new directives."
-        ])
+        place = ""
+        try:
+            place = game_identity.place_summary() or game_identity.display_name()
+        except Exception:
+            place = ""
+        place = place or "this place"
+        return f"You are still in {place}. The next move is yours."
     
+    # Experience lore is the native bible (Horizon, The Gate, …). The old
+    # Gemini cachedContent path is optional and usually off; this is the
+    # one that actually fires.
+    if use_lore:
+        try:
+            import experience_store
+            prompt = experience_store.apply_lore_to_prompt(prompt)
+        except Exception:
+            pass
+
     # Get active provider from config
     provider = ai_provider_manager.get_text_provider()
     model_name = ai_provider_manager.get_text_model()
     
     if provider == "gemini":
-        return _ask_gemini(prompt, model_name, temp, tokens, image_path, use_lore)
+        return _ask_gemini(prompt, model_name, temp, tokens, image_path, use_lore, response_schema=response_schema)
     elif provider == "openai":
         return _ask_openai(prompt, model_name, temp, tokens, image_path)
     elif provider == "anthropic":
         return _ask_claude(prompt, model_name, temp, tokens, image_path)
     else:
         print(f"[ASK ERROR] Unknown provider: {provider}, falling back to Gemini")
-        return _ask_gemini(prompt, model_name, temp, tokens, image_path, use_lore)
+        return _ask_gemini(prompt, model_name, temp, tokens, image_path, use_lore, response_schema=response_schema)
 
 def _record_text_usage(provider: str, model_name: str, *, success: bool,
                         input_units: Optional[float] = None,
@@ -1957,7 +2431,7 @@ def _record_text_usage(provider: str, model_name: str, *, success: bool,
         print(f"[COST TRACKER] _record_text_usage failed (non-fatal): {_e}", flush=True)
 
 
-def _ask_gemini(prompt: str, model_name: str, temp: float, tokens: int, image_path: str = None, use_lore: bool = True) -> str:
+def _ask_gemini(prompt: str, model_name: str, temp: float, tokens: int, image_path: str = None, use_lore: bool = True, response_schema: Optional[dict] = None) -> str:
     """Gemini text generation implementation with optional lore cache."""
     import requests
     import base64
@@ -2001,9 +2475,13 @@ def _ask_gemini(prompt: str, model_name: str, temp: float, tokens: int, image_pa
             cache_id = lore_cache_manager.get_cache_id()
         
         # Build request payload with ALL SAFETY FILTERS DISABLED
+        gen_cfg = {"thinkingConfig": {"thinkingBudget": 0}, "temperature": temp, "maxOutputTokens": tokens}
+        if response_schema:
+            gen_cfg["responseMimeType"] = "application/json"
+            gen_cfg["responseSchema"] = response_schema
         payload = {
             "contents": [{"parts": parts}],
-            "generationConfig": {"thinkingConfig": {"thinkingBudget": 0}, "temperature": temp, "maxOutputTokens": tokens},
+            "generationConfig": gen_cfg,
             "safetySettings": [
                 {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
                 {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -2017,7 +2495,7 @@ def _ask_gemini(prompt: str, model_name: str, temp: float, tokens: int, image_pa
             payload["cachedContent"] = cache_id
             print(f"[GEMINI CACHED] Using lore cache: {cache_id.split('/')[-1][:16]}...")
         elif use_lore:
-            print(f"[GEMINI] Lore requested but cache not available")
+            print(f"[GEMINI] Experience lore on prompt; Gemini cache unused")
         
         print(f"[GEMINI TEXT] Calling {model_name} API...", flush=True)
         _gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
@@ -2290,6 +2768,51 @@ def _resolve_image_path(image_path: str, session_id: str = None) -> Path:
 
     return ROOT / "images" / name
 
+
+def _sniff_image_mime(path) -> str:
+    """MIME type from magic bytes, then extension.
+
+    Realtime observe/act captures are JPEG data URLs written to disk. Older
+    builds named them ``observed_*.png``, so trusting the extension sends the
+    wrong type to Gemini and vision/choice-reground silently drop the frame.
+    """
+    try:
+        p = Path(path)
+        head = b""
+        if p.exists() and p.is_file():
+            with open(p, "rb") as f:
+                head = f.read(16)
+        if head.startswith(b"\xff\xd8\xff"):
+            return "image/jpeg"
+        if head.startswith(b"\x89PNG"):
+            return "image/png"
+        if head.startswith(b"GIF8"):
+            return "image/gif"
+        if len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+            return "image/webp"
+        name = p.name.lower()
+        if name.endswith((".jpg", ".jpeg")):
+            return "image/jpeg"
+        if name.endswith(".webp"):
+            return "image/webp"
+    except Exception:
+        pass
+    return "image/png"
+
+
+def _detect_scene_prior(st) -> str:
+    """Label hint for SCAN / detect — must describe the on-screen frame.
+
+    ``current_image_prompt`` is the last still's render recipe (camera grammar,
+    previous-turn objects, style). Folding it into detect is why MOVE TO keeps
+    offering the pink sedan / rusted truck after the live video has drifted.
+    Only a vision pass that actually looked at a captured live frame is an
+    honest prior; otherwise the pixels are the sole source of truth.
+    """
+    if not isinstance(st, dict):
+        return ""
+    return str(st.get("current_observed_vision") or "").strip()
+
 # ───────── vision description helper ────────────────────────────────────────
 def _downscale_for_vision(image_path: str, size=(640, 426)) -> io.BytesIO:
     full = _resolve_image_path(image_path)
@@ -2351,10 +2874,8 @@ def _vision_analyze_all(image_path: str) -> dict:
         if small_path.exists():
             print(f"[VISION] Using pre-downsampled image (480x360, 4:3)")
         
-        # Determine MIME type
-        mime_type = "image/png"
-        if str(full_path).endswith(('.jpg', '.jpeg')):
-            mime_type = "image/jpeg"
+        # Determine MIME type from bytes — observed_*.png files are often JPEG.
+        mime_type = _sniff_image_mime(use_path)
         
         # Use Gemini vision API - ONE call for everything
         print(f"[VISION] Analyzing {os.path.basename(image_path)} (all-in-one)...")
@@ -2595,6 +3116,37 @@ def _is_underwhelming_label(label: str) -> bool:
     return bool(_UNDERWHELMING_PART_RE.search(normalized))
 
 
+_PLAYER_SELF_LABELS = frozenset({
+    "player", "player character", "the player", "protagonist",
+    "main character", "the protagonist",
+})
+
+
+def _is_player_self_label(label: str) -> bool:
+    """True when SCAN named the body the camera is already following.
+
+    The detect prompt already asks not to tag them; Gemini still does
+    ("player character", the shipped name). Tapping that tag is "Move to
+    yourself", which is how a second, differently-gendered figure gets
+    invented into the next hard cut. Dropping the tag in code is the
+    backstop — not another sentence in the detect prompt.
+    """
+    if not game_identity.shows_character():
+        return False
+    normalized = _LEADING_ARTICLE_RE.sub("", (label or "").strip().lower())
+    if not normalized:
+        return False
+    if normalized in _PLAYER_SELF_LABELS:
+        return True
+    who = game_identity.display_name().strip().lower()
+    if not who or who == "the player character":
+        return False
+    if normalized == who:
+        return True
+    parts = [p for p in re.findall(r"[a-z]+", who) if len(p) > 2]
+    return normalized in parts
+
+
 def _classify_speaker(label: str, kind_raw, speaks_raw) -> tuple:
     """Decide a detected thing's ``kind`` and whether it ``speaks``.
 
@@ -2651,6 +3203,33 @@ def _classify_speaker(label: str, kind_raw, speaks_raw) -> tuple:
     return kind, bool(speaks)
 
 
+_FIGURE_KINDS = frozenset({"person", "character", "creature", "animal"})
+_OBJECT_KINDS = frozenset({"machine", "object"})
+_OBJECT_LABEL_RE = re.compile(
+    r"\b(radio|intercom|speaker|phone|telephone|handset|walkie|"
+    r"walkie-talkie|transceiver|receiver|terminal|console|computer|"
+    r"monitor|screen|laptop|keyboard|display|panel|loudspeaker|"
+    r"megaphone|pa system)\b",
+    re.I,
+)
+
+
+def _talk_subject_is_figure(subject: dict) -> bool:
+    """True when a TALK subject is a being (cinematic portrait).
+
+    Machines and objects (a computer monitor, a radio) must stay those
+    pixels — the portrait path used to phrase every subject as a person,
+    so img2img invented a random face in a new room.
+    """
+    subject = subject or {}
+    kind = str(subject.get("kind") or "").strip().lower()
+    if kind in _OBJECT_KINDS:
+        return False
+    if kind in _FIGURE_KINDS:
+        return True
+    return not bool(_OBJECT_LABEL_RE.search(str(subject.get("label") or "")))
+
+
 # Shared keep-alive HTTP session for Gemini vision calls. Reopening a TLS
 # connection on every /api/detect (which fires at a ~2.1-2.6 s cadence while
 # the SCAN overlay is live) burns 100-300 ms per call; a pooled session cuts
@@ -2661,6 +3240,26 @@ _GEMINI_HTTP_SESSION = requests.Session()
 # responseSchema (not just responseMimeType) guarantees a well-formed array
 # with the exact fields we consume — no code-fence stripping, no regex
 # fallback, no "wrapped the JSON in prose" edge cases.
+#
+# `dispatch` and `visual_scene` are two different channels and the schema has
+# to carry both. While only `visual_scene` was declared here, structured output
+# made it impossible for the model to answer with `dispatch` at all, so the
+# parse fell back to `dispatch = visual_scene` and the story log printed the
+# image caption: ten turns of "Wren Alvarez stands atop the jumbled heap of
+# rusted scrap, the crane appearing closer" — camera bookkeeping, no prose.
+# `action_consequence_instructions` has declared both fields mandatory the
+# whole time; this is the schema catching up to the authored contract.
+_CONSEQUENCE_RESPONSE_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "dispatch": {"type": "STRING"},
+        "visual_scene": {"type": "STRING"},
+        "player_alive": {"type": "BOOLEAN"},
+    },
+    "required": ["dispatch", "visual_scene", "player_alive"],
+}
+
+
 _DETECT_RESPONSE_SCHEMA = {
     "type": "ARRAY",
     "items": {
@@ -2697,15 +3296,19 @@ def _read_detect_image_bytes(image_path: str) -> tuple:
     return image_bytes, mime_type
 
 
-def _detect_self_rule() -> str:
+def _detect_self_rule(viewfinder: bool = False) -> str:
     """What SCAN should ignore because it's the player, not the world.
 
     In first person that's the hands and the vehicle cabin around the camera.
     In any third-person mode the player's whole body is legitimately in frame,
     and without this it gets tagged as an anonymous "figure" the player can
     walk up to and talk to.
+
+    ``viewfinder`` is the PHOTO restage: the plate is first-person even when
+    the authored camera is still third-person, so a foreground NPC must not
+    be dropped as "the followed character".
     """
-    if not game_identity.shows_character():
+    if viewfinder or not game_identity.shows_character():
         return (
             "Do NOT tag the viewer's own hands, gloves, arms, or the vehicle "
             "they're inside (steering wheel, dashboard, gauges, mirrors, seat) "
@@ -2714,13 +3317,19 @@ def _detect_self_rule() -> str:
         )
     who = game_identity.display_name()
     return (
-        f"The person in the foreground being followed by the camera is {who}, "
-        "the player's own character — do NOT tag them as a point of interest, "
-        "and do NOT tag the vehicle they are inside."
+        f"The camera is following {who}, the player's own character. "
+        f"Do NOT tag {who} when you can identify them, and do NOT tag the "
+        "vehicle they are inside. DO tag every other person, figure, or "
+        "creature. If you cannot tell whether the foreground person is "
+        f"{who} or someone else, tag them anyway — a missed NPC is worse "
+        "than an extra tag. A close-up of a person is not an empty scene: "
+        "still tag their gear and every distinct prop, container, door, "
+        "vehicle, or notable object in frame."
     )
 
 
-def _normalize_detections(parsed: list, max_items: int = DETECT_MAX_ITEMS) -> list:
+def _normalize_detections(parsed: list, max_items: int = DETECT_MAX_ITEMS,
+                          *, include_self: bool = False) -> list:
     """Turn raw detector output into the wire shape the client consumes.
 
     Shared by every backend on purpose. Both Gemini and ``local_vision`` hand
@@ -2752,6 +3361,11 @@ def _normalize_detections(parsed: list, max_items: int = DETECT_MAX_ITEMS) -> li
         # Drop underwhelming labels before they cost a max_items slot: the
         # player's own hands/gear/vehicle-interior, never worth a tag.
         if _is_underwhelming_label(label):
+            continue
+        # SCAN drops the operator so you cannot "move to yourself". The
+        # viewfinder leak check must KEEP that label — otherwise a hero
+        # copied from the 3P grab is invisible to the retry.
+        if (not include_self) and _is_player_self_label(label):
             continue
         try:
             ymin, xmin, ymax, xmax = (float(box[0]), float(box[1]), float(box[2]), float(box[3]))
@@ -2814,7 +3428,9 @@ def _detect_objects(image_path: str = None,
                     max_items: int = DETECT_MAX_ITEMS,
                     image_bytes: bytes = None,
                     mime_type: str = None,
-                    scene_prompt: str = "") -> list:
+                    scene_prompt: str = "",
+                    viewfinder: bool = False,
+                    include_self: bool = False) -> list:
     """Realtime object recognition for the live scene.
 
     Names the prominent, interactable things visible in a frame and boxes them,
@@ -2833,10 +3449,12 @@ def _detect_objects(image_path: str = None,
     already has the frame in memory — this avoids a disk round-trip plus a
     second base64 encode per call). When both are given, bytes win.
 
-    ``scene_prompt`` is the exact text the world model was steered with for
-    this frame (``state['current_image_prompt']``). Gemini takes it as a prior
-    for sharper labels; the local backend leans on it much harder, using it as
-    the open vocabulary that COCO's 80 classes cannot supply.
+    ``scene_prompt`` is an optional description of what is currently on
+    screen (``current_observed_vision``). Gemini takes it as a prior for
+    sharper labels; the local backend leans on it as the open vocabulary
+    COCO cannot supply. It must NOT be the last still's render recipe —
+    that names objects from the previous location after the live video
+    has drifted.
 
     Returns a list of dicts (at most ``max_items``) — see
     ``_normalize_detections`` for the exact shape. Returns [] on any failure
@@ -2865,7 +3483,7 @@ def _detect_objects(image_path: str = None,
                 max_items=max_items,
                 scene_prompt=scene_prompt,
             )
-            return _normalize_detections(parsed, max_items)
+            return _normalize_detections(parsed, max_items, include_self=include_self)
         except Exception as e:  # noqa: BLE001 — never raise into a request
             safe_e = str(e).encode("ascii", "replace").decode("ascii")
             log_error(f"[DETECT] local detection failed: {safe_e}")
@@ -2880,14 +3498,65 @@ def _detect_objects(image_path: str = None,
                   f"({local_vision.status() if local_vision else 'module not imported'})")
         return []
 
-    parsed = _detect_objects_gemini(image_bytes, mime_type, max_items, scene_prompt)
-    return _normalize_detections(parsed, max_items)
+    parsed = _detect_objects_gemini(
+        image_bytes, mime_type, max_items, scene_prompt, viewfinder=viewfinder,
+    )
+    return _normalize_detections(parsed, max_items, include_self=include_self)
+
+
+def _salvage_json_array_objects(text: str) -> list:
+    """Recover the COMPLETE objects out of a truncated JSON array.
+
+    A response that hit the output-token ceiling ends mid-object, so
+    ``json.loads`` on the whole string fails and every object in it is lost —
+    including the eight perfectly good ones that arrived before the cut. That
+    reads to the player as an empty world: SCAN on a room full of things
+    returns no tags at all, with no error anywhere, because "the call failed"
+    and "there is nothing here" are the same empty list.
+
+    Walks the text tracking brace depth (string- and escape-aware, so a brace
+    inside a label can't throw off the count) and parses each balanced
+    top-level ``{...}`` on its own. Returns [] if nothing is recoverable.
+    """
+    import json as _json
+
+    objects = []
+    depth = 0
+    start = None
+    in_string = False
+    escaped = False
+    for i, ch in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start is not None:
+                    try:
+                        objects.append(_json.loads(text[start:i + 1]))
+                    except Exception:
+                        pass
+                    start = None
+    return objects
 
 
 def _detect_objects_gemini(image_bytes: bytes,
                            mime_type: str,
                            max_items: int = DETECT_MAX_ITEMS,
-                           scene_prompt: str = "") -> list:
+                           scene_prompt: str = "",
+                           viewfinder: bool = False) -> list:
     """Ask Gemini to name and box what's in the frame.
 
     Returns the raw parsed entries ({"label", "box_2d", "kind", "speaks"}) for
@@ -2929,27 +3598,30 @@ def _detect_objects_gemini(image_bytes: bytes,
             "separately with its own box. "
             "Prefer specific, concrete labels over vague ones. "
             "Skip generic background like 'sky', 'ground', 'wall' unless notable. "
-            + _detect_self_rule() +
+            "Never return an empty list when anything a player could walk to, "
+            "pick up, talk to, or look at is visible — barrels, crates, "
+            "weapons, doors, lights, railings, vehicles, and other people "
+            "all count, even in a close-up, even at the edge of the frame. "
+            + _detect_self_rule(viewfinder=viewfinder) +
             " Do NOT tag the camcorder recording this footage. Focus "
             "on what's OUT in the world: structures, terrain, other vehicles, "
             "hazards, creatures, and story props."
         )
 
-        # Story-grounded prior: the world model was steered by this exact
-        # prompt, so folding it in sharpens labels on the ambiguous stuff
-        # (a "handle" the prompt calls "weathered valve wheel"). Kept short so
-        # it can't dominate the visual signal.
+        # Optional on-screen prior (a vision description of THIS frame, not
+        # the last still's render recipe). Kept short so it can't dominate
+        # the pixels — those are the only source of truth for SCAN / MOVE TO.
         prompt_prior = ""
         if scene_prompt:
             prior = scene_prompt.strip().replace("\n", " ")
             if len(prior) > 500:
                 prior = prior[:500].rstrip() + "..."
             prompt_prior = (
-                "This frame was rendered from the following scene prompt. "
-                "Use it as a hint for specific, story-grounded labels, but "
-                "only tag things you can actually see in the pixels — do NOT "
-                "invent objects that are named in the prompt but not visible.\n"
-                f"SCENE PROMPT: {prior}\n\n"
+                "A recent description of what is on screen follows. "
+                "Use it only to sharpen labels for things you can actually "
+                "see in the pixels — do NOT invent objects named here but "
+                "not visible.\n"
+                f"ON-SCREEN: {prior}\n\n"
             )
 
         api_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-lite:generateContent"
@@ -2971,7 +3643,13 @@ def _detect_objects_gemini(image_bytes: bytes,
                 # reconciler doesn't get whiplashed by "figure" vs "person"
                 # renaming on identical pixels.
                 "temperature": 0.0,
-                "maxOutputTokens": 700,
+                # Budget the ceiling against what we actually asked for. The
+                # response is pretty-printed JSON at roughly 45 tokens per
+                # object, so a flat 700 could not fit DETECT_MAX_ITEMS (12) and
+                # busy interiors — a wall of monitors, a desk of clutter — ran
+                # off the end mid-object. The player saw an empty scan of a
+                # room full of things.
+                "maxOutputTokens": max(700, 64 + max_items * 64),
                 "responseMimeType": "application/json",
                 "responseSchema": _DETECT_RESPONSE_SCHEMA,
             },
@@ -3025,13 +3703,24 @@ def _detect_objects_gemini(image_bytes: bytes,
         if not full_text:
             return []
 
-        # With responseSchema Gemini returns strict JSON — a single json.loads
-        # is enough. Still guard: if the model somehow returns nothing valid,
-        # log it and return [] rather than raising into the request handler.
+        # With responseSchema Gemini returns strict JSON, so a single
+        # json.loads normally suffices. It does NOT when the response hits the
+        # output-token ceiling: the array ends mid-object and parsing the whole
+        # string throws, which used to discard every object in it. Salvage the
+        # complete ones instead — a scan that finds eight of twelve things is
+        # the feature working, whereas returning [] renders a populated room as
+        # empty with nothing logged the player can see.
         try:
             parsed = _json.loads(full_text)
         except Exception as parse_err:
-            log_error(f"[DETECT] malformed structured response: {parse_err} :: {full_text[:200]}")
+            salvaged = _salvage_json_array_objects(full_text)
+            finish = (candidates[0].get("finishReason") or "?")
+            if salvaged:
+                log_error(f"[DETECT] truncated structured response (finishReason={finish}); "
+                          f"salvaged {len(salvaged)} object(s)")
+                return salvaged
+            log_error(f"[DETECT] malformed structured response (finishReason={finish}): "
+                      f"{parse_err} :: {full_text[:200]}")
             return []
 
         if not isinstance(parsed, list):
@@ -3399,9 +4088,7 @@ def _appraise_photo(image_path: str, max_items: int = 6) -> dict:
             image_bytes = f.read()
         image_b64 = base64.b64encode(image_bytes).decode("utf-8")
 
-        mime_type = "image/png"
-        if str(use_path).lower().endswith((".jpg", ".jpeg")):
-            mime_type = "image/jpeg"
+        mime_type = _sniff_image_mime(use_path)
 
         appraise_prompt = (
             "You are an evidence analyst reviewing a single photograph a field "
@@ -3574,7 +4261,7 @@ def generate_directive(session_id: str = "default") -> dict:
         tod = str((st or {}).get("time_of_day", "") or "")[:80]
 
         prompt = game_identity.apply(
-            "You are the objective director for a first-person investigative "
+            "You are the objective director for an investigative "
             "photography game. The WIN CONDITION is documenting distinct evidence "
             "to build a case file. Your job is to give the player a DURABLE "
             "current lead that stays achievable.\n\n", "narrative"
@@ -3697,95 +4384,90 @@ def _world_report() -> str:
     return _ask(prompt, tokens=60, use_lore=False)
 
 # ───────── dispatch helpers ────────────────────────────────────────────────
-def summarize_world_prompt_for_image(world_prompt: str) -> str:
-    """Summarize the world prompt to 1-2 sentences for image generation.
-    CRITICAL: Avoid graphic/violent/NSFW terms in the summary to prevent image safety blocks.
+# Per-session cache of the last "Visual tone" gloss (see
+# summarize_world_prompt_for_image). Kept in-memory only — never persisted —
+# because it is re-derived from world_prompt on every hard transition or new
+# session anyway, and persisting it risks a stale tone surviving a save/load
+# from an older code path that never wrote this key.
+_VISUAL_TONE_CACHE: dict = {}
+
+
+def summarize_world_prompt_for_image(world_prompt: str, session_id: str = 'default',
+                                      hard_transition: bool = False, frame_idx: int = 0) -> str:
+    """Boil the world context down to an aesthetic/tone gloss appended to
+    EVERY image prompt as "World flavor" — never a second description of
+    the scene or the character.
+
+    `world_prompt` is frequently just the static character bio ("WHO: Jason
+    Fleece... equipped with a heavy-duty 1993 VHS camcorder...") with no
+    scene or pose in it at all. The old instruction ("vivid, scene-specific
+    sentences... focus on the current visual environment") asked this call
+    to describe a scene and a pose anyway — with nothing in the source to
+    draw one from, at temp=1.0 it INVENTED one fresh every turn ("crouches
+    on a concrete floor, clutching a circuit board", "hunches in the
+    flickering light"). That invented pose is a second, self-contained
+    character description sitting in the same prompt as the turn's real
+    `visual_scene` ("the render exactly this scene" text), and the image
+    model sometimes tried to satisfy both — which is how a second, often
+    front-facing figure ended up standing in frames that `visual_scene`
+    never asked for. Restricting this to tone/palette/era and explicitly
+    banning pose or action removes the thing being hallucinated, rather
+    than hoping the image model resolves the contradiction correctly.
+
+    CACHING: this used to call the LLM fresh every single turn, independent
+    of every other turn. Because `world_prompt` is the dramatic beat text
+    ("OVERWHELMING CHAOS! Immediate, decisive action is paramount...",
+    "the red biome is dangerously close..."), a fresh call reliably invented
+    a NEW lighting/mood gloss each time ("flickering sodium-vapor
+    highlights" one turn, "high-contrast crimson strobe lighting" the next,
+    "oppressive desert twilight" after that) — three different ambient
+    lighting descriptions across three consecutive frames of the SAME
+    unbroken chase, even though every image prompt already also says
+    "Maintain the same lighting... as the previous image". The two
+    instructions fought each other and the freshly-generated one, being more
+    specific, often won, which is what produced day-for-night flicker across
+    a run the state machine's own `time_of_day` string never changed. Now
+    this is only recomputed on a hard location transition (where the light
+    genuinely may be different) or the first frame of a session; every other
+    turn reuses the cached gloss so the tone truly stays fixed, matching the
+    continuity instruction it sits next to instead of undercutting it.
     """
+    cached = _VISUAL_TONE_CACHE.get(session_id)
+    if cached and not hard_transition and frame_idx > 1:
+        return cached
     prompt = (
-        "Summarize the following world context in 1-2 vivid, scene-specific sentences for an image generation model. "
-        "Focus only on details relevant to the current visual environment. Omit backstory and generalities. "
+        "In ONE short phrase, name the visual TONE of the following world "
+        "context for an image generation model — grain/film stock, era, "
+        "color palette, ambient mood. Example: 'muted 1993 desert "
+        "thriller, amber and rust tones, oppressive haze.'\n"
+        "Do NOT describe a character, a pose, a posture, an action, or "
+        "anything happening — that scene is described elsewhere in the "
+        "prompt already, in full, and adding another one here is exactly "
+        "what this call must never do. If the text below names no scene "
+        "or action, do not invent one; describe only its texture/tone.\n"
+        "Omit backstory, equipment lists, and names entirely. Never mention "
+        "a camcorder, VHS, videotape, analog recording, or any recording "
+        "device — those are equipment, not tone, and must not leak into "
+        "the aesthetic gloss.\n"
+        "This is one still moment of a single, continuous scene. Unless "
+        "the world context explicitly says the time of day changed, the "
+        "weather broke, or the player moved indoors/outdoors, name the "
+        "SAME base lighting condition and palette as the previous tone "
+        "below — do not invent a new light source or swap day for night.\n"
         "CRITICAL: Avoid using graphic or violent words like 'blood', 'gore', 'mutilated', 'viscera', etc. "
-        "Use clinical or atmospheric equivalents if needed.\n\nWORLD PROMPT: " + world_prompt
+        "Use clinical or atmospheric equivalents if needed.\n\n"
+        + (f"PREVIOUS TONE (keep matching this unless the context below overrides it): {cached}\n\n" if cached else "")
+        + "WORLD CONTEXT: " + world_prompt
     )
-    # Don't use lore - just summarizing existing text
-    return _ask(prompt, model="gemini", temp=1.0, tokens=48, use_lore=False)
+    # Don't use lore - just summarizing existing text. Low temperature on
+    # purpose: this is a factual gloss, not creative writing, and the
+    # improvisation a high temperature buys is exactly the hallucination
+    # this function used to produce.
+    tone = _ask(prompt, model="gemini", temp=0.3, tokens=32, use_lore=False)
+    if tone:
+        _VISUAL_TONE_CACHE[session_id] = tone
+    return tone
 
-
-def _generate_dispatch(choice: str, state: dict, prev_state: dict = None) -> dict:
-    """Generate dispatch with death detection. Returns dict with 'dispatch' and 'player_alive' keys."""
-    try:
-        # Get previous vision analysis AND image for spatial consistency
-        prev_vision = ""
-        prev_image_path = None
-        if history and len(history) > 0:
-            last_entry = history[-1]
-            if last_entry.get("vision_analysis"):
-                prev_vision = last_entry["vision_analysis"][:300]
-            if last_entry.get("image"):
-                prev_image_path = last_entry["image"]  # e.g. "/images/123_file.png"
-        
-        spatial_context = ""
-        if prev_vision:
-            spatial_context = f"\n\nCURRENT VISUAL SCENE (MUST STAY CONSISTENT): {prev_vision}\nDo NOT change locations unless the choice explicitly moves through a door, entrance, or exit. Stay in the same environment."
-        
-        # System instructions + user prompt combined for Gemini
-        prompt = game_identity.apply(
-            PROMPTS['action_consequence_instructions'], "narrative"
-        ) + (
-            f"\n\nPLAYER CHOICE: '{choice}'\n"
-            f"WORLD CONTEXT: {state['world_prompt']}\n"
-            f"PREVIOUS: {prev_state['world_prompt'] if prev_state else ''}"
-            f"{spatial_context}\n\n"
-            "Describe what you do and what immediately happens as a result."
-        )
-        # Don't use lore - dispatch is immediate action/consequence, not world building
-        result = _ask(prompt, model="gemini", temp=1.0, tokens=250, image_path=prev_image_path, use_lore=False)
-        
-        # Try to parse as JSON first (new format)
-        import json
-        try:
-            parsed = json.loads(result)
-            if isinstance(parsed, dict) and "dispatch" in parsed:
-                dispatch_text = parsed.get("dispatch", "").strip()
-                player_alive = parsed.get("player_alive", True)
-                
-                # Hard cap at 400 characters
-                if len(dispatch_text) > 400:
-                    dispatch_text = dispatch_text[:385] + "...(truncated)"
-                
-                return {"dispatch": dispatch_text, "player_alive": player_alive}
-        except json.JSONDecodeError:
-            pass  # Not JSON, treat as plain text (backward compatibility)
-        
-        # FALLBACK: Plain text (old format) - assume player alive
-        # If result is just '[' or '[]' or empty, fallback immediately
-        if result.strip() in {"[", "[]", ""}:
-            return {"dispatch": "You make a tense move in the chaos.", "player_alive": True}
-        
-        # Sanitize: if result looks like a list, extract the text
-        if result.startswith("[") or result.startswith("-") or result.startswith("\""):
-            try:
-                arr = json.loads(result)
-                if isinstance(arr, list):
-                    for item in arr:
-                        if isinstance(item, str) and item.strip():
-                            result = item.strip()
-                            break
-            except Exception:
-                lines = [l.strip('-*[] ",') for l in result.splitlines() if l.strip()]
-                if not lines or all(l in {"[", "[]", ""} for l in lines):
-                    return {"dispatch": "You make a tense move in the chaos.", "player_alive": True}
-                result = " ".join(lines)
-        
-        # Hard cap at 400 characters
-        if len(result) > 400:
-            result = result[:385] + "...(truncated)"
-        
-        return {"dispatch": result, "player_alive": True}
-        
-    except Exception as e:
-        log_error(f"[DISPATCH] LLM error: {e}")
-        return {"dispatch": "You make a tense move in the chaos.", "player_alive": True}
 
 def _generate_caption(dispatch: str, mode: str, is_first_frame: bool = False) -> str:
     # Simplified caption generation - not used in StoryGen version
@@ -3836,6 +4518,17 @@ _TRANSITION_MOVE_VERBS = [
     'make your way', 'break', 'stumble', 'run', 'sprint', 'walk', 'march',
 ]
 
+# The subset of the above that are THRESHOLDS rather than destinations: you do
+# not stand next to a doorway you have gone through, you stand on the far side
+# of it. Crossing one is the case the throttle must never refuse, because the
+# previous frame contains no pixel of where the player now is.
+_PORTAL_NOUNS = frozenset({
+    'doorway', 'gateway', 'gate', 'threshold', 'archway', 'entrance', 'hatch',
+    'airlock', 'opening', 'gap', 'hole', 'window', 'grate', 'grating',
+    'manhole', 'maw', 'vent', 'ventilation', 'duct', 'ductwork', 'passage',
+    'passageway', 'stairwell', 'stairway', 'staircase', 'elevator', 'shaft',
+})
+
 # Prepositions that, paired with a move verb and a space noun, indicate crossing
 # into a new area.
 _TRANSITION_PREPS = [
@@ -3849,6 +4542,26 @@ _TRANSITION_PREPS = [
 _TRANSITION_CONTINUATION_WORDS = [
     'deeper', 'further', 'farther', 'onward', 'onwards', 'along', 'ahead within',
 ]
+
+
+def transition_kind(choice: str) -> str:
+    """How the player is leaving: "portal", "approach", or "" for neither.
+
+    The grade matters because only one of them can be safely refused. Crossing
+    a THRESHOLD — a door, a hatch, a gate — is a passage: the wall the camera
+    was looking at is behind it now, and no amount of img2img off the old frame
+    can depict that. Refuse it and the render has no choice but to draw the
+    room the player just left, which is precisely the "I entered the dark door
+    and came out where I started" report.
+
+    An APPROACH ("move to the silo", "climb into the trench") is a distance
+    closed inside a space the camera can already see. That one softens fine,
+    and softening it is the whole reason the throttle exists — walking up to a
+    rock should not compose a brand-new world.
+    """
+    if not choice:
+        return ""
+    return _transition_reason(choice.lower())[0]
 
 
 def is_hard_transition(choice: str, dispatch: str) -> bool:
@@ -3873,8 +4586,18 @@ def is_hard_transition(choice: str, dispatch: str) -> bool:
     if not choice:
         return False
 
-    choice_lower = choice.lower()
+    kind, reason = _transition_reason(choice.lower())
+    if kind:
+        safe_choice = choice.encode('ascii', 'replace').decode('ascii')
+        print(f"[HARD TRANSITION] Detected in choice ({kind}: {reason}): "
+              f"'{safe_choice}' - new location (fresh composition, keep lighting/aesthetic)")
+        return True
+    return False
 
+
+def _transition_reason(choice_lower: str) -> tuple[str, str]:
+    """The shared detector behind :func:`is_hard_transition` and
+    :func:`transition_kind`. Returns (kind, human reason), ("", "") for no."""
     # ── 1. Unambiguous location-change phrases ────────────────────────────────
     location_keywords = [
         'enter ', 'step inside', 'go inside', 'walk inside', 'move inside',
@@ -3888,38 +4611,506 @@ def is_hard_transition(choice: str, dispatch: str) -> bool:
         'teleport', 'wake up in', 'dragged to', 'carried to', 'transported to',
         'emerge into', 'emerge from', 'emerge onto',
     ]
-    reason = ""
     if any(k in choice_lower for k in location_keywords):
-        reason = "explicit location phrase"
+        return "portal", "explicit location phrase"
 
     # ── 2. move-verb + preposition + enclosed-space noun ──────────────────────
-    if not reason:
-        is_continuation = any(w in choice_lower for w in _TRANSITION_CONTINUATION_WORDS)
-        if not is_continuation:
-            has_verb = any(v in choice_lower for v in _TRANSITION_MOVE_VERBS)
-            if has_verb:
-                for prep in _TRANSITION_PREPS:
-                    marker = f" {prep} "
-                    if marker not in choice_lower:
-                        continue
-                    # Only the text AFTER the preposition should name the space we
-                    # are moving into, so "reach into your PACK" style objects
-                    # before the noun don't cause false hits.
-                    tail = choice_lower.split(marker, 1)[1]
-                    if any(re.search(rf"\b{re.escape(n)}\b", tail) for n in _TRANSITION_SPACE_NOUNS):
-                        reason = f"move-verb + '{prep}' + new space"
-                        break
+    is_continuation = any(w in choice_lower for w in _TRANSITION_CONTINUATION_WORDS)
+    if not is_continuation:
+        has_verb = any(v in choice_lower for v in _TRANSITION_MOVE_VERBS)
+        if has_verb:
+            for prep in _TRANSITION_PREPS:
+                marker = f" {prep} "
+                if marker not in choice_lower:
+                    continue
+                # Only the text AFTER the preposition should name the space we
+                # are moving into, so "reach into your PACK" style objects
+                # before the noun don't cause false hits.
+                tail = choice_lower.split(marker, 1)[1]
+                if any(re.search(rf"\b{re.escape(n)}\b", tail)
+                       for n in _TRANSITION_SPACE_NOUNS):
+                    # A named threshold in the tail is a passage even by this
+                    # looser route: "squeeze through the hatch" is not an
+                    # approach to a hatch, it is the other side of one.
+                    kind = ("portal"
+                            if any(re.search(rf"\b{re.escape(n)}\b", tail)
+                                   for n in _PORTAL_NOUNS)
+                            else "approach")
+                    return kind, f"move-verb + '{prep}' + new space"
 
-    if reason:
-        safe_choice = choice.encode('ascii', 'replace').decode('ascii')
-        print(f"[HARD TRANSITION] Detected in choice ({reason}): '{safe_choice}' - new location (fresh composition, keep lighting/aesthetic)")
+    return "", ""
+
+# ───────── environment stagnation ────────────────────────────────────────────
+# Cutting to a new place every turn is not the same as GOING anywhere. A SCAN
+# run that entered a pipe, a tunnel, a bone structure and another tunnel changed
+# location 27 turns running and never once left "cramped organic interior",
+# because every slate it was offered led further in. Nothing was watching the
+# shape of the run, so nothing ever offered a way back out.
+#
+# Vision already labels each turn's environment (`setting_type`: "indoor-corridor",
+# "outdoor-desert", …) and stores it in history. Counting an unbroken run of the
+# same label is enough to notice, and cheap — no extra model call.
+ENVIRONMENT_STREAK_LIMIT = 4
+
+# Phrasing that means "get out of this kind of space", as opposed to the
+# "deeper / further in" language a stuck run keeps generating.
+_EGRESS_RE = re.compile(
+    r"\b(exit|leave|leaves|leaving|escape|retreat|withdraw|abandon|surface|"
+    r"back out|climb out|crawl out|haul yourself out|get out|way out|"
+    r"out of|outside|open air|open ground|daylight|back the way|turn back|"
+    r"away from|double back|"
+    # Flight. This is not decoration: taking an egress option is the only thing
+    # that sheds detection heat, so a phrasing missing from here is a way out
+    # the player can pick that the engine will not count as running. The forced
+    # options the game offers a hunted player were themselves failing to match.
+    # "run" is qualified because prose runs cables and runs hands along pipes.
+    r"flee|flees|fleeing|sprint|scramble away|scramble out|scramble back|"
+    r"break away|break and run|make a run|get clear|put distance|"
+    r"run for|run to|run back|run toward|run towards|bolt for|bolt out)\b",
+    re.I,
+)
+
+# Deterministic last resort when the model ignores the directive. Deliberately
+# generic: they name no affordance that might not exist, and every one of them
+# is a physical movement of the body out of wherever it currently is.
+_EGRESS_FALLBACKS = (
+    "Turn back and retrace your route",
+    "Climb out toward open air",
+    "Force your way back out",
+    "Abandon this route entirely",
+)
+
+# The same backstop, for when the reason is a pursuer rather than a rut. Walking
+# calmly back the way you came is not an answer to something chasing you, and
+# offering it as one reads as the game not having noticed. These are the same
+# deliberate genericness — no affordance that might not exist — at a run.
+_FLIGHT_FALLBACKS = (
+    "Break and run for open ground",
+    "Sprint back the way you came",
+    "Bolt for the nearest way out",
+    "Turn and flee into the dark",
+)
+
+
+# Vision is the better labeller, but it is not always there: it needs a key, a
+# network round-trip and a frame that has finished rendering, and on the live
+# turn path Phase 2 runs before the image lands. A stagnation guard that only
+# works when vision works is a guard that switches itself off in exactly the
+# conditions that produce stuck runs. So the same taxonomy is also derivable
+# from the render base, which is written on every frame with no model call.
+# Words that name a KIND OF SPACE, not the machinery standing in it. An oil pump
+# is not evidence of a warehouse — it is just as at home in an open yard — and
+# the label is also what keeps drift beats honest about indoor vs outdoor, so
+# guessing "indoor" off a nearby machine would blow wind through a sealed room.
+# Prose that names no space at all scores nothing and returns "", which the
+# streak treats as missing evidence rather than as movement.
+_SETTING_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("outdoor-desert",   ("desert", "dune", "dunes", "sand", "wasteland", "scrubland")),
+    ("outdoor-cliff",    ("cliff", "ravine", "canyon", "ledge", "precipice", "gorge")),
+    ("outdoor-road",     ("road", "highway", "asphalt", "street", "roadside")),
+    # No "field": every render base says "medium-wide field of view", which would
+    # tag the whole run outdoors on boilerplate alone.
+    ("outdoor-other",    ("sky", "yard", "courtyard", "forest", "rooftop",
+                          "treeline", "horizon", "fence", "outdoors",
+                          "open air", "open ground")),
+    ("indoor-corridor",  ("corridor", "hallway", "tunnel", "pipe", "duct", "shaft",
+                          "passage", "passageway", "stairwell", "crawlspace")),
+    ("indoor-lab",       ("laboratory", "infirmary", "clean room")),
+    ("indoor-warehouse", ("warehouse", "factory", "refinery", "catwalk", "gantry",
+                          "machine hall", "pump house", "boiler room", "plant floor")),
+    ("indoor-other",     ("room", "chamber", "basement", "cellar", "office", "interior",
+                          "inside the")),
+    ("transitional",     ("doorway", "threshold", "gateway", "entrance", "airlock",
+                          "hatch")),
+)
+
+# Word-boundary matching, because substring counting reads "vent" out of
+# "vented" and silently breaks a streak that never left the room.
+_SETTING_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = tuple(
+    (label, re.compile("|".join(r"\b" + re.escape(w) + r"\b" for w in words), re.I))
+    for label, words in _SETTING_KEYWORDS
+)
+
+
+def classify_setting(text: str) -> str:
+    """Best-effort environment label for free scene prose.
+
+    Returns "" when the prose names no kind of space.
+    """
+    if not (text or "").strip():
+        return ""
+    best, best_hits = "", 0
+    for label, pattern in _SETTING_PATTERNS:
+        hits = len(pattern.findall(text))
+        if hits > best_hits:
+            best, best_hits = label, hits
+    return best
+
+
+# When the nine-bucket taxonomy above can't name the space at all — "crawling
+# under the truck", "the drainage ditch ahead" name no room — the only
+# remaining evidence is whether the prose keeps repeating itself. Comparing
+# full scene text works because the constant style/camera preamble every
+# render_base repeats verbatim is filtered out here, not because it was
+# stripped out before being passed in.
+_GENERIC_SCENE_STOPWORDS = frozenset(
+    "there their about across toward directly before after while still other "
+    "again further along which where being frame camera first person "
+    "walking vantage field view empty hands lower weapon crosshair reticle "
+    "health minimap screen video game found footage".split()
+)
+# Overlap coefficient (|A∩B| / min(|A|,|B|)), not Jaccard: against a single
+# anchor turn, a real stall (oil pump -> drive rod -> floor grate -> oil pit)
+# scores as low as a genuine truck -> ditch -> pipe chase, because each turn
+# names a different PART of the same machine — Jaccard punishes the anchor's
+# vocabulary for growing. Comparing against the ACCUMULATED vocabulary of the
+# whole streak, and asking only "is most of THIS turn's vocabulary already in
+# it", tells the two apart: the stall's small shared parts-vocabulary keeps
+# getting hit turn after turn, while a chase keeps spending new nouns.
+_SCENE_OVERLAP_STUCK = 0.30
+_style_anchor_words_cache: "frozenset | None" = None
+
+
+def _raw_words(text: str) -> frozenset:
+    return frozenset(re.findall(r"[a-z]{4,}", (text or "").lower()))
+
+
+def _style_anchor_words() -> frozenset:
+    """Lazy + cached: REALTIME_STYLE_ANCHOR is defined further down the module,
+    so this can't be a module-level constant computed at this point in the file."""
+    global _style_anchor_words_cache
+    if _style_anchor_words_cache is None:
+        _style_anchor_words_cache = _raw_words(REALTIME_STYLE_ANCHOR) | _GENERIC_SCENE_STOPWORDS
+    return _style_anchor_words_cache
+
+
+def _content_words(text: str) -> frozenset:
+    return _raw_words(text) - _style_anchor_words()
+
+
+def _overlap_coefficient(a: frozenset, b: frozenset) -> float:
+    """|A∩B| / min(|A|,|B|) — how much of the SMALLER set the other one covers.
+    0.0 when either is empty."""
+    if not a or not b:
+        return 0.0
+    return len(a & b) / min(len(a), len(b))
+
+
+def resolve_environment_label(state: dict, history: list) -> str:
+    """The current environment label, from vision if it ran and prose if it didn't."""
+    last = history[-1] if history else {}
+    label = (last.get("setting_type") or "").strip()
+    if label:
+        return label
+    # The render base carries a constant style preamble plus this turn's scene
+    # sentence; the preamble names no place, so it cannot bias the vote.
+    return classify_setting((state or {}).get("current_render_base") or "")
+
+
+def _environment_key(setting_type: str) -> str:
+    return re.sub(r"[^a-z]+", "-", (setting_type or "").lower()).strip("-")
+
+
+def update_environment_streak(state: dict, setting_type: str,
+                              hard_transition: bool = False,
+                              scene_text: str = "") -> int:
+    """How many turns in a row the run has been in this kind of place.
+
+    A hard cut or a changed label is unambiguous evidence of movement. When
+    neither is available — the nine-bucket taxonomy names no room for plenty
+    of real scene prose ("crawling under the truck", "the drainage ditch
+    ahead") — blindly counting every unlabelled turn as "no movement" is what
+    turned a truck-to-pipe chase into eight forced "turn back and retrace your
+    route" prompts: nothing NAMED a room, so nothing LOOKED like it changed.
+
+    The tiebreaker is whether this turn's words are mostly already in the
+    streak's accumulated vocabulary. A single fixed anchor turn undercounts a
+    real stall, because "oil pump", "drive rod" and "floor grate" are three
+    different nouns for parts of the same machine and share almost no words
+    with each other — only with the growing pool of everything said so far.
+    """
+    prev   = int(state.get("environment_streak", 0) or 0)
+    key    = _environment_key(setting_type)
+    known  = state.get("environment_key") or ""
+    vocab  = set(state.get("environment_streak_vocab") or [])
+    words  = _content_words(scene_text)
+
+    if hard_transition:
+        streak, vocab = 1, set(words)
+    elif key and key == known:
+        streak = prev + 1
+        vocab |= words
+    elif key:
+        streak, vocab = 1, set(words)
+    elif words and vocab and _overlap_coefficient(words, vocab) >= _SCENE_OVERLAP_STUCK:
+        streak = prev + 1 if prev else 1
+        vocab |= words
+    elif prev:
+        streak = prev  # neither confirmed same nor confirmed different: hold, don't guess
+    else:
+        streak, vocab = 1, set(words)
+
+    if key:
+        state["environment_key"] = key
+    state["environment_streak_vocab"] = sorted(vocab)
+    state["environment_streak"] = streak
+    return streak
+
+
+def is_egress_choice(choice: str) -> bool:
+    """Does this option physically take the player OUT of the current space?"""
+    return bool(_EGRESS_RE.search(choice or ""))
+
+
+def enforce_egress_option(choices: list, streak: int,
+                          detection: int = DETECT_HIDDEN, turn: int = 0) -> list:
+    """Guarantee a way out on the slate when the run needs one.
+
+    Two reasons to need one. The run has been in one kind of place too long, or
+    the player is being hunted — and the second is the one that matters most,
+    because fleeing is the only thing that sheds detection heat (see
+    DETECT_COOL_FLEEING). Being hunted with no way to run offered is a trap the
+    player cannot see the edges of.
+
+    The dispatch prompt asks for one first (see the stagnation directive); this
+    is the backstop for when the model would rather offer a third way deeper in.
+    Replaces the LAST option so the two the model felt strongest about survive.
+    """
+    needed = streak >= ENVIRONMENT_STREAK_LIMIT or detection >= DETECT_HUNTED
+    if not needed or not choices:
+        return choices
+    if any(is_egress_choice(c) for c in choices):
+        return choices
+    hunted = detection >= DETECT_HUNTED
+    pool = _FLIGHT_FALLBACKS if hunted else _EGRESS_FALLBACKS
+    # Rotate on the turn as well as the streak. A hunted run holds both of the
+    # others constant, so a live render forced the identical sentence eight
+    # times running — which is the repetition this backstop exists to prevent.
+    forced = pool[(streak + detection + turn) % len(pool)]
+    why = "being hunted" if hunted else f"{streak} turns in one place"
+    print(f"[ANTI-LOOP] {why} and no way out on the slate — forcing '{forced}'",
+          flush=True)
+    return list(choices[:-1]) + [forced]
+
+
+def stagnation_directive(streak: int) -> str:
+    """Prompt text telling the consequence call to offer an exit."""
+    if streak < ENVIRONMENT_STREAK_LIMIT:
+        return ""
+    return (
+        f"\n\nSTUCK IN ONE KIND OF PLACE: the player has spent {streak} consecutive "
+        "turns in this same type of environment. The run needs somewhere else to go. "
+        "Your `visual_scene` MUST make a way out of this kind of space physically "
+        "visible in the frame (an opening to elsewhere, a route back, a change in the "
+        "structure ahead), and ONE of your three `next_choices` MUST take the player "
+        "OUT of it rather than further into it. Do not offer three variations on "
+        "going deeper.\n"
+    )
+
+
+# ───────── on-screen objects (what SCAN saw) ─────────────────────────────────
+# SCAN names every interactable thing in the frame the player is looking at, and
+# all but one of those names used to be thrown away: only the single label the
+# player tapped ever reached the simulation, as the permanence `subject`. So the
+# consequence call was handed the frame itself (as a multimodal part) and its
+# pixels (as img2img references) but never a LIST of what is in it — which is
+# why a beat could only ever be about the one thing that got poked while the
+# other five things on screen might as well not have existed.
+#
+# Keeping that list for the turn it belongs to costs nothing: the detection has
+# already run and been paid for. It is what lets the consequence weave two
+# VISIBLE things together instead of resolving on one.
+
+# The detector may name up to DETECT_MAX_ITEMS (12). All twelve in a prompt
+# dilutes rather than grounds, and the tail of a detection pass is the least
+# salient of it, so the cache keeps the front of the list.
+SCENE_OBJECTS_MAX = 8
+
+
+def record_scene_objects(state: dict, objects: list) -> list:
+    """Cache the labels SCAN just named, stamped with the turn they describe."""
+    labels: list = []
+    for obj in objects or []:
+        label = str((obj or {}).get("label") or "").strip()
+        if label and label.lower() not in {l.lower() for l in labels}:
+            labels.append(label)
+        if len(labels) >= SCENE_OBJECTS_MAX:
+            break
+    state["scene_objects"] = labels
+    state["scene_objects_turn"] = int(state.get("turn_count", 0) or 0)
+    return labels
+
+
+def scene_objects_for_turn(state: dict) -> list:
+    """The cached on-screen labels, or [] once they describe a frame we've left.
+
+    Stale nouns are worse than none. A list captured two rooms ago would tell
+    the consequence call to feature things that are no longer in front of the
+    player — the exact teleporting/ungrounded failure the spatial rules exist to
+    prevent. `turn_count` only increments once a turn has fully resolved, so a
+    SCAN and the action the player commits from it share a stamp, and the cache
+    expires by itself the moment the world moves on.
+    """
+    labels = state.get("scene_objects") or []
+    if not isinstance(labels, list) or not labels:
+        return []
+    try:
+        stamped = int(state.get("scene_objects_turn", -1))
+        current = int(state.get("turn_count", 0) or 0)
+    except (TypeError, ValueError):
+        return []
+    if stamped != current:
+        return []
+    return [str(l).strip() for l in labels if str(l).strip()]
+
+
+def onscreen_directive(labels: list) -> str:
+    """Prompt text naming what is in frame, and asking for a collision.
+
+    Two things, not one: a consequence that resolves on the single object the
+    player poked reads as a vignette, while the same beat with a second visible
+    thing reacting to it reads as a world that is alive. Choosing WHICH pairing
+    is interesting is what the model is already good at — it just has to be told
+    what is on the table. Below two labels there is nothing to pair, so the
+    directive stays out of the prompt rather than asking for the impossible.
+    """
+    if len(labels) < 2:
+        return ""
+    return (
+        "\n\nON SCREEN RIGHT NOW (named from the frame the player is looking at): "
+        f"{', '.join(labels)}\n"
+        "Weave AT LEAST TWO of these into this beat, and let one of them CHANGE "
+        "STATE — move, open, break, react, close in, give way. Both `dispatch` and "
+        "`visual_scene` must show them. Do NOT invent a new prop to carry the beat "
+        "while these sit inert in the background.\n"
+    )
+
+
+def grounded_entities(state: dict, limit: int = 12) -> str:
+    """The entity list for choice generation: what's on screen, then memory.
+
+    On-screen labels lead because they are what the player can physically act on
+    THIS turn; `seen_elements` follows as world memory (most recent first, which
+    is also the order truncation should eat from the back of). This ordering is
+    what stops a slate proposing a sprint to a shed that was never in frame.
+    """
+    seen = [str(e) for e in (state.get("seen_elements") or []) if str(e).strip()]
+    out: list = []
+    for label in scene_objects_for_turn(state) + seen[::-1]:
+        if label.lower() not in {o.lower() for o in out}:
+            out.append(label)
+        if len(out) >= limit:
+            break
+    return ", ".join(out)
+
+
+# ───────── hard-transition throttle (NOT called from the live turn pipeline) ─
+# A hard transition throws away img2img continuity and composes a fresh frame.
+# That's right for genuinely walking into a new space, and ruinous when it
+# happens every single turn: a 30-turn SCAN run that entered a pipe, then a
+# tunnel, then a bone structure, then another tunnel spent 27 consecutive turns
+# in organic interiors that shared no geography with each other, because each
+# cut invented a fresh "inside" with nothing holding it to the last one.
+#
+# So consecutive cuts used to be capped here. Past the cap the turn still
+# MOVED, but the frame was composed off the previous one. The cap itself
+# became the next inconsistency: the SAME "walk to the silo" wording could cut
+# or not depending on how many cuts had happened recently, for no reason
+# visible to the player — the exact coin-flip MOVE TO was fixed to not have.
+# advance_turn_image_fast no longer calls this for any action (MOVE is
+# unconditional; typed/curated text is un-throttled too, see its else
+# branch). Kept — tested, self-contained — for a future feature that
+# legitimately wants "cap consecutive cuts" back without re-deriving this.
+MAX_CONSECUTIVE_HARD_TRANSITIONS = 2
+
+# Language that means a new space genuinely opened in the fiction. When the
+# consequence says this, the cut is earned no matter how many preceded it —
+# otherwise the throttle would flatten a real breakthrough into a camera nudge.
+_NEW_SPACE_PROSE = (
+    "opens into", "opens onto", "opens out", "gives way to", "widens into",
+    "emerges into", "emerge into", "emerges onto", "spills into", "breaks through into",
+    "you are now inside", "you are inside", "find yourself in", "step out into",
+    "collapses into", "drops you into", "on the other side",
+)
+
+
+def narrative_opened_new_space(dispatch: str) -> bool:
+    """Did the consequence prose actually describe arriving somewhere new?"""
+    low = (dispatch or "").lower()
+    return any(phrase in low for phrase in _NEW_SPACE_PROSE)
+
+
+def throttle_hard_transition(state: dict, wants_cut: bool, dispatch: str,
+                             kind: str = "") -> bool:
+    """Decide whether this turn really gets a fresh composition.
+
+    Mutates ``state['consecutive_hard_transitions']``. A soft turn resets the
+    run, so ordinary play never trips the cap — only an unbroken chain of
+    location changes does.
+
+    A PORTAL is exempt. The throttle exists to stop walking up to a rock from
+    composing a whole new world; it was never meant to adjudicate whether the
+    player got through a door they were told they could open. Refusing one of
+    those is unrenderable — the previous frame shows the near side and the
+    prose says they are on the far side — so the image has to contradict one of
+    them, and it contradicts the prose. That is what "I entered the dark door
+    and appeared back outside" is. Being asked to play MOVE-first made it
+    constant rather than occasional: nearly every turn now wants a cut, so the
+    cap was reached by turn three and, because a refusal HOLDS the count at the
+    cap, stayed reached. Runs of four and five consecutive refusals show up in
+    the logs, and each one re-pinned the camera to a place already left.
+    """
+    run = int(state.get("consecutive_hard_transitions", 0) or 0)
+    if not wants_cut:
+        state["consecutive_hard_transitions"] = 0
+        return False
+    if kind == "portal":
+        # Doesn't clear the run — an approach after this is still throttleable —
+        # but is never itself refused.
+        state["consecutive_hard_transitions"] = run + 1
         return True
+    if run >= MAX_CONSECUTIVE_HARD_TRANSITIONS and not narrative_opened_new_space(dispatch):
+        # Hold the chain at the cap: the next turn is still throttled unless a
+        # soft turn breaks it, so a stuck run can't alternate its way around.
+        print(f"[HARD TRANSITION] throttled — {run} consecutive cuts already and the "
+              f"prose didn't open a new space; composing off the previous frame", flush=True)
+        return False
+    state["consecutive_hard_transitions"] = run + 1
+    return True
 
-    return False
 
 def get_last_movement_type() -> Optional[str]:
     """Get the last detected movement type for display purposes."""
     return _last_movement_type
+
+# The MOVE rail writes its own actions, so they are exact strings rather than
+# player prose and can be recognised outright. They used to go through the
+# keyword lists below like anything else, which went wrong twice over: "Move
+# to the X" matches no keyword, so the commonest travel action in the game
+# paid for an LLM round-trip and then accepted whatever came back; and the
+# object's name is interpolated INTO the sentence, so a MOVE TO the panel hit
+# the 'pan' substring and was classified as standing still.
+#
+# "walk over to the" / "moving inside into the space beyond" are the RETIRED
+# client phrasings (moveActionPhrase used to pick one of the two based on the
+# object's name); kept here so a replayed older session or saved history entry
+# still gets the fast path instead of quietly falling through to the LLM call.
+_UI_MOVE_PHRASES = re.compile(
+    r"\bmove to the\b|\bwalk over to the\b|\bmoving inside into the space beyond\b",
+    re.IGNORECASE,
+)
+
+
+def _mentions(text: str, keywords) -> bool:
+    """Whole-word keyword search.
+
+    Substring matching is what let an object's NAME answer a question about the
+    player's VERB: panel/company contain "pan", turnstile contains "turn",
+    checkpoint contains "check", scanner contains "scan". Every one of those
+    turned a walk into a stationary shot.
+    """
+    return any(re.search(rf"\b{re.escape(k)}\b", text) for k in keywords)
+
 
 def _detect_movement_type(player_choice: str) -> str:
     """
@@ -3928,20 +5119,24 @@ def _detect_movement_type(player_choice: str) -> str:
     """
     # Keyword-based classification for common patterns (faster, more reliable)
     choice_lower = player_choice.lower()
-    
+
+    # The rail's own MOVE actions, before anything can misread them.
+    if _UI_MOVE_PHRASES.search(choice_lower):
+        return 'forward_movement'
+
     # Stationary actions (observing, no camera movement)
     stationary_keywords = ['photograph', 'examine', 'inspect', 'check', 'observe', 'watch', 'study', 'crouch in place', 'stand still']
-    if any(keyword in choice_lower for keyword in stationary_keywords):
+    if _mentions(choice_lower, stationary_keywords):
         return 'stationary'
     
     # Exploration actions (subtle movement, turning, panning)
     exploration_keywords = ['turn', 'look around', 'scan', 'survey', 'glance', 'peer', 'look back', 'turn around', 'rotate', 'pan', 'back away', 'step back', 'retreat']
-    if any(keyword in choice_lower for keyword in exploration_keywords):
+    if _mentions(choice_lower, exploration_keywords):
         return 'exploration'
     
     # Forward movement actions (significant spatial progression)
     forward_keywords = ['sprint', 'dash', 'run toward', 'charge', 'advance', 'approach', 'move forward', 'walk toward', 'climb', 'enter', 'cross', 'vault', 'scramble', 'rush']
-    if any(keyword in choice_lower for keyword in forward_keywords):
+    if _mentions(choice_lower, forward_keywords):
         return 'forward_movement'
     
     # Fallback to LLM if no keywords match
@@ -3978,6 +5173,8 @@ def build_image_prompt(
     is_timeout_penalty: bool = False,
     prev_spatial: str = "",
     prev_setting: str = "",
+    softened_move: bool = False,
+    spec: Optional[dict] = None,
 ) -> str:
     """
     Build an image generation prompt with spatial-anchor continuity.
@@ -3996,17 +5193,44 @@ def build_image_prompt(
     ``prev_setting`` — indoor/outdoor environment type from previous vision
     analysis; used to enforce environment type consistency.
 
+    ``softened_move`` — this turn asked for a location change and the throttle
+    declined to give it a fresh composition. It still has to MOVE. Without
+    this the two states were indistinguishable to the prompt, so a declined
+    move was built exactly like standing still: the spatial anchor below told
+    the camera it could not leave a position the player had already walked out
+    of, and the render obediently drew where they used to be. Vision then read
+    that frame back into ``spatial_compass``, so the next turn anchored on the
+    old place too, and the run walked backwards a frame at a time.
+
     Every branch below returns through ``game_identity.apply(..., "image")``,
     which stamps the active CAMERA / CAST / LOCATION directive on top and
     reconciles the perspective language underneath it. That's what makes the
     editor's first/third-person switch actually reach the image model rather
     than losing an argument with the hardcoded first-person prose.
     """
-    spec = game_identity.get_spec()
+    spec = spec or game_identity.get_spec()
     cam = game_identity.mode_config(spec)
 
     def _finish(text: str) -> str:
         return game_identity.apply(text, "image", spec)
+
+    # ── VIEWFINDER: same place, eyes-on-the-world, no evolution ────────────
+    if game_identity.is_viewfinder_spec(spec):
+        bits = [
+            "VIEWFINDER RESTAGE — same place, no scene evolution, no camera travel.",
+            "The camera IS the player's eyes. Restage this exact view as first person.",
+            "Do not draw the player, their back, silhouette, clothes, or gear.",
+            "Do not draw a camcorder, viewfinder, or film HUD.",
+            "Do not walk the follow-cam body around to face the lens.",
+            game_identity.viewfinder_hero_ban(spec),
+        ]
+        if prev_spatial:
+            bits.append(f"Looking at: {prev_spatial}")
+        if prev_setting:
+            bits.append(f"Setting: {prev_setting}")
+        if dispatch:
+            bits.append(dispatch)
+        return _finish("\n".join(bits))
 
     # ── TIMEOUT PENALTIES: identical camera, only environment reacts ──────────
     if is_timeout_penalty:
@@ -4075,33 +5299,129 @@ def build_image_prompt(
         # Visual scaffold from the previous frame's actual visual analysis. This is
         # WAY more visually grounded than narrative text and prevents drift even
         # when the LLM forgets to emit `visual_scene`.
+        #
+        # It used to end with "render the SAME camera position evolved... keep
+        # ground type, environment type and visible landmarks identical" — an
+        # unconditional stasis order, emitted on movement turns too, sitting
+        # directly beneath the CAMERA line that had just said the opposite. One
+        # more voice in the argument that made MOVE TO render as a redecorated
+        # copy of the previous frame. What the camera did is decided above; this
+        # branch's job is only to describe what the previous frame contained.
         scaffold = prev_vision_analysis.strip().replace("\n", " ")
         if len(scaffold) > 240:
             scaffold = scaffold[:237] + "..."
         prompt = (
-            f"{cam['camera_header']} — continuing directly from the previous frame.\n"
-            f"Previous frame visual state: {scaffold}\n"
+            f"{cam['camera_header']}.\n"
+            f"The previous frame showed: {scaffold}\n"
             f"Action just performed: {player_choice}\n"
-            f"Now render the SAME camera position evolved to show the result of that "
-            f"action. Keep ground type, environment type, lighting, and visible "
-            f"landmarks identical unless the action itself changes them."
+            f"Render the result of that action, keeping the film stock, the light "
+            f"and the materials of the previous frame."
         )
     else:
         prompt = f"Action taken: {player_choice}. Result: {dispatch}"
 
-    # ── Spatial anchor (highest priority constraint) ──────────────────────────
-    # Injected BEFORE movement-type guidance so the model reads it first.
-    if prev_spatial and not hard_transition:
-        setting_note = (
-            f"  Environment type: {prev_setting}." if prev_setting else ""
+    # ── Camera state: decided once, said once, in prose ───────────────────────
+    # This used to be two blocks: an emoji-marked prefix ("🗺️ SPATIAL ANCHOR",
+    # "➡️ YOU HAVE CROSSED THE SPACE") and a bulleted suffix ("FORWARD MOVEMENT:
+    # camera moved 5-15 ft"), which the img2img template then STRING-MATCHED for
+    # those markers to pick one of its own five camera branches. Three layers
+    # restating one decision, each with its own capitals and its own claim to
+    # precedence — the template's header literally read "NOTHING BELOW MAY
+    # OVERRULE IT" while the cast directive above it read "THIS OVERRIDES ANY
+    # CONFLICTING CAMERA LANGUAGE BELOW".
+    #
+    # With precedence undefined, the model stopped arbitrating by authority and
+    # went with whatever line was most concrete — always the literal scene
+    # sentence. That is the whole reason MOVE TO rendered as the previous frame
+    # with the chosen object pasted into it: the capitals lost to a sentence
+    # that said where the player was standing.
+    #
+    # One sentence group, no markers to match, no precedence to assert.
+    travelled = softened_move or movement_type == 'forward_movement'
+
+    if hard_transition:
+        # "Carry over only the light, the film stock and the look" was too
+        # literal a licence: a run that entered a building and then went deeper
+        # through two interior doors grew a purple storm sky over an indoor
+        # corridor, because "nothing of the previous location" had been read to
+        # include the ceiling. Enclosure is not scenery — going through a door
+        # inside a building does not take you outdoors.
+        if cam["shows_body"]:
+            lock = cam.get("follow_lock") or (
+                "the character stays on screen, medium-wide, seen from behind at chest height"
+            )
+            camera = (
+                "The camera is in a NEW PLACE — a different space, not the previous "
+                "one rearranged. Carry over the light, the look, and whether this is "
+                "indoors or outdoors, unless the scene says the player actually went "
+                "in or out. Do not spin to face them or cut to their POV.\n"
+                f"{lock}."
+            )
+        else:
+            camera = (
+                "The camera is in a NEW PLACE — a different space, not the previous "
+                "one rearranged. Carry over the light, the film stock, the look, and "
+                "whether this is indoors or outdoors, unless the scene says the "
+                "player actually went in or out."
+            )
+    elif softened_move:
+        # Asked to change location; the throttle declined a fresh composition.
+        # It still travelled — it just travels as a continuation, not a cut.
+        if cam["shows_body"]:
+            lock = cam.get("follow_lock") or (
+                "They remain visible from behind; what they faced is now around them"
+            )
+            camera = (
+                "The follow camera moved forward WITH the character into what was "
+                "ahead. Do not reproduce the reference framing, and do "
+                "not turn the lens to face them.\n"
+                f"{lock}."
+            )
+        else:
+            camera = (
+                "The camera has MOVED FORWARD, through and into what was ahead of "
+                "it. What it was facing is now around it; what was beside it has "
+                "passed behind. Do not reproduce the reference framing, and do not "
+                "turn back toward anywhere already left."
+            )
+    elif travelled:
+        # Walking to something inside the space you are already in: the ground,
+        # the light and the landmarks are the established ones. What changes is
+        # the distance — and that it changes at all is the point of MOVE TO.
+        where = f" Still inside: {prev_setting}." if prev_setting else ""
+        if cam["shows_body"]:
+            lock = cam.get("follow_lock") or (
+                "They are on screen at the new spot — medium-wide, seen from behind"
+            )
+            camera = (
+                "The follow camera walked with the character to the destination. "
+                f"The place is readable around them.{where} Same place seen "
+                "from further in; do not fill the frame with the destination alone "
+                "or flip to a face-on reverse.\n"
+                f"{lock}."
+            )
+        else:
+            camera = (
+                "The camera has WALKED TO IT and stands there now, close enough to "
+                "touch. It fills far more of the frame than it did; what stood "
+                f"beside the camera has slid out past the edges.{where} Same place "
+                "seen from further in — keep the ground, the light and the "
+                "surrounding landmarks."
+            )
+    elif movement_type == 'exploration':
+        camera = (
+            "The camera has panned or tilted slightly from the reference "
+            "position. Same spot, new angle."
         )
-        prompt = (
-            f"🗺️ SPATIAL ANCHOR — YOU ARE EXACTLY HERE:\n"
-            f"{prev_spatial}{setting_note}\n"
-            f"The camera CANNOT leave this spatial position unless the action"
-            f" explicitly moves through a door, entrance, or large gap.\n"
-            f"Visible landmarks from this position MUST remain consistent.\n\n"
-        ) + prompt
+    else:
+        camera = (
+            "The camera has NOT moved from the reference position. Only the "
+            "environment, the light, or the subject reacts."
+        )
+        if prev_spatial:
+            camera += f" It is looking at: {prev_spatial}"
+
+    prompt = f"CAMERA: {camera}\n\n{prompt}"
 
     # LEAVE CAMP → new level: forbid vehicle-cabin POVs even if narrative drifts.
     choice_l = (player_choice or "").lower()
@@ -4111,37 +5431,19 @@ def build_image_prompt(
     ):
         prompt = f"{prompt}\n\n{_CAMP_LEAVE_ON_FOOT_CONSTRAINT}"
 
-    # ── Movement-type guidance ────────────────────────────────────────────────
-    if prev_vision_analysis:
-        if hard_transition:
-            prompt = (
-                f"{prompt}\n\nLOCATION CHANGE: Maintain same lighting, time of day, "
-                f"and VHS aesthetic as before, but show the new environment."
-            )
-        elif movement_type == 'forward_movement':
-            prompt = (
-                f"{prompt}\n\n"
-                f"FORWARD MOVEMENT: Camera advances naturally.\n"
-                f"- Objects ahead are closer and larger in frame\n"
-                f"- Camera moved 5–15 ft forward (walking), 15–30 ft (sprint)\n"
-                f"- Smooth perspective shift; horizon line stays stable\n"
-                f"- Ground/foreground elements reflect new position\n"
-                f"Scene context: {prev_vision_analysis[:150]}"
-            )
-        elif movement_type == 'exploration':
-            prompt = (
-                f"{prompt}\n\n"
-                f"SUBTLE CAMERA SHIFT: Small pan, tilt, or drift — not a new location.\n"
-                f"- Roughly same position, slightly different angle\n"
-                f"- Environmental elements shift naturally with camera movement\n"
-                f"Scene context: {prev_vision_analysis[:150]}"
-            )
-        else:
-            # STATIONARY
-            prompt = (
-                f"{prompt} Same camera position. "
-                f"Only environmental/lighting changes: {prev_vision_analysis[:200]}"
-            )
+    # The previous frame's vision analysis, when the async reground actually
+    # landed in time, as ONE optional context clause. It used to be pasted into
+    # each of four movement branches that restated the CAMERA line above; the
+    # camera decision is already made, so this is only description.
+    #
+    # Withheld on a hard cut, where the previous frame's contents are explicitly
+    # moot, and when the scaffold branch above already opened with it — saying it
+    # twice is how a 2,000-word prompt gets built one reasonable addition at a
+    # time.
+    if prev_vision_analysis and not hard_transition and has_visual_scene:
+        prompt = (
+            f"{prompt}\n\nThe previous frame showed: {prev_vision_analysis[:150]}"
+        )
 
     return _finish(prompt)
 
@@ -4155,9 +5457,8 @@ def build_image_prompt(
 # anchor commits to a first-person, walk-through vantage.
 REALTIME_STYLE_ANCHOR = os.getenv(
     "REALTIME_STYLE_ANCHOR",
-    "A navigable first-person world you can walk through, shot as 1993 analog VHS "
-    "home-video footage from a handheld camcorder, heavy film grain and chromatic "
-    "aberration, slightly desaturated, low-light dread and horror atmosphere. "
+    "A navigable third-person world you can walk through, photographed as a 1993 "
+    "photoreal still — muted colour, available light, slight grain, low-light dread. "
     "Eye-level walking vantage with a medium-wide field of view. "
     # World models are trained on a great deal of gameplay footage, and
     # "first-person" plus a motion verb is the strongest FPS cue there is —
@@ -4166,7 +5467,7 @@ REALTIME_STYLE_ANCHOR = os.getenv(
     # negative prompt, so the ban has to live in the anchor itself.
     "Empty hands, nothing held in the lower frame. No weapon, no gun, no crosshair, "
     "no reticle, no HUD, no health bar, no minimap, no on-screen text or game UI of "
-    "any kind — this is found footage, not a video game",
+    "any kind — this is a photograph of a place, not a video game",
 )
 
 # Conversation Moment portraits use a DIFFERENT lens language than the handheld
@@ -4183,6 +5484,10 @@ CONVERSATION_PORTRAIT_STYLE_ANCHOR = os.getenv(
 # Soft budget: how many conversation portraits a single session may mint.
 # Cached hits do not count. Prevents runaway cost if a player re-opens TALK a lot.
 CONVERSATION_PORTRAIT_BUDGET = int(os.getenv("CONVERSATION_PORTRAIT_BUDGET", "12"))
+# Companion plates written from a SCAN crop (not Gemini-invented). Camp
+# ignores older files so a leftover player-as-Watcher shot cannot sit at
+# the fire.
+COMPANION_PORTRAIT_GEN = 2
 
 # In-memory portrait cache: (session_id, subject_label, scene_hash) -> web url.
 # Cleared implicitly when the process restarts; disk files remain in session images/.
@@ -4210,7 +5515,7 @@ _CAMP_PROMPT_FALLBACK = (
     "{vantage}: handheld establishing shot of a night campsite in {terrain}\n"
     "4:3 frame matching the rest of the game. A small campfire burns in the mid-ground,\n"
     "warm orange firelight pooling on the ground, embers drifting, deep blue-black night sky,\n"
-    "VHS analog grain, 1990s found-footage mood. Not a security camera, not a collage.\n"
+    "Photoreal 1993 still. Not a collage.\n"
     "CRITICAL — THE RED JEEP MUST BE IN FRAME: a dusty bright-red 1990s Jeep "
     "Cherokee/Wrangler parked at the RIGHT edge of the firelight, three-quarter "
     "view, clearly readable silhouette and red paint, mud-caked tires. Do NOT "
@@ -4242,7 +5547,7 @@ _JEEP_PROP_PROMPT = (
     "in empty high-desert scrub at dusk. Three-quarter view from the front-left, "
     "vehicle fills most of the frame, weathered paint, mud-caked tires, spare tire "
     "on the back, chrome details dulled by dust. No people, no other vehicles, no "
-    "text, photoreal cinematic still, VHS analog grain, muted 1993 palette."
+    "text, photoreal cinematic still, muted 1993 palette."
 )
 
 # Bump when camp plate grammar changes so stale jeep-/companion-less caches regenerate.
@@ -4257,12 +5562,23 @@ _CAMP_LEAVE_CHOICE = (
 )
 # Retuned by game_identity.apply() at use (build_image_prompt runs every branch
 # through it), so the "first-person eye-level" opener follows the camera switch.
+# States where the camera IS, and says nothing about perspective — that is
+# game_identity's call, and this rule used to make it twice over.
+#
+# It opened "first-person eye-level walking vantage", which `retune` dutifully
+# rewrote to "third-person …" whenever the player had chosen a third-person
+# camera. That handed `reconcile` a line pairing a prohibition ("Do NOT show a
+# vehicle interior") with a third-person framing term, which is exactly its
+# signature for "a rule that forbids what the active mode requires" — so it
+# deleted the line. Retune inserted the word that made reconcile destroy it, and
+# the entire no-vehicle-cabin constraint silently stopped shipping in the one
+# mode where LEAVE CAMP renders a character on screen. Nothing here names a
+# perspective now, so there is nothing for either stage to catch on.
 _CAMP_LEAVE_ON_FOOT_CONSTRAINT = (
-    "CRITICAL — ON-FOOT ARRIVAL (no vehicle cabin): first-person eye-level walking "
-    "vantage outdoors on open ground. Do NOT show a vehicle interior, dashboard, "
-    "steering wheel, windshield frame, seats, or hands on a wheel. Do NOT place the "
-    "camera inside any truck, jeep, or car. If a vehicle appears it is ONLY distant "
-    "or parked far behind — never the camera's location."
+    "ON-FOOT ARRIVAL: outdoors on open ground, arriving on foot, eye level with "
+    "the ground ahead. The camera is NOT inside a vehicle — no cabin interior, "
+    "no dashboard, no steering wheel, no windshield frame, no seats. If a vehicle "
+    "is in shot at all it is distant or parked, never the camera's location."
 )
 
 
@@ -4398,10 +5714,9 @@ CRITICAL RULES:
 - Describe small physical/sound/atmospheric changes
 - Be specific and grounded
 
-TIME-OF-DAY PROGRESSION (PHASE-GATED EXCEPTION):
-- Most ticks DO NOT change time of day.
-- A tick may shift lighting ONE tier (golden hour -> dusk, or dusk -> night) ONLY when the phase has just transitioned (normal->escalating or escalating->critical).
-- Never shift backward. Never skip tiers. Never invent unrelated weather changes (no storms, no clouds at the start)."""
+TIME OF DAY:
+- Do not change the time of day or the lighting. The evening of this run is already set.
+- Never invent weather changes (no storms, no sudden night)."""
 
 # Process-wide single-flight: at most ONE drift LLM call in flight, ever.
 # Guarded by its own lock because the check and the set are far apart (a state
@@ -4439,7 +5754,10 @@ def _drift_environment_type(st: dict, hist: list) -> str:
         setting = (entry.get("setting_type") or "").strip()
         if setting:
             return setting
-    return (st.get("time_of_day") and "the current environment") or "the current environment"
+    # Vision may never have run (no key, or the frame landed after Phase 2).
+    # The render base still says where we are, so read it rather than giving the
+    # drift no environment at all.
+    return classify_setting((st or {}).get("current_render_base") or "") or "the current environment"
 
 
 def _drift_location_context(st: dict) -> str:
@@ -4654,16 +5972,10 @@ def api_world_tick():
 
 
 def _build_vhs_prompt(base_prompt: str, use_img2img: bool = False) -> str:
-    """
-    Wrap any image generation prompt with VHS aesthetic instructions.
-    This ensures Gemini and OpenAI both generate the same gritty analog look.
-    
-    Args:
-        base_prompt: The scene description (what's happening)
-        use_img2img: If True, use img2img instructions; else text-to-image
-    
-    Returns:
-        Full prompt with VHS aesthetic styling
+    """Render the shared image template for the OpenAI path.
+
+    Look lives in `image_art_direction`. This wrapper only adds the
+    first-person empty-frame rule when the camera is nobody's eyes.
     """
     # Load the appropriate template from simulation_prompts.json
     if use_img2img:
@@ -4673,33 +5985,18 @@ def _build_vhs_prompt(base_prompt: str, use_img2img: bool = False) -> str:
     
     structured_prompt = prompts_store.render_image_template(template_key, base_prompt)
     
-    # Add CRITICAL anti-border instructions
-    anti_border = "\n\nCRITICAL - ABSOLUTELY NO BORDERS OR FRAMES:\nThe image MUST fill the ENTIRE canvas edge-to-edge with ZERO borders, frames, or edges of any kind. NO black bars, NO white borders, NO photo frames, NO matting, NO letterboxing. The content fills 100% of the image area. This is RAW FOOTAGE, not a framed photograph."
-    
-    # Add CRITICAL anti-person instructions — but ONLY while the camera is
-    # supposed to be nobody's eyes. In any third-person mode the player has
-    # explicitly asked to see their character, so this block becomes the single
-    # loudest voice arguing against the thing they asked for.
+    # Empty-frame rule — but ONLY while the camera is supposed to be nobody's
+    # eyes. In any third-person mode the player has explicitly asked to see
+    # their character, so this block would argue against the thing they asked for.
     if game_identity.shows_character():
         anti_person = ""
     else:
-        anti_person = "\n\nCRITICAL - ABSOLUTELY NO PERSON/PLAYER VISIBLE:\nThis is a FIXED CAMERA VIEW mounted to a wall or tripod. The camera operator does NOT exist in this image. NEVER show ANY part of a human body - no head, no back of head, no shoulders, no arms, no hands, no legs, no feet, no torso, no silhouette. Show ONLY the environment - walls, floor, ceiling, objects, debris, sky, ground. Think: security camera footage, dashboard cam, surveillance view - PURE environmental shot with ZERO human presence in frame."
+        anti_person = (
+            "\n\nNo person in frame: no head, shoulders, back, hands, or silhouette. "
+            "Show only the environment."
+        )
     
-    # Add CRITICAL anti-timecode/text instructions
-    anti_timecode = (
-        "\n\n CRITICAL - ABSOLUTELY NO TEXT OR TIMECODE OVERLAYS:\n"
-        "This is RAW CAMERA FOOTAGE with NO on-screen displays.\n"
-        "Do NOT add ANY text, numbers, letters, or symbols to the image.\n"
-        "FORBIDDEN:\n"
-        "ERROR: NO timecode (NO 'DEC 14 1993', NO '14:32:05', NO date/time stamps)\n"
-        "ERROR: NO 'REC' indicator\n"
-        "ERROR: NO 'PCC HISS' or any text overlays\n"
-        "ERROR: NO battery indicators, recording icons, or UI elements\n"
-        "ERROR: NO scanline overlays or grid patterns\n"
-        "The image is PURE FOOTAGE with ZERO on-screen text of any kind."
-    )
-    
-    full_prompt = structured_prompt + anti_border + anti_person + anti_timecode
+    full_prompt = structured_prompt + anti_person
 
     # Retune/reconcile the wrapper's own perspective language. `base_prompt`
     # arrives already stamped with the camera directive by build_image_prompt();
@@ -4730,7 +6027,7 @@ def _flipbook_camera_block() -> str:
     """The flipbook grid's camera contract, written for the active perspective."""
     cfg = game_identity.mode_config()
     rule = "═" * 63
-    head = f"{rule}\n🎥 CAMERA: {cfg['camera_header']} — 1993 VHS CAMCORDER, WIDE ANGLE\n{rule}\n\n"
+    head = f"{rule}\n🎥 CAMERA: {cfg['camera_header']} — WIDE ANGLE\n{rule}\n\n"
 
     if not cfg["shows_body"]:
         body = (
@@ -4903,7 +6200,7 @@ def _gen_image(*args, session_id: str = 'default', **kwargs) -> Optional[tuple[s
     return result
 
 
-def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Optional[str] = None, previous_caption: Optional[str] = None, previous_mode: Optional[str] = None, strength: float = 0.25, image_description: str = "", time_of_day: Optional[str] = None, use_edit_mode: bool = False, frame_idx: int = 0, dispatch: str = "", world_prompt: str = "", hard_transition: bool = False, is_timeout_penalty: bool = False, session_id: str = 'default', history_ref: Optional[list] = None) -> Optional[tuple[str, str, Optional[str]]]:
+def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Optional[str] = None, previous_caption: Optional[str] = None, previous_mode: Optional[str] = None, strength: float = 0.25, image_description: str = "", time_of_day: Optional[str] = None, use_edit_mode: bool = False, frame_idx: int = 0, dispatch: str = "", world_prompt: str = "", hard_transition: bool = False, is_timeout_penalty: bool = False, session_id: str = 'default', history_ref: Optional[list] = None, softened_move: bool = False, identity_spec: Optional[dict] = None) -> Optional[tuple[str, str, Optional[str]]]:
     """Generate image and return (image_path, prompt_used, video_path).
     
     video_path is None for non-Veo providers or when video generation fails/disabled.
@@ -4957,6 +6254,7 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
         # capture / observe), this holds the original Gemini still so img2img can
         # anchor QUALITY on it while spatial state follows the live frame.
         primary_guide_image_path = None
+        live_capture_this = False
         
         if frame_idx > 0 and _hist:
             last_imgs = []
@@ -4979,6 +6277,8 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                     print(f"[IMG2IMG COLLECT]   Image path: {entry.get('image')}")
                 
                 if entry.get("image") and entry.get("vision_dispatch"):
+                    img_name = Path(str(entry.get("image") or "")).name
+                    is_live = bool(entry.get("live_capture")) or img_name.startswith("observed_")
                     last_imgs.append((
                         entry["image"],
                         entry["vision_dispatch"],
@@ -4986,6 +6286,7 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                         entry.get("spatial_compass", ""),  # ahead/left/right compass
                         entry.get("setting_type", ""),     # indoor/outdoor type
                         entry.get("guide_image", ""),      # original hi-fi guide still
+                        is_live,
                     ))
                     print(f"[IMG2IMG COLLECT]   -> Added to reference list (total: {len(last_imgs)})")
                 
@@ -5019,7 +6320,7 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
             if len(last_imgs) >= 1:
                 print(f"[IMG2IMG COLLECT] Processing {len(last_imgs)} references for img2img...")
                 # Get most recent entry — unpack all fields
-                img, cap, vis_analysis, spatial_compass, setting_type, guide_img = last_imgs[0]
+                img, cap, vis_analysis, spatial_compass, setting_type, guide_img, live_capture_this = last_imgs[0]
                 prev_vision_analysis = vis_analysis
                 prev_spatial         = spatial_compass
                 prev_setting         = setting_type
@@ -5092,7 +6393,18 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
         # --- Summarize world prompt for image flavor ---
         world_flavor = ""
         if current_state.get("world_prompt", ""):
-            world_flavor = summarize_world_prompt_for_image(current_state["world_prompt"])
+            world_flavor = summarize_world_prompt_for_image(
+                current_state["world_prompt"],
+                session_id=session_id,
+                hard_transition=hard_transition,
+                frame_idx=frame_idx,
+            )
+        identity_spec = identity_spec or game_identity.get_spec()
+        if game_identity.is_viewfinder_spec(identity_spec):
+            # A viewfinder restage must not inherit turn flavor that names the
+            # follow-cam body, and must not kick a flipbook on the side.
+            world_flavor = ""
+            world_summary = ""
         prompt_str = build_image_prompt(
             player_choice=choice,
             dispatch=caption,                              # visual scene (sanitized)
@@ -5102,11 +6414,18 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
             is_timeout_penalty=is_timeout_penalty,
             prev_spatial=prev_spatial,
             prev_setting=prev_setting,
+            softened_move=softened_move,
+            spec=identity_spec,
         )
         
-        # Inject world flavor and location for image model only
+        # Inject world flavor and location for image model only.
+        # Labelled "Visual tone" rather than "World flavor" on purpose — the
+        # latter reads like a second scene description to hand off to, and
+        # summarize_world_prompt_for_image() is now explicitly forbidden from
+        # putting a character/pose/action in this text, so the label should
+        # not imply one either.
         if world_flavor:
-            prompt_str += f" World flavor: {world_flavor}."
+            prompt_str += f" Visual tone: {world_flavor}."
         if world_summary:
             prompt_str += f" Background context: {world_summary}."
         # ALWAYS maintain lighting/aesthetic continuity, even during location changes.
@@ -5135,19 +6454,27 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
         # hardest and spatial continuity has to keep winning that slot — but on
         # frame 0 (nothing to continue from) they lead, which is what turns a
         # location plate into an actual opening shot of YOUR level.
-        identity_spec = game_identity.get_spec()
-        identity_plates = game_identity.identity_reference_paths(
-            # A character sheet is only useful to the renderer when the body or
-            # hands can appear; otherwise it just wastes a reference slot and
-            # tempts the model into putting a stranger in frame.
-            include_character=(
-                game_identity.shows_character(identity_spec)
-                or game_identity.hands_visible(identity_spec)
-            ),
-            spec=identity_spec,
-        )
+        # PHOTO restage: the live grab is the place lock. A level plate
+        # prepends as Gemini's first reference and restages the opening
+        # location instead of where the player is standing.
+        if game_identity.is_viewfinder_spec(identity_spec):
+            identity_plates = []
+        else:
+            identity_plates = game_identity.identity_reference_paths(
+                # A character sheet is only useful to the renderer when the body or
+                # hands can appear; otherwise it just wastes a reference slot and
+                # tempts the model into putting a stranger in frame.
+                include_character=(
+                    game_identity.shows_character(identity_spec)
+                    or game_identity.hands_visible(identity_spec)
+                ),
+                spec=identity_spec,
+            )
         if identity_plates:
-            prompt_str += game_identity.reference_annotation(identity_plates, identity_spec)
+            prompt_str += game_identity.reference_annotation(
+                identity_plates,
+                identity_spec,
+            )
             print(f"[IDENTITY] {len(identity_plates)} reference plate(s) available for this frame")
 
         # --- LOGGING ---
@@ -5233,9 +6560,10 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
         elif active_image_provider == "gemini":
             # Use Google Gemini (Nano Banana) - OFFICIAL API
             print(f"[IMG] Using Google Gemini (Nano Banana) provider")
-            from gemini_image_utils import generate_with_gemini, generate_gemini_img2img
+            from gemini_image_utils import generate_with_gemini, generate_gemini_img2img, make_style_swatch
             
             # Use img2img for ALL frames with history (style continuity + movement instructions)
+            use_style_swatch = False
             if prev_img_paths_list and frame_idx > 0:
                 # For hard transitions (location changes), use ONLY 1 reference for lighting/aesthetic
                 # For normal transitions, use full reference set for composition continuity
@@ -5248,30 +6576,67 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                 print(f"[IMG GENERATION] Movement instructions will override composition")
                 print(f"[IMG GENERATION] Available references: {len(prev_img_paths_list)}")
                 
-                # SPECIAL CASE: Frame 1 always uses Frame 0 strongly (no hard transition)
-                if frame_idx == 1:
+                # Frame 1 used to ALWAYS img2img off the intro still, even when
+                # this turn asked for a hard cut. That made the first curated
+                # choice ("Follow the fence", "Climb the ladder") a modification
+                # of the establishing shot instead of a new composition. Soft
+                # turns (look-around, INTERACT, timeout) still lock to Frame 0.
+                if frame_idx == 1 and not hard_transition:
                     ref_images_to_use = prev_img_paths_list[:1]  # Use ONLY most recent (Frame 0)
                     print(f"[IMG GENERATION] FRAME 1 SPECIAL CASE - Using most recent reference from intro")
                     print(f"[IMG GENERATION] This ensures color/lighting consistency from Frame 0 to Frame 1")
                 elif hard_transition:
-                    ref_images_to_use = prev_img_paths_list[:1]  # Only most recent for lighting
-                    print(f"[IMG GENERATION] Hard transition - using 1 reference image (lighting/aesthetic only)")
+                    # A hard transition is supposed to be a genuinely NEW
+                    # composition, not "the same shot with a color-matched
+                    # skin." Handing Gemini's img2img endpoint the previous
+                    # frame as even a single "style-only" reference was the
+                    # theory (see the print above) — in practice it was NOT
+                    # style-only: the model kept reproducing the old frame's
+                    # camera angle and character position near-verbatim, and
+                    # the prompt's "NEW VANTAGE POINT" wording did nothing to
+                    # override an actual photo sitting in the same request
+                    # ("Move to the pipes" rendered as the same shot with
+                    # steam added). No reference means the model has no photo
+                    # to be faithful TO; the world_prompt's own written-out
+                    # lighting/time-of-day/character description is what
+                    # keeps a hard cut feeling like the same world.
+                    #
+                    # A blurred-past-recognition swatch of that same frame is
+                    # a different bet, not a repeat of the failed one: there
+                    # is no legible photo left to be faithful TO, only a
+                    # color/light field, so it can carry lighting continuity
+                    # without giving the model a composition to copy. Falls
+                    # back to no reference at all (the proven-safe behavior)
+                    # if the swatch can't be built for any reason.
+                    swatch_path = make_style_swatch(prev_img_paths_list[0], output_dir=img_dir)
+                    if swatch_path:
+                        ref_images_to_use = [swatch_path]
+                        use_style_swatch = True
+                        print(f"[IMG GENERATION] Hard transition - using a blurred color/light "
+                              f"swatch (no legible composition to copy) instead of no reference")
+                    else:
+                        ref_images_to_use = []
+                        print(f"[IMG GENERATION] Hard transition - swatch build failed, falling back "
+                              f"to NO reference image (forces text-to-image)")
                 else:
                     ref_images_to_use = prev_img_paths_list[:1]  # ONLY most recent for strongest continuity
                     print(f"[IMG GENERATION] Normal transition - using 1 reference image (most recent frame)")
 
-                # REALTIME QUALITY GUARD: the most-recent reference may be a LIVE
-                # world-model screenshot (act-time / observe capture). Those frames
-                # are often melty / low-fidelity, so they must NOT be the MAIN img2img
-                # influence — Gemini weights the FIRST reference most heavily, and
-                # letting the live frame lead produced ugly, degraded images. When the
-                # original high-fidelity guide still is available (primary_guide_image_path),
-                # make the GUIDE STILL the PRIMARY influence and demote the live frame
-                # to a SECONDARY spatial anchor (or drop it entirely on single-reference
-                # hard cuts / Frame 1, where a clean aesthetic anchor matters most).
-                if primary_guide_image_path:
+                # Live capture is WHERE THEY ARE NOW. Using it as img2img init
+                # on a hard cut (MOVE TO) redrew that same yard every trip —
+                # the exploration freeze. Same-place turns still refine from
+                # the frame on screen; a relocation keeps the swatch / empty
+                # path above so the destination can actually be a new place.
+                if (live_capture_this and not hard_transition
+                        and prev_img_path and os.path.exists(prev_img_path)):
+                    ref_images_to_use = [prev_img_path]
+                    if primary_guide_image_path and primary_guide_image_path != prev_img_path:
+                        ref_images_to_use.append(primary_guide_image_path)
+                    use_style_swatch = False
+                    print(f"[IMG GENERATION] Live world-model frame is PRIMARY img2img reference [{os.path.basename(prev_img_path)}]")
+                elif primary_guide_image_path and not hard_transition:
                     live_frame = ref_images_to_use[0] if ref_images_to_use else None
-                    if hard_transition or frame_idx == 1:
+                    if frame_idx == 1:
                         ref_images_to_use = [primary_guide_image_path]
                         print(f"[IMG GENERATION] Realtime: guide still as sole reference (quality anchor) [{os.path.basename(primary_guide_image_path)}]")
                     else:
@@ -5279,14 +6644,22 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                         if live_frame and live_frame != primary_guide_image_path:
                             ref_images_to_use.append(live_frame)
                         print(f"[IMG GENERATION] Realtime dual-ref: guide still PRIMARY (quality/aesthetic) + live frame SECONDARY (spatial) [{os.path.basename(primary_guide_image_path)}]")
+
+                if game_identity.is_viewfinder_spec(identity_spec) and prev_img_path and os.path.exists(prev_img_path):
+                    # PHOTO restage must img2img the frame the player is looking
+                    # at (live reactor grab or current still). The guide-still
+                    # primary path above would redraw the authored 3P plate.
+                    ref_images_to_use = [prev_img_path]
+                    use_style_swatch = False
+                    print(f"[IMG GENERATION] Viewfinder: source frame is the sole img2img reference [{os.path.basename(prev_img_path)}]")
                 
-                # Identity plates ride BEHIND the continuity frame(s): the most
-                # recent frame must stay the primary influence or the scene
-                # teleports back to whatever the plate depicts.
-                for plate in identity_plates:
-                    if plate not in ref_images_to_use and len(ref_images_to_use) < 4:
-                        ref_images_to_use.append(plate)
-                        print(f"[IDENTITY] Attached plate as reference: {os.path.basename(plate)}")
+                # Character / level plates are passed as identity_paths, not
+                # mixed into the continuity list. Appending them here made
+                # Gemini treat the previous Jason still as "the person" and
+                # the authored sheet as a second previous frame.
+                if identity_plates:
+                    print(f"[IDENTITY] {len(identity_plates)} plate(s) ride as labeled identity, "
+                          f"not as extra continuity frames")
 
                 print(f"[IMG GENERATION] References being passed to API:")
                 for i, ref in enumerate(ref_images_to_use):
@@ -5302,6 +6675,8 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                 # Start flipbook generation at the SAME TIME as static image, using SAME parent reference
                 current_state = _load_state(session_id)
                 flipbook_enabled = current_state.get("flipbook_mode", False)
+                if game_identity.is_viewfinder_spec(identity_spec):
+                    flipbook_enabled = False
                 if flipbook_enabled:
                     print(f"[FLIPBOOK] Parallel generation starting - using parent reference: {os.path.basename(ref_images_to_use[0])}")
                     
@@ -5357,11 +6732,13 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                                 "Output: 4×4 grid, 16 panels, 1200×896 pixels total\n"
                                 "• Each panel: 300×224 pixels\n"
                                 "• Grid reads: LEFT→RIGHT, TOP→BOTTOM (panels 1…16)\n"
-                                "• NO text, numbers, labels, or timecodes in any panel\n"
+                                "• No captions or labels in any panel\n"
                                 "• NO borders visible within panels (grid dividers only between panels)\n\n"
                                 + _flipbook_camera_block()
                             )
-                            flipbook_prefix += PROMPTS.get("gemini_flipbook_4panel_prefix", "")
+                            flipbook_prefix += game_identity.apply(
+                                PROMPTS.get("gemini_flipbook_4panel_prefix", "") or "", "raw"
+                            )
                             
                             # --- REFERENCE STRATEGY: SPATIAL ANCHOR FIRST ---
                             # ORDER MATTERS: Gemini weights the FIRST reference most heavily.
@@ -5417,18 +6794,17 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                             # FREE WILL ACTIONS (custom actions not in standard choices) MUST TAKE PRIORITY
                             dispatch_preview = dispatch[:250] if dispatch else caption[:250]
                             
-                            # Detect if this is a FREE WILL action (not a standard choice like "Approach X" or "Examine Y")
-                            is_free_will = choice and not any([
-                                choice.startswith("Approach"),
-                                choice.startswith("Examine"),
-                                choice.startswith("Use"),
-                                choice.startswith("Take"),
-                                choice.startswith("Look"),
-                                choice.startswith("Search"),
-                                choice.startswith("Listen"),
-                                choice.startswith("Wait"),
-                                choice == "Intro"
-                            ])
+                            # Whether the player typed this action, set by
+                            # advance_turn_image_fast onto state (see
+                            # is_custom_action in its docstring) — reloaded here
+                            # rather than passed as a parameter because this
+                            # branch reads a fresh `current_state` off disk.
+                            # This used to guess from the choice TEXT against a
+                            # stale prefix list ("Approach"/"Examine"/...) that
+                            # nothing generated any more, so it misfired on
+                            # every curated pick — see the note in
+                            # _generate_combined_dispatches.
+                            is_free_will = bool(current_state.get('_turn_is_custom_action'))
                             
                             if is_free_will:
                                 # FREE WILL: Show the player's EXACT action, ignore AI interpretation
@@ -5512,7 +6888,27 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                     threading.Thread(target=generate_flipbook_parallel, daemon=True).start()
 
                 # --- STATIC IMAGE GENERATION (Skip if in Flipbook Mode) ---
-                if not flipbook_enabled:
+                if not flipbook_enabled and not ref_images_to_use and not identity_plates:
+                    # Hard transition with nothing to attach (no identity plates
+                    # configured for this game): go straight to pure text-to-image
+                    # rather than calling the img2img endpoint with an empty
+                    # reference list and hoping it degrades sensibly. This is the
+                    # same function the img2img call below already falls back to
+                    # on failure — using it directly here, on purpose, is what
+                    # actually produces a fresh composition instead of an edit.
+                    print(f"[IMG GENERATION] Hard transition, no references to attach - "
+                          f"generating via text-to-image", flush=True)
+                    result_path = generate_with_gemini(
+                        prompt=prompt_str,
+                        caption=caption,
+                        world_prompt=world_prompt,
+                        time_of_day=use_time_of_day,
+                        is_first_frame=(frame_idx == 0),
+                        action_context=choice,
+                        hd_mode=use_hq_for_this_frame,
+                        output_dir=img_dir,
+                    )
+                elif not flipbook_enabled:
                     result_path = generate_gemini_img2img(
                         prompt=prompt_str,
                         caption=caption,
@@ -5521,7 +6917,11 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                         time_of_day=use_time_of_day,
                         action_context=choice,  # Pass action for FPS hands context
                         hd_mode=use_hq_for_this_frame,  # Frame 0 always HQ, others respect quality toggle
-                        output_dir=img_dir  # Session-specific directory
+                        output_dir=img_dir,  # Session-specific directory
+                        style_only_swatch=use_style_swatch,
+                        identity_seed=bool(hard_transition and identity_plates),
+                        identity_paths=identity_plates,
+                        spec=identity_spec,
                     )
                     # SAFETY NET: img2img can come back empty (API timeout on the
                     # slow lite model, a safety block triggered by the accumulated
@@ -5553,6 +6953,9 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                             action_context=choice,
                             hd_mode=use_hq_for_this_frame,
                             output_dir=img_dir,
+                            identity_seed=True,
+                            identity_paths=identity_plates,
+                            spec=identity_spec,
                         )
                     if not result_path:
                         print(f"[IMG GENERATION] img2img returned no image - falling back to text-to-image so the scene still advances", flush=True)
@@ -5560,7 +6963,6 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                             prompt=prompt_str,
                             caption=caption,
                             world_prompt=world_prompt,
-                            aspect_ratio="4:3",
                             time_of_day=use_time_of_day,
                             is_first_frame=(frame_idx == 0),
                             action_context=choice,
@@ -5584,6 +6986,8 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                 # --- PARALLEL FLIPBOOK GENERATION (Direct Comparison Mode for T2I) ---
                 current_state = _load_state(session_id)
                 flipbook_enabled = current_state.get("flipbook_mode", False)
+                if game_identity.is_viewfinder_spec(identity_spec):
+                    flipbook_enabled = False
                 if flipbook_enabled:
                     print(f"[FLIPBOOK] Parallel generation starting for TEXT-TO-IMAGE mode (Turn 0 or no references)")
                     
@@ -5612,7 +7016,9 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                             from gemini_image_utils import generate_gemini_img2img
                             
                             # Add flipbook prefix - SPECIAL CASE for intro
-                            flipbook_prefix = PROMPTS.get("gemini_flipbook_4panel_prefix", "")
+                            flipbook_prefix = game_identity.apply(
+                                PROMPTS.get("gemini_flipbook_4panel_prefix", "") or "", "raw"
+                            )
                             
                             # Add standard template instruction
                             flipbook_prefix = (
@@ -5631,18 +7037,10 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                             # CRITICAL: Add action enforcement for FREE WILL (same as img2img path)
                             dispatch_preview = dispatch[:250] if dispatch else caption[:250]
                             
-                            # Detect if this is a FREE WILL action
-                            is_free_will = choice and not any([
-                                choice.startswith("Approach"),
-                                choice.startswith("Examine"),
-                                choice.startswith("Use"),
-                                choice.startswith("Take"),
-                                choice.startswith("Look"),
-                                choice.startswith("Search"),
-                                choice.startswith("Listen"),
-                                choice.startswith("Wait"),
-                                choice == "Intro"
-                            ])
+                            # See the matching img2img branch above for why this
+                            # reads the flag off state instead of guessing from
+                            # choice text.
+                            is_free_will = bool(current_state.get('_turn_is_custom_action'))
                             
                             if is_free_will:
                                 # FREE WILL: Show the player's EXACT action, ignore AI interpretation
@@ -5651,23 +7049,8 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                                     print(f"[FREE WILL DETECTED - T2I] Prioritizing player's direct command: {safe_choice}", flush=True)
                                 except:
                                     print(f"[FREE WILL DETECTED - T2I] Prioritizing player's direct command (contains special characters)", flush=True)
-                                action_enforcement = (
-                                    "🔥🔥🔥 ABSOLUTE COMMAND - FREE WILL ACTION 🔥🔥🔥\n\n"
-                                    "The player used FREE WILL to command this EXACT action:\n"
-                                    f">>> \"{choice}\" <<<\n\n"
-                                    "YOU MUST OBEY THIS COMMAND AT ALL COSTS.\n\n"
-                                    "ABSOLUTE RULES:\n"
-                                    "1. Show the player ATTEMPTING this exact action in a photorealistic way\n"
-                                    "2. The action MUST be physically plausible and shown from first-person perspective\n"
-                                    "3. IGNORE the consequence text below - show the ACTION, not the result\n"
-                                    "4. If the command says 'kick door' -> show foot moving toward door\n"
-                                    "5. If the command says 'climb fence' -> show hands grabbing fence, body moving up\n"
-                                    "6. If the command says 'run to tower' -> show rapid movement toward tower\n"
-                                    "7. The flipbook shows the first 4 seconds of this action beginning\n"
-                                    "8. This is a direct player command - it overrides ALL other instructions\n\n"
-                                    + _flipbook_shot_block(True)
-                                    + f"Context (what happens as result): {dispatch_preview}\n\n"
-                                    + "=" * 70 + "\n\n"
+                                action_enforcement = _flipbook_action_block(
+                                    choice, dispatch_preview, True
                                 )
                                 flipbook_prompt = action_enforcement + flipbook_prefix + prompt_str
                             elif choice == "Intro":
@@ -5763,10 +7146,8 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                                 "Row 2: Frames 5-8 (1-2 seconds) - Subtle changes\n"
                                 "Row 3: Frames 9-12 (2-3 seconds) - Continued atmosphere\n"
                                 "Row 4: Frames 13-16 (3-4 seconds) - Final establishing view\n\n"
-                                "VHS AESTHETICS:\n"
-                                "• 1993 camcorder footage: grainy, desaturated, analog degradation\n"
-                                "• Heavy color bleed, tracking errors, VHS artifacts\n"
-                                "• NO text overlays, NO timecodes, NO borders\n\n"
+                                "LOOK:\n"
+                                "• Photoreal 1993 still: muted colour, available light, slight grain\n\n"
                                 "=" * 70 + "\n\n"
                             )
                             
@@ -5847,6 +7228,9 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                             action_context=choice,
                             hd_mode=use_hq_for_this_frame,
                             output_dir=img_dir,
+                            identity_seed=True,
+                            identity_paths=identity_plates,
+                            spec=identity_spec,
                         )
                     else:
                         result_path = None
@@ -5855,7 +7239,6 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                             prompt=prompt_str,
                             caption=caption,
                             world_prompt=world_prompt,
-                            aspect_ratio="4:3",  # Faster generation, smaller files (1184x864)
                             time_of_day=use_time_of_day,
                             is_first_frame=(frame_idx == 0),  # Keep for fallback logic
                             action_context=choice,  # Pass action for FPS hands context
@@ -5885,12 +7268,20 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                 # Most-recent frame is the strongest continuity anchor.
                 ref_images_to_use = prev_img_paths_list[:1]
 
-                # REALTIME QUALITY GUARD: the most-recent reference may be a live
-                # world-model screenshot (melty/low-fidelity). When a clean guide
-                # still exists, make it the PRIMARY style reference instead.
-                if primary_guide_image_path:
+                if hard_transition:
+                    from gemini_image_utils import make_style_swatch
+                    swatch_path = make_style_swatch(prev_img_paths_list[0], output_dir=img_dir)
+                    ref_images_to_use = [swatch_path] if swatch_path else []
+                    print(f"[IMG GENERATION] Krea hard cut — style swatch only, not the current frame")
+                elif (live_capture_this
+                        and prev_img_path and os.path.exists(prev_img_path)):
+                    ref_images_to_use = [prev_img_path]
+                    if primary_guide_image_path and primary_guide_image_path != prev_img_path:
+                        ref_images_to_use.append(primary_guide_image_path)
+                    print(f"[IMG GENERATION] Krea: live world-model frame is PRIMARY style reference")
+                elif primary_guide_image_path:
                     live_frame = ref_images_to_use[0] if ref_images_to_use else None
-                    if hard_transition or frame_idx == 1:
+                    if frame_idx == 1:
                         ref_images_to_use = [primary_guide_image_path]
                         print(f"[IMG GENERATION] Krea realtime: guide still as sole style reference")
                     else:
@@ -5899,26 +7290,37 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                             ref_images_to_use.append(live_frame)
                         print(f"[IMG GENERATION] Krea realtime dual-ref: guide still PRIMARY + live frame SECONDARY")
 
-                # Identity plates ride behind the continuity frame(s), exactly
-                # as on the Gemini path — the most recent frame has to stay the
-                # primary style anchor or the scene snaps back to whatever the
-                # plate depicts.
-                for plate in identity_plates:
-                    if plate not in ref_images_to_use and len(ref_images_to_use) < 4:
-                        ref_images_to_use.append(plate)
-                        print(f"[IDENTITY] Attached plate as Krea reference: {os.path.basename(plate)}")
+                # Plates lead. A captured live frame of the leftover guy used
+                # to sit in slot 1 and win every MOVE TO.
+                if identity_plates:
+                    leading = [p for p in identity_plates if p not in ref_images_to_use]
+                    ref_images_to_use = (leading + ref_images_to_use)[:4]
+                    print(f"[IDENTITY] {len(leading)} plate(s) lead the Krea reference list")
 
-                print(f"[IMG GENERATION] Krea img2img (style transfer) with {len(ref_images_to_use)} reference(s)")
-                result_path = generate_krea_img2img(
-                    prompt=prompt_str,
-                    caption=caption,
-                    reference_image_path=ref_images_to_use,
-                    world_prompt=world_prompt,
-                    time_of_day=use_time_of_day,
-                    action_context=choice,
-                    hd_mode=use_hq_for_this_frame,
-                    output_dir=img_dir,
-                )
+                if ref_images_to_use:
+                    print(f"[IMG GENERATION] Krea img2img (style transfer) with {len(ref_images_to_use)} reference(s)")
+                    result_path = generate_krea_img2img(
+                        prompt=prompt_str,
+                        caption=caption,
+                        reference_image_path=ref_images_to_use,
+                        world_prompt=world_prompt,
+                        time_of_day=use_time_of_day,
+                        action_context=choice,
+                        hd_mode=use_hq_for_this_frame,
+                        output_dir=img_dir,
+                    )
+                else:
+                    print(f"[IMG GENERATION] Krea text-to-image (hard cut, no composition reference)")
+                    result_path = generate_with_krea(
+                        prompt=prompt_str,
+                        caption=caption,
+                        world_prompt=world_prompt,
+                        time_of_day=use_time_of_day,
+                        is_first_frame=False,
+                        action_context=choice,
+                        hd_mode=use_hq_for_this_frame,
+                        output_dir=img_dir,
+                    )
             elif identity_plates:
                 # No history, but the player supplied art. Same call the Gemini
                 # branch makes on frame 0: build the opening frame out of their
@@ -5941,7 +7343,6 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                     prompt=prompt_str,
                     caption=caption,
                     world_prompt=world_prompt,
-                    aspect_ratio="4:3",
                     time_of_day=use_time_of_day,
                     is_first_frame=(frame_idx == 0),
                     action_context=choice,
@@ -5965,7 +7366,7 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                 else:
                     result_path = generate_with_gemini(
                         prompt=prompt_str, caption=caption, world_prompt=world_prompt,
-                        aspect_ratio="4:3", time_of_day=use_time_of_day,
+                        time_of_day=use_time_of_day,
                         is_first_frame=(frame_idx == 0), action_context=choice,
                         hd_mode=use_hq_for_this_frame, output_dir=img_dir,
                     )
@@ -5982,7 +7383,11 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
             from fal_image_utils import generate_with_fal, generate_fal_img2img
 
             if prev_img_paths_list and frame_idx > 0:
-                ref_image_to_use = primary_guide_image_path or prev_img_paths_list[0]
+                if hard_transition and identity_plates:
+                    ref_image_to_use = identity_plates[0]
+                    print(f"[IDENTITY] Hard cut — fal's one slot is the character plate")
+                else:
+                    ref_image_to_use = primary_guide_image_path or prev_img_paths_list[0]
                 print(f"[IMG GENERATION] fal img2img with reference: {Path(ref_image_to_use).name}")
                 result_path = generate_fal_img2img(
                     prompt=prompt_str,
@@ -6037,7 +7442,7 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                 else:
                     result_path = generate_with_gemini(
                         prompt=prompt_str, caption=caption, world_prompt=world_prompt,
-                        aspect_ratio="4:3", time_of_day=use_time_of_day,
+                        time_of_day=use_time_of_day,
                         is_first_frame=(frame_idx == 0), action_context=choice,
                         hd_mode=False, output_dir=img_dir,
                     )
@@ -6070,9 +7475,9 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                 # IMG2IMG MODE - Use /images/edits with previous frames as reference
                 # Using raw requests because Python SDK doesn't support multiple images properly
                 print(f"[OPENAI IMG2IMG] Attempting img2img with {len(openai_refs)} reference image(s)")
-                print(f"[OPENAI IMG2IMG] Wrapping prompt with VHS aesthetic instructions...")
+                print(f"[OPENAI IMG2IMG] Rendering shared image template...")
                 
-                # Wrap with VHS styling (same as Gemini)
+                # Render through the shared image template (same as Gemini)
                 vhs_prompt = _build_vhs_prompt(prompt_str, use_img2img=True)
                 
                 # Build multipart form-data with multiple images
@@ -6175,9 +7580,9 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
             # TEXT-TO-IMAGE MODE - Either img2img failed or no reference images
             if not img2img_success:
                 print(f"[OPENAI TEXT2IMG] Generating fresh image")
-                print(f"[OPENAI TEXT2IMG] Wrapping prompt with VHS aesthetic instructions...")
+                print(f"[OPENAI TEXT2IMG] Rendering shared image template...")
                 
-                # Wrap with VHS styling (same as Gemini)
+                # Render through the shared image template (same as Gemini)
                 vhs_prompt = _build_vhs_prompt(prompt_str, use_img2img=False)
                 
                 response = client.images.generate(
@@ -6409,7 +7814,7 @@ def begin_tick() -> dict:
         world_prompt=state.get('world_prompt', ''),
         temperature=0.2,
         situation_summary=situation_summary,
-        injury_state=', '.join(state.get('injuries', []) or []) or 'none',
+        beat_nudge=beat_nudge_text(state),
     )
     # Remove placeholder/empty choices
     options = [c for c in options if c and c.strip() and c.strip() != '—']
@@ -6484,7 +7889,28 @@ def extract_scene_elements(*args):
     return nouns
 
 # RENAMED from advance_turn
-def _process_turn_background(choice: str, initial_player_action_item_id: int, signal_file_path: Optional[str] = None, source: Optional[str] = None, session_id: str = 'default', subject: Optional[str] = None):
+def _latest_history_image_path(session_id: str = "default") -> str:
+    """Filesystem path of the newest history still, if it still exists."""
+    try:
+        hist = _load_history(session_id) or []
+    except Exception:
+        hist = []
+    for entry in reversed(hist or []):
+        if not isinstance(entry, dict):
+            continue
+        for key in ("image", "image_url"):
+            p = entry.get(key)
+            if not p:
+                continue
+            s = str(p)
+            if s.startswith("/images/"):
+                continue
+            if Path(s).exists():
+                return s
+    return ""
+
+
+def _process_turn_background(choice: str, initial_player_action_item_id: int, signal_file_path: Optional[str] = None, source: Optional[str] = None, session_id: str = 'default', subject: Optional[str] = None, skip_image: bool = False, pacing: bool = True):
     """Standalone feed turn — a thin adapter over the canonical two-phase
     session pipeline.
 
@@ -6523,19 +7949,14 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
         except Exception:
             pass
 
-    time.sleep(0.75)  # brief pacing delay so the client renders the action first
+    if pacing:
+        time.sleep(0.75)  # brief pacing delay so the client renders the action first
 
     SID = session_id
-    # Serialize this session's ENTIRE turn pipeline (dispatch generation,
-    # world evolution kickoff, choice generation) against every OTHER
-    # session's turn/reset processing. advance_turn_image_fast and
-    # advance_turn_choices_deferred still read/write the module-global
-    # `state`/`history` mirrors internally (see their docstrings) — TURN_LOCK
-    # is what actually prevents two sessions' turns from interleaving on
-    # those shared mirrors, matching the documented "only one turn processed
-    # by the engine at a time" model. Scene-image generation is spawned as a
-    # separate background thread (_spawn_scene_image_async) that acquires
-    # TURN_LOCK itself once this function returns, so it isn't held here.
+    # Serialize this session's ENTIRE turn pipeline (world update, scene
+    # image, choice generation) against every OTHER session's turn/reset.
+    # The slate is derived from the new frame, so the render stays on this
+    # path instead of racing ahead of the choices.
     with TURN_LOCK:
         try:
             # ── STORY ESCALATION + FATE ──
@@ -6545,25 +7966,82 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             # SCAN interactions ("scan_interact"/"scan_move") are deliberate meddling
             # with the world, so they push threat harder and bias fate toward risk —
             # exactly the "interacting moves the story forward + raises stakes" goal.
-            is_interaction = source in ("scan_interact", "scan_move")
+            is_interaction = source in ("scan_interact", "scan_move", "encounter")
             is_move = source == "scan_move"
+            # The client tags a genuinely player-typed action with source="typed"
+            # (see submitCustomAction in standalone.js) — that's the ONLY reliable
+            # signal, because a tapped choice pill sends no source at all, same as
+            # a typed one used to. Downstream code used to guess this from the
+            # choice TEXT (does it start with "Approach"/"Examine"/...?), which
+            # matched nothing once choices moved to "Enter the..."/"Walk over
+            # to..." phrasing — so it fired "FREE WILL" on every curated pick,
+            # every turn, injecting a first-person-framed instruction block that
+            # fought whatever camera perspective the player had actually chosen.
+            is_custom_action = source == "typed"
             risk_boost = 2 if is_interaction else 0
+            encounter_released = True
+            if source == "encounter":
+                try:
+                    import encounter as _encounter
+                    _enc_st = _load_state(SID) or {}
+                    _rec = _enc_st.get("encounter_outcome") if isinstance(
+                        _enc_st.get("encounter_outcome"), dict) else {}
+                    encounter_released = _encounter.encounter_releases(
+                        _rec.get("outcome"))
+                    if encounter_released:
+                        _encounter.clear_encounter(SID)
+                except Exception:
+                    encounter_released = True
             dyn = advance_story_dynamics(session_id=SID, risk_boost=risk_boost)
             turn_fate = dyn.get("fate", "NORMAL")
             print(f"[TURN DYNAMICS] source={source} phase={dyn.get('phase')} "
                   f"threat={dyn.get('threat_level')} fate={turn_fate} escalated={dyn.get('escalated')}", flush=True)
+            try:
+                import play_log as _play_log
+                _play_log.record("turn_start", SID, {
+                    "source": source,
+                    "choice": str(choice or "")[:220],
+                    "phase": dyn.get("phase"),
+                    "fate": turn_fate,
+                })
+            except Exception:
+                pass
 
-            # ── PHASE 1: consequence dispatch only (fast text; NO image, async evolve) ──
-            # Image and world-evolution run in the background so narrative + choices
-            # return fast.
-            p1 = advance_turn_image_fast(choice, fate=turn_fate, is_timeout_penalty=False, session_id=SID, skip_image=True, skip_evolve=True, interaction=is_interaction, local_only=True, subject=(subject or ""), is_move=is_move)
+            # ── PHASE 1: camera beat + blocking world update (NO image yet) ──
+            # Evolve must finish before the frame, or the picture improvises
+            # against a stale novel. The frame then derives the slate.
+            p1 = advance_turn_image_fast(choice, fate=turn_fate, is_timeout_penalty=False, session_id=SID, skip_image=True, skip_evolve=False, interaction=is_interaction, local_only=True, subject=(subject or ""), is_move=is_move, escalated=bool(dyn.get("escalated")), is_custom_action=is_custom_action)
             turn_state = _load_state(SID)
             _sync_ambient_state(turn_state, SID)
 
-            dispatch_text = (p1.get("dispatch") or "").strip() or "The situation evolves..."
-            consequence_img_url = None  # streamed in asynchronously below
-            vision_dispatch_text = p1.get("vision_dispatch", "")
+            vision_dispatch_text = (p1.get("vision_dispatch") or "").strip()
+            # The feed gets the narrative; only the renderer gets the caption.
+            dispatch_text = (
+                (p1.get("dispatch") or "").strip()
+                or vision_dispatch_text
+                or "The situation evolves..."
+            )
+            consequence_img_url = None  # streamed after the slate
             player_alive = turn_state.get("player_state", {}).get("alive", True)
+            # Encounter resolve already decided live/die. The consequence LLM
+            # writes that beat; it does not get to flip player_alive.
+            if source == "encounter":
+                forced = turn_state.get("encounter_outcome")
+                if isinstance(forced, dict) and "alive" in forced:
+                    player_alive = bool(forced.get("alive"))
+                    with WORLD_STATE_LOCK:
+                        st_force = _load_state(SID)
+                        ps = st_force.setdefault("player_state", {})
+                        if not isinstance(ps, dict):
+                            ps = {}
+                            st_force["player_state"] = ps
+                        ps["alive"] = player_alive
+                        cond = str(forced.get("condition") or ps.get("condition") or "ok")
+                        if cond in ("ok", "wounded"):
+                            ps["condition"] = cond
+                        _save_state(st_force, SID)
+                        turn_state = st_force
+                        _sync_ambient_state(st_force, SID)
 
             turn_items: List[Dict[str, Any]] = [
                 create_feed_item(
@@ -6590,7 +8068,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
             try:
                 from items import detect_item_pickups, add_items_to_inventory, ITEMS
                 current_inventory = turn_state.get("inventory", [])
-                picked_up = detect_item_pickups(dispatch_text, current_inventory)
+                picked_up = detect_item_pickups(vision_dispatch_text or dispatch_text, current_inventory)
                 if picked_up:
                     updated_inventory, didnt_fit = add_items_to_inventory(current_inventory, picked_up)
                     _inventory_update = updated_inventory
@@ -6625,17 +8103,19 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
 
             # ── DEATH: single mechanism — the Phase 1 player_alive verdict ──
             if not player_alive:
-                # Still render the death moment's scene image — it streams in
-                # behind the "YOU DIED" overlay and lands on the tape.
-                _spawn_scene_image_async(
-                    caption=vision_dispatch_text or dispatch_text,
-                    dispatch=dispatch_text,
-                    choice=choice,
-                    frame_idx=int(p1.get("frame_idx", 1)),
-                    world_prompt=turn_state.get("world_prompt", ""),
-                    hard_transition=bool(p1.get("hard_transition", False)),
-                    session_id=SID,
-                )
+                # Encounter resolve already pinned the death still. A normal
+                # death turn still renders a scene image behind YOU DIED.
+                if not skip_image:
+                    _spawn_scene_image_async(
+                        caption=vision_dispatch_text or dispatch_text,
+                        dispatch=dispatch_text,
+                        choice=choice,
+                        frame_idx=int(p1.get("frame_idx", 1)),
+                        world_prompt=turn_state.get("world_prompt", ""),
+                        hard_transition=bool(p1.get("hard_transition", False)),
+                        session_id=SID,
+                        softened_move=bool(p1.get("softened_move", False)),
+                    )
                 game_over_item = create_feed_item(type="game_over", content="You have succumbed to the horrors. The transmission ends.")
                 game_over_choices = _structure_choices_for_feed(
                     ["Restart Simulation"], "GAME OVER",
@@ -6643,45 +8123,128 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                 )
                 with WORLD_STATE_LOCK:
                     st = _load_state(SID)
-                    _feed_append(st, game_over_item)
-                    _feed_append(st, game_over_choices)
                     st["turn_count"] = int(st.get("turn_count", 0)) + 1
+                    switched = _tick_world_and_maybe_transition(
+                        st, SID, player_alive=False)
+                    if switched:
+                        st.setdefault("player_state", {})["alive"] = True
+                        if switched.get("kind") == "cutscene":
+                            _feed_append(st, _cutscene_feed_item(switched))
+                        else:
+                            _feed_append(st, _world_transition_feed_item(switched))
+                            dest_name = (switched.get("to") or {}).get("name") or "a new world"
+                            _feed_append(st, _structure_choices_for_feed(
+                                ["Look around"], dest_name,
+                                image_url=st.get("current_image_url"),
+                            ))
+                    else:
+                        _feed_append(st, game_over_item)
+                        _feed_append(st, game_over_choices)
                     _save_state(st, SID)
                     turn_state = st
                     _sync_ambient_state(st, SID)
+                try:
+                    import play_log as _play_log
+                    _play_log.record("turn", SID, {
+                        "source": source,
+                        "choice": str(choice or "")[:220],
+                        "dispatch": str(dispatch_text or "")[:280],
+                        "alive": False,
+                    })
+                except Exception:
+                    pass
                 return
 
-            # Remember the pre-turn image so the async vision reground below can tell
-            # when THIS turn's new guide image has actually landed.
-            _prev_image_url = turn_state.get("current_image_url")
+            # Loop: world already updated. Render the new frame, then derive
+            # the slate from that frame — only act on what is actually in it.
+            # Encounter resolve already pinned the play-out still for
+            # survive / wounded / die. Escape generates a new world frame
+            # so the punch does not become the walkable yard.
+            hard_cut = bool(p1.get("hard_transition", False))
+            if source == "encounter" and encounter_released:
+                hard_cut = True
+            if skip_image:
+                scene = None
+                img_path = _latest_history_image_path(SID)
+                img_prompt = ""
+                turn_state = _load_state(SID)
+                _sync_ambient_state(turn_state, SID)
+            else:
+                scene = _generate_and_append_scene_image(
+                    caption=vision_dispatch_text or dispatch_text,
+                    dispatch=vision_dispatch_text or dispatch_text,
+                    choice=choice,
+                    frame_idx=int(p1.get("frame_idx", 1)),
+                    world_prompt=turn_state.get("world_prompt", ""),
+                    hard_transition=hard_cut,
+                    session_id=SID,
+                    write_history=False,
+                    softened_move=bool(p1.get("softened_move", False)),
+                )
+                turn_state = _load_state(SID)
+                _sync_ambient_state(turn_state, SID)
+                img_path = (scene or {}).get("img_path") or ""
+                img_prompt = (scene or {}).get("image_prompt") or ""
 
-            # ── Stream the scene image asynchronously (FAST — never block choices on
-            # the slow render, or the turn/ceremony stalls on the last step waiting
-            # for the prompt). The choices are re-grounded on the rendered image via
-            # a NON-BLOCKING vision pass below, so they stop going stale without
-            # gating the whole turn on image + vision. ──
-            _spawn_scene_image_async(
-                caption=vision_dispatch_text or dispatch_text,
-                dispatch=dispatch_text,
-                choice=choice,
-                frame_idx=int(p1.get("frame_idx", 1)),
-                world_prompt=turn_state.get("world_prompt", ""),
-                hard_transition=bool(p1.get("hard_transition", False)),
-                session_id=SID,
-            )
+            # Survive / wounded stay locked. The world just evolved through
+            # the same pipeline as MOVE TO / a typed action. The Moment
+            # owns the next slate — do not generate explore verbs.
+            if source == "encounter" and not encounter_released:
+                switched = None
+                with WORLD_STATE_LOCK:
+                    st = _load_state(SID)
+                    st["turn_count"] = int(st.get("turn_count", 0)) + 1
+                    switched = _tick_world_and_maybe_transition(
+                        st, SID, player_alive=True)
+                    if switched:
+                        try:
+                            import encounter as _encounter
+                            _encounter.clear_encounter(SID)
+                        except Exception:
+                            pass
+                        if switched.get("kind") == "cutscene":
+                            _feed_append(st, _cutscene_feed_item(switched))
+                        else:
+                            _feed_append(st, _world_transition_feed_item(switched))
+                    MAX_FEED_LOG_ITEMS = 100
+                    if len(st.get("feed_log", [])) > MAX_FEED_LOG_ITEMS:
+                        st["feed_log"] = st["feed_log"][-MAX_FEED_LOG_ITEMS:]
+                    _save_state(st, SID)
+                    turn_state = st
+                    _sync_ambient_state(st, SID)
+                if switched:
+                    return {
+                        "dispatch": dispatch_text,
+                        "choices": [],
+                        "danger": "",
+                        "stakes": "",
+                        "released": True,
+                        "alive": True,
+                    }
+                try:
+                    import encounter as _encounter
+                    held = _encounter.hold_after_engine_turn(SID, dispatch_text)
+                except Exception as e_hold:
+                    log_error(f"[ENCOUNTER] hold after engine turn failed: {e_hold}")
+                    try:
+                        import encounter as _encounter
+                        _encounter._clear_encounter_resolving(SID)
+                    except Exception:
+                        pass
+                    held = {
+                        "dispatch": dispatch_text,
+                        "choices": [],
+                        "danger": "",
+                        "stakes": "",
+                        "released": False,
+                        "alive": True,
+                    }
+                return held
 
-            # ── PHASE 2: resolve the turn's choices promptly. ──
-            # Prefer the provisional choices produced in the SAME LLM call as the
-            # consequence (Phase 1) — when present and usable this skips the
-            # situation-report + choice-generation round-trips entirely, so the
-            # turn's text pipeline is a single LLM call. The client's vision
-            # reground below still refines them against the rendered frame. When
-            # the consequence call didn't return usable options, this falls back
-            # to full choice generation automatically.
             p2 = advance_turn_choices_deferred(
-                None, dispatch_text, vision_dispatch_text, choice,
-                "", p1.get("hard_transition", False), SID, local_only=True,
-                pregenerated_choices=p1.get("provisional_choices") or [],
+                img_path, vision_dispatch_text, vision_dispatch_text, choice,
+                img_prompt, p1.get("hard_transition", False), SID, local_only=True,
+                pregenerated_choices=[],
             )
             turn_state = _load_state(SID)
             _sync_ambient_state(turn_state, SID)
@@ -6694,25 +8257,41 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
 
             with WORLD_STATE_LOCK:
                 st = _load_state(SID)
-                _feed_append(st, prompt_item)
                 st["turn_count"] = int(st.get("turn_count", 0)) + 1
+                switched = _tick_world_and_maybe_transition(
+                    st, SID, player_alive=True)
+                if switched and switched.get("kind") == "cutscene":
+                    # The montage owns this beat — do not leave the source
+                    # World's verbs live under the overlay (they would start
+                    # another turn while the run is parked on the Cutscene).
+                    _feed_append(st, _cutscene_feed_item(switched))
+                else:
+                    _feed_append(st, prompt_item)
+                    if switched:
+                        _feed_append(st, _world_transition_feed_item(switched))
                 MAX_FEED_LOG_ITEMS = 100  # keep feed_log manageable
                 if len(st.get("feed_log", [])) > MAX_FEED_LOG_ITEMS:
                     st["feed_log"] = st["feed_log"][-MAX_FEED_LOG_ITEMS:]
                 _save_state(st, SID)
                 turn_state = st
                 _sync_ambient_state(st, SID)
-
-            # ── Vision reground (non-blocking): once THIS turn's guide image has
-            # rendered, regenerate the choices from what's ACTUALLY on screen and
-            # push them as a choices_revised item the client swaps in place — so the
-            # options reflect the real scene instead of the dispatch text. Bounded +
-            # guarded; if the image never lands it simply gives up. This is what
-            # makes choices image-derived WITHOUT stalling the turn on the render. ──
             try:
-                _spawn_scene_choices_reground(prompt_item.get("id"), _prev_image_url, SID)
-            except Exception as _e_reground:
-                log_error(f"[REGROUND] spawn failed: {_e_reground}")
+                import play_log as _play_log
+                _play_log.record("turn", SID, {
+                    "source": source,
+                    "choice": str(choice or "")[:220],
+                    "dispatch": str(dispatch_text or "")[:280],
+                    "alive": True,
+                    "choices": [c[:80] for c in (next_choices or [])[:3]],
+                })
+            except Exception:
+                pass
+            return {
+                "dispatch": dispatch_text,
+                "choices": next_choices,
+                "released": True,
+                "alive": True,
+            }
 
         except Exception as e_critical:
             log_error(f"Critical unhandled error in _process_turn_background thread: {e_critical}")
@@ -6726,8 +8305,8 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                     _sync_ambient_state(current_state_for_err, SID)
             except Exception as e_final_log:
                 log_error(f"Could not even log critical error to feed_log: {e_final_log}")
-    # No return value: runs in a thread; persists its session's state to disk
-    # and mirrors it into the ambient global only if still the active session.
+    # Thread callers ignore the return. Sync encounter-hold reads it for the
+    # next Moment slate. State is always persisted to disk regardless.
 
 
 def _structure_choices_for_feed(choice_texts: List[str], prompt_text: str = "What do you do next?", image_url: Optional[str] = None) -> Dict[str, Any]:
@@ -6757,7 +8336,8 @@ def _structure_choices_for_feed(choice_texts: List[str], prompt_text: str = "Wha
 
 def _generate_and_append_scene_image(caption: str, dispatch: str, choice: str, frame_idx: int,
                                      world_prompt: str, hard_transition: bool = False,
-                                     session_id: str = 'default', write_history: bool = True):
+                                     session_id: str = 'default', write_history: bool = True,
+                                     softened_move: bool = False):
     """Generate the scene image, append the scene_image feed item, and update
     session state. Returns {'img_path','web_url','image_prompt','render_prompt'}
     or None on failure / when image generation is disabled.
@@ -6808,11 +8388,13 @@ def _generate_and_append_scene_image(caption: str, dispatch: str, choice: str, f
                 frame_idx=frame_idx,
                 session_id=session_id,
                 history_ref=local_history,
+                softened_move=softened_move,
             )
             img_path = result[0] if result else None
             # Two different prompts for two different renderers:
             #   • image_prompt (result[1]) — the diffusion prompt used for the
-            #     Gemini still; kept in state for debugging only.
+            #     Gemini still. Also sent as metadata.image_prompt so enabling
+            #     Reactor / LingBot / Oyster can animate from the same text.
             #   • render_prompt — a clean, video-model-appropriate scene bible
             #     used to STEER Reactor/Helios (see build_realtime_prompt). This
             #     is what we hand the standalone client via metadata.prompt.
@@ -6842,6 +8424,7 @@ def _generate_and_append_scene_image(caption: str, dispatch: str, choice: str, f
                     metadata={
                         "prompt": render_prompt,
                         "base": render_base,
+                        "image_prompt": image_prompt or caption or "",
                         "hard_transition": bool(hard_transition),
                         "blocked": True,
                     },
@@ -6867,6 +8450,10 @@ def _generate_and_append_scene_image(caption: str, dispatch: str, choice: str, f
                     # 'base' (style + scene, no action) lets the client re-steer
                     # instantly with the next action before the turn resolves.
                     "base": render_base,
+                    # The text that generated the still — injected when a world
+                    # model (Reactor / LingBot / Oyster) is enabled so it has
+                    # something to animate besides the seed image.
+                    "image_prompt": image_prompt or caption or "",
                     "hard_transition": bool(hard_transition),
                 },
             )
@@ -6956,6 +8543,12 @@ def _generate_and_append_scene_image(caption: str, dispatch: str, choice: str, f
                         _save_history(hist, session_id)
                         _sync_ambient_history(hist, session_id)
             print(f"[SCENE IMG] scene appended for {session_id}: {web}", flush=True)
+            if int(frame_idx) == 0 and img_path:
+                try:
+                    import world_frames
+                    world_frames.remember_from_play(img_path, session_id=session_id)
+                except Exception as e_wf:
+                    logging.warning(f"[WORLD FRAMES] remember skipped: {e_wf}")
             return {"img_path": img_path, "web_url": web,
                     "image_prompt": image_prompt, "render_prompt": render_prompt}
         except Exception as e:
@@ -6982,6 +8575,7 @@ def _generate_and_append_scene_image(caption: str, dispatch: str, choice: str, f
                     metadata={
                         "prompt": fb_prompt,
                         "base": fb_base,
+                        "image_prompt": caption or "",
                         "hard_transition": bool(hard_transition),
                         "blocked": True,
                     },
@@ -7002,7 +8596,7 @@ def _generate_and_append_scene_image(caption: str, dispatch: str, choice: str, f
 
 def _spawn_scene_image_async(caption: str, dispatch: str, choice: str, frame_idx: int,
                              world_prompt: str, hard_transition: bool = False,
-                             session_id: str = 'default'):
+                             session_id: str = 'default', softened_move: bool = False):
     """Generate a scene image OFF the turn's critical path (death + intro paths,
     where choices are produced in parallel). The browser polls /api/feed and
     streams the scene in. For the main turn loop we instead generate the image
@@ -7014,7 +8608,8 @@ def _spawn_scene_image_async(caption: str, dispatch: str, choice: str, frame_idx
         target=_generate_and_append_scene_image,
         kwargs=dict(caption=caption, dispatch=dispatch, choice=choice, frame_idx=frame_idx,
                     world_prompt=world_prompt, hard_transition=hard_transition,
-                    session_id=session_id, write_history=True),
+                    session_id=session_id, write_history=True,
+                    softened_move=softened_move),
         daemon=True,
     ).start()
 
@@ -7109,7 +8704,8 @@ def generate_intro_turn_feed_items(session_id: str = 'default', new_state: Optio
             world_prompt=new_state.get("world_prompt", "System Online."),
             image_description=intro_image_description,
             situation_summary=intro_situation,
-            n=3
+            n=3,
+            beat_nudge=beat_nudge_text(new_state),
         )
     except Exception as e_choices:
         log_error(f"Error generating initial choices: {e_choices}")
@@ -7142,7 +8738,106 @@ def generate_intro_turn_feed_items(session_id: str = 'default', new_state: Optio
     # couldn't start until reset released it); now that renders are per-session,
     # the ordering has to be explicit.
     return intro_items, intro_image_kwargs
-    
+
+
+def _apply_cached_opening_frame(
+    session_id: str,
+    new_state: dict,
+    intro_items: list,
+    intro_image_kwargs: dict,
+) -> bool:
+    """Put the World's cached first frame into a fresh run's feed.
+
+    Returns True if intro gen should still spawn (cache missing, or dirty so
+    we want a background refresh). Returns False when the cache is warm and
+    clean — Play can start on that still with no render wait.
+    """
+    try:
+        import world_frames
+    except Exception as e:
+        logging.warning(f"[WORLD FRAMES] inject skipped: {e}")
+        return True
+    slug = ""
+    try:
+        wid = str((new_state or {}).get("experience_world_id") or "")
+        import experience_store
+        exp = experience_store.get_experience()
+        world = experience_store.world_by_id(exp, wid) if wid else None
+        slug = str((world or {}).get("slug") or "") or world_frames.start_world_slug(exp)
+    except Exception:
+        slug = world_frames.start_world_slug()
+    rec = world_frames.record(slug) if slug else {}
+    if not rec.get("url") or not rec.get("path"):
+        # Warm this World in the background so the *next* reset is instant.
+        if slug:
+            try:
+                world_frames.ensure(slug, wait=False)
+            except Exception:
+                pass
+        return True
+    web = rec["url"]
+    img_path = rec["path"]
+    caption = (intro_image_kwargs or {}).get("caption") or ""
+    dispatch = (intro_image_kwargs or {}).get("dispatch") or caption
+    choice = (intro_image_kwargs or {}).get("choice") or "Initialize Simulation"
+    world_prompt = (intro_image_kwargs or {}).get("world_prompt") or ""
+    frame_prompt = str(rec.get("prompt") or "").strip()
+    if not frame_prompt:
+        try:
+            import worlds_store
+            data = worlds_store.get_world(slug)
+            frame_prompt = world_frames.scene_prompt_for(
+                data.get("prompts") or {}, dispatch
+            )
+        except Exception:
+            frame_prompt = (dispatch or caption or "").strip()
+    visual = frame_prompt or dispatch or caption
+    render_base = build_realtime_base(visual_scene=visual, narrative=caption)
+    render_prompt = build_realtime_prompt(
+        visual_scene=visual, narrative=caption, choice=choice
+    )
+    item = create_feed_item(
+        type="scene_image",
+        content="",
+        image_url=web,
+        metadata={
+            "prompt": render_prompt,
+            "base": render_base,
+            "image_prompt": visual,
+            "hard_transition": True,
+            "cached_opening": True,
+        },
+    )
+    intro_items.append(item)
+    new_state["current_image_url"] = web
+    new_state["current_image_prompt"] = visual
+    new_state["current_render_prompt"] = render_prompt
+    new_state["current_render_base"] = render_base
+    tape = [f for f in (new_state.get("tape_frames") or []) if isinstance(f, str)]
+    if not tape or tape[-1] != web:
+        tape.append(web)
+    new_state["tape_frames"] = tape[-400:]
+    hist = _load_history(session_id)
+    if not hist:
+        hist.append({
+            "choice": choice,
+            "dispatch": dispatch,
+            "vision_dispatch": dispatch or caption,
+            "world_prompt": world_prompt,
+            "image": img_path,
+            "image_url": img_path,
+            "analysis_image": img_path,
+            "guide_image": img_path,
+            "image_prompt": visual,
+            "hard_transition": True,
+            "cached_opening": True,
+        })
+        _save_history(hist, session_id)
+        _sync_ambient_history(hist, session_id)
+    logging.info(f"[WORLD FRAMES] opening from cache for {slug}: {web}")
+    # Dirty: show this still now, still spawn a regen so the cache catches up.
+    return bool(rec.get("dirty"))
+
 # --- Internal Reset Logic --- (Moved from api_reset for reusability)
 def _perform_game_reset() -> List[Dict[str, Any]]:
     global state, history, _last_image_path, _next_feed_item_id
@@ -7162,6 +8857,9 @@ def _perform_game_reset() -> List[Dict[str, Any]]:
     # could interleave with generate_intro_turn_feed_items()'s calls into
     # the deep turn pipeline (which still touch the module-global `state`/
     # `history` mirrors internally) and corrupt either session's data.
+    need_intro_spawn = True
+    intro_image_kwargs = {}
+    initial_items: List[Dict[str, Any]] = []
     with TURN_LOCK:
         SID = _resolve_request_session_id()
         logging.info(f"_perform_game_reset: ENTER session='{SID}'. Initial global state object id: {id(state)}")
@@ -7172,6 +8870,11 @@ def _perform_game_reset() -> List[Dict[str, Any]]:
     
         # Generate random starting time/weather/mood for this session
         starting_time = _generate_random_starting_time()
+
+        # Bind the Experience graph first so a stitched start World is live
+        # before world_brief() reads the prompt file.
+        import experience_store
+        _experience_seed = apply_experience_start({}, SID)
     
         # Explicitly create a new dictionary for the state to ensure no shared references for critical parts.
         # This is a LOCAL variable — NOT assigned to the ambient `state` global
@@ -7188,8 +8891,10 @@ def _perform_game_reset() -> List[Dict[str, Any]]:
             # either. reset_state() has always done this; the two agreeing is
             # the difference between "the editor works" and "the editor works
             # from the admin page".
-            "world_prompt": game_identity.world_brief(
-                PROMPTS.get("world_initial_state", "Default world starting point.")
+            "world_prompt": experience_store.with_lore(
+                game_identity.world_brief(
+                    PROMPTS.get("world_initial_state", "Default world starting point.")
+                )
             ),
             "current_phase": "normal",
             "chaos_level": 0,
@@ -7197,19 +8902,32 @@ def _perform_game_reset() -> List[Dict[str, Any]]:
             "last_saved": datetime.now(timezone.utc).isoformat(),
             "seen_elements": [],
             "player_state": {"alive": True},
-            "injuries": [],
+            # Turn 0 of a new run has not been scanned yet, and the stamp must not
+            # be left matching turn_count or the last run's frame would ground the
+            # new one's opening beat.
+            "scene_objects": [],
+            "scene_objects_turn": -1,
             # A new run starts a new tape. Without this the reel would splice
             # this playthrough onto the end of the last one.
             "tape_frames": [],
             "feed_log": [],  # Explicitly a new empty list
-            "current_image_url": None,
+            "current_image_url": _experience_seed.get("current_image_url"),
             "choices": [],
             "choices_metadata": {},
             "turn_count": 0,
             "interim_index": 0,
             "in_combat": False,
             "threat_level": 0,
-            "time_of_day": starting_time
+            # A new run is unseen. This was missing here, so detection had
+            # nowhere to start.
+            "detection": {"heat": 0, "level": DETECT_HIDDEN, "since_turn": 0},
+            "time_of_day": starting_time,
+            "experience_id": _experience_seed.get("experience_id") or "default",
+            "experience_world_id": _experience_seed.get("experience_world_id") or "",
+            "world_turn_count": 0,
+            "pending_world_transition": False,
+            "experience_cutscene_id": _experience_seed.get("experience_cutscene_id") or "",
+            "pending_cutscene": _experience_seed.get("pending_cutscene"),
             # Add any other essential keys that should be present from a fresh state
         }
         logging.info(f"_perform_game_reset: New state object created. New state id: {id(new_state)}. Its feed_log (len {len(new_state['feed_log'])}) id: {id(new_state['feed_log'])}")
@@ -7237,7 +8955,36 @@ def _perform_game_reset() -> List[Dict[str, Any]]:
         initial_items, intro_image_kwargs = generate_intro_turn_feed_items(
             SID, new_state, spawn_image=False)
         logging.info(f"_perform_game_reset: initial_items from generate_intro_turn_feed_items (IDs): {[item['id'] for item in initial_items if item]}")
-    
+
+        # Cached first frame is the load time. If this World already has a
+        # still, put it in the reset payload so Play / Watch paint immediately
+        # instead of sitting on a black screen until intro gen returns.
+        need_intro_spawn = _apply_cached_opening_frame(
+            SID, new_state, initial_items, intro_image_kwargs)
+
+        if new_state.get("experience_cutscene_id"):
+            # Opening is the montage — don't leave intro verbs under it.
+            initial_items = [
+                it for it in initial_items
+                if (it or {}).get("type") != "player_choice_prompt"
+            ]
+            try:
+                import experience_store
+                exp = experience_store.get_experience()
+                dest = experience_store.cutscene_by_id(
+                    exp, new_state.get("experience_cutscene_id"))
+            except Exception:
+                dest = None
+            initial_items.append(_cutscene_feed_item({
+                "to": dest or {},
+                "cutscene": new_state.get("pending_cutscene") or {},
+                "from": {},
+            }))
+            if new_state.get("current_image_url") is None:
+                seed_url = _experience_seed.get("current_image_url")
+                if seed_url:
+                    new_state["current_image_url"] = seed_url
+
         new_state['feed_log'].extend(initial_items) # Add to the new state's new feed_log
         logging.info(f"_perform_game_reset: state['feed_log'] before _save_state (IDs): {[item['id'] for item in new_state['feed_log'] if item]}")
     
@@ -7250,9 +8997,10 @@ def _perform_game_reset() -> List[Dict[str, Any]]:
         logging.info(f"_perform_game_reset: Game reset complete. {len(initial_items)} initial items generated and saved.")
     # Spawn the intro render OUTSIDE the TURN_LOCK block and AFTER the save
     # above, so it can never be clobbered by that save and never holds the
-    # global lock. This is the first frame the player sees; on a seed-locked
-    # world model it's also the thing realtime needs before it can start.
-    _spawn_scene_image_async(**intro_image_kwargs)
+    # global lock. Skip it when the cache is warm and clean — that render is
+    # how this used to feel slow.
+    if need_intro_spawn:
+        _spawn_scene_image_async(**intro_image_kwargs)
     return initial_items
 
 def api_reset():
@@ -7276,7 +9024,8 @@ def api_reset():
 
         # Fallback: If still no player_choice_prompt, add a default
         has_choice_prompt = any(item.get('type') == 'player_choice_prompt' for item in initial_items)
-        if not has_choice_prompt:
+        has_opening_cutscene = any(item.get('type') == 'cutscene' for item in initial_items)
+        if not has_choice_prompt and not has_opening_cutscene:
             logging.error("api_reset: No player_choice_prompt found in initial_items. Adding fallback.")
             # The id MUST come from the shared counter, and the item MUST be
             # appended to the session's feed_log like every other beat.
@@ -7329,9 +9078,9 @@ def api_revive():
 
     Intended to be called by the coin-op layer AFTER a payment has been
     verified server-side (see coinop.verify_and_redeem). This endpoint is
-    itself agnostic to payment — it simply flips the death state, restores a
-    partial health, and appends a short narrative beat + a fresh choice
-    prompt so the player can keep going.
+    itself agnostic to payment — it simply flips the death state, eases the
+    heat, and appends a short narrative beat + a fresh choice prompt so the
+    player can keep going.
 
     Idempotent: calling api_revive on an already-alive player is a no-op
     that returns the (empty) list of newly appended items, so a duplicate
@@ -7354,10 +9103,16 @@ def api_revive():
             # layer up in coinop.verify_and_redeem's redeemed-set — this
             # function trusts its caller.
             ps["alive"] = True
-            if isinstance(ps.get("health"), (int, float)):
-                # Best-effort partial heal when the run tracks a numeric HP;
-                # if it doesn't, the flag flip is all that's needed.
-                ps["health"] = max(int(ps["health"]), 25)
+            # A continue buys a moment of not being hunted. Coming back still
+            # cornered spends the coin before the player touches anything, and
+            # since detection is now the thing that gets you killed, this is
+            # what a continue actually purchases.
+            det = get_detection(st)
+            if det["level"] > DETECT_SUSPICIOUS:
+                det["heat"] = DETECT_THRESHOLDS[DETECT_SUSPICIOUS]
+                det["level"] = DETECT_SUSPICIOUS
+                st["detection"] = det
+                st["in_combat"] = False
             ps["revived"] = True
             ps["revive_count"] = int(ps.get("revive_count", 0)) + 1
             st["player_state"] = ps
@@ -7389,7 +9144,7 @@ def api_revive():
                 [
                     "Look around carefully.",
                     "Move forward, cautiously.",
-                    "Check yourself for injuries.",
+                    "Get your bearings.",
                     "Wait a moment and listen.",
                 ],
                 "What do you do next?",
@@ -7518,6 +9273,10 @@ def api_choose():
         # thread below) is what makes each session's turns land in ITS OWN
         # save file instead of everyone's turns landing in 'default'.
         session_id = _resolve_request_session_id()
+        with WORLD_STATE_LOCK:
+            _cut_st = _load_state(session_id) or {}
+            if str(_cut_st.get("experience_cutscene_id") or "").strip():
+                return jsonify({"ok": False, "error": "cutscene_playing"}), 409
         # How the action was issued. SCAN object interactions ("scan_interact"/
         # "scan_move") drive the story-escalation backend harder (see
         # _process_turn_background) so poking the world moves the plot + raises risk.
@@ -7527,6 +9286,26 @@ def api_choose():
         # OBJECT PERMANENCE block. Only SCAN taps carry one; a typed or generated
         # choice has no identified subject and pins nothing.
         action_subject = _permanence_subject(data.get('subject'))
+        # Encounter Moment: the feed shows the short verb; the turn LLM gets
+        # the character + danger briefing so the aftermath is about THIS interrupt.
+        turn_choice_text = player_choice_text
+        if action_source == "encounter":
+            try:
+                import encounter as _encounter
+                _enc_st = _load_state(session_id) or {}
+                enc = _enc_st.get("encounter")
+                rec = _enc_st.get("encounter_outcome") if isinstance(_enc_st.get("encounter_outcome"), dict) else {}
+                if isinstance(enc, dict):
+                    turn_choice_text = _encounter.encounter_action_for_turn(
+                        player_choice_text, enc,
+                        lane=rec.get("lane"),
+                        outcome=rec.get("outcome"),
+                    )
+                    if not action_subject:
+                        action_subject = _permanence_subject(
+                            (enc.get("character") or {}).get("label"))
+            except Exception as e_enc:
+                log_error(f"api_choose: encounter enrich failed: {e_enc}")
         # LEAVE CAMP must arrive on foot — never in a cab/dashboard POV.
         player_choice_text = _normalize_camp_leave_choice(player_choice_text, action_source)
 
@@ -7615,7 +9394,7 @@ def api_choose():
         try:
             thread = threading.Thread(
                 target=_process_turn_background,
-                args=(player_choice_text, player_action_item['id'], str(temp_signal_file)),
+                args=(turn_choice_text, player_action_item['id'], str(temp_signal_file)),
                 kwargs={"source": action_source, "session_id": session_id,
                         "subject": action_subject},
                 daemon=True,
@@ -7672,7 +9451,10 @@ def _prune_observed_frames(img_dir, keep: int = 12):
         d = _P(img_dir)
         if not d.exists():
             return
-        frames = sorted(d.glob("observed_*.png"), key=lambda p: p.stat().st_mtime)
+        frames = sorted(
+            list(d.glob("observed_*.png")) + list(d.glob("observed_*.jpg")),
+            key=lambda p: p.stat().st_mtime,
+        )
         excess = len(frames) - max(0, int(keep))
         for old in frames[:excess]:
             try:
@@ -7858,7 +9640,7 @@ def _ingest_realtime_frame(frame_b64: str, session_id: str = 'default'):
 
     img_dir = _Path(_get_image_dir(session_id))
     img_dir.mkdir(parents=True, exist_ok=True)
-    fname = f"observed_{int(_time.time() * 1000)}.png"
+    fname = f"observed_{int(_time.time() * 1000)}.jpg"
     fpath = img_dir / fname
     fpath.write_bytes(img_bytes)
     web = _to_web_image_url(fname, session_id)
@@ -7884,6 +9666,7 @@ def _ingest_realtime_frame(frame_b64: str, session_id: str = 'default'):
                 hist[-1]['guide_image'] = hist[-1]['image']
             hist[-1]['image'] = str(fpath)
             hist[-1]['image_url'] = str(fpath)
+            hist[-1]['live_capture'] = True
             _save_history(hist, session_id)
             if get_active_session_id() == session_id:
                 history = hist
@@ -7948,12 +9731,18 @@ def api_detect():
     "starfield" tags over the live scene where each object actually sits — and
     let the player poke any of them.
 
-    Request JSON:  {"frame": "data:image/jpeg;base64,..."}
+    Request JSON:  {"frame": "data:image/jpeg;base64,...", "purpose": "scan"?}
     Response JSON: {"objects": [{"label", "cx", "cy", "w", "h"}, ...]}
     Coordinates are normalized 0..1 (cx/cy = box center, w/h = box size).
 
-    This is a stateless, read-only perception call: unlike /api/observe it does
-    NOT mutate world state, history, or choices — it just names what's on screen.
+    Read-only w.r.t. history and choices: unlike /api/observe this never touches
+    the turn record. The ONE thing it writes is `purpose: "scan"`-gated — the
+    labels are cached on state so the next consequence call knows what is in
+    frame (see record_scene_objects). That gate matters: photo targeting polls
+    this same endpoint every ~2.5 s while the camera is armed, and a locked
+    state read+write at that cadence would contend with the turn loop for no
+    benefit. A deliberate SCAN tap is one pass, and it is the act already wired
+    to scan_interact / scan_move, so it is the only caller that opts in.
     """
     import base64 as _b64, re as _re
     try:
@@ -7978,14 +9767,20 @@ def api_detect():
         if len(img_bytes) < 512:
             return jsonify({"error": "frame too small"}), 400
 
-        # Ground the detector with the exact prompt the world model was steered
-        # with for this frame. Pulled from live state so it tracks the current
-        # turn without any client changes; falls back gracefully to no prior
-        # if the session has no state yet (opening frame, intro, tests).
+        # Ground the detector with a description of the on-screen frame when
+        # we have one (current_observed_vision). Never the last still's render
+        # recipe — that names objects from the previous location after the
+        # live video has drifted. No prior is fine: the JPEG is the truth.
         scene_prompt = ""
+        anti_loop_gate = False
+        streak = 0
+        det_level = DETECT_HIDDEN
         try:
             _st = get_state(session_id) or {}
-            scene_prompt = str(_st.get('current_image_prompt') or "")
+            scene_prompt = _detect_scene_prior(_st)
+            streak = int(_st.get("environment_streak", 0) or 0)
+            det_level = get_detection(_st).get("level", DETECT_HIDDEN)
+            anti_loop_gate = streak >= ENVIRONMENT_STREAK_LIMIT or det_level >= DETECT_HUNTED
         except Exception:
             scene_prompt = ""
 
@@ -7993,17 +9788,66 @@ def api_detect():
         # no re-read, no second base64 encode. The old scratch-file path was
         # both slower and a source of contention when SCAN + PHOTO detects
         # fired against the same session at once.
+        viewfinder = bool(data.get("viewfinder"))
         objects = _detect_objects(
             image_bytes=img_bytes,
             mime_type=mime_type,
             scene_prompt=scene_prompt,
+            viewfinder=viewfinder,
         )
-        return jsonify({"objects": objects or []})
+
+        # SCAN used to be a second front door into the world with no relation
+        # to the anti-loop gate `enforce_egress_option` already enforces on the
+        # text-choice pills — a run stuck retracing the same room (or being
+        # hunted) could just keep tapping whatever SCAN rotated through
+        # forever, because the pills' forced "way out" option sat unused right
+        # next to a tap target nobody had a reason to ignore. That is exactly
+        # how a 40-turn run spent 25+ turns cycling "man / soldier / rifle /
+        # truck" in one wrecked vehicle: every tap was a genuine hard cut, but
+        # none of them were the fallback pool's forced egress, because SCAN
+        # never consulted it. Rather than build a second, parallel
+        # stuck-detector for the object list, this reuses the SAME signal:
+        # when the pills would already be forcing an egress choice, SCAN goes
+        # quiet too (unless it already found the way out itself), so the only
+        # affordance left on screen is the one the model or the fallback pool
+        # is trying to hand the player.
+        suppressed = False
+        if anti_loop_gate and objects and not any(
+            is_egress_choice(o.get("label") or "") for o in objects
+        ):
+            print(f"[ANTI-LOOP] SCAN suppressed (streak={streak}, detection={det_level}) "
+                  f"— forcing the choice pills' egress option", flush=True)
+            objects = []
+            suppressed = True
+
+        # Remember what this pass named, so the turn the player commits from it
+        # is grounded in the things they can actually see. Best-effort: losing
+        # the cache costs grounding, never the scan itself.
+        if str(data.get('purpose') or "").strip().lower() == "scan":
+            try:
+                with WORLD_STATE_LOCK:
+                    st = _load_state(session_id)
+                    labels = record_scene_objects(st, objects or [])
+                    _save_state(st, session_id)
+                if labels:
+                    print(f"[SCENE OBJECTS] turn {st.get('turn_count', 0)} on screen: "
+                          f"{', '.join(labels)}", flush=True)
+            except Exception as e_cache:
+                log_error(f"[SCENE OBJECTS] cache failed (non-fatal): {e_cache}")
+
+        # `anti_loop_suppressed` lets callers (the playtest harness's SCAN
+        # hit-rate checks, in particular) tell "the detector found nothing"
+        # apart from "the detector found things but the anti-loop gate
+        # deliberately withheld them" — an empty `objects` list looks
+        # identical on the wire otherwise, and a harness that can't tell
+        # those apart flags this gate's own correct behavior as a detector
+        # regression every time a run gets hunted long enough to trip it.
+        return jsonify({"objects": objects or [], "anti_loop_suppressed": suppressed})
     except Exception as e:
         import traceback as _tb
         log_error(f"[DETECT] failed: {e}")
         _tb.print_exc()
-        return jsonify({"error": str(e), "objects": []}), 500
+        return jsonify({"error": str(e), "objects": [], "anti_loop_suppressed": False}), 500
 
 
 def api_danger():
@@ -8053,13 +9897,12 @@ def api_danger():
             # on transitions.
             return jsonify(safe)
 
-        # Ground the danger call with the current scene prompt, same as
-        # /api/detect. Helps the model disambiguate "guard with rifle
-        # aimed at you" from "guard idling behind a desk".
+        # Ground danger with a description of THIS frame when we have one —
+        # not the last still's render recipe (same rule as /api/detect).
         scene_prompt = ""
         try:
             _st = get_state(session_id) or {}
-            scene_prompt = str(_st.get('current_image_prompt') or "")
+            scene_prompt = _detect_scene_prior(_st)
         except Exception:
             scene_prompt = ""
 
@@ -8076,6 +9919,326 @@ def api_danger():
         # Return 200 with a safe reading — the client's loop should not treat
         # a server error as danger. It'll ease back toward SAFE on its own.
         return jsonify({"error": str(e), **safe})
+
+
+def _write_data_url_image(
+    frame_b64: str,
+    session_id: str,
+    prefix: str = "viewfinder_live",
+) -> Optional[str]:
+    """Decode a browser data-URL onto disk. Does not touch history or state."""
+    import base64 as _b64, re as _re, time as _time
+    if not frame_b64:
+        return None
+    m = _re.match(r"^data:image/[^;]+;base64,(.*)$", frame_b64, _re.DOTALL)
+    raw = m.group(1) if m else frame_b64
+    try:
+        img_bytes = _b64.b64decode(raw)
+    except Exception:
+        return None
+    if len(img_bytes) < 512:
+        return None
+    img_dir = Path(_get_image_dir(session_id))
+    img_dir.mkdir(parents=True, exist_ok=True)
+    fpath = img_dir / f"{prefix}_{int(_time.time() * 1000)}.jpg"
+    fpath.write_bytes(img_bytes)
+    return str(fpath) if fpath.is_file() else None
+
+
+def _viewfinder_source_still(session_id: str) -> Optional[str]:
+    """Filesystem path of the current 3P gameplay still, if one exists."""
+    st = get_state(session_id) or {}
+    url = st.get("current_image_url")
+    if url:
+        resolved = _resolve_image_path(url, session_id)
+        if resolved and os.path.exists(resolved):
+            return str(resolved)
+    hist = _load_history(session_id)
+    for entry in reversed(hist or []):
+        img = entry.get("image") or entry.get("image_url")
+        if not img:
+            continue
+        resolved = _resolve_image_path(img, session_id)
+        if resolved and os.path.exists(resolved):
+            return str(resolved)
+    return None
+
+
+def _viewfinder_cache_key(source_path: str, spatial: str = "") -> str:
+    p = Path(source_path)
+    try:
+        digest = hashlib.sha256(p.read_bytes()).hexdigest()[:20]
+    except OSError:
+        digest = p.name
+    raw = f"eyes-v4:{digest}:{spatial or ''}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _viewfinder_cache_path(session_id: str, key: str) -> Path:
+    return Path(_get_image_dir(session_id)) / f"viewfinder_{key}.png"
+
+
+def _viewfinder_last_look(session_id: str) -> dict:
+    hist = _load_history(session_id)
+    last = hist[-1] if hist else {}
+    st = get_state(session_id) or {}
+    return {
+        "spatial": last.get("spatial_compass") or "",
+        "setting": last.get("setting_type") or "",
+        "description": last.get("vision_analysis") or last.get("vision_dispatch") or "",
+        "time_of_day": st.get("time_of_day") or "",
+    }
+
+
+def _viewfinder_leaked_character(image_path: str, *, allow_other_people: bool = False) -> bool:
+    """True when a viewfinder plate still has the operator.
+
+    SCAN's normal detect path strips the protagonist so you cannot tag
+    yourself. This check asks to keep those labels. Local detect often
+    names the leaked body ``person`` rather than the authored name — a
+    large centered human on the FIRST (3P-attached) plate is that leak.
+
+    ``allow_other_people`` is for the retry and for cache hits: an NPC
+    in front of the lens is a real subject, not the operator. Refusing
+    those plates made PHOTO fail in encounters.
+    """
+    try:
+        objects = _detect_objects(image_path=image_path, include_self=True)
+    except Exception:
+        return False
+    for obj in objects or []:
+        label = (obj or {}).get("label") or ""
+        if _is_player_self_label(label):
+            return True
+        if allow_other_people:
+            continue
+        kind = str((obj or {}).get("kind") or "").lower()
+        try:
+            w = float((obj or {}).get("w") or 0)
+            h = float((obj or {}).get("h") or 0)
+            cx = float((obj or {}).get("cx") or 0.5)
+        except (TypeError, ValueError):
+            continue
+        if kind in ("person", "character") and (w * h) >= 0.10 and 0.22 <= cx <= 0.78:
+            return True
+    return False
+
+
+def _install_viewfinder_cache(generated_path: str, dest: Path) -> Optional[str]:
+    """Copy a generated still onto the viewfinder cache name. Returns dest path."""
+    src = generated_path
+    if not src or not os.path.exists(str(src)):
+        resolved = _resolve_image_path(src) if src else None
+        if not resolved or not os.path.exists(resolved):
+            return None
+        src = str(resolved)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if os.path.abspath(src) != os.path.abspath(dest):
+        import shutil
+        shutil.copy2(src, dest)
+    return str(dest) if dest.is_file() else None
+
+
+def render_viewfinder_image(
+    session_id: str = "default",
+    *,
+    attach_source: bool = True,
+    source_path: Optional[str] = None,
+) -> Optional[str]:
+    """Restage the frame the player is looking at as first person.
+
+    The attached still is the current view (live grab or last gameplay still).
+    It is labeled a place lock: copy architecture and light, erase the person.
+    """
+    source = source_path or _viewfinder_source_still(session_id)
+    if not source:
+        return None
+    look = _viewfinder_last_look(session_id)
+    fp_spec = game_identity.viewfinder_spec()
+    stripped = game_identity.strip_follow_cam_prose(look["description"], fp_spec)
+    caption = stripped or look["spatial"] or "The same place, seen through the player's eyes."
+    history_ref = []
+    frame_idx = 0
+    if attach_source:
+        live = Path(str(source)).name.startswith("viewfinder_live_")
+        history_ref = [{
+            "image": source,
+            "vision_dispatch": caption,
+            "vision_analysis": caption,
+            "spatial_compass": look["spatial"],
+            "setting_type": look["setting"],
+            "hard_transition": False,
+            "live_capture": live,
+        }]
+        frame_idx = 1
+    result = _gen_image(
+        caption,
+        "camcorder",
+        "Raise camera",
+        image_description=caption,
+        time_of_day=look["time_of_day"] or None,
+        use_edit_mode=False,
+        frame_idx=frame_idx,
+        dispatch=caption,
+        world_prompt="",
+        hard_transition=False,
+        is_timeout_penalty=False,
+        session_id=session_id,
+        history_ref=history_ref,
+        identity_spec=fp_spec,
+    )
+    path = result[0] if result else None
+    if path and not os.path.exists(str(path)):
+        resolved = _resolve_image_path(path)
+        path = str(resolved) if resolved and os.path.exists(resolved) else None
+    return path
+
+
+def _viewfinder_live_prompt(session_id: str, caption: str = "") -> str:
+    """Realtime prompt that restages the world model as planted first person."""
+    spec = game_identity.viewfinder_spec()
+    contract = game_identity.live_camera_contract(spec)
+    look = _viewfinder_last_look(session_id)
+    stripped = game_identity.strip_follow_cam_prose(
+        caption or look.get("description") or "", spec,
+    )
+    scene = stripped or look.get("spatial") or contract.get("scene_floor") or ""
+    prefix = (contract.get("prefix") or contract.get("vantage") or "").strip()
+    planted = (
+        "The player is planted and looking through their own eyes. "
+        "Looking left or right yaws the camera in place; looking up or down pitches. "
+        "Do not walk, truck, strafe, or slide the viewpoint. "
+        "Do not draw the player, their hands, or a camcorder. "
+        "Do not spawn, walk, or stand a person in front of the lens. "
+        "This world has no protagonist on screen. Uninhabited first-person view. "
+        "Empty air between the lens and the scene. "
+        + game_identity.viewfinder_hero_ban(spec)
+    )
+    prefix = game_identity.strip_follow_cam_prose(prefix, spec)
+    scene = game_identity.strip_follow_cam_prose(scene, spec)
+    return " ".join(p for p in (prefix, scene, planted) if p)
+
+
+def _viewfinder_response(
+    session_id: str,
+    image_url: str,
+    *,
+    cached: bool,
+    from_live: bool,
+    source: Optional[str],
+    seed_image: bool = True,
+):
+    spec = game_identity.viewfinder_spec()
+    look = _viewfinder_last_look(session_id)
+    caption = game_identity.strip_follow_cam_prose(look.get("description") or "", spec)
+    source_url = _to_web_image_url(source, session_id) if source else ""
+    return jsonify({
+        "image_url": image_url,
+        "cached": cached,
+        "from_live": from_live,
+        "seed_image": seed_image,
+        "source_still": source_url,
+        "prompt": _viewfinder_live_prompt(session_id, caption),
+        "camera": game_identity.live_camera_contract(spec),
+    })
+
+
+def api_viewfinder():
+    """Raise PHOTO: restage the current view as first-person, no turn.
+
+    Request JSON:  {"session_id": "...", "frame": "data:image/jpeg;base64,..."?}
+    Response JSON: {"image_url", "cached", "source_still", "from_live",
+                    "seed_image", "prompt", "camera"}
+
+    ``frame`` is the live view grab. It is the img2img source so the plate is
+    THIS place, not the opening still. The person in that grab is erased by
+    the place-lock label. Without a frame, falls back to the current still.
+
+    ``seed_image`` is false when detect still names a person.
+
+    ``prompt`` / ``camera`` retarget the running world model onto first person
+    without saving a camera-mode change.
+
+    Does not mutate ``camera_perspective``, history, or world state.
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        session_id = data.get("session_id", "default")
+        if not (IMAGE_ENABLED and LLM_ENABLED):
+            return jsonify({"error": "images_disabled"}), 503
+
+        authored_mode = game_identity.camera_mode()
+        hist_before = list(_load_history(session_id) or [])
+        state_before = (get_state(session_id) or {}).get("current_image_url")
+        live_path = _write_data_url_image(data.get("frame") or "", session_id)
+        source = live_path or _viewfinder_source_still(session_id)
+        if not source:
+            return jsonify({"error": "no_still"}), 400
+
+        look = _viewfinder_last_look(session_id)
+        key = _viewfinder_cache_key(source, look.get("spatial") or "")
+        cached = _viewfinder_cache_path(session_id, key)
+        if cached.is_file():
+            if _viewfinder_leaked_character(str(cached), allow_other_people=True):
+                print("[VIEWFINDER] cached plate leaked protagonist — regenerating")
+                try:
+                    cached.unlink()
+                except OSError:
+                    pass
+            else:
+                return _viewfinder_response(
+                    session_id,
+                    _to_web_image_url(str(cached), session_id),
+                    cached=True,
+                    from_live=bool(live_path),
+                    source=source,
+                    seed_image=True,
+                )
+
+        first = render_viewfinder_image(
+            session_id, attach_source=True, source_path=source,
+        )
+        chosen = first
+        if first and _viewfinder_leaked_character(first):
+            print("[VIEWFINDER] protagonist leaked into plate — retrying without 3P pixels")
+            retry = render_viewfinder_image(
+                session_id, attach_source=False, source_path=source,
+            )
+            if retry:
+                chosen = retry
+        leaked = bool(chosen) and _viewfinder_leaked_character(
+            chosen, allow_other_people=True,
+        )
+        installed = None
+        if chosen and not leaked:
+            installed = _install_viewfinder_cache(chosen, cached)
+        elif chosen and leaked:
+            print("[VIEWFINDER] plate still names a person — refusing leaked viewfinder")
+            installed = None
+        if game_identity.camera_mode() != authored_mode:
+            log_error("[VIEWFINDER] authored camera mode changed — this path must not save")
+        hist_after = list(_load_history(session_id) or [])
+        if len(hist_after) != len(hist_before):
+            log_error("[VIEWFINDER] history grew — this path must not append a turn")
+        state_after = (get_state(session_id) or {}).get("current_image_url")
+        if state_after != state_before:
+            log_error("[VIEWFINDER] current_image_url changed — this path must not clobber the 3P still")
+
+        if not installed:
+            return jsonify({"error": "render_failed"}), 502
+        return _viewfinder_response(
+            session_id,
+            _to_web_image_url(installed, session_id),
+            cached=False,
+            from_live=bool(live_path),
+            source=source,
+            seed_image=not leaked,
+        )
+    except Exception as e:
+        import traceback as _tb
+        log_error(f"[VIEWFINDER] failed: {e}")
+        _tb.print_exc()
+        return jsonify({"error": str(e)}), 500
 
 
 def api_photo():
@@ -8245,7 +10408,7 @@ def _talk_vision_snapshot(session_id: str = "default") -> dict:
     except Exception:
         pass
 
-    scene_prompt = (st.get("current_image_prompt") or "").strip()
+    scene_prompt = _detect_scene_prior(st)
     visible = []
     try:
         visible = _detect_objects(str(resolved), max_items=DETECT_MAX_ITEMS,
@@ -8333,7 +10496,9 @@ def build_talk_context(subject: dict, session_id: str = "default", opening_overr
     """
     subject = subject or {}
     label = _clean_subject_text(subject.get("label"), "figure", 40)
-    kind = _clean_subject_text(subject.get("kind"), "person", 20)
+    kind = _clean_subject_text(subject.get("kind"), "", 20)
+    if not kind:
+        kind = "person" if _talk_subject_is_figure(subject) else "machine"
 
     try:
         st = _load_state(session_id) or {}
@@ -8471,17 +10636,22 @@ def _talk_llm_failed(text: str) -> bool:
     return t.startswith(("i cannot", "i can't", "as an", "i'm sorry", "i am sorry"))
 
 
+def _talk_opening_fallback(label: str, kind: str) -> str:
+    """Instant first line — no LLM. TALK must speak even when Gemini is slow."""
+    return {
+        "machine": f"[the {label} crackles]… is someone there? Say something.",
+        "creature": "…you can see me. Most can't. Why are you still standing there?",
+        "animal": "…you hear me, don't you. Don't act like the others.",
+    }.get(kind, "You. You shouldn't be here. What do you want?")
+
+
 def _talk_opening_line(label: str, kind: str, situation: dict, persona_prompt: str) -> str:
     """The subject's first line — spoken before the player says anything.
 
     Uses the LLM when available (grounded in the persona prompt); falls back to
     a tense, generic-but-fitting line so the mechanic always opens with voice.
     """
-    fallback = {
-        "machine": f"[the {label} crackles]… is someone there? Say something.",
-        "creature": "…you can see me. Most can't. Why are you still standing there?",
-        "animal": "…you hear me, don't you. Don't act like the others.",
-    }.get(kind, "You. You shouldn't be here. What do you want?")
+    fallback = _talk_opening_fallback(label, kind)
 
     if not LLM_ENABLED:
         return fallback
@@ -8510,57 +10680,78 @@ def build_portrait_prompt(context: dict, img2img: bool = False) -> str:
     lens language from the handheld-camcorder world view — so the cut into
     dialogue reads as a register change.
 
-    ``img2img=True`` phrases it as a reframe of the CURRENT scene (a reference
-    frame is supplied): keep the environment/lighting, turn the camera to face
-    the character. This makes the portrait read as the next shot in the same
-    place instead of a brand-new location.
+    ``img2img=True`` phrases it as a likeness hold of a SCAN bounding-box crop
+    of the subject (the reference IS those pixels). Beings keep face/clothes
+    and reframe to a cinematic medium shot. Machines and objects keep the
+    cropped object and reframe to a cinematic close-up — never invent a person.
     """
     context = context or {}
     subject = context.get("subject") or {}
     situation = context.get("situation") or {}
     label = _clean_subject_text(subject.get("label"), "figure", 40)
-    kind = _clean_subject_text(subject.get("kind"), "person", 20)
+    kind = _clean_subject_text(subject.get("kind"), "", 20)
+    if not kind:
+        kind = "person" if _talk_subject_is_figure(subject) else "machine"
     scene = (situation.get("scene") or "").strip()
     if len(scene) > 220:
         scene = scene[:217].rstrip() + "..."
     tod = (situation.get("time_of_day") or "").strip()
     loc = (situation.get("location") or "").replace("_", " ").strip()
+    is_figure = _talk_subject_is_figure({"label": label, "kind": kind})
 
     kind_look = {
         "person": "a wary human figure",
         "character": "a named character from this world",
         "creature": "a strange, possibly inhuman presence with a readable face or visage",
         "animal": "an uncanny animal that meets the camera's gaze",
-        "machine": "a machine, radio, intercom, or terminal that somehow feels present / watched",
+        "machine": "a machine, radio, intercom, monitor, or terminal that somehow feels present / watched",
+        "object": "the exact object in the crop, filling the frame",
     }.get(kind, "a figure the investigator has encountered")
 
     if img2img:
-        # A reference frame of the CURRENT environment is supplied — describe the
-        # reframe, not a fresh scene. The img2img continuity block in
-        # gemini_image_utils handles keeping the room; here we name the subject.
-        bits = [
-            f"Turn the camera to face the '{label}' — {kind_look} — standing in this same place.",
-            "Cinematic medium shot, mid-torso up, the character sharp and clearly lit,",
-            "the surrounding environment softly out of focus behind them (shallow depth of field).",
-            "Keep the room, lighting, palette, and film grain of the reference exactly.",
-        ]
+        if not is_figure:
+            bits = [
+                f"The reference is a close crop of the '{label}' — {kind_look} — taken from the live video frame.",
+                "Keep this exact object: same shape, materials, wear, markings, and the light falling on it.",
+                "Cinematic close-up, the object filling the frame, sharp and clearly lit,",
+                "the surrounding environment from the crop softly out of focus behind it.",
+                "Do not invent a person. Do not add a face, figure, or human. Do not replace the object.",
+            ]
+        else:
+            # A crop of the SCAN bounding box is supplied — that IS the person, not
+            # a wide plate we have to invent a face into.
+            bits = [
+                f"The reference is a close crop of the '{label}' — {kind_look} — taken from the current frame.",
+                "Keep this exact person: same face, hair, clothes, build, and the light falling on them.",
+                "Cinematic medium shot, mid-torso up, this same figure sharp and clearly lit,",
+                "the surrounding environment from the crop softly out of focus behind them.",
+                "Do not invent a different person. Do not replace their face.",
+            ]
         setting = ", ".join([b for b in [loc, tod] if b])
         if setting:
             bits.append(f"Setting: {setting}.")
         return _sanitize_for_image_generation(" ".join(bits))
 
-    bits = [
-        # A portrait is a deliberate break from the world camera — a locked-off
-        # medium shot of somebody who is NOT the player — so it takes the
-        # level's era and palette but keeps its own framing.
-        game_identity.world_anchor(
-            CONVERSATION_PORTRAIT_STYLE_ANCHOR,
-            include_character=False,
-            include_vantage=False,
-        ).rstrip(". ") + ".",
-        f"Subject: the '{label}' — {kind_look}.",
-        "Hold a charged, intimate medium shot; the subject fills the frame.",
-    ]
+    if not is_figure:
+        bits = [
+            "stylish cinematic close-up, 35mm film still, shallow depth of field, "
+            "analog-horror 1993 muted palette, subtle film grain.",
+            f"Subject: the '{label}' — {kind_look}. The object fills the frame.",
+            "No person, no face, no figure, no human in frame.",
+        ]
+    else:
+        bits = [
+            # A portrait is a deliberate break from the world camera — a locked-off
+            # medium shot of somebody who is NOT the player — so it takes the
+            # level's era and palette but keeps its own framing.
+            game_identity.world_anchor(
+                CONVERSATION_PORTRAIT_STYLE_ANCHOR,
+                include_character=False,
+                include_vantage=False,
+            ).rstrip(". ") + ".",
+            f"Subject: the '{label}' — {kind_look}.",
+            "Hold a charged, intimate medium shot; the subject fills the frame.",
+        ]
     if scene:
         bits.append(f"Background suggests this place (softly, out of focus): {scene}")
     setting = ", ".join([b for b in [loc, tod] if b])
@@ -8595,9 +10786,16 @@ def _persist_companion_image(image_path: str, session_id: str, label: str) -> Op
         slug = _companion_slug(label)
         dst = img_dir / f"companion_{slug}.png"
         import shutil as _shutil
-        _shutil.copyfile(str(src), str(dst))
-        # Mirror the img2img downsample convention so companion images can be
-        # used as img2img references efficiently later.
+        # Client crops are JPEGs. Write a real PNG so camp img2img / the
+        # roster never open JPEG bytes under a .png name.
+        try:
+            from PIL import Image
+            im = Image.open(src)
+            if im.mode not in ("RGB", "L"):
+                im = im.convert("RGB")
+            im.save(dst, "PNG")
+        except Exception:
+            _shutil.copyfile(str(src), str(dst))
         try:
             small_src = src.with_name(src.name.replace(".png", "_small.png"))
             if small_src.exists():
@@ -8611,7 +10809,8 @@ def _persist_companion_image(image_path: str, session_id: str, label: str) -> Op
 
 
 def _record_companion(session_id: str, subject: dict, portrait_url: str,
-                      prompt: str = "", scene: str = "") -> dict:
+                      prompt: str = "", scene: str = "",
+                      portrait_source: str = "", portrait_gen: int = 0) -> dict:
     """Upsert a COMPANION into the session roster.
 
     A companion is a character the player has spoken with, stored WITH their
@@ -8645,6 +10844,8 @@ def _record_companion(session_id: str, subject: dict, portrait_url: str,
         "last_seen_turn": turn,
         "seen_count": int(prev.get("seen_count") or 0) + 1,
         "updated_at": datetime.now(timezone.utc).isoformat(),
+        "portrait_source": portrait_source or prev.get("portrait_source") or "",
+        "portrait_gen": int(portrait_gen or prev.get("portrait_gen") or 0),
     }
     # Preserve the ElevenLabs voice block if it was recorded first (voice +
     # portrait are resolved in parallel from Talk.start).
@@ -8724,13 +10925,67 @@ def _record_companion_voice(session_id: str, subject: dict, voice: dict) -> None
         log_error(f"[COMPANION] voice save failed: {e}")
 
 
+def _norm_box_from_subject(subject: Any, pad: float = 0.12) -> Optional[Dict[str, float]]:
+    """SCAN bbox as a padded {x,y,w,h} in 0..1 source space.
+
+    Detector boxes are a 0-1000 grid normalized to center+size on the wire
+    (``cx``, ``cy``, ``w``, ``h``). The portrait crop has to come from that
+    exact region or img2img invents a generic face from the whole plate.
+    """
+    if not isinstance(subject, dict):
+        return None
+    try:
+        w = float(subject.get("w") or 0)
+        h = float(subject.get("h") or 0)
+        cx = float(subject["cx"]) if subject.get("cx") is not None else 0.5
+        cy = float(subject["cy"]) if subject.get("cy") is not None else 0.5
+    except (TypeError, ValueError):
+        return None
+    if w < 0.02 or h < 0.02 or (w >= 0.98 and h >= 0.98):
+        return None
+    pad = max(0.0, min(0.4, float(pad or 0)))
+    pw = min(1.0, w * (1.0 + pad * 2.0))
+    ph = min(1.0, h * (1.0 + pad * 2.0))
+    x = max(0.0, min(1.0 - pw, cx - pw / 2.0))
+    y = max(0.0, min(1.0 - ph, cy - ph / 2.0))
+    return {"x": round(x, 5), "y": round(y, 5), "w": round(pw, 5), "h": round(ph, 5)}
+
+
+def _crop_image_to_norm_box(path: str, box: Dict[str, float]) -> Optional[str]:
+    """Crop ``path`` to a normalized box, keeping sub-pixel source coords."""
+    if not path or not isinstance(box, dict):
+        return path
+    try:
+        from PIL import Image
+        x, y, w, h = float(box["x"]), float(box["y"]), float(box["w"]), float(box["h"])
+    except Exception:
+        return path
+    if w <= 0.001 or h <= 0.001:
+        return path
+    try:
+        im = Image.open(path)
+        W, H = im.size
+        if W < 8 or H < 8:
+            return path
+        left = max(0.0, min(float(W - 1), x * W))
+        top = max(0.0, min(float(H - 1), y * H))
+        right = max(left + 1.0, min(float(W), left + w * W))
+        bottom = max(top + 1.0, min(float(H), top + h * H))
+        cropped = im.crop((left, top, right, bottom))
+        cropped.save(path)
+        return path
+    except Exception as e:
+        log_error(f"[TALK PORTRAIT] bbox crop failed: {e}")
+        return path
+
+
 def _save_portrait_reference(frame_b64: str, session_id: str = "default") -> Optional[str]:
     """Decode a client-captured scene frame (data URL) to a file for img2img.
 
     Read-only w.r.t. sim state (unlike ``_ingest_realtime_frame``): it just
-    persists the frame so ``generate_gemini_img2img`` can anchor the portrait on
-    the exact environment the player is looking at. Returns the file path, or
-    None on a missing / malformed / too-small frame.
+    persists the frame so ``generate_gemini_img2img`` can hold likeness from
+    the SCAN subject's bounding-box crop (or crop it server-side). Returns the
+    file path, or None on a missing / malformed / too-small frame.
     """
     if not frame_b64:
         return None
@@ -8755,25 +11010,31 @@ def _save_portrait_reference(frame_b64: str, session_id: str = "default") -> Opt
         return None
 
 
-def _portrait_cache_key(session_id: str, label: str, world_prompt: str) -> tuple:
+def _portrait_cache_key(session_id: str, label: str, world_prompt: str, box: Any = None) -> tuple:
     scene_hash = hashlib.sha1((world_prompt or "").encode("utf-8")).hexdigest()[:16]
-    return (session_id or "default", (label or "").strip().lower(), scene_hash)
+    crop = ""
+    if isinstance(box, dict) and box.get("w"):
+        crop = "{x:.3f}:{y:.3f}:{w:.3f}:{h:.3f}".format(
+            x=float(box.get("x") or 0), y=float(box.get("y") or 0),
+            w=float(box.get("w") or 0), h=float(box.get("h") or 0),
+        )
+    return (session_id or "default", (label or "").strip().lower(), scene_hash, crop)
 
 
 def api_talk_portrait():
     """Generate (or reuse) a cinematic medium-shot portrait for a TALK subject.
 
-    Request JSON: ``{"subject": {"label","kind","speaks"}, "session_id"?,
-                     "reference_image"?: <data-url of the current frame>}``
+    Request JSON: ``{"subject": {"label","kind","speaks","cx","cy","w","h"},
+                     "session_id"?, "reference_image"?: <data-url>,
+                     "reference_cropped"?: bool}``
     Response JSON: ``{"image_url": "/images/...", "cached": bool, "prompt": str,
-                      "mode": "img2img"|"text2img"}``
-      or ``{"image_url": null, "reason": "..."}`` when generation is unavailable.
+                      "mode": "img2img"|"crop"}``
+      or ``{"image_url": null, "reason": "..."}`` when no crop arrived.
 
-    When a ``reference_image`` (the frame the player is looking at) is supplied
-    we img2img off it so the character reads as the NEXT shot in the SAME
-    environment; otherwise we text2img a standalone cinematic portrait. Either
-    way we use the fast single-image path — NOT the heavy turn-coupled
-    ``_gen_image_impl`` — and cache per ``(session, subject, scene)``.
+    The SCAN bounding-box crop is the likeness reference. We img2img it into
+    a cinematic medium-shot portrait (``portrait_mode`` + ``subject_crop``).
+    A crop-only return is the fallback when generate is disabled or fails.
+    Cache is per ``(session, subject, scene, box)``.
     """
     try:
         if _rate_limited("talk_portrait", 1.2):
@@ -8782,11 +11043,9 @@ def api_talk_portrait():
         subject = data.get("subject") or {}
         session_id = data.get("session_id", "default")
         reference_b64 = data.get("reference_image") or ""
+        reference_cropped = bool(data.get("reference_cropped"))
         if not isinstance(subject, dict) or not (subject.get("label") or "").strip():
             return jsonify({"error": "missing subject", "image_url": None}), 400
-
-        if not IMAGE_ENABLED:
-            return jsonify({"image_url": None, "reason": "image_disabled"})
 
         # Reuse the same briefing Talk built for the persona, but skip BOTH
         # the opening-line LLM call (opening_override=".") AND the vision
@@ -8805,97 +11064,119 @@ def api_talk_portrait():
             world_prompt = str((_load_state(session_id) or {}).get("world_prompt") or "")
         except Exception:
             world_prompt = ""
-        cache_key = _portrait_cache_key(session_id, label, world_prompt)
+
+        crop_box = _norm_box_from_subject(subject)
+        if crop_box is None and isinstance(data.get("box"), dict):
+            try:
+                raw = data["box"]
+                crop_box = {
+                    "x": float(raw["x"]), "y": float(raw["y"]),
+                    "w": float(raw["w"]), "h": float(raw["h"]),
+                }
+                if crop_box["w"] <= 0.001 or crop_box["h"] <= 0.001:
+                    crop_box = None
+            except (KeyError, TypeError, ValueError):
+                crop_box = None
+        cache_key = _portrait_cache_key(session_id, label, world_prompt, crop_box)
 
         with _PORTRAIT_CACHE_LOCK:
             cached = _PORTRAIT_CACHE.get(cache_key)
         if cached:
             return jsonify({"image_url": cached, "cached": True, "subject": context["subject"]})
 
-        spend = _PORTRAIT_SPEND.get(session_id, 0)
-        if spend >= CONVERSATION_PORTRAIT_BUDGET:
+        ref_path = _save_portrait_reference(reference_b64, session_id) if reference_b64 else None
+        if ref_path and crop_box and not reference_cropped:
+            cropped = _crop_image_to_norm_box(ref_path, crop_box)
+            if cropped and cropped != ref_path:
+                try:
+                    Path(ref_path).unlink(missing_ok=True)
+                except Exception:
+                    pass
+                ref_path = cropped
+        if not ref_path:
             return jsonify({
                 "image_url": None,
-                "reason": "budget",
+                "reason": "no_crop",
                 "subject": context["subject"],
             })
 
-        img_dir = _get_image_dir(session_id)
-        tod = (context.get("situation") or {}).get("time_of_day") or ""
-
-        # Prefer img2img off the current frame so the portrait is the next shot
-        # in the SAME room. Fall back to text2img when no usable frame arrives.
-        ref_path = _save_portrait_reference(reference_b64, session_id) if reference_b64 else None
-        use_img2img = bool(ref_path)
-        prompt = build_portrait_prompt(context, img2img=use_img2img)
-
-        t0 = time.time()
-        image_path = None
-        gen_mode = "img2img" if use_img2img else "text2img"
+        prompt = build_portrait_prompt(context, img2img=True)
+        is_figure = _talk_subject_is_figure(context["subject"])
+        tod = ""
         try:
-            if use_img2img:
-                from gemini_image_utils import generate_gemini_img2img
-                image_path = generate_gemini_img2img(
-                    prompt=prompt,
-                    caption=f"portrait_{label}",
-                    reference_image_path=ref_path,
-                    # Bigger change than a normal turn: we're reframing the shot
-                    # onto a character, not nudging the scene forward.
-                    strength=0.6,
-                    world_prompt=world_prompt[:400] if world_prompt else None,
-                    time_of_day=tod,
-                    hd_mode=False,
-                    output_dir=Path(img_dir),
-                    portrait_mode=True,
-                )
-            else:
-                from gemini_image_utils import generate_with_gemini
-                image_path = generate_with_gemini(
-                    prompt=prompt,
-                    caption=f"portrait_{label}",
-                    world_prompt=world_prompt[:400] if world_prompt else None,
-                    aspect_ratio="16:9",
-                    time_of_day=tod,
-                    hd_mode=False,
-                    output_dir=Path(img_dir),
-                    portrait_mode=True,
-                )
-        except Exception as gen_err:
-            log_error(f"[TALK PORTRAIT] generate failed: {gen_err}")
-            try:
-                cost_tracker.record_usage(
-                    session_id, "image", "gemini", "talk_portrait",
-                    operation="talk_portrait", output_units=0, unit_type="images",
-                    latency_ms=int((time.time() - t0) * 1000), success=False,
-                    error_message=str(gen_err)[:200],
-                )
-            except Exception:
-                pass
-            return jsonify({"image_url": None, "reason": "generate_failed",
-                            "subject": context["subject"]})
-        finally:
-            # The reference frame is a throwaway — clean it up so it can't leak
-            # into the tape/feed or pile up on the session disk.
-            if ref_path:
+            tod = str((_load_state(session_id) or {}).get("time_of_day") or "")
+        except Exception:
+            tod = ""
+        image_path = None
+        gen_mode = "crop"
+        spent = False
+        if IMAGE_ENABLED:
+            with _PORTRAIT_CACHE_LOCK:
+                spend = int(_PORTRAIT_SPEND.get(session_id, 0))
+            if spend < CONVERSATION_PORTRAIT_BUDGET:
+                t0 = time.time()
                 try:
-                    Path(ref_path).unlink(missing_ok=True)
-                    _small = Path(ref_path).with_name(Path(ref_path).name.replace(".png", "_small.png"))
-                    if _small.exists():
-                        _small.unlink(missing_ok=True)
+                    from gemini_image_utils import generate_gemini_img2img
+                    image_path = generate_gemini_img2img(
+                        prompt=prompt,
+                        caption=f"talk_portrait_{_companion_slug(label)}",
+                        reference_image_path=str(ref_path),
+                        strength=0.58,
+                        world_prompt=None,
+                        time_of_day=tod,
+                        hd_mode=False,
+                        output_dir=Path(_get_image_dir(session_id)),
+                        portrait_mode=True,
+                        subject_crop=True,
+                        object_subject=not is_figure,
+                    )
+                    if image_path:
+                        gen_mode = "img2img"
+                        spent = True
+                except Exception as gen_err:
+                    log_error(f"[TALK PORTRAIT] generate failed: {gen_err}")
+                    image_path = None
+                try:
+                    cost_tracker.record_usage(
+                        session_id, "image", "gemini", "talk_portrait",
+                        operation=f"talk_portrait_{gen_mode}",
+                        output_units=1.0 if image_path else 0,
+                        unit_type="images",
+                        latency_ms=int((time.time() - t0) * 1000),
+                        success=bool(image_path),
+                        error_message=None if image_path else "no_image_returned",
+                    )
                 except Exception:
                     pass
+        if spent:
+            with _PORTRAIT_CACHE_LOCK:
+                _PORTRAIT_SPEND[session_id] = int(_PORTRAIT_SPEND.get(session_id, 0)) + 1
 
-        web = _to_web_image_url(image_path, session_id)
-        latency_ms = int((time.time() - t0) * 1000)
+        plate = image_path or ref_path
+        companion = None
+        web = None
         try:
-            cost_tracker.record_usage(
-                session_id, "image", "gemini", "talk_portrait",
-                operation=f"talk_portrait_{gen_mode}", output_units=1.0 if web else 0,
-                unit_type="images", latency_ms=latency_ms, success=bool(web),
-                error_message=None if web else "no_image_returned",
-            )
-        except Exception:
-            pass
+            durable_url = _persist_companion_image(plate, session_id, label)
+            web = durable_url or _to_web_image_url(plate, session_id)
+            if web:
+                companion = _record_companion(
+                    session_id, context["subject"], web,
+                    prompt=prompt if gen_mode == "img2img" else "",
+                    scene=world_prompt,
+                    portrait_source=gen_mode,
+                    portrait_gen=COMPANION_PORTRAIT_GEN,
+                )
+        except Exception as comp_err:
+            log_error(f"[COMPANION] record from portrait failed: {comp_err}")
+            web = web or _to_web_image_url(plate, session_id)
+        finally:
+            if ref_path:
+                try:
+                    rp = Path(ref_path)
+                    if rp.name.startswith("portrait_ref_"):
+                        rp.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
         if not web:
             return jsonify({"image_url": None, "reason": "no_image",
@@ -8903,27 +11184,12 @@ def api_talk_portrait():
 
         with _PORTRAIT_CACHE_LOCK:
             _PORTRAIT_CACHE[cache_key] = web
-            _PORTRAIT_SPEND[session_id] = spend + 1
-
-        # Store this character as a COMPANION: a durable, sweep-protected copy of
-        # their portrait plus roster metadata, so they can be placed back into
-        # later scenes for a continuing story. Best-effort — never fail the
-        # portrait response over roster bookkeeping.
-        companion = None
-        try:
-            durable_url = _persist_companion_image(image_path, session_id, label) or web
-            companion = _record_companion(
-                session_id, context["subject"], durable_url,
-                prompt=prompt, scene=world_prompt,
-            )
-        except Exception as comp_err:
-            log_error(f"[COMPANION] record from portrait failed: {comp_err}")
 
         return jsonify({
             "image_url": web,
             "cached": False,
             "mode": gen_mode,
-            "prompt": prompt[:400],
+            "prompt": prompt if gen_mode == "img2img" else "",
             "subject": context["subject"],
             "companion": ({
                 "label": companion.get("label"),
@@ -9448,6 +11714,10 @@ def _collect_camp_companions(session_id: str, st: dict) -> list:
     for key, c in companions.items():
         if not isinstance(c, dict):
             continue
+        gen = int(c.get("portrait_gen") or 0)
+        src = str(c.get("portrait_source") or "")
+        if gen < COMPANION_PORTRAIT_GEN and src != "crop":
+            continue
         _add(
             c.get("label") or key,
             c.get("kind") or "person",
@@ -9455,24 +11725,8 @@ def _collect_camp_companions(session_id: str, st: dict) -> list:
             c.get("last_seen_turn") or 0,
         )
 
-    # Disk fallback: durable companion_*.png files not already in the roster.
-    try:
-        img_dir = Path(_get_image_dir(session_id))
-        if img_dir.exists():
-            for p in sorted(img_dir.glob("companion_*.png")):
-                if p.name.endswith("_small.png"):
-                    continue
-                try:
-                    key = str(p.resolve())
-                except Exception:
-                    key = str(p)
-                if key in seen_paths:
-                    continue
-                slug = p.name[len("companion_"):-len(".png")]
-                label = (slug or "figure").replace("_", " ").strip() or "figure"
-                _add(label, "person", _to_web_image_url(p.name, session_id), 0)
-    except Exception as scan_err:
-        log_error(f"[CAMP] companion disk scan failed: {scan_err}")
+    # No disk-orphan import. Old invented plates (player-as-Watcher) lived
+    # only as companion_*.png and used to walk into CAMP.
 
     roster.sort(key=lambda r: (r.get("last_seen_turn") or 0), reverse=True)
     return roster
@@ -9846,9 +12100,16 @@ def api_talk_session():
         if not isinstance(subject, dict) or not (subject.get("label") or "").strip():
             return jsonify({"error": "missing subject"}), 400
 
-        # When only the VOICE is changing, the client passes the existing opening
-        # line so we don't burn an LLM call regenerating an identical greeting.
-        context = build_talk_context(subject, session_id, opening_override=data.get("opening_line", ""))
+        # Don't block TALK on two vision calls + an opening LLM. The greeting
+        # is an instant fallback; /api/talk/message still grounds replies.
+        _label = _clean_subject_text(subject.get("label"), "figure", 40)
+        _kind = _clean_subject_text(subject.get("kind"), "", 20)
+        if not _kind:
+            _kind = "person" if _talk_subject_is_figure(subject) else "machine"
+        _opening = (data.get("opening_line") or "").strip() or _talk_opening_fallback(_label, _kind)
+        context = build_talk_context(
+            subject, session_id, opening_override=_opening, include_vision=False,
+        )
 
         # Resolve the voice. Precedence:
         #   1) Explicit (validated) client choice — that's what powers the
@@ -9969,21 +12230,18 @@ def api_talk_session():
                 overrides["tts"] = {"voice_id": resolved_voice}
 
         agent_id = ELEVENLABS_AGENT_ID
-        api_key = ELEVENLABS_API_KEY
+        api_key = (ELEVENLABS_API_KEY or "").strip()
         signed_url = None
         # Voice needs only an agent id (public agents connect with it directly).
         mode = "voice" if agent_id else "text"
-        # Why voice might not work, in words, for the client to show and log.
-        # Without this a failed signing was invisible: the response still said
-        # "voice", the browser tried to open a PRIVATE agent it had no
-        # signature for, and the player sat on "establishing channel…" forever
-        # with nothing anywhere saying why.
+        # Advisory. A missing or unusable key must NOT block a public agent —
+        # that left TALK on "establishing channel…" forever, or dumped the
+        # player into text, because a dashboard key-ID in the API-key slot
+        # failed to sign and the client then refused to even try agent_id.
         voice_error = None
+        key_problem = elevenlabs_key_problem()
 
-        if agent_id and not api_key:
-            voice_error = "ElevenLabs API key is not set"
-
-        if agent_id and api_key:
+        if agent_id and api_key and not key_problem:
             # Private agents need a short-lived signed URL minted server-side so
             # the API key never reaches the browser. A signing failure is
             # non-fatal: a public agent can still connect with the bare agent_id.
@@ -9998,17 +12256,14 @@ def api_talk_session():
                 if resp.status_code == 200:
                     signed_url = (resp.json() or {}).get("signed_url")
                 else:
-                    # Always ATTEMPT the exchange — the format check is only
-                    # ever used to explain a failure, never to pre-empt one, so
-                    # a key shape we don't recognise but ElevenLabs accepts
-                    # keeps working.
                     voice_error = f"ElevenLabs rejected the signing request ({resp.status_code})"
-                    if _ELEVENLABS_KEY_PROBLEM:
-                        voice_error += f" — API key {_ELEVENLABS_KEY_PROBLEM}"
                     log_error(f"[TALK] signed-url {resp.status_code}: {resp.text[:200]}")
             except Exception as e:
                 voice_error = "could not reach ElevenLabs to sign the conversation"
                 log_error(f"[TALK] signed-url exchange failed: {e}")
+        elif agent_id and key_problem and key_problem != "not set":
+            voice_error = f"ElevenLabs API key {key_problem}"
+            log_error(f"[TALK] skipping signed-url — API key {key_problem}")
 
         return jsonify({
             "mode": mode,
@@ -10021,8 +12276,9 @@ def api_talk_session():
             },
             "agent_id": agent_id or None,
             "signed_url": signed_url,
-            # Null when voice should work. When set, the browser can say why the
-            # channel didn't open instead of hanging on "establishing channel…".
+            # Null when signing worked (or no key was needed). When set, the
+            # browser still tries a public agent_id; this string is why signing
+            # was skipped, so a dead channel can say so instead of hanging.
             "voice_error": voice_error,
             "voice_id": resolved_voice or None,
             # Extra fields let the client hot-swap the Convai voice once a
@@ -10109,6 +12365,91 @@ def api_talk_end():
     except Exception as e:
         log_error(f"[TALK] end failed: {e}")
         return jsonify({"ok": True, "refcount": 0})
+
+
+def api_cutscene_play():
+    """POST /api/cutscene/play — generate four cinematic shots from the plate."""
+    from flask import jsonify, request
+    import cutscene as _cutscene
+
+    if _rate_limited("cutscene_play", 0.35):
+        return jsonify({"error": "slow_down"}), 429
+    sid = _resolve_request_session_id()
+    body = request.get_json(silent=True) or {}
+    payload = _cutscene.play_for_session(sid, body)
+    if not payload.get("ok"):
+        return jsonify(payload), 409
+    return jsonify(payload)
+
+
+def api_cutscene_complete():
+    """POST /api/cutscene/complete — leave the montage and follow its edge."""
+    from flask import jsonify, request
+
+    sid = _resolve_request_session_id()
+    with WORLD_STATE_LOCK:
+        st = _load_state(sid) or {}
+        info = complete_cutscene(st, sid)
+        out = {"ok": True, "kind": (info or {}).get("kind") or "resume"}
+        if info and info.get("kind") == "cutscene":
+            _feed_append(st, _cutscene_feed_item(info))
+            pending = info.get("cutscene") or {}
+            dest = info.get("to") or {}
+            out["cutscene"] = pending
+            out["cutscene_id"] = dest.get("id") or pending.get("cutscene_id")
+            out["name"] = dest.get("name") or pending.get("name")
+            out["mood"] = dest.get("mood") or pending.get("mood")
+        elif info and info.get("kind") == "world":
+            _feed_append(st, _world_transition_feed_item(info))
+            dest_name = (info.get("to") or {}).get("name") or "a new world"
+            dest_url = st.get("current_image_url")
+            choices_item = _structure_choices_for_feed(
+                ["Look around"], dest_name, image_url=dest_url,
+            )
+            _feed_append(st, choices_item)
+            out["to_world"] = (info.get("to") or {}).get("id")
+            out["to_name"] = dest_name
+            out["image_url"] = dest_url
+            out["choices"] = choices_item
+        else:
+            # No outgoing edge, or the dest World is missing. The hop that
+            # opened this Cutscene skipped the source World's slate — leave
+            # a playable prompt or the choice bar stays empty.
+            dest_url = st.get("current_image_url")
+            choices_item = _structure_choices_for_feed(
+                ["Look around"], "What do you do next?", image_url=dest_url,
+            )
+            _feed_append(st, choices_item)
+            out["to_world"] = st.get("experience_world_id") or ""
+            out["image_url"] = dest_url
+            out["choices"] = choices_item
+        _save_state(st, sid)
+        _sync_ambient_state(st, sid)
+    return jsonify(out)
+
+
+def api_encounter_begin():
+    """POST /api/encounter/begin — invent a confrontation and a 3-choice slate."""
+    import encounter as _encounter
+    return _encounter.api_begin()
+
+
+def api_encounter_roll():
+    """POST /api/encounter/roll — alias for the travel clock pulse."""
+    import encounter as _encounter
+    return _encounter.api_roll()
+
+
+def api_encounter_travel():
+    """POST /api/encounter/travel — walking time counts down the encounter clock."""
+    import encounter as _encounter
+    return _encounter.api_travel()
+
+
+def api_encounter_resolve():
+    """POST /api/encounter/resolve — play out the verb; aftermath is background."""
+    import encounter as _encounter
+    return _encounter.api_resolve()
 
 
 def api_talk_voice_status():
@@ -10219,7 +12560,7 @@ def _narrate_segments(segments: list) -> list:
         character = (seg.get("character") or "narrator").strip().lower()
         cast = resolve_cast(character)
         voice_id = _valid_voice_id(seg.get("voice_id")) or cast.get("voice_id") \
-            or ELEVENLABS_NARRATOR_VOICE_ID or _default_voice_id()
+            or _narrator_voice_id()
         settings = {k: cast[k] for k in ("stability", "speed", "style", "similarity_boost") if k in cast}
         entry = {"character": character, "text": text[:2500], "voice_id": voice_id}
         audio = _tts_synthesize(text, voice_id, settings)
@@ -10266,7 +12607,7 @@ def _segment_voice(character: str, voice_id=None) -> str:
     """Resolve the voice a narrator segment should speak in."""
     cast = resolve_cast(character)
     return _valid_voice_id(voice_id) or cast.get("voice_id") \
-        or ELEVENLABS_NARRATOR_VOICE_ID or _default_voice_id()
+        or _narrator_voice_id()
 
 
 def api_narrator_cast():
@@ -10306,7 +12647,7 @@ def api_narrator_say():
             return jsonify({"error": "narrator voice not configured", "text": text}), 503
         cast = resolve_cast(data.get("character"))
         voice_id = _valid_voice_id(data.get("voice_id")) or cast.get("voice_id") \
-            or ELEVENLABS_NARRATOR_VOICE_ID or _default_voice_id()
+            or _narrator_voice_id()
         settings = {k: cast[k] for k in ("stability", "speed", "style", "similarity_boost") if k in cast}
         if isinstance(data.get("settings"), dict):
             settings.update(data["settings"])
@@ -10356,7 +12697,7 @@ def _clip_narration_to_one_sentence(text: str) -> str:
     return t[: m.end()].strip()
 
 
-def _narrator_script(focus: str, multi: bool, session_id: str) -> list:
+def _narrator_script(focus: str, multi: bool, session_id: str, acted: str = "") -> list:
     """Generate a short, story-aware world-building narration as a list of
     {character, text} segments. `multi` lets it hand off between cast voices.
 
@@ -10385,12 +12726,29 @@ def _narrator_script(focus: str, multi: bool, session_id: str) -> list:
     # Freshest first: the vision pass over the frame that actually rendered
     # (written every turn by the reground), then the prompt that frame was drawn
     # from, then the world document as a last resort — clipped either way.
-    scene = ""
+    still = ""
     for _key in ("current_observed_vision", "current_image_prompt", "world_prompt"):
-        scene = (st.get(_key) or "").strip()
-        if scene:
+        still = (st.get(_key) or "").strip()
+        if still:
             break
-    scene = re.sub(r"\s+", " ", scene)[:400]
+    still = re.sub(r"\s+", " ", still)[:400]
+    # MOVE TO's spoken line fires on the click, before /api/choose writes
+    # last_choice. The client therefore sends `acted` on the worldbuild
+    # request so this line names the trip they just committed to, not the
+    # previous pick (or a recaption of the still they are leaving).
+    acted = (acted or "").strip() or (st.get("last_choice") or "").strip()
+    scene_bits = []
+    if acted:
+        scene_bits.append(
+            f"THE PLAYER JUST DID: {acted}. Speak to that action's consequence, "
+            f"not a recap of the still they were already looking at."
+        )
+    if still:
+        if (focus or "").strip():
+            scene_bits.append(f"WHERE THEY WERE LEAVING: {still}")
+        else:
+            scene_bits.append(still)
+    scene = " ".join(scene_bits)
     # The cheap signals that genuinely differ turn to turn. Without them the
     # only thing separating two narrations is model temperature.
     now = []
@@ -10399,16 +12757,21 @@ def _narrator_script(focus: str, multi: bool, session_id: str) -> list:
     phase = str(st.get("current_phase") or "").strip().lower()
     if phase and phase != "normal":
         now.append(f"the situation is {phase}")
-    injuries = [str(i).strip() for i in (st.get("injuries") or []) if str(i).strip()]
-    if injuries:
-        now.append("hurt: " + ", ".join(injuries[:3])[:80])
+    # This used to carry the tracked injury list. That went away with the wound
+    # parser; the narrator gets the wound prose from RECENT EVENTS below anyway,
+    # and being hunted is the live stake now, so hand it that instead.
+    det_level = get_detection(st)["level"]
+    if det_level > DETECT_HIDDEN:
+        now.append(f"you are {DETECT_NAMES[det_level]}")
     if now:
         scene = (scene + " — " if scene else "") + "; ".join(now)
     recent = []
     for entry in hist[-3:]:
-        d = (entry.get("dispatch") or "").strip()
-        if d:
-            recent.append(d[:220])
+        ch = (entry.get("choice") or "").strip()
+        d = (entry.get("dispatch") or entry.get("vision_dispatch") or "").strip()
+        line = (f"{ch} -> {d}" if ch and d else (d or ch))
+        if line:
+            recent.append(line[:220])
     recent_block = ("\n\nRECENT EVENTS:\n- " + "\n- ".join(recent)) if recent else ""
     focus_block = f"\n\nFOCUS THIS NARRATION ON: {focus.strip()}" if (focus or "").strip() else ""
     # What this narrator has already said. Asking a model not to be repetitive
@@ -10432,9 +12795,42 @@ def _narrator_script(focus: str, multi: bool, session_id: str) -> list:
     world_label = game_identity.place_summary() or "a 1993 analog-horror world"
     narrator_self = game_identity.protagonist_line() or "one lone person"
 
+    # Built before the branch because BOTH paths need it now. The authored brief
+    # used to be read only on the single-voice path, and the narrator button
+    # asks for multi — so the one prompt in the editor with a whole panel to
+    # itself ("The Narrator → What it says") had no effect on the one button a
+    # player presses to hear it. Editing it looked exactly like editing nothing.
+    scene_block = (chr(10) + chr(10) + "CURRENT SCENE: " + scene) if scene else ""
+    focus_block_line = ""
+    if (focus or "").strip():
+        # Named separately from the mood note so an authored template can put it
+        # first: with the baseline mood ahead of it, every focused line collapsed
+        # back into the same generic beat.
+        focus_block_line = (
+            f"INSTRUCTIONS FOR THIS LINE: {focus.strip()}\n"
+            f"Follow these exactly, ahead of any mood note below.\n\n"
+        )
+    authored = _authored_narrator_brief(
+        world=world_label, self=narrator_self, premise=premise,
+        scene=scene_block, recent=recent_block, focus=focus_block_line,
+        avoid=avoid_block,
+    )
+
     if multi:
         cast_names = ", ".join((VOICES_CONFIG.get("cast") or {}).keys()) or "narrator"
-        prompt = (
+        # The radio play is an OUTPUT SHAPE, not a voice. So when the narrator is
+        # authored, the authored brief is the prompt and the handoff contract is
+        # appended to it — last word on format, no opinion about what is said.
+        # (An authored brief ends with its own "exactly one sentence" rule, which
+        # is why the override has to be explicit rather than merely later.)
+        shape = (
+            f"OUTPUT FORMAT — this replaces any format instruction above. Write a SHORT "
+            f"radio-play style narration: 2 to 5 lines that hand off between these voices "
+            f"where it fits: {cast_names}. EACH LINE IS EXACTLY ONE SHORT SENTENCE. Respond "
+            f'with ONLY a JSON array, each item {{"character": "<one of the voice names>", '
+            f'"text": "<exactly one short sentence>"}}.'
+        )
+        prompt = (authored + "\n\n" + shape) if authored else (
             f"You script {world_label} PREMISE: {premise}"
             f"{(chr(10)+chr(10)+'CURRENT SCENE: '+scene) if scene else ''}{recent_block}{focus_block}\n{avoid_block}\n"
             f"Write a SHORT radio-play style world-building narration: 2 to 5 lines that hand off between "
@@ -10474,30 +12870,8 @@ def _narrator_script(focus: str, multi: bool, session_id: str) -> list:
     # WHO the narrator is and HOW they speak is authored (`narrator_direction`),
     # not baked in here: it was three hardcoded f-strings, so the one voice that
     # talks directly to the player was the one voice you couldn't write.
-    # Everything the engine knows — the place, your character, the premise, the
-    # scene, the last few beats, and any specific instruction for this line —
-    # goes in as a placeholder.
-    scene_block = (chr(10) + chr(10) + "CURRENT SCENE: " + scene) if scene else ""
-    focus_block_line = ""
-    if (focus or "").strip():
-        # Named separately from the mood note so an authored template can put it
-        # first: with the baseline mood ahead of it, every focused line collapsed
-        # back into the same generic beat.
-        focus_block_line = (
-            f"INSTRUCTIONS FOR THIS LINE: {focus.strip()}\n"
-            f"Follow these exactly, ahead of any mood note below.\n\n"
-        )
-    authored_dir = (PROMPTS.get("narrator_direction") or "").strip()
-    if authored_dir:
-        try:
-            return _narrator_one_line(authored_dir.format(
-                world=world_label, self=narrator_self, premise=premise,
-                scene=scene_block, recent=recent_block, focus=focus_block_line,
-                avoid=avoid_block,
-            ), fallback)
-        except (KeyError, IndexError, ValueError) as fmt_err:
-            print(f"[NARRATOR] narrator_direction has a bad placeholder "
-                  f"({fmt_err}); using the shipped voice", flush=True)
+    if authored:
+        return _narrator_one_line(authored, fallback)
 
     if (focus or "").strip():
         prompt = (
@@ -10526,6 +12900,25 @@ def _narrator_script(focus: str, multi: bool, session_id: str) -> list:
             f"No meta, no stage directions, no purple prose."
         )
     return _narrator_one_line(prompt, fallback)
+
+
+def _authored_narrator_brief(**fields) -> str:
+    """The editor's narrator brief, filled in — or "" to use the shipped voice.
+
+    One place, because both narration paths need it and only one of them used
+    to have it. Everything the engine knows about this moment goes in as a
+    placeholder; a template that names one we don't supply is an authoring
+    mistake, not a crash, so it falls back and says why in the log.
+    """
+    template = (PROMPTS.get("narrator_direction") or "").strip()
+    if not template:
+        return ""
+    try:
+        return template.format(**fields)
+    except (KeyError, IndexError, ValueError) as fmt_err:
+        print(f"[NARRATOR] narrator_direction has a bad placeholder "
+              f"({fmt_err}); using the shipped voice", flush=True)
+        return ""
 
 
 def _narrator_one_line(prompt: str, fallback: list) -> list:
@@ -10568,7 +12961,8 @@ def _remember_narration(script: list, session_id: str) -> None:
 def api_narrator_worldbuild():
     """Generate a story-aware world-building narration and (optionally) speak it.
 
-    Request JSON: {"focus"?: str, "multi"?: bool, "speak"?: bool, "session_id"?}
+    Request JSON: {"focus"?: str, "follow_focus"?: str, "acted"?: str,
+                   "multi"?: bool, "speak"?: bool, "session_id"?}
     Response: {"segments": [{character, text, voice_id?, audio?}], "voice": bool}
     With speak=false (or no key) it returns text-only segments the client can
     display and/or send to /api/narrator/narrate later. Read-only."""
@@ -10577,6 +12971,7 @@ def api_narrator_worldbuild():
             return jsonify({"error": "slow down", "segments": []}), 429
         data = request.get_json(silent=True) or {}
         focus = re.sub(r"\s+", " ", str(data.get("focus") or "")).strip()[:240]
+        acted = re.sub(r"\s+", " ", str(data.get("acted") or "")).strip()[:240]
         # Optional SECOND focus — appended to the primary script's segments in
         # one round trip so a caller who needs a bridging + follow-up beat (e.g.
         # MOVE TO's black loading transition) never has to fire two requests
@@ -10587,9 +12982,9 @@ def api_narrator_worldbuild():
         multi = bool(data.get("multi"))
         speak = data.get("speak", True)  # legacy: server-side TTS audio inline
         session_id = data.get("session_id", "default")
-        script = _narrator_script(focus, multi, session_id)
+        script = _narrator_script(focus, multi, session_id, acted=acted)
         if follow_focus:
-            follow_script = _narrator_script(follow_focus, False, session_id)
+            follow_script = _narrator_script(follow_focus, False, session_id, acted=acted)
             script = list(script or []) + list(follow_script or [])
         _remember_narration(script, session_id)
         # Attach the resolved voice per line so the client's generative agent
@@ -10646,7 +13041,9 @@ def api_talk_message():
             if isinstance(_m, dict) and _m.get("role") == "assistant":
                 opening = _m.get("content") or ""
                 break
-        context = build_talk_context(subject, session_id, opening_override=opening)
+        context = build_talk_context(
+            subject, session_id, opening_override=opening, include_vision=False,
+        )
         persona = context["persona_prompt"]
 
         # Render the running transcript into the prompt. Keep only the last ~12
@@ -10786,7 +13183,12 @@ def _spawn_scene_choices_reground(prompt_id, prev_image_url: str, session_id: st
                 st = _load_state(session_id)
                 cur = st.get('current_image_url')
                 if cur and cur != prev_image_url:
-                    fpath = os.path.join(str(img_dir), os.path.basename(cur))
+                    # current_image_url carries a ?session=… query string, and
+                    # basename() keeps it — the path built from it can never
+                    # exist, so this waited out its whole timeout every turn and
+                    # the reground never ran once.
+                    fpath = os.path.join(str(img_dir),
+                                         os.path.basename(cur.split('?', 1)[0]))
                     if os.path.exists(fpath):
                         # Hand off to the shared reground pipeline (vision +
                         # regenerate choices + push choices_revised).
@@ -10816,10 +13218,13 @@ def _spawn_observe_reground(fpath: str, web: str, session_id: str, prompt_id):
         try:
             print(f"[OBSERVE] reground worker start: {fpath}", flush=True)
             vision = ""
+            v_setting = v_spatial = ""
             try:
                 vres = _vision_analyze_all(fpath)  # has an internal 30s timeout
                 if isinstance(vres, dict):
-                    vision = (vres.get("description") or "").strip()
+                    vision    = (vres.get("description") or "").strip()
+                    v_setting = (vres.get("setting") or "").strip()
+                    v_spatial = (vres.get("spatial") or "").strip()
             except Exception as e:
                 log_error(f"[OBSERVE] vision failed: {e}")
             print(f"[OBSERVE] vision len={len(vision)}", flush=True)
@@ -10839,6 +13244,14 @@ def _spawn_observe_reground(fpath: str, web: str, session_id: str, prompt_id):
                 if hist:
                     hist[-1]['vision_dispatch'] = vision
                     hist[-1]['vision_analysis'] = vision
+                    # Phase 2 runs before this frame exists, so it had no image to
+                    # read these off. This is the only pass that sees the frame
+                    # that actually rendered — drop them here and the stagnation
+                    # guard and the drift beats never get a real label at all.
+                    if v_setting:
+                        hist[-1]['setting_type'] = v_setting
+                    if v_spatial:
+                        hist[-1]['spatial_compass'] = v_spatial
                     _save_history(hist, session_id)
                     if get_active_session_id() == session_id:
                         history = hist
@@ -10852,21 +13265,23 @@ def _spawn_observe_reground(fpath: str, web: str, session_id: str, prompt_id):
             # choices from the frame the player is actually looking at) had never
             # worked: the vision call was paid for, then thrown away.
             from choices import generate_choices
-            last_dispatch = ""
-            for it in reversed(st.get('feed_log', [])):
-                if it.get('type') in ('consequence_event', 'narrative_event') and it.get('content'):
-                    last_dispatch = it['content']
-                    break
+            # The live frame + its vision are the source of truth. The last
+            # narrative dispatch describes the previous still and will pull
+            # MOVE-TO-style choices back to objects that are no longer on
+            # screen. Pass the filesystem path so generate_choices can attach
+            # the JPEG (the /images/observed_… web URL used to resolve to
+            # images/observed_….png, which does not exist).
             texts = generate_choices(
                 client=client,
                 prompt_tmpl=PROMPTS["player_choice_generation_instructions"],
-                last_dispatch=(last_dispatch or vision),
+                last_dispatch=vision,
                 image_description=vision,
-                image_url=web,
+                image_url=fpath,
                 world_prompt=st.get('world_prompt', ''),
                 situation_summary=summarize_world_state(st),
                 inventory=st.get('inventory'),
                 n=3,
+                beat_nudge=beat_nudge_text(st),
             ) or []
             print(f"[OBSERVE] regenerated {len(texts)} choices", flush=True)
             if not texts:
@@ -10960,7 +13375,8 @@ def api_regenerate_choices():
             image_description=image_desc_context,
             situation_summary=situation_summary, # Use general summary
             n=3,
-            temperature=0.7 # Slightly higher temp for variety
+            temperature=0.7, # Slightly higher temp for variety
+            beat_nudge=beat_nudge_text(state_snapshot_for_context),
         )
 
         prompt_text = last_choice_prompt.get("content", "What do you do now?") if last_choice_prompt else "The path is unclear. Choose wisely."
@@ -11047,13 +13463,28 @@ def _subject_in_text(subject: str, text: str) -> bool:
 
 
 def _permanence_directive(subject: str, is_move: bool) -> str:
-    """The requirement block naming the object this turn may not delete."""
+    """The requirement block naming the object this turn may not delete.
+
+    The `is_move` wording used to ask for the subject "central to this new
+    vantage" — meant as "don't cut away from it," but a model handed that
+    instruction satisfies it the cheapest way possible: a tight, centered
+    hero shot of the object, isolated, nothing around it. That reads as the
+    OBJECT moving to the middle of the screen, not the PLAYER walking up to
+    it — exactly backwards from what a relocation is supposed to sell. The
+    fix asks for the same guarantee (the object is provably in the new
+    frame) without ever using the word that made "centered and dominant"
+    the easy answer.
+    """
     subj = _permanence_subject(subject)
     if not subj:
         return ""
     survives = (
-        f"the {subj} still visible and CLOSER — the player has travelled toward "
-        f"it, so it fills more of the frame than it did"
+        f"the {subj} visible in the room the player just crossed into, sitting "
+        f"in place — on its wall, floor, or surface — with that room's own "
+        f"geometry around it (other walls, floor, depth, whatever else is in "
+        f"there), the way it would actually look from a few steps away. Not a "
+        f"close-up of the {subj} alone with nothing else in frame; that is a "
+        f"product photo, not a person arriving somewhere"
         if is_move else
         f"the {subj} still visible and CHANGED BY the action — opened, moved, "
         f"damaged, reacting — not absent"
@@ -11065,6 +13496,93 @@ def _permanence_directive(subject: str, is_move: bool) -> str:
         f"renderer sees, so a `visual_scene` that omits the {subj} deletes the "
         f"very thing the player just reached out and touched.\n"
     )
+
+
+def _action_directive(is_interaction: bool, is_move: bool, subject: str,
+                        also_relocating: bool = False) -> str:
+    """The requirement block for an action that relocates the camera or hands
+    the player a specific SCAN object — MOVE TO, INTERACT, or (via
+    `also_relocating`) a curated/typed choice that is about to earn its own
+    hard cut for the same reason MOVE always does.
+
+    This used to be gated on `is_interaction` alone — a SCAN tap only —
+    which meant a plain choice like "Sprint toward the side corridor" (forced
+    into a hard cut by the egress backstop, or by the ordinary text
+    classifier) got NONE of this. The model writing that turn's `visual_scene`
+    had no steering away from a dramatic reaction pose — spinning to face
+    the threat, hands raised toward camera — and nothing telling it this is
+    the same kind of beat MOVE is. That is exactly the seam a real run fell
+    through: MOVE turns held a consistent over-the-shoulder framing for six
+    turns straight, then the first curated escape choice flipped the camera
+    to face the character on the very next one. `also_relocating` closes
+    that seam by asking the caller "is this choice about to get a hard cut
+    for a reason OTHER than a SCAN tap?" — egress-forced or text-classified —
+    and routing it through the exact same TRAVERSAL text.
+
+    MOVE and INTERACT are different verbs and need different beats, but they
+    used to share one block that told the model the player was "handling" the
+    thing. On a MOVE turn that is a lie: the player only walked toward it. The
+    consequence came back as an ordinary action from an unchanged camera, so the
+    footage read as standing still while something happened nearby, which is
+    precisely what MOVE is supposed not to look like. The traversal text below
+    asks for the one thing that makes travel legible in a still: a new vantage.
+    """
+    relocating = is_move or also_relocating
+    if not is_interaction and not relocating:
+        return ""
+    if relocating:
+        directive = (
+            "\n\nTRAVERSAL: this is a full relocation, every time — the engine "
+            "has already committed to a fresh composition for this turn (see "
+            "CAMERA above), so `visual_scene` must land somewhere the previous "
+            "frame did not show, not the old view with the destination nudged "
+            "closer. This is locomotion, not handling — the player does not "
+            "touch, open, or operate anything yet, and nothing here is a "
+            "confrontation. Write the crossing itself: what they move past, "
+            "what the footing is, what falls away behind them. The scene MUST "
+            "end from a NEW VANTAGE POINT the camera did not have a moment "
+            "ago — whatever surrounded the player before is now behind them, "
+            "replaced by what's here. A description that could be mistaken "
+            "for the previous frame with the object pasted into it is WRONG. "
+            "This is a person arriving somewhere, not a product photo of the "
+            "destination: hold a normal human vantage — the room's walls, "
+            "floor, and depth around the player — and let the destination sit "
+            "wherever it actually would from a few steps away, not centered "
+            "and filling the frame. A tight, centered hero shot of the thing "
+            "the player moved to, with no space around it, reads as an "
+            "object floating in a void, not a person who just walked there. "
+            "When the camera shows the player character, it stays BEHIND them "
+            "as they arrive — they face into the new space, we see their back. "
+            "Do not spin around to a walking-toward-camera hero shot just "
+            "because this is a new scene. Fleeing, sprinting, or scrambling "
+            "away is still travel, not a turn-and-confront beat, even under "
+            "threat. "
+            "When the destination is a door, hatch, vent, threshold, entrance, "
+            "shed, stair, or other opening, visual_scene is the space on the "
+            "FAR SIDE of it — the interior or the other room — not another "
+            "exterior shot of its face. Arriving means they crossed through. "
+            "When the camera shows the player character, `visual_scene` must "
+            "name them in the place (what they are doing there), not only the "
+            "empty room ahead of their eyes. "
+            "Covering ground is exposure: the trip itself should cost something "
+            "or reveal something.\n"
+        )
+    else:
+        directive = (
+            "\n\nOBJECT INTERACTION: The player is deliberately handling/entering a "
+            "specific thing in the scene. This action MUST produce a consequential "
+            "development — reveal something new, trigger a mechanism or reaction, "
+            "disturb the environment, draw attention, or expose a threat/clue. Never "
+            "answer with 'nothing happens' or a purely cosmetic result. Meddling with "
+            "the unknown here should carry real risk and push the mystery forward.\n"
+        )
+    # …and the thing must still be THERE afterwards. Both directives ask for
+    # consequence, which a model can satisfy by cutting to somewhere new
+    # entirely — see the OBJECT PERMANENCE block for why that reads as the
+    # action never landing. `subject` is empty for a non-SCAN relocation (no
+    # detected object was tapped), so this contributes nothing in that case —
+    # there is nothing to name, which is correct, not a gap.
+    return directive + _permanence_directive(subject, relocating)
 
 
 def _permanence_record(subject: str, is_move: bool, visual_scene: str) -> Optional[dict]:
@@ -11104,7 +13622,7 @@ def _resolve_permanence(st: dict, vision_text: str) -> None:
 
 
 # ───────── COMBINED dispatch generator (saves 1 API call) ─────────────────────
-def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = None, prev_vision: str = "", current_image: str = None, fate: str = "NORMAL", is_interaction: bool = False, subject: str = "", is_move: bool = False) -> tuple[str, str, bool]:
+def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = None, prev_vision: str = "", current_image: str = None, fate: str = "NORMAL", is_interaction: bool = False, subject: str = "", is_move: bool = False, environment_streak: int = 0, is_custom_action: bool = False) -> tuple[str, str, bool, list]:
     """
     Generate BOTH narrative dispatch AND vision dispatch in ONE API call.
     Now supports multimodal input - can see the current frame!
@@ -11144,9 +13662,7 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
                 f"action — preserve ground type, environment, and visible landmarks."
             )
 
-        # `prev_context` removed: it duplicated `spatial_context`. Both came from
-        # the same vision_analysis source. Keeping only the richer label.
-        prev_context = ""
+        prev_context = _previous_beat_block(state)
         world_prompt = state.get('world_prompt', '')
         
         image_context = ""
@@ -11160,18 +13676,18 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
             "to torso", "to limb", "trauma", "burns to", "pressure on", "collapses on"
         ])
         
-        # Detect FREE WILL actions (custom actions not in standard choices)
-        is_free_will = choice and not any([
-            choice.startswith("Approach"),
-            choice.startswith("Examine"),
-            choice.startswith("Use"),
-            choice.startswith("Take"),
-            choice.startswith("Look"),
-            choice.startswith("Search"),
-            choice.startswith("Listen"),
-            choice.startswith("Wait"),
-            choice == "Intro"
-        ])
+        # Whether the player typed this rather than picking a curated choice or
+        # SCAN object. Used to used to guess this from the choice TEXT — did it
+        # start with "Approach"/"Examine"/"Use"/"Take"/"Look"/"Search"/"Listen"/
+        # "Wait"? — which matched the choice phrasing from months ago and
+        # nothing since choices moved to "Enter the...", "Walk over to...",
+        # "Move to..." framing. That made it fire on essentially every curated
+        # pick (confirmed: 6/6 in a live smoke test), injecting a "describe
+        # them DOING the action" header on every single turn regardless of
+        # what the player actually did. The caller now threads the real signal
+        # through instead — see is_custom_action in advance_turn_image_fast's
+        # docstring.
+        is_free_will = bool(is_custom_action)
         
         # Build FREE WILL emphasis if detected
         free_will_header = ""
@@ -11186,7 +13702,8 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
                 f"The player used FREE WILL to command: \"{choice}\"\n\n"
                 "CRITICAL INSTRUCTIONS FOR FREE WILL:\n"
                 "1. The player IS PERFORMING this exact action RIGHT NOW\n"
-                "2. Describe them DOING the action from first-person perspective\n"
+                "2. Describe them DOING the action in the active camera mode "
+                "(third-person follow shows their body doing it; first-person shows the attempt from their eyes)\n"
                 "3. Show the ATTEMPT - the physical movements, the effort\n"
                 "4. THEN show the immediate consequence/result\n"
                 "5. Example: If they say 'Kick door' → 'You draw back your leg and slam your boot into the door. [result]'\n"
@@ -11195,28 +13712,73 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
                 "Your dispatch MUST start by showing them performing this specific action.\n"
             )
         
-        # Build fate modifier text
+        # Build fate modifier text.
+        #
+        # This is the single most influential block in the turn and it is not in
+        # the editable prompt file, so it escaped the prompt trim entirely. It
+        # used to run 280 words: five headed categories, fifteen bullets, three
+        # forbidden patterns. Two things were wrong with it beyond the length.
+        #
+        # It pointed at a rule by a heading the payload no longer contains: it
+        # cited the old death-fairness heading as still applying "above", while
+        # the consequence template's heading now reads "INJURY IS THE DEFAULT,
+        # NOT DEATH". A dangling cross-reference is worse than no reference — it
+        # tells the model there is a governing rule somewhere it cannot find.
+        # Nothing here cites a heading by name any more; the rule is restated in
+        # one line instead, so a prompt rename cannot silently orphan it.
+        #
+        # And every one of its complications could REPLACE the player's action
+        # instead of costing them for it. "Equipment fails", "sprained ankle" —
+        # applied to a MOVE, the cheapest way to realise those is to snag the
+        # player mid-stride, which is precisely what a live run produced: "you
+        # grunt, shifting your weight to lunge forward, BUT the film strip
+        # tightens, snagging your boot and dragging you to your knees." The
+        # template's "A MOVE ALWAYS COMPLETES" rule was already in the payload
+        # and lost, because this block is later and far more concrete. So the
+        # additive-not-substitutive rule has to live HERE, where the model is
+        # actually deciding what goes wrong.
         fate_modifier = ""
         if fate == "LUCKY":
-            fate_modifier = "\n\n🎰 FATE INTERVENTION - LUCKY:\nSomething breaks your way. Add ONE concrete benefit:\n• Equipment works better than expected\n• Guard patrol turns away at the right moment\n• You find something useful (ammo, cover, distraction)\n• Environmental timing favors you (door unlocked, light goes out)\n• A threat misses or hesitates\nMake it TANGIBLE and HELPFUL, not just flavor text.\n"
+            fate_modifier = (
+                "\n\n🎰 LUCKY: something breaks your way. Add ONE tangible "
+                "advantage on top of what the player did — a door already open, "
+                "a patrol turning away, cover where none was expected, a threat "
+                "hesitating, something useful within reach. Concrete and usable, "
+                "not just a lighter mood.\n"
+            )
         elif fate == "UNLUCKY":
-            fate_modifier = "\n\n🎰 FATE INTERVENTION - UNLUCKY:\nFate turns against you. Add ONE concrete dramatic complication. The DEATH FAIRNESS DOCTRINE above still applies — environment can WOUND but only characters/events KILL.\n\n**PRIORITIZE CHARACTER- OR EVENT-DRIVEN DRAMA** (these are the satisfying complications):\n• A character appears or closes in (guard patrol turns toward you, a creature emerges from cover, a sniper acquires you)\n• A dramatic event triggers (explosion the player set off, vehicle screeches in, structural collapse caused by the action)\n• Evidence is discovered against you (alarm trips, camera catches you, radio call alerts the facility)\n• A previously safe ally turns hostile or reveals themselves\n• A creature mauls or a guard fires (still subject to fairness — death only if visible and earned)\n\n**OR SURVIVABLE BODILY HARM** (when no character/event fits — these INJURE, do not kill):\n• Limb is bruised or broken (sprained ankle, fractured wrist, dislocated shoulder)\n• Flesh is burned (caustic splash on hand, scalding steam blistering skin)\n• Tissue is lacerated (barbed wire rips forearm, jagged metal cuts calf — still able to move)\n• Concussion or vision swim from a blow\n• Equipment fails (rope frays, ladder rung breaks, catwalk gives way — fall + injury, not death)\n\n**FORBIDDEN UNDER UNLUCKY (cheap-death patterns):**\n❌ Random impalement on rebar/spike/glass killing the player\n❌ Death by inert environment (falling onto debris with no character driving the scene)\n❌ Spores/contamination killing the player in one beat (slow corruption is fine; sudden death is not)\n\nDescribe injuries with VISCERAL DETAIL when wounds occur — what bruises, what tears, what burns. But unless a CHARACTER or DRAMATIC EVENT is on screen driving it, KEEP `player_alive` = TRUE and let the wound become a persistent burden the player carries forward.\n"
+            fate_modifier = (
+                "\n\n🎰 UNLUCKY: fate turns against you. Add ONE concrete "
+                "complication — and it is the COST of the action, never a "
+                "cancellation of it. What the player did still happened: they "
+                "got the door open, crossed the gap, reached the room. The "
+                "complication is what it took, or what is waiting there.\n"
+                "  WRONG: \"You lunge for it, but the cable snags your boot and "
+                "drags you down.\"\n"
+                "  RIGHT: \"You make it through, the cable tearing a strip out of "
+                "your calf on the way.\"\n"
+                "Prefer a character or an event: someone closing in, a creature "
+                "emerging, an alarm tripping, a structure giving way under you. "
+                "Otherwise a bad wound — broken, burned, lacerated, concussed — "
+                "described in visceral specifics.\n"
+                "Only characters and dramatic events may kill. Inert scenery — "
+                "rebar, glass, debris, spores, a fall — wounds badly and never "
+                "kills; `player_alive` stays true and the wound persists.\n"
+            )
         # NORMAL = no modifier, outcome is purely based on choice
 
-        # ── Entity + injury grounding (fairness) ─────────────────────────────
+        # ── Entity grounding (fairness) ──────────────────────────────────────
         # The death-fairness doctrine in the prompt requires that any lethal
-        # threat already be visible to the player. Surface the seen entities
-        # and persistent injuries so the LLM can honor that contract.
+        # threat already be visible to the player, so surface the seen entities
+        # for the LLM to honor that contract. There used to be an INJURY STATE
+        # line here too, fed from a tracked wound list; that went with the wound
+        # parser. Continuity of harm now comes from PREVIOUS BEAT below, which
+        # carries the actual prose of what just happened to the player.
         seen_list = state.get('seen_elements', []) or []
         if isinstance(seen_list, list):
             seen_str = ', '.join(str(e) for e in seen_list[-10:])
         else:
             seen_str = str(seen_list)
-        injury_list = state.get('injuries', []) or []
-        if isinstance(injury_list, list):
-            injury_str = ', '.join(str(i) for i in injury_list) if injury_list else 'none'
-        else:
-            injury_str = str(injury_list)
         phase_str = state.get('current_phase', 'normal')
         # Phase directives make the STORY PHASE actually STEER the beat — pressure
         # rises turn over turn instead of the world staying flat at "normal".
@@ -11231,31 +13793,41 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
                         "situation lurches. No stalling, no safe nothing-happens beats.",
         }.get(phase_str, "")
 
-        # SCAN object interactions must MOVE THE STORY, not dead-end on a shrug.
-        interaction_directive = ""
-        if is_interaction:
-            interaction_directive = (
-                "\n\nOBJECT INTERACTION: The player is deliberately handling/entering a "
-                "specific thing in the scene. This action MUST produce a consequential "
-                "development — reveal something new, trigger a mechanism or reaction, "
-                "disturb the environment, draw attention, or expose a threat/clue. Never "
-                "answer with 'nothing happens' or a purely cosmetic result. Meddling with "
-                "the unknown here should carry real risk and push the mystery forward.\n"
-            )
-            # …and it must still be THERE afterwards. The directive above asks for
-            # consequence, which a model can satisfy by cutting to somewhere new
-            # entirely — see the OBJECT PERMANENCE block above for why that reads
-            # as the action never landing.
-            interaction_directive += _permanence_directive(subject, is_move)
+        # SCAN object actions must MOVE THE STORY, not dead-end on a shrug.
+        #
+        # A curated or typed choice earns the exact same hard cut a SCAN MOVE
+        # does whenever it reads as an egress pick (the anti-loop backstop's
+        # own escape hatch) or the ordinary hard-transition text classifier
+        # would cut to it — is_hard_transition only ever inspects `choice`
+        # itself (never the not-yet-written dispatch), so this is knowable
+        # before the LLM call below, not a guess. Without also_relocating here,
+        # that turn got NO traversal guidance at all: nothing telling the
+        # model this is locomotion, not confrontation, and nothing telling it
+        # to hold the camera's existing relationship to the player. A run can
+        # hold a steady over-the-shoulder framing across six straight SCAN
+        # MOVE turns and then flip to face the character on the very next
+        # egress choice — same hard cut, same camera rig, missing directive.
+        non_scan_relocation = not is_interaction and (
+            is_egress_choice(choice) or is_hard_transition(choice, "")
+        )
+        interaction_directive = _action_directive(
+            is_interaction, is_move, subject, also_relocating=non_scan_relocation,
+        )
+
+        # What SCAN named in the frame the player is looking at. This is the only
+        # pixel-accurate entity list in the prompt: `seen_elements` is written by
+        # the world-evolution rewrite, which runs async and therefore lags a turn.
+        onscreen = scene_objects_for_turn(state)
 
         grounding_block = (
             f"\n\nDISCOVERED ENTITIES (these are the only things on the board — "
             f"any LETHAL threat must come from here or the current scene): "
             f"{seen_str or 'none yet'}\n"
-            f"INJURY STATE (persistent wounds — reference at least once if non-empty): "
-            f"{injury_str}\n"
+            f"{condition_directive(state)}"
             f"STORY PHASE: {phase_str} — {phase_directive}\n"
+            f"{onscreen_directive(onscreen)}"
             f"{interaction_directive}"
+            f"{stagnation_directive(environment_streak)}"
         )
 
         # Use JUST the action_consequence_instructions (which has JSON format).
@@ -11266,25 +13838,36 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
         json_prompt = game_identity.apply(
             PROMPTS['action_consequence_instructions'], "narrative"
         ) + (
+            f"\n\n{game_identity.visual_scene_guidance()}\n"
             # The free-will header is written outside the template, so it needs
             # its own pass — it says "describe them DOING the action from
             # first-person perspective", which is an instruction to write the
             # wrong shot when the camera is behind the character.
             f"\n\n{game_identity.apply(free_will_header, 'raw')}"
             f"PLAYER CHOICE: '{choice}'\n"
-            f"WORLD CONTEXT: {world_prompt}\n"
+            f"THE ACTION COMPLETED. The attached image is WHERE THEY WERE when "
+            f"they chose. visual_scene is the camera AFTER this action — do not "
+            f"recaption the attached still.\n"
+            # Interpolated raw, this is the one surface the director's sheet
+            # never reached: the world document still carried the shipped
+            # protagonist's name, so the model was told who the player is by
+            # the sheet and contradicted six times by the context below it.
+            f"WORLD CONTEXT: {game_identity.recast(world_prompt)}\n"
             f"{grounding_block}"
             f"{fate_modifier}"
             f"{spatial_context}"
             f"{prev_context}\n\n"
-            "Generate the consequence in valid JSON format. In ADDITION to the "
-            "mandatory `dispatch`, `visual_scene`, and `player_alive` fields, also "
-            "include a fourth field `next_choices`: an array of EXACTLY 3 short "
-            "(3-6 word) physical action options for what the player "
-            "does NEXT from this new position. Each MUST move the body through the "
-            "space or physically manipulate something (NEVER look/observe/wait/"
-            "photograph/listen). The three original fields stay mandatory and "
-            "their quality must not drop."
+            "Return JSON with all three fields from the OUTPUT CONTRACT:\n"
+            "  dispatch — the prose the player reads. 2-3 sentences. What the "
+            "action cost, what it changed, what the place does back. Write the "
+            "beat, not the camera position: never open with the protagonist's "
+            "name followed by a posture verb.\n"
+            "  visual_scene — the camera after the action completed. One or two "
+            "sentences, only what is physically visible, no feelings, no sound. "
+            "Do not recaption the attached still.\n"
+            "  player_alive — true or false.\n"
+            "dispatch and visual_scene must not be the same sentence. "
+            "No next_choices."
         )
         
         # Build parts list (text + optional image)
@@ -11320,9 +13903,12 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
             json_prompt,
             model="gemini",
             temp=1.0,
-            tokens=560,  # room for the consequence + the added next_choices array
-            image_path=current_image,  # Pass current image if available
-            use_lore=False  # Dispatch is mechanical, lore only for world evolution
+            # Two prose fields now, not one caption. At 200 the second field
+            # came back truncated mid-sentence.
+            tokens=420,
+            image_path=current_image,
+            use_lore=False,
+            response_schema=_CONSEQUENCE_RESPONSE_SCHEMA,
         )
         
         print("[COMBINED DISPATCH] Complete")
@@ -11345,12 +13931,13 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
         try:
             import json as json_lib
             data = json_lib.loads(result)
-            dispatch = data.get("dispatch", "")
-            visual_scene = data.get("visual_scene", "").strip()
+            visual_scene = (data.get("visual_scene") or "").strip()
             player_alive = data.get("player_alive", True)
-            _raw_choices = data.get("next_choices", []) or []
-            if isinstance(_raw_choices, list):
-                provisional_choices = [str(c).strip() for c in _raw_choices if str(c).strip()]
+            # The feed reads `dispatch`; the image model reads `visual_scene`.
+            # Only fall back to the caption when the model actually withheld
+            # the prose — assigning one to the other unconditionally is what
+            # turned the story log into a shot list.
+            dispatch = (data.get("dispatch") or "").strip() or visual_scene
             # Safe print with Unicode handling
             try:
                 print(f"[DISPATCH] Parsed JSON: dispatch={dispatch[:50]}..., alive={player_alive}")
@@ -11373,7 +13960,16 @@ def _generate_combined_dispatches(choice: str, state: dict, prev_state: dict = N
         
         # vision_dispatch = visual scene description for image generation
         # If the LLM generated a proper visual_scene, use it; otherwise fall back to dispatch
-        vision_dispatch = visual_scene if visual_scene else dispatch
+        if visual_scene:
+            vision_dispatch = visual_scene
+        elif game_identity.shows_character():
+            who = game_identity.display_name()
+            vision_dispatch = (
+                f"{who} is in frame, full body, after the action, "
+                "at the current location."
+            )
+        else:
+            vision_dispatch = dispatch
         
         # Hard cap at 400 characters
         if len(dispatch) > 400:
@@ -11449,59 +14045,226 @@ def _diegetic_dispatch(choice: str = "") -> str:
     return _DIEGETIC_DISPATCHES[abs(hash(seed)) % len(_DIEGETIC_DISPATCHES)]
 
 
-# ───────── persistent injuries ───────────────────────────────────────────────
-# Words that mean the player actually took bodily harm. Bare body-part nouns
-# are deliberately excluded: "he raised a hand" is not a wound, and a false
-# positive here follows the player for the rest of the run.
-_INJURY_SIGNALS = (
-    "bleed", "blood", "wound", "gash", "laceration", "lacerat", "sprain",
-    "fracture", "broken bone", "burn", "scorch", "sear", "graze", "grazed",
-    "bruise", "bruised", "dislocat", "impaled", "puncture", "torn muscle",
-    "gouge", "twisted ankle", "cracked rib", "split lip", "deep cut",
+# ───────── how a run ends ────────────────────────────────────────────────────
+# There used to be a wound parser and a hit-point pool here: prose was scraped
+# for injury words, each wound priced from a severity table, and a run ended
+# when the total reached zero.
+#
+# It was cut because the mechanic was being extracted from free text, and every
+# playtest found a new way for that to be wrong. "Punctures the silence" was
+# filed as a puncture wound the player then carried for the rest of the run.
+# Excerpts clipped the injury off the end, so five of eleven wounds in one run
+# were stored as pure scene-setting and the prompts described the player as
+# hurt by a noise. And in the last run before removal, ONE thigh wound was
+# billed three times — -35, -14, -35 — because each turn's prose opened the
+# sentence differently, which is 84 of 100 points and most of what killed that
+# run. The prompts are deliberately fed the injury list so the writing keeps
+# referring back to it, which means restatement is the normal case; a text
+# scraper cannot reliably tell "you are hurt again" from "you are still hurt".
+#
+# So death is the model's call now, from `player_alive` in the consequence JSON
+# — the same structured field it already returned. What keeps that from being
+# arbitrary is the fairness doctrine in the consequence prompt (inert scenery
+# wounds, characters and events kill) plus the detection ladder below, which is
+# event-driven rather than scraped: being hunted is what kills you, not bleeding.
+
+
+# ───────── detection: something out there knowing where you are ──────────────
+# The prose would say a guard spots you and gives chase, and nothing in the
+# engine knew it on the next turn. `in_combat` was initialised False and written
+# by nothing at all; there was no alert level, no pursuer, no memory of having
+# been seen. Every turn began from hidden regardless of how the last one ended,
+# so being hunted was a sentence rather than a situation.
+#
+# This is the smallest version of that which is genuinely simulated. Heat rises
+# when a turn describes attention and bleeds away when it doesn't, the level is
+# a reading of the heat, and the level is fed back into the prompt, the odds and
+# the HUD — so the next turn is obliged to honour what the last one said.
+#
+# The level constants sit with the other game constants near the top; they are
+# needed during import.
+DETECT_THRESHOLDS = (0, 2, 4, 7)   # heat at which each level begins
+DETECT_HEAT_MAX = 10
+DETECT_COOL = 1                    # bled off by a turn that draws no attention
+DETECT_COOL_MOVING = 2             # ... and more when you put ground behind you
+
+# What breaking away is worth. This one is load-bearing: the condition directive
+# tells the narrator that a hunted player must not get a calm beat, so once the
+# level is up the prose describes a chase every single turn, that prose re-fires
+# the signal, and heat sits at the ceiling for the rest of the run. A 20-turn
+# render climbed 0 -> 10 by turn six and never came back down.
+#
+# So fleeing has to beat the prose rather than argue with it. Taking an egress
+# option ignores this turn's signal and sheds heat outright — three or four
+# turns of committed running gets you clear, and they cost you every other
+# thing you might have done. Being seen should be recoverable; being seen once
+# should not decide the rest of the run.
+DETECT_COOL_FLEEING = 4
+
+# What the prose has to say for the world to notice. Weighted worst-first: being
+# chased is worse than being seen, and being seen is worse than being watched.
+#
+# Every phrase either names the player or is unambiguous alarm hardware. That is
+# not fussiness — the first draft of this table had bare "stirs", "notices" and
+# "pauses" in it, and "Nothing stirs." raised the alert level. Ambient scene
+# prose is most of what a narrator writes, so anything that can fire on it will
+# fire constantly, and the dial becomes noise wearing a number.
+_DETECT_SIGNALS: tuple[tuple[int, tuple[str, ...]], ...] = (
+    (4, ("gives chase", "gives pursuit", "charges at you", "charges toward you",
+         "lunges at you", "lunges for you", "runs at you", "sprints toward you",
+         "closing on you", "closing in on you", "chasing you", "hunting you",
+         "pursuing you", "comes after you", "bearing down on you",
+         "grabs you", "seizes you", "drags you")),
+    (3, ("spots you", "sees you", "sights you", "notices you", "spotted you",
+         "locks onto you", "fixes on you", "points at you", "aims at you",
+         "fires at you", "shoots at you", "opens fire", "screams an alarm",
+         "alarm blares", "alarm sounds", "alarm shrieks", "siren", "klaxon",
+         "raises its weapon", "raises his weapon", "raises her weapon",
+         "shouts at you", "calls out to you")),
+    (2, ("turns toward you", "turns to face you", "looks straight at you",
+         "looks right at you", "catches sight of you", "sweeps over you",
+         "light finds you", "beam settles on you", "head snaps toward you",
+         "footsteps quicken behind you", "following you", "watching you",
+         "staring at you", "tracks you")),
 )
 
 
-def _extract_injury(dispatch: str) -> Optional[str]:
-    """The one sentence of the dispatch that describes a wound, or None."""
-    if not dispatch:
-        return None
-    if not any(sig in dispatch.lower() for sig in _INJURY_SIGNALS):
-        return None
-    for sentence in re.split(r"(?<=[.!?])\s+", dispatch.strip()):
-        if any(sig in sentence.lower() for sig in _INJURY_SIGNALS):
-            wound = sentence.strip()
-            return (wound[:87] + "...") if len(wound) > 90 else wound
-    return None
+def detection_signal(text: str) -> int:
+    """How much attention this turn's prose drew. 0 when it drew none."""
+    low = (text or "").lower()
+    for weight, phrases in _DETECT_SIGNALS:
+        if any(p in low for p in phrases):
+            return weight
+    return 0
 
 
-def _apply_injuries(state: dict, dispatch: str, is_timeout_penalty: bool = False) -> bool:
-    """Carry wounds forward in ``state['injuries']``.
+def detection_level(heat: int) -> int:
+    """The level a given heat reads as."""
+    level = DETECT_HIDDEN
+    for idx, floor in enumerate(DETECT_THRESHOLDS):
+        if heat >= floor:
+            level = idx
+    return level
 
-    Four prompts read this list — the consequence grounding and every choice
-    call — and nothing wrote it, so the UNLUCKY prompt's promise that a wound
-    "becomes a persistent burden the player carries forward" never happened.
 
-    Wounds age out rather than accumulating: capped at three, and a clean turn
-    has a chance to heal the oldest, so a run can't end up permanently crippled
-    by one bad roll on turn two.
+def _as_int(value, fallback: int = 0) -> int:
+    """Whatever was on disk, as an int. Saves get hand-edited and half-written."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return fallback
 
-    Returns True when a NEW wound was recorded this turn.
+
+def get_detection(state: dict) -> dict:
+    """The detection record, defaulted for a state that predates the system."""
+    det = state.get("detection")
+    if not isinstance(det, dict):
+        det = {}
+    heat = max(0, min(DETECT_HEAT_MAX, _as_int(det.get("heat"))))
+    return {"heat": heat,
+            "level": max(0, min(DETECT_HUNTED,
+                                _as_int(det.get("level"), detection_level(heat)))),
+            "since_turn": _as_int(det.get("since_turn"))}
+
+
+def apply_detection(state: dict, dispatch: str, *, interaction: bool = False,
+                    is_move: bool = False, fate: str = "NORMAL",
+                    fleeing: bool = False) -> tuple[dict, bool]:
+    """Re-read how much the world knows about the player from this turn.
+
+    Returns (detection, rose) where `rose` says the level went up, which is a
+    tension event the same way a new injury is.
     """
-    import random as _random
-    injuries = [i for i in (state.get("injuries", []) or []) if isinstance(i, str)]
-    wound = None if is_timeout_penalty else _extract_injury(dispatch)
-    newly_injured = False
-    if wound:
-        # Don't log a near-duplicate of the wound we just recorded.
-        if not injuries or injuries[-1][:30].lower() != wound[:30].lower():
-            injuries.append(wound)
-            injuries = injuries[-3:]
-            newly_injured = True
-            print(f"[INJURY] recorded: {wound[:60]}", flush=True)
-    elif injuries and _random.random() < 0.30:
-        print(f"[INJURY] healed: {injuries.pop(0)[:40]}", flush=True)
-    state["injuries"] = injuries
-    return newly_injured
+    det = get_detection(state)
+    was_heat, was_level = det["heat"], det["level"]
+
+    gain = detection_signal(dispatch)
+    if interaction:
+        gain += 1                      # meddling is loud
+    if fate == "UNLUCKY" and gain:
+        gain += 1                      # bad luck arrives as attention
+
+    if fleeing:
+        # Running wins over whatever the prose says, because while hunted the
+        # prose is under instruction to describe a chase and would otherwise
+        # hold the dial at maximum forever. See DETECT_COOL_FLEEING.
+        heat = max(0, was_heat - DETECT_COOL_FLEEING)
+    elif gain:
+        heat = min(DETECT_HEAT_MAX, was_heat + gain)
+    else:
+        heat = max(0, was_heat - (DETECT_COOL_MOVING if is_move else DETECT_COOL))
+
+    level = detection_level(heat)
+    det["heat"], det["level"] = heat, level
+    if level != was_level:
+        det["since_turn"] = int(state.get("turn_count", 0) or 0)
+        print(f"[DETECT] {DETECT_NAMES[was_level]} -> {DETECT_NAMES[level]} "
+              f"(heat {was_heat}->{heat})", flush=True)
+    elif heat != was_heat:
+        print(f"[DETECT] {DETECT_NAMES[level]}, heat {was_heat}->{heat}", flush=True)
+
+    state["detection"] = det
+    # in_combat was dead state that /api/status reported every turn. Alerted or
+    # worse is what it was always supposed to mean.
+    state["in_combat"] = level >= DETECT_ALERTED
+    return det, level > was_level
+
+
+def condition_directive(state: dict) -> str:
+    """How much the world knows about the player, as prompt text.
+
+    Detection is simulated, so the narrator has to be handed what it currently
+    says. Without this the prose invents its own answer every turn and the HUD
+    ends up contradicting the story in front of the player — which is the whole
+    reason this stuff read as hallucinated.
+
+    This used to lead with a PLAYER CONDITION line priced off a hit-point pool.
+    That pool is gone (see "how a run ends"), and with it the risk that the two
+    halves disagreed: the number could say "dying" while the prose had the
+    player sprinting, because only one of them was load-bearing.
+    """
+    level = get_detection(state)["level"]
+
+    seen = (
+        "Nothing out there knows where the player is. Stealth is intact; "
+        "keep the danger latent.",
+        "Something SUSPECTS. A search is beginning — not a hunt yet. Write "
+        "the world starting to look for them.",
+        "The player HAS BEEN SEEN and whatever saw them is acting on it. Do "
+        "not quietly forget this; it cannot be walked back to calm in one beat.",
+        "The player is BEING HUNTED right now, this turn. The pursuer is close "
+        "and closing. A calm or idle beat here is wrong. One of next_choices "
+        "MUST be a way to break away and run — fleeing is the only thing that "
+        "shakes a pursuer, so a slate without it is a dead end. This pursuer "
+        "is ALLOWED TO KILL: if the player stands and takes it while hunted, "
+        "`player_alive` may be false, and that death is earned because they "
+        "were told it was coming and given a way out.",
+    )[level]
+
+    return f"DETECTION: {DETECT_NAMES[level].upper()} — {seen}\n"
+
+
+def _record_recent_event(state: dict, choice: str, visual_scene: str) -> None:
+    """Append this turn's camera beat to the session tape (cap 10)."""
+    beat = (visual_scene or "").strip() or (choice or "").strip()
+    line = f"{(choice or '').strip()} -> {beat}"[:200]
+    events = list(state.get("recent_events") or [])
+    events.append(line)
+    state["recent_events"] = events[-10:]
+
+
+def _previous_beat_block(state: Optional[dict], history: Optional[list] = None) -> str:
+    """PREVIOUS BEAT for the next world-update call. Empty if the tape is blank."""
+    events = list((state or {}).get("recent_events") or [])[-3:]
+    if history:
+        last = history[-1] if history else {}
+        extra = (last.get("vision_dispatch") or last.get("dispatch") or "").strip()
+        if extra and extra not in " ".join(events):
+            events.append(extra)
+    if not events:
+        return ""
+    lines = "\n".join(f"- {e}" for e in events if e)
+    return f"\n\nPREVIOUS BEAT:\n{lines}\n"
 
 
 def summarize_world_state_diff(prev_state: dict, state: dict) -> str:
@@ -11555,15 +14318,295 @@ def summarize_world_state_diff(prev_state: dict, state: dict) -> str:
 # ratchets risk, and so interacting with a scanned object pushes hardest.
 STORY_ESCALATE_AT = 4   # threat pressure at which the story tips into "escalating"
 STORY_CRITICAL_AT = 9   # ... and into "critical"
+# Platform default when an Experience does not name its own curve.
+_HARNESS_ESCALATE_AT = 8
+_HARNESS_CRITICAL_AT = 20
+_DEFAULT_BEAT_ESCALATING = "BEAT: pressure is rising. Push the situation forward."
+_DEFAULT_BEAT_CRITICAL = "BEAT: the situation is critical. Offer a way through or a last stand."
+
+
+def _threat_block() -> dict:
+    """Authorable pacing on the active Experience. Empty dict if none."""
+    try:
+        import experience_store
+        raw = (experience_store.get_experience() or {}).get("threat") or {}
+        return raw if isinstance(raw, dict) else {}
+    except Exception:
+        return {}
+
+
+def _threat_marks() -> tuple[int, int]:
+    """SOMEWHERE keeps 4/9. A blank Experience may set a slower curve."""
+    esc, crit = STORY_ESCALATE_AT, STORY_CRITICAL_AT
+    raw = _threat_block()
+    if raw.get("escalate_at") is not None:
+        try:
+            esc = int(raw["escalate_at"])
+        except (TypeError, ValueError):
+            pass
+    if raw.get("critical_at") is not None:
+        try:
+            crit = int(raw["critical_at"])
+        except (TypeError, ValueError):
+            pass
+    esc = max(1, esc)
+    return esc, max(esc + 1, crit)
+
+
+def beat_nudge_text(state: Optional[dict] = None) -> str:
+    """Fills {beat_nudge} on the choice template. Empty when the story is calm.
+
+    The two lines are Experience pacing — authored in Create — not a
+    hardcoded engine slogan. Missing copy falls back to the shipped beats.
+    """
+    st = state if isinstance(state, dict) else {}
+    threat = int(st.get("threat_level") or 0)
+    phase = str(st.get("current_phase") or _phase_for_threat(threat) or "")
+    raw = _threat_block()
+    if phase == "critical":
+        text = str(raw.get("beat_critical") or "").strip()
+        return text or _DEFAULT_BEAT_CRITICAL
+    if phase == "escalating":
+        text = str(raw.get("beat_escalating") or "").strip()
+        return text or _DEFAULT_BEAT_ESCALATING
+    return ""
+
+# How much a single deliberate act of meddling can add to the story clock on top
+# of the turn's own +1. Measured, not guessed: at the original +2, a SCAN-driven
+# playtest where every turn was a MOVE TO hit "critical" on turn 3 and finished
+# at threat 90, so 27 of its 30 turns had nowhere left to escalate and the whole
+# time-of-day ladder was spent before turn 4. Meddling should still push the
+# story harder than a button press — it just can't triple the clock.
+MAX_RISK_THREAT_BOOST = 1
 
 def _phase_for_threat(threat: int) -> str:
     """Map accumulated threat pressure onto the three story phases the rest of
     the engine (prompt directives, world-tick, time-of-day, HUD) already keys off."""
-    if threat >= STORY_CRITICAL_AT:
+    esc, crit = _threat_marks()
+    if threat >= crit:
         return "critical"
-    if threat >= STORY_ESCALATE_AT:
+    if threat >= esc:
         return "escalating"
     return "normal"
+
+# ───────── the clock ─────────────────────────────────────────────────────────
+# `time_of_day` is written once at reset and read by every image generation.
+# A later pass stepped it one lighting tier darker on each phase tip so the
+# "act break" would show in the sky. That string is injected into every
+# render as a lighting constraint, and hard cuts have no previous frame to
+# hold the old light — so the movie relit (golden hour → purple twilight →
+# night) instead of staying the evening it started as. The helper below
+# still knows how to step a line if something asks; the turn loop does not.
+#
+# Ordered dark-ward. The first entry of each tier is the canonical name written
+# back into the string; the rest are the ways a generated line might have said
+# it. Tiers only ever advance, never wrap — a run must not brighten back to dawn.
+_TIME_TIERS: tuple[tuple[str, ...], ...] = (
+    ("dawn", "sunrise", "first light"),
+    ("morning", "mid-morning"),
+    ("midday", "noon", "high sun"),
+    ("afternoon", "mid-afternoon"),
+    ("golden hour", "late afternoon", "low sun"),
+    ("dusk", "twilight", "sunset", "evening", "gloaming"),
+    ("night", "nightfall", "after dark"),
+    ("deep night", "dead of night", "midnight", "small hours"),
+)
+
+_TIME_STEP_MINUTES = 45
+_CLOCK_RE = re.compile(r"\b(\d{1,2}):(\d{2})\s*([ap])\.?m\.?", re.I)
+
+
+def _current_time_tier(time_of_day: str) -> tuple[int, str]:
+    """The darkest tier named in ``time_of_day``, and the word that named it.
+
+    Darkest-wins because the aliases nest: "deep night", "midnight" and
+    "nightfall" all contain a word from an earlier tier, and taking the first
+    match would read them as one tier brighter than they are. Returns (-1, "")
+    when no tier is named at all.
+    """
+    low = (time_of_day or "").lower()
+    best_idx, best_alias = -1, ""
+    for idx, aliases in enumerate(_TIME_TIERS):
+        for alias in aliases:
+            if re.search(rf"\b{re.escape(alias)}\b", low):
+                best_idx, best_alias = idx, alias
+                break
+    return best_idx, best_alias
+
+
+# Where each tier starts on a 24h clock, darkest-first so a lookup takes the
+# first hour it is at or past.
+_TIER_START_HOUR = (
+    (21, 6),  # night proper; "deep night" is reserved for after midnight
+    (19, 5),  # dusk
+    (17, 4),  # golden hour
+    (14, 3),  # afternoon
+    (11, 2),  # midday
+    (7, 1),   # morning
+    (5, 0),   # dawn
+)
+
+
+def _tier_from_clock(time_of_day: str) -> int:
+    """Infer the lighting tier from the clock when the text doesn't name one.
+
+    The default seed string is "6:30pm | weather: clear, warm light | …", which
+    names no tier at all — so without this, the one run that starts from the
+    default could only ever move its clock and would never darken.
+    """
+    m = _CLOCK_RE.search(time_of_day or "")
+    if not m:
+        return -1
+    hour = (int(m.group(1)) % 12) + (12 if m.group(3).lower() == "p" else 0)
+    if hour < 5:
+        return 7  # deep night
+    for start, idx in _TIER_START_HOUR:
+        if hour >= start:
+            return idx
+    return -1
+
+
+def _bump_clock(time_of_day: str, minutes: int) -> str:
+    """Move the "7:42pm" part of the string forward, wrapping past midnight."""
+    def _shift(m: "re.Match[str]") -> str:
+        hour, minute, half = int(m.group(1)), int(m.group(2)), m.group(3).lower()
+        total = (((hour % 12) + (12 if half == "p" else 0)) * 60 + minute + minutes) % (24 * 60)
+        h24, mm = divmod(total, 60)
+        return f"{h24 % 12 or 12}:{mm:02d}{'am' if h24 < 12 else 'pm'}"
+    return _CLOCK_RE.sub(_shift, time_of_day, count=1)
+
+
+def advance_time_of_day(time_of_day: str) -> str:
+    """One lighting tier darker, with the clock moved to match.
+
+    Only the lighting word is rewritten; the weather and mood clauses the run
+    was seeded with are left alone, because they're the identity of this
+    playthrough's evening and shouldn't be reinvented at an act break.
+    """
+    time_of_day = (time_of_day or "").strip()
+    if not time_of_day:
+        return time_of_day
+    idx, alias = _current_time_tier(time_of_day)
+    if idx < 0:
+        # No lighting word to rewrite, so read the tier off the clock and NAME
+        # the new one in the weather clause. The next step then finds it and
+        # rewrites in place, so a run self-heals into the ladder after one tick.
+        idx, alias = _tier_from_clock(time_of_day), ""
+    if idx < 0 or idx >= len(_TIME_TIERS) - 1:
+        # Unreadable, or already as dark as the ladder goes: the clock still
+        # moves so time visibly passes, but the run never brightens.
+        return _bump_clock(time_of_day, _TIME_STEP_MINUTES)
+    darker = _TIME_TIERS[idx + 1][0]
+    if alias:
+        # Swallow a trailing "light"/"lighting" along with the tier word, so
+        # "golden hour light" becomes "dusk" rather than "dusk light" and then
+        # the frankly unusable "night light".
+        shifted = re.sub(rf"\b{re.escape(alias)}(\s+light(?:ing)?)?\b", darker,
+                         time_of_day, count=1, flags=re.I)
+    else:
+        shifted = _name_lighting(time_of_day, darker)
+    return _bump_clock(shifted, _TIME_STEP_MINUTES)
+
+
+# A seed describes its light in its own words ("dusty haze with fading violet
+# light"), which name no tier this ladder knows. Appending the new tier next to
+# that phrase is what produced render prompts reading "fading violet light, deep
+# night" — two different times of day in one breath, handed straight to the
+# image model. Take the seed's lighting phrase out before naming the new one.
+_LIGHTING_PHRASE_RE = re.compile(
+    r"[,;]?\s*\b(?:with|in|under)?\s*(?:[\w-]+\s+){0,3}light(?:ing)?\b", re.I)
+
+
+def _name_lighting(time_of_day: str, tier: str) -> str:
+    """Write ``tier`` into the weather clause of a "TIME | weather: … | mood: …" string."""
+    parts = time_of_day.split("|")
+    for i, part in enumerate(parts):
+        stripped = part.strip()
+        if stripped.lower().startswith("weather:"):
+            body = _LIGHTING_PHRASE_RE.sub(
+                "", stripped[len("weather:"):].strip(), count=1).strip(" ,;")
+            parts[i] = f" weather: {body + ', ' if body else ''}{tier} "
+            return "|".join(parts)
+    return f"{time_of_day} | weather: {tier}"
+
+
+# ───────── chaos as a tension dial ───────────────────────────────────────────
+# chaos_level used to be `+= 1` every turn in generate_and_apply_choice, which
+# made it a second turn counter rather than a reading of how bad things are: it
+# rose on every turn regardless of content, never fell, and ran unbounded to 30
+# over a long run. It is read by summarize_world_state (which branches on
+# chaos > 7 and > 5), by the TALK persona's STATE line ("chaos level N/10" —
+# already written against a 10-point scale) and by the HUD.
+#
+# It is NOT an accumulator. The first attempt at this was — spikes on events,
+# −1 on a quiet turn — and a 30-turn live run pinned it at the ceiling from turn
+# 6 to turn 30, falling on 2 turns out of 27. That isn't a tuning problem: once
+# the story reaches its 'critical' phase, UNLUCKY fires on roughly half of all
+# turns and the phase directive explicitly demands a hard consequential beat, so
+# nearly every turn IS eventful and ANY accumulator saturates.
+#
+# So chaos is a decaying average of recent intensity instead. Each turn keeps
+# half of the previous reading and adds this turn's spike, which means it tracks
+# how bad the last few turns have been rather than how many turns there have
+# been. A relentless stretch sits high, one quiet turn visibly cools it, and it
+# only reaches the ceiling when everything fires at once.
+CHAOS_MAX = 10
+CHAOS_MEMORY = 0.5          # how much of last turn's heat carries into this one
+CHAOS_MEMORY_LUCKY = 0.25   # a break bleeds it off faster
+
+
+def chaos_events(fate: str, escalated: bool, interaction: bool,
+                 spotted: bool = False) -> list[tuple[str, int]]:
+    """What this turn ADDED to the tension, as (reason, weight) pairs.
+
+    Weights only ever push up; the fall comes from the decay in apply_chaos, so
+    a turn with nothing in it needs no entry here.
+
+    There was a "new injury" weight here, fed by the wound parser. It went with
+    that parser, and it was largely double-counting anyway: an injury nearly
+    always arrived on an UNLUCKY turn, which is already worth 2 below.
+    """
+    events: list[tuple[str, int]] = []
+    if escalated:
+        events.append(("story escalated", 3))
+    if fate == "UNLUCKY":
+        events.append(("fate turned", 2))
+    if spotted:
+        events.append(("the world noticed you", 3))
+    if interaction:
+        events.append(("meddled with the world", 1))
+    return events
+
+
+def apply_chaos(state: dict, *, fate: str, escalated: bool,
+                interaction: bool, spotted: bool = False) -> int:
+    """Re-read ``state['chaos_level']`` from what the turn contained.
+
+    Returns the new value.
+    """
+    events = chaos_events(fate, escalated, interaction, spotted)
+    memory = CHAOS_MEMORY_LUCKY if fate == "LUCKY" else CHAOS_MEMORY
+    before = int(state.get("chaos_level", 0) or 0)
+    after = max(0, min(CHAOS_MAX, round(before * memory + sum(w for _, w in events))))
+    state["chaos_level"] = after
+    reasons = ", ".join(f"{r} +{w}" for r, w in events) or "quiet turn"
+    print(f"[CHAOS] {before} -> {after} (kept {memory:.0%}; {reasons})", flush=True)
+    return after
+
+
+#: Luck never becomes impossible, and misfortune never becomes the house rule.
+#:
+#: Both floors are here because the bias arithmetic below could erase a whole
+#: outcome. `lucky_cut = 0.25 - bias` reaches zero at bias 0.25, and in scan_move
+#: — where every turn is a SCAN interaction and therefore carries the +0.15 risk
+#: boost unconditionally — 0.25 is passed as soon as the story reaches
+#: "escalating". A measured 13-turn run rolled LUCKY exactly ZERO times and
+#: UNLUCKY seven times: from turn three onward a break was arithmetically
+#: unavailable, so the world could only ever be neutral or cruel. That reads to a
+#: player as a game that has stopped responding to them.
+FATE_LUCKY_FLOOR = 0.10
+FATE_UNLUCKY_CEILING = 0.55
+
 
 def compute_fate(risk_bias: float = 0.0) -> str:
     """Roll narrative luck for a turn.
@@ -11572,11 +14615,12 @@ def compute_fate(risk_bias: float = 0.0) -> str:
     `risk_bias` (0..0.5) shifts probability out of LUCKY and into UNLUCKY without
     touching the NORMAL band much — so riskier moments (deep escalation, poking
     an unknown object) are genuinely more likely to bite. At bias 0 the split is
-    unchanged; higher bias makes fate lean mean.
+    unchanged; higher bias makes fate lean mean, but only as far as
+    FATE_LUCKY_FLOOR / FATE_UNLUCKY_CEILING allow.
     """
     bias = max(0.0, min(0.5, risk_bias))
-    lucky_cut = max(0.0, 0.25 - bias)          # LUCKY shrinks as risk rises
-    unlucky_cut = max(lucky_cut, 0.75 - bias)  # UNLUCKY (roll >= cut) grows with risk
+    lucky_cut = max(FATE_LUCKY_FLOOR, 0.25 - bias)
+    unlucky_cut = max(lucky_cut, 1.0 - FATE_UNLUCKY_CEILING, 0.75 - bias)
     roll = random.random()
     if roll < lucky_cut:
         return "LUCKY"
@@ -11596,27 +14640,47 @@ def advance_story_dynamics(session_id: str = 'default', risk_boost: int = 0) -> 
     • fate is rolled with a bias that grows as the phase escalates AND when the
       action itself is risky, so late-game turns and object-poking swing harder.
 
+    • time_of_day is the evening this run started in. It is not stepped here.
+      Phase is the tension dial; rewriting the light on an act break made
+      every hard-cut frame a new time of day (see the image-path injection
+      in gemini_image_utils). The clock helper still exists if something
+      deliberately waits until night — the turn loop is not that something.
+
     Mutates + persists session state under the world lock. Returns
-    {"fate", "phase", "prev_phase", "threat_level", "escalated"}.
+    {"fate", "phase", "prev_phase", "threat_level", "escalated", "time_of_day"}.
     """
     global state
     with WORLD_STATE_LOCK:
         st = _load_state(session_id)
         prev_phase = st.get("current_phase", "normal")
-        threat = int(st.get("threat_level", 0) or 0) + 1 + max(0, int(risk_boost))
+        threat = int(st.get("threat_level", 0) or 0) + 1 + min(
+            MAX_RISK_THREAT_BOOST, max(0, int(risk_boost)))
         phase = _phase_for_threat(threat)
+        escalated = _PHASE_RANK.get(phase, 0) > _PHASE_RANK.get(prev_phase, 0)
         st["threat_level"] = threat
         st["current_phase"] = phase
+        detect_level = get_detection(st)["level"]
+        # Lighting is the identity of this run's evening, not a tension dial.
+        # Stepping the tier on an act break (golden hour → dusk → night) was
+        # handed to every image as a CRITICAL rewrite, so a hard cut relit
+        # the whole movie instead of holding the light the first frame set.
+        # Phase still climbs; the sky does not.
+        time_of_day = st.get("time_of_day", "") or ""
         _save_state(st, session_id)
         _sync_ambient_state(st, session_id)
     phase_bias = {"normal": 0.0, "escalating": 0.12, "critical": 0.22}.get(phase, 0.0)
     # A risk_boost (SCAN interaction / entering the unknown) both accelerated the
     # phase above and tilts THIS turn's luck toward complication.
-    risk_bias = phase_bias + (0.15 if risk_boost else 0.0)
+    #
+    # Being known about is its own risk, and separate from how far the story has
+    # got: hiding successfully should make a turn safer, and being hunted should
+    # make it meaner, or detection is a readout rather than a stake.
+    detect_bias = (0.0, 0.05, 0.14, 0.24)[max(0, min(3, detect_level))]
+    risk_bias = phase_bias + detect_bias + (0.15 if risk_boost else 0.0)
     fate = compute_fate(risk_bias)
-    escalated = _PHASE_RANK.get(phase, 0) > _PHASE_RANK.get(prev_phase, 0)
     return {"fate": fate, "phase": phase, "prev_phase": prev_phase,
-            "threat_level": threat, "escalated": escalated}
+            "threat_level": threat, "escalated": escalated,
+            "detection": detect_level, "time_of_day": time_of_day}
 
 _PHASE_RANK = {"normal": 0, "escalating": 1, "critical": 2}
 
@@ -11640,7 +14704,7 @@ def _phase_escalation_beat(phase: str) -> str:
     return random.choice(beats) if beats else ""
 
 # ───────── game loop ──────────────────────────────────────────────────────────
-def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalty: bool = False, session_id: str = 'default', skip_image: bool = False, skip_evolve: bool = False, interaction: bool = False, local_only: bool = False, subject: str = "", is_move: bool = False) -> dict:
+def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalty: bool = False, session_id: str = 'default', skip_image: bool = False, skip_evolve: bool = False, interaction: bool = False, local_only: bool = False, subject: str = "", is_move: bool = False, escalated: bool = False, is_custom_action: bool = False) -> dict:
     """
     PHASE 1 (FAST): Generate dispatch and image, return immediately.
 
@@ -11653,6 +14717,14 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
                          `visual_scene` — see the OBJECT PERMANENCE block.
     is_move           -> the tap was MOVE TO rather than INTERACT, so the
                          subject must end up closer rather than merely changed.
+    escalated         -> this turn tipped the story into a higher phase (the
+                         caller rolled it in advance_story_dynamics). Feeds the
+                         chaos dial, which is the biggest single jolt it takes.
+    is_custom_action  -> the player typed this action rather than picking a
+                         curated choice or tapping a SCAN object. Gates the
+                         FREE WILL prompt block in _generate_combined_dispatches
+                         (and the matching flipbook branch in _gen_image_impl,
+                         which reads it back off state — see below).
     local_only=True   -> operate entirely on LOCAL `state`/`history` variables
                          (loaded + saved per session_id) and never touch the
                          module-global mirrors. The web multi-user path passes
@@ -11703,6 +14775,24 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             prev_vision = (history[-1].get("vision_analysis", "") or
                            history[-1].get("vision_dispatch", ""))
             prev_image = history[-1].get("image_url", None)
+
+        # How long the run has been in the same KIND of place. Read from history
+        # because that's where the previous turn's vision label was persisted;
+        # Phase 2 doesn't save state, so it can't put it anywhere else. The
+        # previous turn's hard cut is what actually moved the player, so that is
+        # what clears the count.
+        env_streak = update_environment_streak(
+            state,
+            resolve_environment_label(state, history),
+            hard_transition=bool(history[-1].get("hard_transition")) if history else False,
+            scene_text=state.get("current_render_base") or "",
+        )
+        # Persisted (not just passed down the call stack) so the flipbook branch
+        # in _gen_image_impl — which reloads state from disk rather than
+        # receiving this call's arguments — can see it too. See is_custom_action
+        # in this function's docstring.
+        state['_turn_is_custom_action'] = is_custom_action
+        _save_state(state, session_id)
         
         # TIMEOUT PENALTIES: Use penalty text AS dispatch (don't generate new one)
         provisional_choices: list = []
@@ -11712,10 +14802,8 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             player_alive = True  # timeout penalties never kill directly; the next turn's consequence LLM judges lethality
             print(f"[TIMEOUT PENALTY] Using penalty text as dispatch: {dispatch[:100]}")
         else:
-            # Generate dispatch using FULL StoryGen version (with fate modifier).
-            # provisional_choices are produced in the SAME call so the turn loop
-            # can skip the separate choice-generation round-trip.
-            dispatch, vision_dispatch, player_alive, provisional_choices = _generate_combined_dispatches(choice, state, prev_state, prev_vision, prev_image, fate, is_interaction=interaction, subject=subject, is_move=is_move)
+            # Camera beat only. Choices are a later call after evolve lands.
+            dispatch, vision_dispatch, player_alive, provisional_choices = _generate_combined_dispatches(choice, state, prev_state, prev_vision, prev_image, fate, is_interaction=interaction, subject=subject, is_move=is_move, environment_streak=env_streak, is_custom_action=is_custom_action)
         
         # SIMPLE DEATH SYSTEM: Just trust the LLM
         state['player_state']['alive'] = player_alive
@@ -11725,7 +14813,7 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
         
         # Save state immediately after death detection
         _save_state(state, session_id)
-        print(f"[STATE] Saved - alive={player_alive}, health={state['player_state'].get('health', 100)}")
+        print(f"[STATE] Saved - alive={player_alive}")
         
         # An error sentinel is not an empty string, so it slipped past the guard
         # below and was narrated to the player verbatim. Mask it as a camcorder
@@ -11742,16 +14830,32 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
         if not vision_dispatch or vision_dispatch.strip().lower() in {"none", "", "[", "[]"}:
             vision_dispatch = dispatch
 
-        # Persist any wound this turn described. `state['injuries']` is read by
-        # four prompts (the consequence grounding and every choice call) and was
-        # written by nothing, so the UNLUCKY prompt's promise that a wound
-        # "becomes a persistent burden the player carries forward" was empty —
-        # the list was initialised at reset and stayed at [] for the whole run.
-        _apply_injuries(state, dispatch, is_timeout_penalty)
+        # Whether anything out there now knows where the player is. Read from
+        # the prose, so a turn that says "it gives chase" is a turn the next one
+        # has to answer for. This is the only stake the engine adjudicates now;
+        # death itself is the model's verdict, above.
+        # Both channels: the caption carries the geometry, the narrative carries
+        # "it gives chase". Reading only the caption meant a turn could announce
+        # pursuit in the prose and the engine would never register it.
+        _det, spotted = apply_detection(state, f"{dispatch}\n{vision_dispatch}",
+                                        interaction=interaction,
+                                        is_move=is_move, fate=fate,
+                                        fleeing=is_egress_choice(choice))
+        # Chaos reads the turn that just happened, so it has to land after the
+        # detection check and after the caller has told us whether the story
+        # tipped.
+        apply_chaos(state, fate=fate, escalated=escalated,
+                    interaction=interaction, spotted=spotted)
+        _record_recent_event(state, choice, dispatch)
         _save_state(state, session_id)
 
-        # Evolve world state.
-        consequence_summary = summarize_world_state_diff(prev_state, state)
+        # Evolve from what HAPPENED, with the camera beat in its own slot. The
+        # evolve prompt has always had separate CONSEQUENCE OF ACTION and VISION
+        # ANALYSIS sections; handing the caption to both left the world state
+        # growing out of a shot list, which is why it drifted instead of
+        # developing. The dummy summarize_world_state_diff string is not the
+        # evolve input.
+        consequence_summary = dispatch or vision_dispatch
         if skip_evolve:
             # Feed path: run the (slow, ~1k-token) world evolution in the
             # background so the turn's narrative + choices return fast. It only
@@ -11775,12 +14879,68 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
         # Generate image
         mode = state.get("mode", "camcorder")
         frame_idx = len(history) + 1
+        # `softened_move` used to mean "asked for a hard cut, the throttle
+        # declined it, still has to visibly travel" (see build_image_prompt).
+        # Nothing asks for a cut and gets refused anymore — MOVE is
+        # unconditional and the text classifier below is no longer throttled
+        # either — so this is permanently False. Left wired through
+        # build_image_prompt / the flipbook regeneration path rather than
+        # ripped out, since a future feature that legitimately wants a
+        # "travelled but stayed in-frame" render (as opposed to a fresh
+        # composition) has a tested branch to reuse instead of reinventing it.
+        softened_move = False
         # CRITICAL: Timeout penalties NEVER change location
         if is_timeout_penalty:
             hard_transition = False
             print(f"[TIMEOUT PENALTY] Forcing NO location change - maintaining exact camera position")
+        elif is_move:
+            # MOVE is a single, unconditional verb, not a spectrum the engine
+            # infers from wording. It used to be run through the same
+            # portal-vs-approach text classifier as everything else, which
+            # decided from the OBJECT NAME whether "move to X" got a fresh
+            # composition ("enter the door") or was quietly kept on the old
+            # frame ("walk over to the television" / "the broken glass") — so
+            # clicking MOVE TO felt like a coin flip depending on what the
+            # player happened to tap. The engine had no reliable signal for
+            # "this was a structural relocation" and had to guess one from
+            # prose. It has one now: `is_move` comes straight from the client
+            # tapping the dedicated MOVE TO verb (source == "scan_move"), not
+            # from parsing what the player typed. MOVE always gets a fresh
+            # composition — a run that wants continuous, same-place
+            # development belongs on a different verb (INTERACT), not on a
+            # MOVE that sometimes doesn't move.
+            hard_transition = True
+            _save_state(state, session_id)
+        elif interaction or is_custom_action:
+            # INTERACT and typed free-will still have no dedicated "this is a
+            # new beat" verb, so intent is inferred from the wording. This is
+            # also the refine-from-current path: look-around / in-place pokes
+            # stay on the previous frame unless the text itself is a
+            # relocation. Realtime WSAD look-around never comes through here
+            # (/api/observe), so this branch is the only place a soft
+            # continuation is still allowed.
+            #
+            # Egress/flight wording ("Bolt for the nearest way out", ...) is
+            # forced to a cut: is_hard_transition was tuned for "enter the
+            # door" and never recognizes "bolt"/"sprint"/"climb out".
+            if is_egress_choice(choice):
+                hard_transition = True
+            else:
+                hard_transition = is_hard_transition(choice, dispatch)
+            _save_state(state, session_id)
         else:
-            hard_transition = is_hard_transition(choice, dispatch)
+            # Curated choice pill. Refine from the frame the player was
+            # looking at (the live capture, once ingested) unless the wording
+            # is a real relocation. Forcing every pill to a hard cut threw
+            # that capture away and the next still left the Reactor scene.
+            if is_egress_choice(choice):
+                hard_transition = True
+            else:
+                hard_transition = is_hard_transition(choice, dispatch)
+            _save_state(state, session_id)
+        if state.pop("pending_world_transition", False):
+            hard_transition = True
+            _save_state(state, session_id)
         
         consequence_img_url = None
         consequence_img_prompt = ""  # Initialize to prevent undefined variable error
@@ -11826,6 +14986,7 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
                 is_timeout_penalty=is_timeout_penalty,  # Pass flag to image generation
                 session_id=session_id,  # Session-specific image directory
                 history_ref=history,  # LOCAL history — never the shared global mirror
+                softened_move=softened_move,
             )
             consequence_video_url = None
             if result:
@@ -11860,6 +15021,12 @@ def advance_turn_image_fast(choice: str, fate: str = "NORMAL", is_timeout_penalt
             "consequence_image_prompt": consequence_img_prompt,
             "consequence_video": consequence_video_url,  # Video path for HD mode playback
             "hard_transition": hard_transition,  # Track location changes for reference buffer
+            # Wanted a location change and was throttled to a soft one. The feed
+            # path renders its image asynchronously and so re-derives the whole
+            # prompt later, from these fields alone — omit this and the camera
+            # gets pinned to the previous frame on exactly the turns the player
+            # asked to leave it.
+            "softened_move": softened_move,
             # True when the dispatch was a masked failure. The player sees only
             # the in-world glitch line, but autoplay and QA need to know this
             # beat carried no real story so they don't treat it as progress.
@@ -11940,12 +15107,14 @@ def _advance_turn_choices_deferred_impl(consequence_img_url: str, dispatch: str,
             print(f"[VISION] Flipbook mode - will analyze first and last frames")
             analysis_img_url = flipbook_last  # Primary analysis uses last frame
 
-    # --- VISION ANALYSIS (Moved to top for grounding) ---
-    vision_analysis_text  = ""
+    # The new frame is the source of truth. generate_choices attaches it.
+    # A second vision-caption call used to hang the slate after the picture
+    # had already landed — skip that when we have the still.
+    vision_analysis_text  = (vision_dispatch or "").strip()
     _spatial_compass_turn = ""   # directional compass: ahead/left/right/ground/height
     _setting_type_turn    = ""   # environment type: outdoor-desert, indoor-corridor, etc.
 
-    if analysis_img_url and VISION_ENABLED:
+    if (not analysis_img_url) and VISION_ENABLED:
         # Analyze BOTH frames if flipbook mode
         if flipbook_first and flipbook_last and os.path.exists(flipbook_first) and os.path.exists(flipbook_last):
             print(f"[VISION] Analyzing FIRST frame: {os.path.basename(flipbook_first)}")
@@ -12003,17 +15172,23 @@ def _advance_turn_choices_deferred_impl(consequence_img_url: str, dispatch: str,
     # round-trips (dispatch → situation report → choices) down to 1. All state /
     # history bookkeeping below still runs, and the client's vision reground still
     # refines these against the actual rendered frame. Falls back to the full
-    # generator whenever the pregenerated list doesn't yield >=2 clean, meaningful
-    # options.
+    # generator whenever the pregenerated list doesn't yield a FULL slate of
+    # clean, meaningful options: accepting a short one used to hand the player
+    # two buttons where the UI lays out three, which reads as the game running
+    # out of ideas. The shortcut is worth taking only when it's complete —
+    # otherwise the extra round-trip buys back the missing option.
     _pregen = None
     if pregenerated_choices:
         try:
-            from choices import drop_meaningless_choices, enforce_diversity
+            from choices import drop_meaningless_choices, enforce_diversity, SLATE_SIZE
             _cleaned = enforce_diversity(drop_meaningless_choices(
                 [c for c in pregenerated_choices if c and c.strip()]
             ))
-            if len(_cleaned) >= 2:
-                _pregen = _cleaned[:3]
+            if len(_cleaned) >= SLATE_SIZE:
+                _pregen = _cleaned[:SLATE_SIZE]
+            elif _cleaned:
+                print(f"[PHASE 2] provisional choices came back short "
+                      f"({len(_cleaned)}/{SLATE_SIZE}) — generating a full slate instead.", flush=True)
         except Exception as _e_pre:
             print(f"[PHASE 2] pregenerated-choices cleaning failed, will generate: {_e_pre}", flush=True)
             _pregen = None
@@ -12024,8 +15199,9 @@ def _advance_turn_choices_deferred_impl(consequence_img_url: str, dispatch: str,
         print(f"[PHASE 2] Using {len(next_choices)} provisional choice(s) from the consequence call "
               f"(skipped situation-report + choice LLM calls).", flush=True)
     else:
-        # Generate situation summary with BOTH narrative and visual context
-        situation_summary = _generate_situation_report(
+        # The attached frame already grounds the slate. A situation-report
+        # round-trip is leftover from text-first choices.
+        situation_summary = vision_analysis_text if analysis_img_url else _generate_situation_report(
             current_image=analysis_img_url,
             current_dispatch=dispatch,
             vision_analysis=vision_analysis_text
@@ -12036,25 +15212,37 @@ def _advance_turn_choices_deferred_impl(consequence_img_url: str, dispatch: str,
             dispatch,
             n=3,
             image_url=analysis_img_url,
-            seen_elements=', '.join(state.get('seen_elements', [])[-10:]),  # Last 10 discovered entities
+            # What SCAN saw in frame, then discovered entities as world memory —
+            # so the slate offers verbs on things the player can actually see.
+            seen_elements=grounded_entities(state),
             recent_choices='',
             caption=vision_dispatch,
             image_description=vision_analysis_text, # Now correctly populated!
             world_prompt=state.get('world_prompt', ''),
             temperature=0.7,
             situation_summary=situation_summary,
-            injury_state=', '.join(state.get('injuries', []) or []) or 'none',
+            beat_nudge=beat_nudge_text(state),
         )
     
     next_choices = [c for c in next_choices if c and c.strip() and c.strip() != '—']
     if not next_choices:
         next_choices = ["Look around", "Move forward", "Wait"]
+    # Backstop for the stagnation directive in the dispatch prompt: a run that
+    # has been in one kind of place too long must be OFFERED a way out, whatever
+    # the model felt like generating.
+    next_choices = enforce_egress_option(
+        next_choices, int(state.get("environment_streak", 0) or 0),
+        get_detection(state)["level"], int(state.get("turn_count", 0) or 0))
     while len(next_choices) < 3:
         next_choices.append("—")
     
-    # Save to history (with custom action flag for permanence tracking)
+    # Save to history (with custom action flag for permanence tracking). Reads
+    # the same real signal Phase 1 stashed on state (see is_custom_action in
+    # advance_turn_image_fast's docstring) rather than guessing from keywords
+    # in the choice text, which this used to do independently of — and
+    # inconsistently with — the guess _generate_combined_dispatches made.
     history = _load_history(session_id)
-    is_custom_action = not any(keyword in choice.lower() for keyword in ["move", "advance", "photograph", "examine", "sprint", "climb", "vault", "crawl"])
+    is_custom_action = bool(state.get('_turn_is_custom_action'))
     
     # CRITICAL TEMPORAL CONTINUITY FIX:
     # In flipbook mode, static images aren't generated, so consequence_img_url is None.
@@ -12295,6 +15483,7 @@ def reset_state(session_id='default'):
     initial_time = _generate_random_starting_time()
     
     # Recreate state for this session
+    place_state = game_identity.intro_place_state()
     intro_state = {
         # Seed the run's evolving world document with the cast sheet, not just
         # the setting brief — otherwise the protagonist and level exist only as
@@ -12305,13 +15494,12 @@ def reset_state(session_id='default'):
         "turn": 0,
         "time_of_day": initial_time,
         "last_action": "Initial simulation state",
-        "situation": "You stand at the edge of the restricted zone, camera in hand.",
+        "situation": place_state["situation"],
         "beat": 0,
-        "injuries": [],
         "tape_frames": [],
         "inventory": ["Nikon F3 camera", "notebook", "flashlight"],
-        "location": "desert_edge",
-        "environment_type": "desert",
+        "location": place_state["location"],
+        "environment_type": place_state["environment_type"],
         "turn_count": 0,
         "player_state": {"alive": True}
     }
@@ -12340,8 +15528,11 @@ def _intro_world_seed(prologue: str) -> str:
     the world and rebuilt everything else from the shipped defaults, so an
     authored world survived exactly until the first action.
     """
-    base = game_identity.world_brief(
-        PROMPTS.get("world_initial_state", "Default world starting point.")
+    import experience_store
+    base = experience_store.with_lore(
+        game_identity.world_brief(
+            PROMPTS.get("world_initial_state", "Default world starting point.")
+        )
     )
     if not prologue:
         return base
@@ -12396,7 +15587,7 @@ def generate_intro_image_fast(session_id='default'):
     state["chaos_level"] = 0
     state["last_choice"] = ""
     state["seen_elements"] = []
-    state["player_state"] = {"alive": True, "health": 100}
+    state["player_state"] = {"alive": True}
     _save_state(state, session_id)
     
     mode = state.get("mode", "camcorder")
@@ -12535,7 +15726,7 @@ def generate_intro_choices_deferred(image_url: str, prologue: str, vision_dispat
             world_prompt=prologue,
             temperature=0.7,
             situation_summary=situation_summary,
-            injury_state=', '.join(state.get('injuries', []) or []) or 'none',
+            beat_nudge=beat_nudge_text(state),
         )
     except Exception as _gen_choices_err:
         import traceback
@@ -12632,7 +15823,7 @@ def generate_intro_turn(session_id: str = 'default'):
     state["chaos_level"] = 0
     state["last_choice"] = ""
     state["seen_elements"] = []
-    state["player_state"] = {"alive": True, "health": 100}
+    state["player_state"] = {"alive": True}
     _save_state(state, session_id)
     
     dispatch = prologue
@@ -12688,7 +15879,7 @@ def generate_intro_turn(session_id: str = 'default'):
             world_prompt=prologue,
             temperature=0.7,
             situation_summary=situation_summary,
-            injury_state=', '.join(state.get('injuries', []) or []) or 'none',
+            beat_nudge=beat_nudge_text(state),
         )
     except Exception as _intro_choices_err:
         import traceback
