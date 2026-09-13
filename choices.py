@@ -13,6 +13,21 @@ import engine
 import difflib
 import game_identity
 
+# How many options a turn hands the player. The standalone UI lays out this
+# many buttons and binds number keys 1..SLATE_SIZE, so a short slate reads as
+# the game running out of ideas rather than as a filter having done its job.
+SLATE_SIZE = 3
+
+# Overlay / HUD buttons cannot hold a sentence. The model is told 3–6 words;
+# this is the hard backstop so a long clause never lands with an ellipsis.
+CHOICE_MAX_WORDS = 6
+CHOICE_MAX_CHARS = 40
+_CHOICE_TAIL_STOP = frozenset({
+    "the", "a", "an", "to", "from", "of", "into", "onto", "toward", "towards",
+    "at", "for", "with", "and", "or", "your", "my",
+})
+_CHOICE_HEDGE_PREFIX = ("attempt to ", "try to ", "try and ")
+
 # No longer using OpenAI - everything uses Gemini now!
 def _ensure_client(c):
     """Legacy function - no longer needed, Gemini is used directly"""
@@ -128,14 +143,49 @@ def is_too_similar(a, b):
     ratio = difflib.SequenceMatcher(None, a, b).ratio()
     return ratio > 0.75
 
-def truncate_choice(choice, max_len=60):
-    if len(choice) <= max_len:
-        return choice
-    # Try to cut at the last space before max_len
-    cut = choice[:max_len].rsplit(' ', 1)[0]
-    if len(cut) < max_len // 2:
-        cut = choice[:max_len]
-    return cut.rstrip() + '…'
+def truncate_choice(choice, max_len=CHOICE_MAX_CHARS):
+    """Clip a choice to a short command. Never ellipsis — a cut-off clause
+    on the TV is worse than a slightly plainer verb+noun."""
+    raw = (choice or "").replace("…", " ").replace("...", " ").strip()
+    low = raw.lower()
+    for hedge in _CHOICE_HEDGE_PREFIX:
+        if low.startswith(hedge):
+            raw = raw[len(hedge):].lstrip()
+            break
+    words = re.findall(r"[A-Za-z0-9']+", raw)
+    if not words:
+        return (choice or "").strip()
+
+    def _join(ws):
+        while ws and ws[-1].lower() in _CHOICE_TAIL_STOP:
+            ws = ws[:-1]
+        return " ".join(ws)
+
+    kept = words[:CHOICE_MAX_WORDS]
+    out = _join(kept)
+    cap = max_len if max_len else CHOICE_MAX_CHARS
+    while out and len(out) > cap and len(kept) > 3:
+        kept = kept[:-1]
+        out = _join(kept)
+    if not out:
+        out = " ".join(words[:3])
+    if out and out[0].islower():
+        out = out[0].upper() + out[1:]
+    return out
+
+
+def clip_choice_slate(choices):
+    """Hard-clip a slate. Dedupes after clipping so two long clauses that
+    collapse to the same verb+noun don't both survive."""
+    out = []
+    seen = set()
+    for c in choices or []:
+        t = truncate_choice(c)
+        key = t.lower()
+        if t and key not in seen:
+            seen.add(key)
+            out.append(t)
+    return out
 
 def enforce_diversity(choices):
     """Remove choices that are too similar to each other and truncate them."""
@@ -150,7 +200,7 @@ def generate_choices(
     client = None,  # No longer used - Gemini is called directly
     prompt_tmpl: str = "",
     last_dispatch: str = "",
-    n: int = 3,
+    n: int = SLATE_SIZE,
     image_url: str = None,
     seen_elements: str = "",
     recent_choices: str = "",
@@ -163,7 +213,7 @@ def generate_choices(
     temperature: float = 1.2,
     situation_summary: str = "",
     inventory: list = None,  # Player inventory items
-    injury_state: str = "none",  # Persistent wounds carried into this turn
+    overlay: str = "",
 ) -> List[str]:
     """
     Ask the model for up to n choices. The template must contain:
@@ -188,7 +238,6 @@ def generate_choices(
         time_of_day=time_of_day or "",
         beat_nudge=beat_nudge,
         situation_summary=situation_summary,  # RE-ENABLED: This is now grounded via Vision AI in Phase 2!
-        injury_state=injury_state or "none",
     )
     
     # Format inventory for prompt
@@ -203,7 +252,10 @@ def generate_choices(
             print(f"[CHOICES] Error formatting inventory: {e}")
     
     system_prompt = {"role": "system", "content": (
-        "Generate 3 VISCERAL, PHYSICAL ACTION CHOICES (3-6 words each). Emphasize BODILY movement and physical risk.\n\n"
+        "Generate 3 VISCERAL, PHYSICAL ACTION CHOICES. 3 to 6 words each. Never longer.\n\n"
+        "LENGTH IS HARD: if a choice would run past 6 words, cut adjectives and keep the verb + the thing. "
+        "Wrong: 'Attempt to pry the jagged, shattered glass shards from the monitor'. "
+        "Right: 'Pry the glass free'. Never trail off. Never use an ellipsis.\n\n"
         f"{inventory_text}"
         "🚫 PRIME DIRECTIVE: EVERY choice MUST (1) MOVE the player through the space OR physically MANIPULATE something in the space, AND (2) advance the passage of time — the world must be materially different afterward. NO exceptions.\n\n"
         "❌ ABSOLUTELY BANNED (meaningless dead turns that change nothing):\n"
@@ -217,7 +269,7 @@ def generate_choices(
         "- ARMS/HANDS: Grab, Yank, Wrench, Hurl, Smash, Rip, Pry, Claw, Shove, Swing, Heave\n"
         "- TORSO: Slam, Throw yourself, Barrel through, Roll, Twist, Duck, Drop, Lunge, Charge\n"
         "- FULL BODY: Hurl yourself, Fling yourself, Propel forward, Burst through, Crash into\n\n"
-        "GROUNDING: Base ALL choices on the ATTACHED IMAGE and the provided IMAGE DESCRIPTION. The image and its description are the absolute source of truth for Jason's current position.\n\n"
+        "GROUNDING: Base ALL choices on the ATTACHED IMAGE and the provided IMAGE DESCRIPTION. The image and its description are the absolute source of truth for the protagonist's current position.\n\n"
         "EXAMPLES OF EXCITING CHOICES (movement + interaction, time advances):\n"
         "✅ 'Vault over chain-link fence'\n"
         "✅ 'Hurl yourself through window'\n"
@@ -237,6 +289,8 @@ def generate_choices(
         "MOMENTUM: Jason is ALWAYS aggressive and forward-moving. Even 'safe' choices should feel ACTIVE and DECISIVE — and always progress the situation.\n\n"
         "Make every choice feel like an ACTION MOVIE. Use words that make you FEEL the physical exertion."
     )}
+    if overlay and str(overlay).strip():
+        system_prompt["content"] = system_prompt["content"] + "\n\n" + str(overlay).strip()
     if image_url:
         messages = [
             system_prompt,
@@ -279,7 +333,7 @@ def generate_choices(
             "🚨🚨🚨 ABSOLUTE COMMAND - READ THIS FIRST 🚨🚨🚨\n\n"
             "THE ATTACHED IMAGE IS THE ONLY SOURCE OF TRUTH.\n\n"
             "⚠️ CRITICAL RULES:\n"
-            "1. The image shows what Jason can ACTUALLY SEE right now from his eyes\n"
+            "1. The image shows what is ACTUALLY visible right now from the current camera\n"
             "2. ONLY generate choices for objects/places VISIBLE in the attached image\n"
             "3. If the text mentions 'air conditioning unit' but image shows desert -> IGNORE THE TEXT, USE THE IMAGE\n"
             "4. If the text mentions 'wrench' but image shows hands/ground -> IGNORE THE TEXT, USE THE IMAGE\n"
@@ -309,13 +363,14 @@ def generate_choices(
     # Add current timestep image if provided
     if image_url:
         print(f"[CHOICES DEBUG] Received image_url: {image_url}")
-        
-        # Use pre-downsampled version if available
-        if image_url.startswith("/images/"):
-            actual_path = Path("images") / image_url.replace("/images/", "")
-        else:
-            actual_path = Path(image_url)
-        
+        from engine import _resolve_image_path, _sniff_image_mime
+
+        # Session stills and live observe grabs live under
+        # sessions/<id>/images/, not the legacy images/ folder. The old
+        # Path("images") / basename lookup missed every observed_ frame, so
+        # realtime choice-reground never attached the video the player sees.
+        resolved = _resolve_image_path(str(image_url))
+        actual_path = Path(resolved) if resolved is not None else Path(str(image_url).split("?", 1)[0])
         small_path = actual_path.parent / actual_path.name.replace(".png", "_small.png")
         use_path = small_path if small_path.exists() else actual_path
         
@@ -328,7 +383,7 @@ def generate_choices(
             
             parts.insert(0, {
                 "inlineData": {
-                    "mimeType": "image/png",
+                    "mimeType": _sniff_image_mime(use_path),
                     "data": image_data
                 }
             })
@@ -393,7 +448,7 @@ def generate_choices(
             import hashlib
             offset = int(hashlib.md5(ctx.strip()[:200].encode("utf-8")).hexdigest(), 16) % len(deduped)
             deduped = [deduped[(offset + i) % len(deduped)] for i in range(len(deduped))]
-        return deduped[:3]
+        return clip_choice_slate(deduped)[:3]
 
     # Offline/mock backend short-circuit: when ai_provider_manager has been
     # told to use the "mock" backend (e.g. by run_local.py --mock or the
@@ -535,16 +590,18 @@ def generate_choices(
         line_lower = line.lower()
         # Skip preamble text and meta-commentary
         if (
-            4 < len(line) <= 40
+            4 < len(line) <= 160
             and not line.endswith(("...", "-", "—"))
-            and line_lower not in seen
             and " choices" not in line_lower  # Filter ANY line mentioning " choices"
             and " action choices" not in line_lower  # Specific filter for "action choices"
             and not line_lower.startswith(("scene:", "narrative:", "option:", "choice:", "here are", "here's", "here is"))
             and "for jason" not in line_lower  # Filter any meta-commentary about Jason
         ):
-            opts.append(line)
-            seen.add(line_lower)
+            clipped = truncate_choice(line)
+            key = clipped.lower()
+            if len(clipped) > 4 and key not in seen:
+                opts.append(clipped)
+                seen.add(key)
     # Stricter filtering: remove out-of-context choices
     opts = filter_choices(opts, seen_elements, recent_choices, dispatch=last_dispatch, image_description=image_description, world_prompt=world_prompt)
     # Filter out repeated choices
@@ -618,6 +675,27 @@ def generate_choices(
         improved_choices = drop_meaningless_choices(opts) or opts
     if not improved_choices:
         improved_choices = _contextual_fallback()
+    # Critic rewrites ignore the 3–6 word contract; clip before top-up so a
+    # collapsed duplicate can be replaced instead of served with an ellipsis.
+    improved_choices = clip_choice_slate(improved_choices)
+    # Top the slate back up to `n`. Every stage above (diversity, the
+    # meaningless-choice drop, the critic's own de-duping against recent
+    # turns) can REMOVE an option, and only an empty result was ever
+    # refilled — so a turn that lost one option to a filter served two
+    # buttons where the UI lays out three, which reads as the game running
+    # out of ideas. Refill from the options we already generated first, and
+    # only then from the contextual builder, so a topped-up slate still
+    # belongs to this scene.
+    if len(improved_choices) < n:
+        for candidate in drop_meaningless_choices(opts) + _contextual_fallback():
+            if len(improved_choices) >= n:
+                break
+            merged = enforce_diversity(improved_choices + [candidate])
+            if len(merged) > len(improved_choices):
+                improved_choices = merged
+        if len(improved_choices) < n:
+            print(f"[CHOICES] slate still short after top-up: {len(improved_choices)}/{n}", flush=True)
+    improved_choices = clip_choice_slate(improved_choices)[:n]
     # Persist recent choices in world_state.json
     try:
         path = Path("world_state.json")
@@ -689,18 +767,35 @@ def choice_critic(dispatch, vision, choices, world_prompt, recent_choices=None):
     # Contextual risk assessment
     filtered = filter_risky_choices(filtered, dispatch, vision)
     # Build critic prompt
+    # The critic used to be briefed in isolation, so it rewrote a slate of
+    # committed physical actions into "Photograph the pulsating growth" and
+    # "Inspect the nearby lockers" — the two categories the generator above
+    # bans outright — and was told to "avoid risky or aggressive actions",
+    # which is the opposite of how this world is supposed to read. It gets the
+    # house rules now, and its answer is re-filtered below rather than trusted.
     critic_prompt = (
         "You are a choice critic for an interactive story. Given the scene and choices, remove any choices that are illogical, impossible, or not grounded in the current context. "
         "If a choice is not logical, suggest a replacement that fits the scene. "
         "Do not repeat choices from the last two turns. "
         "Only allow choices that reference visible objects, characters, or threats in the current scene. "
-        "If there is a threat or danger, avoid suggesting risky or aggressive actions unless contextually justified. "
-        "Return a list of 2-3 final, contextually coherent choices.\n"
+        "EVERY choice must move the body or change an object. NEVER return camera, "
+        "observation or waiting actions (photograph, film, record, document, look, "
+        "observe, watch, study, examine, inspect, scan, wait, listen, hold position) — "
+        "those are dead turns. Danger is not a reason to soften a choice; this world "
+        "is hostile and the options should stay committed. "
+        "The three choices must be genuinely different things to do, not three verbs "
+        "for the same movement toward the same object. "
+        "Each choice MUST be 3 to 6 words, never a long clause, never an ellipsis. "
+        "Return a list of exactly 3 final, contextually coherent choices.\n"
         f"SCENE: {dispatch}\n"
     )
     if vision:
         critic_prompt += f"VISION: {vision}\n"
-    critic_prompt += f"WORLD: {world_prompt}\n"
+    # A 48-token answer does not need the whole world document; the scene and
+    # the vision line are what "grounded in the current context" means here.
+    world_brief = " ".join(str(world_prompt or "").split())[:1200]
+    if world_brief:
+        critic_prompt += f"WORLD: {world_brief}\n"
     critic_prompt += "CHOICES:\n" + "\n".join(f"- {c}" for c in filtered)
     critic_prompt += "\nReturn only the improved list of choices, no commentary."
     # Use LLM to review and rewrite choices (don't use lore - this is mechanical choice refinement)
@@ -712,20 +807,30 @@ def choice_critic(dispatch, vision, choices, world_prompt, recent_choices=None):
         # Remove any empty or duplicate lines
         seen2 = set()
         final = [l for l in lines if l and l not in seen2 and not seen2.add(l)]
-        # Fallback: if LLM output is not a list, use filtered
+        # The critic's slate goes back through the bans. Returning it raw is how
+        # a filtered slate got observation choices put back into it, which the
+        # engine then dropped again and backfilled with generic movement verbs —
+        # the reason three near-identical "go to the crane" options kept showing
+        # up on the same turn.
+        final = drop_meaningless_choices(final)
         if not final or len(final) < 2:
-            return filtered[:3]
-        return final[:3]
+            return clip_choice_slate(filtered)[:3]
+        return clip_choice_slate(final)[:3]
     except Exception as e:
         print("[CHOICE CRITIC] LLM error:", e)
-        return filtered[:3]
+        return clip_choice_slate(filtered)[:3]
 
 def generate_and_apply_choice(
     choice: str,
     state_path: Union[str, Path] = "world_state.json"
 ) -> None:
     """
-    Persist the winning choice into world_state.json and bump chaos_level by 1.
+    Persist the winning choice into world_state.json.
+
+    This used to also do `chaos_level += 1`, which made chaos a second turn
+    counter: it rose on every turn regardless of what the turn contained, and
+    never fell. engine.apply_chaos owns the dial now and moves it by what
+    actually happened (see the note above CHAOS_MAX).
     """
     path = Path(state_path)
     if path.exists():
@@ -739,7 +844,6 @@ def generate_and_apply_choice(
         }
 
     state["last_choice"] = choice
-    state["chaos_level"] = int(state.get("chaos_level", 0)) + 1
     # Reset index so we hand out from the top:
     state["interim_index"] = 0
     # Persist the updated world_state
