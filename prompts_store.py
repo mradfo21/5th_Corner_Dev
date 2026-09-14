@@ -498,6 +498,16 @@ PROMPT_SCHEMA: List[Dict[str, Any]] = [
         "live": True,
     },
     {
+        "id": "director_instructions",
+        "label": "Watch Director",
+        "group": "narrative",
+        "tier": TIER_ADVANCED,
+        "type": "longtext",
+        "description": "How the unattended Watch run decides which choice to take. Nobody is at the controls, so this is the taste that picks the next beat — it sees what is on screen and what the run has already done.",
+        "code_refs": ["director.py"],
+        "live": True,
+    },
+    {
         "id": "field_notes_format",
         "label": "Field Notes Voice",
         "group": "narrative",

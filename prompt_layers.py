@@ -159,6 +159,7 @@ KEY_LAYERS: Dict[str, str] = {
     "encounter_plate_anchor": ENGINE,
     "encounter_choice_overlay": ENGINE,
     "encounter_choice_instructions": ENGINE,
+    "director_instructions": ENGINE,
     "world_evolution_instructions": ENGINE,
     "situation_summary_instructions": ENGINE,
     "field_notes_format": ENGINE,

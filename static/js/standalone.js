@@ -15144,6 +15144,10 @@
       const btn = document.createElement("button");
       btn.className = "choice-btn";
       btn.style.animationDelay = `${idx * 70}ms`; // staggered pop-in cascade
+      // The rendered button reads "1Kick the rusted vent open" once the
+      // number span is folded in, so keep the written choice intact for
+      // anything that needs to reason about it rather than show it.
+      btn.dataset.choiceText = choice.text || "";
       btn.innerHTML = `<span class="choice-num">${idx + 1}</span><span>${renderInline(choice.text)}</span>`;
       btn.addEventListener("click", () => {
         if (state.processing || state.gameOver) return;
@@ -20960,6 +20964,7 @@
 
     function showChoices(items) {
       choices = Array.isArray(items) ? items.slice(0, 3) : [];
+      slateSeq += 1;
       if (!window.Moments || typeof window.Moments.setChoices !== "function") return;
       const mapped = choices.map((c) => {
         if (typeof c === "string") return { label: c, text: c };
@@ -20970,6 +20975,44 @@
         };
       }).filter((c) => c.label);
       window.Moments.setChoices(mapped, (item) => pick(item));
+      armAutoPick(mapped);
+    }
+
+    // Auto-play stands down while a Moment is on screen, so an unattended
+    // Watch run used to sit in a standoff until somebody walked back to the
+    // keyboard. Let the director commit for it — after a beat long enough
+    // to read the slate — and lean away from the lane it took last round so
+    // a fight is not three of the same answer.
+    const AUTO_PICK_MS = 4600;
+    let autoPickTimer = null;
+    let slateSeq = 0;
+    let lastLane = "";
+
+    function clearAutoPick() {
+      clearTimeout(autoPickTimer);
+      autoPickTimer = null;
+    }
+
+    function armAutoPick(slate) {
+      clearAutoPick();
+      if (!state.autoPlay || !slate || !slate.length) return;
+      const seq = slateSeq;
+      autoPickTimer = setTimeout(async () => {
+        if (seq !== slateSeq || !active || resolving || !state.autoPlay) return;
+        const idx = await Director.choose(slate.map((c) => c.text));
+        // The fight can move on while the director is thinking.
+        if (seq !== slateSeq || !active || resolving || !state.autoPlay
+            || state.processing || state.gameOver) return;
+        let item = slate[idx];
+        if (!item) {
+          const fresh = slate.filter((c) => !c.lane || c.lane !== lastLane);
+          const pool = fresh.length ? fresh : slate;
+          item = pool[Math.floor(Math.random() * pool.length)];
+        }
+        if (!item) return;
+        lastLane = item.lane || "";
+        pick(item);
+      }, AUTO_PICK_MS);
     }
 
     function stayLocked(nextChoices) {
@@ -21016,6 +21059,7 @@
       aftermath = null;
       resolveShown = false;
       pendingFinish = null;
+      clearAutoPick();
       try { Sound.encounterResolve(); } catch (_) {}
       try { if (Haptics && Haptics.encounterResolve) Haptics.encounterResolve(); } catch (_) {}
       try { if (Sound.heartbeatSetBpm) Sound.heartbeatSetBpm(108); } catch (_) {}
@@ -21272,6 +21316,7 @@
     function finish(result) {
       if (finishing) return;
       finishing = true;
+      clearAutoPick();
       clearReleaseWatchdog();
       try { clearTurnWatchdog(); } catch (_) {}
       state.awaitingResolution = false;
@@ -21310,6 +21355,7 @@
       resolveShown = false;
       pendingFinish = null;
       releasePending = false;
+      clearAutoPick();
       try { if (Sound && Sound.heartbeatStop) Sound.heartbeatStop(); } catch (_) {}
       try {
         if (SceneAudio && typeof SceneAudio.endEncounter === "function") {
@@ -22305,6 +22351,64 @@
     pick.click(); // reuses the choice flow (select sound, pick flash, makeChoice)
   }
 
+  // ── DIRECTOR ───────────────────────────────────────────────────────────
+  // Nobody is holding the controller in Watch, and a coin toss takes the
+  // dull option as often as the good one — which is how a run ends up
+  // spending its evening walking up to things and looking at them. Ask the
+  // server which choice makes the best next minute; fall back to the coin
+  // toss the moment it is slow or unavailable, because an unattended run
+  // must never stall on a decision nobody is waiting for.
+  const Director = {
+    TIMEOUT_MS: 7000,
+    COOLDOWN_MS: 60000,
+    _quietUntil: 0,
+
+    async choose(texts) {
+      if (!texts.length) return -1;
+      if (Date.now() < this._quietUntil) return -1;
+      try {
+        const data = await withTimeout(
+          postJSON("/api/director/pick", { choices: texts }),
+          this.TIMEOUT_MS,
+          "director",
+        );
+        const idx = Number(data && data.index);
+        if (!Number.isInteger(idx) || idx < 0 || idx >= texts.length) return -1;
+        console.log(`[DIRECTOR] ${texts[idx]}${data.why ? " — " + data.why : ""}`
+                    + ` (${data.source || "?"})`);
+        return idx;
+      } catch (err) {
+        // One bad call should not make every later turn sit through the
+        // timeout as well.
+        this._quietUntil = Date.now() + this.COOLDOWN_MS;
+        console.warn("[DIRECTOR] falling back to random:", err && err.message);
+        return -1;
+      }
+    },
+  };
+
+  // Auto-play's version of moveForward: same commit, chosen on purpose.
+  async function advanceOnPurpose() {
+    if (state.processing || state.gameOver || state.freeWillOpen) return;
+    const btns = Array.from(el.choices.children);
+    if (!btns.length) return;
+    const texts = btns.map((b) => {
+      if (b.dataset && b.dataset.choiceText) return b.dataset.choiceText;
+      const span = b.querySelector("span:last-child");
+      return ((span || b).textContent || "").trim();
+    });
+    const promptAtAsk = state.currentPromptId;
+    const idx = await Director.choose(texts);
+    // The slate can be replaced while the director is thinking (a revision
+    // lands, or the player takes over). Committing a stale index would fire
+    // an action against choices nobody is looking at.
+    if (state.currentPromptId !== promptAtAsk || state.processing
+        || state.gameOver || state.freeWillOpen) return;
+    const live = Array.from(el.choices.children);
+    const pick = live[idx] || live[Math.floor(Math.random() * live.length)];
+    if (pick) pick.click();
+  }
+
   // ------------------------------------------------------------------
   // Auto-play — the world advances on its own via the forward hub
   // ------------------------------------------------------------------
@@ -22333,7 +22437,7 @@
         return;
       }
       state.lastAdvancedPromptId = state.currentPromptId;
-      moveForward();
+      advanceOnPurpose();
     }, delay == null ? AUTOPLAY_FALLBACK_MS : delay);
   }
 

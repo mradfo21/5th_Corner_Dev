@@ -930,6 +930,27 @@ app.add_url_rule('/api/encounter/resolve', 'standalone_api_encounter_resolve',
                  _session_scoped(_gated_encounter_resolve), methods=['POST'])
 app.add_url_rule('/api/encounter/roll', 'standalone_api_encounter_roll',
                  _session_scoped(engine.api_encounter_roll), methods=['POST'])
+
+
+@app.route('/api/director/pick', methods=['POST'])
+@_session_scoped
+def api_director_pick():
+    """Which option on screen makes the best next minute of television?
+
+    Watch has nobody at the controls and used to advance on a coin toss.
+    Always 200s with a usable index — a slow or unhappy model must never
+    be able to stall an unattended run, so every failure is a pick.
+    """
+    body = request.get_json(silent=True) or {}
+    choices = body.get('choices') or []
+    session_id = str(body.get('session_id') or 'default')
+    try:
+        import director
+        return jsonify(director.pick(choices, session_id,
+                                     scene=str(body.get('scene') or '')))
+    except Exception as e:
+        engine.log_error(f"[DIRECTOR] endpoint failed: {e}")
+        return jsonify({"index": -1, "why": "", "source": "error"})
 app.add_url_rule('/api/encounter/travel', 'standalone_api_encounter_travel',
                  _session_scoped(engine.api_encounter_travel), methods=['POST'])
 # Refcount + status endpoints for the dynamic per-character voices designed
