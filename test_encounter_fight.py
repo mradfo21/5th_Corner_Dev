@@ -342,6 +342,185 @@ class TestThePlayerSurvivesTheStandoffPlate(unittest.TestCase):
         self.assertNotIn("CARRY THE PLAYER OVER", self._plate(True, img2img=False))
 
 
+class TestTheEnemyCannotWearThePlayersClothes(unittest.TestCase):
+    """By the third frame the enemy was wearing the player's vest and cap.
+
+    Two things let that happen. The clone guard only knew the player from
+    the character sheet, so an outfit the image model invented — a green
+    vest on a protagonist written as "olive field jacket" — belonged to
+    nobody and was free to migrate. And the cast lock ended with a
+    hardcoded "must not wear that vest, cap, or PRESS gear", left over from
+    a different protagonist, which introduced a vest and a cap to a world
+    that had neither.
+    """
+
+    # One person is in an exploration frame, and it is the player.
+    FRAME = ("A man in a green quilted vest and a dark baseball cap stands "
+             "in a dirt yard, holding a camcorder, chain-link fence and a "
+             "rusted pickup truck behind him.")
+
+    def setUp(self):
+        encounter._LOOK_READ_CACHE.clear()
+        self._seen = mock.patch.object(
+            encounter, "observed_player_look", return_value=self.FRAME)
+        self._seen.start()
+        self.addCleanup(self._seen.stop)
+        self.addCleanup(encounter._LOOK_READ_CACHE.clear)
+
+    def test_an_outfit_the_sheet_never_mentioned_is_still_the_players(self):
+        self.assertTrue(encounter.look_clones_player(
+            "a man in a green quilted vest and a dark baseball cap"))
+
+    def test_taking_only_part_of_it_still_counts(self):
+        self.assertTrue(encounter.look_clones_player("a man in a baseball cap"))
+
+    def test_a_stranger_in_their_own_clothes_is_left_alone(self):
+        for look in ("a man in a grease-stained grey coverall",
+                     "a woman in a torn red windbreaker"):
+            with self.subTest(look=look):
+                self.assertFalse(encounter.look_clones_player(look))
+                self.assertEqual(look, encounter.distinct_enemy_look(look))
+
+    def test_the_scenery_around_the_player_is_not_their_wardrobe(self):
+        # Learning from the whole frame description would make the yard part
+        # of the outfit, and then anyone standing in it reads as the player.
+        self.assertFalse(encounter.look_clones_player(
+            "a man beside a chain-link fence near a rusted truck"))
+
+    def test_a_stolen_look_never_reaches_the_prompt(self):
+        brief = _brief()
+        encounter.adopt_plate_look(
+            brief, "A man in a green quilted vest and a dark baseball cap "
+                   "swings at another man in a green quilted vest.")
+        locked = brief["character"].get("locked_look") or ""
+        self.assertFalse(encounter.look_clones_player(locked), locked)
+
+    def test_the_cast_lock_bans_the_outfit_that_exists(self):
+        lock = encounter.player_cast_lock()
+        self.assertIn("green quilted vest", lock)
+        self.assertNotIn("PRESS", lock)
+
+    def test_the_wardrobe_phrase_stops_at_the_clothes(self):
+        # An unpunctuated description runs straight past the outfit.
+        got = encounter.observed_player_wardrobe()
+        self.assertNotIn("yard", got)
+        self.assertIn("vest", got)
+
+
+class TestThePlateLocksOntoTheStrangerNotThePlayer(unittest.TestCase):
+    """The decisive step in the cast-rotation bug.
+
+    A plate is a two-shot and the prompt introduces the player first, so
+    "take the first clause that mentions clothes" picked the protagonist
+    nearly every time and wrote their outfit into the enemy's locked look.
+    From then on every frame drew the enemy in the player's clothes. The
+    brief invented the stranger before any pixels existed, so it is the
+    evidence for which described person is not the player.
+    """
+
+    def _locked(self, plate, invented):
+        return encounter.plate_stranger_look(plate, fallback=invented).lower()
+
+    def test_the_player_described_first_does_not_become_the_enemy(self):
+        got = self._locked(
+            "A man in a green quilted vest and a dark baseball cap faces an "
+            "older man in a plaid shirt holding a shotgun.",
+            "an older man wearing a baseball cap and plaid shirt")
+        self.assertIn("plaid", got)
+        self.assertNotIn("quilted", got)
+
+    def test_two_people_in_one_comma_free_sentence_are_separated(self):
+        # Punctuation alone left both people in a single clause.
+        got = self._locked(
+            "A man in a green vest faces an older man in a plaid shirt.",
+            "an older man in a plaid shirt")
+        self.assertIn("plaid", got)
+        self.assertNotIn("green vest", got)
+
+    def test_the_player_described_second_is_also_avoided(self):
+        # The fix must weigh who the clause resembles, not flip the order.
+        got = self._locked(
+            "A man in a heavy rubber apron blocks the path while a man in an "
+            "olive field jacket raises a camcorder.",
+            "a worker in a heavy rubber apron")
+        self.assertIn("apron", got)
+        self.assertNotIn("olive", got)
+
+    def test_the_connector_is_not_part_of_the_costume(self):
+        got = self._locked(
+            "A man in a green vest, and another man in a grease-stained "
+            "coverall steps toward him.",
+            "a mechanic in a grease-stained coverall")
+        self.assertIn("coverall", got)
+        for junk in ("another", "and ", "steps"):
+            self.assertNotIn(junk, got)
+
+
+class TestTheObservedLookComesFromTheImageNotTheSheet(unittest.TestCase):
+    """A history entry carries two description-shaped fields and only one of
+    them is evidence. ``vision_analysis`` is what vision saw in the rendered
+    frame; ``vision_dispatch`` beside it is the character sheet restated as
+    prose, so it always agrees with the sheet and can never reveal that the
+    drawing has drifted. Reading the wrong one makes the whole guard inert.
+    """
+
+    DRAWN = ("A man in a green quilted vest and a dark baseball cap stands "
+             "in a dirt yard holding a camcorder.")
+    SHEET = ("Jason Fleece is in frame — investigative photojournalist, "
+             "olive field jacket, dark work pants, boots.")
+
+    def _look(self, hist):
+        import engine
+        encounter._LOOK_READ_CACHE.clear()
+        with mock.patch.object(engine, "_load_history", return_value=hist):
+            encounter.set_look_session("default")
+            return encounter.observed_player_look()
+
+    def tearDown(self):
+        encounter._LOOK_READ_CACHE.clear()
+
+    def test_the_rendered_frame_wins_over_the_restated_sheet(self):
+        got = self._look([{"choice": "walk", "vision_analysis": self.DRAWN,
+                           "vision_dispatch": self.SHEET}])
+        self.assertEqual(self.DRAWN, got)
+
+    def test_the_restated_sheet_is_not_treated_as_evidence(self):
+        got = self._look([{"choice": "walk", "vision_dispatch": self.SHEET}])
+        self.assertEqual("", got)
+
+    def test_two_person_frames_are_skipped(self):
+        # A resolve frame cannot say which of the two people is the player.
+        got = self._look([
+            {"choice": "walk", "vision_analysis": self.DRAWN},
+            {"choice": "__encounter_resolve__", "encounter": True,
+             "vision_analysis": "Two men in green vests grapple in the dirt."},
+        ])
+        self.assertEqual(self.DRAWN, got)
+
+
+class TestNoFrameMeansNoGuessing(unittest.TestCase):
+    """With nothing rendered yet there is no observed look, and the guard
+    must fall back to the sheet rather than start refusing everything."""
+
+    def setUp(self):
+        encounter._LOOK_READ_CACHE.clear()
+        p = mock.patch.object(encounter, "observed_player_look", return_value="")
+        p.start()
+        self.addCleanup(p.stop)
+        self.addCleanup(encounter._LOOK_READ_CACHE.clear)
+
+    def test_ordinary_strangers_still_pass(self):
+        for look in ("a man in a grease-stained grey coverall",
+                     "a woman in a torn red windbreaker",
+                     "a man in a green quilted vest"):
+            with self.subTest(look=look):
+                self.assertFalse(encounter.look_clones_player(look))
+
+    def test_the_sheet_is_still_enforced(self):
+        self.assertTrue(encounter.look_clones_player(
+            "a man in an olive field jacket carrying a camcorder"))
+
+
 class TestTheEncounterIsTheNextShotNotANewProduction(unittest.TestCase):
     """Walking into a fight used to cut to a different-looking film.
 

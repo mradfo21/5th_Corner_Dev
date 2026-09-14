@@ -20,7 +20,7 @@ import random
 import re
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 ENCOUNTER_STANCES = ("hostile", "desperate", "opportunistic")
 ENCOUNTER_KINDS = ("person", "creature", "character")
@@ -376,6 +376,147 @@ def player_wardrobe_text() -> str:
         return ""
 
 
+# Garments worth protecting. Scenery words are deliberately absent: learning
+# the player's look from a whole frame description would drag the yard in
+# with the clothes, and then every later description of the same place would
+# look like it was wearing the player's outfit.
+_GARMENT_NOUNS = (
+    "windbreaker", "balaclava", "waistcoat", "coveralls", "respirator",
+    "raincoat", "bandana", "overalls", "fatigues", "backpack", "coverall",
+    "hoodie", "flannel", "sweater", "uniform", "goggles", "harness",
+    "holster", "beanie", "helmet", "jacket", "poncho", "gaiter", "gloves",
+    "jumper", "trousers", "anorak", "armour", "apron", "boots", "shirt",
+    "scarf", "smock", "parka", "plaid", "denim", "jeans", "pants", "armor",
+    "tunic", "coat", "hood", "mask", "vest", "belt", "cap", "hat", "tee",
+)
+
+_GARMENT_RE = re.compile(
+    r"\b((?:[a-z][a-z'-]+\s+){0,3})(" + "|".join(_GARMENT_NOUNS) + r")\b",
+    re.I,
+)
+
+# Words that sit in front of a garment without identifying it.
+_GARMENT_FILLER = frozenset({
+    "and", "with", "the", "his", "her", "their", "its", "one", "two", "over",
+    "under", "wearing", "wears", "worn", "dressed", "man", "woman", "person",
+    "figure", "guy", "other", "second", "another", "same", "who", "that",
+    "this", "they", "them", "both", "also", "still", "now", "left", "right",
+    "foreground", "background", "front", "behind", "near", "stands",
+    "standing", "holding", "carrying", "wearing", "some", "sort", "kind",
+})
+
+
+def wardrobe_tokens_from_text(text: str) -> set:
+    """Garment words, plus the adjectives actually attached to them.
+
+    Only what hangs off a garment noun is kept, so "a man in a green vest
+    beside a chain-link fence" yields {green, vest} and not the fence.
+    """
+    out = set()
+    for lead, garment in _GARMENT_RE.findall(str(text or "").lower()):
+        out.add(garment)
+        for w in re.split(r"[^a-z'-]+", lead):
+            w = w.strip("'-")
+            if len(w) > 2 and w not in _GARMENT_FILLER and w not in _WARDROBE_STOP:
+                out.add(w)
+    return out
+
+
+# The session whose frames describe the player right now. Every clone guard
+# in this module is called from code that has no session id to hand, so the
+# encounter entry points set this once and the guards read it.
+_LOOK_SESSION = "default"
+# Every clone guard consults the observed look, and a single plate prompt
+# runs them dozens of times, so the history read behind it is cached for a
+# few seconds rather than hit once per call.
+_LOOK_READ_CACHE: Dict[str, tuple] = {}
+_LOOK_TOKEN_CACHE: Dict[str, set] = {}
+_LOOK_TTL = 5.0
+
+
+def set_look_session(session_id: str) -> None:
+    """Point the wardrobe guards at the session currently being played."""
+    global _LOOK_SESSION
+    if session_id:
+        _LOOK_SESSION = str(session_id)
+
+
+def _read_player_look(session_id: str) -> str:
+    """Newest frame description that can only be describing the player."""
+    try:
+        import engine
+        hist = engine._load_history(session_id) or []
+    except Exception:
+        return ""
+    for entry in reversed(hist):
+        if not isinstance(entry, dict):
+            continue
+        # Encounter frames hold two people and cannot say which is which.
+        if entry.get("encounter") or entry.get("choice") == "__encounter_resolve__":
+            continue
+        # `vision_analysis` is the only field here that is an observation of
+        # the rendered frame. `vision_dispatch` next to it is the character
+        # sheet restated as prose, so it always agrees with the sheet and can
+        # never show that the drawing has drifted away from it.
+        desc = str(entry.get("vision_analysis") or entry.get("description")
+                   or entry.get("caption") or "").strip()
+        if desc:
+            return desc
+    return ""
+
+
+def observed_player_look(session_id: str = "") -> str:
+    """How the player is being DRAWN, from the last frame that is only them.
+
+    An exploration frame is the one place the protagonist appears alone, so
+    a description of it is unambiguously their appearance.
+    """
+    sid = session_id or _LOOK_SESSION
+    hit = _LOOK_READ_CACHE.get(sid)
+    now = time.time()
+    if hit and hit[0] > now:
+        return hit[1]
+    desc = _read_player_look(sid)
+    _LOOK_READ_CACHE[sid] = (now + _LOOK_TTL, desc)
+    return desc
+
+
+def observed_player_tokens(session_id: str = "") -> set:
+    """Wardrobe words the player is actually wearing on screen."""
+    desc = observed_player_look(session_id or _LOOK_SESSION)
+    if not desc:
+        return set()
+    if desc not in _LOOK_TOKEN_CACHE:
+        _LOOK_TOKEN_CACHE[desc] = wardrobe_tokens_from_text(desc)
+    return _LOOK_TOKEN_CACHE[desc]
+
+
+def observed_player_wardrobe(session_id: str = "") -> str:
+    """A short phrase naming what the player has on in the current frame.
+
+    Assembled from the garment matches rather than sliced out of the
+    sentence, because an unpunctuated description runs straight past the
+    clothes ("a green vest and a dark cap stands in a dirt yard").
+    """
+    desc = observed_player_look(session_id)
+    if not desc:
+        return ""
+    phrases = []
+    for lead, garment in _GARMENT_RE.findall(desc.lower()):
+        mods = [w for w in re.split(r"[^a-z'-]+", lead)
+                if len(w) > 2 and w not in _GARMENT_FILLER
+                and w not in _WARDROBE_STOP]
+        phrase = " ".join(mods[-2:] + [garment])
+        if phrase not in phrases:
+            phrases.append(phrase)
+    if not phrases:
+        return ""
+    phrases = phrases[:3]
+    joined = (phrases[0] if len(phrases) == 1
+              else ", ".join(phrases[:-1]) + " and " + phrases[-1])
+    return _clip(joined, "", 90)
+
+
 def player_wardrobe_tokens() -> set:
     """Clothes/face words that belong ONLY to the authored player."""
     blob = ""
@@ -394,7 +535,12 @@ def player_wardrobe_tokens() -> set:
     }
     if "vest" in tokens or "press" in tokens:
         tokens.update({"vest", "press", "highvis", "visibility"})
-    return tokens
+    # The sheet is what the player was SPECIFIED as; the frames are what they
+    # get DRAWN as, and the two drift. A protagonist written as "olive field
+    # jacket" who is rendered in a green vest and cap owns a vest and a cap as
+    # far as the next frame is concerned, and nothing here knew that — so that
+    # outfit was unguarded and the enemy was free to inherit it.
+    return tokens | observed_player_tokens()
 
 
 # Words that describe almost any person in this setting. An overlap on these
@@ -536,6 +682,17 @@ def separate_cast(brief: dict) -> dict:
     return ground_danger_to_visible(brief)
 
 
+def _looks_like_sheet(seen: str, wardrobe: str) -> bool:
+    """True when the observed outfit is just the sheet restated.
+
+    No point spending prompt on "in the reference they are wearing an olive
+    field jacket" when the line above already said olive field jacket.
+    """
+    a = wardrobe_tokens_from_text(seen)
+    b = wardrobe_tokens_from_text(wardrobe)
+    return bool(a) and a.issubset(b)
+
+
 def player_cast_lock() -> str:
     """Hard identity sentence so img2img cannot recast the protagonist."""
     try:
@@ -547,10 +704,25 @@ def player_cast_lock() -> str:
         wardrobe = player_wardrobe_text()
         exclusive = ""
         if wardrobe:
+            # This used to end "must not wear that vest, cap, or PRESS gear",
+            # hardcoded from one long-gone protagonist. For a character sheet
+            # that says "olive field jacket" it introduces a vest and a cap
+            # the world does not have — and naming a garment, even to ban it,
+            # is how it ends up in the picture. Ban the outfit that actually
+            # exists instead.
             exclusive = (
-                f" ONLY {name} wears that wardrobe ({wardrobe}). "
-                "The other person must not wear that vest, cap, or PRESS gear. "
-                "Do not draw a second high-vis or PRESS vest."
+                f" ONLY {name} wears that outfit ({wardrobe}). "
+                f"Nobody else in the frame wears any part of it — give the "
+                f"other person different garments in different colours."
+            )
+        # What the sheet says and what the last frame drew are not the same
+        # thing, and it is the drawn version the next frame will copy. Name
+        # it, or the model hands the player's clothes to the stranger.
+        seen = observed_player_wardrobe()
+        if seen and not _looks_like_sheet(seen, wardrobe):
+            exclusive += (
+                f" In the reference photograph {name} is wearing {seen}; "
+                f"that stays on {name} and goes on nobody else."
             )
         return (
             f"CAST LOCK — HARD. The player is {who} "
@@ -719,6 +891,18 @@ _WARDROBE_STOP = frozenset((
 ))
 _DEFAULT_STRANGER_LOOK = "a weathered stranger in a torn work coat and knit cap"
 
+# Where one person's description ends and the next begins. Punctuation alone
+# is not enough: "a man in a green vest faces an older man in a plaid shirt"
+# is one comma-free sentence holding two people, and treating it as a single
+# clause is how the player and the stranger got merged into one look.
+_PERSON_SPLIT_RE = re.compile(
+    r"(?<=[,.;])\s+|"
+    r"\s+(?=\b(?:beside|facing|faces|confronting|confronts|opposite|while|"
+    r"whilst|across from|in front of|behind)\b)|"
+    r"\s+(?=\band\s+(?:a|an|another|the\s+other)\b)",
+    re.I,
+)
+
 
 def _strip_player_clauses(seen: str) -> str:
     """Drop the clauses of a plate description that describe the player.
@@ -737,8 +921,7 @@ def _strip_player_clauses(seen: str) -> str:
     if not owned:
         return raw
     keep = []
-    for clause in re.split(r"(?<=[,.;])\s+|\s+(?=\bbeside\b|\bfacing\b|\bwhile\b|\band beside\b)",
-                           raw, flags=re.I):
+    for clause in _PERSON_SPLIT_RE.split(raw):
         if look_clones_player(clause):
             continue
         keep.append(clause)
@@ -760,16 +943,25 @@ def plate_stranger_look(plate_seen: str, fallback: str = "") -> str:
     player actually saw, so the plate wins.
     """
     stripped = _strip_player_clauses(plate_seen)
-    best = ""
-    for clause in re.split(r"(?<=[,.;])\s+", stripped):
+    # The brief invented this stranger before any pixels existed, so it is
+    # the best evidence for which of the described people is NOT the player.
+    wanted = wardrobe_tokens_from_text(fallback)
+    owned = player_wardrobe_tokens()
+    candidates = []
+    for clause in _PERSON_SPLIT_RE.split(stripped):
+        # Splitting before "faces" / "and another" leaves the connector at
+        # the head of the clause, so strip a whole run of them.
         c = re.sub(
-            r"^(?:and|but|while|with|facing|confronting|opposite|before|"
-            r"across from|in front of)\s+",
+            r"^(?:(?:and|but|while|whilst|with|facing|faces|confronting|"
+            r"confronts|opposite|before|behind|beside|another|the other|"
+            r"across from|in front of)\s+)+",
             "", clause.strip(), flags=re.I,
         )
         c = re.sub(
             r"\s+\b(?:stands?|standing|stood|occupy|occupies|occupying|is|are|"
-            r"was|were|sits?|sitting)\b.*$",
+            r"was|were|sits?|sitting|steps?|stepping|moves?|moving|walks?|"
+            r"walking|advances?|advancing|lunges?|lunging|blocks?|blocking|"
+            r"raises?|raising|swings?|swinging|reaches?|reaching)\b.*$",
             "", c, flags=re.I,
         ).strip(" ,.;:")
         # "The man on the left" stops being true the moment the resolve cuts
@@ -783,12 +975,21 @@ def plate_stranger_look(plate_seen: str, fallback: str = "") -> str:
                    "", c, flags=re.I).strip(" ,.;:")
         if not c or look_clones_player(c) or not _first_person_noun(c):
             continue
+        # Taking the first clause that mentions clothes is what handed the
+        # player's outfit to the enemy: the plate is a two-shot and the
+        # prompt introduces the player first, so the protagonist's clause is
+        # almost always the one that comes first. Pick the clause that looks
+        # like the stranger the brief asked for, and lean away from anything
+        # wearing what the player wears.
+        worn = wardrobe_tokens_from_text(c)
+        score = 2 * len(worn & wanted) - 3 * len(worn & owned)
         if re.search(r"\b(?:wearing|dressed|in|with)\b", c, re.I):
-            best = c
-            break
-        best = best or c
-    if not best:
+            score += 1
+        # Ties keep the earlier clause, which is the old behaviour.
+        candidates.append((score, -len(candidates), c))
+    if not candidates:
         return distinct_enemy_look(fallback)
+    best = max(candidates)[2]
     return distinct_enemy_look(_clip(best, "", 160))
 
 
@@ -2137,6 +2338,7 @@ def api_begin():
         return jsonify({"error": "slow_down"}), 429
     data = request.get_json(silent=True) or {}
     session_id = data.get("session_id") or engine._resolve_request_session_id()
+    set_look_session(session_id)
     force = bool(data.get("force") or data.get("demo"))
     reference_b64 = data.get("frame") or data.get("reference_image") or ""
 
@@ -2505,6 +2707,7 @@ def api_resolve():
         return jsonify({"error": "slow_down"}), 429
     data = request.get_json(silent=True) or {}
     session_id = data.get("session_id") or engine._resolve_request_session_id()
+    set_look_session(session_id)
     posted_text = str(data.get("choice") or data.get("text") or "").strip()
     posted_lane = str(data.get("lane") or "").strip().lower()
 
