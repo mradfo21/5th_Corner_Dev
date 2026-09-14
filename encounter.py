@@ -27,12 +27,37 @@ ENCOUNTER_KINDS = ("person", "creature", "character")
 ENCOUNTER_LANES = ("confront", "evade", "use")
 ENCOUNTER_OUTCOMES = ("survive", "escape", "wounded", "die")
 ENCOUNTER_CONDITIONS = ("ok", "wounded")
+# Where the other body is in the exchange. Without this the fight had no
+# memory: every round was the same independent roll against the same standoff,
+# so committing to a verb could not change the situation, only repeat it or
+# end the run. "down" is the win the player previously had no way to reach —
+# confront could only loop (50% survive, nothing changes) or kill you.
+ENCOUNTER_ENEMY_STATES = ("ready", "staggered", "down")
 
 ENCOUNTER_PLATE_STYLE_ANCHOR = os.getenv(
     "ENCOUNTER_PLATE_STYLE_ANCHOR",
-    "stylish cinematic confrontation still, 35mm film, locked-off two-shot or "
+    "stylish cinematic confrontation still, 35mm film, tense medium two-shot or "
     "over-shoulder, analog-horror 1993 muted palette, subtle grain, the same "
     "place restaged from a new lens — not a handheld camcorder, not a portrait",
+)
+# The beat where a verb LANDS is not the standoff, and it was being rendered
+# with the standoff's anchor: "locked-off two-shot" is dialogue grammar, so a
+# punch came back as two people standing apart in a wide. Fight coverage is
+# close, low, and off-axis.
+ENCOUNTER_ACTION_STYLE_ANCHOR = os.getenv(
+    "ENCOUNTER_ACTION_STYLE_ANCHOR",
+    "stylish cinematic fight still, 35mm film, tight and kinetic — low or "
+    "canted angle, the action close to the lens, motion blur on the moving "
+    "limb, analog-horror 1993 muted palette, subtle grain — NOT a locked-off "
+    "wide, NOT a portrait, NOT two people standing apart",
+)
+# Shot size escalates with the exchange the way a fight scene cuts in.
+ENCOUNTER_SHOT_LADDER = (
+    "Medium shot, waist up, the gap between them already closed.",
+    "Tighter now — over-the-shoulder, shoulders and arms filling the frame, "
+    "the camera inside arm's reach.",
+    "Tight and violent — hands, jaw, and eyes near the lens, the frame barely "
+    "containing the struggle.",
 )
 
 # Travel clock: seconds of TRANSLATION (walk / strafe) until the next
@@ -199,11 +224,22 @@ def _clip(text: Any, fallback: str, n: int) -> str:
     if not raw:
         return fallback
     if len(raw) <= n:
-        return raw
-    cut = raw[:n]
-    if raw[n] != " " and " " in cut:
-        cut = cut[:cut.rfind(" ")]
-    return cut.rstrip(" ,;:-") or raw[:n]
+        cut = raw
+    else:
+        cut = raw[:n]
+        if raw[n] != " " and " " in cut:
+            cut = cut[:cut.rfind(" ")]
+    cut = cut.rstrip(" ,;:-")
+    # Ending on a conjunction or preposition still reads as a broken string:
+    # "A man in green combat jacket and" shipped to a choice button that way.
+    # Upstream text arrives pre-truncated too, so this is not conditional on
+    # having done the cutting here.
+    while True:
+        m = re.search(r"\s+(and|or|with|in|on|a|an|the|of|at|to|from|for)$", cut, re.I)
+        if not m:
+            break
+        cut = cut[:m.start()].rstrip(" ,;:-")
+    return cut or raw[:n]
 
 
 def _is_clothing_clause_label(text: str) -> bool:
@@ -286,27 +322,66 @@ def player_wardrobe_tokens() -> set:
     return tokens
 
 
+# Words that describe almost any person in this setting. An overlap on these
+# alone does not mean a description is of the player.
+_GENERIC_LOOK_WORDS = frozenset({
+    "jacket", "coat", "shirt", "pants", "trousers", "boots", "shoes", "gloves",
+    "hair", "face", "eyes", "hood", "hooded", "dark", "light", "heavy", "worn",
+    "torn", "adult", "young", "older", "tall", "short", "thin", "build",
+    "figure", "person", "human", "male", "female", "wearing", "carries",
+    "carrying", "holding", "stands", "standing",
+})
+
+
+def _player_token_hits(text: str) -> set:
+    """Player-specific words a description reuses, minus the generic ones.
+
+    This used to be a literal set — {"vest", "press", "gaiter", "respirator",
+    "camcorder", "alvarez"} — which is one particular protagonist's costume.
+    Every other protagonist got no protection at all, so a plate description
+    of the player ("the man on the left wears an olive field jacket", which is
+    Jason Fleece's sheet verbatim) was read as the ENEMY and became the cast
+    lock for the rest of the fight.
+    """
+    raw = str(text or "").strip().lower()
+    if not raw:
+        return set()
+    # "not a vest" / "not PRESS gear" is a ban, not a costume.
+    raw = re.sub(r"\bnot (?:a |an |the )?[a-z0-9-]+(?: vest| gear| cap)?", " ", raw)
+    owned = player_wardrobe_tokens()
+    if not owned:
+        return set()
+    words = {w for w in re.split(r"[^a-z0-9]+", raw) if w}
+    return (words & owned) - _GENERIC_LOOK_WORDS
+
+
 def look_clones_player(text: str) -> bool:
     """True when a description is wearing the player's outfit."""
     raw = str(text or "").strip().lower()
     if not raw:
         return False
-    # "not a vest" / "not PRESS gear" is a ban, not a costume.
-    raw = re.sub(r"\bnot (?:a |an |the )?[a-z0-9-]+(?: vest| gear| cap)?", " ", raw)
     owned = player_wardrobe_tokens()
     if ("high-vis" in raw or "high vis" in raw or "high-visibility" in raw
             or "high visibility" in raw or "highvis" in raw):
         if "vest" in owned or "press" in owned or not owned:
             return True
     words = {w for w in re.split(r"[^a-z0-9]+", raw) if w}
-    clothing = words & owned & {
-        "vest", "press", "gaiter", "respirator", "camcorder", "alvarez",
-    }
-    if clothing:
+    if words & owned & {"press", "gaiter", "respirator", "camcorder"}:
         return True
     if "vest" in words and ("press" in owned or "vest" in owned):
         return True
-    return False
+    # The protagonist's own name, or two of their distinctive features.
+    try:
+        import game_identity
+        name_words = {
+            w for w in re.split(r"[^a-z0-9]+", (game_identity.display_name() or "").lower())
+            if len(w) > 3
+        }
+    except Exception:
+        name_words = set()
+    if words & name_words:
+        return True
+    return len(_player_token_hits(raw)) >= 2
 
 
 def distinct_enemy_look(look: str) -> str:
@@ -520,6 +595,14 @@ def normalize_encounter_brief(raw: Any, place_hold: str = "") -> dict:
     }
     if locked_look:
         out["character"]["locked_look"] = locked_look
+    # Preserve where the exchange got to; normalize rebuilds from scratch and
+    # would otherwise reset every round to a fresh standoff.
+    enemy_state = str(data.get("enemy_state") or "ready").strip().lower()
+    out["enemy_state"] = enemy_state if enemy_state in ENCOUNTER_ENEMY_STATES else "ready"
+    try:
+        out["round_no"] = max(1, int(data.get("round_no") or 1))
+    except Exception:
+        out["round_no"] = 1
     seen = _clip(data.get("plate_seen") or "", "", 220)
     if seen:
         out["plate_seen"] = seen
@@ -573,14 +656,84 @@ def _strip_player_clauses(seen: str) -> str:
     keep = []
     for clause in re.split(r"(?<=[,.;])\s+|\s+(?=\bbeside\b|\bfacing\b|\bwhile\b|\band beside\b)",
                            raw, flags=re.I):
-        words = {w for w in re.split(r"[^a-z0-9]+", clause.lower()) if w}
-        if words & owned & {"vest", "press", "gaiter", "respirator", "camcorder", "alvarez"}:
+        if look_clones_player(clause):
             continue
         keep.append(clause)
     # Everything described was the player, so this plate does not show the
     # stranger. Returning the original here is what let the protagonist get
     # promoted to hostile; the caller should fall back to the brief's own look.
     return " ".join(k for k in keep if k).strip()
+
+
+def plate_stranger_look(plate_seen: str, fallback: str = "") -> str:
+    """Describe the other person AS THE PHOTOGRAPH DREW THEM.
+
+    The brief invents a look before any image exists, then the image model
+    draws whatever it draws. Nothing reconciled the two, so the cast lock
+    pinned a person who was never rendered: the brief said "oversized yellow
+    raincoat", the plate drew "a man in a green combat jacket", the nameplate
+    took the plate and the prose took the brief. Every later frame then got a
+    prompt naming both, and drew a third stranger. The plate is what the
+    player actually saw, so the plate wins.
+    """
+    stripped = _strip_player_clauses(plate_seen)
+    best = ""
+    for clause in re.split(r"(?<=[,.;])\s+", stripped):
+        c = re.sub(
+            r"^(?:and|but|while|with|facing|confronting|opposite|before|"
+            r"across from|in front of)\s+",
+            "", clause.strip(), flags=re.I,
+        )
+        c = re.sub(
+            r"\s+\b(?:stands?|standing|stood|occupy|occupies|occupying|is|are|"
+            r"was|were|sits?|sitting)\b.*$",
+            "", c, flags=re.I,
+        ).strip(" ,.;:")
+        # "The man on the left" stops being true the moment the resolve cuts
+        # to a new camera, and it is not a description of anybody.
+        c = re.sub(
+            r"\s+(?:on|to|in|at)\s+the\s+(?:left|right|near|far|back)\b"
+            r"(?:\s+(?:side|of\s+(?:the\s+)?frame))?",
+            "", c, flags=re.I,
+        )
+        c = re.sub(r"\s+in\s+the\s+(?:foreground|background|middle|centre|center)",
+                   "", c, flags=re.I).strip(" ,.;:")
+        if not c or look_clones_player(c) or not _first_person_noun(c):
+            continue
+        if re.search(r"\b(?:wearing|dressed|in|with)\b", c, re.I):
+            best = c
+            break
+        best = best or c
+    if not best:
+        return distinct_enemy_look(fallback)
+    return distinct_enemy_look(_clip(best, "", 160))
+
+
+def adopt_plate_look(brief: dict, plate_seen: str) -> dict:
+    """Repoint the brief's character at the rendered plate, then relabel."""
+    char = brief.setdefault("character", {})
+    look = plate_stranger_look(plate_seen, fallback=char.get("look") or "")
+    if not look or look == _DEFAULT_STRANGER_LOOK:
+        # The plate never showed a usable stranger. Keep the invented look
+        # rather than locking onto the default nobody.
+        if not char.get("locked_look") or look_clones_player(char.get("locked_look") or ""):
+            char["locked_look"] = distinct_enemy_look(char.get("look") or "")
+        return brief
+    char["look"] = look
+    char["locked_look"] = look
+    grounded = _grounded_label_from_look(look, plate_seen)
+    if grounded and not look_clones_player(grounded) and not _is_clothing_clause_label(grounded):
+        char["label"] = grounded
+    return brief
+
+
+def _camera_shows_player() -> bool:
+    """Whether the world's camera actually has the player's body in frame."""
+    try:
+        import game_identity
+        return bool(game_identity.shows_character())
+    except Exception:
+        return True
 
 
 def _grounded_label_from_look(look: str, plate_seen: str = "") -> str:
@@ -629,10 +782,10 @@ def align_brief_to_plate(brief: dict, vision: Optional[dict] = None) -> dict:
     char = brief.setdefault("character", {})
     if seen:
         brief["plate_seen"] = seen
-        # Lock the stranger to THEIR look, never the whole two-shot
-        # description (that copies the player's vest onto them).
-        if not char.get("locked_look") or look_clones_player(char.get("locked_look") or ""):
-            char["locked_look"] = distinct_enemy_look(char.get("look") or "")
+        # Lock the stranger to the person the plate DREW, never the whole
+        # two-shot description (that copies the player's vest onto them).
+        adopt_plate_look(brief, seen)
+        char = brief.setdefault("character", {})
     if not seen:
         return ground_danger_to_visible(brief)
     label = str(char.get("label") or "")
@@ -785,9 +938,18 @@ def _encounter_stinger_urls() -> dict:
         return {}
 
 
-def encounter_releases(outcome: str) -> bool:
-    """Only escape returns the player to walking. Die ends the run."""
-    return str(outcome or "").strip().lower() in ("escape", "die")
+def encounter_releases(outcome: str, record: Optional[dict] = None) -> bool:
+    """Escape returns the player to walking. Die ends the run.
+
+    Putting the other body down also ends it. Without that there was no way to
+    WIN a confrontation — confront could only loop you back into the same
+    standoff or kill you, so the only winning move was always to run.
+    """
+    if str(outcome or "").strip().lower() in ("escape", "die"):
+        return True
+    if isinstance(record, dict):
+        return str(record.get("enemy_state") or "").strip().lower() == "down"
+    return False
 
 
 def encounter_choice_overlay(brief: dict, continued: bool = False) -> str:
@@ -1001,24 +1163,36 @@ def match_encounter_choice(posted_text: str, posted_lane: str,
 def encounter_outcome_weights(lane: str, stance: str = "hostile",
                               kind: str = "person",
                               condition: str = "ok",
-                              fate: str = "NORMAL") -> dict:
-    """Integer weights for survive / escape / wounded / die."""
+                              fate: str = "NORMAL",
+                              enemy_state: str = "ready") -> dict:
+    """Integer weights for survive / escape / wounded / die.
+
+    `enemy_state` is what makes this a fight rather than a slot machine. A
+    confront against a ready body is an opening exchange — it mostly costs the
+    other person their balance. A confront against a body already staggered is
+    the finish. Rolling both the same way is why committing to a verb used to
+    change nothing 75% of the time and kill you the other 25%.
+    """
     lane_l = lane if lane in ENCOUNTER_LANES else "confront"
     stance_l = stance if stance in ENCOUNTER_STANCES else "hostile"
     kind_l = kind if kind in ENCOUNTER_KINDS else "person"
     wounded = str(condition or "ok").strip().lower() == "wounded"
     fate_l = str(fate or "NORMAL").strip().upper()
+    staggered = str(enemy_state or "ready").strip().lower() == "staggered"
 
     if lane_l == "confront":
         if kind_l == "creature" or stance_l == "hostile":
-            w = {"survive": 50, "escape": 5, "wounded": 20, "die": 25}
+            w = {"survive": 55, "escape": 5, "wounded": 32, "die": 8}
         elif stance_l == "desperate":
-            w = {"survive": 55, "escape": 10, "wounded": 30, "die": 5}
+            w = {"survive": 55, "escape": 10, "wounded": 32, "die": 3}
         else:
             w = {"survive": 70, "escape": 15, "wounded": 15, "die": 0}
+        if staggered:
+            # They are off their feet. Pressing the advantage should land.
+            w = {"survive": 78, "escape": 5, "wounded": 14, "die": 3}
         if wounded:
-            w["die"] = w.get("die", 0) + 25
-            w["survive"] = max(5, w["survive"] - 20)
+            w["die"] = w.get("die", 0) + 12
+            w["survive"] = max(5, w["survive"] - 15)
     elif lane_l == "evade":
         if kind_l == "creature":
             w = {"survive": 10, "escape": 55, "wounded": 25, "die": 10}
@@ -1056,11 +1230,42 @@ def encounter_outcome_weights(lane: str, stance: str = "hostile",
     return {k: max(0, int(v)) for k, v in w.items()}
 
 
+def advance_enemy_state(lane: str, outcome: str, enemy_state: str = "ready",
+                        rng: Any = None) -> str:
+    """How the other body changes as a result of this exchange.
+
+    This is the escalation the encounter never had. Pressing a confront moves
+    them ready -> staggered -> down, so two committed verbs finish a fight and
+    the player can win one, which was previously impossible: `encounter_releases`
+    only fired on escape or death.
+    """
+    state = str(enemy_state or "ready").strip().lower()
+    if state not in ENCOUNTER_ENEMY_STATES:
+        state = "ready"
+    if outcome in ("die", "escape") or state == "down":
+        return state
+    roll = rng.random() if rng is not None else random.random()
+    if lane == "confront":
+        if state == "staggered":
+            return "down" if roll < 0.62 else "staggered"
+        return "staggered" if roll < 0.55 else "ready"
+    if lane == "use":
+        # Turning their own weight or tool against them unbalances, rarely ends it.
+        if state == "staggered":
+            return "down" if roll < 0.35 else "staggered"
+        return "staggered" if roll < 0.40 else "ready"
+    # Evading buys distance; they recover their footing.
+    return "ready" if roll < 0.6 else state
+
+
 def roll_encounter_outcome(lane: str, stance: str = "hostile",
                            kind: str = "person", condition: str = "ok",
-                           fate: str = "NORMAL", rng: Any = None) -> dict:
+                           fate: str = "NORMAL", rng: Any = None,
+                           enemy_state: str = "ready",
+                           round_no: int = 1) -> dict:
     """Server-owned result. The consequence LLM writes this beat; it does not flip it."""
-    weights = encounter_outcome_weights(lane, stance, kind, condition, fate)
+    weights = encounter_outcome_weights(lane, stance, kind, condition, fate,
+                                        enemy_state=enemy_state)
     total = sum(weights.values()) or 1
     pick = rng.random() if rng is not None else random.random()
     cursor = 0.0
@@ -1071,6 +1276,7 @@ def roll_encounter_outcome(lane: str, stance: str = "hostile",
             outcome = name
             break
     prev = "wounded" if str(condition or "").strip().lower() == "wounded" else "ok"
+    next_enemy = advance_enemy_state(lane, outcome, enemy_state, rng=rng)
     if outcome == "die":
         next_cond = prev
         alive = False
@@ -1085,6 +1291,8 @@ def roll_encounter_outcome(lane: str, stance: str = "hostile",
         "alive": alive,
         "condition": next_cond,
         "lane": lane if lane in ENCOUNTER_LANES else "confront",
+        "enemy_state": next_enemy,
+        "round_no": max(1, int(round_no or 1)),
         "weights": weights,
     }
 
@@ -1226,22 +1434,38 @@ def build_encounter_plate_prompt(brief: dict, img2img: bool = True,
                 "This frame is INDOORS. Stay in this same room. Same walls, "
                 "same light. Do not go outside or into a different room."
             )
-    cast = player_cast_lock()
-    if cast:
-        bits.append(cast)
-    bits.append(
-        f"TWO DISTINCT PEOPLE IN A STANDOFF, not a completed attack. "
-        f"(1) The player character stays the same person as the character "
-        f"sheet — only THEY wear that outfit. "
-        f"(2) A newly introduced {char['kind']} named "
-        f"'{char['label']}' — {char['look']} — stands close, "
-        f"{char['stance']}, large and readable, facing the player. "
-        f"Different face, different clothes — not a second press vest, not a "
-        f"high-vis vest, not a copy of the player. Do not merge them. "
-        f"Do not swap their genders or faces. Do not clone the player. "
-        f"Do not show a choke or takedown already landed — weight ready, "
-        f"not a body already winning."
-    )
+    look = distinct_enemy_look(char.get("locked_look") or char.get("look") or "")
+    if _camera_shows_player():
+        cast = player_cast_lock()
+        if cast:
+            bits.append(cast)
+        bits.append(
+            f"TWO DISTINCT PEOPLE IN A STANDOFF, not a completed attack. "
+            f"(1) The player character stays the same person as the character "
+            f"sheet — only THEY wear that outfit. "
+            f"(2) A newly introduced {char['kind']} named "
+            f"'{char['label']}' — {look} — stands close, "
+            f"{char['stance']}, large and readable, facing the player. "
+            f"Different face, different clothes — not a second press vest, not a "
+            f"high-vis vest, not a copy of the player. Do not merge them. "
+            f"Do not swap their genders or faces. Do not clone the player. "
+            f"Do not show a choke or takedown already landed — weight ready, "
+            f"not a body already winning."
+        )
+    else:
+        # First person. Demanding a two-shot here left the player's body out of
+        # frame and handed the composition to the stranger, so the camera read
+        # as following THEM around instead of being the player's own eyes.
+        bits.append(
+            f"FIRST-PERSON POV — this is the player's own eyes. The player's "
+            f"body is NOT in frame: no second figure standing in for them, no "
+            f"back of a head, no over-the-shoulder onto the player. "
+            f"EXACTLY ONE person is visible: a {char['kind']} — {look} — "
+            f"squared up close to the camera, {char['stance']}, filling much "
+            f"of the frame, looking straight down the lens at the player. "
+            f"They are coming at the viewer. Do not add a bystander. "
+            f"Do not show a takedown already landed."
+        )
     bits.append(
         f"The danger is THIS FIGURE's body, already close: {brief['danger']}. "
         f"Do not invent sludge, fire, collapse, or a prop the reference "
@@ -1249,10 +1473,16 @@ def build_encounter_plate_prompt(brief: dict, img2img: bool = True,
     )
     if brief.get("place_hold"):
         bits.append(f"Hold these place locks: {brief['place_hold']}.")
-    bits.append(
-        "Cinematic two-shot or over-shoulder. Bodies readable. Empty hands, "
-        "no HUD, no game UI, no captions, no letterbox. A finished 1993 photograph."
-    )
+    if _camera_shows_player():
+        bits.append(
+            "Cinematic two-shot or over-shoulder. Bodies readable. Empty hands, "
+            "no HUD, no game UI, no captions, no letterbox. A finished 1993 photograph."
+        )
+    else:
+        bits.append(
+            "Point-of-view framing, one figure close to the lens. "
+            "No HUD, no game UI, no captions, no letterbox. A finished 1993 photograph."
+        )
     prompt = " ".join(bits)
     try:
         import engine
@@ -1277,14 +1507,14 @@ def build_encounter_resolve_prompt(brief: dict, verb: str, lane: str,
         # Style only. Naming the character-sheet person here recasts the
         # plate (a man in a PRESS vest becomes a different woman).
         anchor = game_identity.world_anchor(
-            ENCOUNTER_PLATE_STYLE_ANCHOR,
+            ENCOUNTER_ACTION_STYLE_ANCHOR,
             include_character=False,
             include_vantage=False,
         )
         if anchor:
             bits.append(anchor.rstrip(". ") + ".")
     except Exception:
-        bits.append(ENCOUNTER_PLATE_STYLE_ANCHOR + ".")
+        bits.append(ENCOUNTER_ACTION_STYLE_ANCHOR + ".")
 
     outdoor = is_outdoor(setting, brief.get("place_hold") or "")
     bits.append(
@@ -1349,13 +1579,32 @@ def build_encounter_resolve_prompt(brief: dict, verb: str, lane: str,
         f"Do not show the stranger choking, striking, or throwing the player "
         f"unless this is a die/wounded beat where the player failed."
     )
+    shot = ENCOUNTER_SHOT_LADDER[
+        min(max(1, int(brief.get("round_no") or 1)), len(ENCOUNTER_SHOT_LADDER)) - 1
+    ]
     bits.append(
-        f"THIS IS A HARD CUT. New camera, new blocking. "
+        f"THIS IS A HARD CUT. New camera, new blocking. {shot} "
         f"Show the instant the verb lands: {verb_s} ({lane_s}). {motion} "
-        f"If you return the previous standoff with a small pose change, you failed. "
+        f"Bodies are in contact or a hand's width apart — this is an exchange, "
+        f"not a conversation. If you return the previous standoff with a small "
+        f"pose change, you failed. If the two people are standing apart looking "
+        f"at each other, you failed. "
         f"If you show the stranger doing the verb to the player, you failed."
     )
-    if out_s == "survive":
+    enemy_state = str(brief.get("enemy_state") or "ready").strip().lower()
+    if out_s in ("survive", "wounded") and enemy_state == "down":
+        bits.append(
+            "THIS IS THE FINISH. The other person is going down — knees "
+            "buckling or already on the ground, no longer a threat. The "
+            "player is standing over them, breathing hard. No gore."
+        )
+    elif out_s in ("survive", "wounded") and enemy_state == "staggered":
+        bits.append(
+            "The blow has rocked them. They are off-balance, reeling, "
+            "a hand out for something to catch — but still up, still in it. "
+            "This is the middle of the fight, not the end of it."
+        )
+    elif out_s == "survive":
         bits.append(
             "The verb has already landed. Contact, weight, a body reacting. "
             f"{char['label']} is still readable. This is the instant it works."
@@ -1680,6 +1929,12 @@ def _pin_encounter_resolve(session_id: str, image_path: Optional[str],
         brief["plate_url"] = brief.get("plate_url") or web_url
     if image_path:
         brief["resolve_path"] = image_path
+    # Carry the exchange forward so the next round opens where this one left
+    # off instead of resetting to a fresh standoff.
+    brief["enemy_state"] = (
+        (record or {}).get("enemy_state") or brief.get("enemy_state") or "ready"
+    )
+    brief["round_no"] = max(1, int((record or {}).get("round_no") or 1)) + 1
     with engine.WORLD_STATE_LOCK:
         st = engine._load_state(session_id) or {}
         if web_url:
@@ -1781,6 +2036,13 @@ def api_begin():
         return jsonify({"error": reason, "fire": False}), 409
 
     ref_path = engine._save_portrait_reference(reference_b64, session_id) if reference_b64 else None
+    if not ref_path:
+        # No frame posted (autoplay, a dropped capture, the first beat after a
+        # world stitch). Without a reference the plate fell through to
+        # text-to-image, which renders a wide establishing shot of the place
+        # with no antagonist in it — the "camera angle that doesn't show the
+        # fight". The last rendered frame is the place; restage that instead.
+        ref_path = _confrontation_plate_path(session_id)
     place = read_place_lock(session_id, ref_path)
     brief = build_encounter_brief(
         session_id, image_path=ref_path,
@@ -1828,11 +2090,10 @@ def api_begin():
                     seen = _clip(plate_vis.get("description") or "", "", 220)
                     if seen:
                         brief["plate_seen"] = seen
-                        # Lock the challenger to THEIR look, not the whole
-                        # two-shot (that copies the player's vest onto them).
-                        char = brief.setdefault("character", {})
-                        if not char.get("locked_look") or look_clones_player(char.get("locked_look") or ""):
-                            char["locked_look"] = distinct_enemy_look(char.get("look") or "")
+                        # Lock the challenger to the person the plate actually
+                        # drew, not the one the brief invented before it.
+                        adopt_plate_look(brief, seen)
+                        label = brief["character"]["label"]
                     if not plate_shows_confrontation(plate_vis, brief):
                         try:
                             engine.log_error(
@@ -1867,6 +2128,7 @@ def api_begin():
                                 seen = _clip(plate_vis.get("description") or "", "", 220)
                                 if seen:
                                     brief["plate_seen"] = seen
+                                    adopt_plate_look(brief, seen)
                             except Exception:
                                 pass
             else:
@@ -1881,6 +2143,51 @@ def api_begin():
                     output_dir=Path(img_dir),
                 )
                 gen_mode = "text2img"
+                # This path used to skip vision entirely, so a text2img plate
+                # was never checked for actually containing the antagonist and
+                # never grounded the cast lock.
+                if image_path:
+                    try:
+                        plate_vis = engine._vision_analyze_all(image_path) or {}
+                    except Exception:
+                        plate_vis = {}
+                    seen = _clip(plate_vis.get("description") or "", "", 220)
+                    if seen:
+                        brief["plate_seen"] = seen
+                        adopt_plate_look(brief, seen)
+                    if not plate_shows_confrontation(plate_vis, brief):
+                        try:
+                            engine.log_error(
+                                "[ENCOUNTER] text2img plate missing the new "
+                                "character — retrying"
+                            )
+                        except Exception:
+                            pass
+                        retry_path = generate_with_gemini(
+                            prompt=prompt + (
+                                " The new character is already standing in this "
+                                "frame, large, close, facing the player. This is "
+                                "the confrontation, not an empty landscape. Do "
+                                "not render a wide establishing shot."
+                            ),
+                            caption=f"encounter_{label}_retry",
+                            world_prompt=place_ctx[:200] if place_ctx else None,
+                            aspect_ratio="16:9",
+                            time_of_day=tod,
+                            hd_mode=False,
+                            output_dir=Path(img_dir),
+                        )
+                        if retry_path:
+                            image_path = retry_path
+                            gen_mode = "text2img_retry"
+                            try:
+                                plate_vis = engine._vision_analyze_all(image_path) or {}
+                                seen = _clip(plate_vis.get("description") or "", "", 220)
+                                if seen:
+                                    brief["plate_seen"] = seen
+                                    adopt_plate_look(brief, seen)
+                            except Exception:
+                                pass
         except Exception as gen_err:
             try:
                 engine.log_error(f"[ENCOUNTER] plate generate failed: {gen_err}")
@@ -1991,27 +2298,32 @@ def _generate_resolve_plate(session_id: str, brief: dict, prompt: str,
         from gemini_image_utils import (
             generate_gemini_img2img, generate_with_gemini, make_style_swatch,
         )
-        swatch = None
-        if ref_path and Path(str(ref_path)).exists():
-            swatch = make_style_swatch(str(ref_path), output_dir=Path(img_dir))
+        # The standoff plate goes in as a real reference, not a style swatch.
+        # make_style_swatch() throws away everything except the palette, so
+        # the punch was generated from TEXT alone: new faces, new clothes, and
+        # an indoor shed where the standoff had been an outdoor yard. The
+        # prompt already forbids re-posing the standoff, so the reference can
+        # carry identity and place while the wording moves the camera.
+        plate = str(ref_path) if ref_path and Path(str(ref_path)).exists() else ""
         identity = encounter_identity_paths()
-        refs = [swatch] if swatch else []
-        if refs or identity:
+        refs = ([plate] if plate else []) + [p for p in identity[:2] if p != plate]
+        if refs:
             image_path = generate_gemini_img2img(
                 prompt=prompt,
                 caption=caption,
-                reference_image_path=refs or identity[:1],
+                reference_image_path=refs,
+                strength=ENCOUNTER_RESOLVE_STRENGTH,
                 world_prompt=place_ctx[:200] if place_ctx else None,
                 time_of_day=tod,
                 hd_mode=False,
                 output_dir=Path(img_dir),
                 include_people=True,
-                hold_cast=False,
-                style_only_swatch=bool(swatch),
+                hold_cast=True,
+                style_only_swatch=False,
                 identity_paths=identity or None,
                 identity_seed=bool(identity),
             )
-            gen_mode = "hard_cut_swatch" if swatch else "hard_cut_identity"
+            gen_mode = "hard_cut_plate" if plate else "hard_cut_identity"
         if not image_path:
             image_path = generate_with_gemini(
                 prompt=prompt,
@@ -2089,7 +2401,7 @@ def api_resolve():
             "outcome": rec.get("outcome"),
             "lane": rec.get("lane"),
             "verb": rec.get("verb") or posted_text,
-            "released": encounter_releases(rec.get("outcome")),
+            "released": encounter_releases(rec.get("outcome"), rec),
             "choices": structure_encounter_choices(enc.get("choices") or []),
             "dispatch": rec.get("dispatch") or "",
             "cached": True,
@@ -2122,8 +2434,14 @@ def api_resolve():
         engine._save_state(locked, session_id)
         engine._sync_ambient_state(locked, session_id)
 
+    prev_enemy = str(enc.get("enemy_state") or "ready").strip().lower()
+    if prev_enemy not in ENCOUNTER_ENEMY_STATES:
+        prev_enemy = "ready"
+    round_no = max(1, int(enc.get("round_no") or 1))
     rolled = roll_encounter_outcome(
         lane, stance=stance, kind=kind, condition=condition,
+        fate=str(st.get("fate") or "NORMAL"),
+        enemy_state=prev_enemy, round_no=round_no,
     )
     record = {
         "outcome": rolled["outcome"],
@@ -2131,7 +2449,11 @@ def api_resolve():
         "condition": rolled["condition"],
         "lane": lane,
         "verb": verb,
+        "enemy_state": rolled["enemy_state"],
+        "round_no": round_no,
     }
+    brief["enemy_state"] = rolled["enemy_state"]
+    brief["round_no"] = round_no
     brief["stakes"] = stakes_after_verb(brief, verb, lane, rolled["outcome"])
     prompt = build_encounter_resolve_prompt(
         brief, verb, lane, rolled["outcome"],
@@ -2175,7 +2497,7 @@ def api_resolve():
     except Exception:
         pass
 
-    released = encounter_releases(rolled["outcome"])
+    released = encounter_releases(rolled["outcome"], record)
     next_choices = []
     dispatch = ""
     turn_text = encounter_action_for_turn(
@@ -2202,10 +2524,14 @@ def api_resolve():
         engine._save_state(st, session_id)
         engine._sync_ambient_state(st, session_id)
 
+    # Object permanence should hold the other person in frame only while the
+    # fight is still on. Pinning them through the release is why breaking away
+    # was followed by several turns of the camera trailing the person you just
+    # escaped from, or standing over the one you put down.
     turn_kwargs = {
         "source": "encounter",
         "session_id": session_id,
-        "subject": engine._permanence_subject(subject),
+        "subject": None if released else engine._permanence_subject(subject),
         "skip_image": encounter_turn_skip_image(rolled["outcome"]),
     }
     if released:

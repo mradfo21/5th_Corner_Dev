@@ -1547,6 +1547,16 @@ def apply_experience_world(state: dict, world_id: str, session_id: str = "defaul
         return None
     src = experience_store.world_by_id(exp, state.get("experience_world_id") or "")
     if dest.get("slug"):
+        # Who the player IS belongs to the run, not to a World. Most saved
+        # World snapshots carry an empty cast sheet, and loading one replaced
+        # the live sheet with nothing — so `effective_character` fell back to
+        # the shipped protagonist and the player became Jason Fleece mid-run.
+        prior_cast = None
+        try:
+            if game_identity.character_enabled():
+                prior_cast = dict(game_identity.get_spec()[game_identity.CHARACTER_KEY])
+        except Exception:
+            prior_cast = None
         try:
             worlds_store.load_world(dest["slug"])
         except KeyError:
@@ -1554,10 +1564,28 @@ def apply_experience_world(state: dict, world_id: str, session_id: str = "defaul
                 f"[EXPERIENCE GRAPH] world '{dest.get('slug')}' missing"
             )
             return None
+        if prior_cast and not game_identity.character_enabled():
+            try:
+                import prompts_store
+                prompts_store.save_prompts_bulk(
+                    {game_identity.CHARACTER_KEY: prior_cast}
+                )
+                logging.info(
+                    "[EXPERIENCE GRAPH] kept protagonist "
+                    f"{prior_cast.get('name')!r} across the world stitch"
+                )
+            except Exception as e:
+                logging.warning(f"[EXPERIENCE GRAPH] cast carry-over failed: {e}")
     state["experience_id"] = exp.get("id") or "default"
     state["experience_world_id"] = dest["id"]
     state["world_turn_count"] = 0
     state["pending_world_transition"] = True
+    # A confrontation belongs to the place it started in. Carrying it across a
+    # stitch left the player trailing the previous world's attacker into a new
+    # one, then rolling a second encounter on top of the open one.
+    state.pop("encounter", None)
+    state.pop("encounter_outcome", None)
+    state.pop("encounter_resolving", None)
     state["world_prompt"] = experience_store.with_lore(
         game_identity.world_brief(
             PROMPTS.get("world_initial_state", "Default world starting point.")
@@ -7987,7 +8015,7 @@ def _process_turn_background(choice: str, initial_player_action_item_id: int, si
                     _rec = _enc_st.get("encounter_outcome") if isinstance(
                         _enc_st.get("encounter_outcome"), dict) else {}
                     encounter_released = _encounter.encounter_releases(
-                        _rec.get("outcome"))
+                        _rec.get("outcome"), _rec)
                     if encounter_released:
                         _encounter.clear_encounter(SID)
                 except Exception:
