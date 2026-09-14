@@ -30,6 +30,7 @@ os.environ.setdefault("GEMINI_API_KEY", "")
 os.environ.setdefault("OPENAI_API_KEY", "")
 
 import encounter
+import game_identity
 
 
 def _brief(**over):
@@ -339,6 +340,90 @@ class TestThePlayerSurvivesTheStandoffPlate(unittest.TestCase):
 
     def test_text_to_image_has_no_reference_to_carry_anyone_from(self):
         self.assertNotIn("CARRY THE PLAYER OVER", self._plate(True, img2img=False))
+
+
+class TestTheEncounterIsTheNextShotNotANewProduction(unittest.TestCase):
+    """Walking into a fight used to cut to a different-looking film.
+
+    The plate is handed the previous frame as an img2img reference and was
+    then told, twice, to restage it "from a new lens" — with the editor's
+    camera deliberately stripped out via ``include_vantage=False``. So the
+    one surface that most needed to feel continuous was the only one that
+    threw the world's camera away.
+    """
+
+    def _plate(self):
+        with mock.patch("game_identity.shows_character", return_value=True):
+            return encounter.build_encounter_plate_prompt(
+                _brief(), img2img=True, setting="outdoor")
+
+    def test_the_editor_camera_survives_into_the_fight(self):
+        vantage = "third-person follow-cam several metres behind the walker"
+        with mock.patch("game_identity.vantage", return_value=vantage), \
+             mock.patch("game_identity.is_active", return_value=True):
+            prompt = self._plate()
+        self.assertIn(vantage, prompt)
+
+    def test_nothing_asks_for_a_different_camera(self):
+        prompt = self._plate().lower()
+        for banned in ("new lens", "restaged", "new camera"):
+            self.assertNotIn(banned, prompt)
+
+    def test_the_reference_frame_is_held_not_reshot(self):
+        prompt = self._plate()
+        self.assertIn("PLACE LOCK", prompt)
+        self.assertIn("same camera", prompt)
+
+    def test_the_beat_is_the_one_before_violence(self):
+        prompt = self._plate().lower()
+        self.assertTrue(
+            any(w in prompt for w in ("about to", "stillness", "before")),
+            "the plate should read as anticipation, not a landed hit")
+        for landed in ("no choke", "nothing has landed"):
+            self.assertIn(landed, prompt)
+
+    def test_the_same_order_is_not_given_twice(self):
+        # The authored anchor used to repeat the place lock the code appends,
+        # so the model got "do not teleport" twice and a pile of negations.
+        sentences = [s.strip().lower()
+                     for s in re.split(r"(?<=[.!?])\s+", self._plate())
+                     if len(s.strip()) > 12]
+        dupes = {s for s in sentences if sentences.count(s) > 1}
+        self.assertEqual(set(), dupes)
+
+
+class TestAnAnchorNeverEndsMidThought(unittest.TestCase):
+    """``look_line`` cut the art direction at 180 characters on a word
+    boundary and bolted a full stop on, which turned "Threats are human or
+    biological - never robots or future tech" into "…biological - never." A
+    dangling negation with no object, riding in every image prompt the game
+    sent, encounter or not."""
+
+    def _look(self, art):
+        with mock.patch.dict(game_identity.PROMPTS,
+                             {"image_art_direction": art}, clear=False):
+            return game_identity.look_line()
+
+    def test_the_negation_keeps_the_thing_it_negates(self):
+        art = ("1993 American Southwest industrial horror. Period technology "
+               "only: CRT monitors, fluorescent tubes, chain-link, rusted "
+               "plant, 1990s trucks. Threats are human or biological - never "
+               "robots or future tech. Touchstones: The X-Files.")
+        got = self._look(art)
+        self.assertNotIn("never.", got)
+        self.assertTrue(got.endswith("."), got)
+
+    def test_it_prefers_a_whole_sentence(self):
+        art = "A. " + ("word " * 60) + "tail."
+        got = self._look(art)
+        self.assertLessEqual(len(got), 181)
+        self.assertTrue(got.endswith("."), got)
+
+    def test_a_word_cut_still_never_dangles(self):
+        art = "x" * 120 + " and the quick brown fox " + "y" * 90
+        got = self._look(art)
+        self.assertFalse(
+            re.search(r"\b(?:and|the|or|of|to|a|never)\.$", got), got)
 
 
 class TestWinningAFightGetsYouOutOfIt(unittest.TestCase):

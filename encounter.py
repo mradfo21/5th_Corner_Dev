@@ -36,9 +36,15 @@ ENCOUNTER_ENEMY_STATES = ("ready", "staggered", "down")
 
 ENCOUNTER_PLATE_STYLE_ANCHOR = os.getenv(
     "ENCOUNTER_PLATE_STYLE_ANCHOR",
-    "stylish cinematic confrontation still, 35mm film, tense medium two-shot or "
-    "over-shoulder, analog-horror 1993 muted palette, subtle grain, the same "
-    "place restaged from a new lens — not a handheld camcorder, not a portrait",
+    # This used to order "the same place restaged from a NEW LENS", which is
+    # the opposite of what entering a fight wants. The plate is handed the
+    # previous frame as a reference and then told to re-shoot it from
+    # somewhere else, so an encounter looked like cutting to a different
+    # production. It is the next shot in the same sequence: same camera, same
+    # stock, a beat later, with someone now in the way.
+    "the next frame of this same sequence, seconds later — same camera, same "
+    "lens, same film stock, analog-horror 1993 muted palette, subtle grain. "
+    "The air has gone still: the moment before violence, not violence itself",
 )
 # The beat where a verb LANDS is not the standoff, and it was being rendered
 # with the standoff's anchor: "locked-off two-shot" is dialogue grammar, so a
@@ -1480,7 +1486,13 @@ def build_encounter_plate_prompt(brief: dict, img2img: bool = True,
         anchor = game_identity.world_anchor(
             ENCOUNTER_PLATE_STYLE_ANCHOR,
             include_character=True,
-            include_vantage=False,
+            # The encounter is still the player's game, shot on the camera
+            # they set up in the editor. Dropping the vantage here threw away
+            # the follow-cam rig, the lens and the camera notes, so walking
+            # into a fight cut from their third-person world to an anonymous
+            # two-shot — the single biggest reason a plate did not look like
+            # it belonged to the scene before it.
+            include_vantage=True,
         )
         if anchor:
             bits.append(anchor.rstrip(". ") + ".")
@@ -1499,11 +1511,13 @@ def build_encounter_plate_prompt(brief: dict, img2img: bool = True,
     outdoor = is_outdoor(setting, brief.get("place_hold") or "")
     if img2img:
         bits.append(
-            "PLACE LOCK — HARD. The reference is the current exploration "
-            "photograph of this exact place. Keep the same location, "
-            "architecture, materials, ground, sky, and light. ADD the new "
-            "character and danger INTO this photograph. Do not change the "
-            "place. Do not teleport."
+            "PLACE LOCK — HARD. The reference is the frame the player is "
+            "looking at right now, and this is the next exposure on that "
+            "same roll. Keep the same location, architecture, materials, "
+            "ground, sky, and light — and the same camera: same height, "
+            "same angle, same distance, same focal length. ADD the new "
+            "character and danger INTO this photograph. Do not restage it, "
+            "do not change the place, do not teleport."
         )
         if outdoor:
             bits.append(
@@ -1540,17 +1554,17 @@ def build_encounter_plate_prompt(brief: dict, img2img: bool = True,
         if cast:
             bits.append(cast)
         bits.append(
-            f"TWO DISTINCT PEOPLE IN A STANDOFF, not a completed attack. "
-            f"(1) The player character stays the same person as the character "
-            f"sheet — only THEY wear that outfit. "
-            f"(2) A newly introduced {char['kind']} named "
-            f"'{char['label']}' — {look} — stands close, "
-            f"{char['stance']}, large and readable, facing the player. "
-            f"Different face, different clothes — not a second press vest, not a "
-            f"high-vis vest, not a copy of the player. Do not merge them. "
-            f"Do not swap their genders or faces. Do not clone the player. "
-            f"Do not show a choke or takedown already landed — weight ready, "
-            f"not a body already winning."
+            f"TWO DISTINCT PEOPLE IN A STANDOFF, held one beat before "
+            f"anything happens. (1) The player character, the same person as "
+            f"the character sheet, squared up and braced — only THEY wear "
+            f"that outfit. (2) A newly introduced {char['kind']} named "
+            f"'{char['label']}' — {look} — blocking the way, "
+            f"{char['stance']}, close enough to reach, large and readable, "
+            f"facing the player. They read as two different people: "
+            f"different face, different clothes, no shared wardrobe, not a "
+            f"copy of the player. Keep their genders and faces distinct. "
+            f"The tension is in the stillness — nobody has swung yet, "
+            f"nothing has landed, no choke and no takedown."
         )
     else:
         # First person. Demanding a two-shot here left the player's body out of
@@ -1567,16 +1581,25 @@ def build_encounter_plate_prompt(brief: dict, img2img: bool = True,
             f"Do not show a takedown already landed."
         )
     bits.append(
-        f"The danger is THIS FIGURE's body, already close: {brief['danger']}. "
-        f"Do not invent sludge, fire, collapse, or a prop the reference "
-        f"photograph does not already show."
+        # The brief writes danger as something already underway ("swinging a
+        # wrench at you"), which fights the held beat the rest of the plate
+        # asks for. Frame it as the thing about to land instead.
+        f"The danger is THIS FIGURE's body and what they are about to do: "
+        f"{brief['danger']} — caught at the edge of happening, not yet done. "
+        f"Keep every object in the frame to what the reference photograph "
+        f"already shows."
     )
     if brief.get("place_hold"):
         bits.append(f"Hold these place locks: {brief['place_hold']}.")
     if _camera_shows_player():
         bits.append(
-            "Cinematic two-shot or over-shoulder. Bodies readable. Empty hands, "
-            "no HUD, no game UI, no captions, no letterbox. A finished 1993 photograph."
+            # Naming a shot size here overrode the vantage the player set up
+            # in the editor, which is half of why the plate never looked like
+            # the scene it interrupted. Ask for readability, let the world's
+            # own camera decide the framing.
+            "Hold the established camera. Both bodies readable in the frame, "
+            "empty hands, no HUD, no game UI, no captions, no letterbox. "
+            "A finished 1993 photograph."
         )
     else:
         bits.append(

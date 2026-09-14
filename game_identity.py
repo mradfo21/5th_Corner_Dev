@@ -60,6 +60,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import copy
 import json
 import os
 import re
@@ -81,6 +82,7 @@ ROOT = Path(__file__).parent.resolve()
 REFERENCES_DIR = Path(
     os.getenv("REFERENCES_DIR") or (ROOT / "assets" / "references")
 )
+SESSIONS_DIR = Path(os.getenv("SESSIONS_DIR") or (ROOT / "sessions"))
 
 # Spec keys as they appear in prompts/simulation_prompts.json.
 CHARACTER_KEY = "player_character"
@@ -172,6 +174,10 @@ PERSPECTIVE_MODES: Dict[str, Dict[str, Any]] = {
         "camera_header": "OVER-THE-SHOULDER THIRD-PERSON VIEW",
         "rig": "a camera floating roughly one metre behind and slightly above the character's shoulder",
         "vantage": "third-person over-the-shoulder vantage, the camera trailing a metre behind the character who stays visible in frame",
+        "follow_lock": (
+            "Over-the-shoulder chase cam: tight behind the character, they face INTO the "
+            "space ahead"
+        ),
         "image_rules": [
             "The PLAYER CHARACTER is visible in frame, seen from behind and slightly above, "
             "occupying the lower-left or lower-right third of the composition.",
@@ -180,6 +186,9 @@ PERSPECTIVE_MODES: Dict[str, Dict[str, Any]] = {
             "The camera trails the character — it moves where they move, never overtakes them, "
             "and never cuts to their face.",
             "Whatever the character is holding stays visible in their hands, read from behind.",
+            "Keep a stable over-the-shoulder grammar shot to shot: chest-to-head height, "
+            "medium-wide, lead room in the direction they face or move. No face-on reverse, "
+            "no empty POV plate, no worm's-eye hide shot.",
         ],
         "hands_rule": "",
         "no_hands_rule": "",
@@ -196,20 +205,30 @@ PERSPECTIVE_MODES: Dict[str, Dict[str, Any]] = {
     },
     "third_person": {
         "label": "Third person",
-        "tagline": "Full-body follow cam with room to breathe — Tomb Raider, Souls.",
+        "tagline": "Full-body follow cam from behind — Tomb Raider, Gears of War, The Last of Us.",
         "phrase": "third-person",
         "tag": "THIRD-PERSON FOLLOW CAM",
         "shows_body": True,
         "hands_default": False,
         "camera_header": "THIRD-PERSON FOLLOW-CAM VIEW",
-        "rig": "a camera three to five metres back from the character at chest height",
-        "vantage": "third-person follow-cam vantage, the camera several metres back with the character fully visible head to feet",
+        "rig": "a camera three to five metres behind the character at chest height, looking over their back into the space they face",
+        "vantage": "third-person action-game follow-cam, several metres behind the character who faces into the scene — back of the head and shoulders toward the lens, the space ahead filling the depth of the frame",
+        "follow_lock": (
+            "Action-game follow cam: camera behind the character, they face INTO the space ahead. "
+            "We see the back of the head, the shoulders, the gait"
+        ),
         "image_rules": [
             "The PLAYER CHARACTER is fully visible — head to feet — as the clear subject of the shot.",
+            "This is a third-person action-game follow cam (Tomb Raider, Gears of War, The Last of Us): "
+            "the camera sits behind the character and they face INTO the space ahead. We see the back of "
+            "the head, the shoulders, and the walk; the destination is readable in the depth past them.",
             "The character reads at roughly a third to a half of the frame height, with the "
-            "environment framing them so the space is legible around them.",
-            "Camera stays behind or to the side of the character and follows their motion; "
-            "the world is always shown WITH them in it, never without them.",
+            "environment opening up beyond them so the place stays legible.",
+            "Never turn them to face the lens. No walking-toward-camera arrival, no front-facing portrait, "
+            "no face-on reverse. A sliver of cheek or profile is the most face the shot may show.",
+            "Continuity across cuts: stay in a medium-wide / full-body band at chest height, "
+            "preserve screen direction (do not flip left/right travel), give lead room ahead "
+            "of their motion, and never spin to a face-on reverse or an empty first-person plate.",
         ],
         "hands_rule": "",
         "no_hands_rule": "",
@@ -221,6 +240,9 @@ PERSPECTIVE_MODES: Dict[str, Dict[str, Any]] = {
         "negative_add": [
             "first person view", "camera as eyes", "empty scene with no character",
             "close-up portrait", "cropped body",
+            "character facing the camera", "walking toward camera",
+            "front-facing portrait", "character looking at camera",
+            "hero approaching the lens",
         ],
         "negative_strip": _CHARACTER_NEGATIVE_STRIP,
     },
@@ -256,7 +278,7 @@ PERSPECTIVE_MODES: Dict[str, Dict[str, Any]] = {
     },
 }
 
-DEFAULT_MODE = "first_person"
+DEFAULT_MODE = "third_person"
 
 
 def mode_options() -> List[Dict[str, Any]]:
@@ -290,6 +312,31 @@ CHARACTER_DEFAULTS: Dict[str, Any] = {
     "reference_images": [],
 }
 
+# The shipped world brief already assumes this person (Jason, photojournalist,
+# 1993 camcorder). It is NOT extra prompt law — it is the CAST the compiler
+# below already knows how to emit, filled only when the camera can see a body
+# and the player never authored one. Leaving that slot empty while third-person
+# is on is how every hard-cut frame invented a new stranger (man one shot,
+# woman the next): the image model was told "the subject is the player
+# character" with no face, no clothes, and no plate to copy.
+SHIPPED_PROTAGONIST: Dict[str, str] = {
+    "name": "Jason Fleece",
+    "pronouns": "he/him",
+    "role": "investigative photojournalist",
+    "appearance": "adult man, short dark hair, weathered face, stubble",
+    "wardrobe": "olive field jacket, dark work pants, boots",
+    "signature_gear": "1993 VHS camcorder",
+}
+
+# SOMEWHERE's Level card. Same leftover problem as Jason's wardrobe: a recast
+# that names a new place used to keep emitting this fence one-liner (and the
+# Horizon bible still led the world seed), so the image model redrew the
+# shipped yard.
+SHIPPED_SETTING: Dict[str, str] = {
+    "name": "SOMEWHERE",
+    "summary": "1993. The fence. Four Corners. The shipped demo.",
+}
+
 SETTING_DEFAULTS: Dict[str, Any] = {
     "enabled": False,
     "name": "",
@@ -303,10 +350,21 @@ SETTING_DEFAULTS: Dict[str, Any] = {
 
 CAMERA_DEFAULTS: Dict[str, Any] = {
     "mode": DEFAULT_MODE,
-    "show_hands": True,
+    "show_hands": False,
     "lens": "",
     "notes": "",
+    "schemes": {},
 }
+
+# Semantic drive tokens the browser already understands. A scheme is a
+# per-camera key map onto these — not a second pair of named "modes".
+_DRIVE_ACTIONS = frozenset({
+    "fwd", "back", "strafeL", "strafeR", "lookL", "lookR", "pitchUp", "pitchDown",
+})
+# The mouse is the same map as the keys: `keys.mouse = "look"` steers the
+# camera. Older worlds stored a sibling `mouseLook` bool — both forms load.
+_DEVICE_KEY = "mouse"
+_DEVICE_ACTIONS = frozenset({"look"})
 
 _DEFAULTS_BY_KEY = {
     CHARACTER_KEY: CHARACTER_DEFAULTS,
@@ -353,12 +411,63 @@ def _normalize(key: str, raw: Any) -> Dict[str, Any]:
             out[field] = bool(value)
         elif isinstance(default, list):
             out[field] = _clean_refs(value)
+        elif isinstance(default, dict):
+            out[field] = dict(value) if isinstance(value, dict) else dict(default)
         else:
             out[field] = _clean_text(value)
     if key == CAMERA_KEY:
         if out["mode"] not in PERSPECTIVE_MODES:
             out["mode"] = DEFAULT_MODE
+        out["schemes"] = _clean_schemes(source.get("schemes", out.get("schemes")))
     return out
+
+
+def _clean_schemes(raw: Any) -> Dict[str, Any]:
+    """Keep only real camera ids and real drive tokens. Everything else drops."""
+    if not isinstance(raw, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    for sid, body in raw.items():
+        if sid not in PERSPECTIVE_MODES or not isinstance(body, dict):
+            continue
+        keys_in = body.get("keys") if isinstance(body.get("keys"), dict) else {}
+        keys = {}
+        mouse_from_keys = None
+        for k, act in keys_in.items():
+            key = str(k or "").strip().lower()
+            action = str(act or "").strip()
+            if key == _DEVICE_KEY:
+                mouse_from_keys = action if action in _DEVICE_ACTIONS else ""
+                continue
+            if key and action in _DRIVE_ACTIONS:
+                keys[key] = action
+        mouse_look = (
+            mouse_from_keys == "look"
+            if mouse_from_keys is not None
+            else bool(body.get("mouseLook"))
+        )
+        if mouse_look:
+            keys[_DEVICE_KEY] = "look"
+        out[sid] = {
+            "mouseLook": mouse_look,
+            "invertY": bool(body.get("invertY")),
+            "keys": keys,
+        }
+    return out
+
+
+def spec_from_prompts(prompts: Optional[Dict[str, Any]] = None) -> Dict[str, Dict[str, Any]]:
+    """Build a normalized cast sheet from a stored prompt snapshot.
+
+    Used by the per-World first-frame cache so a World that is not currently
+    loaded can still describe its opening shot without swapping the live file.
+    """
+    src = prompts if isinstance(prompts, dict) else {}
+    return {
+        CHARACTER_KEY: _normalize(CHARACTER_KEY, src.get(CHARACTER_KEY)),
+        SETTING_KEY: _normalize(SETTING_KEY, src.get(SETTING_KEY)),
+        CAMERA_KEY: _normalize(CAMERA_KEY, src.get(CAMERA_KEY)),
+    }
 
 
 def get_spec() -> Dict[str, Dict[str, Any]]:
@@ -367,19 +476,113 @@ def get_spec() -> Dict[str, Dict[str, Any]]:
     Reads through ``PROMPTS``, so an edit saved by either editor is live on the
     next call with no restart (same hot-reload contract as every other prompt).
     """
-    return {
-        CHARACTER_KEY: _normalize(CHARACTER_KEY, PROMPTS.get(CHARACTER_KEY)),
-        SETTING_KEY: _normalize(SETTING_KEY, PROMPTS.get(SETTING_KEY)),
-        CAMERA_KEY: _normalize(CAMERA_KEY, PROMPTS.get(CAMERA_KEY)),
-    }
+    return spec_from_prompts(dict(PROMPTS))
 
 
 def default_spec() -> Dict[str, Dict[str, Any]]:
     return {
         CHARACTER_KEY: dict(CHARACTER_DEFAULTS),
         SETTING_KEY: dict(SETTING_DEFAULTS),
-        CAMERA_KEY: dict(CAMERA_DEFAULTS),
+        CAMERA_KEY: {**CAMERA_DEFAULTS, "schemes": {}},
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# VIEWFINDER — a one-shot first-person overlay of the live sheet
+#
+# PHOTO restages the current still as eyes-on-the-world without saving a
+# camera-mode change. The world's authored perspective stays third-person;
+# only this copied spec is first-person, and only for that render.
+# ═══════════════════════════════════════════════════════════════════════════
+
+VIEWFINDER_FLAG = "_viewfinder"
+
+VIEWFINDER_NOTES = (
+    "Do not draw a camcorder, viewfinder, film HUD, or any body part of the "
+    "player. The player is looking with their own eyes; the UI overlay is "
+    "the camera. EMPTY FOREGROUND — no person standing in front of the lens."
+)
+
+VIEWFINDER_PLACE_LOCK = (
+    "VIEWFINDER PLACE LOCK — this attachment is a follow-cam still of the "
+    "SAME place and light. Copy architecture, materials, palette, weather, "
+    "and illumination. ERASE the person from the attachment: they are the "
+    "CAMERA OPERATOR standing in the scene. Do not draw them, their back, "
+    "silhouette, face, clothes, or gear. Do not walk them around to face "
+    "the lens. The space they occupied is empty air. Restage as first-person: "
+    "standing where they stood, looking the direction they faced. This is "
+    "WHAT THEY SEE, not a continuation of their pose."
+)
+
+_FOLLOW_CAM_PHRASES = re.compile(
+    r"\b("
+    r"is in frame|seen by the camera|stands before|stands in front of|"
+    r"walks along|walks toward|walks towards|steps onto|kneels before|"
+    r"the camera follows|follow(?:-|\s)?cam|from behind|over the shoulder|"
+    r"head to feet|fully visible"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def viewfinder_spec(spec: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """A one-shot first-person overlay of the live cast sheet.
+
+    Copy, do not save. ``shows_character`` / ``hands_visible`` become false,
+    which turns off hero mode, the character plate, and KEEP-IN-FRAME.
+    """
+    out = copy.deepcopy(spec or get_spec())
+    cam = dict(out.get(CAMERA_KEY) or {})
+    cam["mode"] = "first_person"
+    cam["show_hands"] = False
+    notes = str(cam.get("notes") or "").strip()
+    if VIEWFINDER_NOTES not in notes:
+        cam["notes"] = (notes + "\n" + VIEWFINDER_NOTES).strip() if notes else VIEWFINDER_NOTES
+    out[CAMERA_KEY] = cam
+    out[VIEWFINDER_FLAG] = True
+    return out
+
+
+def is_viewfinder_spec(spec: Optional[Dict[str, Any]] = None) -> bool:
+    """True only for a spec produced by :func:`viewfinder_spec`."""
+    if not isinstance(spec, dict):
+        return False
+    return bool(spec.get(VIEWFINDER_FLAG))
+
+
+def viewfinder_place_lock_label() -> str:
+    return VIEWFINDER_PLACE_LOCK
+
+
+def viewfinder_hero_ban(spec: Optional[Dict[str, Any]] = None) -> str:
+    """Ban any person from the viewfinder. Do not name the hero.
+
+    Naming the protagonist (``Jason Fleece is the camera operator``) is how
+    the image model and the world model summon them into an empty-eyes shot.
+    The 3P follow-cam still is also not a person reference — never attach it.
+    """
+    return (
+        "EMPTY FOREGROUND. No person, body, back, silhouette, face, clothes, "
+        "or gear in front of the lens. Uninhabited view. The operator is "
+        "behind the camera and must never appear."
+    )
+
+
+def strip_follow_cam_prose(text: str, spec: Optional[Dict[str, Any]] = None) -> str:
+    """Drop player-name and follow-cam verbs so a 3P vision caption can seed FP."""
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    who = display_name(spec)
+    if who and who.lower() != "the player character":
+        raw = re.sub(re.escape(who), "", raw, flags=re.IGNORECASE)
+        for part in re.findall(r"[A-Za-z]+", who):
+            if len(part) > 2:
+                raw = re.sub(rf"\b{re.escape(part)}\b", "", raw, flags=re.IGNORECASE)
+    raw = _FOLLOW_CAM_PHRASES.sub("", raw)
+    raw = re.sub(r"\s{2,}", " ", raw)
+    raw = re.sub(r"\s+([,.;])", r"\1", raw)
+    return raw.strip(" ,.;")
 
 
 # Filling one of these in is unambiguous intent to use the block, so doing it
@@ -389,6 +592,10 @@ def default_spec() -> Dict[str, Dict[str, Any]]:
 _INTENT_FIELDS = ("name", "role", "appearance", "wardrobe", "signature_gear",
                   "demeanor", "backstory", "summary", "era", "palette",
                   "landmarks", "opening_shot")
+# Level copy that must compile even if the leftover off-switch is still down.
+# SOMEWHERE ships Level-off so the Horizon bible owns the place; typing into
+# the sheet is the opt-in, same as Character.
+_SETTING_COPY_FIELDS = ("name", "summary", "landmarks", "opening_shot", "era", "palette")
 
 
 def save_spec(partial: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
@@ -404,6 +611,7 @@ def save_spec(partial: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     your character means "and don't use them".
     """
     current = get_spec()
+    old_name = character_name(current)
     fields: Dict[str, Any] = {}
     for key in SPEC_KEYS:
         if key not in partial:
@@ -423,13 +631,30 @@ def save_spec(partial: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         fields[key] = _normalize(key, merged)
     if fields:
         prompts_store.save_prompts_bulk(fields)
-    return get_spec()
+    spec = get_spec()
+    if CHARACTER_KEY in fields:
+        recast_stored_prompts(old_name, spec)
+        spec = get_spec()
+    return spec
 
 
 def reset_spec() -> Dict[str, Dict[str, Any]]:
     """Clear the cast sheet back to 'unset' (first person, nobody, nowhere)."""
     prompts_store.save_prompts_bulk(default_spec())
     return get_spec()
+
+
+def clear_block(key: str) -> Dict[str, Dict[str, Any]]:
+    """Empty one spec block back to shipped defaults (off, blank, unwired).
+
+    Character and level turn *off* so a Clear cannot leave the "switched on
+    but every field is blank" warning. Camera returns to first person with
+    no extra notes. Reference image files stay on disk; they are just
+    unwired from the sheet.
+    """
+    if key not in SPEC_KEYS:
+        raise KeyError(key)
+    return save_spec({key: dict(_DEFAULTS_BY_KEY[key])})
 
 
 def ensure_spec_keys() -> None:
@@ -580,6 +805,242 @@ def identity_schema() -> List[Dict[str, Any]]:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# DRAFT FROM A REFERENCE IMAGE
+#
+# Drop a plate onto an empty Character or Level sheet and the empty text
+# fields fill from vision. Authored text is never overwritten. Camera has no
+# image slot; any later schema block with supports_images inherits this.
+# Uses ai_provider_manager.vision() (Gemini flash-lite, or mock).
+# ═══════════════════════════════════════════════════════════════════════════
+
+_FILL_FIELD_TYPES = ("text", "longtext")
+_JSON_OBJECT_RE = re.compile(r"\{.*\}", re.DOTALL)
+IMAGE_FILL_MAX_TOKENS = 800
+
+
+def image_fillable_blocks() -> List[str]:
+    """Identity blocks that can draft their empty text fields from a plate."""
+    return [b["id"] for b in IDENTITY_SCHEMA if b.get("supports_images")]
+
+
+def block_for_image_kind(kind: str) -> Optional[str]:
+    """Map an upload `kind` (character/setting) or a block id to a fillable sheet."""
+    raw = (kind or "").strip().lower()
+    aliases = {
+        "character": CHARACTER_KEY,
+        "player_character": CHARACTER_KEY,
+        "setting": SETTING_KEY,
+        "level": SETTING_KEY,
+        "setting_reference": SETTING_KEY,
+    }
+    block_id = aliases.get(raw, raw)
+    return block_id if block_id in image_fillable_blocks() else None
+
+
+def fillable_text_fields(block_id: str) -> List[Dict[str, Any]]:
+    for block in IDENTITY_SCHEMA:
+        if block["id"] != block_id:
+            continue
+        return [f for f in block["fields"] if f.get("type") in _FILL_FIELD_TYPES]
+    return []
+
+
+def empty_fill_fields(block_id: str, spec: Optional[Dict[str, Any]] = None) -> List[str]:
+    """Text field ids on this sheet that are currently blank."""
+    spec = spec or get_spec()
+    block = spec.get(block_id) or {}
+    return [
+        f["id"]
+        for f in fillable_text_fields(block_id)
+        if not str(block.get(f["id"], "") or "").strip()
+    ]
+
+
+def _identity_fill_prompt(block_id: str, field_ids: List[str]) -> str:
+    import ai_provider_manager
+    block = next((b for b in IDENTITY_SCHEMA if b["id"] == block_id), None)
+    wanted = {f["id"]: f for f in fillable_text_fields(block_id) if f["id"] in field_ids}
+    kind = "character" if block_id == CHARACTER_KEY else "place"
+    lines = []
+    for fid in field_ids:
+        field = wanted.get(fid)
+        if not field:
+            continue
+        hint = field.get("placeholder") or field.get("help") or ""
+        lines.append(f'- "{fid}": {field["label"]}' + (f" — {hint}" if hint else ""))
+    label = (block or {}).get("label") or block_id
+    return (
+        f"{ai_provider_manager.IDENTITY_DRAFT_MARKER}\n"
+        f"block={block_id}\n"
+        f"Look at this reference image of a {kind} ({label}). "
+        f"Write a short playable draft for a game sheet from what you can see.\n"
+        f"Return ONLY a JSON object with these keys (omit a key if you cannot tell):\n"
+        + "\n".join(lines)
+        + "\nRules: short and concrete; visual first; a real name, not Unknown; "
+        "no plot. JSON only, no markdown."
+    )
+
+
+def _parse_fill_json(raw: str) -> Dict[str, str]:
+    if not raw or "Signal interrupted" in raw:
+        return {}
+    text = raw.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    data: Any = None
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        match = _JSON_OBJECT_RE.search(text)
+        if not match:
+            return {}
+        try:
+            data = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            return {}
+    if not isinstance(data, dict):
+        return {}
+    out: Dict[str, str] = {}
+    for key, value in data.items():
+        if value is None:
+            continue
+        cleaned = _clean_text(value)
+        if cleaned:
+            out[str(key)] = cleaned
+    return out
+
+
+def infer_fields_from_image(
+    block_id: str,
+    image_path: str,
+    only_fields: Optional[List[str]] = None,
+) -> Dict[str, str]:
+    """Ask vision for a draft of the named fields. Does not persist."""
+    import ai_provider_manager
+    allowed = {f["id"] for f in fillable_text_fields(block_id)}
+    wanted = [f for f in (only_fields or sorted(allowed)) if f in allowed]
+    if not wanted or not image_path:
+        return {}
+    raw = ai_provider_manager.vision(
+        image_path=image_path,
+        prompt=_identity_fill_prompt(block_id, wanted),
+        max_tokens=IMAGE_FILL_MAX_TOKENS,
+    )
+    parsed = _parse_fill_json(raw)
+    return {fid: parsed[fid] for fid in wanted if parsed.get(fid)}
+
+
+def apply_image_fill(
+    block_id: str,
+    image_path: Optional[str] = None,
+    ref_id: Optional[str] = None,
+    *,
+    overwrite: bool = False,
+) -> Dict[str, Any]:
+    """Draft sheet fields from a reference image and persist.
+
+    Default keeps author text (fill blanks only). ``overwrite=True`` treats
+    the plate as the only input and rewrites every fillable field — that is
+    what a Character / Level upload in the editor wants.
+    """
+    import ai_provider_manager
+    if block_id not in image_fillable_blocks():
+        return {"filled": {}, "skipped": True, "reason": "not_fillable"}
+
+    path = image_path
+    if not path:
+        if not ref_id:
+            refs = (get_spec().get(block_id) or {}).get("reference_images") or []
+            ref_id = refs[0] if refs else None
+        resolved = reference_path(ref_id) if ref_id else None
+        path = str(resolved) if resolved else None
+    if not path:
+        return {"filled": {}, "skipped": True, "reason": "no_image"}
+
+    wanted = [f["id"] for f in fillable_text_fields(block_id)]
+    if not overwrite:
+        wanted = empty_fill_fields(block_id)
+        if not wanted:
+            return {"filled": {}, "skipped": True, "reason": "all_filled"}
+
+    inferred = infer_fields_from_image(block_id, path, wanted)
+    current = get_spec().get(block_id) or {}
+    patch = {}
+    for key, value in inferred.items():
+        if not value:
+            continue
+        if overwrite or not str(current.get(key, "") or "").strip():
+            patch[key] = value
+    if patch:
+        save_spec({block_id: patch})
+    return {
+        "filled": patch,
+        "skipped": not bool(patch),
+        "reason": "" if patch else "nothing_inferred",
+        "fields": list(patch.keys()),
+        "backend": ai_provider_manager.active_backend("vision"),
+        "model": ai_provider_manager.resolve_model(None, "vision"),
+    }
+
+
+def attach_reference_and_fill(
+    block_id: str,
+    ref_id: str,
+    *,
+    overwrite: bool = True,
+) -> Dict[str, Any]:
+    """Wire a plate and draft the sheet from it in one save.
+
+    Attaching first, then filling, dirtied the World on leftover CAST text
+    (the shipped photojournalist) before vision had named the new person.
+    The editor must not mark the node dirty until this returns.
+    """
+    import ai_provider_manager
+    if block_id not in image_fillable_blocks():
+        return {"filled": {}, "skipped": True, "reason": "not_fillable"}
+    current = get_spec().get(block_id) or {}
+    refs = list(current.get("reference_images") or [])
+    if ref_id and ref_id not in refs:
+        refs.append(ref_id)
+    resolved = reference_path(ref_id) if ref_id else None
+    path = str(resolved) if resolved else None
+    wanted = [f["id"] for f in fillable_text_fields(block_id)]
+    if not overwrite:
+        wanted = [
+            fid for fid in wanted
+            if not str(current.get(fid, "") or "").strip()
+        ]
+    inferred: Dict[str, str] = {}
+    if path and wanted:
+        inferred = infer_fields_from_image(block_id, path, wanted)
+    filled: Dict[str, str] = {}
+    for key, value in inferred.items():
+        if not value:
+            continue
+        if overwrite or not str(current.get(key, "") or "").strip():
+            filled[key] = value
+    reason = (
+        "" if filled else
+        ("no_image" if not path else
+         "all_filled" if not wanted else "nothing_inferred")
+    )
+    if filled:
+        patch: Dict[str, Any] = {"reference_images": refs, "enabled": True}
+        patch.update(filled)
+        save_spec({block_id: patch})
+    return {
+        "filled": filled,
+        "skipped": not bool(filled),
+        "reason": reason,
+        "fields": list(filled.keys()),
+        "attached": ref_id if filled else "",
+        "backend": ai_provider_manager.active_backend("vision"),
+        "model": ai_provider_manager.resolve_model(None, "vision"),
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # ACCESSORS — small questions the rest of the pipeline asks constantly
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -630,14 +1091,147 @@ def setting_enabled(spec: Optional[Dict[str, Any]] = None) -> bool:
     return any(setting.get(f) for f in ("name", "summary", "landmarks", "opening_shot"))
 
 
+def setting_authored(spec: Optional[Dict[str, Any]] = None) -> bool:
+    """True when the Level sheet has anything to send, toggle or not.
+
+    The off-switch used to swallow landmarks / palette / era, so the editor
+    looked saved and the live scene never heard the words.
+    """
+    spec = spec or get_spec()
+    setting = spec[SETTING_KEY]
+    return any(str(setting.get(f) or "").strip() for f in _SETTING_COPY_FIELDS)
+
+
 def character_name(spec: Optional[Dict[str, Any]] = None) -> str:
     spec = spec or get_spec()
     return spec[CHARACTER_KEY].get("name", "").strip()
 
 
+def uses_shipped_protagonist(spec: Optional[Dict[str, Any]] = None) -> bool:
+    """Camera can see a body, and the player never filled in who that is."""
+    spec = spec or get_spec()
+    return shows_character(spec) and not character_enabled(spec)
+
+
+def effective_character(spec: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """The CAST the image/narrative compilers should emit.
+
+    Authored fields win. Otherwise, if the camera is looking at a person, the
+    shipped protagonist — the one ``world_initial_state`` already names —
+    fills the empty sheet so a hard cut has *someone* to draw instead of a
+    coin-flip stranger. First person with no character stays empty.
+    """
+    spec = spec or get_spec()
+    if character_enabled(spec):
+        return spec[CHARACTER_KEY]
+    if shows_character(spec):
+        out = dict(CHARACTER_DEFAULTS)
+        out.update(SHIPPED_PROTAGONIST)
+        out["enabled"] = True
+        return out
+    return spec[CHARACTER_KEY]
+
+
+def _norm_field(value: Any) -> str:
+    return " ".join(str(value or "").lower().split())
+
+
+def is_shipped_cast(spec: Optional[Dict[str, Any]] = None) -> bool:
+    """True when this sheet is still the shipped Jason identity.
+
+    A recast (new name, new look, or a character plate) is someone else even
+    if hidden fields still hold Jason's wardrobe and pronouns — the Experience
+    editor only shows Name / Role / Look, so those leftovers are not author
+    intent.
+    """
+    spec = spec or get_spec()
+    char = effective_character(spec)
+    name = _norm_field(char.get("name"))
+    look = _norm_field(char.get("appearance"))
+    if name and name != _norm_field(SHIPPED_PROTAGONIST["name"]):
+        return False
+    if look and look != _norm_field(SHIPPED_PROTAGONIST["appearance"]):
+        return False
+    if char.get("reference_images"):
+        return False
+    return True
+
+
+def authored_character(spec: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """CAST fields that should actually reach the image and story prompts.
+
+    SOMEWHERE ships Jason's pronouns, jacket, and camcorder into fields the
+    minimal editor does not show. Changing Look to "adult woman" used to
+    still emit ``he/him`` + olive field jacket as if the author chose them,
+    and the image model redrew the default guy. Those leftovers are dropped
+    once the sheet is no longer the shipped cast.
+    """
+    spec = spec or get_spec()
+    char = dict(effective_character(spec))
+    if is_shipped_cast(spec):
+        return char
+    for field in ("pronouns", "wardrobe", "signature_gear"):
+        if _norm_field(char.get(field)) == _norm_field(SHIPPED_PROTAGONIST.get(field, "")):
+            char[field] = ""
+    # A plate with leftover Jason Name / Role / Look is the same hole as
+    # leftover jacket. The Experience editor used to skip fill when those
+    # fields were already full, so a woman plate still compiled as
+    # "Jason Fleece, adult man" and every MOVE TO redrew the default guy.
+    if char.get("reference_images"):
+        for field in ("name", "role", "appearance"):
+            if _norm_field(char.get(field)) == _norm_field(SHIPPED_PROTAGONIST.get(field, "")):
+                char[field] = ""
+    return char
+
+
+def is_shipped_setting(spec: Optional[Dict[str, Any]] = None) -> bool:
+    """True when the Level sheet is still the shipped SOMEWHERE fence plate.
+
+    Empty counts as shipped (Play falls back to the Horizon openers). A new
+    name, summary, landmark, opening shot, or location plate is a recast.
+    """
+    spec = spec or get_spec()
+    if not setting_authored(spec):
+        return True
+    setting = spec[SETTING_KEY]
+    if setting.get("reference_images"):
+        return False
+    if any(str(setting.get(f) or "").strip() for f in ("landmarks", "opening_shot", "era", "palette")):
+        return False
+    name = _norm_field(setting.get("name"))
+    summary = _norm_field(setting.get("summary"))
+    if name and name != _norm_field(SHIPPED_SETTING["name"]):
+        return False
+    if summary and summary != _norm_field(SHIPPED_SETTING["summary"]):
+        return False
+    return True
+
+
+def authored_setting(spec: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Level fields that should actually reach the image and story prompts.
+
+    Same leftover hole as Jason's Name / Look: a location plate over the
+    shipped SOMEWHERE fence used to keep emitting that one-liner, so MOVE TO
+    redrew the yard. Shipped name / summary drop once the sheet is a recast.
+    """
+    spec = spec or get_spec()
+    setting = dict(spec[SETTING_KEY])
+    if is_shipped_setting(spec):
+        return setting
+    for field in ("name", "summary"):
+        if _norm_field(setting.get(field)) == _norm_field(SHIPPED_SETTING.get(field, "")):
+            setting[field] = ""
+    return setting
+
+
 def display_name(spec: Optional[Dict[str, Any]] = None) -> str:
     """What to call the protagonist in prompt prose when a name isn't set."""
-    return character_name(spec) or "the player character"
+    name = (authored_character(spec).get("name") or "").strip()
+    if name:
+        return name
+    if uses_shipped_protagonist(spec):
+        return SHIPPED_PROTAGONIST["name"]
+    return "the player character"
 
 
 def is_active(spec: Optional[Dict[str, Any]] = None) -> bool:
@@ -687,9 +1281,17 @@ def camera_directive(spec: Optional[Dict[str, Any]] = None) -> str:
     if cam.get("notes"):
         rules.append(cam["notes"])
 
+    # No precedence clause. This header used to open "THIS OVERRIDES ANY
+    # CONFLICTING CAMERA LANGUAGE BELOW", which was an accurate description of
+    # the payload at the time — `image_camera_rules` really did contradict it,
+    # because it bypassed `retune`/`reconcile` on its way into the template (see
+    # prompts_store._perspective_corrected). Both halves of that are fixed: the
+    # shared blocks are corrected now, and they no longer carry perspective
+    # language of their own. Announcing a conflict that no longer exists just
+    # tells the model to go looking for one and to treat this block as
+    # contested rather than simply true.
     return (
-        "🎥 CAMERA DIRECTIVE — THIS OVERRIDES ANY CONFLICTING CAMERA LANGUAGE BELOW\n"
-        f"PERSPECTIVE: {cfg['camera_header']} ({cfg['label']}).\n"
+        f"🎥 CAMERA: {cfg['camera_header']} ({cfg['label']}).\n"
         f"RIG: {cfg['rig']}.\n"
         f"{_bullets(rules)}"
     )
@@ -702,9 +1304,9 @@ def character_visual_sheet(spec: Optional[Dict[str, Any]] = None) -> str:
     callers should gate on :func:`shows_character` / :func:`hands_visible`.
     """
     spec = spec or get_spec()
-    if not character_enabled(spec):
+    char = authored_character(spec)
+    if not any(char.get(f) for f in ("name", "role", "appearance", "wardrobe", "signature_gear")):
         return ""
-    char = spec[CHARACTER_KEY]
 
     lines: List[str] = []
     header = display_name(spec)
@@ -722,7 +1324,8 @@ def character_visual_sheet(spec: Optional[Dict[str, Any]] = None) -> str:
 
     tail = (
         "This is the SAME person in every single frame — face, build, hair, and outfit "
-        "must not drift between shots."
+        "must not drift between shots. Lock identity from the back of the head and "
+        "wardrobe; do not spin them to face the lens just to prove the face matches."
     )
     return "🧍 PLAYER CHARACTER — WHO IS ON SCREEN\n" + "\n".join(lines) + f"\n{tail}"
 
@@ -730,9 +1333,9 @@ def character_visual_sheet(spec: Optional[Dict[str, Any]] = None) -> str:
 def setting_plate(spec: Optional[Dict[str, Any]] = None) -> str:
     """The LOCATION block — the level the whole run takes place in."""
     spec = spec or get_spec()
-    if not setting_enabled(spec):
+    if not setting_authored(spec):
         return ""
-    setting = spec[SETTING_KEY]
+    setting = authored_setting(spec)
 
     lines: List[str] = []
     if setting.get("name"):
@@ -758,9 +1361,9 @@ def character_sdxl_tags(spec: Optional[Dict[str, Any]] = None) -> str:
     tags rather than the paragraph the Gemini path receives.
     """
     spec = spec or get_spec()
-    if not character_enabled(spec):
+    char = authored_character(spec)
+    if not any(char.get(f) for f in ("role", "appearance", "wardrobe")):
         return ""
-    char = spec[CHARACTER_KEY]
     bits = [char.get("role"), char.get("appearance"), char.get("wardrobe")]
     tags = ", ".join(b.rstrip(". ") for b in bits if b)
     return tags[:220]
@@ -774,10 +1377,54 @@ def image_directive(spec: Optional[Dict[str, Any]] = None) -> str:
         sheet = character_visual_sheet(spec)
         if sheet:
             blocks.append(sheet)
-    plate = setting_plate(spec)
-    if plate:
-        blocks.append(plate)
+    # A viewfinder restage copies THIS frame. The authored level plate
+    # describes the opening location and fights the live grab.
+    if not is_viewfinder_spec(spec):
+        plate = setting_plate(spec)
+        if plate:
+            blocks.append(plate)
     return "\n\n".join(blocks)
+
+
+def visual_scene_guidance(spec: Optional[Dict[str, Any]] = None) -> str:
+    """How to write `visual_scene` for the active camera.
+
+    The consequence template historically described places as "somebody
+    standing in them would see them" — pure first-person looking-ahead prose.
+    When the camera is third-person that text never names the body, so the
+    image model either drops the character (reads as a POV cut) or invents a
+    reverse/face-on angle to force them in. This block is the corrective: it
+    travels with the consequence prompt and must stay short.
+    """
+    spec = spec or get_spec()
+    cfg = mode_config(spec)
+    who = display_name(spec)
+
+    if not cfg["shows_body"]:
+        return (
+            "WRITING visual_scene FOR THIS CAMERA\n"
+            "Describe the place ahead through the player's eyes after the action. "
+            "No face, head, back, or torso of the player — hands only if they are "
+            "reaching. Never use frame-relative language (\"lower left\", \"edge of "
+            "frame\"). If they moved, describe where they arrived, not the doorway "
+            "they already passed through."
+        )
+
+    lock = cfg.get("follow_lock") or (
+        "Hold the shipped follow grammar: behind or beside them, chest height, "
+        "medium-wide / full-body, with lead room in the direction they face or move"
+    )
+    return (
+        f"WRITING visual_scene FOR THIS CAMERA\n"
+        f"This is a {cfg['phrase']} shot. Name {who} in the sentence — what they "
+        f"are doing and where they stand in the place. Write it as an exterior "
+        f"observation of them in the room, not as what they see looking forward.\n"
+        f"{lock}.\n"
+        f"Do not write an empty environment plate, a hands-only POV, a "
+        f"face-on reverse, a walking-toward-camera hero shot, a worm's-eye hide shot, "
+        f"or a tight product shot of the destination alone. Never use frame-relative "
+        f"language (\"lower left\", \"edge of frame\")."
+    )
 
 
 def narrative_directive(spec: Optional[Dict[str, Any]] = None) -> str:
@@ -798,8 +1445,9 @@ def narrative_directive(spec: Optional[Dict[str, Any]] = None) -> str:
     lines.append(f"CAMERA: {cfg['label']} — {cfg['tagline']}")
     lines.append(cfg["narrative_rule"])
 
-    if character_enabled(spec):
+    if character_enabled(spec) or uses_shipped_protagonist(spec):
         who = display_name(spec)
+        char = authored_character(spec)
         bits = []
         if char.get("role"):
             bits.append(char["role"])
@@ -819,8 +1467,8 @@ def narrative_directive(spec: Optional[Dict[str, Any]] = None) -> str:
                 "stance, and visible injuries as the player sees them."
             )
 
-    if setting_enabled(spec):
-        setting = spec[SETTING_KEY]
+    if setting_authored(spec):
+        setting = authored_setting(spec)
         if setting.get("name"):
             lines.append(f"THE PLACE: {setting['name']}.")
         if setting.get("summary"):
@@ -856,9 +1504,9 @@ def vantage(spec: Optional[Dict[str, Any]] = None) -> str:
 def place_line(spec: Optional[Dict[str, Any]] = None) -> str:
     """One line naming the level and what it looks like, or "" if unauthored."""
     spec = spec or get_spec()
-    if not setting_enabled(spec):
+    if not setting_authored(spec):
         return ""
-    setting = spec[SETTING_KEY]
+    setting = authored_setting(spec)
     head = setting.get("name") or "the level"
     bits: List[str] = []
     if setting.get("summary"):
@@ -879,20 +1527,125 @@ def place_summary(spec: Optional[Dict[str, Any]] = None) -> str:
     direction (image descriptions, situation reports).
     """
     spec = spec or get_spec()
-    if not setting_enabled(spec):
+    if not setting_authored(spec):
         return ""
-    setting = spec[SETTING_KEY]
+    setting = authored_setting(spec)
     name = setting.get("name") or "the level"
     summary = (setting.get("summary") or "").rstrip(".")
     return f"{name} — {summary}." if summary else f"{name}."
 
 
+# Leftover biome phrases from the shipped SOMEWHERE look. A recast Level
+# that names a new place used to still emit these as image law.
+_SHIPPED_PLACE_MARKERS = (
+    "american southwest",
+    "four corners",
+    "horizon industries",
+    "horizon facility",
+    "horizon research",
+)
+
+
+def authored_art_direction(spec: Optional[Dict[str, Any]] = None) -> str:
+    """GAME look, minus leftover shipped biome when the Level is a recast.
+
+    ``image_art_direction`` is a GAME prompt — it is not rewritten when you
+    type a new Level name. The leftover Southwest / Horizon sentences then
+    beat the Level plate the same way Jason's jacket beat a recast Look.
+    """
+    spec = spec or get_spec()
+    raw = str(PROMPTS.get("image_art_direction") or "").strip()
+    if is_shipped_setting(spec):
+        return raw
+    kept: List[str] = []
+    for line in raw.splitlines():
+        if any(m in line.lower() for m in _SHIPPED_PLACE_MARKERS):
+            continue
+        kept.append(line)
+    look = "\n".join(kept).strip()
+    setting = spec[SETTING_KEY]
+    lead: List[str] = []
+    place = place_summary(spec)
+    if place:
+        lead.append(
+            f"WORLD & PLACE\nThis run is at {place} "
+            "Not the shipped Horizon desert fence."
+        )
+    if setting.get("era"):
+        lead.append(f"ERA: {setting['era']}")
+    if setting.get("palette"):
+        lead.append(f"PALETTE: {setting['palette']}")
+    head = "\n".join(lead)
+    if head and look:
+        return f"{head}\n\n{look}"
+    return head or look
+
+
+# Words that cannot end a sentence. A word-boundary cut can land on any of
+# them and leave the anchor promising something it never says.
+_DANGLING_TAIL = re.compile(
+    r"\s+(?:never|and|or|but|with|without|the|an?|of|to|in|on|for|from|than|"
+    r"that|which|while|as|at|by|is|are|was|were|not|no|only)\s*$",
+    re.I,
+)
+
+
+def look_line(spec: Optional[Dict[str, Any]] = None) -> str:
+    """A short LOOK for the live world, from the GAME art-direction prompt.
+
+    The stills bible is a multi-section block. The video model gets one
+    sentence cluster or it drowns the scene. Empty when nothing is authored.
+    A recast Level drops leftover Southwest sentences and names the new
+    place first so live video does not keep walking the fence.
+    """
+    spec = spec or get_spec()
+    raw = str(PROMPTS.get("image_art_direction") or "").strip()
+    if raw and not is_shipped_setting(spec):
+        raw = "\n".join(
+            line for line in raw.splitlines()
+            if not any(m in line.lower() for m in _SHIPPED_PLACE_MARKERS)
+        )
+    if not raw:
+        return ""
+    lines: List[str] = []
+    for line in raw.splitlines():
+        s = line.strip()
+        if not s or s.startswith("_"):
+            continue
+        if s.isupper() and len(s) < 28:
+            continue
+        lines.append(s)
+    text = " ".join(lines)
+    if not text:
+        return ""
+    if len(text) > 180:
+        # Cutting on a word boundary and bolting a full stop onto the end
+        # turned "Threats are human or biological - never robots or future
+        # tech" into "Threats are human or biological - never." A dangling
+        # negation with no object, sitting in every image prompt the game
+        # sends. Prefer the last whole sentence that fits.
+        head = text[:180]
+        stop = max(head.rfind(". "), head.rfind("! "), head.rfind("? "))
+        if stop > 60:
+            text = head[:stop + 1].strip()
+        else:
+            sp = head.rfind(" ")
+            text = (head[:sp] if sp > 80 else head).rstrip(" ,;:-\u2014")
+            while True:
+                trimmed = _DANGLING_TAIL.sub("", text)
+                if trimmed == text:
+                    break
+                text = trimmed
+            text = text.rstrip(" ,;:-\u2014") + "."
+    return text
+
+
 def protagonist_line(spec: Optional[Dict[str, Any]] = None) -> str:
     """One line naming the protagonist and what they look like, or ""."""
     spec = spec or get_spec()
-    if not character_enabled(spec):
+    char = authored_character(spec)
+    if not any(char.get(f) for f in ("name", "role", "appearance", "wardrobe", "signature_gear")):
         return ""
-    char = spec[CHARACTER_KEY]
     head = display_name(spec)
     if char.get("pronouns"):
         head += f" ({char['pronouns']})"
@@ -949,20 +1702,28 @@ def world_anchor(
     wants the level's era and palette.
     """
     spec = spec or get_spec()
+    look = look_line()
     if not is_active(spec):
+        if look:
+            return default.rstrip(". ") + ". " + look
         return default
     parts = [retune(default, spec).strip().rstrip(". ")]
     if include_vantage:
         parts.append(vantage(spec))
 
     setting = spec[SETTING_KEY]
-    if setting_enabled(spec):
+    if setting_authored(spec):
         for field in ("era", "palette"):
             if setting.get(field):
                 parts.append(setting[field].rstrip(". "))
     cam = spec[CAMERA_KEY]
     if cam.get("lens") and include_vantage:
         parts.append(cam["lens"].rstrip(". "))
+    notes = (cam.get("notes") or "").strip()
+    if notes and include_vantage:
+        parts.append(notes.rstrip(". "))
+    if look:
+        parts.append(look.rstrip(". "))
     if include_character and shows_character(spec) and character_enabled(spec):
         who = protagonist_line(spec).rstrip(". ")
         parts.append(f"The player character stays in frame: {who}")
@@ -989,6 +1750,12 @@ def movement_clause(spec: Optional[Dict[str, Any]] = None) -> str:
     if not cfg["shows_body"]:
         return "Smooth continuous first-person motion, the environment flowing past."
     who = display_name(spec)
+    lock = cfg.get("follow_lock")
+    if lock:
+        return (
+            f"Smooth continuous {cfg['phrase']} motion, {lock}. "
+            f"{who} stays in frame as the environment flows past."
+        )
     return (
         f"Smooth continuous {cfg['phrase']} motion, the camera travelling with "
         f"{who}, who stays in frame as the environment flows past."
@@ -1001,10 +1768,58 @@ def scene_floor(spec: Optional[Dict[str, Any]] = None) -> str:
     if not cfg["shows_body"]:
         return "First-person cinematic view of the current scene."
     phrase = cfg["phrase"]
+    who = display_name(spec)
+    lock = cfg.get("follow_lock")
+    if lock:
+        return (
+            f"{phrase[0].upper()}{phrase[1:]} cinematic view of the current scene, "
+            f"{who} in frame. {lock}."
+        )
     return (
         f"{phrase[0].upper()}{phrase[1:]} cinematic view of the current scene, "
-        f"{display_name(spec)} in frame."
+        f"{who} in frame."
     )
+
+
+def live_prefix(spec: Optional[Dict[str, Any]] = None) -> str:
+    """One paragraph every live instance must hear: camera, level, and cast.
+
+    LingBot and Helios have no create_world knobs for those. The prompt is the
+    wire. Without this, an editor save updated stills and the next Play turn
+    while the running video kept walking as a pair of eyes in the old place.
+    """
+    spec = spec or get_spec()
+    parts: List[str] = [vantage(spec)]
+    lens = (spec[CAMERA_KEY].get("lens") or "").strip()
+    if lens:
+        parts.append(lens.rstrip(". "))
+    notes = (spec[CAMERA_KEY].get("notes") or "").strip()
+    if notes:
+        parts.append(notes.rstrip(". "))
+    look = look_line()
+    # Character look is a costume sheet. A viewfinder restage that hears it
+    # will draw that person in front of the lens.
+    if look and not is_viewfinder_spec(spec):
+        parts.append(look.rstrip(". "))
+    place = place_line(spec)
+    if place:
+        parts.append(place.rstrip(". "))
+    shot = (spec[SETTING_KEY].get("opening_shot") or "").strip()
+    # Opening shots are written for the authored follow-cam and often name
+    # the hero walking into frame. A viewfinder restage must not hear that.
+    if shot and not is_viewfinder_spec(spec):
+        parts.append(shot.rstrip(". "))
+    if is_viewfinder_spec(spec):
+        parts.append(viewfinder_hero_ban())
+    if shows_character(spec):
+        who = protagonist_line(spec)
+        if who:
+            lock = mode_config(spec).get("follow_lock")
+            if lock:
+                parts.append(f"{who.rstrip('. ')} stays in frame. {lock}")
+            else:
+                parts.append(f"{who.rstrip('. ')} stays in frame")
+    return ". ".join(p for p in parts if p) + "."
 
 
 # The live world model only distinguishes first from third person — it has one
@@ -1037,11 +1852,25 @@ def live_camera_contract(spec: Optional[Dict[str, Any]] = None) -> Dict[str, Any
         # What create_world is given. First vs third is all it understands.
         "perspective": world_model_perspective(spec),
         "shows_character": shows_character(spec),
-        "subject": display_name(spec) if character_enabled(spec) else "",
+        "subject": display_name(spec) if shows_character(spec) else "",
         "vantage": vantage(spec),
         "motion_clause": motion_clause(spec),
         "movement_clause": movement_clause(spec),
         "scene_floor": scene_floor(spec),
+        # Level + cast compressed for the live prompt. Same facts as
+        # preview.compact, riding the camera payload so one apply() restages
+        # the video when ANY of the sheet changes, not only the VIEW switch.
+        "place_line": place_line(spec),
+        "protagonist_line": protagonist_line(spec) if shows_character(spec) else "",
+        "lens": (spec[CAMERA_KEY].get("lens") or "").strip(),
+        "notes": (spec[CAMERA_KEY].get("notes") or "").strip(),
+        # Viewfinder is the operator's eyes. Character look-lines name the
+        # hero and will walk them into the live restage if they ride along.
+        "look": "" if is_viewfinder_spec(spec) else look_line(),
+        "prefix": live_prefix(spec),
+        # How you DRIVE each camera. Empty means the browser uses its built-in
+        # layout for that view; authored remaps travel with the world.
+        "schemes": spec[CAMERA_KEY].get("schemes") or {},
     }
 
 
@@ -1065,7 +1894,7 @@ def structure_lines(spec: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
         )
 
     if setting_enabled(spec):
-        setting = spec[SETTING_KEY]
+        setting = authored_setting(spec)
         name = setting.get("name") or "the level"
         out["where"] = f"Current position inside {name} (updated!)"
         out["environment"] = ", ".join(
@@ -1084,46 +1913,104 @@ def world_brief(base: str, spec: Optional[Dict[str, Any]] = None) -> str:
     Appended to ``world_initial_state`` at reset so the protagonist and level
     are part of the world state the whole run reasons from — not just a
     per-prompt garnish that the world-evolution pass would erase.
+
+    A recast Level plate LEADS. The shipped Horizon bible is thousands of
+    words about the fence; if it stays first, the image model redraws that
+    yard no matter what the Level card says.
     """
     spec = spec or get_spec()
     directive = narrative_directive(spec)
-    if not directive:
-        return base
-    return f"{base}\n\n{directive}" if base else directive
+    plate = setting_plate(spec)
+    parts: List[str] = []
+    if not is_shipped_setting(spec):
+        if plate:
+            parts.append(plate)
+            parts.append(
+                "THE PLACE above is the current level. Any later description of a "
+                "different biome, facility, or region is background lore, not the "
+                "location of this run."
+            )
+        elif setting_reference_paths(spec):
+            parts.append(
+                "🗺️ LEVEL PLATE — THE PLACE THIS RUN HAPPENS IN\n"
+                "A location plate is attached. That plate is the current level. "
+                "Any later description of a different biome, facility, or region "
+                "is background lore, not the location of this run."
+            )
+    if base:
+        parts.append(base)
+    if directive:
+        parts.append(directive)
+    return "\n\n".join(p for p in parts if p)
 
 
 def opening_shot(spec: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, str]]:
-    """The authored first frame, when the setting spec provides one.
+    """The authored first frame.
 
-    Returns ``{"prologue", "vision"}`` shaped like the hardcoded opening scenes
-    in ``engine.generate_intro_image_fast`` so it can drop straight in, or None
-    to fall back to the shipped Horizon openers.
+    Setting copy wins when it exists. A named character with the body in
+    frame is enough on its own — otherwise changing Character on a World
+    whose Level sheet is off (SOMEWHERE) never reached the opening still.
+    Returns None only when neither sheet has anything to draw, so Play
+    can fall back to the shipped Horizon openers.
     """
     spec = spec or get_spec()
-    if not setting_enabled(spec):
+    char_on = character_enabled(spec) and shows_character(spec)
+    setting = authored_setting(spec)
+    shot = (setting.get("opening_shot") or "").strip()
+    summary = (setting.get("summary") or "").strip()
+    # Written Level copy is the scene, even if the toggle was left off.
+    # SOMEWHERE ships Level-off; typing an opening shot still has to
+    # reach the first frame and the live video.
+    setting_on = setting_enabled(spec) or setting_authored(spec)
+    place = (setting.get("name") or "").strip() or "the location"
+    if not setting_on and not char_on:
         return None
-    setting = spec[SETTING_KEY]
-    shot = setting.get("opening_shot", "").strip()
-    summary = setting.get("summary", "").strip()
-    name = setting.get("name", "").strip()
-    if not (shot or summary):
+    if setting_on and not (shot or summary) and not char_on and not setting_authored(spec):
         return None
 
-    place = name or "the location"
-    lead = (shot or summary).rstrip()
-    vision_bits = [lead if lead.endswith((".", "!", "?")) else lead + "."]
+    who_bits: List[str] = []
+    place_bits: List[str] = []
+    if shot or summary:
+        lead = (shot or summary).rstrip()
+        place_bits.append(lead if lead.endswith((".", "!", "?")) else lead + ".")
     if setting.get("landmarks"):
-        vision_bits.append(f"Visible landmarks: {setting['landmarks']}.")
+        place_bits.append(f"Visible landmarks: {setting['landmarks']}.")
     if setting.get("palette"):
-        vision_bits.append(f"Light and palette: {setting['palette']}.")
+        place_bits.append(f"Light and palette: {setting['palette']}.")
+    if setting.get("era") and not (shot or summary):
+        place_bits.append(f"{setting['era'].rstrip('.')}.")
 
-    if shows_character(spec) and character_enabled(spec):
+    if char_on:
         who = display_name(spec)
-        prologue = f"{who} arrives at {place}."
-        vision_bits.append(f"{who} is in frame, seen by the camera, entering the space.")
+        char = authored_character(spec)
+        look = ", ".join(
+            p for p in (char.get("role"), char.get("appearance"), char.get("wardrobe")) if p
+        )
+        if setting_on:
+            prologue = f"{who} arrives at {place}."
+            body = f"{who} is in frame, seen by the camera, entering the space"
+        else:
+            prologue = f"{who} is here."
+            body = f"{who} is in frame, seen by the camera"
+        if look:
+            body += f" — {look}"
+        if setting_on:
+            who_bits.append(body + ".")
+        else:
+            who_bits.append(f"{body}, standing in {place}.")
+        if not who_bits and not place_bits:
+            who_bits.append(
+                f"{who} stands in {place}. The camera sees their whole body."
+            )
     else:
         prologue = f"You arrive at {place}."
 
+    # WHO leads. The shipped SOMEWHERE one-liner ("1993. The fence. The
+    # shipped demo.") used to open the vision string, so the image model
+    # redrew the default opening and treated the new look as garnish.
+    vision_bits = who_bits + place_bits
+    if not vision_bits:
+        return None
     return {"prologue": prologue, "vision": " ".join(vision_bits)}
 
 
@@ -1134,10 +2021,10 @@ def opening_narration(spec: Optional[Dict[str, Any]] = None) -> Optional[str]:
     Corners opener stands.
     """
     spec = spec or get_spec()
-    if not (character_enabled(spec) or setting_enabled(spec)):
+    if not (character_enabled(spec) or setting_authored(spec)):
         return None
-    char = spec[CHARACTER_KEY]
-    setting = spec[SETTING_KEY]
+    char = authored_character(spec)
+    setting = authored_setting(spec)
 
     sentences: List[str] = []
     if setting.get("era"):
@@ -1148,7 +2035,7 @@ def opening_narration(spec: Optional[Dict[str, Any]] = None) -> Optional[str]:
         sentences.append(f"You are {who}{', ' + role if role else ''}.")
         if char.get("backstory"):
             sentences.append(char["backstory"].rstrip(".") + ".")
-    if setting_enabled(spec):
+    if setting_authored(spec) and (setting.get("name") or setting.get("summary")):
         place = setting.get("name") or "this place"
         summary = setting.get("summary", "").rstrip(".")
         sentences.append(f"Ahead of you: {place}{' — ' + summary if summary else ''}.")
@@ -1156,6 +2043,34 @@ def opening_narration(spec: Optional[Dict[str, Any]] = None) -> Optional[str]:
         sentences.append(f"You carry {char['signature_gear']}.")
 
     return " ".join(s for s in sentences if s) or None
+
+
+def intro_place_state(spec: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+    """situation / location / environment_type for a fresh run.
+
+    Reset used to hardcode the restricted-zone fence and ``desert_edge``
+    even after the Level card named somewhere else.
+    """
+    spec = spec or get_spec()
+    authored_open = opening_shot(spec)
+    place = place_summary(spec) or place_line(spec)
+    recast_place = setting_authored(spec) and not is_shipped_setting(spec)
+    setting_name = (authored_setting(spec).get("name") or "").strip()
+    situation = (authored_open or {}).get("prologue") or (
+        f"You arrive at {place}" if recast_place and place else
+        "You stand at the edge of the restricted zone, camera in hand."
+    )
+    if recast_place:
+        location = setting_name or "authored_place"
+        environment_type = "the authored location"
+    else:
+        location = "desert_edge"
+        environment_type = "desert"
+    return {
+        "situation": situation,
+        "location": location,
+        "environment_type": environment_type,
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1195,6 +2110,37 @@ def recast(text: str, spec: Optional[Dict[str, Any]] = None) -> str:
     if not name or not character_enabled(spec):
         return text
     return SHIPPED_PROTAGONIST_RE.sub(name, text)
+
+
+def recast_stored_prompts(
+    old_name: str = "", spec: Optional[Dict[str, Any]] = None
+) -> int:
+    """Rewrite persisted prompt strings so the world bible matches the sheet.
+
+    ``recast`` only ran at apply-time, so the editor's Character fields
+    could say Wren while ``world_initial_state`` still named Jason. A name
+    change now walks the live prompt file. Appearance-only edits leave
+    the bible alone — CAST still compiles on the next turn.
+    """
+    spec = spec or get_spec()
+    new_name = character_name(spec)
+    if not new_name or not character_enabled(spec):
+        return 0
+    old = str(old_name or "").strip()
+    if old.lower() == new_name.lower():
+        return 0
+    changed: Dict[str, Any] = {}
+    for key, val in dict(PROMPTS).items():
+        if key in SPEC_KEYS or not isinstance(val, str):
+            continue
+        out = recast(val, spec)
+        if old and old.lower() not in ("jason", "jason fleece"):
+            out = re.sub(rf"\b{re.escape(old)}\b", new_name, out)
+        if out != val:
+            changed[key] = out
+    if changed:
+        prompts_store.save_prompts_bulk(changed)
+    return len(changed)
 
 
 def retune(text: str, spec: Optional[Dict[str, Any]] = None) -> str:
@@ -1362,7 +2308,18 @@ def apply(text: str, surface: str = "image", spec: Optional[Dict[str, Any]] = No
     if not is_active(spec):
         return text
 
-    body = reconcile(retune(text, spec), spec)
+    # Reconcile BEFORE retune, not after. Reconcile's job is to judge what the
+    # AUTHOR wrote — retune's job is to rewrite it. Run the other way round,
+    # retune would rewrite "first-person" to "third-person" in place and then
+    # reconcile would delete that whole line for containing a third-person
+    # framing term next to a prohibition, which is its signature for "a rule
+    # forbidding what the active mode requires". Stage 2 handed stage 3 the
+    # evidence to destroy rules that were never about perspective at all.
+    #
+    # That is how LEAVE CAMP lost its entire no-vehicle-cabin constraint — a
+    # line about not putting the camera in a truck, deleted for mentioning a
+    # vantage — but only in third person, and only silently.
+    body = retune(reconcile(text, spec), spec)
 
     if surface == "image":
         head = image_directive(spec)
@@ -1444,9 +2401,11 @@ def wiring_notes(spec: Optional[Dict[str, Any]] = None) -> Dict[str, List[str]]:
             "This level is switched on but every field is blank, so nothing is sent. "
             "Fill in at least a name or a description."
         )
-    if not setting.get("enabled") and any(setting.get(f) for f in _INTENT_FIELDS):
+    if not setting.get("enabled") and setting_authored(spec):
         notes[SETTING_KEY].append(
-            "Switched off, so the shipped opening is used instead of this level."
+            "The Level switch is off, but the words you wrote are still compiled "
+            "into the live scene. Flip the switch on if you want this to replace "
+            "the shipped opening for Play."
         )
     if setting_enabled(spec) and not setting.get("opening_shot"):
         notes[SETTING_KEY].append(
@@ -1657,7 +2616,10 @@ def identity_reference_paths(
     return [p for p in out if not (p in seen or seen.add(p))]
 
 
-def reference_annotation(paths: List[str], spec: Optional[Dict[str, Any]] = None) -> str:
+def reference_annotation(
+    paths: List[str],
+    spec: Optional[Dict[str, Any]] = None,
+) -> str:
     """Tell the image model what the extra plates ARE.
 
     Without this, a character sheet appended to the reference list reads as "the
@@ -1689,3 +2651,130 @@ def reference_annotation(paths: List[str], spec: Optional[Dict[str, Any]] = None
         + "\n".join(lines)
         + "\nThese plates define WHO and WHERE. The scene description defines WHAT IS HAPPENING."
     )
+
+
+def reference_part_label(
+    path: str,
+    spec: Optional[Dict[str, Any]] = None,
+) -> str:
+    """A short label to sit next to one attached image in the Gemini parts list.
+
+    Unlabeled attachments all read as "the previous frame". The character
+    sheet then lost to whatever Jason still was sitting in slot one.
+    """
+    spec = spec or get_spec()
+    path = str(path or "")
+    char_paths = set(character_reference_paths(spec))
+    if path in char_paths:
+        who = display_name(spec)
+        return (
+            f"CHARACTER SHEET for {who} — copy this face, body, hair, and clothes. "
+            "Do NOT copy this photo's background, pose, or framing. "
+            "This is WHO to draw, not a previous game frame."
+        )
+    if path in set(setting_reference_paths(spec)):
+        return (
+            "LOCATION PLATE — copy architecture, materials, palette, and mood. "
+            "Do NOT copy this photo's framing. This is WHERE, not a previous frame."
+        )
+    if is_viewfinder_spec(spec):
+        return viewfinder_place_lock_label()
+    return (
+        "PREVIOUS FRAME — place, light, and materials only. "
+        "If a CHARACTER SHEET is also attached, do NOT copy the person in this frame."
+    )
+
+
+def identity_seed_instruction(spec: Optional[Dict[str, Any]] = None) -> str:
+    """Grammar for a first frame seeded from plates, not from a previous still."""
+    spec = spec or get_spec()
+    who = display_name(spec)
+    place = place_summary(spec) or place_line(spec)
+    bits = [
+        "IDENTITY SEED — these attachments are reference plates, NOT a previous "
+        "game frame. Compose a NEW opening shot from the scene text."
+    ]
+    if place:
+        bits.append(
+            f"If a location plate is attached, the place is {place} — copy its "
+            "architecture, materials, and palette. Do not invent the shipped "
+            "Horizon desert fence unless the Level sheet is that place. "
+            "Do not copy the plate's framing."
+        )
+    bits.append(
+        f"If a character sheet is attached, {who} in the new shot MUST be THAT "
+        "person — same face, body, hair, and clothes. Do not invent the shipped "
+        "default photojournalist. Do not copy the plate's background or pose."
+    )
+    return "\n".join(bits)
+
+
+def keep_place_instruction(
+    spec: Optional[Dict[str, Any]] = None,
+    *,
+    has_setting_plate: bool = False,
+) -> str:
+    """Where to copy when a Level plate or recast place is in play."""
+    spec = spec or get_spec()
+    if not setting_authored(spec):
+        return ""
+    place = place_line(spec)
+    if has_setting_plate:
+        return (
+            f"\n\n🗺️ KEEP THIS PLACE:\n\n"
+            f"A LOCATION PLATE is attached. That plate is WHERE this is"
+            f"{' — ' + place if place else ''}. "
+            "Copy architecture, materials, and palette from the LOCATION PLATE, "
+            "NOT from any previous game frame. A previous frame may show the "
+            "shipped desert fence or another World — ignore that place."
+        )
+    if not is_shipped_setting(spec):
+        return (
+            f"\n\n🗺️ KEEP THIS PLACE:\n\n"
+            f"The level is {place} "
+            "Do not replace it with the shipped Horizon desert fence."
+        )
+    return ""
+
+
+def keep_character_instruction(
+    spec: Optional[Dict[str, Any]] = None,
+    *,
+    has_character_plate: bool = False,
+    extras_are_strangers: bool = False,
+) -> str:
+    """Who to copy when a body belongs in frame.
+
+    Without a plate, "keep the person in the reference" copies whoever is in
+    the previous still — which is how a recast kept drawing Jason. With a
+    plate, that sheet is the person; a previous frame is only the place.
+
+    ``extras_are_strangers`` is for two-shots: the sheet is ONLY the player.
+    Other people must not inherit that face or outfit (PRESS vest clones).
+    """
+    spec = spec or get_spec()
+    who = display_name(spec)
+    if has_character_plate:
+        body = (
+            f"\n\n🕹️ KEEP {who} IN FRAME:\n\n"
+            f"A CHARACTER SHEET is attached. That sheet is who {who} is. "
+            "Copy face, build, hair, and outfit from the CHARACTER SHEET, "
+            "NOT from any previous game frame. A previous frame may show a "
+            f"different person — ignore that person. Draw {who}. "
+            "Do not erase them. Do not render an empty environment plate."
+        )
+    else:
+        body = (
+            f"\n\n🕹️ KEEP {who} IN FRAME:\n\n"
+            f"The player character is {who}. Carry them as the SAME person — "
+            "same face, build, hair, and outfit — re-posed to match the action. "
+            "Do not erase them. Do not swap them for a different person. "
+            "Do not render an empty environment plate."
+        )
+    if extras_are_strangers:
+        body += (
+            f"\nONLY {who} copies that sheet. Any other person is a stranger — "
+            "different face, hair, clothes, and body. Do not clone the player. "
+            "Do not dress anyone else in the player's vest, cap, or badge."
+        )
+    return body
