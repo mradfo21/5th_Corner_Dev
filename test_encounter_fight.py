@@ -255,6 +255,92 @@ class TestFirstPersonDoesNotDrawASecondPlayer(unittest.TestCase):
         self.assertNotIn("FIRST-PERSON POV", prompt)
 
 
+class TestAShotDescriptionIsNotAPerson(unittest.TestCase):
+    """A vision description narrates the photograph, so it opens by naming the
+    shot. That whole sentence was handed over as the stranger's appearance, so
+    the plate prompt asked for "a newly introduced person named 'A person' - A
+    first-person perspective shows a hand holding a two-way radio". Gemini drew
+    the camera instruction: a first-person hand in a plaid sleeve, no standoff,
+    and the player replaced by whoever owned that sleeve. One frame later the
+    resolve copied faces off its reference and the right player came back,
+    which is exactly how it looked in play - wrong on entry, right after the
+    first choice."""
+
+    CAMERA_TALK = ("A first-person perspective shows a hand holding a black "
+                   "two-way radio with a digital watch on the wrist")
+
+    def test_the_viewpoint_lead_in_is_not_kept_as_a_look(self):
+        self.assertNotIn("first-person",
+                         encounter.distinct_enemy_look(self.CAMERA_TALK).lower())
+
+    def test_a_shot_with_no_person_in_it_falls_back_to_a_stranger(self):
+        self.assertEqual(encounter._DEFAULT_STRANGER_LOOK,
+                         encounter.distinct_enemy_look(self.CAMERA_TALK))
+        self.assertEqual(encounter._DEFAULT_STRANGER_LOOK,
+                         encounter.distinct_enemy_look("POV of a hand gripping a wrench"))
+
+    def test_the_person_survives_when_the_framing_is_stripped_off(self):
+        for narrated, person in (
+            ("The image shows a man in a red jacket", "a man in a red jacket"),
+            ("A wide shot depicts a guard in a long coat", "a guard in a long coat"),
+            ("Close-up of a woman in a leather jacket", "a woman in a leather jacket"),
+        ):
+            self.assertEqual(person, encounter.distinct_enemy_look(narrated))
+
+    def test_a_plain_description_is_left_alone(self):
+        look = "a man in a grease-stained grey coverall and knit cap"
+        self.assertEqual(look, encounter.distinct_enemy_look(look))
+
+    def test_first_person_no_longer_certifies_itself_as_a_person(self):
+        # A hyphen is a word boundary, so \bperson\b matched inside
+        # "first-person" and the phrase that broke the frame passed every
+        # "is this a human?" check in the module.
+        self.assertEqual("", encounter._first_person_noun("A first-person perspective"))
+        self.assertEqual("man", encounter._first_person_noun("a man in a coat"))
+
+    def test_the_brief_built_from_a_frame_never_carries_the_framing(self):
+        brief = encounter.brief_from_vision({"description": self.CAMERA_TALK,
+                                             "setting": "outdoor industrial yard"})
+        self.assertNotIn("perspective", brief["character"]["look"].lower())
+        self.assertNotIn("first-person", brief["character"]["look"].lower())
+
+    def test_the_plate_prompt_cannot_be_handed_a_camera_move(self):
+        brief = _brief(character={"label": "A person", "kind": "person",
+                                  "look": self.CAMERA_TALK, "stance": "hostile"})
+        with mock.patch("game_identity.shows_character", return_value=True):
+            prompt = encounter.build_encounter_plate_prompt(
+                brief, img2img=True, setting="outdoor")
+        self.assertNotIn("first-person perspective", prompt.lower())
+        self.assertIn("TWO DISTINCT PEOPLE", prompt)
+
+
+class TestThePlayerSurvivesTheStandoffPlate(unittest.TestCase):
+    """The plate locked the PLACE and then said "ADD the new character", which
+    left the people unprotected: the newcomer was drawn large in front and the
+    player was dropped out of their own standoff. The resolve never had this
+    problem because hold_cast makes it copy faces out of the reference."""
+
+    def _plate(self, shows_player, img2img=True):
+        with mock.patch("game_identity.shows_character", return_value=shows_player):
+            return encounter.build_encounter_plate_prompt(
+                _brief(), img2img=img2img, setting="outdoor")
+
+    def test_the_player_is_copied_off_the_reference_not_reinvented(self):
+        prompt = self._plate(True)
+        self.assertIn("CARRY THE PLAYER OVER", prompt)
+        self.assertIn("IN FRAME", prompt)
+
+    def test_only_one_person_joins_the_photograph(self):
+        self.assertIn("EXACTLY ONE new person", self._plate(True))
+
+    def test_first_person_worlds_are_left_alone(self):
+        # There is no player body to carry over when the camera is their eyes.
+        self.assertNotIn("CARRY THE PLAYER OVER", self._plate(False))
+
+    def test_text_to_image_has_no_reference_to_carry_anyone_from(self):
+        self.assertNotIn("CARRY THE PLAYER OVER", self._plate(True, img2img=False))
+
+
 class TestTheCameraStopsFollowingThemWhenItIsOver(unittest.TestCase):
     """Breaking away was followed by turns of the camera trailing the person
     you just escaped, because the enemy stayed the object-permanence subject

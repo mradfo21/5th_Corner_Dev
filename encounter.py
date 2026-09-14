@@ -87,6 +87,71 @@ _PERSON_NOUNS = (
     "person", "someone", "creature", "presence",
 )
 
+# A vision description narrates a PHOTOGRAPH, so it opens by naming the shot
+# ("A first-person perspective shows a hand holding a two-way radio…"). The
+# enemy's look is pasted straight into the plate prompt as an appearance, so
+# that lead-in stops reading as description and starts reading as a camera
+# instruction: Gemini drew the first-person hand it was told about, the
+# standoff never happened, and the player became whoever owned that sleeve.
+# Strip the framing off before any of it can describe a person.
+_CAMERA_LEAD_RE = re.compile(
+    r"^\W*(?:in\s+)?(?:a|an|the|this)?\s*"
+    r"(?:extreme\s+|medium\s+|wide\s+|close[\s-]?up\s+|low\s+|high\s+)*"
+    r"(?:first[\s-]person|third[\s-]person|second[\s-]person|pov|point[\s-]of[\s-]view|"
+    r"over[\s-]the[\s-]shoulder|bird'?s[\s-]eye|aerial|overhead|establishing|"
+    r"wide|close[\s-]?up|photograph|photo|picture|image|frame|shot|scene|view|"
+    r"angle|perspective|composition|camera)\b[^,.;]*?"
+    r"\b(?:shows?|showing|depicts?|depicting|captures?|capturing|features?|"
+    r"featuring|presents?|of|is|are|we\s+see|you\s+see)\b\s*",
+    re.I,
+)
+# Viewpoint talk anywhere in the clause, not just at the front.
+_CAMERA_PHRASE_RE = re.compile(
+    r"\b(?:from\s+)?(?:a|an|the)?\s*"
+    r"(?:first[\s-]person|third[\s-]person|point[\s-]of[\s-]view|pov|"
+    r"over[\s-]the[\s-]shoulder)\s*"
+    r"(?:perspective|view|viewpoint|angle|shot|framing)?\b",
+    re.I,
+)
+
+
+def strip_camera_language(text: str) -> str:
+    """Drop shot/viewpoint narration so a look describes a PERSON, not a frame."""
+    out = str(text or "").strip()
+    if not out:
+        return ""
+    for _ in range(3):  # "A wide shot shows a POV of…" nests
+        stripped = _CAMERA_LEAD_RE.sub("", out, count=1).strip()
+        if stripped == out:
+            break
+        out = stripped
+    out = _CAMERA_PHRASE_RE.sub(" ", out)
+    out = re.sub(r"\s{2,}", " ", out).strip(" ,.;:-")
+    return out
+
+
+def look_is_camera_language(text: str) -> bool:
+    """True when a 'look' is really a description of the shot, not of a body.
+
+    `_first_person_noun` used to answer yes to "A first-person perspective",
+    because a hyphen is a word boundary and `\\bperson\\b` matches inside it —
+    so the very phrase that broke the frame also certified itself as a person.
+    """
+    raw = str(text or "").strip()
+    if not raw:
+        return True
+    cleaned = strip_camera_language(raw)
+    if cleaned == raw:
+        # No framing talk in it at all. A brief's invented look is allowed to
+        # be pure wardrobe ("an oversized yellow raincoat, hood pulled low")
+        # with no person noun anywhere, so absence of one proves nothing here.
+        return False
+    if not cleaned:
+        return True
+    # Framing WAS stripped, so this started life as a sentence about a shot.
+    # It only survives if what is left actually describes a body.
+    return not _first_person_noun(cleaned)
+
 ENCOUNTER_BRIEF_SCHEMA = {
     "type": "object",
     "properties": {
@@ -249,6 +314,10 @@ def _is_clothing_clause_label(text: str) -> bool:
 
 def _first_person_noun(text: str) -> str:
     low = str(text or "").lower()
+    # "first-person" / "third-person" are camera talk. A hyphen is a word
+    # boundary, so \bperson\b matched inside them and a viewpoint phrase
+    # passed every "does this describe a human?" check in the module.
+    low = re.sub(r"\b(?:first|second|third)[\s-]person\b", " ", low)
     for noun in _PERSON_NOUNS:
         if re.search(rf"\b{re.escape(noun)}\b", low):
             return noun
@@ -385,8 +454,16 @@ def look_clones_player(text: str) -> bool:
 
 
 def distinct_enemy_look(look: str) -> str:
-    """Keep a stranger look that cannot be read as the player's vest."""
-    raw = _clip(look, "", 160)
+    """Keep a stranger look that cannot be read as the player's vest.
+
+    Also the last gate before a look reaches the image prompt, so it is where
+    camera narration has to die: the plate prompt drops this string in as the
+    other person's appearance, and a look that still says "a first-person
+    perspective shows…" re-aims the whole frame instead of dressing anybody.
+    """
+    if look_is_camera_language(look):
+        return _DEFAULT_STRANGER_LOOK
+    raw = _clip(strip_camera_language(look), "", 160)
     if raw and not look_clones_player(raw):
         return raw
     return _DEFAULT_STRANGER_LOOK
@@ -836,16 +913,22 @@ def brief_from_vision(vision: Optional[dict], place_hold: str = "") -> dict:
               "tendril", "blood", "tumor")
     figure = ("figure", "person", "man", "woman", "miner", "guard",
               "silhouette", "stranger")
+    # `desc` narrates the whole photograph from the camera's seat. Handing it
+    # over whole as the stranger's appearance is what put "A first-person
+    # perspective shows a hand holding a two-way radio" into the plate prompt
+    # as a person, so strip the framing and keep only the clause that actually
+    # describes somebody.
+    body = strip_camera_language(desc)
     if any(w in low for w in threat):
         kind = "creature"
         label = "The growth" if any(w in low for w in ("mass", "flesh", "growth", "tumor")) \
             else "A creature"
-        look = _clip(desc, "something living in this place", 160)
+        look = _clip(body, "something living in this place", 160)
         danger = "it is already reaching toward you from this place"
     elif any(w in low for w in figure):
         kind = "person"
         label = "A stranger"
-        look = _clip(desc, "a wary human figure already in this place", 160)
+        look = plate_stranger_look(body, fallback="a wary human figure already in this place")
         danger = "they are already close enough to hurt you"
     else:
         kind = "person"
@@ -1433,6 +1516,23 @@ def build_encounter_plate_prompt(brief: dict, img2img: bool = True,
             bits.append(
                 "This frame is INDOORS. Stay in this same room. Same walls, "
                 "same light. Do not go outside or into a different room."
+            )
+        if _camera_shows_player():
+            # The place lock protects the location and then says "ADD the new
+            # character", which leaves the people fair game: the newcomer got
+            # drawn large in the foreground and the player was dropped out of
+            # their own standoff, so the first frame showed a stranger as
+            # "me". The resolve never had this problem because hold_cast makes
+            # it copy faces out of the reference. The plate needs the same
+            # instruction, scoped to the one person already standing there.
+            bits.append(
+                "CARRY THE PLAYER OVER — HARD. The person already in the "
+                "reference photograph IS the player. Copy their face, hair, "
+                "build, and clothes from that photograph and keep them IN "
+                "FRAME at similar size, turned to face the newcomer, body and "
+                "face readable. Do not delete them, do not swap them for the "
+                "newcomer, and do not give the frame to the newcomer alone. "
+                "Add EXACTLY ONE new person to the photograph."
             )
     look = distinct_enemy_look(char.get("locked_look") or char.get("look") or "")
     if _camera_shows_player():
