@@ -8994,6 +8994,20 @@ def _apply_cached_opening_frame(
             except Exception:
                 pass
         return True
+    # The frame on disk may be a picture of somebody else. It is stamped with
+    # the World SNAPSHOT's hash, but a run is played on the live prompts, and
+    # the snapshot only moves when the level is saved — so editing the
+    # protagonist left this reading "ready" while showing the old hero, and
+    # the run cut to the real one on turn two. Only open on a frame that was
+    # drawn from the prompts this run is about to use.
+    if not world_frames.drawn_from_live(rec):
+        print(f"[WORLD FRAMES] not opening on {slug}'s cached frame — it was "
+              f"drawn from different prompts; rendering this run's own",
+              flush=True)
+        # Deliberately no ensure() here: it would re-render from the snapshot,
+        # i.e. the wrong hero again. The intro about to run installs the right
+        # frame itself (see world_frames.remember_from_play).
+        return True
     web = rec["url"]
     img_path = rec["path"]
     caption = (intro_image_kwargs or {}).get("caption") or ""
@@ -9058,8 +9072,11 @@ def _apply_cached_opening_frame(
         print(f"[WORLD FRAMES] opening not seeded: history already has "
               f"{len(hist)} entries", flush=True)
     logging.info(f"[WORLD FRAMES] opening from cache for {slug}: {web}")
-    # Dirty: show this still now, still spawn a regen so the cache catches up.
-    return bool(rec.get("dirty"))
+    # No regen behind it. The frame was drawn from the prompts this run is
+    # using, so it is already right, and a background regen would redraw it
+    # from the snapshot — which is how the wrong hero got cached in the
+    # first place.
+    return False
 
 # --- Internal Reset Logic --- (Moved from api_reset for reusability)
 def _perform_game_reset() -> List[Dict[str, Any]]:

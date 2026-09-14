@@ -72,18 +72,19 @@ class _Isolated(unittest.TestCase):
             wf._timers.clear()
 
     def _rendered_world(self, name: str = "Yard") -> dict:
-        """A World whose frame is a real opening shot.
+        """A World whose frame is a real opening shot of the current hero.
 
         The harness runs with images off, so ensure() can only produce a mint
         placeholder. Anything testing what a player sees on Start needs a
-        frame that claims to be rendered, because Play now refuses to open a
-        run on a placeholder.
+        frame that claims to be rendered, because Play refuses to open a run
+        on a placeholder — and one stamped with the prompts that drew it,
+        because Play also refuses to open on a picture of somebody else.
         """
         info = self._world(name)
         wf.ensure(info["slug"], wait=True)
         wf.install_from_file(info["slug"], wf.frame_path(info["slug"]),
                              wf.fingerprint_for_slug(info["slug"]),
-                             source="generated")
+                             source="generated", drawn=wf.live_fingerprint())
         return info
 
     def tearDown(self):
@@ -425,6 +426,88 @@ class TestInject(_Isolated):
             "wf-test", state, items, {"caption": "x", "dispatch": "y"})
         self.assertTrue(need_spawn)
         self.assertEqual(items, [])
+
+
+class TestTheOpeningFrameIsOfThisRunsHero(_Isolated):
+    """The cached frame is stamped with the World SNAPSHOT's hash, but a run
+    is played on the live prompt file, and the snapshot only moves when
+    somebody saves the level. So changing the protagonist in the editor left
+    the cache reading "ready" while holding a picture of the previous hero:
+    Start showed one character and turn two cut to a different one."""
+
+    def _open(self, slug):
+        exp = xs.get_experience()
+        exp["worlds"][0]["slug"] = slug
+        xs.save_experience(exp)
+        items = []
+        with patch.object(engine, "_load_history", return_value=[]), \
+             patch.object(engine, "_save_history"), \
+             patch.object(engine, "_sync_ambient_history"), \
+             patch.object(engine, "_spawn_cached_opening_vision"), \
+             patch.object(wf, "ensure") as warm:
+            need_spawn = engine._apply_cached_opening_frame(
+                "wf-test",
+                {"experience_world_id": exp["worlds"][0]["id"], "tape_frames": []},
+                items, {"caption": "x", "dispatch": "y"})
+        return need_spawn, items, warm
+
+    def test_a_frame_drawn_for_this_hero_is_opened_on(self):
+        info = self._rendered_world("Yard")
+        need_spawn, items, _ = self._open(info["slug"])
+        self.assertFalse(need_spawn)
+        self.assertEqual(len(items), 1)
+
+    def test_recasting_the_hero_sends_the_run_to_render_its_own(self):
+        info = self._rendered_world("Yard")
+        # Exactly what saving Cast & Camera in the editor does: the live
+        # prompts move, the World snapshot does not.
+        ps.save_prompts_bulk({"player_character": dict(
+            gi.default_spec()["player_character"],
+            enabled=True, name="Someone Else", appearance="tall, shaved head")})
+        self.assertEqual(wf.record(info["slug"])["status"], "ready",
+                         "the snapshot hash cannot see this change")
+        need_spawn, items, _ = self._open(info["slug"])
+        self.assertTrue(need_spawn, "a run must not open on the old hero")
+        self.assertEqual(items, [], "nothing of the old hero reaches the feed")
+
+    def test_a_frame_of_unknown_provenance_is_not_trusted(self):
+        """Every frame cached before this existed has no record of what drew
+        it, and could be anybody."""
+        info = self._rendered_world("Yard")
+        meta = wf._read_meta(info["slug"])
+        meta.pop("drawn", None)
+        wf._write_meta(info["slug"], meta)
+        self.assertFalse(wf.drawn_from_live(wf.record(info["slug"])))
+        need_spawn, items, _ = self._open(info["slug"])
+        self.assertTrue(need_spawn)
+        self.assertEqual(items, [])
+
+    def test_the_wrong_hero_is_not_re_rendered_from_the_snapshot(self):
+        """Warming the cache here would redraw it from the snapshot — the
+        wrong hero again, for money. The intro that is about to run caches
+        the right frame itself."""
+        info = self._rendered_world("Yard")
+        ps.save_prompts_bulk({"player_character": dict(
+            gi.default_spec()["player_character"],
+            enabled=True, name="Someone Else")})
+        _, _, warm = self._open(info["slug"])
+        warm.assert_not_called()
+
+    def test_an_intro_rendered_in_play_records_the_live_prompts(self):
+        info = self._world("Yard")
+        src = Path(self._tmpdir.name) / "intro.png"
+        src.write_bytes(b"\x89PNG\r\n\x1a\n" + b"intro" * 20)
+        with patch.object(wf, "start_world_slug", return_value=info["slug"]):
+            wf.remember_from_play(str(src), "wf-test")
+        rec = wf.record(info["slug"])
+        self.assertEqual(rec["source"], "intro")
+        self.assertTrue(wf.drawn_from_live(rec),
+                        "Play drew it from the live prompts, so it must say so")
+
+    def test_a_placeholder_claims_nothing_about_who_is_in_it(self):
+        info = self._world("Yard")
+        wf.ensure(info["slug"], wait=True)
+        self.assertFalse(wf.drawn_from_live(wf.record(info["slug"])))
 
 
 class TestTheOpeningFrameIsActuallyLookedAt(_Isolated):

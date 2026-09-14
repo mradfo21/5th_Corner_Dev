@@ -4,16 +4,21 @@ world_frames.py — per-World first-frame cache. This is the app's load time.
 Each World (a prompt snapshot in ``worlds/<slug>.json``) gets a sidecar still:
 
     worlds/<slug>.frame.png
-    worlds/<slug>.frame.json   {fingerprint, updated, source, prompt}
+    worlds/<slug>.frame.json   {fingerprint, drawn, updated, source, prompt}
 
 The fingerprint is a hash of the prompt keys that actually change the opening
-shot. When it matches, Play / Watch / the editor reuse the still. When it
-doesn't (identity saved in the editor, persist, a prompt that steers the
-camera), we regenerate in the background and swap the file atomically.
+shot, taken from the World snapshot. When it matches, the editor reuses the
+still. When it doesn't (identity saved in the editor, persist, a prompt that
+steers the camera), we regenerate in the background and swap the file
+atomically.
 
-Play never waits on that render if a still — even a slightly stale one — is
-already on disk. The cached frame is the first thing on screen; a dirty regen
-lands later if one is needed.
+``drawn`` is a second hash: the prompts that actually produced the picture,
+which is not always the snapshot's. A run reads the LIVE prompt file, and the
+snapshot only moves when somebody saves the level — so editing the
+protagonist changed who the run was about while leaving the cached frame
+stamped clean. Play opened on a picture of the previous hero and cut to the
+new one on turn two. Play now checks ``drawn`` against the live prompts and
+renders its own opening rather than starting on a stranger.
 
 Mock / no-keys: copy an authored level plate, else a tiny mint placeholder.
 Never fails the graph, never bills, never touches a play session's images/.
@@ -156,6 +161,33 @@ def fingerprint_for_slug(slug: str) -> str:
     return fingerprint(data.get("prompts") or {})
 
 
+def live_fingerprint() -> str:
+    """The hash of the prompts a run will actually be played on.
+
+    Not the same thing as the World snapshot's hash. ``worlds/<slug>.json``
+    is a saved copy that only moves when somebody saves the level, while a
+    run reads the live prompt file — so editing the protagonist in the editor
+    changes who the run is about without changing the snapshot at all.
+    """
+    try:
+        from prompts_store import PROMPTS
+        return fingerprint(PROMPTS)
+    except Exception:
+        return ""
+
+
+def drawn_from_live(rec: Optional[Dict[str, Any]]) -> bool:
+    """Is this frame a picture of the character the run is about to play?
+
+    Frames record the prompts that actually drew them. A frame with no such
+    record predates this and could be anybody, so it does not count — the
+    run renders its own opening rather than starting on a stranger.
+    """
+    drawn = str((rec or {}).get("drawn") or "")
+    live = live_fingerprint()
+    return bool(drawn and live and drawn == live)
+
+
 def _read_meta(slug: str) -> Dict[str, Any]:
     path = meta_path(slug)
     if not path.is_file():
@@ -185,6 +217,7 @@ def record(slug: str, prompts: Optional[Dict[str, Any]] = None) -> Dict[str, Any
         "dirty": True,
         "generating": False,
         "fingerprint": "",
+        "drawn": "",
         "source": "",
         "prompt": "",
     }
@@ -217,6 +250,7 @@ def record(slug: str, prompts: Optional[Dict[str, Any]] = None) -> Dict[str, Any
             "dirty": dirty,
             "generating": generating and dirty,
             "fingerprint": have or want,
+            "drawn": str(meta.get("drawn") or ""),
             "source": str(meta.get("source") or ""),
             "prompt": str(meta.get("prompt") or ""),
         }
@@ -229,6 +263,7 @@ def record(slug: str, prompts: Optional[Dict[str, Any]] = None) -> Dict[str, Any
         "dirty": True,
         "generating": generating,
         "fingerprint": want,
+        "drawn": "",
         "source": "",
         "prompt": str(meta.get("prompt") or ""),
     }
@@ -304,7 +339,7 @@ def _placeholder_png(width: int = 64, height: int = 64) -> bytes:
 
 
 def _install_bytes(slug: str, data: bytes, fp: str, source: str,
-                   prompt: str = "") -> Dict[str, Any]:
+                   prompt: str = "", drawn: str = "") -> Dict[str, Any]:
     slug = _safe_slug(slug)
     _worlds_dir().mkdir(parents=True, exist_ok=True)
     dest = frame_path(slug)
@@ -313,6 +348,7 @@ def _install_bytes(slug: str, data: bytes, fp: str, source: str,
     tmp.replace(dest)
     _write_meta(slug, {
         "fingerprint": fp,
+        "drawn": drawn,
         "updated": time.time(),
         "source": source,
         "prompt": _meta_prompt(slug, prompt=prompt),
@@ -321,8 +357,14 @@ def _install_bytes(slug: str, data: bytes, fp: str, source: str,
 
 
 def install_from_file(slug: str, src: str, fp: str = "", source: str = "generated",
-                      prompt: str = "") -> Dict[str, Any]:
-    """Copy an existing still into the World cache. Used by intro gen + plates."""
+                      prompt: str = "", drawn: str = "") -> Dict[str, Any]:
+    """Copy an existing still into the World cache. Used by intro gen + plates.
+
+    ``drawn`` is the fingerprint of the prompts that actually produced the
+    picture, which is not always this World's snapshot — an intro rendered
+    during play comes from the live prompt file. Play compares it against the
+    live prompts before it will open a run on the frame.
+    """
     slug = _safe_slug(slug)
     path = Path(src)
     if not slug or not path.is_file():
@@ -335,11 +377,13 @@ def install_from_file(slug: str, src: str, fp: str = "", source: str = "generate
     tmp.replace(dest)
     _write_meta(slug, {
         "fingerprint": fp,
+        "drawn": drawn,
         "updated": time.time(),
         "source": source,
         "prompt": _meta_prompt(slug, prompt=prompt),
     })
-    log.info("[WORLD FRAMES] cached %s from %s (%s)", slug, source, fp[:8])
+    log.info("[WORLD FRAMES] cached %s from %s (%s, drawn %s)",
+             slug, source, fp[:8], (drawn or "-")[:8])
     return record(slug)
 
 
@@ -370,9 +414,11 @@ def remember_from_play(img_path: str, session_id: str = "default") -> None:
     if not slug:
         return
     try:
+        # Play rendered this against the LIVE prompts, so that — not the
+        # World snapshot — is what the picture is actually of.
         install_from_file(
             slug, img_path, fingerprint_for_slug(slug),
-            source="intro", prompt=prompt,
+            source="intro", prompt=prompt, drawn=live_fingerprint(),
         )
     except Exception as e:
         log.warning("[WORLD FRAMES] remember_from_play failed: %s", e)
@@ -437,7 +483,7 @@ def _generate_paid(slug: str, prompts: Dict[str, Any], fp: str) -> Optional[str]
     if img_path and Path(img_path).is_file():
         install_from_file(
             slug, img_path, fp, source="generated",
-            prompt=scene_prompt_for(prompts, vision),
+            prompt=scene_prompt_for(prompts, vision), drawn=fp,
         )
         return str(img_path)
     return None
