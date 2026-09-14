@@ -2872,12 +2872,6 @@ def _vision_analyze_all(image_path: str) -> dict:
     if not LLM_ENABLED or not VISION_ENABLED:
         return {"description": "", "time_of_day": "", "color_palette": ""}
     
-    # Check cache first
-    cache_key = os.path.abspath(image_path)
-    if cache_key in _vision_cache:
-        print(f"[VISION] Using cached analysis for {os.path.basename(image_path)}")
-        return _vision_cache[cache_key]
-    
     try:
         
         # Handle path - ensure it's accessible
@@ -2893,7 +2887,30 @@ def _vision_analyze_all(image_path: str) -> dict:
         from pathlib import Path
         full_path_obj = Path(full_path)
         small_path = full_path_obj.parent / full_path_obj.name.replace(".png", "_small.png")
-        use_path = small_path if small_path.exists() else full_path_obj
+        use_path = full_path_obj
+        if small_path.exists():
+            # A downsample left over from an earlier render of the same path
+            # is a picture nobody is looking at any more.
+            try:
+                fresh = small_path.stat().st_mtime >= full_path_obj.stat().st_mtime
+            except OSError:
+                fresh = False
+            if fresh:
+                use_path = small_path
+        
+        # Cache on the BYTES, not the name. World frames live at one fixed
+        # path per world (worlds/<slug>.frame.png) and are regenerated in
+        # place, so a path-keyed cache kept answering with the description of
+        # the previous render — the game confidently describing a picture
+        # that is no longer on screen.
+        try:
+            st = use_path.stat()
+            cache_key = f"{use_path.resolve()}:{st.st_mtime_ns}:{st.st_size}"
+        except OSError:
+            cache_key = str(use_path)
+        if cache_key in _vision_cache:
+            print(f"[VISION] Using cached analysis for {os.path.basename(image_path)}")
+            return _vision_cache[cache_key]
         
         with open(use_path, "rb") as f:
             image_bytes = f.read()
@@ -8889,6 +8906,55 @@ def generate_intro_turn_feed_items(session_id: str = 'default', new_state: Optio
     return intro_items, intro_image_kwargs
 
 
+def _spawn_cached_opening_vision(session_id: str, img_path: str) -> None:
+    """Look at the cached first frame, off the reset's critical path.
+
+    The cached opening is the picture the player starts on, but nothing ever
+    read it: the entry went into history with an empty ``vision_analysis``, so
+    everything downstream fell through to ``vision_dispatch`` — the intro
+    dispatch, which describes the protagonist rather than the scene on screen.
+    The first turn was therefore grounded on a picture nobody had looked at.
+    """
+    if not VISION_ENABLED or not img_path:
+        print(f"[WORLD FRAMES] opening vision skipped "
+              f"(vision={VISION_ENABLED}, path={bool(img_path)})", flush=True)
+        return
+
+    def _worker():
+        global history
+        try:
+            vres = _vision_analyze_all(img_path)
+        except Exception as e:
+            log_error(f"[WORLD FRAMES] opening vision failed: {e}")
+            return
+        vision = ((vres or {}).get("description") or "").strip() \
+            if isinstance(vres, dict) else ""
+        if not vision:
+            print("[WORLD FRAMES] opening vision returned nothing", flush=True)
+            return
+        with WORLD_STATE_LOCK:
+            hist = _load_history(session_id)
+            # Only the opening, and only while the run is still sitting on it.
+            if not hist or not (hist[0] or {}).get("cached_opening"):
+                print("[WORLD FRAMES] opening vision arrived after the run "
+                      "moved on; dropping", flush=True)
+                return
+            if hist[0].get("vision_analysis"):
+                return
+            hist[0]["vision_analysis"] = vision
+            for key, src in (("setting_type", "setting"),
+                             ("spatial_compass", "spatial")):
+                val = (vres.get(src) or "").strip()
+                if val:
+                    hist[0][key] = val
+            _save_history(hist, session_id)
+            if get_active_session_id() == session_id:
+                history = hist
+        print(f"[WORLD FRAMES] opening vision len={len(vision)}", flush=True)
+
+    threading.Thread(target=_worker, name="opening-vision", daemon=True).start()
+
+
 def _apply_cached_opening_frame(
     session_id: str,
     new_state: dict,
@@ -8983,6 +9049,10 @@ def _apply_cached_opening_frame(
         })
         _save_history(hist, session_id)
         _sync_ambient_history(hist, session_id)
+        _spawn_cached_opening_vision(session_id, img_path)
+    else:
+        print(f"[WORLD FRAMES] opening not seeded: history already has "
+              f"{len(hist)} entries", flush=True)
     logging.info(f"[WORLD FRAMES] opening from cache for {slug}: {web}")
     # Dirty: show this still now, still spawn a regen so the cache catches up.
     return bool(rec.get("dirty"))
