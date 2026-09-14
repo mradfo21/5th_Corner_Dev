@@ -4564,6 +4564,55 @@ _TRANSITION_PREPS = [
     'up into', 'in to', 'onto',
 ]
 
+# Everything above is an interiors vocabulary: the prepositions all mean
+# "entering an enclosure" and every destination noun is a room or a passage.
+# In an open world nothing could ever match, so "sprint toward the scorched
+# basin", "scale the lightning-struck mesa" and "follow the canyon trail" were
+# all classed as in-place beats and rendered as img2img edits of the previous
+# frame. Travel outdoors is a destination you cross to, not a threshold you
+# pass through.
+_TRAVEL_PREPS = [
+    'toward', 'towards', 'across', 'over to', 'up to', 'down to',
+    'out onto', 'out to', 'back to', 'to the', 'to a ', 'to an ',
+    'over the', 'over a ', 'down the', 'up the', 'past the', 'past a ',
+    'beyond the', 'behind the',
+]
+
+# Locomotion that covers GROUND. Kept separate from _TRANSITION_MOVE_VERBS
+# because these do not need an enclosure to count, and deliberately excludes
+# the short-range approach verbs (walk / move / go / head / approach /
+# advance). Crossing a room to stand at an oil pump is a new vantage on the
+# same place, and cutting for it is what made MOVE read as teleporting; that
+# case is handled by the chain cap below, not by a cut.
+_TRAVEL_VERBS = [
+    'sprint', 'run', 'dash', 'bolt', 'charge', 'race', 'jog', 'hurry',
+    'march', 'hike', 'trek', 'cross', 'traverse', 'follow', 'scale',
+    'climb', 'ascend', 'descend', 'clamber', 'scramble', 'vault', 'leap',
+    'wade', 'swim', 'creep', 'sneak', 'crawl', 'venture', 'retreat',
+    'backtrack', 'double back', 'make your way',
+]
+
+# Travel verbs that take their destination as a plain object: you do not
+# "scale INTO" a mesa, you scale it, and you are somewhere else after.
+_TRAVEL_OBJECT_VERBS = [
+    'scale', 'cross', 'traverse', 'follow', 'climb', 'ascend', 'descend',
+]
+
+# A heading with no named destination still moves the camera.
+_TRAVEL_DIRECTIONS = [
+    'forward', 'ahead', 'onward', 'onwards', 'downhill', 'uphill',
+    'upstream', 'downstream', 'inland', 'north', 'south', 'east', 'west',
+]
+
+# Verbs that keep the body where it is. "Follow the wire with your eyes" and
+# "climb onto the crate to get a better look" are observations, not journeys,
+# so an observational tail vetoes a travel match.
+_IN_PLACE_MARKERS = [
+    'with your eyes', 'with the camcorder', 'through the viewfinder',
+    'from here', 'from where you stand', 'without moving', 'in place',
+    'stay put', 'hold position', 'for a better look', 'to get a better look',
+]
+
 # Words signalling continuation WITHIN the current space rather than crossing into
 # a new one ("navigate DEEPER into the crawlspace" = same crawlspace, keep img2img
 # continuity; "scramble into the ventilation shaft" = new space, hard cut).
@@ -4665,6 +4714,24 @@ def _transition_reason(choice_lower: str) -> tuple[str, str]:
                                    for n in _PORTAL_NOUNS)
                             else "approach")
                     return kind, f"move-verb + '{prep}' + new space"
+
+    # ── 3. travel in the open: locomotion + a destination ────────────────────
+    # Graded "approach", never "portal": crossing open ground to a landmark is
+    # a new vantage on the same world, so the throttle may still refuse it.
+    if is_continuation or any(m in choice_lower for m in _IN_PLACE_MARKERS):
+        return "", ""
+    has_travel_verb = any(re.search(rf"\b{re.escape(v)}", choice_lower)
+                          for v in _TRAVEL_VERBS)
+    if has_travel_verb:
+        for prep in _TRAVEL_PREPS:
+            if f" {prep}" in choice_lower:
+                return "approach", f"travel verb + '{prep.strip()}' + destination"
+        for direction in _TRAVEL_DIRECTIONS:
+            if re.search(rf"\b{re.escape(direction)}\b", choice_lower):
+                return "approach", f"travel verb + heading '{direction}'"
+    for verb in _TRAVEL_OBJECT_VERBS:
+        if re.search(rf"\b{re.escape(verb)}\s+(?:the|a|an|that|this)\s+\w", choice_lower):
+            return "approach", f"'{verb}' + destination"
 
     return "", ""
 
@@ -5050,6 +5117,36 @@ def grounded_entities(state: dict, limit: int = 12) -> str:
 # branch). Kept — tested, self-contained — for a future feature that
 # legitimately wants "cap consecutive cuts" back without re-deriving this.
 MAX_CONSECUTIVE_HARD_TRANSITIONS = 2
+
+# How many soft turns may compound off each other before the chain is
+# re-anchored. A soft turn generates from the previous GENERATED frame, so the
+# nth frame in a run has been through n rounds of lossy resampling; a 20-turn
+# outdoor stretch (which is what an open world produced before travel was
+# detectable) ends up a smeared, colour-drifted copy of a copy.
+IMG2IMG_SOFT_CHAIN_MAX = int(os.getenv("IMG2IMG_SOFT_CHAIN_MAX", "3"))
+
+
+def _soft_chain_anchor(history: Optional[list], limit: int) -> Optional[str]:
+    """The clean frame that opened this location, once the chain is too deep.
+
+    Walks back to the last hard cut, counting soft frames. Returns that
+    boundary frame's image only if the run since it is longer than ``limit``
+    — below the cap, compounding is cheap and continuity is worth more.
+    """
+    if not history or limit <= 0:
+        return None
+    soft = 0
+    for entry in reversed(history):
+        if not isinstance(entry, dict):
+            continue
+        path = entry.get("image")
+        if entry.get("hard_transition"):
+            if soft <= limit:
+                return None
+            return path if path and os.path.exists(str(path)) else None
+        if path:
+            soft += 1
+    return None
 
 # Language that means a new space genuinely opened in the fiction. When the
 # consequence says this, the cut is earned no matter how many preceded it —
@@ -6649,6 +6746,20 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                 else:
                     ref_images_to_use = prev_img_paths_list[:1]  # ONLY most recent for strongest continuity
                     print(f"[IMG GENERATION] Normal transition - using 1 reference image (most recent frame)")
+                    # Each soft turn edits the PREVIOUS GENERATED frame, so a
+                    # run of them is an edit of an edit of an edit. Nothing
+                    # bounded that chain — it only reset at a hard cut — and
+                    # colour, contrast and texture drift compound every pass
+                    # until the frame is mush. Past the cap, the clean frame
+                    # that opened this location leads for quality and the
+                    # previous frame follows for spatial state: the same
+                    # dual-reference the realtime path already uses.
+                    anchor = _soft_chain_anchor(_hist, IMG2IMG_SOFT_CHAIN_MAX)
+                    if anchor and anchor not in ref_images_to_use:
+                        ref_images_to_use = [anchor] + ref_images_to_use
+                        print(f"[IMG GENERATION] Soft chain past {IMG2IMG_SOFT_CHAIN_MAX} frames — "
+                              f"re-anchoring quality on {os.path.basename(anchor)} "
+                              f"(previous frame kept as secondary/spatial)")
 
                 # Live capture is WHERE THEY ARE NOW. Using it as img2img init
                 # on a hard cut (MOVE TO) redrew that same yard every trip —
