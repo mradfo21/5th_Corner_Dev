@@ -11,12 +11,17 @@ import threading
 import time
 import traceback
 from pathlib import Path
+from typing import Optional
+from urllib.parse import quote
 from flask import Flask, request, jsonify, send_file, make_response, render_template, redirect
 from flask_cors import CORS
 import engine
 import ai_provider_manager
+import render_jobs
 import scene_audio
 import coinop
+import keys_store
+import billing
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
@@ -184,10 +189,7 @@ def api_diag_stacks():
 
 _ensure_watchdog()
 
-# Optional realtime music streaming (Increment 2). flask-sock is an optional
-# dependency: if it's missing, the /ws/scene_music route simply isn't registered
-# and the client falls back to the clip-loop scene audio. Never let its absence
-# break app startup.
+# Optional flask-sock (live TALK websocket). Never let its absence break boot.
 try:
     from flask_sock import Sock
     _sock = Sock(app)
@@ -237,7 +239,16 @@ def _talk_status():
         elif not info["api_key"]:
             info["reason"] = "No ELEVENLABS_API_KEY: works only if the agent is public."
         else:
-            info["reason"] = "ready"
+            problem = None
+            try:
+                problem = engine.elevenlabs_key_problem()
+            except Exception:
+                problem = None
+            if problem:
+                info["voice"] = False
+                info["reason"] = f"ElevenLabs API key {problem}."
+            else:
+                info["reason"] = "ready"
     except Exception as e:  # noqa: BLE001
         info = {"voice": False, "reason": f"{type(e).__name__}: {e}"}
     try:
@@ -245,6 +256,21 @@ def _talk_status():
         info["designed_voices"] = len((_vd.cache_snapshot() or {}).get("entries") or [])
     except Exception:  # noqa: BLE001
         info["designed_voices"] = 0
+    return info
+
+
+def _music_status():
+    """Can scene music / world SFX generate right now, and if not, why."""
+    info = {"can_generate": False, "reason": "unavailable", "stock_ready": 0,
+            "stock_total": 0}
+    try:
+        info["can_generate"] = scene_audio.is_available()
+        info["reason"] = scene_audio.unavailable_reason() or "ready"
+        stock = scene_audio.stock_status()
+        info["stock_total"] = len(stock)
+        info["stock_ready"] = sum(1 for v in stock.values() if v.get("ready"))
+    except Exception as e:  # noqa: BLE001
+        info["reason"] = f"{type(e).__name__}: {e}"
     return info
 
 
@@ -286,6 +312,11 @@ if getattr(engine, "DETECT_BACKEND", "gemini") in ("local", "auto"):
         print(f"[API INIT] local detection warmup failed: {_lv_warm_err}", flush=True)
 
 
+# Local RUN/PLAY sets SOMEWHERE_BOOT. Flask's default static max-age is 12h,
+# and WebView2 will keep serving yesterday's standalone.js unless we refuse.
+if os.environ.get("SOMEWHERE_BOOT"):
+    app.config["SEND_FILE_MAX_AGE_DEFAULT"] = 0
+
 # Allow embedding the game in an iframe on the main site.
 @app.after_request
 def add_embed_headers(response):
@@ -295,6 +326,12 @@ def add_embed_headers(response):
     response.headers['X-Frame-Options'] = (
         "ALLOW-FROM https://www.5th-corner.com"
     )
+    if os.environ.get("SOMEWHERE_BOOT"):
+        path = request.path or ""
+        if path.startswith(("/standalone", "/play", "/lobby", "/realtime",
+                            "/live", "/static/js/", "/static/css/")):
+            response.headers["Cache-Control"] = "no-store, max-age=0"
+            response.headers["Pragma"] = "no-cache"
     return response
 
 # ═══════════════════════════════════════════════════════════════════
@@ -357,6 +394,18 @@ app.add_url_rule('/api/reset', 'standalone_api_reset', _session_scoped(engine.ap
 app.add_url_rule('/api/feed', 'standalone_api_feed', engine.api_feed, methods=['GET'])
 
 
+def _spend_blocked(min_usd: float = 0.0):
+    """Shared 402 when hosted billing is on and the wallet cannot pay."""
+    try:
+        blocked = billing.gate(min_usd=min_usd)
+        if blocked:
+            blocked["usage"] = _usage_payload()
+            return jsonify(blocked), 402
+    except Exception:
+        pass
+    return None
+
+
 def _credit_gated_choose():
     """Wrap engine.api_choose with the arcade credit meter.
 
@@ -383,6 +432,15 @@ def _credit_gated_choose():
     more credits than were spent).
     """
     sid = engine._resolve_request_session_id()
+    blocked = _spend_blocked()
+    if blocked:
+        return blocked
+    cost_before = 0.0
+    try:
+        import cost_tracker
+        cost_before = float(cost_tracker.session_cost_usd(sid) or 0.0)
+    except Exception:
+        cost_before = 0.0
     gated = coinop.is_credit_gating_enabled()
     debited = False
     if gated:
@@ -426,6 +484,11 @@ def _credit_gated_choose():
             coinop.grant_credits(sid, 1, source="refund")
         except Exception:
             traceback.print_exc()
+    if status < 500:
+        try:
+            billing.settle_session(sid, cost_before)
+        except Exception:
+            traceback.print_exc()
     return response
 
 
@@ -436,8 +499,46 @@ app.add_url_rule('/api/choose', 'standalone_api_choose', _session_scoped(_credit
 # for the same reason as /api/feed — it's polled on a timer by every connected
 # client and must not swap the shared global mirror; engine.api_world_tick
 # resolves its own session id. See engine.world_drift_tick.
-app.add_url_rule('/api/world_tick', 'standalone_api_world_tick', engine.api_world_tick, methods=['POST'])
-app.add_url_rule('/api/regenerate_choices', 'standalone_api_regenerate_choices', _session_scoped(engine.api_regenerate_choices), methods=['POST'])
+def _gated_world_tick():
+    blocked = _spend_blocked()
+    if blocked:
+        return blocked
+    sid = engine._resolve_request_session_id()
+    cost_before = 0.0
+    try:
+        import cost_tracker
+        cost_before = float(cost_tracker.session_cost_usd(sid) or 0.0)
+    except Exception:
+        cost_before = 0.0
+    response = engine.api_world_tick()
+    try:
+        billing.settle_session(sid, cost_before)
+    except Exception:
+        traceback.print_exc()
+    return response
+
+
+def _gated_regenerate_choices():
+    blocked = _spend_blocked()
+    if blocked:
+        return blocked
+    sid = engine._resolve_request_session_id()
+    cost_before = 0.0
+    try:
+        import cost_tracker
+        cost_before = float(cost_tracker.session_cost_usd(sid) or 0.0)
+    except Exception:
+        cost_before = 0.0
+    response = engine.api_regenerate_choices()
+    try:
+        billing.settle_session(sid, cost_before)
+    except Exception:
+        traceback.print_exc()
+    return response
+
+
+app.add_url_rule('/api/world_tick', 'standalone_api_world_tick', _gated_world_tick, methods=['POST'])
+app.add_url_rule('/api/regenerate_choices', 'standalone_api_regenerate_choices', _session_scoped(_gated_regenerate_choices), methods=['POST'])
 
 # ─── COIN-OP (buy-a-continue) ────────────────────────────────────────────
 # All coin-op routes are dark-shipped: when FEATURE_COINOP is unset or the
@@ -483,8 +584,11 @@ def _coinop_checkout():
     sid = engine._resolve_request_session_id()
     data = request.get_json(silent=True) or {}
     comp_code = (data.get('comp') or '').strip() or None
+    pack_id = (data.get('pack') or '').strip() or None
+    return_to = (data.get('return_to') or '').strip() or None
     try:
-        out = coinop.create_checkout(sid, request, comp_code=comp_code)
+        out = coinop.create_checkout(
+            sid, request, comp_code=comp_code, pack_id=pack_id, return_to=return_to)
         return jsonify(out)
     except Exception as e:  # noqa: BLE001
         traceback.print_exc()
@@ -556,8 +660,8 @@ def _coinop_redeem():
 
 @app.route('/webhook/stripe', methods=['POST'])
 def _coinop_webhook():
-    if not coinop.is_enabled():
-        return jsonify({"error": "coinop_disabled"}), 404
+    if not (coinop.is_enabled() or billing.is_payments_enabled()):
+        return jsonify({"error": "payments_disabled"}), 404
     payload = request.get_data()
     sig = request.headers.get('Stripe-Signature', '')
     result = coinop.handle_webhook(payload, sig)
@@ -567,19 +671,41 @@ def _coinop_webhook():
 # Vision for the realtime renderer: the client posts the actual on-screen video
 # frame; the engine analyzes it and re-grounds the simulation so it tracks the
 # video instead of drifting from the still. See engine.api_observe.
-app.add_url_rule('/api/observe', 'standalone_api_observe', engine.api_observe, methods=['POST'])
+def _gated_observe():
+    blocked = _spend_blocked()
+    if blocked:
+        return blocked
+    return engine.api_observe()
+
+
+app.add_url_rule('/api/observe', 'standalone_api_observe', _gated_observe, methods=['POST'])
 # Realtime object recognition for the SCAN tool: the client posts the on-screen
 # video frame; the engine returns the prominent, interactable objects visible in
 # it plus their positions so the UI can float "starfield" tags. Stateless /
 # read-only (does not mutate the sim). See engine.api_detect.
-app.add_url_rule('/api/detect', 'standalone_api_detect', engine.api_detect, methods=['POST'])
+def _gated_detect():
+    if getattr(engine, "DETECT_BACKEND", "local") != "local":
+        blocked = _spend_blocked()
+        if blocked:
+            return blocked
+    return engine.api_detect()
+
+
+app.add_url_rule('/api/detect', 'standalone_api_detect', _gated_detect, methods=['POST'])
 # Realtime danger grading for the peripheral-vignette / health system: the
 # client posts the on-screen video frame at ~1 Hz; the engine returns a single
 # ordinal threat level (0 safe / 1 threatened / 2 attacking) for that frame.
 # The level drives the client's danger state machine (SAFE → WARNING →
 # HURTING) which pulses the red peripheral vignette and drains health when
 # danger persists. Stateless / read-only. See engine.api_danger.
-app.add_url_rule('/api/danger', 'standalone_api_danger', engine.api_danger, methods=['POST'])
+def _gated_danger():
+    blocked = _spend_blocked()
+    if blocked:
+        return blocked
+    return engine.api_danger()
+
+
+app.add_url_rule('/api/danger', 'standalone_api_danger', _gated_danger, methods=['POST'])
 # Opt-in experimental: same wire contract as /api/detect but the frame is
 # pushed into a persistent Gemini Live-API WebSocket session, and the endpoint
 # returns whatever detections that session has produced most recently. See
@@ -594,6 +720,9 @@ try:
             import base64 as _b64
             import re as _re
             from flask import request as _req, jsonify as _jsonify
+            blocked = _spend_blocked()
+            if blocked:
+                return blocked
             data = _req.get_json(silent=True) or {}
             frame_b64 = data.get('frame')
             session_id = data.get('session_id', 'default')
@@ -616,7 +745,7 @@ try:
             scene_prompt = ""
             try:
                 _st = engine.get_state(session_id) or {}
-                scene_prompt = str(_st.get('current_image_prompt') or "")
+                scene_prompt = engine._detect_scene_prior(_st)
             except Exception:
                 scene_prompt = ""
             _live_vision.push_frame(
@@ -636,7 +765,24 @@ except Exception as _e:  # noqa: BLE001
 # engine returns an evidence-style breakdown (notable items + interest rating +
 # a terse "why it matters" note, plus a caption/mood) that the UI prints as a
 # scoring "receipt". Stateless / read-only. See engine.api_photo.
-app.add_url_rule('/api/photo', 'standalone_api_photo', engine.api_photo, methods=['POST'])
+def _gated_photo():
+    blocked = _spend_blocked()
+    if blocked:
+        return blocked
+    return engine.api_photo()
+
+
+app.add_url_rule('/api/photo', 'standalone_api_photo', _gated_photo, methods=['POST'])
+
+
+def _gated_viewfinder():
+    blocked = _spend_blocked()
+    if blocked:
+        return blocked
+    return engine.api_viewfinder()
+
+
+app.add_url_rule('/api/viewfinder', 'standalone_api_viewfinder', _gated_viewfinder, methods=['POST'])
 # Investigation textures: the client crops a small thumbnail from the scene
 # around/under the TOUCH reticle (or, later, a "photograph") and stores it here.
 # These specimens persist to disk + state['investigations'] as raw material for
@@ -649,12 +795,33 @@ app.add_url_rule('/api/investigations', 'standalone_api_investigations', engine.
 # configured, returns voice-agent config; otherwise the UI falls back to a text
 # conversation driven by the message endpoint. Both are stateless / read-only.
 # See engine.api_talk_session / engine.api_talk_message.
-app.add_url_rule('/api/talk/session', 'standalone_api_talk_session', engine.api_talk_session, methods=['POST'])
-app.add_url_rule('/api/talk/message', 'standalone_api_talk_message', engine.api_talk_message, methods=['POST'])
+def _gated_talk_session():
+    blocked = _spend_blocked()
+    if blocked:
+        return blocked
+    return engine.api_talk_session()
+
+
+def _gated_talk_message():
+    blocked = _spend_blocked()
+    if blocked:
+        return blocked
+    return engine.api_talk_message()
+
+
+def _gated_talk_portrait():
+    blocked = _spend_blocked()
+    if blocked:
+        return blocked
+    return engine.api_talk_portrait()
+
+
+app.add_url_rule('/api/talk/session', 'standalone_api_talk_session', _gated_talk_session, methods=['POST'])
+app.add_url_rule('/api/talk/message', 'standalone_api_talk_message', _gated_talk_message, methods=['POST'])
 # Conversation Moment portrait: a fast cinematic medium-shot of the subject
 # (distinct lens language from the handheld world view). Cached per
 # (session, subject, scene); see engine.api_talk_portrait.
-app.add_url_rule('/api/talk/portrait', 'standalone_api_talk_portrait', engine.api_talk_portrait, methods=['POST'])
+app.add_url_rule('/api/talk/portrait', 'standalone_api_talk_portrait', _gated_talk_portrait, methods=['POST'])
 # Companions: characters the player has spoken with are saved to a roster WITH
 # their cinematic portrait (engine.api_talk_portrait records them), so they can
 # be listed and placed back into later scenes for a continuing story.
@@ -662,12 +829,109 @@ app.add_url_rule('/api/companions', 'standalone_api_companions', engine.api_comp
 app.add_url_rule('/api/companions/place', 'standalone_api_companion_place', engine.api_companion_place, methods=['POST'])
 # Rebuild a companion's ElevenLabs voice from the stored Voice Design brief
 # (persisted by api_talk_session). Poll /api/talk/voice/status while generating.
+def _gated_companion_regenerate_voice():
+    blocked = _spend_blocked()
+    if blocked:
+        return blocked
+    return engine.api_companion_regenerate_voice()
+
+
 app.add_url_rule('/api/companions/regenerate_voice',
                  'standalone_api_companion_regenerate_voice',
-                 engine.api_companion_regenerate_voice, methods=['POST'])
+                 _gated_companion_regenerate_voice, methods=['POST'])
 # CAMP Moment: night campsite establishing shot compositing the jeep prop +
 # up to 5 companion portraits. Side pocket — does not advance the turn loop.
 app.add_url_rule('/api/camp/enter', 'standalone_api_camp_enter', engine.api_camp_enter, methods=['POST'])
+
+
+def _gated_encounter_begin():
+    blocked = _spend_blocked()
+    if blocked:
+        return blocked
+    return engine.api_encounter_begin()
+
+
+def _gated_encounter_resolve():
+    """One credit, same as /api/choose — do not also POST choose."""
+    sid = engine._resolve_request_session_id()
+    blocked = _spend_blocked()
+    if blocked:
+        return blocked
+    cost_before = 0.0
+    try:
+        import cost_tracker
+        cost_before = float(cost_tracker.session_cost_usd(sid) or 0.0)
+    except Exception:
+        cost_before = 0.0
+    gated = coinop.is_credit_gating_enabled()
+    debited = False
+    if gated:
+        spend = coinop.spend_credit(sid, amount=1, reason="encounter_resolve")
+        if not spend.get("ok"):
+            return jsonify({
+                "needs_coin": True,
+                "balance": int(spend.get("balance", 0)),
+                "reason": spend.get("reason", "insufficient_credits"),
+                "message": "Out of coins — insert more to keep playing.",
+            }), 402
+        debited = True
+
+    try:
+        response = engine.api_encounter_resolve()
+    except Exception:
+        if debited:
+            try:
+                coinop.grant_credits(sid, 1, source="refund")
+            except Exception:
+                traceback.print_exc()
+        raise
+
+    try:
+        payload = response[0] if isinstance(response, tuple) else response
+        status = response[1] if isinstance(response, tuple) and len(response) > 1 else None
+        if not isinstance(status, int):
+            status = getattr(payload, "status_code", 200)
+    except Exception:
+        payload = response
+        status = 200
+    cached = False
+    try:
+        body = payload.get_json(silent=True) if hasattr(payload, "get_json") else None
+        cached = bool(isinstance(body, dict) and body.get("cached"))
+    except Exception:
+        cached = False
+    if debited and (status >= 400 or cached):
+        try:
+            coinop.grant_credits(sid, 1, source="refund")
+        except Exception:
+            traceback.print_exc()
+    if status < 400 and not cached:
+        try:
+            billing.settle_session(sid, cost_before)
+        except Exception:
+            traceback.print_exc()
+    return response
+
+
+def _gated_cutscene_play():
+    blocked = _spend_blocked()
+    if blocked:
+        return blocked
+    return engine.api_cutscene_play()
+
+
+app.add_url_rule('/api/cutscene/play', 'standalone_api_cutscene_play',
+                 _session_scoped(_gated_cutscene_play), methods=['POST'])
+app.add_url_rule('/api/cutscene/complete', 'standalone_api_cutscene_complete',
+                 _session_scoped(engine.api_cutscene_complete), methods=['POST'])
+app.add_url_rule('/api/encounter/begin', 'standalone_api_encounter_begin',
+                 _session_scoped(_gated_encounter_begin), methods=['POST'])
+app.add_url_rule('/api/encounter/resolve', 'standalone_api_encounter_resolve',
+                 _session_scoped(_gated_encounter_resolve), methods=['POST'])
+app.add_url_rule('/api/encounter/roll', 'standalone_api_encounter_roll',
+                 _session_scoped(engine.api_encounter_roll), methods=['POST'])
+app.add_url_rule('/api/encounter/travel', 'standalone_api_encounter_travel',
+                 _session_scoped(engine.api_encounter_travel), methods=['POST'])
 # Refcount + status endpoints for the dynamic per-character voices designed
 # on the fly by voice_design.py. /talk/end lets the client drop the refcount
 # on the active voice when the TALK widget closes so session-cleanup can
@@ -827,64 +1091,51 @@ def api_scene_audio():
     image and return its URL.
 
     The standalone UI posts the scene descriptor (`metadata.prompt`, already
-    delivered with every `scene_image`) here; we render a short Lyria RealTime
-    clip the client loops as an ambient score, re-scoring on each new scene.
-    Degrades to `{ "audio_url": null }` whenever audio can't be produced (no
-    GEMINI_API_KEY, SDK missing, or stream failure) so the client stays silent
+    delivered with every `scene_image`) here; we render an ElevenLabs Music
+    bed plus looping world SFX the client plays together, re-scoring on each
+    new scene. Degrades to null URLs whenever audio can't be produced (no
+    ELEVENLABS_API_KEY, or the call failed) so the client stays silent
     instead of erroring."""
     try:
         body = request.get_json(silent=True) or {}
         prompt = (body.get("prompt") or "").strip()
         session_id = body.get("session") or "default"
         mode = (body.get("mode") or "scene").strip().lower()
-        if mode not in ("scene", "conversation"):
+        if mode not in ("scene", "conversation", "encounter"):
             mode = "scene"
         if not prompt:
-            return jsonify({"audio_url": None, "reason": "no_prompt"})
+            return jsonify({"audio_url": None, "sfx_url": None,
+                            "stinger_url": None, "pending_music": False,
+                            "pending_sfx": False, "reason": "no_prompt"})
         result = scene_audio.get_scene_audio(prompt, session_id=session_id, mode=mode)
         if not result:
-            return jsonify({"audio_url": None, "reason": "unavailable"})
+            return jsonify({"audio_url": None, "sfx_url": None,
+                            "stinger_url": None, "pending_music": False,
+                            "pending_sfx": False,
+                            "reason": scene_audio.unavailable_reason() or "unavailable"})
         return jsonify(result)
     except Exception as e:
         traceback.print_exc()
         # Never surface a hard error for a non-critical enhancement.
-        return jsonify({"audio_url": None, "reason": "error", "details": str(e)})
+        return jsonify({"audio_url": None, "sfx_url": None,
+                        "stinger_url": None, "pending_music": False,
+                        "pending_sfx": False, "reason": "error", "details": str(e)})
 
 
 @app.route('/audio/<filename>', methods=['GET'])
 def serve_scene_audio(filename):
-    """Serve generated scene audio WAVs (mirrors the /images route, with the
-    same path-traversal protection)."""
+    """Serve generated scene audio (mirrors /images session fallback)."""
     try:
-        path = scene_audio.resolve_audio_path(filename, 'default')
+        session_id = request.args.get("session") or request.args.get("session_id") or "default"
+        path = scene_audio.resolve_audio_path(filename, session_id)
         if path and path.exists():
-            return send_file(str(path), mimetype='audio/wav')
+            ext = path.suffix.lstrip('.').lower()
+            return send_file(str(path),
+                             mimetype=scene_audio.LOOP_EXTS.get(ext, 'audio/wav'))
         return error_response("Audio not found", code=404)
     except Exception as e:
         traceback.print_exc()
         return error_response("Failed to serve audio", str(e))
-
-
-if _sock is not None:
-    @_sock.route('/ws/scene_music')
-    def ws_scene_music(ws):
-        """Realtime scene music stream (Lyria RealTime -> browser).
-
-        The client opens this socket, may send an initial `{"prompt": ...}` steer
-        message, then receives raw 16-bit/48kHz/stereo PCM binary frames. Sending
-        a new `{"prompt": ...}` on each scene re-steers the score live. Opt-in via
-        the standalone UI's ?music=stream flag."""
-        try:
-            first = ws.receive(timeout=5)
-            initial_prompt = ""
-            if first:
-                try:
-                    initial_prompt = (json.loads(first).get("prompt") or "").strip()
-                except Exception:
-                    initial_prompt = ""
-            scene_audio.stream_music_over_ws(ws, initial_prompt)
-        except Exception:
-            traceback.print_exc()
 
 
 def _standalone_asset_version():
@@ -895,7 +1146,9 @@ def _standalone_asset_version():
     candidates = [
         "static/css/standalone.css",
         "static/js/standalone.js",
+        "static/js/editor_graph.js",
         "static/js/reactor_renderer.js",
+        "static/js/moments.js",
         "static/css/lobby.css",
         "static/js/lobby.js",
     ]
@@ -905,7 +1158,9 @@ def _standalone_asset_version():
             latest = max(latest, os.path.getmtime(path))
         except Exception:
             pass
-    return str(int(latest)) if latest else "0"
+    stamp = str(int(latest)) if latest else "0"
+    boot = (os.environ.get("SOMEWHERE_BOOT") or "").strip()
+    return f"{stamp}-{boot}" if boot else stamp
 
 
 @app.route('/standalone', methods=['GET'])
@@ -946,10 +1201,10 @@ def serve_realtime():
 
 @app.route('/lobby', methods=['GET'])
 def serve_lobby():
-    """Splash / lobby page. Explains the world, shows recent runs the
-    visitor can resume, and lets them start a fresh instance. Delegates
-    session creation to /api/lobby/create and then routes the browser to
-    /play?session=<id> where the immersive UI takes over."""
+    """Web start screen — same graphic language as the desktop Play / Watch
+    menu. PLAY mints a session and enters the game; WATCH opens the studio;
+    CONTINUE lists saved runs. Session create still goes through
+    /api/lobby/create, then /play?session=<id>&mode=play."""
     return render_template(
         'lobby.html',
         asset_version=_standalone_asset_version(),
@@ -983,6 +1238,12 @@ def api_tape():
                 files = [
                     p for p in img_dir.glob('*.png')
                     if not p.name.endswith('_small.png')
+                    # A hard cut writes a `_styleswatch.png` next to the frame:
+                    # the previous still reduced to a blurred colour field, an
+                    # input to the next render and never something to look at.
+                    # Without this the tape showed it as a frame, which is the
+                    # "it just displays a blurry image" report.
+                    and not p.name.endswith('_styleswatch.png')
                     and 'flipbook' not in p.name.lower()
                     and not p.name.startswith('observed_')  # low-res video grabs, not canonical stills
                 ]
@@ -1041,6 +1302,33 @@ def api_objectives():
                         "generated": False})
 
 
+def _setting_plate_url():
+    """First authored level plate, if any. Cheap disk lookup — no generation."""
+    try:
+        import game_identity
+        spec = game_identity.get_spec()
+        ids = (spec.get(game_identity.SETTING_KEY) or {}).get("reference_images") or []
+        for ref_id in ids:
+            if game_identity.reference_path(ref_id):
+                return game_identity.reference_url(ref_id)
+    except Exception:
+        return None
+    return None
+
+
+def _status_world_name(state: dict) -> str:
+    """Display name of the World this run is currently in, or empty."""
+    wid = str((state or {}).get("experience_world_id") or "").strip()
+    if not wid:
+        return ""
+    try:
+        import experience_store
+        world = experience_store.world_by_id(experience_store.get_experience(), wid)
+        return str((world or {}).get("name") or "").strip()
+    except Exception:
+        return ""
+
+
 @app.route('/api/status', methods=['GET'])
 def api_status():
     """Lightweight state snapshot for the standalone UI's HUD. Does not
@@ -1074,13 +1362,26 @@ def api_status():
 
         return jsonify({
             "phase": s.get("current_phase", "normal"),
+            # Two different dials, and they were easy to confuse while only one
+            # was visible. `chaos` is volatile 0..CHAOS_MAX — how bad it is
+            # RIGHT NOW, and it falls again on a quiet turn. `threat` only ever
+            # climbs and is what derives the phase, so it reads as how far into
+            # the story the run has pushed.
             "chaos": s.get("chaos_level", 0),
+            "chaos_max": engine.CHAOS_MAX,
+            "threat": s.get("threat_level", 0),
             "turn": s.get("turn_count", 0),
             "alive": s.get("player_state", {}).get("alive", True),
-            # Surface HEALTH so the client can show a real stakes meter (0-100).
-            # The danger vignette loop drains it; without it on the HUD the
-            # player had no visible sense of jeopardy.
-            "health": s.get("player_state", {}).get("health", 100),
+            # `health` / `health_max` / `injuries` used to be reported here off a
+            # hit-point pool and a scraped wound list. Both were removed (see
+            # engine's "how a run ends"): death is the model's verdict now, and
+            # detection below is the dial the player watches climb toward it.
+            # How much the world knows about the player: hidden / suspicious /
+            # alerted / hunted, plus the raw heat behind it. `in_combat` is no
+            # longer dead state — it means alerted or worse.
+            "detection": engine.DETECT_NAMES[engine.get_detection(s)["level"]],
+            "detection_heat": engine.get_detection(s)["heat"],
+            "detection_max": engine.DETECT_HEAT_MAX,
             "in_combat": s.get("in_combat", False),
             "time_of_day": s.get("time_of_day", ""),
             "inventory": inventory,
@@ -1091,12 +1392,26 @@ def api_status():
             # get_image_provider() whenever no override is active (production).
             "image_provider": ai_provider_manager.active_backend("image"),
             "image_model": ai_provider_manager.get_image_model(),
+            # Resolution belongs next to the model: the same model at 4K is a
+            # different wait and a different bill, and a render transcript that
+            # records one without the other can't say what it cost.
+            "image_size": ai_provider_manager.get_image_size(),
             "image_enabled": engine.IMAGE_ENABLED,
             # Renderer selection + the latest scene prompt, so the standalone
             # client can steer the Reactor realtime world model with the same
             # text used to generate the still image.
             "renderer": getattr(engine, "SCENE_RENDERER", "image"),
             "current_image_prompt": s.get("current_image_prompt", ""),
+            "current_render_prompt": s.get("current_render_prompt", ""),
+            # Free stills the start menu can warm — last run frame, or the
+            # authored level plate. Never triggers generation.
+            "current_image_url": s.get("current_image_url") or None,
+            "setting_plate_url": _setting_plate_url(),
+            # Live Experience graph: which World this run is standing in, so
+            # the editor overlay can mark it during Play / Watch.
+            "experience_world_id": s.get("experience_world_id") or "",
+            "experience_world_name": _status_world_name(s),
+            "world_turn_count": int(s.get("world_turn_count") or 0),
         })
     except Exception as e:
         traceback.print_exc()
@@ -1131,8 +1446,8 @@ def api_reactor_config():
     models = getattr(engine, "AVAILABLE_WORLD_MODELS", [])
     default_sdk = engine.world_model_sdk_name(default_id) if hasattr(engine, "world_model_sdk_name") \
         else os.getenv("REACTOR_MODEL", "reactor/happy-oyster")
-    return jsonify({
-        "enabled": bool(os.getenv("REACTOR_API_KEY")),
+    resp = jsonify({
+        "enabled": keys_store.has_provider_key("reactor"),
         "renderer": getattr(engine, "SCENE_RENDERER", "image"),
         "model_name": default_sdk,
         "world_model": default_id,
@@ -1145,6 +1460,8 @@ def api_reactor_config():
         "allow_custom_models": bool(getattr(engine, "REACTOR_ALLOW_CUSTOM_MODELS", True)),
         "sdk_name_prefix": "reactor/",
     })
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
 
 
 @app.route('/api/reactor/token', methods=['POST'])
@@ -1155,6 +1472,10 @@ def api_reactor_token():
     `Reactor-API-Key` header returns `{ "jwt": ..., "expires_at": ... }`. The
     API key stays on the server; only the short-lived token reaches the browser.
     """
+    blocked = _spend_blocked(min_usd=0.25)
+    if blocked:
+        return blocked
+    keys_store.has_provider_key("reactor")
     api_key = os.getenv("REACTOR_API_KEY")
     if not api_key:
         return error_response(
@@ -1193,6 +1514,7 @@ def api_reactor_health():
 
     Never raises, and never returns the key or the token itself.
     """
+    keys_store.has_provider_key("reactor")
     api_key = os.getenv("REACTOR_API_KEY")
     if not api_key:
         return jsonify({
@@ -1230,6 +1552,9 @@ def api_reactor_usage():
     session ends: on model swap, disable, or page unload. Fire-and-forget:
     always 200, never blocks or breaks the client on failure.
     """
+    blocked = _spend_blocked(min_usd=0.25)
+    if blocked:
+        return blocked
     try:
         data = request.get_json(silent=True) or {}
         session_id = str(data.get("session_id") or "default").strip() or "default"
@@ -2043,14 +2368,14 @@ def _admin_token_ok():
     """
     Validate the admin token from query string, header, or cookie.
 
-    If ADMIN_TOKEN is unset (e.g. local dev without secrets) we leave the
-    dashboard open. In production we strongly recommend setting it; the
-    dashboard exposes session state and reset controls. The token can be
-    supplied as `?token=...`, an `X-Admin-Token` header, or an `admin_token`
-    cookie so the dashboard's existing fetch() calls keep working.
+    Local desktop (no hosted billing) may leave ADMIN_TOKEN unset and keep
+    the dashboard open. Hosted billing cannot: an unset token would expose
+    sessions, pricing, and reset on a paying service.
     """
     expected = os.getenv('ADMIN_TOKEN')
     if not expected:
+        if os.getenv("FEATURE_BILLING", "").strip().lower() in ("1", "true", "on", "yes"):
+            return False
         return True
     from flask import request
     provided = (
@@ -2201,7 +2526,7 @@ try:
         _voice_design.start_periodic_sweep(active_sessions_getter=_list_active_sessions)
     else:
         _reason = (
-            "no ELEVENLABS_API_KEY" if not _voice_design.API_KEY
+            "no ELEVENLABS_API_KEY" if not _voice_design._api_key()
             else "ELEVENLABS_DYNAMIC_VOICES=0"
         )
         print(f"[VOICE DESIGN] DISABLED ({_reason}) — TALK will use the "
@@ -2223,29 +2548,29 @@ except Exception as _e:  # noqa: BLE001
 # and an at-a-glance latency badge without hardcoding it in the HTML. Keyed by
 # preset name; unknown presets fall back to sensible defaults derived from the
 # preset config itself.
+# Play / Watch / Editor / admin image pickers only offer these. Text-only
+# presets (anthropic, openai) stay in available_configs for narrator switching
+# but must not appear as image generators.
+_IMAGE_PRESET_NAMES = ("gemini_pro", "gemini", "krea")
+
 _PRESET_UI_META = {
-    "fal": {"label": "fal.ai Lightning", "latency": "~1-2s", "speed": 5,
-            "blurb": "SDXL Lightning. Fastest possible — lower fidelity. Needs FAL_API_KEY."},
-    "krea": {"label": "Krea 2 Medium", "latency": "~12s", "speed": 3,
-             "blurb": "Default. Fast, strong quality, style-transfer continuity. Needs KREA_API_KEY."},
-    "krea_large": {"label": "Krea 2 Large", "latency": "~24s", "speed": 2,
-                   "blurb": "Higher quality / more textured. Needs KREA_API_KEY."},
-    "gemini": {"label": "Gemini (Nano Banana 2 Lite)", "latency": "~3-4s", "speed": 4,
-               "blurb": "Fast 1K stills, multi-frame continuity. DEFAULT. Needs GEMINI_API_KEY."},
-    "openai": {"label": "OpenAI gpt-image-1", "latency": "~20-40s", "speed": 1,
-               "blurb": "Highest fidelity, up to 16 reference images. Needs OPENAI_API_KEY."},
-    "veo": {"label": "Veo video frames", "latency": "~30-60s", "speed": 1,
-            "blurb": "Generates 8s video, extracts last frame. Natural consistency."},
-    "anthropic": {"label": "Claude + Gemini", "latency": "~15-30s", "speed": 2,
-                  "blurb": "Claude Opus narrative + Gemini images. Premium storytelling."},
+    "gemini_pro": {"label": "Gemini Pro", "latency": "~15-30s", "speed": 2,
+                   "blurb": "Highest fidelity. Slow."},
+    "gemini": {"label": "Gemini Fast", "latency": "~3-4s", "speed": 4,
+               "blurb": "Seconds per frame. The default."},
+    "krea": {"label": "Krea", "latency": "~12s", "speed": 3,
+             "blurb": "Style-transfer continuity. Needs KREA_API_KEY."},
 }
 
 
 def _preset_matches_current(preset_cfg, current):
-    """A preset is 'active' when its image+text provider/model all match the
-    live config (that's what set_preset writes)."""
-    keys = ("image_provider", "image_model", "text_provider", "text_model")
-    return all(preset_cfg.get(k) == current.get(k) for k in keys)
+    """An image preset is active when its stills match. Text is chosen
+    separately — switching Gemini Fast / Pro / Krea must not demand the
+    narrator still be Gemini."""
+    return (
+        preset_cfg.get("image_provider") == current.get("image_provider")
+        and preset_cfg.get("image_model") == current.get("image_model")
+    )
 
 
 def _ai_config_payload():
@@ -2268,15 +2593,24 @@ def _ai_config_payload():
     except Exception:
         _pricing = None
 
+    offered_ids = {e["id"] for e in ai_provider_manager.available_model_catalogue("image")}
+    all_presets = ai_provider_manager.get_available_presets()
     presets = []
     active_name = None
-    for name, cfg in ai_provider_manager.get_available_presets().items():
+    for name in _IMAGE_PRESET_NAMES:
+        cfg = all_presets.get(name)
+        if not cfg:
+            continue
+        img_provider = cfg.get("image_provider")
+        img_model = cfg.get("image_model")
+        # Same key-hiding as available_model_catalogue: a missing KREA_API_KEY
+        # must not produce a tile that fails on the first frame.
+        if img_model not in offered_ids:
+            continue
         meta = _PRESET_UI_META.get(name, {})
         is_active = _preset_matches_current(cfg, current)
         if is_active:
             active_name = name
-        img_provider = cfg.get("image_provider")
-        img_model = cfg.get("image_model")
         rate = _pricing.get_rate(img_provider, img_model) if (_pricing and img_provider) else None
         cost_per_image = None
         if rate:
@@ -2298,11 +2632,25 @@ def _ai_config_payload():
             "cost_per_image": cost_per_image,
             "active": is_active,
         })
+    offered_text = {e["id"] for e in ai_provider_manager.available_model_catalogue("text")}
+    text_models = []
+    for entry in ai_provider_manager.model_catalogue("text"):
+        mid = entry.get("id")
+        if not mid:
+            continue
+        text_models.append({
+            "id": mid,
+            "provider": entry.get("provider"),
+            "label": entry.get("label") or mid,
+            "note": entry.get("note") or "",
+            "available": mid in offered_text,
+        })
     return {
         "status": "ok",
         "current": current,
         "active_preset": active_name,
         "presets": presets,
+        "text_models": text_models,
     }
 
 
@@ -2317,16 +2665,23 @@ def _ai_switch_result(preset):
             "error": f"Unknown preset '{preset}'.",
             "available": list(presets.keys()),
         }, 400
-    ok = ai_provider_manager.set_preset(preset)
-    if not ok:
-        return {"status": "error", "error": f"Failed to switch to '{preset}'."}, 500
+    cfg = presets[preset]
+    # Image presets used to config.update() the whole block, which reset the
+    # narrator to Gemini Flash every time someone picked Krea or Pro stills.
+    try:
+        settings = ai_provider_manager.apply_models(
+            image_model=cfg.get("image_model"),
+            image_size=cfg.get("image_size"),
+        )
+    except ValueError as e:
+        return {"status": "error", "error": str(e)}, 400
     return {
         "status": "ok",
         "preset": preset,
-        "image_provider": ai_provider_manager.get_image_provider(),
-        "image_model": ai_provider_manager.get_image_model(),
-        "text_provider": ai_provider_manager.get_text_provider(),
-        "text_model": ai_provider_manager.get_text_model(),
+        "image_provider": settings.get("image_provider"),
+        "image_model": settings.get("image_model"),
+        "text_provider": settings.get("text_provider"),
+        "text_model": settings.get("text_model"),
     }, 200
 
 
@@ -2385,7 +2740,8 @@ def public_ai_config():
 
 @app.route('/api/ai/switch', methods=['POST'])
 def public_ai_switch():
-    """Switch the image/text model preset from the in-game menu (no auth)."""
+    """Switch the image model preset from the in-game menu (no auth).
+    Does not change the narrator — use /api/ai/models for text."""
     body = request.get_json(silent=True) or {}
     preset = body.get('preset') or request.args.get('preset')
     try:
@@ -2394,6 +2750,175 @@ def public_ai_switch():
     except Exception as e:
         traceback.print_exc()
         return error_response("Failed to switch AI preset", str(e))
+
+
+@app.route('/api/ai/models', methods=['POST'])
+def public_ai_apply_models():
+    """Point text and/or image at a catalogue id without a named preset.
+
+    This is how Claude (or GPT) becomes the narrator while Gemini/Krea
+    keep drawing the stills. Providers are derived from the catalogue.
+    """
+    body = request.get_json(silent=True) or {}
+    text_model = (body.get("text_model") or "").strip() or None
+    image_model = (body.get("image_model") or "").strip() or None
+    image_size = (body.get("image_size") or "").strip() or None
+    if not any((text_model, image_model, image_size)):
+        return jsonify({"status": "error", "error": "Nothing to apply."}), 400
+    try:
+        settings = ai_provider_manager.apply_models(
+            text_model=text_model,
+            image_model=image_model,
+            image_size=image_size,
+        )
+    except ValueError as e:
+        return jsonify({"status": "error", "error": str(e)}), 400
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to apply models", str(e))
+    return jsonify({"status": "ok", **settings})
+
+
+# ═══════════════════════════════════════════════════════════════════
+# RENDER — an offline playtest, started from the game UI
+#
+# The server plays a full run against itself on whichever models you pick,
+# then hands back the frames, the flipbooks and the verdict. See
+# render_jobs.py for why a render owns the renderer while it runs.
+# ═══════════════════════════════════════════════════════════════════
+
+@app.route('/api/render/options', methods=['GET'])
+def api_render_options():
+    """Models, sizes, modes and defaults for the render form."""
+    try:
+        return jsonify(render_jobs.options())
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to load render options", str(e))
+
+
+@app.route('/api/render/start', methods=['POST'])
+def api_render_start():
+    """Start a render. The run plays against this server, so it inherits
+    whatever the editor currently says about level, character and prompts."""
+    body = request.get_json(silent=True) or {}
+    try:
+        turns = int((body or {}).get("turns") or 40)
+    except (TypeError, ValueError):
+        turns = 40
+    # Rough hold so a 60-turn Pro render cannot start on an empty wallet.
+    blocked = _spend_blocked(min_usd=max(0.5, turns * 0.05))
+    if blocked:
+        return blocked
+    try:
+        return jsonify(render_jobs.start(body, request.host_url))
+    except ValueError as e:
+        return error_response("Bad render request", str(e), code=400)
+    except RuntimeError as e:
+        return error_response("Render already running", str(e), code=409)
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to start render", str(e))
+
+
+@app.route('/api/render/status', methods=['GET'])
+def api_render_status():
+    """Where the current (or last) render got to."""
+    try:
+        return jsonify(render_jobs.status())
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to read render status", str(e))
+
+
+@app.route('/api/render/cancel', methods=['POST'])
+def api_render_cancel():
+    """Stop the running render. Frames already written stay on disk."""
+    try:
+        return jsonify(render_jobs.cancel())
+    except RuntimeError as e:
+        return error_response("Nothing to cancel", str(e), code=409)
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to cancel render", str(e))
+
+
+@app.route('/api/render/live', methods=['POST'])
+def api_render_live():
+    """Store the browser-recorded live world film for the current run.
+
+    Watch mode drives the Reactor stream in the TV from each still and records
+    it (see WatchFilm in standalone.js). The finished clip is uploaded here and
+    becomes the run's Film cut. Guarded so it can only write the run this
+    browser is (or just was) driving.
+    """
+    job_id = (request.form.get("job") or "").strip()
+    film = request.files.get("film")
+    if not job_id or film is None:
+        return error_response("Bad live film upload", "missing job or film", code=400)
+    try:
+        data = film.read()
+        result = render_jobs.save_live(job_id, data, request.form.get("timeline"))
+        return jsonify(result)
+    except ValueError as e:
+        return error_response("Live film rejected", str(e), code=400)
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to save live film", str(e))
+
+
+@app.route('/api/render/history', methods=['GET'])
+def api_render_history():
+    """Every render still on disk, newest first — the browsing list."""
+    try:
+        return jsonify(render_jobs.history())
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to list renders", str(e))
+
+
+@app.route('/api/render/run/<run_id>', methods=['GET'])
+def api_render_run(run_id):
+    """One finished render, turn by turn, for the reviewer."""
+    try:
+        return jsonify(render_jobs.detail(run_id))
+    except (ValueError, FileNotFoundError):
+        return error_response("No such render", run_id, code=404)
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to read render", str(e))
+
+
+@app.route('/api/render/download/<run_id>', methods=['GET'])
+def api_render_download(run_id):
+    """Export a whole render as one zip — frames, flipbooks, summary, transcript."""
+    try:
+        path = render_jobs.bundle(run_id)
+        return send_file(str(path), as_attachment=True, download_name=path.name)
+    except (ValueError, FileNotFoundError):
+        return error_response("No such render", run_id, code=404)
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to bundle render", str(e))
+
+
+@app.route('/api/render/file/<path:rel>', methods=['GET'])
+def api_render_file(rel):
+    """Serve a render artifact — a frame, the GIF, a flipbook, the summary.
+
+    `?download=1` forces a save rather than letting the browser display it, so
+    the same URL backs both the inline reviewer and the export buttons.
+    """
+    try:
+        path = render_jobs.artifact_path(rel)
+        if request.args.get('download'):
+            return send_file(str(path), as_attachment=True, download_name=path.name)
+        return send_file(str(path))
+    except (ValueError, FileNotFoundError):
+        return error_response("No such render artifact", rel, code=404)
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to read render artifact", str(e))
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -2612,22 +3137,17 @@ def admin_pricing_put():
 
 @app.route('/studio', methods=['GET'])
 def serve_world_studio():
-    """Serve the World Studio prompt editor, gated the same way /admin is."""
+    """Create lives in the in-game graph. Keep the admin gate."""
     if not _admin_token_ok():
         return jsonify({
             "error": "unauthorized",
             "message": "Provide ADMIN_TOKEN via ?token=, X-Admin-Token header, or admin_token cookie."
         }), 401
-    try:
-        response = make_response(send_file('world_studio.html'))
-        origin = request.headers.get('Origin')
-        if origin:
-            response.headers['Access-Control-Allow-Origin'] = origin
-            response.headers['Vary'] = 'Origin'
-            response.headers['Access-Control-Allow-Credentials'] = 'true'
-        return response
-    except FileNotFoundError:
-        return jsonify({"error": "World Studio file not found"}), 404
+    token = (request.args.get("token") or "").strip()
+    dest = "/?mode=create"
+    if token:
+        dest = f"/?mode=create&token={quote(token)}"
+    return redirect(dest, code=302)
 
 
 @app.route('/api/admin/studio/content', methods=['GET'])
@@ -2642,6 +3162,7 @@ def admin_studio_content():
         import game_identity
         import prompt_layers
         import levels_store
+        import experience_store
         game_identity.ensure_spec_keys()
         spec = game_identity.get_spec()
         return jsonify(success_response({
@@ -2666,6 +3187,7 @@ def admin_studio_content():
             "layers": prompt_layers.layer_manifest(),
             "level_keys": levels_store.level_keys(),
             "levels": levels_store.list_levels(),
+            "experience": _experience_json(),
         }))
     except Exception as e:
         traceback.print_exc()
@@ -2796,8 +3318,25 @@ def admin_studio_identity_put():
                 "Body must include at least one of: "
                 + ", ".join(game_identity.SPEC_KEYS) + ".", code=400)
         spec = game_identity.save_spec(payload)
+        # Play / reset reloads the bound World snapshot. If we only write the
+        # live prompt file, the next reset silently throws the sheet away.
+        persisted = None
+        try:
+            import experience_store
+            exp = experience_store.get_experience()
+            wid = (body.get("world_id") or body.get("persist_world")
+                   or exp.get("start_world") or "")
+            if wid:
+                exp = experience_store.persist_world_snapshot(wid)
+                persisted = experience_store.world_by_id(exp, wid) or {}
+        except Exception:
+            traceback.print_exc()
         return jsonify(success_response(
-            {"identity": spec, "preview": game_identity.preview()},
+            {
+                "identity": spec,
+                "preview": game_identity.preview(),
+                "persisted_world": (persisted or {}).get("slug") or "",
+            },
             "Cast & camera saved — live on your next turn"))
     except Exception as e:
         traceback.print_exc()
@@ -2806,11 +3345,32 @@ def admin_studio_identity_put():
 
 @app.route('/api/admin/studio/identity/reset', methods=['POST'])
 def admin_studio_identity_reset():
-    """Clear the cast sheet back to first person, no character, no level."""
+    """Clear the cast sheet back to first person, no character, no level.
+
+    Body may include ``{"block": "player_character"}`` (or ``setting_reference``
+    / ``camera_perspective``) to empty just that sheet. Without it, all three
+    go. The World Editor's per-pane Clear uses the single-block form.
+    """
     if not _admin_token_ok():
         return _admin_unauthorized()
     try:
         import game_identity
+        body = request.get_json(silent=True) or {}
+        block = body.get('block')
+        if block:
+            if block not in game_identity.SPEC_KEYS:
+                return error_response(
+                    "block must be one of: "
+                    + ", ".join(game_identity.SPEC_KEYS) + ".", code=400)
+            spec = game_identity.clear_block(block)
+            label = {
+                game_identity.CHARACTER_KEY: "Character",
+                game_identity.SETTING_KEY: "Level",
+                game_identity.CAMERA_KEY: "Camera",
+            }.get(block, block)
+            return jsonify(success_response(
+                {"identity": spec, "preview": game_identity.preview()},
+                f"{label} cleared"))
         spec = game_identity.reset_spec()
         return jsonify(success_response(
             {"identity": spec, "preview": game_identity.preview()},
@@ -2825,8 +3385,9 @@ def admin_studio_reference_upload():
     """Store an uploaded character sheet / level plate.
 
     Body: {"image": "data:image/png;base64,...", "kind": "character"|"setting",
-    "label": "optional", "attach": true} — `attach` wires the new id straight
-    into that slot's reference list, which is what the editor's drop zone wants.
+    "label": "optional", "attach": true} — `attach` wires the new id and
+    drafts the sheet from the plate in one write. The editor must wait for
+    that draft before dirtying the World node.
     """
     if not _admin_token_ok():
         return _admin_unauthorized()
@@ -2843,14 +3404,25 @@ def admin_studio_reference_upload():
 
         meta = game_identity.save_reference(body.get('image', ''), kind, body.get('label', ''))
 
+        image_fill = None
         if body.get('attach', True):
-            existing = game_identity.get_spec()[slot].get('reference_images', [])
-            game_identity.save_spec({slot: {'reference_images': existing + [meta['id']]}})
+            # Plate + drafted text in one write. Attaching first used to dirty
+            # the World on leftover Jason copy before vision had read the image.
+            fill_from_image = body.get('fill_from_image', body.get('fill_empty', True))
+            if fill_from_image:
+                image_fill = game_identity.attach_reference_and_fill(
+                    slot, meta['id'], overwrite=True)
+            else:
+                existing = game_identity.get_spec()[slot].get('reference_images', [])
+                game_identity.save_spec({
+                    slot: {'reference_images': existing + [meta['id']], 'enabled': True},
+                })
 
         return jsonify(success_response({
             "reference": meta,
             "identity": game_identity.get_spec(),
             "preview": game_identity.preview(),
+            "image_fill": image_fill,
         }, "Reference image added"))
     except ValueError as e:
         return error_response(str(e), code=400)
@@ -3001,6 +3573,721 @@ def admin_studio_worlds_delete():
         return error_response("Failed to delete world", str(e))
 
 
+def _experience_json(exp=None):
+    """Experience payload with per-World first-frame URLs stamped on."""
+    import experience_store
+    import world_frames
+    if exp is None:
+        exp = experience_store.get_experience()
+    out = world_frames.annotate_experience(exp)
+    if isinstance(out, dict):
+        out = dict(out)
+        out["transition_types"] = experience_store.condition_catalog()
+    return out
+
+
+# ═══════════════════════════════════════════════════════════════════
+# EXPERIENCE — worlds stitched by transitions
+#
+# The bubble editor authors one World at a time. This graph says which
+# Worlds exist in the designed run, which one Play starts in, and when
+# the engine should leave one for another. Stored as
+# experiences/<slug>.json. The start-menu picker lists every file and
+# POSTs /api/experiences/activate so Play / reset bind to that slug.
+# ═══════════════════════════════════════════════════════════════════
+
+@app.route('/api/worlds/<slug>/frame', methods=['GET'])
+def api_world_frame(slug):
+    """Serve a World's cached first frame. This is the app's load-time still."""
+    try:
+        import world_frames
+        rec = world_frames.record(slug)
+        path = rec.get("path")
+        if not path or not Path(path).is_file():
+            return error_response("No first frame yet.", code=404)
+        resp = make_response(send_file(path, mimetype="image/png", conditional=True))
+        resp.headers["Cache-Control"] = "private, max-age=120"
+        return resp
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to serve that frame", str(e))
+
+
+@app.route('/api/admin/studio/worlds/frames', methods=['GET'])
+def admin_studio_world_frames_get():
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        exp = _experience_json()
+        frames = {}
+        for world in exp.get("worlds") or []:
+            wslug = world.get("slug") or ""
+            if wslug:
+                frames[wslug] = {
+                    "url": world.get("frame_url") or "",
+                    "status": world.get("frame_status") or "missing",
+                    "generating": bool(world.get("frame_generating")),
+                    "source": world.get("frame_source") or "",
+                }
+        return jsonify(success_response({"experience": _experience_json(exp), "frames": frames}))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to load world frames", str(e))
+
+
+@app.route('/api/admin/studio/worlds/frames/ensure', methods=['POST'])
+def admin_studio_world_frames_ensure():
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import world_frames
+        body = request.get_json(silent=True) or {}
+        wslug = (body.get("slug") or "").strip()
+        if wslug:
+            rec = world_frames.ensure(wslug, wait=False)
+            return jsonify(success_response({
+                "frame": rec,
+                "experience": _experience_json(),
+            }))
+        world_frames.schedule_ensure_all()
+        return jsonify(success_response({"experience": _experience_json()}))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to refresh world frames", str(e))
+
+
+@app.route('/api/admin/studio/worlds/frames/reset', methods=['POST'])
+def admin_studio_world_frames_reset():
+    """Snapshot this World's live design, then regenerate its first frame.
+
+    The desk REDRAW uses this. Body: ``id`` (World id) or ``slug``.
+    """
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import experience_store
+        import world_frames
+        body = request.get_json(silent=True) or {}
+        slug = (body.get("slug") or "").strip()
+        wid = body.get("id") or body.get("world_id")
+        exp = experience_store.get_experience()
+        if wid:
+            try:
+                exp = experience_store.persist_world_snapshot(wid)
+            except KeyError:
+                pass
+            world = experience_store.world_by_id(exp, wid)
+            slug = str((world or {}).get("slug") or slug)
+        if not slug:
+            slug = world_frames.start_world_slug(exp)
+        if not slug:
+            return error_response("No World to reset.", code=400)
+        rec = world_frames.force_reset(slug, wait=False)
+        return jsonify(success_response({
+            "frame": rec,
+            "experience": _experience_json(),
+        }))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to reset that World", str(e))
+
+
+@app.route('/api/experiences', methods=['GET'])
+def api_experiences_list():
+    """Catalog of Experiences on disk for the start-menu picker."""
+    try:
+        import experience_store
+        import world_frames
+        items = experience_store.list_experiences(play_catalog=True)
+        try:
+            world_frames.maybe_kick_all()
+        except Exception:
+            pass
+        return jsonify(success_response({
+            "experiences": items,
+            "active": experience_store.get_active_slug(),
+        }))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to list Experiences", str(e))
+
+
+@app.route('/api/admin/studio/experiences', methods=['POST'])
+def admin_studio_experience_create():
+    """New Experience file. The editor carousel's + NEW."""
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import experience_store
+        body = request.get_json(silent=True) or {}
+        exp = experience_store.create_experience(
+            body.get("name") or "",
+            clone_from=body.get("clone_from") or "",
+        )
+        return jsonify(success_response({
+            "experience": _experience_json(exp),
+            "active": experience_store.get_active_slug(),
+            "experiences": experience_store.list_experiences(),
+        }, "Experience created"))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to create that Experience", str(e))
+
+
+@app.route('/api/admin/studio/experiences/rename', methods=['POST'])
+def admin_studio_experience_rename():
+    """Name the Experience the editor is looking at."""
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import experience_store
+        body = request.get_json(silent=True) or {}
+        slug = body.get("slug") or body.get("id") or ""
+        name = body.get("name")
+        if name is None:
+            return error_response("Body must include 'name'.", code=400)
+        exp = experience_store.rename_experience(name, slug)
+        return jsonify(success_response({
+            "experience": _experience_json(exp),
+            "active": experience_store.get_active_slug(),
+            "experiences": experience_store.list_experiences(),
+        }, "Experience named"))
+    except KeyError as e:
+        return error_response(str(e), code=404)
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to name that Experience", str(e))
+
+
+@app.route('/api/experiences/activate', methods=['POST'])
+def api_experiences_activate():
+    """Make this Experience the one Play / reset / the editor bind to."""
+    try:
+        import experience_store
+        body = request.get_json(silent=True) or {}
+        slug = body.get("slug") or body.get("id") or experience_store.ACTIVE_SLUG
+        slug = experience_store.set_active(slug)
+        return jsonify(success_response({
+            "experience": _experience_json(experience_store.get_experience(slug)),
+            "active": slug,
+        }, "Experience ready"))
+    except KeyError as e:
+        return error_response(str(e), code=404)
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to activate that Experience", str(e))
+
+
+@app.route('/api/admin/studio/experience', methods=['GET'])
+def admin_studio_experience_get():
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import experience_store
+        return jsonify(success_response({"experience": _experience_json()}))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to load the Experience", str(e))
+
+
+@app.route('/api/admin/studio/experience', methods=['PUT'])
+def admin_studio_experience_put():
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import experience_store
+        body = request.get_json(silent=True) or {}
+        payload = body.get('experience') if isinstance(body.get('experience'), dict) else body
+        exp = experience_store.save_experience(payload)
+        return jsonify(success_response({"experience": _experience_json(exp)}, "Experience saved"))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to save the Experience", str(e))
+
+
+@app.route('/api/admin/studio/experience/sound', methods=['PUT'])
+def admin_studio_experience_sound():
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import experience_store
+        body = request.get_json(silent=True) or {}
+        payload = body.get("sound") if isinstance(body.get("sound"), dict) else body
+        exp = experience_store.set_sound(payload)
+        return jsonify(success_response({"experience": _experience_json(exp)}, "Sound saved"))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to save sound", str(e))
+
+
+@app.route('/api/admin/studio/experience/pacing', methods=['PUT'])
+def admin_studio_experience_pacing():
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import experience_store
+        body = request.get_json(silent=True) or {}
+        payload = body.get("threat") if isinstance(body.get("threat"), dict) else body
+        if isinstance(body.get("pacing"), dict):
+            payload = body.get("pacing")
+        exp = experience_store.set_pacing(payload)
+        return jsonify(success_response({"experience": _experience_json(exp)}, "Pacing saved"))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to save pacing", str(e))
+
+
+@app.route('/api/admin/studio/experience/lore', methods=['GET'])
+def admin_studio_experience_lore_get():
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import experience_store
+        lore = experience_store.get_lore()
+        return jsonify(success_response({
+            "lore": lore,
+            "stats": experience_store.lore_stats(lore),
+            "experience": _experience_json(),
+        }))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to read lore", str(e))
+
+
+@app.route('/api/admin/studio/experience/lore', methods=['PUT'])
+def admin_studio_experience_lore_put():
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import experience_store
+        body = request.get_json(silent=True) or {}
+        lore = experience_store.set_lore_notes(
+            body.get("notes"),
+            enabled=body.get("enabled"),
+        )
+        return jsonify(success_response({
+            "lore": lore,
+            "stats": experience_store.lore_stats(lore),
+            "experience": _experience_json(),
+        }, "Lore saved"))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to save lore", str(e))
+
+
+@app.route('/api/admin/studio/experience/lore', methods=['POST'])
+def admin_studio_experience_lore_add():
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import experience_store
+        body = request.get_json(silent=True) or {}
+        added = experience_store.add_lore_document(
+            name=body.get("name") or "",
+            text=body.get("text") or "",
+            image=body.get("image") or "",
+        )
+        return jsonify(success_response({
+            "lore": added["lore"],
+            "document": added.get("document"),
+            "stats": experience_store.lore_stats(added["lore"]),
+            "experience": _experience_json(),
+        }, "Lore added"))
+    except ValueError as e:
+        return error_response(str(e), code=400)
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to add lore", str(e))
+
+
+@app.route('/api/admin/studio/experience/lore', methods=['DELETE'])
+def admin_studio_experience_lore_delete():
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import experience_store
+        body = request.get_json(silent=True) or {}
+        did = body.get("id") or body.get("doc_id")
+        if not did:
+            return error_response("Body must include 'id'.", code=400)
+        lore = experience_store.remove_lore_document(did)
+        return jsonify(success_response({
+            "lore": lore,
+            "stats": experience_store.lore_stats(lore),
+            "experience": _experience_json(),
+        }, "Lore removed"))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to remove that lore", str(e))
+
+
+@app.route('/api/admin/studio/experience/lore/move', methods=['POST'])
+def admin_studio_experience_lore_move():
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import experience_store
+        body = request.get_json(silent=True) or {}
+        lore = experience_store.move_lore(body.get("x"), body.get("y"))
+        return jsonify(success_response({
+            "lore": lore,
+            "experience": _experience_json(),
+        }))
+    except ValueError as e:
+        return error_response(str(e), code=400)
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to move lore", str(e))
+
+
+@app.route('/api/experience/lore/<slug>/<doc_id>', methods=['GET'])
+def serve_experience_lore(slug, doc_id):
+    """Serve an uploaded lore image. Unguessable ids; same contract as plates."""
+    try:
+        import experience_store
+        path = experience_store.lore_file_path(slug, doc_id)
+        if not path:
+            return error_response("No such lore file.", code=404)
+        suffix = path.suffix.lower()
+        mime = {
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".webp": "image/webp",
+            ".gif": "image/gif",
+            ".md": "text/plain; charset=utf-8",
+            ".txt": "text/plain; charset=utf-8",
+        }.get(suffix, "application/octet-stream")
+        resp = make_response(send_file(path, mimetype=mime, conditional=True))
+        resp.headers["Cache-Control"] = "private, max-age=120"
+        return resp
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to read that file", str(e))
+
+
+@app.route('/api/admin/studio/experience/worlds', methods=['POST'])
+def admin_studio_experience_world_add():
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import experience_store
+        body = request.get_json(silent=True) or {}
+        exp = experience_store.add_world(
+            body.get('name') or "",
+            clone_from=body.get('clone_from') or "",
+            x=body.get('x'),
+            y=body.get('y'),
+        )
+        added = (exp.get("worlds") or [])[-1] if exp.get("worlds") else None
+        if added and added.get("slug"):
+            try:
+                import world_frames
+                world_frames.schedule_ensure(added["slug"], delay=0.4)
+            except Exception:
+                pass
+        return jsonify(success_response({"experience": _experience_json(exp)}, "World added"))
+    except (ValueError, KeyError) as e:
+        return error_response(str(e), code=400)
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to add a World", str(e))
+
+
+@app.route('/api/admin/studio/experience/worlds', methods=['DELETE'])
+def admin_studio_experience_world_delete():
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import experience_store
+        body = request.get_json(silent=True) or {}
+        wid = body.get('id') or body.get('world_id')
+        if not wid:
+            return error_response("Body must include 'id'.", code=400)
+        exp = experience_store.remove_world(wid)
+        return jsonify(success_response({"experience": _experience_json(exp)}, "World removed"))
+    except ValueError as e:
+        return error_response(str(e), code=400)
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to remove that World", str(e))
+
+
+@app.route('/api/admin/studio/experience/move', methods=['POST'])
+def admin_studio_experience_move():
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import experience_store
+        body = request.get_json(silent=True) or {}
+        exp = experience_store.move_experience(body.get('x'), body.get('y'))
+        return jsonify(success_response({"experience": _experience_json(exp)}))
+    except ValueError as e:
+        return error_response(str(e), code=400)
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to move that Experience", str(e))
+
+
+@app.route('/api/admin/studio/experience/worlds/move', methods=['POST'])
+def admin_studio_experience_world_move():
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import experience_store
+        body = request.get_json(silent=True) or {}
+        wid = body.get('id') or body.get('world_id')
+        if not wid:
+            return error_response("Body must include 'id'.", code=400)
+        exp = experience_store.move_world(wid, body.get('x'), body.get('y'))
+        return jsonify(success_response({"experience": _experience_json(exp)}))
+    except KeyError as e:
+        return error_response(str(e), code=404)
+    except ValueError as e:
+        return error_response(str(e), code=400)
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to move that World", str(e))
+
+
+@app.route('/api/admin/studio/experience/worlds/rename', methods=['POST'])
+def admin_studio_experience_world_rename():
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import experience_store
+        body = request.get_json(silent=True) or {}
+        wid = body.get('id') or body.get('world_id')
+        name = body.get('name')
+        if not wid or not name:
+            return error_response("Body must include 'id' and 'name'.", code=400)
+        blurb = body.get('blurb') if 'blurb' in body else None
+        exp = experience_store.rename_world(wid, name, blurb=blurb)
+        return jsonify(success_response({"experience": _experience_json(exp)}))
+    except KeyError as e:
+        return error_response(str(e), code=404)
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to rename that World", str(e))
+
+
+@app.route('/api/admin/studio/experience/start', methods=['POST'])
+def admin_studio_experience_start():
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import experience_store
+        body = request.get_json(silent=True) or {}
+        wid = body.get('id') or body.get('world_id')
+        if not wid:
+            return error_response("Body must include 'id'.", code=400)
+        exp = experience_store.set_start_world(wid)
+        return jsonify(success_response({"experience": _experience_json(exp)}, "Start set"))
+    except KeyError as e:
+        return error_response(str(e), code=404)
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to set the start World", str(e))
+
+
+@app.route('/api/admin/studio/experience/enter', methods=['POST'])
+def admin_studio_experience_enter():
+    """Load a graph World's snapshot into the live editor."""
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import experience_store
+        import worlds_store
+        import prompts_store
+        import game_identity
+        body = request.get_json(silent=True) or {}
+        wid = body.get('id') or body.get('world_id')
+        exp = experience_store.get_experience()
+        world = experience_store.world_by_id(exp, wid) if wid else None
+        if not world:
+            return error_response("World not found.", code=404)
+        if world.get("slug"):
+            worlds_store.load_world(world["slug"])
+        return jsonify(success_response({
+            "experience": _experience_json(exp),
+            "world": world,
+            "prompts": dict(prompts_store.PROMPTS),
+            "identity": game_identity.get_spec(),
+            "identity_preview": game_identity.preview(),
+        }, f"Editing '{world.get('name') or 'World'}'"))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to enter that World", str(e))
+
+
+@app.route('/api/admin/studio/experience/persist', methods=['POST'])
+def admin_studio_experience_persist():
+    """Write the live prompt file back into the World currently being edited."""
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import experience_store
+        body = request.get_json(silent=True) or {}
+        wid = body.get('id') or body.get('world_id')
+        if not wid:
+            return error_response("Body must include 'id'.", code=400)
+        exp = experience_store.persist_world_snapshot(wid)
+        world = experience_store.world_by_id(exp, wid)
+        if world and world.get("slug"):
+            try:
+                import world_frames
+                world_frames.schedule_ensure(world["slug"], delay=0.25)
+            except Exception:
+                pass
+        return jsonify(success_response({"experience": _experience_json(exp)}, "World snapshot updated"))
+    except KeyError as e:
+        return error_response(str(e), code=404)
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to persist that World", str(e))
+
+
+@app.route('/api/admin/studio/experience/cutscenes', methods=['POST'])
+def admin_studio_experience_cutscene_add():
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import experience_store
+        body = request.get_json(silent=True) or {}
+        exp = experience_store.add_cutscene(
+            body.get('name') or "",
+            mood=body.get('mood') or "threshold",
+            source=body.get('source') or "incoming",
+            shot_brief=body.get('shot_brief') or "",
+            blurb=body.get('blurb') or "",
+            x=body.get('x'),
+            y=body.get('y'),
+        )
+        return jsonify(success_response({"experience": _experience_json(exp)}, "Cutscene added"))
+    except (ValueError, KeyError) as e:
+        return error_response(str(e), code=400)
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to add a Cutscene", str(e))
+
+
+@app.route('/api/admin/studio/experience/cutscenes', methods=['DELETE'])
+def admin_studio_experience_cutscene_delete():
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import experience_store
+        body = request.get_json(silent=True) or {}
+        cid = body.get('id') or body.get('cutscene_id')
+        if not cid:
+            return error_response("Body must include 'id'.", code=400)
+        exp = experience_store.remove_cutscene(cid)
+        return jsonify(success_response({"experience": _experience_json(exp)}, "Cutscene removed"))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to remove that Cutscene", str(e))
+
+
+@app.route('/api/admin/studio/experience/cutscenes/move', methods=['POST'])
+def admin_studio_experience_cutscene_move():
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import experience_store
+        body = request.get_json(silent=True) or {}
+        cid = body.get('id') or body.get('cutscene_id')
+        if not cid:
+            return error_response("Body must include 'id'.", code=400)
+        exp = experience_store.move_cutscene(cid, body.get('x'), body.get('y'))
+        return jsonify(success_response({"experience": _experience_json(exp)}))
+    except KeyError as e:
+        return error_response(str(e), code=404)
+    except ValueError as e:
+        return error_response(str(e), code=400)
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to move that Cutscene", str(e))
+
+
+@app.route('/api/admin/studio/experience/cutscenes/rename', methods=['POST'])
+def admin_studio_experience_cutscene_rename():
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import experience_store
+        body = request.get_json(silent=True) or {}
+        cid = body.get('id') or body.get('cutscene_id')
+        name = body.get('name')
+        if not cid or not name:
+            return error_response("Body must include 'id' and 'name'.", code=400)
+        exp = experience_store.rename_cutscene(
+            cid, name,
+            blurb=body.get('blurb') if 'blurb' in body else None,
+            mood=body.get('mood') if 'mood' in body else None,
+            source=body.get('source') if 'source' in body else None,
+            shot_brief=body.get('shot_brief') if 'shot_brief' in body else None,
+        )
+        return jsonify(success_response({"experience": _experience_json(exp)}))
+    except KeyError as e:
+        return error_response(str(e), code=404)
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to rename that Cutscene", str(e))
+
+
+@app.route('/api/admin/studio/experience/transitions', methods=['POST'])
+def admin_studio_experience_transition_add():
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import experience_store
+        body = request.get_json(silent=True) or {}
+        exp = experience_store.add_transition(
+            body.get('from'), body.get('to'), body.get('condition'))
+        return jsonify(success_response({"experience": _experience_json(exp)}, "Transition added"))
+    except (ValueError, KeyError) as e:
+        return error_response(str(e), code=400)
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to add that transition", str(e))
+
+
+@app.route('/api/admin/studio/experience/transitions', methods=['PUT'])
+def admin_studio_experience_transition_put():
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import experience_store
+        body = request.get_json(silent=True) or {}
+        tid = body.get('id') or body.get('transition_id')
+        if not tid:
+            return error_response("Body must include 'id'.", code=400)
+        exp = experience_store.update_transition(tid, body)
+        return jsonify(success_response({"experience": _experience_json(exp)}, "Transition updated"))
+    except KeyError as e:
+        return error_response(str(e), code=404)
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to update that transition", str(e))
+
+
+@app.route('/api/admin/studio/experience/transitions', methods=['DELETE'])
+def admin_studio_experience_transition_delete():
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import experience_store
+        body = request.get_json(silent=True) or {}
+        tid = body.get('id') or body.get('transition_id')
+        if not tid:
+            return error_response("Body must include 'id'.", code=400)
+        exp = experience_store.remove_transition(tid)
+        return jsonify(success_response({"experience": _experience_json(exp)}, "Transition removed"))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to remove that transition", str(e))
+
+
 # ═══════════════════════════════════════════════════════════════════
 # LEVELS — the LEVEL LAYER only
 #
@@ -3099,21 +4386,171 @@ def admin_studio_levels_delete():
 def api_music_get():
     """What is scoring the game: a loop you chose, or the per-scene generator."""
     try:
+        scene_audio.kick_stock_warmup()
+        scene_audio.kick_menu_preview()
         loop = scene_audio.custom_loop()
         return jsonify({"data": {
             "loop": loop,
+            "direction": scene_audio.get_music_direction(),
+            "preview": scene_audio.last_preview("preview"),
+            "menu_loop": scene_audio.menu_loop(),
+            "menu_direction": scene_audio.get_menu_direction(),
+            "menu_preview": scene_audio.last_preview("menu_preview"),
+            "sfx_direction": scene_audio.get_sfx_direction(),
             "can_generate": scene_audio.is_available(),
+            "can_generate_reason": scene_audio.unavailable_reason(),
+            "provider": "elevenlabs",
             "accepts": sorted(scene_audio.LOOP_EXTS.keys()),
             "max_bytes": scene_audio.MAX_LOOP_BYTES,
+            "stock": scene_audio.stock_status(),
+            "cache": scene_audio.list_generated_cache(
+                request.args.get("session") or "default"),
         }})
     except Exception as e:  # noqa: BLE001
         traceback.print_exc()
         return error_response("Failed to read music", str(e))
 
 
+@app.route('/api/music', methods=['PUT'])
+def api_music_direction():
+    """Save how this world sounds. Used on every scene, including the next run."""
+    body = request.get_json(silent=True) or {}
+    try:
+        # Only write a field that was actually sent. Saving the title screen
+        # used to POST {menu_prompt} and wipe the match direction to "".
+        if "prompt" in body:
+            prompt = scene_audio.set_music_direction(body.get("prompt") or "")
+        else:
+            prompt = scene_audio.get_music_direction()
+        menu_prompt = body.get("menu_prompt")
+        menu = scene_audio.get_menu_direction()
+        if menu_prompt is not None:
+            menu = scene_audio.set_menu_direction(menu_prompt)
+        sfx_prompt = body.get("sfx_prompt")
+        sfx = scene_audio.get_sfx_direction()
+        if sfx_prompt is not None:
+            sfx = scene_audio.set_sfx_direction(sfx_prompt)
+        return jsonify({"data": {
+            "direction": prompt,
+            "loop": scene_audio.custom_loop(),
+            "menu_direction": menu,
+            "menu_loop": scene_audio.menu_loop(),
+            "sfx_direction": sfx,
+        }})
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        return error_response("Failed to save music direction", str(e))
+
+
+@app.route('/api/music/stock', methods=['GET', 'POST'])
+def api_music_stock():
+    """Pre-cached encounter stingers and fallback ambience beds."""
+    try:
+        if request.method == 'POST':
+            body = request.get_json(silent=True) or {}
+            key = (body.get("id") or "").strip()
+            force = bool(body.get("force"))
+            if key:
+                rec = scene_audio.ensure_one_stock(key, force=force)
+                if not rec:
+                    return jsonify({"error": "invalid", "message": "Unknown stock id."}), 400
+                return jsonify({"data": rec})
+            return jsonify({"data": scene_audio.ensure_stock_sounds(force=force)})
+        scene_audio.kick_stock_warmup()
+        return jsonify({"data": {
+            "can_generate": scene_audio.is_available(),
+            "files": scene_audio.stock_status(),
+            "designer": scene_audio.encounter_designer_urls(),
+        }})
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        return error_response("Failed to read stock audio", str(e))
+
+
+@app.route('/api/music/inspect', methods=['POST'])
+def api_music_inspect():
+    """Show the music + SFX prompts a scene would send. No generation."""
+    body = request.get_json(silent=True) or {}
+    try:
+        return jsonify({"data": scene_audio.inspect_scene(
+            body.get("prompt") or "",
+            mode=(body.get("mode") or "scene"),
+        )})
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        return error_response("Failed to inspect music", str(e))
+
+
+@app.route('/api/music/test', methods=['POST'])
+def api_music_test():
+    """Generate a one-off test clip (music, ambience, or stock stinger)."""
+    body = request.get_json(silent=True) or {}
+    prompt = (body.get("prompt") or "").strip()
+    layer = (body.get("layer") or "music").strip().lower()
+    if layer != "stinger" and not prompt:
+        return jsonify({"error": "invalid", "message": "Write a scene or prompt first."}), 400
+    try:
+        rec = scene_audio.generate_test_clip(
+            prompt,
+            mode=(body.get("mode") or "scene"),
+            layer=layer,
+            seconds=body.get("seconds"),
+            session_id=body.get("session") or "default",
+        )
+        if not rec:
+            return jsonify({"error": "unavailable", "message":
+                            "Couldn't generate that — check ELEVENLABS_API_KEY."}), 502
+        if rec.get("error") == "no_key":
+            return jsonify({"error": "unavailable", "message":
+                            "Couldn't generate that — check ELEVENLABS_API_KEY."}), 502
+        return jsonify({"data": rec})
+    except ValueError as e:
+        return jsonify({"error": "invalid", "message": str(e)}), 400
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        return error_response("Failed to test audio", str(e))
+
+
+@app.route('/api/music/cache', methods=['GET', 'DELETE'])
+def api_music_cache():
+    """Per-scene generated clips. DELETE clears them; stock and locked loops stay."""
+    session_id = request.args.get("session") or "default"
+    try:
+        if request.method == "DELETE":
+            removed = scene_audio.clear_generated_cache(session_id)
+            return jsonify({"data": {"removed": removed,
+                                     "cache": scene_audio.list_generated_cache(session_id)}})
+        return jsonify({"data": {"cache": scene_audio.list_generated_cache(session_id)}})
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        return error_response("Failed to read audio cache", str(e))
+
+
+@app.route('/api/music/preview', methods=['POST'])
+def api_music_preview():
+    """Hear a prompt without locking it as the only track."""
+    body = request.get_json(silent=True) or {}
+    prompt = (body.get("prompt") or "").strip()
+    if not prompt:
+        return jsonify({"error": "invalid", "message": "Write how it should sound first."}), 400
+    try:
+        stem = "menu_preview" if (body.get("for") == "menu") else "preview"
+        preview = scene_audio.generate_preview(
+            prompt, seconds=body.get("seconds") or 8, stem=stem)
+        if not preview:
+            return jsonify({"error": "unavailable", "message":
+                            "Couldn't preview that — check ELEVENLABS_API_KEY, then try again."}), 502
+        return jsonify({"data": {"preview": preview}})
+    except ValueError as e:
+        return jsonify({"error": "invalid", "message": str(e)}), 400
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        return error_response("Failed to preview music", str(e))
+
+
 @app.route('/api/music/generate', methods=['POST'])
 def api_music_generate():
-    """Write the music yourself: {prompt, seconds?} straight to Lyria.
+    """Write the music yourself: {prompt, seconds?} straight to ElevenLabs Music.
 
     Distinct from /api/scene_audio, which derives music direction from a scene
     description. Here the prompt IS the direction.
@@ -3123,12 +4560,15 @@ def api_music_generate():
     if not prompt:
         return jsonify({"error": "invalid", "message": "Write a prompt first."}), 400
     try:
-        loop = scene_audio.generate_loop(prompt, seconds=body.get("seconds") or 12)
+        stem = "menu" if (body.get("for") == "menu") else "loop"
+        loop = scene_audio.generate_loop(
+            prompt, seconds=body.get("seconds") or 12, stem=stem)
         if not loop:
             return jsonify({"error": "unavailable", "message":
-                            "Couldn't generate that — no GEMINI_API_KEY, or the "
-                            "stream failed."}), 502
-        return jsonify({"data": {"loop": loop}})
+                            "Couldn't generate that — no ELEVENLABS_API_KEY, or "
+                            "the generate call failed."}), 502
+        key = "menu_loop" if stem == "menu" else "loop"
+        return jsonify({"data": {key: loop, "loop": loop}})
     except ValueError as e:
         return jsonify({"error": "invalid", "message": str(e)}), 400
     except Exception as e:  # noqa: BLE001
@@ -3156,8 +4596,11 @@ def api_music_upload():
                 if mime in header:
                     ext = candidate
                     break
-        loop = scene_audio.set_uploaded_loop(data, ext or "wav", name=name)
-        return jsonify({"data": {"loop": loop}})
+        stem = "menu" if (body.get("for") == "menu") else "loop"
+        loop = scene_audio.set_uploaded_loop(
+            data, ext or "wav", name=name, stem=stem)
+        key = "menu_loop" if stem == "menu" else "loop"
+        return jsonify({"data": {key: loop, "loop": loop}})
     except ValueError as e:
         return jsonify({"error": "invalid", "message": str(e)}), 400
     except Exception as e:  # noqa: BLE001
@@ -3167,8 +4610,11 @@ def api_music_upload():
 
 @app.route('/api/music', methods=['DELETE'])
 def api_music_clear():
-    """Back to scoring each scene as it comes."""
+    """Back to scoring each scene as it comes. ?for=menu clears the title track."""
     try:
+        if (request.args.get("for") or "").strip() == "menu":
+            scene_audio.clear_menu_loop()
+            return jsonify({"data": {"menu_loop": None}})
         scene_audio.clear_custom_loop()
         return jsonify({"data": {"loop": None}})
     except Exception as e:  # noqa: BLE001
@@ -3283,7 +4729,300 @@ def api_health():
         "detect": _detect_backend_status(),
         # Whether NPC conversation can connect, and why not when it can't.
         "talk": _talk_status(),
+        "music": _music_status(),
     })
+
+
+# ═══════════════════════════════════════════════════════════════════
+# QUITTING (desktop app only)
+# ═══════════════════════════════════════════════════════════════════
+#
+# The same Flask app serves the hosted game, where "any client can stop the
+# process" is a denial-of-service button. So the route below is inert unless
+# something calls enable_shutdown() first, and only the desktop launcher does
+# (see play.py). Hosted deployments never arm it and answer 403.
+
+_SHUTDOWN_HOOKS: list = []
+_shutdown_armed = False
+_local_keys_armed = False
+
+
+def enable_local_keys() -> None:
+    """Allow PUT /api/keys to write the local key store.
+
+    Same contract as enable_shutdown: only play.py / run_local.py arm this.
+    Hosted gunicorn never does, so a visitor cannot overwrite the host's
+    accounts or exfiltrate a write of their own key onto a shared box.
+    """
+    global _local_keys_armed
+    _local_keys_armed = True
+    try:
+        billing.mark_local_app()
+    except Exception:
+        pass
+
+
+def _keys_write_allowed() -> bool:
+    if not _local_keys_armed:
+        return False
+    return request.remote_addr in ("127.0.0.1", "::1", "localhost")
+
+
+def enable_shutdown(hook=None) -> None:
+    """Allow POST /api/shutdown to stop this process.
+
+    `hook` runs before the process goes, and is how the launcher closes its
+    native window: destroying the window unblocks webview.start() so the app
+    exits through main() normally instead of being shot in the head.
+    """
+    global _shutdown_armed
+    _shutdown_armed = True
+    if hook is not None:
+        _SHUTDOWN_HOOKS.append(hook)
+
+
+def _release_compute() -> list:
+    """Stop everything that would otherwise keep spending after we quit.
+
+    Killing the process covers the threads, because they are all daemons. It
+    does NOT cover a render, which drives a *child* process — that one survives
+    its parent and keeps calling paid image models into a folder nobody is
+    watching. So the render is cancelled explicitly and first.
+    """
+    stopped = []
+
+    try:
+        # Forced: quitting means "stop spending right now", not "wait for a
+        # nice video" — the graceful stop the UI's STOP button uses can take
+        # a full turn to land, which is fine mid-session but not on the way out.
+        render_jobs.cancel(force=True)
+        stopped.append("render")
+    except RuntimeError:
+        pass  # nothing running, which is the normal case
+    except Exception as e:  # noqa: BLE001
+        print(f"[QUIT] could not cancel the render: {e}", flush=True)
+
+    try:
+        import gemini_live_talk as _talk
+        with _talk._SESSIONS_LOCK:
+            live = list(_talk._SESSIONS)
+        for bridge in live:
+            try:
+                bridge.ws.close()
+            except Exception:  # noqa: BLE001
+                pass
+        if live:
+            stopped.append(f"{len(live)} conversation(s)")
+    except Exception:  # noqa: BLE001
+        pass
+
+    # MediaPipe complains loudly if it is collected during interpreter teardown,
+    # and os._exit() below skips the atexit handler that normally prevents that.
+    try:
+        import local_vision
+        local_vision._close_detector()
+    except Exception:  # noqa: BLE001
+        pass
+
+    return stopped
+
+
+def _quit_process() -> None:
+    """Let the response finish, close the window, then make sure we die."""
+    # A deadline that touches nothing and therefore cannot be blocked. The
+    # ordinary path below can be: a window hook that hangs, or — the way this
+    # was actually found — a print into a stdout pipe nobody is draining, which
+    # blocks forever and never reaches the exit two lines later. Quitting must
+    # not depend on anything, least of all on logging that we are quitting.
+    def _failsafe() -> None:
+        time.sleep(6.0)
+        os._exit(0)
+
+    threading.Thread(target=_failsafe, name="quit-failsafe", daemon=True).start()
+
+    time.sleep(0.6)  # the browser needs the 200 before its socket goes away
+    for hook in _SHUTDOWN_HOOKS:
+        try:
+            hook()
+        except Exception:  # noqa: BLE001
+            pass
+    # If a hook closed the window, the process is already on its way out and
+    # this never runs. If there was no window — browser mode — nothing else
+    # will ever stop the serving thread, so end it here.
+    time.sleep(2.0)
+    os._exit(0)
+
+
+@app.route('/api/shutdown', methods=['POST'])
+def api_shutdown():
+    """Stop the local app: cancel paid work, close the window, exit."""
+    if not _shutdown_armed:
+        return error_response(
+            "Shutdown is not available on this server",
+            "Only the desktop app can stop itself.", code=403)
+    if request.remote_addr not in ("127.0.0.1", "::1", "localhost"):
+        return error_response(
+            "Shutdown is local-only", request.remote_addr, code=403)
+
+    stopped = _release_compute()
+    print(f"[QUIT] shutting down; stopped: {', '.join(stopped) or 'nothing running'}",
+          flush=True)
+    threading.Thread(target=_quit_process, name="quit", daemon=True).start()
+    return jsonify({"status": "closing", "stopped": stopped})
+
+
+# ═══════════════════════════════════════════════════════════════════
+# LOCAL KEYS (BYOK) — start-menu ACCOUNT pane
+# ═══════════════════════════════════════════════════════════════════
+#
+# GET is always safe: presence + last-four hint, never the secret.
+# PUT is local-only and only when the launcher armed it. Hosted stays
+# read-only so a player cannot write keys onto a shared Render process.
+
+
+@app.route("/api/keys", methods=["GET"])
+def api_keys_status():
+    return jsonify(keys_store.public_status(editable=_keys_write_allowed()))
+
+
+@app.route("/api/keys", methods=["PUT"])
+def api_keys_put():
+    if not _local_keys_armed:
+        return error_response(
+            "Keys cannot be edited on this server",
+            "Only the local app can save API keys.", code=403)
+    if request.remote_addr not in ("127.0.0.1", "::1", "localhost"):
+        return error_response(
+            "Keys are local-only", request.remote_addr, code=403)
+    body = request.get_json(silent=True) or {}
+    provider_id = str(body.get("id") or "").strip()
+    if "value" not in body:
+        return error_response("Missing key value", "Send {id, value}.", code=400)
+    value = body.get("value")
+    if value is None:
+        value = ""
+    if not isinstance(value, str):
+        return error_response("Invalid key", "value must be a string.", code=400)
+    try:
+        status = keys_store.set_key(provider_id, value)
+    except KeyError:
+        return error_response("Unknown provider", provider_id, code=400)
+    except ValueError as e:
+        return error_response("Invalid key", str(e)[:200], code=400)
+    except OSError:
+        return error_response("Could not save keys", "The local store is not writable.", code=500)
+    return jsonify(status)
+
+
+def _usage_payload(*, ignore_cookie: bool = False) -> dict:
+    """Ledger + account wallet. No secrets."""
+    import usage_limits
+    status = usage_limits.public_status()
+    status.update(billing.public_status(ignore_cookie=ignore_cookie))
+    status["editable"] = _keys_write_allowed()
+    status["billing_editable"] = True
+    if billing.requires_wallet() and status.get("account", {}).get("linked"):
+        status["monthly_cap_usd"] = status.get("account_cap_usd")
+        status["remaining_usd"] = status.get("account_remaining_usd")
+        status["over_cap"] = bool(status.get("account_over_cap"))
+    return status
+
+
+def _set_account_cookie(resp, email: Optional[str]):
+    if email:
+        resp.set_cookie(
+            billing.COOKIE, billing.cookie_value(email),
+            max_age=365 * 24 * 3600, httponly=True, samesite="Lax", path="/",
+        )
+    else:
+        resp.delete_cookie(billing.COOKIE, path="/")
+    return resp
+
+
+@app.route("/api/usage", methods=["GET"])
+def api_usage_status():
+    """This month's model spend, account, wallet, and optional cap."""
+    try:
+        return jsonify(_usage_payload())
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to load usage", str(e))
+
+
+@app.route("/api/usage", methods=["PUT"])
+def api_usage_put():
+    """Spend cap, on-demand toggle. Hosted caps are per-account."""
+    body = request.get_json(silent=True) or {}
+    if not body:
+        return error_response("Missing body", "Send monthly_cap_usd and/or on_demand.", code=400)
+    try:
+        if "on_demand" in body:
+            billing.set_on_demand(body.get("on_demand"))
+        if "monthly_cap_usd" in body:
+            if billing.requires_wallet() and billing.current_account().get("email"):
+                billing.set_monthly_cap_usd(body.get("monthly_cap_usd"))
+            elif _keys_write_allowed():
+                import usage_limits
+                usage_limits.set_monthly_cap_usd(body.get("monthly_cap_usd"))
+            else:
+                return error_response(
+                    "Usage limits cannot be edited on this server",
+                    "Link an account to set your own spend cap.", code=403)
+        return jsonify(_usage_payload())
+    except ValueError as e:
+        return error_response("Invalid setting", str(e)[:200], code=400)
+    except OSError:
+        return error_response("Could not save usage limit", "The local store is not writable.", code=500)
+
+
+@app.route("/api/billing/account", methods=["POST"])
+def api_billing_link():
+    body = request.get_json(silent=True) or {}
+    try:
+        email = billing.link_email(body.get("email"))
+    except ValueError as e:
+        return error_response("Invalid email", str(e)[:200], code=400)
+    resp = jsonify(_usage_payload())
+    return _set_account_cookie(resp, email)
+
+
+@app.route("/api/billing/account", methods=["DELETE"])
+def api_billing_unlink():
+    billing.unlink()
+    resp = jsonify(_usage_payload(ignore_cookie=True))
+    return _set_account_cookie(resp, None)
+
+
+@app.route("/api/billing/checkout", methods=["POST"])
+def api_billing_checkout():
+    if not billing.is_payments_enabled():
+        return error_response("Payments are off", "Stripe keys are not configured.", code=404)
+    body = request.get_json(silent=True) or {}
+    try:
+        out = billing.create_checkout(
+            body.get("kind") or "pack", request, pack_id=body.get("pack"))
+        return jsonify(out)
+    except ValueError as e:
+        return error_response("Checkout refused", str(e)[:200], code=400)
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Checkout failed", str(e)[:200], code=500)
+
+
+@app.route("/api/billing/redeem", methods=["POST"])
+def api_billing_redeem():
+    if not billing.is_payments_enabled():
+        return error_response("Payments are off", "Stripe keys are not configured.", code=404)
+    body = request.get_json(silent=True) or {}
+    cs = str(body.get("checkout_session_id") or "").strip()
+    if not cs:
+        return error_response("Missing checkout", "Send {checkout_session_id}.", code=400)
+    result = billing.redeem(cs)
+    if not result.get("ok"):
+        return jsonify(result), 402
+    resp = jsonify({**result, "usage": _usage_payload()})
+    email = (billing.current_account().get("email") or "").strip() or None
+    return _set_account_cookie(resp, email)
 
 
 @app.route('/', methods=['GET'])

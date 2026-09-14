@@ -7408,10 +7408,20 @@ def _gen_image_impl(caption: str, mode: str, choice: str, previous_image_url: Op
                 ref_images_to_use = prev_img_paths_list[:1]
 
                 if hard_transition:
-                    from gemini_image_utils import make_style_swatch
-                    swatch_path = make_style_swatch(prev_img_paths_list[0], output_dir=img_dir)
-                    ref_images_to_use = [swatch_path] if swatch_path else []
-                    print(f"[IMG GENERATION] Krea hard cut — style swatch only, not the current frame")
+                    # The blurred swatch is a workaround for a GEMINI problem:
+                    # handed a legible photo, Gemini's img2img reproduces its
+                    # composition, so the geometry has to be destroyed before
+                    # the request to get lighting continuity without a layout
+                    # to copy. Krea does not have that problem — references go
+                    # into `image_style_references`, a genuine style channel
+                    # that already takes palette and grain without composition.
+                    # Giving THAT channel a blurred colour field means the blur
+                    # is the style, and Krea faithfully returns a smear with no
+                    # scene in it. The sharp frame is the correct input here:
+                    # it yields a new composition in the same world.
+                    ref_images_to_use = prev_img_paths_list[:1]
+                    print(f"[IMG GENERATION] Krea hard cut — previous frame as STYLE reference "
+                          f"(Krea's style channel carries no composition; no swatch needed)")
                 elif (live_capture_this
                         and prev_img_path and os.path.exists(prev_img_path)):
                     ref_images_to_use = [prev_img_path]

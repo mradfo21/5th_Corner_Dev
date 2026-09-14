@@ -16,7 +16,7 @@ sidecar used as a cheap reference for later frames).
 
 img2img continuity is achieved with Krea's *style transfer* system: the previous
 frame(s) are uploaded as assets and passed as `image_style_references`. This
-carries the palette / grain / VHS aesthetic forward. Krea style transfer is a
+carries the palette / grain / look forward. Krea style transfer is a
 STYLE lock rather than a pixel-level spatial lock, so the heavy spatial-anchor
 text in the shared prompt templates still does the compositional work.
 
@@ -37,7 +37,7 @@ from pathlib import Path
 import requests
 
 # Reuse the single source of truth for prompt templates + safety sanitizer so
-# Krea output stays visually consistent with the Gemini path (same VHS identity,
+# Krea output stays visually consistent with the Gemini path (same look,
 # same content-filter softening) instead of duplicating that logic here.
 from gemini_image_utils import PROMPTS, _sanitize_for_safety
 import prompts_store
@@ -84,6 +84,52 @@ except (TypeError, ValueError):
 KREA_ASPECT_RATIO = (os.getenv("KREA_ASPECT_RATIO") or _config.get("KREA_ASPECT_RATIO") or "4:3").strip()
 KREA_RESOLUTION = (os.getenv("KREA_RESOLUTION") or _config.get("KREA_RESOLUTION") or "1K").strip()
 
+
+# The only ratios the Krea API accepts. Anything else is rejected outright
+# with a 422 before a single pixel is generated, so the renderer's setting
+# cannot be forwarded blind: the project ships at 21:9 ("PHONE" on the Watch
+# desk), which is not on this list, and every Krea request failed validation.
+KREA_ASPECT_RATIOS = ("1:1", "4:3", "3:2", "16:9", "2.35:1", "4:5", "2:3", "9:16")
+
+
+def _ratio_value(ratio: str) -> float | None:
+    try:
+        w, h = str(ratio).split(":", 1)
+        w, h = float(w), float(h)
+        return w / h if h else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _nearest_krea_aspect(ratio: str) -> str:
+    """Closest ratio Krea will accept — 21:9 lands on 2.35:1, not a 422."""
+    want = _ratio_value(ratio)
+    if want is None:
+        return KREA_ASPECT_RATIO if KREA_ASPECT_RATIO in KREA_ASPECT_RATIOS else "4:3"
+    best = min(
+        KREA_ASPECT_RATIOS,
+        key=lambda r: abs((_ratio_value(r) or 0.0) - want),
+    )
+    if best != ratio:
+        print(f"[KREA] aspect {ratio!r} is not supported — using nearest {best!r}",
+              flush=True)
+    return best
+
+
+def _krea_aspect(requested: str = None) -> str:
+    """Aspect ratio for a Krea payload: caller, then the renderer setting.
+
+    Always clamped to something Krea accepts. Forwarding the renderer's ratio
+    unchecked meant a provider that looked configured and never once rendered.
+    """
+    if requested:
+        return _nearest_krea_aspect(requested)
+    try:
+        import ai_provider_manager
+        return _nearest_krea_aspect(ai_provider_manager.get_image_aspect_ratio())
+    except Exception:
+        return _nearest_krea_aspect(KREA_ASPECT_RATIO)
+
 # Prefer the downsampled `_small.png` sidecar when uploading references (faster,
 # less bandwidth) — same toggle philosophy as gemini_image_utils.
 USE_DOWNSAMPLED_FOR_IMG2IMG = True
@@ -107,20 +153,11 @@ _asset_cache: dict = {}
 
 
 # ---------------------------------------------------------------------------
-# Prompt building (shared VHS identity, same anchors as the Gemini path)
+# Prompt building (shared look, same anchors as the Gemini path)
 # ---------------------------------------------------------------------------
 
-_ANTI_TIMECODE = (
-    "NO TEXT ANYWHERE. Zero text, zero numbers, zero letters, zero symbols. "
-    "Do NOT render 'REC', dates, timecodes, timestamps, battery/recording icons, "
-    "captions or watermarks. If reference images contain text, remove it. "
-    "The output must be 100% visual with no on-screen displays."
-)
-
-_ANTI_BORDER = (
-    "NO BORDERS OR FRAMES. The image fills the entire canvas edge-to-edge with "
-    "zero borders, frames, black bars, white borders, matting or letterboxing. "
-    "This is raw footage, not a framed photograph."
+_CLEAN_FRAME = (
+    "A finished photograph. Edge to edge. No captions or interface."
 )
 
 _ANTI_PERSON = (
@@ -144,28 +181,20 @@ def _clamp(prompt: str, limit: int = 5000) -> str:
     return prompt if len(prompt) <= limit else prompt[:limit]
 
 
-# The shared templates are long and Krea clamps at 5,000 chars, so the short,
-# Krea-specific guards (no text, no borders, person rule, time of day) go BEFORE
-# the template and only its generic tail is trimmed.
-#
-# There used to be a local _PHOTOGRAPHIC_ANCHOR block here too ("real light
-# through real glass optics onto physical magnetic videotape..."). It's gone:
-# `image_art_direction` now says all of that in its CAMERA & FILM STOCK /
-# OPTICAL PROPERTIES / TAPE DEGRADATION sections, and repeating it here only ate
-# into the budget that the templates' own mode-critical rules need.
+# The shared templates are long and Krea clamps at 5,000 chars, so the short
+# frame / person / time guards go BEFORE the template and only its generic
+# tail is trimmed. Look lives in `image_art_direction` — do not restake
+# camcorder / tape / HUD language here.
 
 def _time_injection(time_of_day: str) -> str:
     if not time_of_day:
         return ""
-    return (
-        f"TIME/ATMOSPHERE CONSTRAINTS:\n{time_of_day}\n"
-        "The lighting, weather and atmosphere MUST match these exact conditions."
-    )
+    return f"Lighting: {time_of_day}."
 
 
 def _build_text2img_prompt(prompt: str, time_of_day: str = "") -> str:
     structured = prompts_store.render_image_template("gemini_text_to_image_instructions", prompt)
-    head = [_ANTI_TIMECODE, _time_injection(time_of_day), _ANTI_BORDER, _person_rule()]
+    head = [_CLEAN_FRAME, _time_injection(time_of_day), _person_rule()]
     parts = [p for p in head if p] + [structured]
     return _clamp(_sanitize_for_safety(game_identity.apply("\n\n".join(parts), "raw")))
 
@@ -174,14 +203,12 @@ def _build_img2img_prompt(prompt: str, time_of_day: str = "", is_flipbook: bool 
     structured = prompts_store.render_image_template("gemini_image_to_image_instructions", prompt)
     continuity = (
         "HOW TO USE THE STYLE REFERENCE(S): the reference image(s) show the "
-        "PREVIOUS moment. Carry forward their palette, grain, lighting, time of day "
-        "and overall VHS aesthetic. Keep the same camera height and viewpoint unless "
+        "PREVIOUS moment. Carry forward their palette, grain, lighting, and time of day. "
+        "Keep the same camera height and viewpoint unless "
         "the action explicitly moves the camera, then show smooth, natural "
         "progression (handheld continuous recording — no teleporting to a new scene)."
     )
-    head = [_ANTI_TIMECODE, continuity, _time_injection(time_of_day)]
-    if not is_flipbook:
-        head.append(_ANTI_BORDER)
+    head = [_CLEAN_FRAME, continuity, _time_injection(time_of_day)]
     head.append(_person_rule())
     parts = [p for p in head if p] + [structured]
     return _clamp(_sanitize_for_safety(game_identity.apply("\n\n".join(parts), "raw")))
@@ -440,7 +467,7 @@ def generate_with_krea(
 
     payload = {
         "prompt": full_prompt,
-        "aspect_ratio": aspect_ratio or KREA_ASPECT_RATIO,
+        "aspect_ratio": aspect_ratio or _krea_aspect(),
         "resolution": KREA_RESOLUTION,
         "creativity": KREA_CREATIVITY,
     }
@@ -512,7 +539,7 @@ def generate_krea_img2img(
 
     payload = {
         "prompt": full_prompt,
-        "aspect_ratio": KREA_ASPECT_RATIO,
+        "aspect_ratio": _krea_aspect(),
         "resolution": KREA_RESOLUTION,
         "creativity": KREA_CREATIVITY,
         "image_style_references": style_refs,
