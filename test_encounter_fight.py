@@ -341,6 +341,94 @@ class TestThePlayerSurvivesTheStandoffPlate(unittest.TestCase):
         self.assertNotIn("CARRY THE PLAYER OVER", self._plate(True, img2img=False))
 
 
+class TestWinningAFightGetsYouOutOfIt(unittest.TestCase):
+    """An encounter's only exit is the aftermath turn reporting back as a
+    `player_choice_prompt` feed item. The client refused that item unless
+    `releasePending` was already set, and it is not set until after
+    waitSceneReady() and the 1350ms verdict card have both finished. A won
+    fight skips image generation server-side, so the aftermath could land
+    inside that window, get dropped, and never be re-sent - finish() never
+    ran, so the aftermath frame was never applied and the fight stayed open
+    forever. The global turn watchdog stands down while an encounter is busy,
+    so nothing else could recover it either."""
+
+    CLIENT = open("static/js/standalone.js", encoding="utf-8").read()
+
+    def test_the_aftermath_signal_is_taken_whenever_it_lands(self):
+        self.assertNotIn('item.type === "player_choice_prompt" && releasePending',
+                         self.CLIENT)
+        self.assertIn('if (item.type === "player_choice_prompt") {', self.CLIENT)
+
+    def test_an_early_signal_is_held_instead_of_dropped(self):
+        body = self.CLIENT.split("function requestFinish(result) {", 1)[1]
+        body = body.split("\n    }", 1)[0]
+        # The old guard returned outright when the release was not armed yet.
+        self.assertNotIn("if (!releasePending && !(result && result.survived === false)) return;",
+                         body)
+        self.assertIn("pendingFinish = payload;", body)
+
+    def test_the_held_signal_is_consumed_once_the_release_arms(self):
+        tail = self.CLIENT.split("releasePending = true;\n      if (pendingFinish)", 1)
+        self.assertEqual(2, len(tail), "release no longer drains pendingFinish")
+        self.assertIn("finish(next);", tail[1][:200])
+
+    def test_a_released_fight_cannot_hang_forever(self):
+        self.assertIn("function armReleaseWatchdog()", self.CLIENT)
+        self.assertIn("armReleaseWatchdog();", self.CLIENT)
+        self.assertIn("RELEASE_WATCHDOG_MS", self.CLIENT)
+
+    def test_the_backstop_is_cancelled_on_every_exit(self):
+        # A stale timer firing into a new fight would eject the player from it.
+        self.assertGreaterEqual(self.CLIENT.count("clearReleaseWatchdog()"), 4)
+
+    def test_only_escape_needs_a_fresh_world_frame(self):
+        # This is what makes a won fight's aftermath fast enough to race the
+        # verdict ceremony in the first place.
+        self.assertTrue(encounter.encounter_turn_skip_image("survive"))
+        self.assertTrue(encounter.encounter_turn_skip_image("die"))
+        self.assertFalse(encounter.encounter_turn_skip_image("escape"))
+
+
+class TestAFightActuallyEnds(unittest.TestCase):
+    """`encounter_releases` only fires on escape, death, or the other body
+    going down, and `advance_enemy_state` is the only thing that reaches
+    "down". Walk the real roll loop so a change to either cannot quietly make
+    confrontations unwinnable."""
+
+    def _rounds_to_end(self, lane, trials=3000, cap=60):
+        rng = random.Random(1234)
+        worst = 0
+        for _ in range(trials):
+            enemy, cond, n = "ready", "ok", 0
+            while n < cap:
+                n += 1
+                r = encounter.roll_encounter_outcome(
+                    lane, stance="hostile", kind="person", condition=cond,
+                    fate="NORMAL", enemy_state=enemy, round_no=n, rng=rng)
+                enemy, cond = r["enemy_state"], r["condition"]
+                if encounter.encounter_releases(r["outcome"], {"enemy_state": enemy}):
+                    break
+            else:
+                self.fail(f"{lane} never ended within {cap} rounds")
+            worst = max(worst, n)
+        return worst
+
+    def test_every_lane_terminates(self):
+        for lane in ("confront", "evade", "use"):
+            with self.subTest(lane=lane):
+                self.assertLess(self._rounds_to_end(lane), 40)
+
+    def test_putting_them_down_is_a_way_out(self):
+        self.assertTrue(encounter.encounter_releases("survive", {"enemy_state": "down"}))
+        self.assertFalse(encounter.encounter_releases("survive", {"enemy_state": "staggered"}))
+
+    def test_pressing_a_staggered_body_can_finish_it(self):
+        rng = random.Random(7)
+        got = {encounter.advance_enemy_state("confront", "survive", "staggered", rng=rng)
+               for _ in range(80)}
+        self.assertIn("down", got)
+
+
 class TestTheCameraStopsFollowingThemWhenItIsOver(unittest.TestCase):
     """Breaking away was followed by turns of the camera trailing the person
     you just escaped, because the enemy stayed the object-permanence subject

@@ -62,18 +62,13 @@
   const REALTIME_BACKGROUND_RETRY_MS = 25000; // how often to quietly re-check after falling back
   const REALTIME_BACKGROUND_RETRY_MAX_ATTEMPTS = 8; // ~3.5 min of quiet background checks, then give up
 
-  // Show a small thumbnail preview of each guide image as it's integrated into
-  // the realtime world model. Flip to false (or set localStorage
-  // "guide_thumbnail" = "off", toggled by the thumbnail's own hide button) to
-  // hide it — the notification + re-anchor still happen either way.
-  const GUIDE_THUMBNAIL_ENABLED = true;
+  // Corner preview of each guide still as it re-anchors the world model.
+  // Off in the player build — img2img / guide results are never shown on screen.
+  const GUIDE_THUMBNAIL_ENABLED = false;
 
-  // Debug/verification preview: show the EXACT realtime frame captured at
-  // act-time and sent to the server as the primary img2img reference, so it's
-  // visually verifiable that the live world-model texture (not a stale still)
-  // is what actually drives the next guide image. Toggle off via build flag or
-  // localStorage "capture_thumbnail" = "off" (the preview's own ✕ button).
-  const CAPTURE_THUMBNAIL_ENABLED = true;
+  // Debug/verification preview of the exact realtime frame handed to img2img.
+  // Off in the player build — the captured texture is never shown on screen.
+  const CAPTURE_THUMBNAIL_ENABLED = false;
 
   const INTERIM_MESSAGES = [
     "Transmitting...",
@@ -101,8 +96,6 @@
     freeWillBtn: document.getElementById("free-will-btn"),
     realtimeBtn: document.getElementById("realtime-btn"),
     scanBtn: document.getElementById("scan-btn"),
-    scanTutorial: document.getElementById("scan-tutorial"),
-    tutDismiss: document.getElementById("tut-dismiss"),
     campBtn: document.getElementById("camp-btn"),
     leaveCampBtn: document.getElementById("leave-camp-btn"),
     movePad: document.getElementById("move-pad"),
@@ -146,6 +139,7 @@
     agentLogClear: document.getElementById("agent-log-clear"),
     touchCaptureFrame: document.getElementById("touch-capture-frame"),
     touchHint: document.getElementById("touch-hint"),
+    touchFocusing: document.getElementById("touch-focusing"),
     touchZoom: document.getElementById("touch-zoom"),
     touchTargets: document.getElementById("touch-targets"),
     touchLock: document.getElementById("touch-lock"),
@@ -199,8 +193,162 @@
     btnStory: document.getElementById("btn-story"),
     lobbyCount: document.getElementById("lobby-count"),
     btnEditor: document.getElementById("btn-editor"),
+    btnRender: document.getElementById("btn-render"),
+    btnResume: document.getElementById("btn-resume"),
+    btnLeave: document.getElementById("btn-leave"),
+    pauseScrim: document.getElementById("pause-scrim"),
+    btnExit: document.getElementById("btn-exit"),
+    exitVeil: document.getElementById("exit-veil"),
+    exitState: document.getElementById("exit-state"),
+    exitNote: document.getElementById("exit-note"),
+    renderPanel: document.getElementById("render-panel"),
+    renderHide: document.getElementById("render-hide"),
+    renderForm: document.getElementById("render-form"),
+    renderTurns: document.getElementById("render-turns"),
+    renderMode: document.getElementById("render-mode"),
+    renderImageModel: document.getElementById("render-image-model"),
+    renderImageNote: document.getElementById("render-image-note"),
+    renderSize: document.getElementById("render-size"),
+    renderAspect: document.getElementById("render-aspect"),
+    renderPicture: document.getElementById("render-picture"),
+    renderTextModel: document.getElementById("render-text-model"),
+    renderTextNote: document.getElementById("render-text-note"),
+    renderStart: document.getElementById("render-start"),
+    renderError: document.getElementById("render-error"),
+    renderProgress: document.getElementById("render-progress"),
+    renderState: document.getElementById("render-state"),
+    renderClock: document.getElementById("render-clock"),
+    renderNow: document.getElementById("render-now"),
+    renderRail: document.getElementById("render-rail"),
+    renderDotCard: document.getElementById("render-dot-card"),
+    renderUsing: document.getElementById("render-using"),
+    renderFrame: document.getElementById("render-frame"),
+    renderFrameEmpty: document.getElementById("render-frame-empty"),
+    renderScanOverlay: document.getElementById("render-scan-overlay"),
+    renderPrev: document.getElementById("render-prev"),
+    renderNext: document.getElementById("render-next"),
+    renderLiveBadge: document.getElementById("render-live-badge"),
+    renderCancel: document.getElementById("render-cancel"),
+    renderDone: document.getElementById("render-done"),
+    renderVerdict: document.getElementById("render-verdict"),
+    renderStrip: document.getElementById("render-strip"),
+    renderOpen: document.getElementById("render-open"),
+    renderResume: document.getElementById("render-resume"),
+    renderResumeCount: document.getElementById("render-resume-count"),
+    renderAgain: document.getElementById("render-again"),
+    renderRefresh: document.getElementById("render-refresh"),
+    renderPast: document.getElementById("render-past"),
+    renderHistory: document.getElementById("render-history"),
+    renderPlayVideo: document.getElementById("render-play-video"),
+    renderCeremony: document.getElementById("render-ceremony"),
+    renderCeremonyStill: document.getElementById("render-ceremony-still"),
+    renderCeremonyVideo: document.getElementById("render-ceremony-video"),
+    renderCeremonyEmpty: document.getElementById("render-ceremony-empty"),
+    // Start menu + always-on edit handle + watch studio + video player
+    startMenu: document.getElementById("start-menu"),
+    startPlay: document.getElementById("start-play"),
+    startCreate: document.getElementById("start-create"),
+    startAccount: document.getElementById("start-account"),
+    startKeys: document.getElementById("start-account"),
+    startBrand: document.getElementById("start-brand"),
+    startSignal: document.getElementById("start-signal"),
+    startSignalImg: document.getElementById("start-signal-img"),
+    startSignalImgB: document.getElementById("start-signal-img-b"),
+    startSignalVideo: document.getElementById("start-signal-video"),
+    startSignalCanvas: document.getElementById("start-signal-canvas"),
+    startExit: document.getElementById("start-exit"),
+    xpExit: document.getElementById("xp-exit"),
+    xpPicker: document.getElementById("xp-picker"),
+    xpBack: document.getElementById("xp-back"),
+    xpEdit: document.getElementById("xp-edit"),
+    xpStage: document.getElementById("xp-stage"),
+    xpStageImg: document.getElementById("xp-stage-img"),
+    xpStageImgB: document.getElementById("xp-stage-img-b"),
+    xpPlay: document.getElementById("xp-play"),
+    xpWatch: document.getElementById("xp-watch"),
+    xpTrack: document.getElementById("xp-track"),
+    keysPanel: document.getElementById("keys-panel"),
+    keysBack: document.getElementById("keys-back"),
+    keysLead: document.getElementById("keys-lead"),
+    keysList: document.getElementById("keys-list"),
+    keysMsg: document.getElementById("keys-msg"),
+    accountTabKeys: document.getElementById("account-tab-keys"),
+    accountTabUsage: document.getElementById("account-tab-usage"),
+    accountPaneKeys: document.getElementById("account-pane-keys"),
+    accountPaneUsage: document.getElementById("account-pane-usage"),
+    usageAccount: document.getElementById("usage-account"),
+    usagePlanName: document.getElementById("usage-plan-name"),
+    usagePlanNote: document.getElementById("usage-plan-note"),
+    usagePlanAdjust: document.getElementById("usage-plan-adjust"),
+    usageFunds: document.getElementById("usage-funds"),
+    usageIncludedKicker: document.getElementById("usage-included-kicker"),
+    usageIncludedLabel: document.getElementById("usage-included-label"),
+    usageIncludedAmt: document.getElementById("usage-included-amt"),
+    usageIncludedBar: document.getElementById("usage-included-bar"),
+    usageIncludedHint: document.getElementById("usage-included-hint"),
+    usageOndemandAmt: document.getElementById("usage-ondemand-amt"),
+    usageOndemandBar: document.getElementById("usage-ondemand-bar"),
+    usageCapMode: document.getElementById("usage-cap-mode"),
+    usageCapInput: document.getElementById("usage-cap-input"),
+    usageCapSave: document.getElementById("usage-cap-save"),
+    usageMsg: document.getElementById("usage-msg"),
+    deathPacks: document.getElementById("death-packs"),
+    pausePacks: document.getElementById("pause-packs"),
+    editTab: document.getElementById("edit-tab"),
+    watchMode: document.getElementById("watch-mode"),
+    watchSub: document.getElementById("watch-sub"),
+    watchMenu: document.getElementById("watch-menu"),
+    watchLibraryToggle: document.getElementById("watch-library-toggle"),
+    watchRunsToggle: document.getElementById("watch-runs-toggle"),
+    watchHandles: document.getElementById("watch-handles"),
+    watchDesk: document.getElementById("watch-desk"),
+    watchGenerateMount: document.getElementById("watch-generate-mount"),
+    watchTvIdle: document.getElementById("watch-tv-idle"),
+    watchTvGhost: document.getElementById("watch-tv-ghost"),
+    watchTvPlay: document.getElementById("watch-tv-play"),
+    watchReel: document.getElementById("watch-reel"),
+    watchReview: document.getElementById("watch-review"),
+    watchReviewCuts: document.getElementById("watch-review-cuts"),
+    watchPlayer: document.getElementById("watch-player"),
+    wpTitle: document.getElementById("wp-title"),
+    wpCuts: document.getElementById("wp-cuts"),
+    wpModels: document.getElementById("wp-models"),
+    wpVariant: document.getElementById("wp-variant"),
+    wpReview: document.getElementById("wp-review"),
+    wpClose: document.getElementById("wp-close"),
+    wpMore: document.getElementById("wp-more"),
+    wpMenu: document.getElementById("wp-menu"),
+    wpPlay: document.getElementById("wp-play"),
+    wpSeek: document.getElementById("wp-seek"),
+    wpTime: document.getElementById("wp-time"),
+    wpMute: document.getElementById("wp-mute"),
+    wpFs: document.getElementById("wp-fs"),
+    wpVideo: document.getElementById("wp-video"),
+    wpOverlay: document.getElementById("wp-overlay"),
+    wpEmpty: document.getElementById("wp-empty"),
+    rvRoot: document.getElementById("render-review"),
+    rvTitle: document.getElementById("rv-title"),
+    rvModels: document.getElementById("rv-models"),
+    rvDownload: document.getElementById("rv-download"),
+    rvClose: document.getElementById("rv-close"),
+    rvImage: document.getElementById("rv-image"),
+    rvEmpty: document.getElementById("rv-empty"),
+    rvPrev: document.getElementById("rv-prev"),
+    rvNext: document.getElementById("rv-next"),
+    rvCounter: document.getElementById("rv-counter"),
+    rvVariant: document.getElementById("rv-variant"),
+    rvAction: document.getElementById("rv-action"),
+    rvNarrative: document.getElementById("rv-narrative"),
+    rvDials: document.getElementById("rv-dials"),
+    rvLinks: document.getElementById("rv-links"),
+    rvStrip: document.getElementById("rv-strip"),
     worldEditor: document.getElementById("world-editor"),
+    weBack: document.getElementById("we-back"),
     weClose: document.getElementById("we-close"),
+    weSave: document.getElementById("we-save"),
+    weReset: document.getElementById("we-reset"),
+    weDefaults: document.getElementById("we-defaults"),
+    weSaveStatus: document.getElementById("we-save-status"),
     weTabs: document.getElementById("we-tabs"),
     weFields: document.getElementById("we-fields"),
     weLayerHead: document.getElementById("we-layer-head"),
@@ -223,6 +371,12 @@
     weRevert: document.getElementById("we-revert"),
     weDirty: document.getElementById("we-dirty"),
     weToast: document.getElementById("we-toast"),
+    weTabExperience: document.getElementById("we-tab-experience"),
+    weTabHarness: document.getElementById("we-tab-harness"),
+    weTabSound: document.getElementById("we-tab-sound"),
+    weXpRow: document.getElementById("we-xp-row"),
+    weXpTrack: document.getElementById("we-xp-track"),
+    weXpNew: document.getElementById("we-xp-new"),
     // Pop-out prompt editor
     wem: document.getElementById("we-modal"),
     wemTitle: document.getElementById("wem-title"),
@@ -243,6 +397,7 @@
     wemDiffPane: document.getElementById("wem-diff-pane"),
     wemDiffBody: document.getElementById("wem-diff-body"),
     wemReset: document.getElementById("wem-reset"),
+    wemClear: document.getElementById("wem-clear"),
     wemWarn: document.getElementById("wem-warn"),
     wemCancel: document.getElementById("wem-cancel"),
     wemSave: document.getElementById("wem-save"),
@@ -317,9 +472,11 @@
     audioUnlocked: false,       // true after the first user gesture (autoplay ok)
     renderedIds: new Set(), // guard against rendering the same feed item twice
     lastStatus: {},
+    experienceWorldId: "",      // Experience graph World this run is standing in
     freeWillOpen: false,
     inputMode: "act",           // custom input intent: "act" (full turn) | "steer" (realtime nudge)
-    touchMode: null,            // TOUCH tool state: null | "aim" (reticle tracks cursor) | "prompt" (spot locked, field open)
+    controlMode: "play",        // play | camera — source of truth for who owns look/walk
+    touchMode: null,            // derived from controlMode: null | "aim"
     touchPoint: null,           // {x, y} viewport coords of the reticle / locked spot
     photoZoom: 1,               // optical zoom magnification while the camera is armed (1..PHOTO_ZOOM_MAX)
     panFocus: null,             // {x, y} scene point (untransformed screen coords) shown at frame center — driven by mouselook / touch-drag while zoomed
@@ -336,6 +493,20 @@
     photoDetectTimer: null,     // idle re-detect loop while armed
     photoDetectLast: 0,         // last time we hit /api/detect for photo targeting
     photoLockedLabel: null,     // label of the subject currently framed (locked)
+    viewfinderReady: false,     // FP restage has landed under the veil
+    viewfinderFailed: false,    // restage failed — stay veiled, do not uncover 3P
+    viewfinderToken: 0,         // bumped on close so a late render cannot swap scenes
+    gameplayStillUrl: null,     // 3P still to restore instantly when PHOTO closes
+    viewfinderUrl: null,        // FP plate currently shown under the viewfinder
+    viewfinderLiveFrame: false, // viewfinder plate was restaged from a live reactor grab
+    viewfinderLive: false,      // in-camera reactor scene has been applied (FP live feed)
+    viewfinderPrompt: null,     // prompt the in-camera world is running
+    viewfinderAppliedAt: 0,     // when applyScene was sent (wait before uncover)
+    photoLookH: "idle",         // planted viewfinder yaw (world-model look)
+    photoLookV: "idle",         // planted viewfinder pitch
+    viewfinderFaded: false,     // CAMERA owns the shared scene-fade veil right now
+    gameplayPrompt: null,       // 3P realtime prompt to restore when PHOTO closes
+    playCameraSnapshot: null,   // authored camera contract on the reactor before PHOTO
     pendingInvestigation: null, // {screen, region, texture} captured at TOUCH lock, finalized on submit
     selectedInvestigation: null,// a specimen chosen from the tray to inform the next action
     scanOn: false,              // hotspot overlay live (object tags over the scene)
@@ -347,7 +518,7 @@
     scanPrewarm: { objects: [], size: null, ts: 0 }, // last detection cached (for tag positioning / re-scan diffing)
     scanFadeTimer: null,        // TTL timer: fade the hotspots out a few seconds after a manual scan
     scanFadeOutTimer: null,     // the fade animation -> teardown timer (after tags start leaving)
-    moving: false,              // camera is being driven (joystick / WASD) — OCR hotspots are hidden + detection paused while moving; they regenerate once you stop
+    moving: false,              // camera is TRANSLATING (WASD / strafe) — OCR hotspots hide; look-only must not tear them down
     moveSettleTimer: null,      // after movement stops, wait for the view to settle before re-detecting hotspots
     moveFadeTimer: null,        // MOVE TO: delayed fade-to-black kickoff so the live world stops drifting during the trip
     lastTurnTs: 0,              // when the last turn was committed/active (pre-warm defers around it)
@@ -492,6 +663,154 @@
   // ------------------------------------------------------------------
   const Sound = (function () {
     let ctx = null;
+    // Tape is the shipped palette: dry mechanical ticks, tape hiss, low
+    // thuds. The arcade chimes were killing a horror presentation.
+    let palette = "tape";
+    let muted = new Set();
+    let sfxVol = 1;
+    let previewing = false;
+    const FAMILIES = {
+      clicks: {
+        label: "Clicks",
+        sub: "Pointer and keys.",
+        cues: ["hover", "focusTick", "press", "toggle", "choiceHover"],
+      },
+      chrome: {
+        label: "Chrome",
+        sub: "Menus and confirms.",
+        cues: ["menuOpen", "menuClose", "open", "submit", "select", "status", "pickup", "coin", "coinReady"],
+      },
+      turn: {
+        label: "Turn",
+        sub: "The loop speaking.",
+        cues: ["text", "choices", "scene", "start", "escalate", "glitch",
+               "cereAction", "cereConsequence", "cereWorldUpdate",
+               "cereWorldRespond", "cereActions", "cereDone", "cereNote"],
+      },
+      lens: {
+        label: "Lens",
+        sub: "Camera, scan, case.",
+        cues: ["scan", "ping", "shutter", "cameraOn", "cameraOff", "receiptOpen",
+               "itemReveal", "scoreTick", "stamp", "zoom", "lock", "miss",
+               "grab", "newSubject", "caseSolved"],
+      },
+      body: {
+        label: "Body",
+        sub: "Hurt, pulse, death.",
+        cues: ["warning", "hurting", "hit", "safeChime", "regenComplete", "death", "error"],
+      },
+      voice: {
+        label: "Voice",
+        sub: "Talk and moments.",
+        cues: ["talkOpen", "talkLine", "talkClose", "convoEnter", "convoExit",
+               "portraitReveal", "choiceSelect", "notify"],
+      },
+      encounter: {
+        label: "Encounter",
+        sub: "Stingers, bed, pulse.",
+        cues: ["encounterHitch", "encounterTitle", "encounterEnter",
+               "encounterStance", "encounterLock", "encounterChoiceHover",
+               "encounterChoiceSelect", "encounterResolve", "encounterSurvive",
+               "encounterDie", "encounterExit", "encounterVerdict"],
+      },
+    };
+    const FAMILY_OF = Object.create(null);
+    Object.keys(FAMILIES).forEach((fam) => {
+      FAMILIES[fam].cues.forEach((cue) => { FAMILY_OF[cue] = fam; });
+    });
+    const DIEGETIC = new Set(["glitch", "death", "hit", "hurting", "warning", "error",
+                              "encounterHitch", "encounterTitle", "encounterDie"]);
+    const QUIET = new Set(["glitch", "death", "hit", "hurting", "warning", "error",
+                           "shutter", "cameraOn", "cameraOff", "miss", "stamp",
+                           "encounterHitch", "encounterTitle", "encounterResolve",
+                           "encounterSurvive", "encounterDie"]);
+    const CUE_HELP = {
+      hover: "Pointer enters a control",
+      focusTick: "Keyboard focus lands",
+      press: "A control is pressed",
+      toggle: "A switch flips",
+      choiceHover: "A dialogue choice is pointed at",
+      menuOpen: "A menu opens",
+      menuClose: "A menu closes",
+      open: "Free-will input opens",
+      submit: "An action is sent",
+      select: "A choice is confirmed",
+      status: "HUD tick",
+      pickup: "An item is taken",
+      coin: "A credit drops",
+      coinReady: "Continue is ready",
+      text: "Narrative lands",
+      choices: "New offers appear",
+      scene: "A still arrives",
+      start: "A run begins",
+      escalate: "The world gets worse",
+      glitch: "Tape jump between scenes",
+      cereAction: "Action selected",
+      cereConsequence: "Consequence generated",
+      cereWorldUpdate: "World updating",
+      cereWorldRespond: "World responding",
+      cereActions: "Actions generating",
+      cereDone: "Turn resolved",
+      cereNote: "A sub-event ticks",
+      scan: "Scan is armed",
+      ping: "Tags land",
+      shutter: "The shutter fires",
+      cameraOn: "The camera raises",
+      cameraOff: "The camera lowers",
+      receiptOpen: "A receipt feeds out",
+      itemReveal: "A receipt line appears",
+      scoreTick: "A score digit rolls",
+      stamp: "A rating is stamped",
+      zoom: "The lens racks",
+      lock: "A subject locks",
+      miss: "An empty frame",
+      grab: "A specimen is taken",
+      newSubject: "A new subject is filed",
+      caseSolved: "The dossier is complete",
+      warning: "You are in danger",
+      hurting: "You are bleeding",
+      hit: "A hit lands",
+      safeChime: "The red drops away",
+      regenComplete: "You are whole again",
+      death: "The run ends",
+      error: "Something failed",
+      talkOpen: "A channel opens",
+      talkLine: "A reply arrives",
+      talkClose: "A channel closes",
+      convoEnter: "A conversation takes over",
+      convoExit: "A conversation ends",
+      encounterHitch: "The world hitch-steps into an encounter",
+      encounterTitle: "ENCOUNTER flares full screen — the stinger",
+      encounterEnter: "Letterbox takes over",
+      encounterStance: "Stance color lands (hostile / desperate / opportunistic)",
+      encounterLock: "The confrontation plate and choices lock",
+      encounterChoiceHover: "An encounter verb is pointed at",
+      encounterChoiceSelect: "An encounter verb is taken",
+      encounterResolve: "An encounter action is committed",
+      encounterSurvive: "You walk out of the interrupt",
+      encounterDie: "The encounter kills you",
+      encounterExit: "The encounter overlay releases",
+      encounterVerdict: "SURVIVED / HURT / CLEAR / DEAD flares over the action",
+      portraitReveal: "A portrait lands",
+      choiceSelect: "A dialogue choice is taken",
+      notify: "A notice appears",
+    };
+
+    function familyOf(name) { return FAMILY_OF[name] || ""; }
+    function ok(name) {
+      if (!state.soundEnabled) return false;
+      if (previewing) return true;
+      if (palette === "silent") return DIEGETIC.has(name);
+      if (palette === "quiet" && !QUIET.has(name) && !DIEGETIC.has(name)) return false;
+      const fam = familyOf(name);
+      if (fam && muted.has(fam)) return false;
+      return true;
+    }
+    function volOf(v) {
+      const n = (v || 0.06) * Math.max(0, Math.min(1, sfxVol));
+      return Math.max(0.0001, n);
+    }
+
     function ensure() {
       if (!state.soundEnabled) return null;
       if (!ctx) {
@@ -518,7 +837,7 @@
         osc.frequency.setValueAtTime(freq, t0);
       }
       gain.gain.setValueAtTime(0.0001, t0);
-      gain.gain.exponentialRampToValueAtTime(vol || 0.06, t0 + 0.01);
+      gain.gain.exponentialRampToValueAtTime(volOf(vol), t0 + 0.01);
       gain.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
       osc.connect(gain);
       gain.connect(c.destination);
@@ -540,11 +859,11 @@
       src.buffer = buf;
       const bp = c.createBiquadFilter();
       bp.type = "bandpass";
-      bp.frequency.value = 2600;
-      bp.Q.value = 0.6;
+      bp.frequency.value = 1400;
+      bp.Q.value = 0.55;
       const gain = c.createGain();
       gain.gain.setValueAtTime(0.0001, t0);
-      gain.gain.exponentialRampToValueAtTime(vol || 0.05, t0 + 0.02);
+      gain.gain.exponentialRampToValueAtTime(volOf(vol || 0.05), t0 + 0.02);
       gain.gain.exponentialRampToValueAtTime(0.0001, t0 + (dur || 0.22));
       src.connect(bp); bp.connect(gain); gain.connect(c.destination);
       src.start(t0);
@@ -646,138 +965,351 @@
       tinNodes = null;
     }
 
-    return {
+    // Drop authored files in static/audio/encounter/<stem>.{wav,mp3} to
+    // replace the synth. If those are missing, play the pre-cached ElevenLabs
+    // stock stinger served from /audio/. Missing files stay silent-fail and
+    // the built-in cue plays.
+    const SAMPLE_DIR = "/static/audio/encounter/";
+    const SAMPLE_STEMS = {
+      encounterHitch: "hitch",
+      encounterTitle: "title",
+      encounterEnter: "enter",
+      encounterStance: "stance",
+      encounterStanceHostile: "stance-hostile",
+      encounterStanceDesperate: "stance-desperate",
+      encounterStanceOpportunistic: "stance-opportunistic",
+      encounterStanceCreature: "stance-creature",
+      encounterLock: "lock",
+      encounterChoiceHover: "choice-hover",
+      encounterChoiceSelect: "choice-select",
+      encounterResolve: "resolve",
+      encounterSurvive: "survive",
+      encounterDie: "die",
+      encounterExit: "exit",
+    };
+    const STOCK_FALLBACK = {
+      encounterHitch: "/audio/sting_encounter_hitch.mp3",
+      encounterTitle: "/audio/sting_encounter_title.mp3",
+      encounterEnter: "/audio/sting_encounter_enter.mp3",
+      encounterLock: "/audio/sting_encounter_lock.mp3",
+      encounterResolve: "/audio/sting_encounter_resolve.mp3",
+      encounterSurvive: "/audio/sting_encounter_survive.mp3",
+      encounterDie: "/audio/sting_encounter_die.mp3",
+      encounterExit: "/audio/sting_encounter_exit.mp3",
+      encounterStanceHostile: "/audio/sting_encounter_stance_hostile.mp3",
+      encounterStanceDesperate: "/audio/sting_encounter_stance_desperate.mp3",
+      encounterStanceOpportunistic: "/audio/sting_encounter_stance_opportunistic.mp3",
+      encounterStanceCreature: "/audio/sting_encounter_stance_creature.mp3",
+    };
+    const STOCK_CUE = {
+      encounter_hitch: "encounterHitch",
+      encounter_title: "encounterTitle",
+      encounter_enter: "encounterEnter",
+      encounter_lock: "encounterLock",
+      encounter_resolve: "encounterResolve",
+      encounter_survive: "encounterSurvive",
+      encounter_die: "encounterDie",
+      encounter_exit: "encounterExit",
+      encounter_stance_hostile: "encounterStanceHostile",
+      encounter_stance_desperate: "encounterStanceDesperate",
+      encounter_stance_opportunistic: "encounterStanceOpportunistic",
+      encounter_stance_creature: "encounterStanceCreature",
+    };
+    const sampleBuf = Object.create(null);
+    const knownUrls = Object.create(null);
+    const loading = Object.create(null);
+
+    function fireBuffer(buf, vol) {
+      const c = ensure();
+      if (!c || !buf) return;
+      const t0 = c.currentTime;
+      const src = c.createBufferSource();
+      src.buffer = buf;
+      const gain = c.createGain();
+      gain.gain.setValueAtTime(volOf(vol == null ? 0.085 : vol), t0);
+      src.connect(gain);
+      gain.connect(c.destination);
+      src.start(t0);
+    }
+
+    function decodeFetched(ab) {
+      if (!ab) return false;
+      const c = ensure();
+      if (!c) return false;
+      try {
+        const out = c.decodeAudioData(ab.slice(0));
+        if (out && typeof out.then === "function") return out;
+        return Promise.resolve(out || false);
+      } catch (_) {
+        return new Promise((resolve) => {
+          try {
+            c.decodeAudioData(ab.slice(0), (buf) => resolve(buf || false), () => resolve(false));
+          } catch (e) {
+            resolve(false);
+          }
+        });
+      }
+    }
+
+    function loadSample(name) {
+      if (sampleBuf[name]) return Promise.resolve(sampleBuf[name]);
+      const url = knownUrls[name];
+      if (!url) return Promise.resolve(false);
+      if (loading[name]) return loading[name];
+      loading[name] = fetch(url, { cache: "force-cache" })
+        .then((r) => (r && r.ok ? r.arrayBuffer() : null))
+        .then((ab) => decodeFetched(ab))
+        .then((buf) => {
+          if (buf && !sampleBuf[name]) sampleBuf[name] = buf;
+          delete loading[name];
+          return sampleBuf[name] || false;
+        })
+        .catch(() => {
+          delete loading[name];
+          return false;
+        });
+      return loading[name];
+    }
+
+    function rememberUrl(name, url) {
+      if (!name || !url) return;
+      if (!knownUrls[name]) knownUrls[name] = url;
+      if (!sampleBuf[name]) loadSample(name);
+    }
+
+    function ingestEncounterStingers(map) {
+      if (!map) return;
+      Object.keys(map).forEach((key) => {
+        const name = STOCK_CUE[key] || key;
+        rememberUrl(name, map[key]);
+      });
+    }
+
+    function ingestDesigner(map) {
+      if (!map) return;
+      const stemToCue = Object.create(null);
+      Object.keys(SAMPLE_STEMS).forEach((cue) => {
+        stemToCue[SAMPLE_STEMS[cue]] = cue;
+      });
+      Object.keys(map).forEach((stem) => {
+        rememberUrl(stemToCue[stem], map[stem]);
+      });
+    }
+
+    function prefetchEncounter() {
+      fetch("/api/music/stock", { cache: "no-store" })
+        .then((r) => (r && r.ok ? r.json() : null))
+        .then((raw) => {
+          const data = (raw && raw.data) || raw || {};
+          ingestDesigner(data.designer);
+          const files = data.files || {};
+          const ready = {};
+          Object.keys(STOCK_CUE).forEach((key) => {
+            const rec = files[key];
+            if (rec && rec.ready && rec.url) ready[key] = rec.url;
+          });
+          ingestEncounterStingers(ready);
+        })
+        .catch(() => {});
+    }
+
+    function play(name, fn) {
+      return function () {
+        if (!ok(name)) return;
+        const buf = sampleBuf[name];
+        if (buf) {
+          fireBuffer(buf);
+          return;
+        }
+        fn.apply(null, arguments);
+        if (buf === undefined && SAMPLE_STEMS[name]) loadSample(name);
+      };
+    }
+
+    function configure(next) {
+      const src = next || {};
+      const pal = String(src.palette || "tape").toLowerCase();
+      palette = (pal === "quiet" || pal === "silent") ? pal : "tape";
+      muted = new Set((src.muted || []).map((x) => String(x || "").toLowerCase())
+        .filter((x) => FAMILIES[x]));
+      const v = Number(src.volume);
+      sfxVol = Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 1;
+      return api.config();
+    }
+
+    const api = {
       resume() { ensure(); },
-      // Shared, gesture-unlocked AudioContext so the ambient scene score
-      // (SceneAudio) rides the same mute + first-gesture gating as the SFX.
       context() { return ensure(); },
-      glitch() { noise(0.24, 0.055); },                        // VCR transition static burst
-      text() { tone(430, 0.09, "sine", 0.045); },              // narrative / world text lands
-      pickup() { tone([600, 900], 0.16, "triangle", 0.06); },  // item pickup
-      // ---- Coin-op ----
-      // coin: two bright metallic pings 40ms apart — the "kaCHING" of a quarter
-      //       hitting a slot's ramp then dropping into the hopper. Tighter and
-      //       higher than pickup so it never blurs into an item cue.
-      // coinReady: an ascending three-tone chime — "CONTINUE READY" arcade
-      //       fanfare played on return-from-checkout, right before the death
-      //       overlay dissolves and the run resumes.
-      coin() {
-        tone([1760, 1320], 0.06, "square", 0.06);
-        tone([1180, 780], 0.14, "triangle", 0.05, 0.04);
+      configure,
+      config() {
+        return {
+          palette: palette,
+          muted: Array.from(muted),
+          volume: sfxVol,
+        };
       },
-      coinReady() {
-        tone(660, 0.09, "triangle", 0.05);
-        tone(990, 0.09, "triangle", 0.05, 0.07);
-        tone(1320, 0.14, "triangle", 0.055, 0.14);
+      families() {
+        return Object.keys(FAMILIES).map((id) => ({
+          id: id,
+          label: FAMILIES[id].label,
+          sub: FAMILIES[id].sub,
+          cues: FAMILIES[id].cues.slice(),
+        }));
       },
-      choices() { tone(680, 0.07, "triangle", 0.05); tone(920, 0.09, "triangle", 0.045, 0.07); }, // choices ready
-      select() { tone(520, 0.05, "square", 0.05); tone(790, 0.10, "square", 0.05, 0.055); },       // confirm choice
-      status() { tone(320, 0.05, "sine", 0.03); },             // HUD tick
-      death() { tone([180, 60], 0.7, "sawtooth", 0.09); },     // game over
-      error() { tone([200, 120], 0.18, "sawtooth", 0.05); },
-      scene() { tone(180, 0.05, "sine", 0.05); tone([520, 380], 0.14, "sine", 0.04, 0.03); }, // new scene image streams in (shutter/whir)
-      start() { tone([160, 520], 0.28, "sawtooth", 0.05); tone(880, 0.12, "triangle", 0.04, 0.18); }, // new tape / game start
-      escalate() { tone([300, 620], 0.35, "sawtooth", 0.06); tone([620, 900], 0.3, "square", 0.03, 0.12); }, // phase escalates — tension rises
-      // ---- Danger vignette / damage / health ----
-      // WARNING is a taut two-note alert (heads up, back off); HURTING is a
-      // lower, uglier throb (you're bleeding); HIT is a short percussive tick
-      // that lands on each damage tick, so the steady drain feels like
-      // discrete impacts, not a numeric ticker. SAFE-CHIME is the "you're
-      // clear" descending mini-arpeggio when the red drops away. REGEN-DONE
-      // is the bright ascending sparkle when HP returns to full — the audio
-      // that closes the recover loop.
-      warning() { tone([880, 660], 0.14, "square", 0.055); tone(1240, 0.08, "square", 0.04, 0.12); },
-      hurting() { tone([320, 180], 0.30, "sawtooth", 0.08); tone([540, 300], 0.22, "sawtooth", 0.055, 0.10); },
-      hit()     { tone([520, 200], 0.10, "sawtooth", 0.08); tone([1100, 700], 0.06, "square", 0.04); },
-      safeChime()    { tone([740, 560], 0.16, "sine", 0.045); tone([560, 420], 0.20, "sine", 0.04, 0.10); },
-      regenComplete(){ tone([560, 880], 0.12, "triangle", 0.05); tone([880, 1320], 0.14, "triangle", 0.045, 0.08); tone(1760, 0.10, "triangle", 0.035, 0.16); },
-      // ---- Heartbeat loop (HURTING) ----
-      // A muffled two-thump per beat, tempo driven by heartbeatSetBpm(). The
-      // "lub-dub" is a low sine with a slightly higher accent 90ms later,
-      // filtered dark so it sits under the mix. Playing state persists
-      // across ensure() calls so mute/unmute doesn't stack loops.
+      cueHelp(name) { return CUE_HELP[name] || name; },
+      preview(name) {
+        const fn = api[name];
+        if (typeof fn !== "function") return false;
+        previewing = true;
+        try { fn(); } finally { previewing = false; }
+        return true;
+      },
+      glitch: play("glitch", () => { noise(0.22, 0.045); }),
+      text: play("text", () => { tone(190, 0.07, "sine", 0.03); }),
+      pickup: play("pickup", () => { tone(200, 0.08, "sine", 0.03); noise(0.03, 0.015); }),
+      coin: play("coin", () => { noise(0.03, 0.02); tone(180, 0.06, "sine", 0.03); }),
+      coinReady: play("coinReady", () => { tone(160, 0.12, "sine", 0.03); }),
+      choices: play("choices", () => { tone(150, 0.07, "sine", 0.028); }),
+      select: play("select", () => { noise(0.02, 0.018); tone(140, 0.06, "sine", 0.032); }),
+      status: play("status", () => { tone(140, 0.04, "sine", 0.018); }),
+      death: play("death", () => { tone([90, 35], 0.85, "sine", 0.1); noise(0.28, 0.035); }),
+      error: play("error", () => { tone([140, 70], 0.16, "sine", 0.04); }),
+      scene: play("scene", () => { noise(0.08, 0.028); tone(100, 0.08, "sine", 0.028); }),
+      start: play("start", () => { tone([80, 140], 0.22, "sine", 0.035); noise(0.1, 0.022); }),
+      escalate: play("escalate", () => { tone([90, 150], 0.38, "sine", 0.04); }),
+      warning: play("warning", () => { tone([220, 140], 0.16, "sine", 0.04); }),
+      hurting: play("hurting", () => { tone([200, 90], 0.28, "sine", 0.06); }),
+      hit: play("hit", () => { tone([160, 70], 0.1, "sine", 0.07); noise(0.04, 0.03); }),
+      safeChime: play("safeChime", () => { tone([180, 120], 0.18, "sine", 0.028); }),
+      regenComplete: play("regenComplete", () => { tone(150, 0.12, "sine", 0.028); }),
       heartbeatStart(bpm) { hbStart(bpm || 80); },
       heartbeatSetBpm(bpm) { hbSetBpm(bpm || 80); },
       heartbeatStop() { hbStop(); },
-      // ---- Tinnitus (critical HP) ----
-      // A sustained ~3.7kHz sine with a tiny FM wobble, faded in over ~700ms
-      // and out over ~500ms. Sits under everything else at low gain so it
-      // reads as "your ears are ringing", not "there's a beep".
       tinnitusStart() { tinStart(); },
       tinnitusStop() { tinStop(); },
-      submit() { tone(700, 0.05, "square", 0.05); tone(1050, 0.11, "square", 0.045, 0.05); }, // custom action sent
-      open() { tone([420, 760], 0.14, "triangle", 0.05); },    // free-will input reveal
-      toggle() { tone(300, 0.04, "square", 0.04); },           // UI toggle click
-      // ---- Universal tactile feedback: a faint detent as the pointer crosses a
-      // control, a crisp mechanical click on press, and a little servo for the
-      // menu — so every surface of the game feels physical to operate. ----
-      hover() { tone(2050, 0.014, "sine", 0.012); },           // pointer enters a control — soft detent
-      focusTick() { tone(1500, 0.02, "sine", 0.018); },        // keyboard focus lands on a control
-      press() { tone(1650, 0.012, "square", 0.03); noise(0.028, 0.02); }, // button press — mechanical click
-      menuOpen() { tone([440, 980], 0.13, "triangle", 0.05); tone(1320, 0.08, "sine", 0.03, 0.05); }, // menu slides open
-      menuClose() { tone([940, 380], 0.13, "triangle", 0.045); }, // menu tucks away
-      scan() { tone([320, 1180], 0.34, "sine", 0.028); tone(1180, 0.12, "sine", 0.02, 0.24); }, // SCAN armed — radar sweep
-      ping() { tone([1300, 1850], 0.10, "sine", 0.03); tone(2500, 0.07, "sine", 0.018, 0.05); }, // tags land — starfield shimmer
-      // ---- TALK: opening a channel to a subject, and a reply landing ----
-      talkOpen() { tone([260, 620], 0.22, "sine", 0.045); tone(880, 0.14, "triangle", 0.035, 0.14); noise(0.05, 0.02); }, // channel opens — a warm carrier tone
-      talkLine() { tone(560, 0.05, "triangle", 0.04); tone(760, 0.10, "sine", 0.03, 0.05); }, // a spoken reply arrives
-      talkClose() { tone([620, 200], 0.2, "sine", 0.04); }, // channel closes
-      // ---- Conversation Moment (cinematic takeover) ----
-      // Rising swell into the letterboxed dialogue screen; resolving chord on
-      // exit; soft photographic flash when the portrait lands; UI ticks for
-      // dialogue choices; a quiet chime for in-Moment notifications.
-      convoEnter() {
-        tone([180, 420], 0.28, "sine", 0.05);
-        tone([420, 780], 0.22, "triangle", 0.04, 0.12);
-        tone(1180, 0.12, "sine", 0.03, 0.28);
-        noise(0.06, 0.018);
-        // A quiet sustained "channel open" drone bridges the gap between the
-        // entrance stinger and whatever lands next (portrait / voice connect /
-        // conversation music) — so the wait never reads as dead air.
-        tone(300, 1.7, "sine", 0.011, 0.16);
-      },
-      convoExit() {
-        tone([780, 360], 0.22, "triangle", 0.04);
-        tone([360, 180], 0.26, "sine", 0.035, 0.1);
-      },
-      portraitReveal() {
-        noise(0.04, 0.03);
-        tone([880, 1320], 0.1, "sine", 0.04);
-        tone(660, 0.08, "triangle", 0.03, 0.06);
-      },
-      choiceHover() { tone(1500, 0.018, "sine", 0.014); },
-      choiceSelect() { tone(720, 0.05, "triangle", 0.045); tone(1080, 0.09, "sine", 0.035, 0.04); },
-      notify() { tone(990, 0.06, "triangle", 0.04); tone(1320, 0.1, "sine", 0.03, 0.05); },
-      grab() { tone(900, 0.03, "square", 0.045); tone([700, 340], 0.10, "triangle", 0.04, 0.02); }, // TOUCH specimen captured
-      shutter() { tone(1500, 0.015, "square", 0.055); noise(0.05, 0.035); tone(760, 0.03, "square", 0.05, 0.03); }, // camera shutter
-      // Raising / lowering the camera: a little servo whir that racks up and
-      // locks ready, then powers back down — so the tool feels mechanical.
-      cameraOn() { tone([170, 540], 0.16, "sawtooth", 0.035); tone([720, 1280], 0.08, "square", 0.03, 0.02); noise(0.05, 0.022); tone(1560, 0.012, "square", 0.05, 0.15); },
-      cameraOff() { tone([620, 170], 0.18, "sawtooth", 0.035); tone(300, 0.04, "square", 0.03, 0.02); },
-      // ---- Photo receipt: printing, per-item reveals, score rolls, stamp ----
-      receiptOpen() { noise(0.09, 0.03); tone(240, 0.05, "square", 0.03); tone(360, 0.06, "triangle", 0.03, 0.04); }, // paper feeds out
-      // Each revealed item chimes a little HIGHER than the last — a rising combo.
-      itemReveal(step) { const f = 680 + (step || 0) * 110; tone(f, 0.045, "square", 0.05); tone(f * 1.5, 0.07, "sine", 0.03, 0.03); },
-      scoreTick() { tone(1500, 0.02, "square", 0.028); },        // rolling score counter blip
-      stamp() { tone([170, 80], 0.16, "sawtooth", 0.07); noise(0.06, 0.05); tone(90, 0.12, "sine", 0.05, 0.02); }, // rating stamp thunk
-      zoom(t) { const f = 420 + Math.max(0, Math.min(1, t || 0)) * 900; tone(f, 0.03, "sine", 0.025); }, // lens zoom tick
-      lock() { tone([900, 1350], 0.05, "sine", 0.03); }, // a subject snaps into frame (worthy)
-      miss() { tone([300, 150], 0.14, "sine", 0.045); noise(0.05, 0.02); }, // empty frame — no subject
-      newSubject() { tone([700, 1150], 0.10, "triangle", 0.05); tone(1500, 0.10, "sine", 0.04, 0.08); tone(1950, 0.12, "sine", 0.03, 0.16); }, // NEW subject filed to the case
-      caseSolved() { // dossier complete — a rising, triumphant fanfare
-        tone([300, 620], 0.18, "triangle", 0.06); tone([620, 930], 0.2, "triangle", 0.055, 0.14);
-        tone([930, 1400], 0.28, "sine", 0.05, 0.3); tone(1860, 0.5, "sine", 0.045, 0.5); noise(0.12, 0.03);
-      },
-      // ---- Ceremony: one distinct cue per pipeline step, so the player HEARS
-      // the world working through each stage. ----
-      cereAction() { tone(300, 0.05, "square", 0.06); tone([300, 620], 0.14, "square", 0.05, 0.05); },   // action selected — decisive commit
-      cereConsequence() { tone(210, 0.09, "sine", 0.05); tone([420, 300], 0.2, "triangle", 0.045, 0.08); }, // consequence generated — a heavy reveal
-      cereWorldUpdate() { tone([260, 700], 0.32, "sawtooth", 0.045); },                                   // world updating — rising machine sweep
-      cereWorldRespond() { tone(520, 0.06, "triangle", 0.05); tone(780, 0.1, "triangle", 0.05, 0.06); tone(1040, 0.14, "sine", 0.04, 0.13); }, // world responding — it materialises
-      cereActions() { tone(660, 0.06, "triangle", 0.045); tone(880, 0.06, "triangle", 0.045, 0.06); tone(1180, 0.12, "sine", 0.04, 0.12); },  // actions generating — options shimmer in
-      cereDone() { tone(720, 0.06, "sine", 0.05); tone(1080, 0.18, "sine", 0.05, 0.06); },                // turn resolved — clean affirmation
-      cereNote() { tone(1500, 0.03, "square", 0.028); },       // realtime sub-event tick (prompt sent, chunk rendered…)
+      submit: play("submit", () => { noise(0.02, 0.016); tone(150, 0.05, "sine", 0.028); }),
+      open: play("open", () => { tone(120, 0.1, "sine", 0.028); }),
+      toggle: play("toggle", () => { tone(140, 0.03, "sine", 0.02); }),
+      hover: play("hover", () => { tone(180, 0.012, "sine", 0.006); }),
+      focusTick: play("focusTick", () => { tone(150, 0.02, "sine", 0.01); }),
+      press: play("press", () => { noise(0.016, 0.016); tone(110, 0.025, "sine", 0.02); }),
+      menuOpen: play("menuOpen", () => { tone(110, 0.1, "sine", 0.028); }),
+      menuClose: play("menuClose", () => { tone([140, 80], 0.1, "sine", 0.024); }),
+      scan: play("scan", () => { tone([120, 240], 0.26, "sine", 0.02); }),
+      ping: play("ping", () => { tone(210, 0.06, "sine", 0.018); }),
+      talkOpen: play("talkOpen", () => { tone(100, 0.18, "sine", 0.028); noise(0.06, 0.014); }),
+      talkLine: play("talkLine", () => { tone(170, 0.06, "sine", 0.022); }),
+      talkClose: play("talkClose", () => { tone([150, 70], 0.16, "sine", 0.024); }),
+      convoEnter: play("convoEnter", () => {
+        tone([80, 140], 0.3, "sine", 0.032);
+        noise(0.08, 0.018);
+        tone(110, 1.4, "sine", 0.01, 0.12);
+      }),
+      convoExit: play("convoExit", () => { tone([150, 70], 0.24, "sine", 0.028); }),
+      encounterHitch: play("encounterHitch", () => {
+        noise(0.05, 0.03);
+        tone([70, 40], 0.18, "sine", 0.04);
+        tone(55, 0.4, "sine", 0.012, 0.08);
+      }),
+      encounterTitle: play("encounterTitle", () => {
+        noise(0.12, 0.04);
+        tone([40, 180], 0.22, "sine", 0.05);
+        tone(90, 0.55, "sine", 0.018, 0.1);
+        tone([220, 70], 0.36, "triangle", 0.016);
+      }),
+      encounterEnter: play("encounterEnter", () => {
+        tone([50, 110], 0.36, "sine", 0.038);
+        noise(0.1, 0.022);
+        tone(90, 1.6, "sine", 0.012, 0.14);
+      }),
+      encounterStance: play("encounterStance", (stance) => {
+        const s = String(stance || "hostile").toLowerCase();
+        const specific = s === "desperate" ? "encounterStanceDesperate"
+          : s === "opportunistic" ? "encounterStanceOpportunistic"
+          : s === "creature" ? "encounterStanceCreature"
+          : "encounterStanceHostile";
+        if (sampleBuf[specific]) {
+          fireBuffer(sampleBuf[specific]);
+          return;
+        }
+        if (sampleBuf[specific] === undefined) loadSample(specific);
+        if (s === "desperate") {
+          tone([90, 170], 0.3, "triangle", 0.032);
+          noise(0.08, 0.022);
+          tone(70, 0.55, "sine", 0.012, 0.08);
+        } else if (s === "opportunistic") {
+          tone([120, 64], 0.34, "sine", 0.028);
+          tone(48, 0.6, "sine", 0.01, 0.1);
+        } else if (s === "creature") {
+          tone([38, 70], 0.4, "sine", 0.036);
+          noise(0.14, 0.03);
+          tone(28, 0.8, "sine", 0.012, 0.08);
+        } else {
+          tone([46, 88], 0.36, "sine", 0.04);
+          noise(0.1, 0.028);
+          tone(36, 0.7, "sine", 0.012, 0.06);
+        }
+      }),
+      encounterLock: play("encounterLock", () => {
+        noise(0.06, 0.03);
+        tone(140, 0.12, "sine", 0.03);
+      }),
+      encounterChoiceHover: play("encounterChoiceHover", () => {
+        tone(150, 0.018, "sine", 0.01);
+      }),
+      encounterChoiceSelect: play("encounterChoiceSelect", () => {
+        noise(0.02, 0.016);
+        tone([150, 80], 0.1, "sine", 0.03);
+      }),
+      encounterResolve: play("encounterResolve", () => {
+        noise(0.025, 0.018);
+        tone([130, 70], 0.16, "sine", 0.03);
+      }),
+      encounterSurvive: play("encounterSurvive", () => {
+        tone(72, 0.12, "sine", 0.012);
+      }),
+      encounterVerdict: play("encounterSurvive", () => {
+        tone(72, 0.12, "sine", 0.012);
+      }),
+      encounterDie: play("encounterDie", () => {
+        tone([90, 32], 0.7, "sine", 0.08);
+        noise(0.22, 0.03);
+      }),
+      encounterExit: play("encounterExit", () => {
+        tone([160, 80], 0.28, "sine", 0.03);
+        noise(0.06, 0.016);
+      }),
+      prefetchEncounter,
+      ingestEncounterStingers,
+      portraitReveal: play("portraitReveal", () => { noise(0.05, 0.028); tone(130, 0.08, "sine", 0.022); }),
+      choiceHover: play("choiceHover", () => { tone(170, 0.012, "sine", 0.007); }),
+      choiceSelect: play("choiceSelect", () => { noise(0.02, 0.016); tone(140, 0.07, "sine", 0.028); }),
+      notify: play("notify", () => { tone(180, 0.08, "sine", 0.022); }),
+      grab: play("grab", () => { noise(0.03, 0.022); tone([160, 80], 0.1, "sine", 0.028); }),
+      shutter: play("shutter", () => { noise(0.04, 0.038); tone(80, 0.04, "sine", 0.04); }),
+      cameraOn: play("cameraOn", () => { tone([70, 130], 0.14, "sine", 0.028); noise(0.05, 0.018); }),
+      cameraOff: play("cameraOff", () => { tone([130, 60], 0.14, "sine", 0.024); }),
+      receiptOpen: play("receiptOpen", () => { noise(0.08, 0.022); tone(90, 0.05, "sine", 0.018); }),
+      itemReveal: play("itemReveal", () => { tone(150, 0.04, "sine", 0.022); }),
+      scoreTick: play("scoreTick", () => { tone(130, 0.015, "sine", 0.012); }),
+      stamp: play("stamp", () => { tone([120, 55], 0.16, "sine", 0.06); noise(0.05, 0.04); }),
+      zoom: play("zoom", (t) => {
+        const f = 90 + Math.max(0, Math.min(1, t || 0)) * 80;
+        tone(f, 0.025, "sine", 0.014);
+      }),
+      lock: play("lock", () => { tone(160, 0.05, "sine", 0.02); }),
+      miss: play("miss", () => { tone([180, 90], 0.12, "sine", 0.03); noise(0.04, 0.016); }),
+      newSubject: play("newSubject", () => { tone(150, 0.08, "sine", 0.026); }),
+      caseSolved: play("caseSolved", () => { tone([90, 150], 0.28, "sine", 0.035); noise(0.1, 0.02); }),
+      cereAction: play("cereAction", () => { tone(130, 0.06, "sine", 0.028); }),
+      cereConsequence: play("cereConsequence", () => { tone(110, 0.12, "sine", 0.032); }),
+      cereWorldUpdate: play("cereWorldUpdate", () => { tone([80, 140], 0.26, "sine", 0.022); }),
+      cereWorldRespond: play("cereWorldRespond", () => { tone(120, 0.1, "sine", 0.026); }),
+      cereActions: play("cereActions", () => { tone(140, 0.08, "sine", 0.022); }),
+      cereDone: play("cereDone", () => { tone(130, 0.1, "sine", 0.026); }),
+      cereNote: play("cereNote", () => { tone(150, 0.02, "sine", 0.012); }),
     };
+    return api;
   })();
 
   // ------------------------------------------------------------------
@@ -788,22 +1320,39 @@
   // SceneAudio — generated ambient score for the current guide image.
   //
   // Each new scene carries a text descriptor (metadata.prompt). We POST it to
-  // /api/scene_audio, which renders a short scene-matched instrumental clip with
-  // Google Lyria RealTime and returns a URL. We loop that clip as an ambient bed
-  // and crossfade to a fresh one whenever the world re-scores. Shares the Sound
-  // synth's AudioContext so it inherits the same mute + first-gesture gating and
-  // silently no-ops when audio is unavailable (no key / offline / stream fail).
+  // /api/scene_audio, which returns an ElevenLabs Music bed plus looping world
+  // SFX (stock first, then a scene-specific fill-in). We loop both and
+  // crossfade whenever the world re-scores. Uncached music is generated in
+  // the background — we retry until the file lands instead of blocking the
+  // first scene. Encounter stingers are pre-cached stock one-shots. Shares
+  // the Sound synth's AudioContext so it inherits the same mute + first-
+  // gesture gating and silently no-ops when audio is unavailable.
   // ------------------------------------------------------------------
   const SceneAudio = (function () {
     let currentUrl = null;      // audio_url currently playing (guards re-triggers)
-    let requestedKey = null;    // last descriptor we requested (dedupe re-renders)
+    let currentSfxUrl = null;
+    let requestedKey = null;    // hash of the last descriptor (dedupe re-renders)
+    let requestedPrompt = null; // the actual scene text that hash came from
     let src = null;             // active looping AudioBufferSourceNode
     let gain = null;            // its GainNode
+    let sfxSrc = null;
+    let sfxGain = null;
     const bufferCache = new Map(); // url -> decoded AudioBuffer
+    const loopCache = new WeakMap(); // AudioBuffer -> {buf, loopEnd}
     const FADE = 1.4;           // crossfade seconds between scene scores
+    const SFX_BED = 0.55;       // ambience sits under the music bed
+    const RETRY_MS = 3500;
+    const RETRY_MAX = 28;       // ~98s, matches Eleven Music's timeout
+    let audioToken = 0;         // bumps on every new score so late replies die
+    let pendingTimer = null;
+    let pendingTries = 0;
     let duckFactor = 1;         // 0..1 multiplier applied on top of musicVol (Conversation Moments)
     let preConvoUrl = null;     // scene bed to restore after a conversation score
+    let preConvoSfxUrl = null;
     let preConvoKey = null;
+    let preConvoPrompt = null;
+    let encounterSeq = 0;
+    let encounterLive = false;
 
     // Music bed volume — an ambient bed that should sit UNDER the UI SFX, not
     // compete with it. It's now adjustable live from the debug panel (WORLD
@@ -829,28 +1378,72 @@
     }
     let musicVol = loadVol();   // current bed volume (0..1), the live target
 
-    // Push the current volume onto whatever is playing right now (clip gain
-    // and/or streamed PCM gain) so debug-panel changes take effect instantly,
-    // without waiting for the next scene to re-score. Honors the global mute
-    // and the Conversation Moment duck factor.
+    // Push the current volume onto whatever is playing right now so debug-
+    // panel changes take effect instantly, without waiting for the next
+    // scene to re-score. Honors the global mute and the Conversation
+    // Moment duck factor.
     function applyLiveVolume() {
       const c = ctx();
-      const target = state.soundEnabled ? (musicVol * Math.max(0, Math.min(1, duckFactor))) : 0;
-      if (gain && c) {
+      const duck = Math.max(0, Math.min(1, duckFactor));
+      const musicTarget = state.soundEnabled ? (musicVol * duck) : 0;
+      const sfxTarget = state.soundEnabled ? (musicVol * SFX_BED * duck) : 0;
+      function ramp(node, value) {
+        if (!node || !c) return;
         try {
           const t = c.currentTime;
-          gain.gain.cancelScheduledValues(t);
-          gain.gain.setValueAtTime(gain.gain.value, t);
-          gain.gain.linearRampToValueAtTime(target, t + 0.25);
+          node.gain.cancelScheduledValues(t);
+          node.gain.setValueAtTime(node.gain.value, t);
+          node.gain.linearRampToValueAtTime(value, t + 0.25);
         } catch (_) {}
       }
-      if (streamGain) {
-        try { streamGain.gain.value = target; } catch (_) {}
-      }
+      ramp(gain, musicTarget);
+      ramp(sfxGain, sfxTarget);
     }
 
     function ctx() {
       try { return Sound.context ? Sound.context() : null; } catch (_) { return null; }
+    }
+
+    function wake() {
+      try { if (Sound.resume) Sound.resume(); } catch (_) {}
+      const c = ctx();
+      if (c && c.state === "suspended") {
+        try { c.resume(); } catch (_) {}
+      }
+      return c;
+    }
+
+    function musicKey(prompt) {
+      const raw = (prompt == null ? "" : String(prompt)).trim();
+      if (!raw) return "";
+      let h = 2166136261;
+      for (let i = 0; i < raw.length; i++) {
+        h ^= raw.charCodeAt(i);
+        h = Math.imul(h, 16777619);
+      }
+      return raw.length + ":" + (h >>> 0).toString(16);
+    }
+
+    function sessionId() {
+      try {
+        if (typeof SESSION_ID !== "undefined" && SESSION_ID) return SESSION_ID;
+      } catch (_) {}
+      return "default";
+    }
+
+    function forgetRequest() {
+      requestedKey = null;
+      requestedPrompt = null;
+      pendingTries = 0;
+      if (pendingTimer) { try { clearTimeout(pendingTimer); } catch (_) {} pendingTimer = null; }
+    }
+
+    function bumpToken() { return ++audioToken; }
+    function sameToken(t) { return t === audioToken; }
+
+    function scheduleRetry(fn) {
+      if (pendingTimer) { try { clearTimeout(pendingTimer); } catch (_) {} }
+      pendingTimer = setTimeout(fn, RETRY_MS);
     }
 
     async function fetchBuffer(url) {
@@ -858,16 +1451,19 @@
       const resp = await fetch(url);
       if (!resp.ok) throw new Error("audio HTTP " + resp.status);
       const arr = await resp.arrayBuffer();
-      const c = ctx();
+      const c = wake();
       if (!c) throw new Error("no audio context");
       const buf = await c.decodeAudioData(arr);
       bufferCache.set(url, buf);
       return buf;
     }
 
-    function stop(fadeOut) {
-      const oldSrc = src, oldGain = gain;
-      src = null; gain = null;
+    function stopLayer(which, fadeOut) {
+      const isSfx = which === "sfx";
+      const oldSrc = isSfx ? sfxSrc : src;
+      const oldGain = isSfx ? sfxGain : gain;
+      if (isSfx) { sfxSrc = null; sfxGain = null; }
+      else { src = null; gain = null; }
       if (!oldSrc) return;
       const c = ctx();
       try {
@@ -884,140 +1480,145 @@
       } catch (_) {}
     }
 
-    function playBuffer(buf) {
-      const c = ctx();
-      if (!c || !buf) return;
-      const s = c.createBufferSource();
-      s.buffer = buf;
-      s.loop = true;
-      const g = c.createGain();
-      const t = c.currentTime;
-      g.gain.setValueAtTime(0.0001, t);
-      g.gain.linearRampToValueAtTime(musicVol * Math.max(0, Math.min(1, duckFactor)), t + FADE);
-      s.connect(g); g.connect(c.destination);
-      try { s.start(); } catch (_) { return; }
-      src = s; gain = g;
+    function stop(fadeOut) {
+      stopLayer("music", fadeOut);
+      stopLayer("sfx", fadeOut);
     }
 
-    async function crossfadeTo(url) {
+    function loopable(c, buf) {
+      if (!c || !buf) return { buf: buf, loopEnd: 0 };
+      if (loopCache.has(buf)) return loopCache.get(buf);
+      const fade = Math.min(1.25, buf.duration * 0.1);
+      if (buf.duration < fade * 2.5) {
+        const rec = { buf: buf, loopEnd: 0 };
+        loopCache.set(buf, rec);
+        return rec;
+      }
+      const n = Math.floor(fade * buf.sampleRate);
+      const out = c.createBuffer(buf.numberOfChannels, buf.length, buf.sampleRate);
+      for (let ch = 0; ch < buf.numberOfChannels; ch++) {
+        const src = buf.getChannelData(ch);
+        const dst = out.getChannelData(ch);
+        dst.set(src);
+        const tailAt = src.length - n;
+        for (let i = 0; i < n; i++) {
+          const w = i / n;
+          dst[i] = src[i] * w + src[tailAt + i] * (1 - w);
+        }
+      }
+      const rec = { buf: out, loopEnd: buf.duration - fade };
+      loopCache.set(buf, rec);
+      return rec;
+    }
+
+    function playBuffer(buf, layer) {
+      const c = wake();
+      if (!c || !buf) return;
+      const isSfx = layer === "sfx";
+      const looped = loopable(c, buf);
+      const s = c.createBufferSource();
+      s.buffer = looped.buf || buf;
+      s.loop = true;
+      if (looped.loopEnd) s.loopEnd = looped.loopEnd;
+      const g = c.createGain();
+      const t = c.currentTime;
+      const duck = Math.max(0, Math.min(1, duckFactor));
+      const target = musicVol * duck * (isSfx ? SFX_BED : 1);
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.linearRampToValueAtTime(target, t + FADE);
+      s.connect(g); g.connect(c.destination);
+      try { s.start(); } catch (_) { return; }
+      if (isSfx) { sfxSrc = s; sfxGain = g; }
+      else { src = s; gain = g; }
+    }
+
+    async function crossfadeTo(url, layer) {
+      if (!url) {
+        stopLayer(layer || "music", FADE);
+        if ((layer || "music") === "sfx") currentSfxUrl = null;
+        else currentUrl = null;
+        return;
+      }
       try {
         const buf = await fetchBuffer(url);
-        if (!state.soundEnabled) return;   // muted while we were fetching
-        stop(FADE);
-        playBuffer(buf);
-        currentUrl = url;
+        if (!state.soundEnabled) return;
+        const which = layer || "music";
+        stopLayer(which, FADE);
+        playBuffer(buf, which);
+        if (which === "sfx") currentSfxUrl = url;
+        else currentUrl = url;
       } catch (_) { /* stay silent on any audio failure */ }
     }
 
-    // ── Increment 2: realtime streaming backend (opt-in via ?music=stream) ──
-    // Continuously plays PCM pushed from /ws/scene_music, re-steering on each
-    // scene instead of looping a clip. Falls back to nothing (silent) on any
-    // socket/decoder error; the clip path stays the default.
-    const STREAM_MODE = (function () {
-      try { return new URLSearchParams(location.search).get("music") === "stream"; }
-      catch (_) { return false; }
-    })();
-    let ws = null;             // active WebSocket
-    let streamGain = null;     // gain for streamed PCM
-    let streamNextTime = 0;    // scheduling clock (AudioContext time)
-    let wsOpening = false;
-
-    function schedulePCM(arrayBuffer) {
-      const c = ctx();
-      if (!c || !streamGain || !arrayBuffer || arrayBuffer.byteLength < 4) return;
-      const view = new DataView(arrayBuffer);
-      const frames = (arrayBuffer.byteLength / 4) | 0; // 2ch * 16-bit
-      if (frames <= 0) return;
-      const buf = c.createBuffer(2, frames, 48000);
-      const chL = buf.getChannelData(0), chR = buf.getChannelData(1);
-      let o = 0;
-      for (let i = 0; i < frames; i++) {
-        chL[i] = view.getInt16(o, true) / 32768; o += 2;
-        chR[i] = view.getInt16(o, true) / 32768; o += 2;
-      }
-      const s = c.createBufferSource();
-      s.buffer = buf;
-      s.connect(streamGain);
-      const now = c.currentTime;
-      // Keep a small latency cushion; re-prime if we've underrun.
-      if (streamNextTime < now + 0.05) streamNextTime = now + 0.15;
-      try { s.start(streamNextTime); } catch (_) { return; }
-      streamNextTime += buf.duration;
-    }
-
-    function openStream(prompt) {
-      const c = ctx();
-      if (!c || wsOpening || (ws && ws.readyState <= 1)) return;
-      wsOpening = true;
-      streamGain = c.createGain();
-      streamGain.gain.value = state.soundEnabled ? musicVol : 0;
-      streamGain.connect(c.destination);
-      streamNextTime = 0;
-      let sock;
+    async function playStinger(url) {
+      if (!url || !state.soundEnabled) return;
       try {
-        const proto = location.protocol === "https:" ? "wss:" : "ws:";
-        sock = new WebSocket(proto + "//" + location.host + "/ws/scene_music");
-        sock.binaryType = "arraybuffer";
-      } catch (_) { wsOpening = false; return; }
-      ws = sock;
-      sock.onopen = () => {
-        wsOpening = false;
-        try { sock.send(JSON.stringify({ prompt: prompt || "" })); } catch (_) {}
-      };
-      sock.onmessage = (ev) => {
-        if (!state.soundEnabled) return;
-        if (ev.data instanceof ArrayBuffer) schedulePCM(ev.data);
-      };
-      sock.onerror = () => { wsOpening = false; };
-      sock.onclose = () => { wsOpening = false; if (ws === sock) ws = null; };
+        const buf = await fetchBuffer(url);
+        const c = wake();
+        if (!c || !buf) return;
+        const s = c.createBufferSource();
+        s.buffer = buf;
+        const g = c.createGain();
+        g.gain.value = musicVol * 0.85;
+        s.connect(g); g.connect(c.destination);
+        s.start();
+      } catch (_) {}
     }
 
-    function steerStream(prompt) {
-      if (ws && ws.readyState === 1) {
-        try { ws.send(JSON.stringify({ prompt: prompt || "" })); } catch (_) {}
-      } else {
-        openStream(prompt);
-      }
-    }
-
-    function closeStream() {
-      try { if (ws) ws.close(); } catch (_) {}
-      ws = null; wsOpening = false;
-      if (streamGain) { try { streamGain.disconnect(); } catch (_) {} streamGain = null; }
-      streamNextTime = 0;
+    function applyScore(res) {
+      if (!res) return;
+      if (res.stinger_url) playStinger(res.stinger_url);
+      if (res.audio_url && res.audio_url !== currentUrl) crossfadeTo(res.audio_url, "music");
+      if (res.sfx_url && res.sfx_url !== currentSfxUrl) crossfadeTo(res.sfx_url, "sfx");
     }
 
     return {
-      // Ask for a scene score, then crossfade (clip) or re-steer (stream).
-      // Deduped so repeated renders of the same scene don't re-request.
-      async score(prompt) {
+      // Ask for a scene score, then crossfade. Deduped so repeated renders
+      // of the same scene don't re-request — unless music is still pending.
+      async score(prompt, opts) {
         if (!state.soundEnabled) return;
-        const key = (prompt == null ? "" : String(prompt)).trim().slice(0, 240);
-        if (!key || key === requestedKey) return;
-        requestedKey = key;
-        if (STREAM_MODE) { steerStream(key); return; }
+        try { wake(); } catch (_) {}
+        const raw = (prompt == null ? "" : String(prompt)).trim();
+        const key = musicKey(raw);
+        const retry = !!(opts && opts.retry);
+        if (!key || (key === requestedKey && !retry)) return;
+        const t = retry ? audioToken : bumpToken();
+        if (!retry) {
+          requestedKey = key;
+          requestedPrompt = raw;
+          pendingTries = 0;
+        }
         let res;
         try {
-          res = await postJSON("/api/scene_audio", { prompt: key, session: "default" });
+          res = await postJSON("/api/scene_audio", {
+            prompt: raw, session: sessionId(),
+          });
         } catch (_) { return; }
-        if (!res || !res.audio_url) return;      // unavailable — stay silent
-        if (res.audio_url === currentUrl) return; // same bed already playing
-        crossfadeTo(res.audio_url);
+        if (!sameToken(t)) return;
+        if (!res || (!res.audio_url && !res.sfx_url && !res.stinger_url
+            && !res.pending_music && !res.pending_sfx)) return;
+        applyScore(res);
+        const waiting = !!(res.pending_music || (res.pending_sfx && !res.sfx_url));
+        if (waiting && pendingTries < RETRY_MAX) {
+          pendingTries += 1;
+          scheduleRetry(() => { this.score(raw, { retry: true }); });
+        } else {
+          pendingTries = 0;
+        }
       },
       // Follow the global sound toggle: fade out on mute, resume on unmute.
       setEnabled(on) {
-        if (STREAM_MODE) {
-          if (!on) closeStream();
-          else if (requestedKey) openStream(requestedKey);
-          return;
-        }
         if (!on) stop(0.4);
-        else if (currentUrl) crossfadeTo(currentUrl);
+        else {
+          if (currentUrl) crossfadeTo(currentUrl, "music");
+          if (currentSfxUrl) crossfadeTo(currentSfxUrl, "sfx");
+        }
       },
       // Full reset (new game): silence and forget so the next scene re-scores.
       reset() {
-        stop(0.4); closeStream();
-        currentUrl = null; requestedKey = null;
+        bumpToken();
+        stop(0.4);
+        currentUrl = null; currentSfxUrl = null; forgetRequest();
       },
       // ── Music volume (debug-panel controlled) ──
       // The preset "options" shown in the debug panel (Off…Max).
@@ -1044,41 +1645,216 @@
       },
       // Score an intimate conversation bed for the subject/scene, remembering
       // the exploration bed so exit can restore it. Best-effort / fire-and-forget.
-      async scoreConversation(prompt) {
+      async scoreEncounter(prompt, opts) {
         if (!state.soundEnabled) return;
-        const key = (prompt == null ? "" : String(prompt)).trim().slice(0, 240);
-        if (!key) return;
-        // Remember the exploration bed once; nested calls shouldn't overwrite.
+        const raw = (prompt == null ? "" : String(prompt)).trim();
+        if (!raw) return;
+        const retry = !!(opts && opts.retry);
+        const seq = retry ? encounterSeq : ++encounterSeq;
+        if (!retry) {
+          encounterLive = true;
+          bumpToken();
+          pendingTries = 0;
+          this.duck(0.22);
+        }
         if (preConvoUrl == null) {
           preConvoUrl = currentUrl;
+          preConvoSfxUrl = currentSfxUrl;
           preConvoKey = requestedKey;
+          preConvoPrompt = requestedPrompt;
         }
-        this.duck(0.35);
         let res;
         try {
           res = await postJSON("/api/scene_audio", {
-            prompt: key,
-            session: (typeof SESSION_ID !== "undefined" && SESSION_ID) ? SESSION_ID : "default",
+            prompt: raw,
+            session: sessionId(),
+            mode: "encounter",
+          });
+        } catch (_) { return; }
+        if (!encounterLive || seq !== encounterSeq) return;
+        try {
+          if (window.Encounter && Encounter.isResolving && Encounter.isResolving()) return;
+        } catch (_) {}
+        if (!res || (!res.audio_url && !res.sfx_url && !res.stinger_url
+            && !res.pending_music && !res.pending_sfx)) return;
+        // Ceremony owns one-shots (hitch / title / enter). Re-scoring the
+        // stance bed must not replay the enter braam.
+        applyScore({
+          audio_url: res.audio_url,
+          sfx_url: res.sfx_url,
+          stinger_url: null,
+        });
+        try {
+          if (res.stingers && window.Sound && Sound.ingestEncounterStingers) {
+            Sound.ingestEncounterStingers(res.stingers);
+          }
+        } catch (_) {}
+        if (res.pending_music && pendingTries < RETRY_MAX) {
+          pendingTries += 1;
+          scheduleRetry(() => { this.scoreEncounter(raw, { retry: true }); });
+        }
+      },
+      endEncounter(opts) {
+        encounterLive = false;
+        encounterSeq += 1;
+        const restore = !opts || opts.restore !== false;
+        try { if (window.Sound && Sound.heartbeatStop) Sound.heartbeatStop(); } catch (_) {}
+        if (!restore) {
+          this.unduck();
+          preConvoUrl = null;
+          preConvoSfxUrl = null;
+          preConvoKey = null;
+          preConvoPrompt = null;
+          return Promise.resolve();
+        }
+        return this.endConversation();
+      },
+      async scoreConversation(prompt, opts) {
+        if (!state.soundEnabled) return;
+        const raw = (prompt == null ? "" : String(prompt)).trim();
+        if (!raw) return;
+        const retry = !!(opts && opts.retry);
+        const t = retry ? audioToken : bumpToken();
+        // Remember the exploration bed once; nested calls shouldn't overwrite.
+        if (preConvoUrl == null) {
+          preConvoUrl = currentUrl;
+          preConvoSfxUrl = currentSfxUrl;
+          preConvoKey = requestedKey;
+          preConvoPrompt = requestedPrompt;
+        }
+        if (!retry) {
+          this.duck(0.35);
+          pendingTries = 0;
+        }
+        let res;
+        try {
+          res = await postJSON("/api/scene_audio", {
+            prompt: raw,
+            session: sessionId(),
             mode: "conversation",
           });
         } catch (_) { return; }
-        if (!res || !res.audio_url) return;
-        if (res.audio_url === currentUrl) return;
-        // Don't stamp requestedKey with the convo key — that would block the
-        // next exploration score() of the same scene after we restore.
-        crossfadeTo(res.audio_url);
+        if (!sameToken(t)) return;
+        if (!res || (!res.audio_url && !res.sfx_url && !res.stinger_url
+            && !res.pending_music && !res.pending_sfx)) return;
+        applyScore(res);
+        if (res.pending_music && pendingTries < RETRY_MAX) {
+          pendingTries += 1;
+          scheduleRetry(() => { this.scoreConversation(raw, { retry: true }); });
+        }
+      },
+      // The soundtrack changed under us — take it NOW.
+      //
+      // Everything else here is driven by the scene: a bed is asked for when a
+      // new scene descriptor arrives, and re-asking for the same one is deduped
+      // on purpose. That is right for gameplay and exactly wrong for the editor,
+      // where the scene has not moved and the music has. Choosing a loop looked
+      // like it did nothing because, in the player's ears, it did: the change
+      // sat on the server waiting for a scene that might be ten turns away.
+      //
+      // `url` is the loop to adopt, or null to go back to per-scene scoring.
+      unlock() {
+        return !!wake();
+      },
+      async adoptLoop(url) {
+        try { this.unlock(); } catch (_) {}
+        if (!state.soundEnabled) return false;
+        bumpToken();
+        if (url) {
+          // Same URL with no live source is a failed first play, not a skip.
+          // Play loop used to no-op after upload set the address but the
+          // gesture had already expired.
+          if (url === currentUrl && src) return true;
+          await crossfadeTo(url, "music");
+          return !!src;
+        }
+        // Back to per-scene: forget the loop and re-score the scene we are in.
+        const raw = requestedPrompt
+          || preConvoPrompt
+          || (typeof state !== "undefined" && state.lastScenePrompt)
+          || "";
+        currentUrl = null;
+        currentSfxUrl = null;
+        forgetRequest();
+        if (!String(raw).trim()) { stop(0.6); return false; }
+        await this.score(raw);
+        return true;
+      },
+      // Title screen bed. The match loop used to keep going after LEAVE, which
+      // is why the menu sounded like the same default track forever.
+      async enterMenu() {
+        try { this.unlock(); } catch (_) {}
+        const t = bumpToken();
+        stop(0.45);
+        currentUrl = null;
+        currentSfxUrl = null;
+        forgetRequest();
+        if (!state.soundEnabled) return;
+        let info;
+        try {
+          const raw = await getJSON("/api/music");
+          info = (raw && raw.data) || raw || {};
+        } catch (_) { return; }
+        if (!sameToken(t)) return;
+        const locked = info.menu_loop && info.menu_loop.url;
+        if (locked) { await crossfadeTo(locked, "music"); return; }
+        const cached = info.menu_preview && info.menu_preview.url;
+        if (cached) { await crossfadeTo(cached, "music"); return; }
+        // Boot used to POST a 10s generate here. PLAY is the same click
+        // that unlocks audio, so the sample landed after LEAVE and the
+        // title track played over the match. Only generate after a
+        // gesture, and only if we are still on the menu when it returns.
+        const prompt = (info.menu_direction || "").trim();
+        if (!prompt || !info.can_generate || !state.audioUnlocked) return;
+        try {
+          const r = await postJSON("/api/music/preview", {
+            prompt: prompt, seconds: 10, for: "menu",
+          });
+          if (!sameToken(t)) return;
+          const preview = (r && r.data && r.data.preview) || (r && r.preview);
+          if (preview && preview.url) await crossfadeTo(preview.url, "music");
+        } catch (_) {}
+      },
+      leaveMenu() {
+        bumpToken();
+        stop(0.35);
+        currentUrl = null;
+        currentSfxUrl = null;
+        forgetRequest();
+      },
+      // First gesture: replay whatever should be audible now. Title music
+      // is requested on boot (usually blocked). A deep-linked PLAY may
+      // have scored a scene against a suspended context.
+      onUnlocked() {
+        try { this.unlock(); } catch (_) {}
+        if (!state.soundEnabled) return;
+        if (currentUrl) crossfadeTo(currentUrl, "music");
+        if (currentSfxUrl) crossfadeTo(currentSfxUrl, "sfx");
+        if (!currentUrl && requestedPrompt) {
+          const raw = requestedPrompt;
+          requestedKey = null;
+          this.score(raw);
+        }
       },
       // Restore the pre-conversation exploration bed (or just unduck).
       async endConversation() {
         this.unduck();
         const restoreUrl = preConvoUrl;
+        const restoreSfx = preConvoSfxUrl;
         const restoreKey = preConvoKey;
+        const restorePrompt = preConvoPrompt;
         preConvoUrl = null;
+        preConvoSfxUrl = null;
         preConvoKey = null;
+        preConvoPrompt = null;
         if (restoreUrl && restoreUrl !== currentUrl) {
-          try { await crossfadeTo(restoreUrl); } catch (_) {}
-          if (restoreKey) requestedKey = restoreKey;
+          try { await crossfadeTo(restoreUrl, "music"); } catch (_) {}
         }
+        if (restoreSfx && restoreSfx !== currentSfxUrl) {
+          try { await crossfadeTo(restoreSfx, "sfx"); } catch (_) {}
+        }
+        if (restoreKey) requestedKey = restoreKey;
+        if (restorePrompt) requestedPrompt = restorePrompt;
       },
     };
   })();
@@ -1127,6 +1903,11 @@
       shutter: () => buzz(24),          // the shot fires — one firm snap
       lock: () => buzz(7),              // a subject snaps into frame
       miss: () => buzz([14, 34, 14]),   // empty / out-of-focus frame
+      encounter: () => buzz([12, 30, 18, 40, 22]), // hitch / title slam
+      encounterLock: () => buzz(16),
+      encounterResolve: () => buzz([20, 28, 20]),
+      encounterSurvive: () => buzz([8, 18, 12]),
+      encounterDie: () => buzz([30, 40, 55]),
     };
   })();
 
@@ -1174,6 +1955,7 @@
     el.veil.classList.add("hidden");
     // Fade the play button back in — the progress bar occupied its spot.
     if (el.actionWheel) el.actionWheel.classList.remove("turn-active");
+    document.body.classList.remove("turn-active");
     // Safety net: never leave the prose + SNAP tool stuck hidden once the boot
     // veil is gone (covers text-only mode and any path where no frame lands).
     markSceneVisible();
@@ -1209,9 +1991,7 @@
     // complaint: the win condition was effectively hidden until you happened to
     // pick up the camera).
     try { Evidence.reveal(); } catch (_) {}
-    // First-timers get the tutorial card (which already states the goal); after
-    // they've dismissed it once, returning runs get the lighter goal toast.
-    try { if (!showScanTutorialOnce()) showIntroGoalOnce(); } catch (_) {}
+    try { showIntroGoalOnce(); } catch (_) {}
     try { refreshDirective(true); } catch (_) {}
     try { updateScanButton(); } catch (_) {} // a scene is readable — SCAN is live
   }
@@ -1230,39 +2010,6 @@
     } catch (_) {}
   }
 
-  // ── First-run tutorial: the ONE thing a new player must learn — TAP TO SCAN.
-  // Shown once per browser (localStorage-gated) the first time a scene is
-  // readable. Dismissed by the button, a tap anywhere on it, or Escape.
-  // Returns true if it was shown this call (so the caller can suppress the
-  // redundant goal toast on the very first run).
-  const TUTORIAL_SEEN_KEY = "scan_tutorial_seen_v1";
-  function showScanTutorialOnce() {
-    if (!el.scanTutorial) return false;
-    if (state._tutorialShown) return false; // already up this session
-    let seen = false;
-    try { seen = localStorage.getItem(TUTORIAL_SEEN_KEY) === "1"; } catch (_) {}
-    if (seen) return false;
-    state._tutorialShown = true;
-    const tgt = el.scanTutorial.querySelector("#tut-target");
-    const target = (window.Evidence && Evidence.target && Evidence.target()) || 8;
-    if (tgt) tgt.textContent = String(target);
-    el.scanTutorial.classList.remove("hidden");
-    // rAF so the .show transition actually plays from the hidden state.
-    requestAnimationFrame(() => el.scanTutorial.classList.add("show"));
-    try { Sound.talkOpen && Sound.talkOpen(); } catch (_) {}
-    return true;
-  }
-
-  function dismissScanTutorial() {
-    if (!el.scanTutorial || el.scanTutorial.classList.contains("hidden")) return;
-    state._tutorialShown = false;
-    try { localStorage.setItem(TUTORIAL_SEEN_KEY, "1"); } catch (_) {}
-    el.scanTutorial.classList.remove("show");
-    const hide = () => el.scanTutorial.classList.add("hidden");
-    if (prefersReducedMotion()) hide(); else setTimeout(hide, 300);
-    try { Sound.press && Sound.press(); } catch (_) {}
-  }
-
   // ------------------------------------------------------------------
   // Ceremony — the gamified turn pipeline. Each turn the world runs a clear
   // sequence of steps; we light them up one at a time (with sound + a beat)
@@ -1273,22 +2020,19 @@
   // ------------------------------------------------------------------
   const Ceremony = (function () {
     const STEPS = [
-      { key: "action",        label: "Action\nSelected",       glyph: "\u25C9", sound: "cereAction" },       // ◉
-      { key: "consequence",   label: "Consequence\nGenerated", glyph: "\u2726", sound: "cereConsequence" },  // ✦
-      { key: "world_update",  label: "World\nUpdating",        glyph: "\u27F3", sound: "cereWorldUpdate" },   // ⟳
-      { key: "world_respond", label: "World\nResponding",      glyph: "\u25C8", sound: "cereWorldRespond" },  // ◈
-      { key: "actions",       label: "Actions\nGenerating",    glyph: "\u22D4", sound: "cereActions" },       // ⋔
-      // The guide image is the slowest stage and lands AFTER choices, so it gets
-      // its own step that stays "rendering" (spinning) until the still actually
-      // arrives — otherwise the app looks frozen while it generates.
-      { key: "guide_image",   label: "Guide Image\nRendering", glyph: "\u25A6", sound: "cereWorldUpdate" },   // ▦
+      { key: "action",        label: "Action selected",       hud: "ACTION",       glyph: "\u25C9", sound: "cereAction" },
+      { key: "consequence",   label: "Consequence generated", hud: "CONSEQUENCE",  glyph: "\u2726", sound: "cereConsequence" },
+      { key: "world_update",  label: "World updating",        hud: "UPDATING",     glyph: "\u27F3", sound: "cereWorldUpdate" },
+      { key: "world_respond", label: "World responding",      hud: "RESPONDING",   glyph: "\u25C8", sound: "cereWorldRespond" },
+      { key: "actions",       label: "Actions generating",    hud: "ACTIONS",      glyph: "\u22D4", sound: "cereActions" },
+      { key: "guide_image",   label: "Guide image rendering", hud: "IMAGE",        glyph: "\u25A6", sound: "cereWorldUpdate" },
     ];
     const IDX = {};
     STEPS.forEach((s, i) => { IDX[s.key] = i; });
     const IMG_STEP = STEPS.length - 1;      // the guide-image step (last)
     const DWELL_MS = 460;      // minimum time each step is shown (so it registers)
-    // After the turn resolves we keep the (green) progress bar in the play
-    // button's spot until the new frame actually loads, then fade back to play.
+    // After the turn resolves we hold the corner circle on green until the
+    // new frame actually loads, then fade it out.
     const FADE_AFTER_IMAGE_MS = 520;   // brief hold once the image is on screen
     // The guide-image step spins until the still lands. Image gen can be slow —
     // that's the whole point of showing it — so give it a generous window before
@@ -1314,7 +2058,7 @@
         li.dataset.key = s.key;
         li.innerHTML =
           `<span class="cere-dot">${s.glyph}</span>` +
-          `<span class="cere-label">${s.label.replace(/\n/g, "<br>")}</span>`;
+          `<span class="cere-label">${s.hud || s.label}</span>`;
         el.ceremonySteps.appendChild(li);
       });
       built = true;
@@ -1336,6 +2080,7 @@
       node.addEventListener("animationend", () => node.classList.remove("beat"), { once: true });
       cur = i;
       const s = STEPS[i];
+      if (el.ceremony) el.ceremony.setAttribute("aria-label", (s && s.label) || "Working");
       if (s && Sound[s.sound]) Sound[s.sound]();
     }
 
@@ -1395,8 +2140,11 @@
         state.processing = true;
         state.turnResolved = false;
         state.turnImageLoaded = false;
-        // The progress bar takes over the play button's spot for the turn.
         if (el.actionWheel) el.actionWheel.classList.add("turn-active");
+        document.body.classList.add("turn-active");
+        try { closeTouch(); } catch (_) {} // put the camera away with the rest of the hubs
+        try { hideGuideThumbnail(); } catch (_) {}
+        try { hideCaptureThumbnail(); } catch (_) {}
         try { updateScanButton(); } catch (_) {} // dim SCAN while the turn runs
         // Reset all chips to pending.
         if (el.ceremonySteps) {
@@ -1639,13 +2387,16 @@
     // `instant` swaps with NO crossfade — used to keep a silent still "floor"
     // under the realtime video without any visible transition/flash.
     if (instant) {
-      const prevT = incoming.style.transition;
+      const prevIn = incoming.style.transition;
+      const prevOut = outgoing.style.transition;
       incoming.style.transition = "none";
+      outgoing.style.transition = "none";
       incoming.style.backgroundImage = `url('${imageUrl}')`;
       incoming.classList.add("scene-active");
       outgoing.classList.remove("scene-active");
-      void incoming.offsetWidth; // flush before restoring the transition
-      incoming.style.transition = prevT || "";
+      void incoming.offsetWidth;
+      incoming.style.transition = prevIn || "";
+      outgoing.style.transition = prevOut || "";
       state.activeScene = state.activeScene === "A" ? "B" : "A";
       return;
     }
@@ -1751,39 +2502,66 @@
   // ------------------------------------------------------------------
   const Camera = {
     contract: null,
+    _loading: null,
 
     async load() {
-      try {
-        const data = await getJSON("/api/camera");
-        const payload = (data && (data.data || data)) || {};
-        if (payload.camera) this.apply(payload.camera);
-      } catch (err) {
-        console.warn("[standalone] camera fetch failed; assuming first person", err);
-      }
-      return this.contract;
+      if (this._loading) return this._loading;
+      this._loading = (async () => {
+        try {
+          const data = await getJSON("/api/camera");
+          const payload = (data && (data.data || data)) || {};
+          if (payload.camera) this.apply(payload.camera);
+        } catch (err) {
+          console.warn("[standalone] camera fetch failed; assuming first person", err);
+        }
+        return this.contract;
+      })();
+      return this._loading;
     },
 
     // Adopt a camera (boot fetch, or an editor save pushing the new one in).
-    // Rebuilds the live world when the perspective it was BUILT with changes —
-    // Happy Oyster fixes that at creation, so without the rebuild the switch
-    // only takes effect at the next hard cut.
+    // Rebuilds the live world when the perspective, mode, or vantage changes —
+    // Happy Oyster fixes perspective at creation; LingBot only has the prompt.
     apply(camera) {
       if (!camera) return false;
+      const prev = this.contract;
       this.contract = camera;
-      let changed = false;
+      let rebuilt = false;
       try {
-        if (Renderer.reactorAvailable() && window.ReactorRenderer.setAuthoredCamera) {
-          changed = window.ReactorRenderer.setAuthoredCamera(camera);
+        if (window.ReactorRenderer && window.ReactorRenderer.setAuthoredCamera) {
+          rebuilt = !!window.ReactorRenderer.setAuthoredCamera(camera);
         }
       } catch (_) {}
+      const framingChanged = !!(prev && (
+        prev.mode !== camera.mode ||
+        prev.perspective !== camera.perspective ||
+        prev.vantage !== camera.vantage ||
+        prev.prefix !== camera.prefix ||
+        prev.place_line !== camera.place_line ||
+        prev.protagonist_line !== camera.protagonist_line ||
+        prev.look !== camera.look ||
+        prev.notes !== camera.notes
+      ));
       try { HappyOysterOptions.update(); } catch (_) {}
-      if (changed) {
+      if (rebuilt || framingChanged) {
         try { window.ReactorRenderer.rebuildWorld(); } catch (_) {}
       }
-      return changed;
+      try { InputBindings.followCamera(camera); } catch (_) {}
+      return rebuilt || framingChanged;
     },
 
     showsCharacter() { return !!(this.contract && this.contract.shows_character); },
+    mode() { return (this.contract && this.contract.mode) || ""; },
+    // Follow cams orbit yaw only. Pitch plus latent video walks the camera
+    // off the character, and the mouse has to stay free to click.
+    yawOnly() {
+      // In-camera live feed is planted first-person: full look, no orbit lock.
+      try {
+        if (state.controlMode === "camera" && state.viewfinderLive) return false;
+      } catch (_) {}
+      const m = this.mode();
+      return m === "third_person" || m === "over_shoulder";
+    },
     // "the camera follows as Wren Alvarez" / "the view shifts as you"
     motionClause() {
       return (this.contract && this.contract.motion_clause) || "the view shifts as you";
@@ -1800,59 +2578,66 @@
       return (this.contract && this.contract.vantage) ||
         "first-person eye-level walking vantage";
     },
+    // Vantage + level + cast — the paragraph decoratePrompt / worldSteerPrompt
+    // stamp on every live instance so a character or place save reaches video.
+    prefix() {
+      if (this.contract && this.contract.prefix) return this.contract.prefix;
+      const bits = [this.vantage()];
+      if (this.contract && this.contract.notes) bits.push(this.contract.notes);
+      if (this.contract && this.contract.look) bits.push(this.contract.look);
+      if (this.contract && this.contract.place_line) bits.push(this.contract.place_line);
+      if (this.showsCharacter() && this.contract && this.contract.protagonist_line) {
+        bits.push(String(this.contract.protagonist_line).replace(/\.+$/, "") + " stays in frame.");
+      }
+      return bits.filter(Boolean).join(" ");
+    },
+    async reload() {
+      this._loading = null;
+      return this.load();
+    },
+    placeLine() { return (this.contract && this.contract.place_line) || ""; },
     // The player character's name, or "" when nobody has been authored.
     subject() { return (this.contract && this.contract.subject) || ""; },
   };
   try { window.__Camera = Camera; } catch (_) {}
 
   // ------------------------------------------------------------------
-  // Renderer facade — swap between the classic still-image renderer and the
-  // Reactor realtime world-model renderer without the rest of the game caring.
-  // "image"   -> Gemini still per turn (default; existing behavior).
-  // "reactor" -> steer Reactor's Happy Oyster navigable world with the SAME
-  //              per-turn scene prompt the engine used to build the still (passed
-  //              as the world's first frame). The still is painted underneath as
-  //              a graceful fallback if Reactor drops.
-  // Selection: ?renderer= query param > localStorage > "image".
+  // Renderer facade — stills are the FLOOR, not a mode. Every session starts
+  // on the Gemini still and upgrades to the Reactor world model the moment a
+  // key is present and the session can connect. A leftover localStorage
+  // "image" preference must never lock Play or the editor into stills.
+  //
+  // lockedStills is only for tests / ?renderer=image / __FORCED_RENDERER__.
+  // Everyday play always wants reactor.
   // ------------------------------------------------------------------
   const Renderer = {
-    mode: "image",
-    explicit: false,  // did the user/URL explicitly pick a renderer?
+    mode: "reactor",
+    explicit: false,  // URL/test hook forced a renderer
+    lockedStills: false, // do not try to upgrade (tests / ?renderer=image)
     lastScene: null,  // latest {prompt,imageUrl,hardTransition}, for mid-game toggle
     lastBase: null,   // stable style+scene text, for instant action re-steer
+    lastImagePrompt: null,  // text that generated the current still
+    lastRenderPrompt: null, // video-model scene bible from the last still
 
     resolveInitial() {
-      // A dedicated route (e.g. /realtime) can force the renderer regardless of
-      // any saved preference. This wins over everything.
       const forced = window.__FORCED_RENDERER__;
       const q = new URLSearchParams(location.search).get("renderer");
-      const stored = (function () {
-        try { return localStorage.getItem("scene_renderer"); } catch (_) { return null; }
-      })();
-      if (forced === "image" || forced === "reactor") {
-        this.mode = forced; this.explicit = true;
-      } else if (q === "image" || q === "reactor") {
-        this.mode = q; this.explicit = true;
-      } else if (stored === "image" || stored === "reactor") {
-        this.mode = stored; this.explicit = true;
+      // A previous fallback wrote scene_renderer=image and every later
+      // session treated that as an explicit choice. Drop the lock.
+      try { localStorage.removeItem("scene_renderer"); } catch (_) {}
+      if (forced === "image" || q === "image") {
+        this.mode = "image";
+        this.explicit = true;
+        this.lockedStills = true;
       } else {
-        this.mode = "image"; this.explicit = false; // provisional; server sets default
+        this.mode = "reactor";
+        this.explicit = (forced === "reactor" || q === "reactor");
+        this.lockedStills = false;
       }
     },
 
     async init() {
       this.resolveInitial();
-      // When the player hasn't explicitly chosen, follow the server's default
-      // renderer (SCENE_RENDERER — "reactor" out of the box).
-      if (!this.explicit) {
-        try {
-          const r = await fetch("/api/reactor/config");
-          if (r.ok) {
-            const c = await r.json();
-            if (c.renderer === "image" || c.renderer === "reactor") this.mode = c.renderer;
-          }
-        } catch (_) {}
-      }
       // Report real connection state on the toggle button, and fall back to
       // stills automatically if the realtime renderer can't start (no key,
       // CDN/import failure, GPU conflict) so a player is never stuck on a
@@ -1873,6 +2658,19 @@
             // longer, more patient retry budget than an ICE renegotiation, and
             // deserves an honest message instead of a generic "reconnecting".
             const lastErr = (window.ReactorRenderer.getLastError && window.ReactorRenderer.getLastError()) || null;
+            // Some causes cannot heal while the player waits — an empty
+            // Reactor balance above all. That one answers 402 and used to
+            // land in the generic "unknown" class, so a depleted account
+            // bought ~4 minutes and 11 doomed session requests of
+            // "reconnecting" before settling on stills, and never said the
+            // word credits. Go straight to the floor and say why.
+            if (lastErr && lastErr.terminal) {
+              console.warn("[standalone] realtime is not available this session:",
+                           lastErr.reason);
+              Renderer._rtRetries = 0;
+              Renderer.fallbackToStills(lastErr.hint, { terminal: true });
+              return;
+            }
             const isCapacity = !!(lastErr && lastErr.capacity);
             const maxRetries = isCapacity ? REALTIME_CAPACITY_MAX_RETRIES : REALTIME_MAX_RETRIES;
             const retryBaseMs = isCapacity ? REALTIME_CAPACITY_RETRY_BASE_MS : 1600;
@@ -1885,7 +2683,10 @@
               Renderer._rtRetryTimer = setTimeout(() => {
                 if (Renderer.mode !== "reactor" || !Renderer.reactorAvailable()) return;
                 window.ReactorRenderer.enable().then((ok) => {
-                  if (ok && Renderer.lastScene) window.ReactorRenderer.applyScene(Renderer.lastScene);
+                  if (!ok) return;
+                  if (typeof isCameraMode === "function" && isCameraMode()) return;
+                  const scene = Renderer.liveScene ? Renderer.liveScene() : Renderer.lastScene;
+                  if (scene && scene.prompt) window.ReactorRenderer.applyScene(scene);
                 });
               }, retryBaseMs * Renderer._rtRetries);
               updateRendererButton();
@@ -1901,12 +2702,6 @@
               (isCapacity
                 ? "Reactor is full right now \u2014 showing stills (retrying quietly)"
                 : "Realtime unavailable \u2014 showing stills"));
-            // Capacity is Reactor's problem to resolve, not the player's — keep
-            // quietly checking in the background so realtime comes back on its
-            // own the moment a server frees up, instead of leaving the player
-            // stuck on stills until they remember to flip the toggle.
-            if (isCapacity) Renderer._armBackgroundResume();
-            else Renderer._cancelBackgroundResume();
           } else if (s === "live" && Renderer.mode === "reactor") {
             Renderer._rtRetries = 0; // healthy again — reset the retry budget
             Renderer._cancelBackgroundResume();
@@ -1961,7 +2756,10 @@
             case "prompt_accepted": RtLog.push("ok", "\u2713 prompt accepted"); break;
             case "image_accepted": RtLog.push("ok", "\u2713 image accepted (seed decoded)"); break;
             case "generation_started":
-            case "stage_started": RtLog.push("ok", "\u25C8 generation started"); break;
+            case "stage_started":
+              RtLog.push("ok", "\u25C8 generation started");
+              try { Movement.onStageReset(); } catch (_) {}
+              break;
             case "video_showing": RtLog.push("ok", "\u25C9 video live \u2014 frames on screen"); break;
             case "video_stalled": RtLog.push("error", "\u26A0 stalled \u2014 no video after " + (d.afterMs || "?") + "ms"); break;
             case "video_black": RtLog.push("error", "\u26A0 stream went black (scene refused) \u2014 showing still"); break;
@@ -1972,7 +2770,10 @@
               RtLog.push("dim", act ? "state \u00B7 " + act : "state", "", { throttleMs: 1200 });
               break;
             }
-            case "generation_reset": RtLog.push("status", "\u21BA world reset (re-staging)"); break;
+            case "generation_reset":
+              RtLog.push("status", "\u21BA world reset (re-staging)");
+              try { Movement.onStageReset(); } catch (_) {}
+              break;
             case "command_error": RtLog.push("error", "\u26A0 error \u00B7 " + (d.command || ""), RtLog.clip(d.reason, 140)); break;
             default: break;
           }
@@ -1983,6 +2784,14 @@
           // before the actual switch, leaving a naked hold then an abrupt jump.
           // Timing the static to the reveal makes it mask the real transition.
           if (Renderer.mode === "reactor") {
+            if (name === "video_stalled") {
+              // No live frames. The still floor is what's on screen — drop the
+              // loading bar and let SCAN / PHOTO read that still.
+              markSceneVisible();
+              Ceremony.imageLoaded();
+              closeScan();
+              updateScanButton();
+            }
             if (name === "video_showing") {
               glitchTransition();
               markSceneVisible(); // the realtime feed is now live on screen
@@ -2166,23 +2975,81 @@
       RtLog.init();
       buildModelSwitcher();
       buildMusicVolume();
-      // In realtime mode, connect eagerly so the GPU session is warming while
-      // the intro scene generates — the video then starts as soon as the first
-      // scene prompt arrives. (Falls back to stills if it can't connect.)
-      if (this.mode === "reactor" && this.reactorAvailable()) {
-        window.ReactorRenderer.enable().then((ok) => {
-          buildModelSwitcher(); // config may refine the model list/labels
-          if (ok && Renderer.lastScene) window.ReactorRenderer.applyScene(Renderer.lastScene);
-          // Reactor is up — kick off the vision-driven danger loop so the
-          // player has a live threat readout the moment the video renders.
-          try { DangerSystem.start(); } catch (_) {}
-        });
-      }
+      // Stills are already on screen. Upgrade to the world model whenever
+      // a key exists — do not wait for a toggle or a leftover preference.
+      if (!this.lockedStills) this.upgradeToLive({ reason: "boot" });
       updateRendererButton();
     },
 
     reactorAvailable() {
       return !!window.ReactorRenderer;
+    },
+
+    wantsLive() {
+      return !this.lockedStills && this.reactorAvailable();
+    },
+
+    // ACCOUNT saved (or cleared) a Reactor key after boot. A green lamp
+    // must start the upgrade; clearing the key should stop trying.
+    onReactorKeyChanged(present) {
+      if (!present) return;
+      this.lockedStills = false;
+      this.mode = "reactor";
+      // A new key is exactly the fix a terminal failure was waiting for.
+      this._terminalStills = false;
+      this.upgradeToLive({ reason: "key", force: true });
+    },
+
+    // Connect the world model. Stills stay painted underneath. Never writes
+    // scene_renderer=image — failure just keeps the floor and retries.
+    async upgradeToLive(opts) {
+      opts = opts || {};
+      if (this.lockedStills) return false;
+      if (!this.reactorAvailable()) return false;
+      // Guarded here rather than at each call site because there are many:
+      // boot, entering PLAY, opening the editor, a scene change, the Watch
+      // film. With an empty Reactor balance every one of them fired another
+      // doomed 402. The explicit paths (G, setMode, a key saved in ACCOUNT)
+      // clear this first, so asking on purpose still works.
+      if (this._terminalStills && !opts.force) return false;
+      if (this._upgrading) return this._upgrading;
+      this.mode = "reactor";
+      updateRendererButton();
+      const run = (async () => {
+        try {
+          if (window.ReactorRenderer.reloadConfig) {
+            await window.ReactorRenderer.reloadConfig();
+          }
+        } catch (_) {}
+        let ok = false;
+        try {
+          ok = await window.ReactorRenderer.enable({ force: !!opts.force });
+        } catch (_) { ok = false; }
+        if (ok) {
+          this._rtRetries = 0;
+          this._cancelBackgroundResume();
+          try {
+            if (typeof WorldEditor !== "undefined" && WorldEditor.isOpen
+                && WorldEditor.isOpen() && WorldEditor.prepareLiveScene) {
+              WorldEditor.prepareLiveScene({ hard: !!opts.hard });
+            }
+          } catch (_) {}
+          const scene = this.liveScene({ hard: !!opts.hard });
+          if (scene && scene.prompt && !(typeof isCameraMode === "function" && isCameraMode())) {
+            try { window.ReactorRenderer.applyScene(scene); } catch (_) {}
+          }
+          try { DangerSystem.start(); } catch (_) {}
+          buildModelSwitcher();
+          updateRendererButton();
+          return true;
+        }
+        if (!opts.fromBackground) this._armBackgroundResume();
+        updateRendererButton();
+        return false;
+      })();
+      this._upgrading = run;
+      try { return await run; }
+      finally { this._upgrading = null; }
     },
 
     // Pause the underlay world for a cinematic Moment WITHOUT tearing it down.
@@ -2243,10 +3110,20 @@
 
     // Apply a scene coming off the feed. `prompt` is the engine's realtime
     // scene prompt (feed item metadata.prompt); `imageUrl` is the generated
-    // still; `meta` carries flags like hard_transition (location change).
+    // still; `meta` carries flags like hard_transition (location change) and
+    // image_prompt (the text that generated the still).
     applyScene(imageUrl, prompt, meta) {
+      const imagePrompt = String((meta && (meta.image_prompt || meta.imagePrompt)) || "").trim();
+      if (imagePrompt) this.lastImagePrompt = imagePrompt;
+      if (meta && meta.base) this.lastBase = meta.base;
+      if (meta && (meta.still_only || meta.stillOnly) && imageUrl) {
+        prompt = [
+          (prompt || imagePrompt || "").trim(),
+          "Hold this exact photograph. Same two people, same clothes, same place. The action has already happened. Do not recast. Do not invent anyone.",
+        ].filter(Boolean).join(" ");
+      }
       const scene = {
-        prompt: prompt || null,
+        prompt: prompt || imagePrompt || this.lastImagePrompt || this.lastRenderPrompt || null,
         imageUrl: imageUrl || null,
         hardTransition: !!(meta && meta.hard_transition),
       };
@@ -2264,20 +3141,32 @@
           hardTransition: scene.hardTransition,
         };
       }
-      if (meta && meta.base) this.lastBase = meta.base;
-      if (this.mode === "reactor" && this.reactorAvailable()) {
-        // Realtime mode: the reactor renderer OWNS the screen (live video + a
-        // freeze back-buffer). But we ALSO paint the Gemini still as a SILENT,
-        // instant floor on the scene layer beneath the video/freeze. That floor
-        // is invisible during healthy playback (the opaque video covers it) but
-        // becomes the safety net whenever the live video can't present frames —
-        // warming up, stalled, or autoplay-blocked (e.g. iOS Low Power Mode) —
-        // so realtime is never "just black". Instant + silent = no crossfade,
-        // so it never flashes between guide images (the reason it was omitted
-        // before; the freeze buffer covers re-anchors, so the floor stays hidden
-        // during them).
+      // CAMERA owns the plate. A late scene write must not paint the 3P still
+      // over the viewfinder or restart the hidden follow-cam stream.
+      if (isCameraMode()) {
+        const incoming = scene.imageUrl || "";
+        if (incoming && incoming.indexOf("viewfinder_") < 0) {
+          state.gameplayStillUrl = incoming;
+        }
+        return;
+      }
+      // Always paint the still first. If we can upgrade, the world model
+      // covers it; if we can't, this IS the picture.
+      if (!this.lockedStills && this.reactorAvailable()) {
+        this.mode = "reactor";
         if (scene.imageUrl) setScene(scene.imageUrl, { silent: true, instant: true });
-        if (scene.prompt) window.ReactorRenderer.applyScene(scene);
+        if (scene.imageUrl && !scanInRealtime()) markSceneVisible();
+        const steer = () => {
+          const next = this.liveScene({ hard: scene.hardTransition }) || scene;
+          if (next && next.prompt) window.ReactorRenderer.applyScene(next);
+        };
+        try {
+          if (window.ReactorRenderer.isActive && window.ReactorRenderer.isActive()) {
+            steer();
+            return;
+          }
+        } catch (_) {}
+        this.upgradeToLive({ reason: "scene" }).then((ok) => { if (ok) steer(); });
         return;
       }
       if (imageUrl) setScene(imageUrl);
@@ -2289,48 +3178,53 @@
     // Tears the realtime layers down and paints the last known still, so a
     // fallback is never just a black screen. The STORED preference is left
     // alone — this reflects reality, it isn't the player changing their mind.
-    fallbackToStills(message) {
-      this.mode = "image";
+    fallbackToStills(message, opts) {
+      // Stills are the floor, not a destination. Keep wanting the world
+      // model so a green Reactor key can upgrade this session without a
+      // toggle — and without a leftover scene_renderer=image lock.
+      //
+      // `terminal` means this cause cannot resolve itself while the player
+      // waits (no credits, no key, a rejected key). Stills remain the floor
+      // and lockedStills stays false, so G / ACCOUNT / a reload can still
+      // upgrade the moment the cause is actually fixed — the only thing
+      // that stops is the pointless background retrying.
       if (message) showRendererToast(message);
       clearScanTags();   // re-map hotspots onto the still that replaces the video
       hideGuideThumbnail();
       try { window.ReactorRenderer.disable(); } catch (_) {}
       if (this.lastScene && this.lastScene.imageUrl) setScene(this.lastScene.imageUrl);
-      // Danger grading reads the live frame; there isn't one anymore.
       try { DangerSystem.stop(); } catch (_) {}
+      this._terminalStills = !!(opts && opts.terminal);
+      if (this._terminalStills) this._cancelBackgroundResume();
+      else if (!this.lockedStills) this._armBackgroundResume();
       updateRendererButton();
     },
 
-    // Quietly keep retrying realtime in the background after an automatic
-    // capacity fallback, so the player doesn't have to remember to flip back
-    // to "LIVE" once Reactor frees a server. Only fires while the player
-    // hasn't manually touched the renderer toggle since the fallback (see
-    // _cancelBackgroundResume, called from any explicit setMode) and gives up
-    // silently after REALTIME_BACKGROUND_RETRY_MAX_ATTEMPTS so a persistent
-    // outage doesn't retry forever.
+    // Quietly keep retrying the world model after a failed upgrade. Stills
+    // stay on screen as the floor. Gives up after
+    // REALTIME_BACKGROUND_RETRY_MAX_ATTEMPTS so a persistent outage doesn't
+    // retry forever. Saving a Reactor key in ACCOUNT also calls
+    // upgradeToLive immediately.
     _armBackgroundResume() {
       this._cancelBackgroundResume();
+      if (this.lockedStills || !this.reactorAvailable()) return;
+      // Nothing to quietly re-check when the cause is an empty balance or a
+      // missing key: every tick would be another guaranteed 402.
+      if (this._terminalStills) return;
       this._bgResumeAttempts = 0;
       const tick = () => {
         this._bgResumeTimer = null;
-        // The player took over (manual toggle/model pick) or is already back
-        // on realtime — nothing left for the background loop to do.
-        if (this.mode !== "image" || !this.reactorAvailable()) return;
+        if (this.lockedStills || !this.reactorAvailable()) return;
+        try {
+          if (window.ReactorRenderer.isShowing && window.ReactorRenderer.isShowing()) return;
+          if (window.ReactorRenderer.isActive && window.ReactorRenderer.isActive()) return;
+        } catch (_) {}
         this._bgResumeAttempts++;
-        window.ReactorRenderer.enable().then((ok) => {
+        this.upgradeToLive({ reason: "retry", fromBackground: true }).then((ok) => {
           if (ok) {
-            if (this.mode !== "image") return; // player switched away while we connected
-            this.mode = "reactor";
-            if (this.lastScene) window.ReactorRenderer.applyScene(this.lastScene);
-            try { DangerSystem.start(); } catch (_) {}
-            showRendererToast("Realtime video is back \u2014 capacity freed up");
-            updateRendererButton();
+            showRendererToast("Realtime video is back");
             return;
           }
-          // Still no capacity (Renderer.mode is "image" here, so the onStatus
-          // "error" handler above is a no-op for this attempt — it only acts
-          // while mode === "reactor"). Reschedule ourselves until the attempt
-          // budget runs out, then stop trying quietly.
           if (this._bgResumeAttempts < REALTIME_BACKGROUND_RETRY_MAX_ATTEMPTS) {
             this._bgResumeTimer = setTimeout(tick, REALTIME_BACKGROUND_RETRY_MS);
           }
@@ -2345,46 +3239,32 @@
     },
 
     setMode(mode) {
-      // A manual toggle/model pick always wins over the quiet background
-      // capacity retry — the player is taking explicit control.
       this._cancelBackgroundResume();
-      if (mode === this.mode) return;
-      // Enabling realtime just needs the renderer available. It connects now and
-      // starts as soon as a scene is ready to steer from — we must NOT hard-block
-      // here on lastScene, or a partial/incomplete scene permanently locks the
-      // toggle (the old "starts once a scene is ready" dead end).
-      if (mode === "reactor" && !this.reactorAvailable()) {
-        showRendererToast("Realtime unavailable");
-        return;
-      }
-      this.mode = mode;
-      this.explicit = true;
-      try { localStorage.setItem("scene_renderer", mode); } catch (_) {}
-      if (mode === "reactor" && this.reactorAvailable()) {
-        showRendererToast("Realtime video — connecting…");
-        window.ReactorRenderer.enable().then((ok) => {
-          buildModelSwitcher(); // config may refine the model list/labels
-          // Steer the current scene immediately so switching mid-game shows
-          // something without waiting for the next turn.
-          if (ok && Renderer.lastScene) window.ReactorRenderer.applyScene(Renderer.lastScene);
-          // Reactor came up — spin up the danger vignette + health loop so
-          // the vision-driven threat readout tracks the live video.
-          try { DangerSystem.start(); } catch (_) {}
-        });
-      } else if (this.reactorAvailable()) {
+      if (mode === "image") {
+        this.lockedStills = true;
+        this.mode = "image";
+        this.explicit = true;
         showRendererToast("Still images");
         try { window.ReactorRenderer.disable(); } catch (_) {}
         hideGuideThumbnail();
         hideCaptureThumbnail();
-        // Danger is a REALTIME-only mechanic (still images have no live
-        // frame to grade), so tear the loop down and clear the vignette
-        // whenever we drop back to stills.
         try { DangerSystem.stop(); } catch (_) {}
+        state.scanSrcSize = null;
+        closeScan();
+        updateScanButton();
+        updateRendererButton();
+        return;
       }
-      // Hotspots work in BOTH renderers, but a scan reads one specific source
-      // (video vs still cover the viewport differently) — switching renderers
-      // invalidates them, so drop the overlay. The player re-scans the new
-      // source with the SCAN button.
+      this.lockedStills = false;
+      this._terminalStills = false;
+      if (!this.reactorAvailable()) {
+        showRendererToast("Realtime unavailable");
+        return;
+      }
+      this.mode = "reactor";
+      this.explicit = true;
+      showRendererToast("Realtime video — connecting…");
+      this.upgradeToLive({ reason: "setMode", hard: true, force: true });
       state.scanSrcSize = null;
       closeScan();
       updateScanButton();
@@ -2392,7 +3272,17 @@
     },
 
     toggle() {
-      this.setMode(this.mode === "reactor" ? "image" : "reactor");
+      // G / the rail button retries the world model. Stills are not a
+      // destination — ?renderer=image and setMode("image") still exist for
+      // tests that need a locked floor.
+      if (this.lockedStills) {
+        this.lockedStills = false;
+        this.mode = "reactor";
+      }
+      // Asking by hand overrides a terminal verdict: the player may have
+      // just bought credits in another tab.
+      this._terminalStills = false;
+      this.upgradeToLive({ reason: "toggle", force: true });
     },
 
     // Switch to a specific world model live, mid-game (from the switcher UI).
@@ -2461,11 +3351,47 @@
     // movement/exploration mode sets without a feed scene_image), and finally a
     // neutral first-person floor — so a re-steer can ALWAYS fire while the world
     // model is live, instead of silently failing back to a full turn.
+    clipSteerPrompt(text) {
+      const t = String(text || "").replace(/\s+/g, " ").trim();
+      if (t.length <= 1800) return t;
+      return t.slice(0, 1797).replace(/\s+\S*$/, "") + "...";
+    },
+
+    rememberImagePrompt(text) {
+      const t = this.clipSteerPrompt(text);
+      if (t) this.lastImagePrompt = t;
+      return t;
+    },
+
+    // Scene handed to Reactor / LingBot / Oyster: the still PLUS the text
+    // that generated it. A seed image with no prompt gives the world model
+    // nothing to animate.
+    liveScene(opts) {
+      const prev = this.lastScene || {};
+      const prompt = this.clipSteerPrompt(
+        (opts && opts.prompt)
+        || prev.prompt
+        || this.lastImagePrompt
+        || this.lastRenderPrompt
+        || this.lastBase
+        || (typeof state !== "undefined" && state.lastScenePrompt)
+        || Camera.sceneFloor()
+      );
+      if (!prompt) return null;
+      return {
+        prompt: prompt,
+        imageUrl: (opts && opts.imageUrl) || prev.imageUrl || null,
+        hardTransition: !!(opts && opts.hard),
+      };
+    },
+
     steerBase() {
       const fromReactor = (this.reactorAvailable() && window.ReactorRenderer.getPrompt)
         ? window.ReactorRenderer.getPrompt() : null;
       return this.lastBase
         || (this.lastScene && this.lastScene.prompt)
+        || this.lastImagePrompt
+        || this.lastRenderPrompt
         || (typeof state !== "undefined" && state.lastScenePrompt)
         || fromReactor
         || Camera.sceneFloor();
@@ -2473,6 +3399,13 @@
 
     steerRealtime(text, where) {
       if (this.mode !== "reactor" || !this.reactorAvailable()) return false;
+      // Happy Oyster Adventure cannot take a live prompt edit — applyScene
+      // would tear the world down and rebuild it. WorldDrift already checks
+      // this; SHAPE / turn-steer / INTERACT fallback must too.
+      try {
+        if (window.ReactorRenderer.supportsLiveSteer &&
+            !window.ReactorRenderer.supportsLiveSteer()) return false;
+      } catch (_) {}
       const a = (text || "").trim().replace(/\.+$/, "");
       if (!a) return false;
       // Build on the stable scene bible (style + physical scene, no action beat)
@@ -2503,9 +3436,17 @@
       //     the authored camera — the same clause the server uses for the
       //     turn's own action beat (game_identity.motion_clause).
       let beat;
-      if (where && where.kind === "event") {
+      // Default is a world EVENT, not "Motion:". That keyword fights LingBot's
+      // look axes (mouse starts trucking like A/D). INTERACT already opted
+      // into event; turn-steer and SHAPE must too. The authored camera clause
+      // still leads so a third-person world is not argued back to first person.
+      // Pass kind:"motion" only when the caller really wants a travel overlay.
+      if (!where || where.kind !== "motion") {
         const sentence = anchor ? anchor + ", " + act : act;
-        beat = sentence.charAt(0).toUpperCase() + sentence.slice(1) + ".";
+        const event = sentence.charAt(0).toUpperCase() + sentence.slice(1) + ".";
+        let cam = "";
+        try { cam = (Camera.motionClause && Camera.motionClause()) || ""; } catch (_) {}
+        beat = cam ? (cam.replace(/\.+$/, "") + ". " + event) : event;
       } else {
         beat = anchor
           ? "Motion: " + anchor + ", " + act + "."
@@ -2529,6 +3470,11 @@
     applyDrift(meta) {
       const prompt = (meta && meta.prompt) || null;
       if (!prompt) return false;
+      try {
+        if (window.Moments && Moments.isActive && Moments.isActive()) return false;
+        if (window.Encounter && Encounter.isActive && Encounter.isActive()) return false;
+      } catch (_) {}
+      if (typeof isCameraMode === "function" && isCameraMode()) return false;
       if (this.mode !== "reactor" || !this.reactorAvailable()) return false;
       const RR = window.ReactorRenderer;
       if (RR.supportsLiveSteer && !RR.supportsLiveSteer()) return false;
@@ -2552,6 +3498,10 @@
     // Movement module; returns true if it steered, false if realtime isn't ready.
     steerMovement(beat) {
       if (this.mode !== "reactor" || !this.reactorAvailable()) return false;
+      try {
+        if (window.ReactorRenderer.supportsLiveSteer &&
+            !window.ReactorRenderer.supportsLiveSteer()) return false;
+      } catch (_) {}
       const b = (beat || "").trim();
       if (!b) return false;
       // Build on the stable scene bible so the move blends with the current shot
@@ -2945,9 +3895,31 @@
     }
 
     // ── Health / damage ──────────────────────────────────────────────────
+    function editorWantsHud() {
+      // Damage is off. Forcing VITAL up in the editor parked a dummy 100
+      // bar on SAVE. Only show it when combat is actually live.
+      if (!DAMAGE_SYSTEM_ENABLED) return false;
+      try { return document.body.classList.contains("world-editor-on"); }
+      catch (_) { return false; }
+    }
+
     function showHealthBar(show) {
       if (!el.health) return;
-      el.health.classList.toggle("hidden", !show);
+      const on = !!(show || editorWantsHud());
+      el.health.classList.toggle("hidden", !on);
+      // The VITAL row ships hidden because the server-driven HUD no longer has
+      // a hit-point pool to fill it with; this system does, so it opts back in.
+      // While the editor is open the instrument stays up so the live picture
+      // can be felt, not just painted.
+      const row = document.getElementById("danger-health-row");
+      if (row) row.classList.toggle("hidden", !on);
+    }
+
+    function present() {
+      bindDom();
+      if (!el.health) el.health = document.getElementById("danger-health");
+      updateHealthBar();
+      if (editorWantsHud()) showHealthBar(true);
     }
 
     function updateHealthBar() {
@@ -3446,7 +4418,7 @@
       return _baseShouldSample();
     };
 
-    return { start, stop, reset, getState, onSoundToggled, demo, forceMode };
+    return { start, stop, reset, getState, onSoundToggled, demo, forceMode, present };
   })();
   try { window.__DangerSystem = DangerSystem; } catch (_) {}
 
@@ -3468,21 +4440,34 @@
       : "off";
     const ico = el.rendererBtn.querySelector(".rail-ico");
     const lbl = el.rendererBtn.querySelector(".rail-lbl");
-    if (ico) ico.textContent = reactorMode ? "\u25C9" : "\u25CE"; // ◉ live / ◎ still
+    // mode stays "reactor" on the stills floor, so the lamp has to read the
+    // STATUS. A terminal failure is not "about to be live" — labelling it
+    // LIVE is the dead-toggle-over-a-dead-stream this button exists to avoid.
+    const groundedForGood = Renderer._terminalStills;
+    if (ico) {
+      ico.textContent = (reactorMode && !groundedForGood) ? "\u25C9" : "\u25CE"; // ◉ live / ◎ still
+    }
     if (lbl) {
-      lbl.textContent = !reactorMode ? "STILL"
+      lbl.textContent = (!reactorMode || groundedForGood) ? "STILL"
         : status === "connecting" ? "\u00B7\u00B7\u00B7"
         : "LIVE";
     }
     el.rendererBtn.classList.toggle("on", reactorMode && status === "live");
     el.rendererBtn.classList.toggle("pending", reactorMode && status === "connecting");
-    el.rendererBtn.title = !reactorMode
-      ? "Renderer: still images — click for realtime (G)"
+    const grounded = groundedForGood && window.ReactorRenderer.getLastError
+      ? (window.ReactorRenderer.getLastError() || {}).hint
+      : "";
+    el.rendererBtn.title = Renderer.lockedStills
+      ? "Renderer: still images (locked) — click to try the world model (G)"
       : status === "live"
-        ? "Renderer: realtime world model (live) — click for stills (G)"
+        ? "Renderer: realtime world model (live)"
         : status === "connecting"
           ? "Renderer: realtime — connecting…"
-          : "Renderer: realtime — showing stills until it connects (G)";
+          : grounded
+            // "until the world model connects" is a promise a depleted
+            // account cannot keep. Name the cause instead.
+            ? "Renderer: " + grounded + ". Click to retry (G)"
+            : "Renderer: showing stills until the world model connects — click to retry (G)";
     updateModelSwitcher();
     try { VerbBar.update(); } catch (_) {}
     try { HappyOysterOptions.update(); } catch (_) {}
@@ -3522,7 +4507,6 @@
     const wrap = el.rtLogModels;
     if (!wrap) return;
     wrap.innerHTML = "";
-    wrap.appendChild(makeModelBtn("__image__", "Stills"));
     const models = (Renderer.reactorAvailable() && window.ReactorRenderer.getModels)
       ? window.ReactorRenderer.getModels()
       : [];
@@ -3747,6 +4731,14 @@
     let identitySchema = [];
     let identityPreview = null;
     let identityDefaults = {};
+    let experience = { worlds: [], transitions: [] };
+    let transitionTypes = [];
+    let editingWorldId = null;
+    let liveWorldId = null;
+    let saveState = "saved";
+    let editorSurface = "experience";
+    let xpCatalog = [];
+    let xpActiveSlug = "default";
     // One switch for the whole editor. Off (the default) shows the four
     // prompts and the dozen cast fields that actually redirect the game; on
     // reveals the mechanical rulebooks underneath them. Twelve equal-looking
@@ -3813,6 +4805,14 @@
     function applyViewMode() {
       document.body.classList.toggle("we-graph-mode", graphMode);
       document.body.classList.toggle("we-dev", devMode);
+      document.body.classList.toggle("we-harness-mode", editorSurface === "harness");
+      document.body.classList.toggle("we-sound-mode", editorSurface === "sound");
+      if (el.weTabExperience) el.weTabExperience.classList.toggle("is-on", editorSurface === "experience");
+      if (el.weTabHarness) el.weTabHarness.classList.toggle("is-on", editorSurface === "harness");
+      if (el.weTabSound) el.weTabSound.classList.toggle("is-on", editorSurface === "sound");
+      if (el.weTabExperience) el.weTabExperience.setAttribute("aria-selected", editorSurface === "experience" ? "true" : "false");
+      if (el.weTabHarness) el.weTabHarness.setAttribute("aria-selected", editorSurface === "harness" ? "true" : "false");
+      if (el.weTabSound) el.weTabSound.setAttribute("aria-selected", editorSurface === "sound" ? "true" : "false");
       if (el.weView) {
         // Labelled with where it takes you, not where you are.
         el.weView.textContent = graphMode ? "List" : "Dots";
@@ -3959,6 +4959,7 @@
 
     function refreshDirtyBadge() {
       if (el.weDirty) el.weDirty.classList.toggle("hidden", !anyDirty());
+      if (anyDirty() && saveState !== "saving") setSaveStatus("dirty");
     }
 
     function layerList() { return (content && content.layers) || []; }
@@ -4017,9 +5018,8 @@
         .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
     }
 
-    // The header a layer opens with. One line by default — the long version is
-    // behind a disclosure, because a paragraph of explanation on every panel is
-    // what made this read as documentation rather than a tool.
+    // The header a layer opens with — just the name. Taglines and blurbs were
+    // teaching copy sitting above the fields.
     function layerIntro(layer) {
       const wrap = document.createElement("div");
       wrap.className = "we-lhead we-risk-" + (layer.risk || "content");
@@ -4028,14 +5028,7 @@
       row.className = "we-lhead-row";
       row.innerHTML =
         '<span class="we-lhead-dot" aria-hidden="true"></span>' +
-        '<span class="we-lhead-title">' + esc(layer.label) + "</span>" +
-        '<span class="we-lhead-tag">' + esc(layer.tagline || layer.question || "") + "</span>";
-
-      const info = infoBtn(layer.label, (layer.blurb || "") +
-        (layer.risk === "contract"
-          ? " These values are parsed by code, so a careless edit can stop turns resolving."
-          : " " + (layer.scope || "")));
-      if (info) row.appendChild(info);
+        '<span class="we-lhead-title">' + esc(layer.label) + "</span>";
 
       wrap.appendChild(row);
       return wrap;
@@ -4385,6 +5378,16 @@
         // changed?", which is not the same question as "does this have content?"
         // — the shipped character has content.
         identityDefaults = payload.identity_defaults || {};
+        if (payload.experience) {
+          experience = payload.experience;
+          applySoundConfig(experience.sound);
+        }
+        if (!editingWorldId && experience) {
+          editingWorldId = landingWorldId(experience) || null;
+        }
+        if (!liveWorldId && experience) {
+          liveWorldId = landingWorldId(experience) || null;
+        }
         // Loading a world or a level can swap the camera out from under a
         // running session; the renderer has to hear about that too.
         if (identityPreview && identityPreview.camera) Camera.apply(identityPreview.camera);
@@ -4422,6 +5425,17 @@
         delete edits[k];
       }
       if (warnings && Object.keys(warnings).length) showWarns(warnings);
+      try { persistEditingWorld(); } catch (_) {}
+      // Art direction and camera rules live in the prompt file. Reload the
+      // live contract and restage so a Harness edit is not stills-only.
+      const visual = Object.keys(fields).some((k) => FRAME_BLOCKS[k]);
+      try {
+        Promise.resolve(visual ? Camera.reload() : null).then(() => {
+          try { resteerLiveFromSheet(); } catch (_) {}
+        });
+      } catch (_) {
+        try { resteerLiveFromSheet(); } catch (_) {}
+      }
       return { ok: true, warnings };
     }
 
@@ -4438,7 +5452,8 @@
       if (!ok) return;
       render();
       try { refreshDirective(true); } catch (_) {}
-      toast("Applied — live on your next turn.");
+      try { await persistAndRender(); } catch (_) {}
+      toast("Applied — updating the viewport.");
     }
 
     async function saveAndRestart() {
@@ -4446,7 +5461,7 @@
       const { ok } = await saveFields(fields); // ok even if nothing dirty
       if (!ok) return;
       toast("Saved — restarting the world…");
-      close();
+      close({ silent: true });
       setTimeout(() => { try { resetGame(); } catch (_) {} }, 260);
     }
 
@@ -4739,6 +5754,16 @@
       toast("Reset to factory default.");
     }
 
+    async function clearFromModal() {
+      if (!modalKey) return;
+      const { ok } = await saveFields({ [modalKey]: "" });
+      if (!ok) return;
+      el.wemText.value = "";
+      modalOpenValue = "";
+      onModalInput();
+      toast("Cleared.");
+    }
+
     function onModalKeydown(e) {
       const meta = e.ctrlKey || e.metaKey;
       if (e.key === "Escape") {
@@ -4775,6 +5800,11 @@
       el.wemReset.addEventListener("click", () => {
         if (confirm("Restore this prompt's factory default? This overwrites the saved value immediately.")) resetFromModal();
       });
+      if (el.wemClear) {
+        el.wemClear.addEventListener("click", () => {
+          if (confirm("Empty this prompt and save? The game will stop using this text.")) clearFromModal();
+        });
+      }
       el.wemWrap.addEventListener("click", () => {
         modalWrap = !modalWrap; lsSet(WEM_WRAP_KEY, modalWrap ? "1" : "0"); applyModalPrefs();
       });
@@ -4910,6 +5940,15 @@
       return slot ? (identityPreview.reference_images[slot] || []) : [];
     }
 
+    function setPlateReading(blockId, on) {
+      const wrap = document.querySelector(
+        '.we-block[data-block="' + blockId + '"] .we-plate-status'
+      );
+      if (!wrap) return;
+      wrap.textContent = on ? "reading the image\u2026" : "";
+      wrap.classList.toggle("is-reading", !!on);
+    }
+
     // What a single card compiles to, as ONE block of text with the
     // destinations marked inside it. The server sends a per-block breakdown
     // (see game_identity.block_preview) because the old shared blob made half
@@ -4927,7 +5966,17 @@
       if (!parts.length && p.image_directive && blockId === "camera_perspective") {
         parts.push("→ TO THE IMAGE MODEL\n" + p.image_directive);
       }
+      if (!parts.length && p.camera && p.camera.prefix &&
+          (blockId === "player_character" || blockId === "setting_reference")) {
+        parts.push("→ TO THE LIVE SCENE\n" + p.camera.prefix);
+      }
       return parts.join("\n\n");
+    }
+
+    function paintCompiled(blockId) {
+      const text = compiledFor(blockId);
+      document.querySelectorAll('#world-editor .we-compiled[data-compiled-for="' + blockId + '"]')
+        .forEach((pane) => { pane.textContent = text || "This sheet is empty — nothing reaches the model yet."; });
     }
 
     function notesFor(blockId) {
@@ -4987,6 +6036,8 @@
         const cb = document.createElement("input");
         cb.type = "checkbox";
         cb.checked = !!value;
+        cb.dataset.identityBlock = blockId;
+        cb.dataset.identityField = field.id;
         cb.addEventListener("change", () => saveIdentity(blockId, { [field.id]: cb.checked }));
         const name = document.createElement("span");
         name.className = "we-cast-toggle-label";
@@ -5034,12 +6085,25 @@
       input.spellcheck = false;
       if (field.placeholder) input.placeholder = field.placeholder;
       input.value = value == null ? "" : String(value);
-      // Save on blur, not per-keystroke: each save recompiles the directive
-      // server-side and re-renders this panel.
-      input.addEventListener("blur", () => {
+      input.dataset.identityBlock = blockId;
+      input.dataset.identityField = field.id;
+      // Save while typing (debounced) and on blur. Remounting the sheet on
+      // every key used to wipe the cursor and hide the compiled prompt, so
+      // the editor looked dead even when the PUT succeeded.
+      const commit = () => {
         const current = (identity[blockId] || {})[field.id] || "";
         if (input.value === current) return;
         saveIdentityField(blockId, field, input.value, opts);
+      };
+      let debounce = 0;
+      input.addEventListener("input", () => {
+        setSaveStatus("dirty");
+        clearTimeout(debounce);
+        debounce = setTimeout(commit, 520);
+      });
+      input.addEventListener("blur", () => {
+        clearTimeout(debounce);
+        commit();
       });
       if (!isLong) {
         input.addEventListener("keydown", (e) => { if (e.key === "Enter") input.blur(); });
@@ -5092,20 +6156,24 @@
         wrap.appendChild(warn);
       });
 
-      // The exact text this compiles to. Worth being able to check; not worth
-      // reading every time you open the panel.
-      const compiled = minimal ? "" : compiledFor(block.id);
-      if (compiled) {
-        const more = document.createElement("details");
-        more.className = "we-more-info we-more-compiled";
-        const sum = document.createElement("summary");
-        sum.textContent = "What the model receives";
+      wrap.appendChild(makeBlockClear(block));
+
+      if (minimal && block.id === "player_character") {
+        const hint = document.createElement("p");
+        hint.className = "we-warn";
+        hint.textContent = "Drop a picture. Name, role, and look are read from the image, then the still updates once.";
+        wrap.appendChild(hint);
+      }
+
+      // Always visible: hiding this in a <details> is how a successful save
+      // looked like "nothing happened".
+      if (!minimal || block.id === "player_character" || block.id === "setting_reference") {
         const pane = document.createElement("div");
         pane.className = "we-compiled";
-        pane.textContent = compiled;
-        more.appendChild(sum);
-        more.appendChild(pane);
-        wrap.appendChild(more);
+        pane.dataset.compiledFor = block.id;
+        pane.textContent = compiledFor(block.id)
+          || "This sheet is empty — nothing reaches the model yet.";
+        wrap.appendChild(pane);
       }
       return wrap;
     }
@@ -5177,6 +6245,10 @@
 
       holder.appendChild(grid);
       holder.appendChild(file);
+      const status = document.createElement("p");
+      status.className = "we-plate-status";
+      status.setAttribute("aria-live", "polite");
+      holder.appendChild(status);
       return holder;
     }
 
@@ -5220,6 +6292,26 @@
       return wrap;
     }
 
+    function makeBlockClear(block) {
+      const row = document.createElement("div");
+      row.className = "we-cast-row we-block-clear";
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "we-btn we-btn-ghost";
+      btn.dataset.action = "clear-block";
+      btn.dataset.block = block.id;
+      btn.textContent = "Clear";
+      const noun = block.id === "player_character" ? "character"
+                 : block.id === "setting_reference" ? "level"
+                 : "camera";
+      btn.title = noun === "camera"
+        ? "Back to first person, no extra notes"
+        : "Empty this " + noun + " and stop sending it";
+      btn.addEventListener("click", () => clearIdentityBlock(block.id));
+      row.appendChild(btn);
+      return row;
+    }
+
     function makeCastReset() {
       const row = document.createElement("div");
       row.className = "we-cast-row";
@@ -5234,6 +6326,7 @@
         const payload = data && (data.data || data);
         if (!ok || !payload) { toast("Couldn't reset.", "warn"); return; }
         applyIdentityPayload(payload);
+        try { persistEditingWorld(); } catch (_) {}
         toast("Cast & Camera reset.");
       });
       row.appendChild(btn);
@@ -5263,7 +6356,7 @@
       host.appendChild(makeCastReset());
     }
 
-    function applyIdentityPayload(data) {
+    function applyIdentityPayload(data, opts) {
       if (!data) return;
       if (data.identity) identity = data.identity;
       if (data.preview) identityPreview = data.preview;
@@ -5271,35 +6364,104 @@
       // perspective and re-steered with camera-specific language, so a save
       // has to reach the renderer too or picking third person mid-run changes
       // the stills and leaves the video exactly as it was.
-      if (data.preview && data.preview.camera) Camera.apply(data.preview.camera);
-      render();
-      try { refreshDirective(true); } catch (_) {}
+      if (!(opts && opts.skipResteer)) {
+        if (data.preview && data.preview.camera) Camera.apply(data.preview.camera);
+        // Character / level / camera all ride the same contract. A save that
+        // only changed the cast used to leave the live video on the old seed
+        // because Camera.apply saw the same perspective and skipped the restage.
+        try { resteerLiveFromSheet(); } catch (_) {}
+      }
+      ["player_character", "setting_reference", "camera_perspective"].forEach(paintCompiled);
+      // Remounting the graph sheet on every field save wiped the cursor and
+      // collapsed the compiled prompt. The open form already has the words.
+      if (!(opts && opts.keepSheet)) {
+        render();
+        try { refreshDirective(true); } catch (_) {}
+      }
     }
 
-    async function saveIdentity(blockId, patch) {
+    async function saveIdentity(blockId, patch, opts) {
+      const wasName = String(((identity[blockId] || {}).name) || "").trim();
       const { ok, data } = await weFetch("PUT", "/api/admin/studio/identity", { [blockId]: patch });
       const payload = data && (data.data || data);
-      if (!ok || !payload) { toast("Couldn't save that.", "warn"); return; }
+      if (!ok || !payload) {
+        if (!(opts && opts.quiet)) toast("Couldn't save that.", "warn");
+        return;
+      }
+      applyIdentityPayload(payload, { keepSheet: true });
+      paintCompiled(blockId);
+      if (opts && opts.skipPersist) return;
+      if (FRAME_BLOCKS[blockId]) {
+        setSaveStatus("saving");
+        try {
+          await persistAndRender({
+            resetFrame: true,
+          });
+        } catch (err) {
+          setSaveStatus("error");
+          if (!(opts && opts.quiet)) toast((err && err.message) || "Couldn't update this World.", "warn");
+          return;
+        }
+        setSaveStatus(anyFrameBusy() ? "rendering" : "saved");
+        if (!(opts && opts.quiet)) {
+          const nowName = String(((identity[blockId] || {}).name) || "").trim();
+          toast(blockId === "player_character" && nowName && nowName !== wasName
+            ? "Saved. Prompts now use " + nowName + ". Updating the picture."
+            : "Saved — restaging the live scene.");
+        }
+      } else {
+        try { await persistEditingWorld(); } catch (_) {}
+        if (!(opts && opts.quiet)) {
+          setSaveStatus("saved");
+          toast("Saved to this World.");
+        }
+      }
+    }
+
+    async function clearIdentityBlock(blockId) {
+      const { ok, data } = await weFetch(
+        "POST", "/api/admin/studio/identity/reset", { block: blockId });
+      const payload = data && (data.data || data);
+      if (!ok || !payload) { toast("Couldn't clear that.", "warn"); return; }
       applyIdentityPayload(payload);
-      // "live on your next turn" is the turn loop talking about itself. From a
-      // sheet, the only thing worth confirming is that it stuck.
-      toast("Saved.");
+      if (FRAME_BLOCKS[blockId]) {
+        kickWorldFrame(editingWorldId);
+        try { persistAndRender(); } catch (_) {}
+      } else {
+        try { persistEditingWorld(); } catch (_) {}
+      }
+      toast("Cleared.");
     }
 
     function uploadPlate(file, slot) {
+      const blockId = slot === "character" ? "player_character"
+                    : slot === "setting" ? "setting_reference"
+                    : slot;
       const reader = new FileReader();
       reader.onload = async () => {
-        toast("Uploading reference…");
+        setPlateReading(blockId, true);
+        toast("reading the image\u2026");
         const { ok, data } = await weFetch("POST", "/api/admin/studio/reference", {
           image: reader.result, kind: slot, label: file.name,
         });
         const payload = data && (data.data || data);
+        setPlateReading(blockId, false);
         if (!ok || !payload) {
           toast((data && data.error) || "Upload failed.", "warn");
           return;
         }
-        applyIdentityPayload(payload);
-        toast("Reference added.");
+        // Wait for the drafted sheet before dirtying the World / restaging.
+        // Applying mid-read used to redraw Jason, then the plate, then a man.
+        applyIdentityPayload(payload, { skipResteer: true });
+        const filled = payload.image_fill && payload.image_fill.fields;
+        if (!filled || !filled.length) {
+          toast("Couldn't read a description from that image.", "warn");
+          return;
+        }
+        setSaveStatus("rendering");
+        try { await persistAndRender(); } catch (_) {}
+        setSaveStatus(anyFrameBusy() ? "rendering" : "saved");
+        toast("Saved — drafted from the image, updating the picture.");
       };
       reader.readAsDataURL(file);
     }
@@ -5309,7 +6471,10 @@
       const payload = data && (data.data || data);
       if (!ok || !payload) { toast("Delete failed.", "warn"); return; }
       applyIdentityPayload(payload);
-      toast("Reference removed.");
+      setSaveStatus("saving");
+      try { await persistAndRender(); } catch (_) {}
+      setSaveStatus(anyFrameBusy() ? "rendering" : "saved");
+      toast("Saved — updating the picture.");
     }
 
     // ── Worlds tab ────────────────────────────────────────────────────
@@ -5401,6 +6566,728 @@
       toast("Deleted " + (name || slug));
     }
 
+    function applySoundConfig(sound) {
+      try { if (window.Sound && window.Sound.configure) window.Sound.configure(sound || {}); } catch (_) {}
+    }
+
+    function applyExperience(payload) {
+      const next = payload && (payload.experience || payload);
+      if (next && next.worlds) {
+        experience = next;
+        if (!Array.isArray(experience.cutscenes)) experience.cutscenes = [];
+        if (next.id) xpActiveSlug = next.id;
+        if (Array.isArray(next.transition_types)) {
+          transitionTypes = next.transition_types.slice();
+          try { delete experience.transition_types; } catch (_) {}
+        }
+        applySoundConfig(next.sound);
+      }
+      return experience;
+    }
+
+    function landingWorldId(exp) {
+      exp = exp || experience;
+      if (!exp) return "";
+      const start = exp.start_world || "";
+      const worlds = exp.worlds || [];
+      if (worlds.some((w) => w.id === start)) return start;
+      const t = (exp.transitions || []).find((x) => x.from === start
+        && worlds.some((w) => w.id === x.to));
+      if (t) return t.to;
+      return (worlds[0] && worlds[0].id) || "";
+    }
+
+    function paintXpRow() {
+      if (!el.weXpTrack) return;
+      const typing = el.weXpTrack.querySelector("input.we-xp-name");
+      const keep = (typing && document.activeElement === typing)
+        ? {
+            value: typing.value,
+            start: typing.selectionStart,
+            end: typing.selectionEnd,
+          }
+        : null;
+      el.weXpTrack.innerHTML = "";
+      const items = xpCatalog.length
+        ? xpCatalog
+        : [{ id: xpActiveSlug || "default", name: "Untitled Experience", preview_url: "" }];
+      items.forEach((item) => {
+        const slug = item.id || "default";
+        const on = slug === xpActiveSlug;
+        const cell = document.createElement(on ? "div" : "button");
+        if (!on) cell.type = "button";
+        cell.className = "we-xp-cell" + (on ? " is-on" : "");
+        cell.setAttribute("role", "option");
+        cell.setAttribute("data-slug", slug);
+        cell.setAttribute("aria-selected", on ? "true" : "false");
+        cell.setAttribute("aria-label", item.name || slug);
+        cell.title = item.name || slug;
+        const shot = document.createElement("span");
+        shot.className = "we-xp-shot" + (item.preview_url ? "" : " is-empty");
+        if (item.preview_url) {
+          const img = document.createElement("img");
+          img.src = item.preview_url;
+          img.alt = "";
+          shot.appendChild(img);
+        }
+        cell.appendChild(shot);
+        if (on) {
+          const name = document.createElement("input");
+          name.type = "text";
+          name.className = "we-xp-name";
+          name.value = item.name || slug;
+          name.spellcheck = false;
+          name.setAttribute("aria-label", "Experience name");
+          name.addEventListener("input", () => queueRenameExperience(slug, name.value));
+          name.addEventListener("change", () => commitRenameExperience(slug, name.value));
+          name.addEventListener("keydown", (evt) => {
+            if (evt.key === "Enter") { evt.preventDefault(); name.blur(); }
+          });
+          cell.appendChild(name);
+        } else {
+          const name = document.createElement("span");
+          name.className = "we-xp-name";
+          name.textContent = item.name || slug;
+          cell.appendChild(name);
+          cell.addEventListener("click", () => activateExperience(slug));
+        }
+        el.weXpTrack.appendChild(cell);
+      });
+      if (!keep) return;
+      const input = el.weXpTrack.querySelector("input.we-xp-name");
+      if (!input) return;
+      input.value = keep.value;
+      try { input.focus({ preventScroll: true }); } catch (_) {
+        try { input.focus(); } catch (_) {}
+      }
+      try { input.setSelectionRange(keep.start, keep.end); } catch (_) {}
+    }
+
+    function focusXpRow() {
+      if (!el.weXpRow) return;
+      el.weXpRow.classList.remove("is-lit");
+      void el.weXpRow.offsetWidth;
+      el.weXpRow.classList.add("is-lit");
+      clearTimeout(focusXpRow._t);
+      focusXpRow._t = setTimeout(() => {
+        if (el.weXpRow) el.weXpRow.classList.remove("is-lit");
+      }, 1100);
+      const on = el.weXpRow.querySelector(".we-xp-cell.is-on") || el.weXpRow.querySelector(".we-xp-cell");
+      if (!on) return;
+      try {
+        on.scrollIntoView({ inline: "center", block: "nearest", behavior: "smooth" });
+      } catch (_) {}
+      const name = on.querySelector("input.we-xp-name");
+      const target = name || on;
+      try { target.focus({ preventScroll: true }); } catch (_) {
+        try { target.focus(); } catch (_) {}
+      }
+    }
+
+    async function loadXpCatalog() {
+      try {
+        const { ok, data } = await weFetch("GET", "/api/experiences");
+        const payload = (data && (data.data || data)) || {};
+        const list = payload.experiences || [];
+        if (payload.active) xpActiveSlug = payload.active;
+        xpCatalog = list.map((row) => ({
+          id: row.id || "default",
+          name: row.name || row.id || "Untitled Experience",
+          preview_url: row.preview_url || "",
+          active: !!row.active,
+        }));
+        if (!xpCatalog.length) {
+          xpCatalog = [{ id: xpActiveSlug || "default", name: "Untitled Experience", preview_url: "" }];
+        }
+        const at = xpCatalog.find((row) => row.id === xpActiveSlug || row.active);
+        if (at && at.id) xpActiveSlug = at.id;
+      } catch (_) {
+        if (!xpCatalog.length) {
+          xpCatalog = [{ id: xpActiveSlug || "default", name: "Untitled Experience", preview_url: "" }];
+        }
+      }
+      paintXpRow();
+    }
+
+    async function activateExperience(slug) {
+      slug = (slug || "").trim() || "default";
+      if (slug === xpActiveSlug && experience && experience.id === slug) {
+        paintXpRow();
+        focusXpRow();
+        return;
+      }
+      try { await persistEditingWorld(); } catch (_) {}
+      const { ok, data } = await weFetch("POST", "/api/experiences/activate", { slug: slug });
+      const payload = data && (data.data || data);
+      if (!ok || !payload) {
+        toast("Couldn't open that Experience.", "warn");
+        return;
+      }
+      applyExperience(payload);
+      xpActiveSlug = payload.active || slug;
+      const start = landingWorldId(experience) || null;
+      editingWorldId = start;
+      if (start) {
+        try { await enterWorld(start); } catch (_) {}
+      }
+      notifyGraph();
+      try { if (window.EditorGraph) window.EditorGraph.onOpen(); } catch (_) {}
+      paintXpRow();
+      focusXpRow();
+    }
+
+    let xpRenameTimer = 0;
+    function queueRenameExperience(slug, name) {
+      clearTimeout(xpRenameTimer);
+      xpRenameTimer = setTimeout(() => { commitRenameExperience(slug, name); }, 320);
+    }
+
+    async function commitRenameExperience(slug, name) {
+      clearTimeout(xpRenameTimer);
+      slug = (slug || xpActiveSlug || "").trim() || "default";
+      name = (name || "").trim() || "Untitled Experience";
+      const row = xpCatalog.find((x) => x.id === slug);
+      if (row && row.name === name && experience && experience.name === name) return;
+      const { ok, data } = await weFetch("POST", "/api/admin/studio/experiences/rename", {
+        slug: slug, name: name,
+      });
+      const payload = data && (data.data || data);
+      if (!ok || !payload) {
+        toast("Couldn't name that Experience.", "warn");
+        return;
+      }
+      if (payload.experience) applyExperience(payload.experience);
+      notifyGraph();
+      if (row) row.name = name;
+      else if (payload.experiences) {
+        xpCatalog = payload.experiences.map((r) => ({
+          id: r.id || "default",
+          name: r.name || r.id || "Untitled Experience",
+          preview_url: r.preview_url || "",
+          active: !!r.active,
+        }));
+      }
+    }
+
+    async function createExperience() {
+      try { await persistEditingWorld(); } catch (_) {}
+      const { ok, data } = await weFetch("POST", "/api/admin/studio/experiences", {
+        name: "Untitled Experience",
+      });
+      const payload = data && (data.data || data);
+      if (!ok || !payload) {
+        toast("Couldn't start a new Experience.", "warn");
+        return;
+      }
+      applyExperience(payload);
+      xpActiveSlug = payload.active || (payload.experience && payload.experience.id) || xpActiveSlug;
+      if (payload.experiences) {
+        xpCatalog = payload.experiences.map((r) => ({
+          id: r.id || "default",
+          name: r.name || r.id || "Untitled Experience",
+          preview_url: r.preview_url || "",
+          active: !!r.active,
+        }));
+      }
+      const start = landingWorldId(experience) || null;
+      editingWorldId = start;
+      if (start) {
+        try { await enterWorld(start); } catch (_) {}
+      }
+      notifyGraph();
+      try { if (window.EditorGraph) window.EditorGraph.onOpen(); } catch (_) {}
+      paintXpRow();
+      focusXpRow();
+      const name = el.weXpTrack && el.weXpTrack.querySelector("input.we-xp-name");
+      if (name) {
+        try { name.focus(); name.select(); } catch (_) {}
+      }
+      toast("New Experience.");
+    }
+
+    const FRAME_BLOCKS = {
+      setting_reference: true,
+      player_character: true,
+      camera_perspective: true,
+      image_art_direction: true,
+      image_camera_rules: true,
+      image_negative_prompt: true,
+      world_initial_state: true,
+    };
+
+    function setSaveStatus(state, msg) {
+      saveState = state || "saved";
+      if (el.weSave) el.weSave.disabled = saveState === "saving";
+      if (!el.weSaveStatus) return;
+      const text = msg || ({
+        saved: "Saved to this World",
+        dirty: "Unsaved — this World is behind",
+        saving: "Updating this World…",
+        rendering: "Redrawing this World…",
+        error: "Couldn't save",
+      })[saveState] || "";
+      el.weSaveStatus.textContent = text;
+      el.weSaveStatus.dataset.state = saveState;
+      el.weSaveStatus.hidden = !text;
+    }
+
+    function resolveEditingWorldId() {
+      if (editingWorldId) return editingWorldId;
+      const start = landingWorldId(experience);
+      if (start) editingWorldId = start;
+      return editingWorldId;
+    }
+
+    function latestPlateUrl(slot) {
+      const blockId = slot === "character" ? "player_character" : "setting_reference";
+      const thumbs = plateThumbs(blockId);
+      const last = thumbs.length ? thumbs[thumbs.length - 1] : null;
+      return (last && last.url) || "";
+    }
+
+    function kickWorldFrame(worldId) {
+      try {
+        if (window.EditorGraph && window.EditorGraph.markRendering) {
+          window.EditorGraph.markRendering(worldId || editingWorldId);
+        }
+      } catch (_) {}
+      syncViewportRenderState(true);
+      startFramePoll(true);
+    }
+
+    async function persistWorld(worldId) {
+      const wid = (worldId || "").trim() || resolveEditingWorldId();
+      if (!wid) return;
+      const { ok, data } = await weFetch("POST", "/api/admin/studio/experience/persist", { id: wid });
+      const payload = data && (data.data || data);
+      if (!ok) throw new Error((data && (data.error || data.message)) || "Couldn't cache this World.");
+      if (payload) applyExperience(payload);
+      try { if (window.EditorGraph && window.EditorGraph.syncFrames) window.EditorGraph.syncFrames(); } catch (_) {}
+    }
+
+    function sameIdentityValue(now, was) {
+      if (typeof now === "boolean" || typeof was === "boolean") return !!now === !!was;
+      return String(now == null ? "" : now).trim() === String(was == null ? "" : was).trim();
+    }
+
+    async function flushPendingWorldEdits() {
+      const pending = [];
+      const seen = Object.create(null);
+      document.querySelectorAll("#world-editor [data-identity-field]").forEach((el) => {
+        const blockId = el.getAttribute("data-identity-block") || "";
+        const fieldId = el.getAttribute("data-identity-field") || "";
+        if (!blockId || !fieldId) return;
+        const key = blockId + "." + fieldId;
+        if (seen[key]) return;
+        seen[key] = true;
+        const next = el.type === "checkbox" ? el.checked : el.value;
+        const was = (identity[blockId] || {})[fieldId];
+        if (sameIdentityValue(next, was)) return;
+        pending.push(saveIdentity(blockId, { [fieldId]: next }, { quiet: true, skipPersist: true }));
+      });
+      if (pending.length) await Promise.all(pending);
+      if (anyDirty()) {
+        const { ok } = await saveFields(dirtyFields());
+        if (!ok) throw new Error("Couldn't save leftover edits.");
+      }
+    }
+    async function persistEditingWorld() {
+      return persistWorld(resolveEditingWorldId());
+    }
+
+    async function resetToAppDefaults() {
+      if (!window.confirm(
+        "Restore the app's defaults? Character, level, camera, and every prompt go back to how they shipped."
+      )) return false;
+      if (el.weDefaults) el.weDefaults.disabled = true;
+      setSaveStatus("saving");
+      try {
+        edits = {};
+        const { ok } = await weFetch("POST", "/api/admin/studio/prompts/reset", { all: true });
+        if (!ok) {
+          setSaveStatus("error");
+          toast("Couldn't reset.", "warn");
+          return false;
+        }
+        await loadContent(true);
+        try { await persistEditingWorld(); } catch (_) {}
+        try { if (window.EditorGraph && window.EditorGraph.sync) window.EditorGraph.sync(); } catch (_) {}
+        render();
+        setSaveStatus("saved");
+        toast("Back to the app's defaults.");
+        return true;
+      } catch (_) {
+        setSaveStatus("error");
+        toast("Couldn't reset.", "warn");
+        return false;
+      } finally {
+        if (el.weDefaults) el.weDefaults.disabled = false;
+      }
+    }
+
+    async function resetWorldPicture(worldId) {
+      const wid = (worldId || "").trim() || resolveEditingWorldId();
+      if (!wid || resetWorldPicture._busy) return false;
+      resetWorldPicture._busy = true;
+      if (el.weReset) el.weReset.disabled = true;
+      setSaveStatus("saving");
+      try {
+        await flushPendingWorldEdits();
+        await persistWorld(wid);
+        paintViewportFromFrame._url = "";
+        keepLiveExperience._url = "";
+        keepLiveExperience._world = "";
+        kickWorldFrame(wid);
+        const { ok, data } = await weFetch("POST", "/api/admin/studio/worlds/frames/reset", { id: wid });
+        const payload = data && (data.data || data);
+        if (ok && payload) applyExperience(payload);
+        await refreshWorldFrames();
+        if (!ok) {
+          setSaveStatus("error");
+          toast("Couldn't redraw this World.", "warn");
+          return false;
+        }
+        toast(anyFrameBusy() ? "Redrawing from this World." : "This World's picture is current.");
+        setSaveStatus(anyFrameBusy() ? "rendering" : "saved");
+        return true;
+      } catch (_) {
+        setSaveStatus("error");
+        toast("Couldn't redraw this World.", "warn");
+        return false;
+      } finally {
+        resetWorldPicture._busy = false;
+        if (el.weReset) el.weReset.disabled = false;
+      }
+    }
+
+    async function persistAndRender(opts) {
+      await persistEditingWorld();
+      kickWorldFrame(resolveEditingWorldId());
+      // Art direction lives in the prompt file, not the identity PUT, so
+      // reload the live contract and restage — same image must not keep
+      // the old look.
+      try { await Camera.reload(); } catch (_) {}
+      try { resteerLiveFromSheet(); } catch (_) {}
+      if (opts && opts.resetFrame) {
+        const wid = resolveEditingWorldId();
+        if (wid) {
+          try {
+            const { ok, data } = await weFetch(
+              "POST", "/api/admin/studio/worlds/frames/reset", { id: wid });
+            const payload = data && (data.data || data);
+            if (ok && payload) applyExperience(payload);
+          } catch (_) {}
+        }
+      }
+      try { await ensureWorldFrames(); } catch (_) {}
+    }
+
+    let framePollTimer = 0;
+    let framePollHustleUntil = 0;
+    async function refreshWorldFrames() {
+      try {
+        const { ok, data } = await weFetch("GET", "/api/admin/studio/worlds/frames");
+        const payload = data && (data.data || data);
+        if (!ok || !payload) return;
+        applyExperience(payload);
+        try { if (window.EditorGraph && window.EditorGraph.syncFrames) window.EditorGraph.syncFrames(); } catch (_) {}
+        paintViewportFromFrame();
+        keepLiveExperience();
+        if (anyFrameBusy()) setSaveStatus("rendering");
+        else if (saveState === "saving" || saveState === "rendering") setSaveStatus("saved");
+      } catch (_) {}
+    }
+
+    async function flushSave() {
+      setSaveStatus("saving");
+      try {
+        try {
+          const ae = document.activeElement;
+          if (ae && ae.blur && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA")) ae.blur();
+        } catch (_) {}
+        await flushPendingWorldEdits();
+        await persistAndRender({ resetFrame: true });
+        setSaveStatus(anyFrameBusy() ? "rendering" : "saved");
+        return true;
+      } catch (_) {
+        setSaveStatus("error");
+        return false;
+      }
+    }
+    function anyFrameBusy() {
+      return ((experience && experience.worlds) || []).some((w) => {
+        const st = w.frame_status || "";
+        return st === "generating" || st === "dirty" || w.frame_generating;
+      });
+    }
+    async function ensureWorldFrames() {
+      try {
+        await weFetch("POST", "/api/admin/studio/worlds/frames/ensure", {});
+      } catch (_) {}
+      await refreshWorldFrames();
+    }
+    function startFramePoll(hustle) {
+      if (hustle) framePollHustleUntil = Date.now() + 45000;
+      if (framePollTimer) {
+        if (!hustle) return;
+        clearTimeout(framePollTimer);
+        framePollTimer = 0;
+      }
+      const beat = () => {
+        framePollTimer = 0;
+        if (!open_ || !graphMode) return;
+        refreshWorldFrames().finally(() => {
+          if (!open_ || !graphMode) return;
+          const busy = anyFrameBusy() || Date.now() < framePollHustleUntil;
+          framePollTimer = setTimeout(beat, busy ? 700 : 2800);
+        });
+      };
+      beat();
+    }
+    function stopFramePoll() {
+      if (!framePollTimer) return;
+      clearTimeout(framePollTimer);
+      framePollTimer = 0;
+    }
+
+    async function addExperienceCutscene(name, pos) {
+      const body = { name: name || "" };
+      if (pos && Number.isFinite(pos.x) && Number.isFinite(pos.y)) {
+        body.x = pos.x;
+        body.y = pos.y;
+      }
+      const { ok, data } = await weFetch("POST", "/api/admin/studio/experience/cutscenes", body);
+      const payload = data && (data.data || data);
+      if (!ok || !payload) throw new Error("add cutscene failed");
+      applyExperience(payload);
+      return experience;
+    }
+
+    async function moveExperienceCutscene(cutsceneId, x, y) {
+      const { ok, data } = await weFetch("POST", "/api/admin/studio/experience/cutscenes/move", {
+        id: cutsceneId, x: x, y: y,
+      });
+      const payload = data && (data.data || data);
+      if (!ok || !payload) throw new Error("move cutscene failed");
+      applyExperience(payload);
+      return experience;
+    }
+
+    async function removeExperienceCutscene(cutsceneId) {
+      const { ok, data } = await weFetch("DELETE", "/api/admin/studio/experience/cutscenes", { id: cutsceneId });
+      const payload = data && (data.data || data);
+      if (!ok || !payload) {
+        const msg = (data && (data.error || data.message)) || "Couldn't remove that Cutscene.";
+        throw new Error(msg);
+      }
+      applyExperience(payload);
+      return experience;
+    }
+
+    async function renameExperienceCutscene(cutsceneId, name, patch) {
+      const body = Object.assign({ id: cutsceneId, name: name }, patch || {});
+      const { ok, data } = await weFetch("POST", "/api/admin/studio/experience/cutscenes/rename", body);
+      const payload = data && (data.data || data);
+      if (!ok || !payload) throw new Error("rename cutscene failed");
+      applyExperience(payload);
+      return experience;
+    }
+
+    async function addExperienceWorld(name, pos) {
+      const body = { name: name || "" };
+      if (pos && Number.isFinite(pos.x) && Number.isFinite(pos.y)) {
+        body.x = pos.x;
+        body.y = pos.y;
+      }
+      const { ok, data } = await weFetch("POST", "/api/admin/studio/experience/worlds", body);
+      const payload = data && (data.data || data);
+      if (!ok || !payload) throw new Error("add world failed");
+      applyExperience(payload);
+      return experience;
+    }
+
+    async function moveExperience(x, y) {
+      const { ok, data } = await weFetch("POST", "/api/admin/studio/experience/move", {
+        x: x, y: y,
+      });
+      const payload = data && (data.data || data);
+      if (!ok || !payload) throw new Error("move experience failed");
+      applyExperience(payload);
+      return experience;
+    }
+
+    async function moveExperienceWorld(worldId, x, y) {
+      const { ok, data } = await weFetch("POST", "/api/admin/studio/experience/worlds/move", {
+        id: worldId, x: x, y: y,
+      });
+      const payload = data && (data.data || data);
+      if (!ok || !payload) throw new Error("move world failed");
+      applyExperience(payload);
+      return experience;
+    }
+
+    async function removeExperienceWorld(worldId) {
+      const { ok, data } = await weFetch("DELETE", "/api/admin/studio/experience/worlds", { id: worldId });
+      const payload = data && (data.data || data);
+      if (!ok || !payload) {
+        const msg = (data && (data.error || data.message)) || "Couldn't remove that World.";
+        throw new Error(msg);
+      }
+      applyExperience(payload);
+      if (editingWorldId === worldId) editingWorldId = landingWorldId(experience) || null;
+      return experience;
+    }
+
+    async function renameExperienceWorld(worldId, name, blurb) {
+      const body = { id: worldId, name: name };
+      if (blurb !== undefined) body.blurb = blurb;
+      const { ok, data } = await weFetch("POST", "/api/admin/studio/experience/worlds/rename", body);
+      const payload = data && (data.data || data);
+      if (!ok || !payload) throw new Error("rename failed");
+      applyExperience(payload);
+      if (editingWorldId === worldId) {
+        const patch = { name: name };
+        const line = blurb === undefined ? "" : String(blurb).trim();
+        if (line) patch.summary = line;
+        const generic = /^(world|new level)( \d+)?$/i.test(String(name || "").trim());
+        if (!generic || line) patch.enabled = true;
+        try { await saveIdentity("setting_reference", patch, { quiet: true }); } catch (_) {}
+      }
+      return experience;
+    }
+
+    async function saveLoreNotes(notes, enabled) {
+      const body = { notes: notes == null ? "" : String(notes) };
+      if (enabled !== undefined) body.enabled = !!enabled;
+      const { ok, data } = await weFetch("PUT", "/api/admin/studio/experience/lore", body);
+      const payload = data && (data.data || data);
+      if (!ok || !payload) throw new Error("save lore failed");
+      applyExperience(payload);
+      return (payload.lore) || (experience && experience.lore);
+    }
+
+    async function addLoreDocument(pack) {
+      const body = {
+        name: (pack && pack.name) || "",
+        text: (pack && pack.text) || "",
+        image: (pack && pack.image) || "",
+      };
+      const { ok, data } = await weFetch("POST", "/api/admin/studio/experience/lore", body);
+      const payload = data && (data.data || data);
+      if (!ok || !payload) {
+        const msg = (data && (data.error || data.message)) || "Couldn't add that lore.";
+        throw new Error(msg);
+      }
+      applyExperience(payload);
+      return (payload.lore) || (experience && experience.lore);
+    }
+
+    async function removeLoreDocument(docId) {
+      const { ok, data } = await weFetch("DELETE", "/api/admin/studio/experience/lore", { id: docId });
+      const payload = data && (data.data || data);
+      if (!ok || !payload) throw new Error("remove lore failed");
+      applyExperience(payload);
+      return (payload.lore) || (experience && experience.lore);
+    }
+
+    async function moveLore(x, y) {
+      const { ok, data } = await weFetch("POST", "/api/admin/studio/experience/lore/move", {
+        x: x, y: y,
+      });
+      const payload = data && (data.data || data);
+      if (!ok || !payload) throw new Error("move lore failed");
+      applyExperience(payload);
+      return (payload.lore) || (experience && experience.lore);
+    }
+
+    async function setStartWorld(worldId) {
+      const { ok, data } = await weFetch("POST", "/api/admin/studio/experience/start", { id: worldId });
+      const payload = data && (data.data || data);
+      if (!ok || !payload) throw new Error("start world failed");
+      applyExperience(payload);
+      notifyGraph();
+      return experience;
+    }
+
+    async function enterWorld(worldId) {
+      const { ok, data } = await weFetch("POST", "/api/admin/studio/experience/enter", { id: worldId });
+      const payload = data && (data.data || data);
+      if (!ok || !payload) { toast("Couldn't open that World.", "warn"); return; }
+      editingWorldId = worldId;
+      applyExperience(payload);
+      if (payload.prompts && content) content.prompts = payload.prompts;
+      if (payload.identity) identity = payload.identity;
+      if (payload.identity_preview)       identityPreview = payload.identity_preview;
+      edits = {};
+      try { if (identityPreview && identityPreview.camera) Camera.apply(identityPreview.camera); } catch (_) {}
+      const world = (experience.worlds || []).find((w) => w.id === worldId) || payload.world;
+      const setting = (identity && identity.setting_reference) || {};
+      const seed = {};
+      const generic = /^(world|new level)( \d+)?$/i.test(String((world && world.name) || "").trim());
+      if (world && world.name && !String(setting.name || "").trim() && !generic) {
+        seed.name = world.name;
+        seed.enabled = true;
+      }
+      if (world && world.blurb && !String(setting.summary || "").trim()) {
+        seed.summary = world.blurb;
+        seed.enabled = true;
+      }
+      if (Object.keys(seed).length) {
+        try { await saveIdentity("setting_reference", seed, { quiet: true }); } catch (_) {}
+      }
+      paintViewportFromFrame._url = "";
+      paintViewportFromFrame();
+      keepLiveExperience();
+    }
+
+    async function addTransition(fromId, toId, condition) {
+      const { ok, data } = await weFetch("POST", "/api/admin/studio/experience/transitions", {
+        from: fromId, to: toId, condition: condition || { type: "turn_count", turns: 8 },
+      });
+      const payload = data && (data.data || data);
+      if (!ok || !payload) throw new Error("transition failed");
+      applyExperience(payload);
+      return experience;
+    }
+
+    async function updateTransition(transitionId, patch) {
+      const { ok, data } = await weFetch("PUT", "/api/admin/studio/experience/transitions", {
+        id: transitionId, ...(patch || {}),
+      });
+      const payload = data && (data.data || data);
+      if (!ok || !payload) throw new Error("update transition failed");
+      applyExperience(payload);
+      return experience;
+    }
+
+    async function removeTransition(transitionId) {
+      const { ok, data } = await weFetch("DELETE", "/api/admin/studio/experience/transitions", {
+        id: transitionId,
+      });
+      const payload = data && (data.data || data);
+      if (!ok || !payload) throw new Error("remove transition failed");
+      applyExperience(payload);
+      return experience;
+    }
+
+    function setEditorSurface(which) {
+      const next = (which === "harness" || which === "sound") ? which : "experience";
+      const changed = editorSurface !== next;
+      editorSurface = next;
+      applyViewMode();
+      if (changed) {
+        notifyGraph();
+        try { if (window.EditorGraph) window.EditorGraph.onOpen(); } catch (_) {}
+      }
+      if (next !== "experience") return;
+      // EXPERIENCE always takes you to the top row — even when it is already
+      // the selected tab, so a second click is never a no-op.
+      focusXpRow();
+      loadXpCatalog().then(() => {
+        requestAnimationFrame(() => focusXpRow());
+      }).catch(() => {});
+    }
+
     // ── Inline validation warnings ────────────────────────────────────
     function clearWarns() {
       if (!el.weFields) return;
@@ -5419,30 +7306,329 @@
 
     // ── Open / close / toggle ─────────────────────────────────────────
     let open_ = false;
-    async function open() {
+    let returnTo = "play";
+
+    function inferReturnTo() {
+      if (document.body.classList.contains("mode-watch")) return "watch";
+      if (document.body.classList.contains("start-menu-on")
+          && document.body.classList.contains("xp-open")) return "picker";
+      return "play";
+    }
+
+    function currentEditingWorld() {
+      const worlds = (experience && experience.worlds) || [];
+      const id = editingWorldId || landingWorldId(experience) || "";
+      return worlds.find((w) => w.id === id) || worlds[0] || null;
+    }
+
+    function worldFrameBusy(world) {
+      if (!world) return false;
+      const st = world.frame_status || "";
+      return st === "generating" || st === "dirty" || !!world.frame_generating;
+    }
+
+    function syncViewportRenderState(forceBusy) {
+      const busy = !!forceBusy || worldFrameBusy(currentEditingWorld());
+      try { document.body.classList.toggle("world-frame-rendering", !!(open_ && busy)); } catch (_) {}
+    }
+
+    function liveReactorShowing() {
+      try {
+        return !!(window.ReactorRenderer && window.ReactorRenderer.isShowing
+          && window.ReactorRenderer.isShowing());
+      } catch (_) { return false; }
+    }
+
+    function usableFrameUrl(world) {
+      const url = world && world.frame_url;
+      const source = (world && world.frame_source) || "";
+      // The mint placeholder is not a place. An authored plate is — Play
+      // already uses it as the LingBot seed, and the desk has to as well.
+      if (!url || source === "placeholder") return "";
+      return url;
+    }
+
+    function editorGuideUrl(world) {
+      // A Level plate is the place the author just pointed at. Seed the
+      // live scene from it now — waiting for the still job left LingBot
+      // walking through the previous World while REDRAW spun.
+      return latestPlateUrl("setting") || usableFrameUrl(world) || latestPlateUrl("character");
+    }
+
+    function worldSteerPrompt(world) {
+      // The server-compiled camera prefix is the live scene. Rebuilding it
+      // here used to drop Character look whenever the name already appeared
+      // (Jason in the Horizon bible) and drop Level landmarks when the
+      // leftover off-switch was still down.
+      const prefix = String(Camera.prefix() || "").trim();
+      const preview = identityPreview || {};
+      const shot = (preview.opening_shot && preview.opening_shot.vision)
+        || String(((identity && identity.setting_reference) || {}).opening_shot || "").trim();
+      const framePrompt = String((world && world.frame_prompt) || "").trim();
+      const parts = [];
+      const blob = () => parts.join(" ").toLowerCase();
+      const has = (s) => {
+        const needle = String(s || "").replace(/\s+/g, " ").trim().slice(0, 40).toLowerCase();
+        return !needle || blob().indexOf(needle) >= 0;
+      };
+      if (prefix) parts.push(prefix.replace(/\.+$/, "."));
+      if (shot && !has(shot)) parts.push(String(shot).replace(/\.+$/, "."));
+      if (parts.length) return parts.join(" ");
+      return framePrompt || "A wide view of this place.";
+    }
+
+    function sceneFromWorld(world, opts) {
+      const prompt = worldSteerPrompt(world);
+      if (!prompt) return null;
+      const url = editorGuideUrl(world);
+      return {
+        prompt: prompt,
+        imageUrl: url || (Renderer.lastScene && Renderer.lastScene.imageUrl) || null,
+        hardTransition: !!(opts && opts.hard),
+      };
+    }
+
+    function adoptLiveScene(scene) {
+      if (!scene || !scene.prompt) return null;
+      const prev = Renderer.lastScene || {};
+      Renderer.lastScene = {
+        prompt: scene.prompt || prev.prompt || null,
+        imageUrl: scene.imageUrl || prev.imageUrl || null,
+        hardTransition: !!scene.hardTransition,
+      };
+      if (scene.prompt && Renderer.rememberImagePrompt) {
+        Renderer.rememberImagePrompt(scene.prompt);
+      }
+      return Renderer.lastScene;
+    }
+
+    function prepareLiveScene(opts) {
+      const scene = sceneFromWorld(currentEditingWorld(), opts || {});
+      return adoptLiveScene(scene);
+    }
+
+    // An identity save (character, level, camera) must restage the running
+    // video, not wait for the next still. Same image URL used to reuse the
+    // old prompt and leave LingBot walking through the previous sheet.
+    function resteerLiveFromSheet() {
+      if (!open_) return;
+      keepLiveExperience._url = "";
+      keepLiveExperience._prompt = "";
+      const scene = prepareLiveScene({ hard: true });
+      if (!scene || !scene.prompt) return;
+      try {
+        if (window.ReactorRenderer && window.ReactorRenderer.applyScene) {
+          window.ReactorRenderer.applyScene(scene);
+        }
+      } catch (_) {}
+    }
+
+    function paintViewportFromFrame() {
+      if (!open_) return;
+      const world = currentEditingWorld();
+      syncViewportRenderState();
+      const url = usableFrameUrl(world);
+      if (!url) return;
+      if (paintViewportFromFrame._url === url) return;
+      paintViewportFromFrame._url = url;
+      // The cached first frame is only a silent floor under Reactor / LingBot.
+      // Never restack .scene over a playing <video> — Chromium can promote
+      // the last-painted same-z-index sibling, which hid the stream behind
+      // the still in the editor.
+      let reactor = false;
+      try { reactor = Renderer.mode === "reactor"; } catch (_) {}
+      const showing = liveReactorShowing();
+      if (reactor && showing) {
+        // Do not paint the still over the stream. Do restage the prompt
+        // and guide so a Level / Character save is not stuck on the old place.
+        try { resteerLiveFromSheet(); } catch (_) {}
+        return;
+      }
+      const live = reactor || showing;
+      try { setScene(url, { silent: true, instant: live }); } catch (_) {}
+    }
+
+    function reactorAlreadyRunning() {
+      try {
+        const RR = window.ReactorRenderer;
+        if (!RR) return false;
+        const st = RR.getStatus && RR.getStatus();
+        if (st === "live" || st === "connecting") return true;
+        if (RR.isActive && RR.isActive()) return true;
+        return liveReactorShowing();
+      } catch (_) { return false; }
+    }
+
+    function keepLiveExperience() {
+      try { DangerSystem.present && DangerSystem.present(); } catch (_) {}
+      try {
+        if (!Renderer.reactorAvailable()) return;
+        if (Renderer.lockedStills) return;
+        // The desk is a live viewport. Always try the world model — a
+        // leftover stills preference or a one-shot failed connect used
+        // to leave EDITOR on stills forever.
+        try { Renderer.upgradeToLive({ reason: "editor" }); } catch (_) { return; }
+      } catch (_) { return; }
+      const world = currentEditingWorld();
+      const worldId = (world && world.id) || "";
+      const known = keepLiveExperience._world || "";
+      const switched = !!(known && known !== worldId);
+      const running = reactorAlreadyRunning();
+      // Hard only when this World is new to the desk AND the stream is not
+      // already up. Opening the editor over a live Play session used to
+      // treat the first World id as a hard apply, which reset LingBot and
+      // pinned the seed freeze over the playing video.
+      const hard = switched || (!known && !running);
+      const scene = sceneFromWorld(world, { hard: hard });
+      if (scene) adoptLiveScene(scene);
+      Promise.resolve().then(() => {
+        try {
+          return window.ReactorRenderer.enable();
+        } catch (_) { return false; }
+      }).then((ok) => {
+        if (!ok) return;
+        const next = prepareLiveScene({ hard: hard });
+        const seed = next && (next.imageUrl || "");
+        let liveGuide = "";
+        try {
+          liveGuide = (window.ReactorRenderer.getGuideImage
+            && window.ReactorRenderer.getGuideImage())
+            || (Renderer.lastScene && Renderer.lastScene.imageUrl)
+            || "";
+        } catch (_) {
+          liveGuide = (Renderer.lastScene && Renderer.lastScene.imageUrl) || "";
+        }
+        const samePrompt = !!(keepLiveExperience._prompt && next && next.prompt
+          && keepLiveExperience._prompt === next.prompt);
+        const sameImage = !!(next && (
+          (keepLiveExperience._url && seedKey(keepLiveExperience._url) === seedKey(seed))
+          || (running && seedKey(liveGuide) === seedKey(seed))
+        ));
+        // Same plate used to skip applyScene even when the sheet changed, so
+        // character / look / camera edits never reached the running video.
+        const sameSeed = !switched && sameImage && samePrompt;
+        if (next && next.prompt && !sameSeed) {
+          try { window.ReactorRenderer.applyScene(next); } catch (_) {}
+        }
+        if (next) {
+          keepLiveExperience._url = seed;
+          keepLiveExperience._prompt = next.prompt;
+          keepLiveExperience._world = worldId;
+        }
+        try { DangerSystem.start(); } catch (_) {}
+        try { DangerSystem.present && DangerSystem.present(); } catch (_) {}
+      }).catch(() => {});
+    }
+
+    function seedKey(url) {
+      const u = String(url || "");
+      const q = u.indexOf("?");
+      return q >= 0 ? u.slice(0, q) : u;
+    }
+
+    function restoreReturn() {
+      const dest = returnTo;
+      returnTo = "play";
+      if (dest === "picker") {
+        try { StartMenu.returnToPicker(); } catch (_) {}
+        return;
+      }
+      if (dest === "watch") {
+        try { StartMenu.switchMode("watch"); } catch (_) {}
+      }
+    }
+
+    function setLiveWorldId(id) {
+      const next = (id || "").trim() || null;
+      if (liveWorldId === next) return;
+      liveWorldId = next;
+      try {
+        if (window.EditorGraph && window.EditorGraph.setLiveWorld) {
+          window.EditorGraph.setLiveWorld(liveWorldId);
+        }
+      } catch (_) {}
+    }
+
+    async function open(opts) {
       if (open_) return;
+      returnTo = (opts && opts.from) || inferReturnTo();
+      paintViewportFromFrame._url = "";
+      keepLiveExperience._forced = false; // leftover; upgradeToLive is idempotent
+      setSaveStatus("saved");
+      // Picker highlight first: EDITOR / ` must open the Experience you
+      // pointed at, not the leftover active slug.
+      try {
+        if (typeof StartMenu !== "undefined" && StartMenu.adoptSelection) {
+          await StartMenu.adoptSelection();
+        }
+      } catch (_) {}
       open_ = true;
+      if (el.worldEditor) {
+        el.worldEditor.classList.remove("hidden");
+        el.worldEditor.setAttribute("aria-hidden", "false");
+        // Paint off-screen first so the slide-in actually animates.
+        void el.worldEditor.offsetWidth;
+      }
       document.body.classList.add("world-editor-on");
-      if (el.worldEditor) { el.worldEditor.classList.remove("hidden"); el.worldEditor.setAttribute("aria-hidden", "false"); }
       if (el.btnEditor) el.btnEditor.classList.add("active");
+      try {
+        if (typeof WatchMode !== "undefined") {
+          if (WatchMode.setDeskOpen) WatchMode.setDeskOpen(false);
+          if (WatchMode.setRunsOpen) WatchMode.setRunsOpen(false);
+        }
+      } catch (_) {}
+      if (!opts || opts.viewport !== false) {
+        try {
+          if (typeof StartMenu !== "undefined" && StartMenu.ensurePlayViewport) {
+            await StartMenu.ensurePlayViewport({ reset: !!(opts && opts.reset) });
+          }
+        } catch (_) {}
+      }
       // The CONTROLS switch is local (no server content needed), so paint it
       // before the prompt fetch — it must work even if that request fails.
       try { InputProfileUi.paint(); } catch (_) {}
-      const ok = await loadContent(false);
+      const ok = await loadContent(true);
+      const worlds = (experience && experience.worlds) || [];
+      if (!worlds.some((w) => w.id === editingWorldId)) {
+        editingWorldId = landingWorldId(experience)
+          || (worlds[0] && worlds[0].id) || null;
+      }
       if (ok) { await loadWorlds(); render(); }
+      try { await refreshStatus(); } catch (_) {}
+      try { await loadXpCatalog(); } catch (_) {}
+      try { await ensureWorldFrames(); } catch (_) {}
+      paintViewportFromFrame();
+      keepLiveExperience();
+      startFramePoll(true);
       // The dots play their entrance on open, not on every save.
       try { if (window.EditorGraph) window.EditorGraph.onOpen(); } catch (_) {}
+      try { DangerSystem.present && DangerSystem.present(); } catch (_) {}
+      try { PlayFocus.toEditor(); } catch (_) {}
     }
-    function close() {
-      if (!open_) return;
+    function finishClose(opts) {
       closePop();
       open_ = false;
-      document.body.classList.remove("world-editor-on");
+      stopFramePoll();
+      try { document.body.classList.remove("world-frame-rendering"); } catch (_) {}
+      document.body.classList.remove("world-editor-on", "we-menu-open");
+      try { PlayFocus.toViewport(); } catch (_) {}
       if (el.btnEditor) el.btnEditor.classList.remove("active");
       if (el.worldEditor) {
         el.worldEditor.setAttribute("aria-hidden", "true");
-        setTimeout(() => { if (!open_) el.worldEditor.classList.add("hidden"); }, 360);
+        setTimeout(() => { if (!open_) el.worldEditor.classList.add("hidden"); }, 640);
       }
+      if (!(opts && opts.silent)) restoreReturn();
+    }
+    function close(opts) {
+      if (!open_) return;
+      if (opts && opts.silent) { finishClose(opts); return; }
+      if (close._busy) return;
+      close._busy = true;
+      setSaveStatus("saving");
+      Promise.resolve(flushSave()).finally(() => {
+        close._busy = false;
+        finishClose(opts);
+      });
     }
     function toggle() { open_ ? close() : open(); }
     function isOpen() { return open_; }
@@ -5453,6 +7639,14 @@
     function onEscape() {
       if (!graphMode) return false;
       try { return !!(window.EditorGraph && window.EditorGraph.onEscape()); } catch (_) { return false; }
+    }
+
+    // Top-left arrow: a nested sheet returns to the graph; a nested ring
+    // surfaces one level; at the root it closes the editor to Play or Watch.
+    function goBack() {
+      if (modalIsOpen()) { closePromptModal(true); return; }
+      if (onEscape()) return;
+      close();
     }
 
     // ── Bridge for the graph view ─────────────────────────────────────
@@ -5475,6 +7669,48 @@
       fieldById: (id) => schemaFields().find((f) => f.id === id) || null,
       levels: () => levels.slice(),
       worlds: () => worlds.slice(),
+      experience: () => experience,
+      transitionTypes: () => transitionTypes.slice(),
+      editorSurface: () => editorSurface,
+      sound: () => (experience && experience.sound) || { palette: "tape", muted: [], volume: 1 },
+      async saveSound(patch) {
+        const next = Object.assign({}, (experience && experience.sound) || {}, patch || {});
+        if (experience) experience.sound = next;
+        applySoundConfig(next);
+        const { ok, data } = await weFetch("PUT", "/api/admin/studio/experience/sound", { sound: next });
+        const payload = data && (data.data || data);
+        if (ok && payload) applyExperience(payload);
+        return ok;
+      },
+      async savePacing(patch) {
+        const next = Object.assign({}, (experience && experience.threat) || {}, patch || {});
+        if (experience) experience.threat = next;
+        const { ok, data } = await weFetch("PUT", "/api/admin/studio/experience/pacing", { threat: next });
+        const payload = data && (data.data || data);
+        if (ok && payload) applyExperience(payload);
+        return ok;
+      },
+      editingWorldId: () => editingWorldId,
+      liveWorldId: () => liveWorldId,
+      addExperienceWorld,
+      addExperienceCutscene,
+      moveExperienceCutscene,
+      removeExperienceCutscene,
+      renameExperienceCutscene,
+      moveExperience,
+      moveExperienceWorld,
+      removeExperienceWorld,
+      renameExperienceWorld,
+      setStartWorld,
+      saveLoreNotes,
+      addLoreDocument,
+      removeLoreDocument,
+      moveLore,
+      enterWorld,
+      addTransition,
+      ensureWorldFrames,
+      updateTransition,
+      removeTransition,
       identitySchema: () => identitySchema.slice(),
       identityBlock: (id) => identitySchema.find((b) => b.id === id) || null,
       identity: () => identity,
@@ -5511,6 +7747,23 @@
       },
       resetField,
       openPrompt: openPromptModal,
+      // Save whatever is dirty and start a fresh run. A handful of fields only
+      // take hold when the world is seeded (RESTART_KEYS), and the editor used
+      // to just say so and leave you to find the way yourself — which reads as
+      // the edit having failed. The windows that own those fields offer this.
+      saveAndRestart,
+      // Speak one line, right now, in the voice and the words you just set.
+      // Deliberately single-voice: the point is to demonstrate THIS narrator,
+      // and a radio play hands most of its lines to other members of the cast.
+      narratorPreview() {
+        try { Narrator.narrate({ multi: false }); return true; }
+        catch (_) { return false; }
+      },
+      // Push a soundtrack change into the bed that is playing right now.
+      adoptLoop(url) {
+        try { return SceneAudio.adoptLoop(url || null); }
+        catch (_) { return Promise.resolve(false); }
+      },
       // Spec sheets — the real form, mounted wherever the graph asks for it.
       // `minimal` strips it back to the essential fields and their
       // placeholders: no block header, no ⓘ, no advanced disclosure, no
@@ -5555,12 +7808,18 @@
           if (b.parent) b.parent.insertBefore(b.node, b.next);
         }
       },
-      // The movement schemes and which one is live, for the Controls window's
-      // reference card. Read-only: the bindings are fixed per scheme.
       inputBindings: () => {
         try {
-          return { current: InputBindings.current(), list: InputBindings.list() };
+          return {
+            current: InputBindings.current(),
+            live: InputBindings.liveScheme(),
+            list: InputBindings.list(),
+            schemes: InputBindings.schemeList(),
+          };
         } catch (_) { return null; }
+      },
+      saveCameraSchemes(schemes) {
+        return saveIdentity("camera_perspective", { schemes: schemes || {} }, { quiet: true });
       },
       // Text size, width, and (with ?dev=1) the door to the machine room. Same
       // loan: the header keeps only the way out.
@@ -5583,6 +7842,8 @@
       loadWorld,
       deleteWorld,
       toast,
+      prepareLiveScene,
+      resetWorldPicture,
     };
 
     function init() {
@@ -5594,7 +7855,36 @@
           closePop();
         });
       }
+      if (el.weBack) el.weBack.addEventListener("click", goBack);
       if (el.weClose) el.weClose.addEventListener("click", close);
+      if (!el.weReset && el.weSave && el.weSave.parentNode) {
+        const b = document.createElement("button");
+        b.id = "we-reset";
+        b.className = "we-reset";
+        b.type = "button";
+        b.title = "Force a new opening still of this World, even if the design did not change";
+        b.textContent = "REDRAW";
+        el.weSave.parentNode.insertBefore(b, el.weSave);
+        el.weReset = b;
+      }
+      if (el.weSave) el.weSave.addEventListener("click", () => {
+        flushSave().then((ok) => {
+          if (ok) toast(saveState === "rendering" ? "Saved — updating the picture." : "Saved.");
+          else toast("Couldn't save.", "warn");
+        });
+      });
+      if (!el.weDefaults && el.weSave && el.weSave.parentNode) {
+        const b = document.createElement("button");
+        b.id = "we-defaults";
+        b.className = "we-defaults";
+        b.type = "button";
+        b.title = "Roll character, level, camera, and prompts back to what the app shipped";
+        b.textContent = "RESET";
+        el.weSave.parentNode.appendChild(b);
+        el.weDefaults = b;
+      }
+      if (el.weReset) el.weReset.addEventListener("click", () => { resetWorldPicture(); });
+      if (el.weDefaults) el.weDefaults.addEventListener("click", () => { resetToAppDefaults(); });
       if (el.weApply) el.weApply.addEventListener("click", applyLive);
       if (el.weRestart) el.weRestart.addEventListener("click", saveAndRestart);
       if (el.weRevert) el.weRevert.addEventListener("click", revertToStart);
@@ -5606,6 +7896,30 @@
         if (e.key === "Enter") { e.preventDefault(); saveWorld(); }
       });
       applyViewMode();
+      const modeTabs = document.querySelector("#world-editor .we-mode-tabs");
+      if (modeTabs) {
+        modeTabs.addEventListener("click", (evt) => {
+          const tab = evt.target && evt.target.closest && evt.target.closest(".we-mode-tab");
+          if (!tab || !modeTabs.contains(tab)) return;
+          if (tab.id === "we-tab-harness") setEditorSurface("harness");
+          else if (tab.id === "we-tab-sound") setEditorSurface("sound");
+          else setEditorSurface("experience");
+        });
+      } else {
+        if (el.weTabExperience) {
+          el.weTabExperience.addEventListener("click", () => setEditorSurface("experience"));
+        }
+        if (el.weTabHarness) {
+          el.weTabHarness.addEventListener("click", () => setEditorSurface("harness"));
+        }
+        if (el.weTabSound) {
+          el.weTabSound.addEventListener("click", () => setEditorSurface("sound"));
+        }
+      }
+      if (el.weXpNew && el.weXpTrack && el.weXpTrack.parentNode) {
+        el.weXpTrack.parentNode.insertBefore(el.weXpNew, el.weXpTrack);
+      }
+      if (el.weXpNew) el.weXpNew.addEventListener("click", () => createExperience());
       if (el.weView) {
         el.weView.addEventListener("click", () => setViewMode(graphMode ? "list" : "graph"));
       }
@@ -5624,6 +7938,9 @@
     return {
       init, open, close, toggle, isOpen, modalIsOpen, onEscape, toggleDev,
       openPrompt: openPromptModal,
+      setLiveWorldId, liveWorldId: () => liveWorldId,
+      prepareLiveScene,
+      resetWorldPicture,
     };
   })();
 
@@ -5754,6 +8071,4671 @@
     return { toggle, hide, load, init, visible };
   })();
 
+  // ── WATCH OVERLAY ──────────────────────────────────────────────────────
+  // Decision theater on the TV: choices as type on the picture, a pick
+  // flare, scan boxes from recorded geometry, and a brief caption when the
+  // run actually has one. Live Watch and finished-run playback share this
+  // painter. Soft-fail: no beat data → empty overlay, video still plays.
+  // No tutorial chrome, no mint frame around the stage.
+  const WatchOverlay = (function () {
+    const BOX_STAGGER_MS = 80;
+
+    function empty() {
+      return {
+        boxes: [], pick: null, choices: [], selected: "",
+        caption: "", caption_kind: "", phase: "", kind: "",
+      };
+    }
+
+    function labelOf(value) {
+      if (value == null || value === false) return "";
+      if (Array.isArray(value)) {
+        return value.map(labelOf).filter(Boolean).join(" \u00b7 ");
+      }
+      if (typeof value === "object") {
+        return labelOf(value.label || value.subject || value.text || value.name || value.choice || "");
+      }
+      const text = String(value).trim();
+      return text === "[object Object]" ? "" : text;
+    }
+
+    function labelsOf(list) {
+      if (!list) return [];
+      if (!Array.isArray(list)) return labelOf(list) ? [labelOf(list)] : [];
+      return list.map(labelOf).filter(Boolean);
+    }
+
+    function boxesOf(beat) {
+      const raw = (beat && (beat.boxes || beat.detections)) || [];
+      if (!Array.isArray(raw)) return [];
+      const out = [];
+      raw.forEach((b) => {
+        if (!b || typeof b !== "object") return;
+        const cx = Number(b.cx), cy = Number(b.cy), w = Number(b.w), h = Number(b.h);
+        if (![cx, cy, w, h].every(Number.isFinite)) return;
+        out.push({
+          label: labelOf(b) || "?",
+          cx: cx, cy: cy, w: Math.max(0.02, w), h: Math.max(0.02, h),
+        });
+      });
+      return out;
+    }
+
+    function pickOf(beat) {
+      if (!beat) return null;
+      const raw = beat.pick;
+      if (raw && typeof raw === "object" && Number.isFinite(Number(raw.cx))) {
+        return {
+          label: labelOf(raw) || labelOf(beat.subject) || "",
+          cx: Number(raw.cx), cy: Number(raw.cy),
+          w: Number(raw.w) || 0.1, h: Number(raw.h) || 0.1,
+        };
+      }
+      const name = labelOf(raw) || labelOf(beat.subject);
+      return name ? { label: name } : null;
+    }
+
+    function stateFromBeat(beat, phase) {
+      if (!beat || typeof beat !== "object") return empty();
+      const p = phase != null ? phase : (beat.phase || "");
+      const kind = String(beat.kind || beat.action_kind || "");
+      const boxes = boxesOf(beat);
+      let pick = pickOf(beat);
+      const choices = labelsOf(beat.choices);
+      let selected = labelOf(beat.choice || beat.choice_text);
+      const offering = p === "scanning" || p === "choosing" || p === "pending";
+      const locked = p === "chosen" || p === "waiting" || p === "resolved";
+      if (offering) { pick = null; selected = ""; }
+      const narrative = String(beat.narrative || "").trim();
+      let caption = "", caption_kind = "";
+      if (locked && narrative) { caption = narrative; caption_kind = "narrator"; }
+      const kindL = kind.toLowerCase();
+      const subject = labelOf(beat.subject);
+      if (kindL.indexOf("camp") !== -1) {
+        caption_kind = "camp";
+        if (!caption) caption = selected || subject || "CAMP";
+      } else if (kindL.indexOf("scan_move") === 0 && subject && locked) {
+        if (!caption) { caption = "MOVE TO " + subject; caption_kind = "move"; }
+      }
+      return {
+        boxes: boxes,
+        pick: (locked || p === "scanned") ? pick : null,
+        choices: boxes.length ? [] : choices,
+        selected: locked ? selected : "",
+        caption: caption.slice(0, 180),
+        caption_kind: caption_kind,
+        phase: p,
+        kind: kind,
+      };
+    }
+
+    function stateAtPage(beats, page, variant, burnedIn) {
+      const list = beats || [];
+      if (!list.length) return empty();
+      page = Math.max(0, page | 0);
+      variant = variant || "review_video";
+      if (variant === "review_video") {
+        const triplet = list.length * 3;
+        if (page >= triplet) {
+          const last = Object.assign({}, list[list.length - 1], {
+            phase: "resolved", boxes: [], pick: null, choices: [],
+          });
+          return stateFromBeat(last, "resolved");
+        }
+        const turn = list[Math.min(Math.floor(page / 3), list.length - 1)];
+        const slot = page % 3;
+        if (burnedIn && (slot === 1 || slot === 2)) return empty();
+        if (slot === 2) return stateFromBeat(turn, "chosen");
+        const offer = (turn.boxes && turn.boxes.length) ? "scanned" : "choosing";
+        return stateFromBeat(turn, offer);
+      }
+      const beat = list[Math.min(page, list.length - 1)];
+      if (variant === "choices_video") {
+        return burnedIn ? empty() : stateFromBeat(beat, "choosing");
+      }
+      if (variant === "selected_video") {
+        return burnedIn ? empty() : stateFromBeat(beat, "chosen");
+      }
+      return stateFromBeat(beat, (beat.boxes && beat.boxes.length) ? "scanned" : "choosing");
+    }
+
+    function stateAtTime(beats, t, spec) {
+      spec = spec || {};
+      const list = beats || [];
+      if (!list.length) return empty();
+      t = Math.max(0, Number(t) || 0);
+      const variant = spec.variant || "review_video";
+      const burnedIn = !!spec.burnedIn;
+      if (variant === "review_video") {
+        const pageS = spec.reviewPageS > 0 ? spec.reviewPageS : 1.1;
+        return stateAtPage(list, Math.floor(t / pageS), variant, burnedIn);
+      }
+      const pageS = spec.flipbookPageS > 0 ? spec.flipbookPageS : 0.5;
+      const page = Math.floor(t / pageS);
+      if (variant === "choices_video" || variant === "selected_video") {
+        return stateAtPage(list, page, variant, burnedIn);
+      }
+      if (page >= list.length) {
+        const last = Object.assign({}, list[list.length - 1], {
+          phase: "resolved", boxes: [], choices: [],
+        });
+        return stateFromBeat(last, "resolved");
+      }
+      const frac = pageS ? (t % pageS) / pageS : 1;
+      const beat = list[page];
+      if (frac < 0.45) {
+        return stateFromBeat(beat, (beat.boxes && beat.boxes.length) ? "scanned" : "choosing");
+      }
+      return stateFromBeat(beat, "chosen");
+    }
+
+    // Live film: the recorded timeline says when each scene went live, as
+    // seconds from the start of the recording. Show the resolved beat for
+    // whichever scene is on screen at time `t`. Soft-fail to empty so the film
+    // always plays even if a beat is missing.
+    function stateAtTimeline(beats, t, timeline) {
+      const list = beats || [];
+      const marks = timeline || [];
+      if (!list.length || !marks.length) return empty();
+      t = Math.max(0, Number(t) || 0);
+      let turn = null;
+      for (let i = 0; i < marks.length; i++) {
+        const mt = Number(marks[i] && marks[i].t);
+        if (Number.isFinite(mt) && mt <= t) turn = marks[i].turn;
+        else if (Number.isFinite(mt) && mt > t) break;
+      }
+      if (turn == null) turn = marks[0].turn;
+      let beat = null;
+      for (let i = 0; i < list.length; i++) {
+        if (list[i] && Number(list[i].turn) === Number(turn)) { beat = list[i]; break; }
+      }
+      if (!beat) return empty();
+      return stateFromBeat(beat, "resolved");
+    }
+
+    function reducedMotion() {
+      try { return !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches); }
+      catch (_) { return false; }
+    }
+
+    function containRect(media, stage) {
+      if (!media || !stage) return null;
+      if (media.classList && media.classList.contains("hidden")) return null;
+      const nw = media.naturalWidth || media.videoWidth || 0;
+      const nh = media.naturalHeight || media.videoHeight || 0;
+      if (!nw || !nh) return null;
+      const sr = stage.getBoundingClientRect();
+      const ir = media.getBoundingClientRect();
+      if (!ir.width || !ir.height) return null;
+      const scale = Math.min(ir.width / nw, ir.height / nh);
+      const dw = nw * scale, dh = nh * scale;
+      return {
+        left: (ir.left - sr.left) + (ir.width - dw) / 2,
+        top: (ir.top - sr.top) + (ir.height - dh) / 2,
+        width: dw,
+        height: dh,
+      };
+    }
+
+    function placeBox(node, box, rect) {
+      node.style.left = (rect.left + (box.cx - box.w / 2) * rect.width) + "px";
+      node.style.top = (rect.top + (box.cy - box.h / 2) * rect.height) + "px";
+      node.style.width = Math.max(10, box.w * rect.width) + "px";
+      node.style.height = Math.max(10, box.h * rect.height) + "px";
+    }
+
+    function isPickedBox(box, pick) {
+      if (!pick) return false;
+      if (Number.isFinite(pick.cx) && Number.isFinite(box.cx)) {
+        if (Math.abs(box.cx - pick.cx) < 0.02 && Math.abs(box.cy - pick.cy) < 0.02) return true;
+      }
+      return !!(pick.label && box.label && pick.label.toLowerCase() === box.label.toLowerCase());
+    }
+
+    function paint(host, media, state, opts) {
+      if (!host) return;
+      opts = opts || {};
+      host._watchState = state || empty();
+      host._watchMedia = media || null;
+      host.innerHTML = "";
+      const stage = host.parentElement;
+      const rect = containRect(media, stage);
+      if (!rect) return;
+      const s = host._watchState;
+      const motion = !!(opts.animate && !reducedMotion());
+      (s.boxes || []).forEach((box, i) => {
+        const node = document.createElement("div");
+        node.className = "render-scan-box" + (isPickedBox(box, s.pick) ? " picked" : "");
+        if (!motion) node.classList.add("shown");
+        node.style.setProperty("--in-delay", motion ? (i * BOX_STAGGER_MS) + "ms" : "0ms");
+        placeBox(node, box, rect);
+        const lab = document.createElement("span");
+        lab.className = "render-scan-box-label";
+        lab.textContent = box.label;
+        node.appendChild(lab);
+        host.appendChild(node);
+      });
+      const lines = s.choices || [];
+      if (lines.length) {
+        const stack = document.createElement("div");
+        stack.className = "watch-choice-stack";
+        stack.style.left = (rect.left + rect.width / 2) + "px";
+        stack.style.bottom = Math.max(10, (stage.clientHeight - rect.top - rect.height) + rect.height * 0.07) + "px";
+        lines.forEach((text, i) => {
+          const node = document.createElement("div");
+          const picked = !!(s.selected && text.toLowerCase() === s.selected.toLowerCase());
+          node.className = "watch-choice"
+            + (picked ? " picked" : (s.selected ? " dim" : ""));
+          if (!motion) node.classList.add("shown");
+          node.style.setProperty("--in-delay", motion ? (i * BOX_STAGGER_MS) + "ms" : "0ms");
+          node.textContent = text;
+          stack.appendChild(node);
+        });
+        host.appendChild(stack);
+      }
+      if (s.caption) {
+        const cap = document.createElement("div");
+        cap.className = "watch-caption" + (s.caption_kind ? " kind-" + s.caption_kind : "");
+        cap.style.left = (rect.left + rect.width / 2) + "px";
+        cap.style.top = (rect.top + rect.height * 0.06) + "px";
+        if (s.caption_kind && s.caption_kind !== "narrator") {
+          const kick = document.createElement("span");
+          kick.className = "watch-caption-kicker";
+          kick.textContent = s.caption_kind === "camp" ? "CAMP" : "MOVE";
+          cap.appendChild(kick);
+        }
+        const line = document.createElement("span");
+        line.className = "watch-caption-line";
+        line.textContent = s.caption;
+        cap.appendChild(line);
+        host.appendChild(cap);
+      }
+    }
+
+    function layout(host) {
+      if (!host || !host._watchState) return;
+      paint(host, host._watchMedia, host._watchState, { animate: false });
+    }
+
+    function clear(host) {
+      if (!host) return;
+      host._watchState = empty();
+      host._watchMedia = null;
+      host.innerHTML = "";
+    }
+
+    const api = {
+      empty, stateFromBeat, stateAtPage, stateAtTime, stateAtTimeline, paint, layout, clear,
+      containRect, labelOf, BOX_STAGGER_MS,
+    };
+    try { window.__WatchOverlay = api; } catch (_) {}
+    return api;
+  })();
+
+  // ── RENDER ─────────────────────────────────────────────────────────────
+  // Start an OFFLINE run: the server plays itself for N turns on whichever
+  // models you pick and hands back frames, flipbooks and a verdict. Live play
+  // is tuned for the fastest frame that still reads; a render is the opposite
+  // trade, which is why it gets its own controls instead of borrowing the
+  // image-model switcher next door. Everything else about the run — level,
+  // character, camera, prompts — comes from whatever the editor says right now,
+  // because the run drives the same endpoints this browser does.
+  const Render = (function () {
+    const POLL_MS = 800;
+    const VIDEO_KEYS = ["live_video", "view_video", "review_video", "selected_video", "choices_video"];
+    const REVIEW_CUTS = [
+      { id: "live_video", label: "Film", title: "The live take you just watched" },
+      { id: "view_video", label: "View", title: "The scenes, in order" },
+      { id: "review_video", label: "Story", title: "Stills with choices on top" },
+      { id: "choices_video", label: "Choices", title: "Every option offered" },
+      { id: "selected_video", label: "Pick", title: "The option the run took" },
+    ];
+    let opts = null;
+    let sel = { mode: "scan_move", size: "1K", aspect: "16:9", picture: "live" };
+    // SETUP used to restamp TURNS from the factory default (40) every time
+    // /api/render/options loaded. A typed number never survived leaving the
+    // strip, reopening Watch, or a refresh — the next start always sent 40.
+    const DESK_KEY = "somewhere.render.desk";
+    let pollTimer = null;
+    let ceremonyTimer = null;
+    let starting = false;
+    let lastState = null;
+    let lastDoneId = null;
+    // Live scrubbing through the frames a running render has captured so
+    // far. `followLive` means "keep jumping to the newest frame as it
+    // lands"; stepping back turns that off until you step forward past the
+    // last captured frame again.
+    let progressFrames = [];
+    let progressIdx = -1;
+    let followLive = true;
+    // Timeline: which job the rail belongs to, how many dots are already
+    // drawn, and which turn's card is open. A fresh start wipes these so
+    // the last run's picture and dots never linger on "START RENDER".
+    let railJobId = null;
+    let railSig = "";
+    let openTurn = null;
+    // Live scan overlay: boxes appear on the VIEW still as soon as
+    // live.json carries geometry, then one is picked. Sequence is
+    // owned here so a single "chosen" poll still plays boxes → pick.
+    const BOX_STAGGER_MS = 80;
+    const PICK_AFTER_MS = 480;
+    let overlayBoxSig = "";
+    let overlayPickSig = "";
+    let overlayTimer = null;
+    let overlayBoxes = [];
+    let overlayPick = "";
+    let overlayRO = null;
+
+    function ensureAspectDom() {
+      // Flask caches standalone.html when debug is off. Build the FRAME row
+      // if the running server is still serving yesterday's markup.
+      if (el.renderAspect || !el.renderForm) return;
+      const sizeField = el.renderSize && el.renderSize.closest(".render-field");
+      const field = document.createElement("div");
+      field.className = "render-field";
+      const lbl = document.createElement("span");
+      lbl.className = "render-lbl";
+      lbl.textContent = "FRAME";
+      const segHost = document.createElement("div");
+      segHost.id = "render-aspect";
+      segHost.className = "render-seg";
+      segHost.setAttribute("role", "group");
+      segHost.setAttribute("aria-label", "Aspect ratio");
+      field.appendChild(lbl);
+      field.appendChild(segHost);
+      if (sizeField && sizeField.parentNode) {
+        sizeField.parentNode.insertBefore(field, sizeField.nextSibling);
+      } else {
+        const start = el.renderStart;
+        if (start && start.parentNode) start.parentNode.insertBefore(field, start);
+        else el.renderForm.appendChild(field);
+      }
+      el.renderAspect = segHost;
+    }
+
+    function ensurePictureDom() {
+      // Same defensive build as the FRAME row: a cached template that predates
+      // the PICTURE segment still gets the Live | Stills control so a live film
+      // can be armed on a JS-only refresh.
+      if (el.renderPicture || !el.renderForm) return;
+      const aspectField = el.renderAspect && el.renderAspect.closest(".render-field");
+      const field = document.createElement("div");
+      field.className = "render-field";
+      const lbl = document.createElement("span");
+      lbl.className = "render-lbl";
+      lbl.textContent = "PICTURE";
+      const segHost = document.createElement("div");
+      segHost.id = "render-picture";
+      segHost.className = "render-seg";
+      segHost.setAttribute("role", "group");
+      segHost.setAttribute("aria-label", "Live world film or stills");
+      field.appendChild(lbl);
+      field.appendChild(segHost);
+      if (aspectField && aspectField.parentNode) {
+        aspectField.parentNode.insertBefore(field, aspectField.nextSibling);
+      } else {
+        const start = el.renderStart;
+        if (start && start.parentNode) start.parentNode.insertBefore(field, start);
+        else el.renderForm.appendChild(field);
+      }
+      el.renderPicture = segHost;
+    }
+
+    function ensureTimelineDom() {
+      // Flask caches the HTML template when debug is off, so a running server
+      // can still be serving the old progress-bar markup after this JS landed.
+      // Build the rail in place if it's missing so a JS refresh is enough.
+      const progress = el.renderProgress;
+      if (!progress) return;
+      const bar = document.getElementById("render-bar");
+      const feed = document.getElementById("render-feed");
+      if (bar) bar.style.display = "none";
+      if (feed) feed.style.display = "none";
+      ensureCeremonyDom();
+      if (!el.renderNow) {
+        const now = document.createElement("span");
+        now.id = "render-now";
+        now.className = "render-now";
+        now.textContent = "waiting for the first beat\u2026";
+        const clock = el.renderClock;
+        if (clock && clock.parentNode) clock.parentNode.insertBefore(now, clock);
+        el.renderNow = now;
+      }
+      if (!el.renderRail) {
+        const wrap = document.createElement("div");
+        wrap.className = "render-rail-wrap";
+        const rail = document.createElement("div");
+        rail.id = "render-rail";
+        rail.className = "render-rail";
+        rail.setAttribute("role", "list");
+        rail.setAttribute("aria-label", "Turn timeline");
+        wrap.appendChild(rail);
+        const card = document.createElement("div");
+        card.id = "render-dot-card";
+        card.className = "render-dot-card hidden";
+        const stop = el.renderCancel;
+        if (stop && stop.parentNode) {
+          stop.parentNode.insertBefore(wrap, stop);
+          stop.parentNode.insertBefore(card, stop);
+        } else {
+          progress.appendChild(wrap);
+          progress.appendChild(card);
+        }
+        el.renderRail = rail;
+        el.renderDotCard = card;
+      }
+      ensureOverlayDom();
+    }
+
+    function ensureOverlayDom() {
+      const stage = el.renderFrame && el.renderFrame.parentNode;
+      if (!stage) return;
+      let ov = el.renderScanOverlay || document.getElementById("render-scan-overlay");
+      if (!ov) {
+        ov = document.createElement("div");
+        ov.id = "render-scan-overlay";
+        ov.className = "render-scan-overlay";
+        ov.setAttribute("aria-hidden", "true");
+      }
+      if (ov.parentNode !== stage) {
+        const empty = el.renderFrameEmpty;
+        if (empty && empty.parentNode === stage) stage.insertBefore(ov, empty);
+        else stage.appendChild(ov);
+      }
+      el.renderScanOverlay = ov;
+      if (!overlayRO && typeof ResizeObserver !== "undefined") {
+        overlayRO = new ResizeObserver(() => layoutOverlay());
+        overlayRO.observe(stage);
+      }
+    }
+
+    function ensureCeremonyDom() {
+      const done = el.renderDone;
+      if (!done) return;
+      if (!el.renderCeremony) {
+        const wrap = document.createElement("div");
+        wrap.id = "render-ceremony";
+        wrap.className = "render-ceremony";
+        const vid = document.createElement("video");
+        vid.id = "render-ceremony-video";
+        vid.className = "render-ceremony-video hidden";
+        vid.setAttribute("playsinline", "");
+        vid.setAttribute("controls", "");
+        vid.setAttribute("autoplay", "");
+        vid.muted = true;
+        vid.loop = true;
+        const empty = document.createElement("div");
+        empty.id = "render-ceremony-empty";
+        empty.className = "render-ceremony-empty";
+        empty.textContent = "Saving the reel\u2026";
+        const still = document.createElement("img");
+        still.id = "render-ceremony-still";
+        still.className = "render-ceremony-still hidden";
+        still.alt = "Last frame";
+        wrap.appendChild(still);
+        wrap.appendChild(vid);
+        wrap.appendChild(empty);
+        done.insertBefore(wrap, done.firstChild);
+        el.renderCeremony = wrap;
+        el.renderCeremonyStill = still;
+        el.renderCeremonyVideo = vid;
+        el.renderCeremonyEmpty = empty;
+      }
+      if (!el.renderCeremonyStill && el.renderCeremony) {
+        const still = document.createElement("img");
+        still.id = "render-ceremony-still";
+        still.className = "render-ceremony-still hidden";
+        still.alt = "Last frame";
+        el.renderCeremony.insertBefore(still, el.renderCeremony.firstChild);
+        el.renderCeremonyStill = still;
+      }
+      if (!document.querySelector(".render-done-actions") && el.renderPlayVideo) {
+        const actions = document.createElement("div");
+        actions.className = "render-done-actions";
+        ["render-play-video", "render-open", "render-resume", "render-again"].forEach((id) => {
+          const n = document.getElementById(id);
+          if (n) actions.appendChild(n);
+        });
+        done.appendChild(actions);
+      }
+      try { if (typeof WatchMode !== "undefined" && WatchMode.placeExtras) WatchMode.placeExtras(); } catch (_) {}
+    }
+
+    function visible() { return document.body.classList.contains("render-on"); }
+    function applyVisibility(on) {
+      document.body.classList.toggle("render-on", on);
+      if (el.btnRender) el.btnRender.classList.toggle("active", on);
+    }
+    async function toggle() {
+      const on = !visible();
+      applyVisibility(on);
+      if (on) {
+        if (!opts) await loadOptions();
+        await poll();
+        loadHistory();
+        startPolling();
+      } else {
+        stopPolling();
+      }
+    }
+    function hide() { applyVisibility(false); stopPolling(); }
+
+    function esc(s) {
+      return String(s == null ? "" : s)
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    }
+
+    function seg(host, items, active, onPick) {
+      if (!host) return;
+      host.innerHTML = "";
+      items.forEach((it) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "render-seg-btn" + (it.id === active ? " active" : "");
+        b.textContent = it.label;
+        b.title = it.title || it.label;
+        b.disabled = !!it.disabled;
+        b.addEventListener("click", () => onPick(it.id));
+        host.appendChild(b);
+      });
+    }
+
+    function entry(kind, id) {
+      const list = (opts && (kind === "image" ? opts.image_models : opts.text_models)) || [];
+      return list.find((m) => m.id === id) || null;
+    }
+
+    function turnLimits() {
+      const lim = (opts && opts.turn_limits) || {};
+      return { lo: Number(lim.min) || 1, hi: Number(lim.max) || 1000 };
+    }
+
+    function clampTurns(raw, fallback) {
+      const n = parseInt(raw, 10);
+      if (!Number.isFinite(n)) return fallback;
+      const { lo, hi } = turnLimits();
+      return Math.max(lo, Math.min(hi, n));
+    }
+
+    function readDesk() {
+      try {
+        const raw = JSON.parse(localStorage.getItem(DESK_KEY) || "null");
+        return raw && typeof raw === "object" ? raw : {};
+      } catch (_) {
+        return {};
+      }
+    }
+
+    function writeDesk(patch) {
+      try {
+        localStorage.setItem(DESK_KEY, JSON.stringify(Object.assign({}, readDesk(), patch)));
+      } catch (_) {}
+    }
+
+    function rememberTurns() {
+      if (!el.renderTurns) return 0;
+      const n = clampTurns(el.renderTurns.value, 0);
+      if (!n) return 0;
+      el.renderTurns.value = String(n);
+      el.renderTurns.dataset.userSet = "1";
+      writeDesk({ turns: n });
+      return n;
+    }
+
+    function turnsToShow(fallback) {
+      if (el.renderTurns && el.renderTurns.dataset.userSet === "1") {
+        const typed = clampTurns(el.renderTurns.value, 0);
+        if (typed) return typed;
+      }
+      const saved = clampTurns(readDesk().turns, 0);
+      if (saved) return saved;
+      return clampTurns(fallback, 40);
+    }
+
+    function applySavedTurns() {
+      if (!el.renderTurns) return;
+      el.renderTurns.value = String(turnsToShow(el.renderTurns.value || 40));
+    }
+
+    async function loadOptions() {
+      try {
+        const r = await fetch("/api/render/options");
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        opts = await r.json();
+      } catch (err) {
+        console.warn("[RENDER] options failed:", err);
+        showError("Couldn\u2019t load render options.");
+        applySavedTurns();
+        return;
+      }
+      const d = opts.defaults || {};
+      const saved = readDesk();
+      sel.mode = saved.mode || d.mode || "scan_move";
+      sel.size = saved.size || d.image_size || "1K";
+      sel.aspect = saved.aspect || d.aspect_ratio || "16:9";
+      // PICTURE: default to the animated live film whenever the world model is
+      // reachable, so a Watch run captures a film instead of a slideshow by
+      // default. A saved preference wins; Stills is the only option (and the
+      // default) when Reactor isn't available.
+      sel.picture = liveFilmAvailable()
+        ? (saved.picture === "stills" ? "stills" : "live")
+        : "stills";
+      applySavedTurns();
+      fillModels(el.renderImageModel, opts.image_models, saved.image_model || d.image_model);
+      fillModels(el.renderTextModel, opts.text_models, saved.text_model || d.text_model);
+      redrawSegs();
+      syncNotes();
+      applyWatchAspect(sel.aspect);
+    }
+
+    function fillModels(node, list, chosen) {
+      if (!node) return;
+      node.innerHTML = "";
+      (list || []).forEach((m) => {
+        const o = document.createElement("option");
+        o.value = m.id;
+        o.textContent = m.label || m.id;
+        node.appendChild(o);
+      });
+      if (chosen && (list || []).some((m) => m.id === chosen)) node.value = chosen;
+    }
+
+    function redrawSegs() {
+      if (!opts) return;
+      seg(el.renderMode, (opts.modes || []).map((m) => ({
+        id: m.id, label: m.id === "scan_move" ? "SCAN \u2192 MOVE" : "CHOICES", title: m.label,
+      })), sel.mode, (id) => { sel.mode = id; redrawSegs(); });
+      // Only offer resolutions the chosen model actually produces. An empty
+      // `sizes` means the provider has no size control of its own, so the whole
+      // row would be a lie — say so rather than showing dead buttons.
+      const chosen = entry("image", el.renderImageModel && el.renderImageModel.value);
+      const sizes = (chosen && chosen.sizes) || [];
+      if (!sizes.length) {
+        if (el.renderSize) {
+          el.renderSize.innerHTML =
+            '<span class="render-note" style="margin:0">fixed by the provider</span>';
+        }
+        sel.size = null;
+      } else {
+        if (!sizes.includes(sel.size)) {
+          sel.size = sizes.includes("1K") ? "1K" : sizes[0];
+        }
+        seg(el.renderSize, sizes.map((s) => ({ id: s, label: s })), sel.size,
+            (id) => { sel.size = id; redrawSegs(); });
+      }
+      const ratios = opts.aspect_ratios || [
+        { id: "16:9", label: "16:9" },
+        { id: "21:9", label: "PHONE", title: "Phone horizontal · 21:9 landscape" },
+      ];
+      const ids = ratios.map((r) => r.id);
+      if (!ids.includes(sel.aspect)) sel.aspect = ids.includes("16:9") ? "16:9" : ids[0];
+      seg(el.renderAspect, ratios.map((r) => ({
+        id: r.id, label: r.label, title: r.title || r.label,
+      })), sel.aspect, (id) => {
+        sel.aspect = id;
+        applyWatchAspect(id);
+        redrawSegs();
+      });
+      // PICTURE — Live world film vs. the stills flipbook. Live needs the world
+      // model; without it the button is disabled and Stills is forced so the
+      // run still finishes with a (flipbook) film.
+      const liveOk = liveFilmAvailable();
+      if (!liveOk && sel.picture === "live") sel.picture = "stills";
+      seg(el.renderPicture, [
+        { id: "live", label: "LIVE", title: liveOk
+            ? "Record the animated world model as the film"
+            : "Live video unavailable \u2014 showing stills", disabled: !liveOk },
+        { id: "stills", label: "STILLS", title: "Assemble the film from generated stills" },
+      ], sel.picture, (id) => { sel.picture = id; redrawSegs(); });
+    }
+
+    // The live film needs the browser world-model renderer. Mirrors Play's own
+    // "stills are the floor, reactor upgrades when it can" rule.
+    function liveFilmAvailable() {
+      try {
+        return !!(typeof Renderer !== "undefined" && Renderer.reactorAvailable
+          && Renderer.reactorAvailable() && !Renderer.lockedStills);
+      } catch (_) { return false; }
+    }
+
+    // Does this run want the animated live film? Only when Live is picked AND
+    // the world model is actually reachable.
+    function wantsLiveFilm() {
+      return sel.picture === "live" && liveFilmAvailable();
+    }
+
+    function applyWatchAspect(id) {
+      const parts = String(id || "16:9").split(":");
+      const w = parseFloat(parts[0]);
+      const h = parseFloat(parts[1]);
+      if (!w || !h) return;
+      document.body.style.setProperty("--watch-ar-w", String(w));
+      document.body.style.setProperty("--watch-ar-h", String(h));
+    }
+
+    function syncNotes() {
+      const img = entry("image", el.renderImageModel && el.renderImageModel.value);
+      const txt = entry("text", el.renderTextModel && el.renderTextModel.value);
+      if (el.renderImageNote) el.renderImageNote.textContent = (img && img.note) || "";
+      if (el.renderTextNote) el.renderTextNote.textContent = (txt && txt.note) || "";
+    }
+
+    function showError(msg) {
+      if (!el.renderError) return;
+      el.renderError.textContent = msg;
+      el.renderError.classList.toggle("hidden", !msg);
+    }
+
+    function show(which) {
+      const watch = document.body.classList.contains("mode-watch");
+      // Watch keeps the form on the SETUP strip so settings stay a
+      // glance away; the TV is only the picture. Hiding the form in Watch
+      // was what made idle Watch a splash page.
+      if (el.renderForm) el.renderForm.classList.toggle("hidden", watch ? false : which !== "form");
+      if (el.renderProgress) el.renderProgress.classList.toggle("hidden", which !== "progress");
+      if (el.renderDone) el.renderDone.classList.toggle("hidden", which !== "done");
+      const actions = document.querySelector(".render-done-actions");
+      if (actions) actions.classList.toggle("hidden", which !== "done");
+      if (el.watchTvIdle) {
+        el.watchTvIdle.hidden = which === "progress" || which === "done";
+        el.watchTvIdle.setAttribute("aria-hidden", (which === "progress" || which === "done") ? "true" : "false");
+      }
+      try { if (typeof WatchMode !== "undefined" && WatchMode.syncDesk) WatchMode.syncDesk(which); } catch (_) {}
+    }
+
+    function clock(s) {
+      const t = Math.max(0, Math.round(s || 0));
+      return t < 60 ? t + "s" : Math.floor(t / 60) + "m" + String(t % 60).padStart(2, "0") + "s";
+    }
+
+    async function start() {
+      if (starting) return;
+      starting = true;
+      showError("");
+      if (el.renderStart) el.renderStart.disabled = true;
+      // Drop the last run's picture and rail *before* the network round-trip
+      // — otherwise START RENDER keeps showing the previous generation until
+      // the new job's first status lands.
+      resetLiveStage();
+      const turns = (el.renderTurns && el.renderTurns.dataset.userSet === "1"
+        ? rememberTurns()
+        : 0) || clampTurns(readDesk().turns, 0) || clampTurns(el.renderTurns && el.renderTurns.value, 40);
+      if (el.renderTurns) el.renderTurns.value = String(turns);
+      const body = {
+        turns: turns,
+        mode: sel.mode,
+        image_model: el.renderImageModel && el.renderImageModel.value,
+        text_model: el.renderTextModel && el.renderTextModel.value,
+      };
+      if (sel.size) body.image_size = sel.size;
+      if (sel.aspect) body.aspect_ratio = sel.aspect;
+      writeDesk({
+        turns: body.turns,
+        mode: sel.mode,
+        size: sel.size,
+        aspect: sel.aspect,
+        picture: sel.picture,
+        image_model: body.image_model,
+        text_model: body.text_model,
+      });
+      try {
+        const r = await fetch("/api/render/start", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.details || data.error || "HTTP " + r.status);
+        // Arm the live world-model film for this run BEFORE painting the first
+        // status, so recording starts as soon as the first scene is live. The
+        // job spec is unchanged — the server still drives the same stills run.
+        if (wantsLiveFilm() && typeof WatchFilm !== "undefined") {
+          try { WatchFilm.begin(data); } catch (_) {}
+        }
+        paint(data);
+        startPolling();
+        showRendererToast("RENDER STARTED \u00b7 " + body.turns + " turns"
+          + (wantsLiveFilm() ? " \u00b7 LIVE FILM" : ""));
+      } catch (err) {
+        console.warn("[RENDER] start failed:", err);
+        showError(String(err.message || err));
+        show("form");
+      } finally {
+        starting = false;
+        if (el.renderStart) el.renderStart.disabled = false;
+      }
+    }
+
+    // Graceful stop: the harness notices at its next turn boundary and runs
+    // its own finalize step, so whatever landed still gets a gif and videos
+    // instead of vanishing. It can take up to one turn to actually land —
+    // paint() shows "STOPPING" for that window rather than pretending it's
+    // instant.
+    async function stop() {
+      try {
+        await fetch("/api/render/cancel", { method: "POST" });
+        showRendererToast("STOPPING \u2014 saving what\u2019s done so far");
+      } catch (err) {
+        console.warn("[RENDER] stop failed:", err);
+      }
+      await poll();
+    }
+
+    function startPolling() {
+      stopPolling();
+      pollTimer = setInterval(poll, POLL_MS);
+    }
+    function stopPolling() {
+      if (pollTimer) clearInterval(pollTimer);
+      pollTimer = null;
+    }
+
+    async function poll() {
+      try {
+        const r = await fetch("/api/render/status");
+        if (!r.ok) return;
+        paint(await r.json());
+      } catch (_) { /* transient; keep polling */ }
+    }
+
+    // ── live scrubbing through the run in progress ──────────────────────
+    let lastJob = null;
+
+    function updateProgressFrames(frames) {
+      progressFrames = frames || [];
+      if (followLive || progressIdx < 0 || progressIdx > progressFrames.length - 1) {
+        progressIdx = progressFrames.length - 1;
+      }
+    }
+
+    function paintStageFrame() {
+      const src = progressFrames[progressIdx];
+      if (el.renderFrame) {
+        el.renderFrame.classList.toggle("hidden", !src);
+        if (src) el.renderFrame.src = "/api/render/file/" + src;
+      }
+      if (el.renderFrameEmpty) el.renderFrameEmpty.classList.toggle("hidden", !!src);
+      if (el.renderPrev) el.renderPrev.disabled = progressIdx <= 0;
+      if (el.renderNext) el.renderNext.disabled = progressIdx >= progressFrames.length - 1;
+    }
+
+    function progressVisible() {
+      return visible() && el.renderProgress && !el.renderProgress.classList.contains("hidden");
+    }
+
+    function stepFrame(by) {
+      if (!lastJob || !progressFrames.length) return;
+      const target = Math.max(0, Math.min(progressFrames.length - 1, progressIdx + by));
+      progressIdx = target;
+      followLive = by > 0 && target >= progressFrames.length - 1;
+      paint(lastJob);
+    }
+
+    function jumpLive() {
+      followLive = true;
+      if (lastJob) paint(lastJob);
+    }
+
+    function onKey(e) {
+      if (!progressVisible()) return false;
+      if (e.key === "ArrowLeft") { stepFrame(-1); return true; }
+      if (e.key === "ArrowRight") { stepFrame(1); return true; }
+      return false;
+    }
+
+    // ── timeline rail: one expanding dot per beat ──────────────────────
+    function resetLiveStage() {
+      ensureTimelineDom();
+      progressFrames = []; progressIdx = -1; followLive = true; lastJob = null;
+      railJobId = null; railSig = ""; openTurn = null;
+      stopCeremonyWatch();
+      clearCeremony();
+      clearScanOverlay();
+      if (el.renderFrame) {
+        el.renderFrame.removeAttribute("src");
+        el.renderFrame.classList.add("hidden");
+      }
+      if (el.renderFrameEmpty) el.renderFrameEmpty.classList.remove("hidden");
+      if (el.renderRail) el.renderRail.innerHTML = "";
+      if (el.renderDotCard) {
+        el.renderDotCard.innerHTML = "";
+        el.renderDotCard.classList.add("hidden");
+      }
+      if (el.renderState) el.renderState.textContent = "turn 0 / \u2026";
+      if (el.renderClock) el.renderClock.textContent = "0s";
+      if (el.renderNow) {
+        el.renderNow.textContent = "starting\u2026";
+        el.renderNow.classList.add("live");
+      }
+      show("progress");
+    }
+
+    function labelOf(value) {
+      if (value == null || value === false) return "";
+      if (Array.isArray(value)) {
+        return value.map(labelOf).filter(Boolean).join(" \u00b7 ");
+      }
+      if (typeof value === "object") {
+        return labelOf(value.label || value.subject || value.text || value.name || value.choice || "");
+      }
+      const text = String(value).trim();
+      return text === "[object Object]" ? "" : text;
+    }
+
+    function labelsOf(list) {
+      if (!list) return [];
+      if (!Array.isArray(list)) return labelOf(list) ? [labelOf(list)] : [];
+      return list.map(labelOf).filter(Boolean);
+    }
+
+    function beatAction(b) {
+      const choice = labelOf(b && b.choice) || "\u2026";
+      const subj = labelOf(b && b.subject);
+      if (subj && !choice.toLowerCase().includes(subj.toLowerCase())) {
+        return choice + " \u2192 " + subj;
+      }
+      return choice;
+    }
+
+    function phaseLabel(b) {
+      const p = b.phase || (b.status === "pending" ? "pending" : "resolved");
+      if (p === "scanning") return "SCANNING";
+      if (p === "choosing") return "CHOOSING";
+      if (p === "scanned") return "SAW";
+      if (p === "chosen") return "TOOK";
+      if (p === "waiting") return "DRAWING";
+      if (p === "pending") return "LIVE";
+      return "TURN " + (b.turn || "?");
+    }
+
+    function nowLine(beats) {
+      const b = (beats || []).slice(-1)[0];
+      if (!b) return "waiting for the first beat\u2026";
+      const head = phaseLabel(b);
+      const action = beatAction(b);
+      const saw = labelsOf(b.detections).slice(0, 4).join(" \u00b7 ");
+      if (b.phase === "scanning" || b.phase === "choosing") {
+        return head + (saw ? " \u00b7 " + saw : "");
+      }
+      if (action && action !== "\u2026") return head + " \u00b7 " + action;
+      return head;
+    }
+
+    function liveTurnOf(job) {
+      const beats = (job && job.beats) || [];
+      const last = beats[beats.length - 1];
+      const fromBeat = last && last.turn != null ? Number(last.turn) || 0 : 0;
+      return Math.max(job && job.turn || 0, fromBeat);
+    }
+
+    function beatForStage(beats) {
+      const list = beats || [];
+      if (followLive || !list.length) return list[list.length - 1] || null;
+      const turn = progressIdx + 1;
+      return list.find((b) => b.turn === turn) || list[list.length - 1] || null;
+    }
+
+    function boxesOf(beat) {
+      const raw = (beat && (beat.boxes || beat.detections)) || [];
+      if (!Array.isArray(raw)) return [];
+      const out = [];
+      raw.forEach((b) => {
+        if (!b || typeof b !== "object") return;
+        const cx = Number(b.cx), cy = Number(b.cy), w = Number(b.w), h = Number(b.h);
+        if (![cx, cy, w, h].every(Number.isFinite)) return;
+        out.push({
+          label: labelOf(b) || "?",
+          cx: cx, cy: cy, w: Math.max(0.02, w), h: Math.max(0.02, h),
+        });
+      });
+      return out;
+    }
+
+    function pickOf(beat) {
+      if (!beat) return null;
+      const raw = beat.pick;
+      if (raw && typeof raw === "object" && Number.isFinite(Number(raw.cx))) {
+        return {
+          label: labelOf(raw) || labelOf(beat.subject) || "",
+          cx: Number(raw.cx), cy: Number(raw.cy),
+          w: Number(raw.w) || 0.1, h: Number(raw.h) || 0.1,
+        };
+      }
+      const name = labelOf(beat.subject);
+      return name ? { label: name } : null;
+    }
+
+    function reducedMotion() {
+      try { return !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches); }
+      catch (_) { return false; }
+    }
+
+    function drawTheater(state, animate) {
+      ensureOverlayDom();
+      WatchOverlay.paint(el.renderScanOverlay, el.renderFrame, state, { animate: !!animate });
+    }
+
+    function layoutOverlay() {
+      WatchOverlay.layout(el.renderScanOverlay);
+    }
+
+    function markChoicePick(on) {
+      if (el.renderNow) el.renderNow.classList.toggle("picked", !!on);
+      if (el.renderDotCard) el.renderDotCard.classList.toggle("picked", !!on);
+    }
+
+    function clearScanOverlay() {
+      if (overlayTimer) { clearTimeout(overlayTimer); overlayTimer = null; }
+      overlayBoxSig = "";
+      overlayPickSig = "";
+      overlayBoxes = [];
+      overlayPick = "";
+      WatchOverlay.clear(el.renderScanOverlay);
+      markChoicePick(false);
+    }
+
+    function applyOverlayPick(state) {
+      overlayPickSig = (state.pick && state.pick.label) || state.selected || "";
+      overlayPick = overlayPickSig;
+      drawTheater(state, false);
+      markChoicePick(true);
+    }
+
+    function paintScanOverlay(beats) {
+      ensureOverlayDom();
+      const beat = beatForStage(beats);
+      const state = WatchOverlay.stateFromBeat(beat);
+      const turn = beat && beat.turn;
+      const boxSig = (turn || 0) + ":" + state.boxes.map((b) =>
+        b.label + "@" + b.cx.toFixed(3) + "," + b.cy.toFixed(3)).join("|")
+        + ":" + state.choices.join("|") + ":" + (state.phase || "");
+      const hasLock = !!(state.selected || (state.pick && state.pick.label));
+      const hasTheater = !!(state.boxes.length || state.choices.length || state.caption);
+
+      if (!followLive) {
+        if (overlayTimer) { clearTimeout(overlayTimer); overlayTimer = null; }
+        overlayBoxSig = boxSig;
+        overlayPickSig = (state.pick && state.pick.label) || state.selected || "";
+        overlayBoxes = state.boxes;
+        overlayPick = overlayPickSig;
+        drawTheater(state, false);
+        markChoicePick(hasLock);
+        return;
+      }
+
+      if (!hasTheater) {
+        if (overlayBoxSig) clearScanOverlay();
+        return;
+      }
+
+      if (boxSig !== overlayBoxSig) {
+        if (overlayTimer) { clearTimeout(overlayTimer); overlayTimer = null; }
+        overlayBoxSig = boxSig;
+        overlayPickSig = "";
+        overlayBoxes = state.boxes;
+        overlayPick = "";
+        markChoicePick(false);
+        const offer = Object.assign({}, state, { pick: null, selected: "" });
+        drawTheater(offer, true);
+        if (hasLock) {
+          const n = state.boxes.length || state.choices.length || 1;
+          const wait = reducedMotion() ? 0 : (n * BOX_STAGGER_MS + PICK_AFTER_MS);
+          overlayTimer = setTimeout(() => applyOverlayPick(state), wait);
+        }
+        return;
+      }
+
+      const pickSig = (state.pick && state.pick.label) || state.selected || "";
+      if (pickSig && overlayPickSig !== pickSig) {
+        if (overlayTimer) { clearTimeout(overlayTimer); overlayTimer = null; }
+        applyOverlayPick(state);
+      }
+    }
+
+    function paintDotCard(b) {
+      if (!el.renderDotCard) return;
+      if (!b) { el.renderDotCard.classList.add("hidden"); return; }
+      const pickName = labelOf(b.subject) || labelOf(b.choice);
+      const picked = labelOf(b.choice);
+      const action = beatAction(b);
+      const choiceHtml = labelsOf(b.choices).slice(0, 3).map((s) => {
+        const on = picked && s.toLowerCase() === picked.toLowerCase();
+        return '<span class="render-beat-choice' + (on ? " is-on" : "") + '">' + esc(s) + "</span>";
+      }).join("");
+      const scanHtml = labelsOf(b.detections).slice(0, 5).map((s) => {
+        const on = pickName && s.toLowerCase() === pickName.toLowerCase();
+        return '<span class="render-beat-scan-item' + (on ? " is-on" : "") + '">' + esc(s) + "</span>";
+      }).join("");
+      const showAction = action && action !== "\u2026";
+      el.renderDotCard.innerHTML =
+        '<div class="render-beat-kicker">' + esc(phaseLabel(b)) + "</div>" +
+        (showAction ? '<div class="render-beat-action">' + esc(action) + "</div>" : "") +
+        (b.narrative ? '<div class="render-beat-note">' + esc(b.narrative) + "</div>" : "") +
+        (choiceHtml ? '<div class="render-beat-choices">' + choiceHtml + "</div>" : "") +
+        (scanHtml ? '<div class="render-beat-scan">' + scanHtml + "</div>" : "");
+      el.renderDotCard.classList.remove("hidden");
+      const lit = !!(overlayPick && pickName
+        && overlayPick.toLowerCase() === pickName.toLowerCase());
+      el.renderDotCard.classList.toggle("picked", lit);
+    }
+
+    function paintRail(beats, jobId) {
+      ensureTimelineDom();
+      if (!el.renderRail) return;
+      const list = beats || [];
+      if (jobId !== railJobId) {
+        el.renderRail.innerHTML = "";
+        railJobId = jobId;
+        railSig = "";
+        openTurn = null;
+        paintDotCard(null);
+      }
+      if (followLive && list.length) {
+        const last = list[list.length - 1];
+        if (last && last.turn != null) openTurn = last.turn;
+      }
+      const sig = jobId + ":" + openTurn + ":" + list.map((b) =>
+        (b.turn || 0) + (b.phase || "") + (b.status || "") + labelOf(b.choice) + labelOf(b.subject)
+        + labelsOf(b.detections).join("|") + ((b.boxes && b.boxes.length) || 0)
+      ).join(",");
+      if (el.renderNow) {
+        el.renderNow.textContent = nowLine(list);
+        const last = list[list.length - 1];
+        el.renderNow.classList.toggle("live", !!(last && last.status === "pending"));
+      }
+      if (sig === railSig) return;
+      railSig = sig;
+      el.renderRail.innerHTML = "";
+      list.forEach((b, i) => {
+        const pending = b.status === "pending" || (b.phase && b.phase !== "resolved");
+        const scan = String(b.kind || "").indexOf("scan") === 0;
+        const latest = i === list.length - 1;
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "render-dot"
+          + (scan ? " scan" : "")
+          + (pending ? " pending" : "")
+          + (latest ? " latest" : "")
+          + (openTurn === b.turn ? " open" : "");
+        btn.setAttribute("role", "listitem");
+        btn.title = "Turn " + b.turn + (labelOf(b.choice) ? " \u2014 " + labelOf(b.choice) : "");
+        btn.innerHTML = '<span class="render-dot-n">' + (b.turn || "") + "</span>";
+        btn.addEventListener("click", () => {
+          openTurn = openTurn === b.turn ? null : b.turn;
+          if (b.turn != null && progressFrames.length) {
+            const idx = Math.max(0, Math.min(progressFrames.length - 1, (b.turn || 1) - 1));
+            progressIdx = idx;
+            followLive = idx >= progressFrames.length - 1;
+            paintStageFrame();
+          }
+          paintRail(list, jobId);
+          paintDotCard(openTurn == null ? null : list.find((x) => x.turn === openTurn) || b);
+        });
+        el.renderRail.appendChild(btn);
+      });
+      if (followLive && el.renderRail.parentNode) {
+        el.renderRail.parentNode.scrollLeft = el.renderRail.parentNode.scrollWidth;
+      }
+      if (openTurn != null) {
+        const shown = list.find((x) => x.turn === openTurn);
+        paintDotCard(shown || null);
+      }
+    }
+
+    function paint(job) {
+      if (!job || job.state === "idle") { show("form"); lastState = "idle"; return; }
+      const running = job.state === "starting" || job.state === "running" || job.state === "stopping";
+      if (running) {
+        lastJob = job;
+        show("progress");
+        updateProgressFrames(job.frames);
+        paintStageFrame();
+        paintRail(job.beats, job.id);
+        paintScanOverlay(job.beats);
+        if (typeof WatchFilm !== "undefined") { try { WatchFilm.onPoll(job); } catch (_) {} }
+        if (el.renderState) {
+          el.renderState.textContent = followLive
+            ? "turn " + liveTurnOf(job) + " / " + job.turns
+            : "turn " + (progressIdx + 1) + " / " + job.turns + " \u00b7 scrubbing back";
+        }
+        if (el.renderClock) el.renderClock.textContent = clock(job.elapsed_s);
+        const m = job.models || {};
+        if (el.renderUsing) {
+          el.renderUsing.textContent = m.image_model + " @ " + m.image_size + " \u00b7 " + m.text_model;
+        }
+        if (el.renderLiveBadge) {
+          el.renderLiveBadge.classList.toggle("paused", !followLive);
+          el.renderLiveBadge.textContent = followLive ? "\u25CF LIVE" : "\u23F8 PAUSED";
+          el.renderLiveBadge.title = followLive
+            ? "Following the newest frame" : "Click to jump back to the live frame";
+        }
+        if (el.renderCancel) {
+          const stopping = job.state === "stopping";
+          el.renderCancel.disabled = stopping;
+          el.renderCancel.classList.toggle("stopping", stopping);
+          el.renderCancel.textContent = stopping
+            ? "\u25A0 STOPPING \u2014 saving\u2026"
+            : "\u25A0 STOP & SAVE";
+        }
+        lastState = job.state;
+        return;
+      }
+      const wasRunning = lastState === "starting" || lastState === "running" || lastState === "stopping";
+      lastState = job.state;
+      stopPolling();
+      // Hold the last still on the TV before teardown. The done poll used
+      // to skip paintStageFrame, so the last turn never landed — then the
+      // ceremony video wiped whatever was there.
+      lastJob = job;
+      updateProgressFrames(job.frames);
+      paintStageFrame();
+      // The run reached a terminal state — hand the recorded live film (if any)
+      // to the server so it lands in this run's folder as the Film cut.
+      if (typeof WatchFilm !== "undefined") { try { WatchFilm.finish(job); } catch (_) {} }
+      if (job.state === "cancelled") {
+        // Stopped (or force-killed) before a single turn landed — there is
+        // nothing to review, so there's no dead "done" screen either.
+        show("form");
+        if (wasRunning) loadHistory();
+        return;
+      }
+      // Watch: a stale finished job is RUNS, not the landing. Only a run that
+      // just completed in this room should take the TV.
+      if (!wasRunning && document.body.classList.contains("mode-watch")) {
+        show("form");
+        return;
+      }
+      show("done");
+      paintDone(job);
+      // A render that just finished under the panel's nose is new footage; the
+      // list on disk is now one item out of date.
+      if (wasRunning) loadHistory();
+    }
+
+    let lastDoneRemaining = 0;
+
+    function bestVideo(art) {
+      const bag = art || {};
+      for (let i = 0; i < VIDEO_KEYS.length; i++) {
+        if (bag[VIDEO_KEYS[i]]) return bag[VIDEO_KEYS[i]];
+      }
+      return null;
+    }
+
+    function lastFrameOf(job) {
+      const art = (job && job.artifacts) || {};
+      const frames = art.frames || (job && job.frames) || progressFrames || [];
+      return frames.length ? frames[frames.length - 1] : null;
+    }
+
+    function paintHoldStill(job) {
+      ensureCeremonyDom();
+      const still = lastFrameOf(job);
+      if (!el.renderCeremonyStill && el.renderCeremony) {
+        const img = document.createElement("img");
+        img.id = "render-ceremony-still";
+        img.className = "render-ceremony-still hidden";
+        img.alt = "Last frame";
+        el.renderCeremony.insertBefore(img, el.renderCeremony.firstChild);
+        el.renderCeremonyStill = img;
+      }
+      if (!el.renderCeremonyStill) return !!still;
+      if (still) {
+        el.renderCeremonyStill.src = "/api/render/file/" + still;
+        el.renderCeremonyStill.classList.remove("hidden");
+      } else {
+        el.renderCeremonyStill.classList.add("hidden");
+      }
+      return !!still;
+    }
+
+    function paintWatchCuts(art) {
+      const host = el.watchReviewCuts;
+      if (!host) return;
+      host.innerHTML = "";
+      REVIEW_CUTS.forEach((cut) => {
+        if (!art || !art[cut.id]) return;
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "watch-review-cut";
+        b.textContent = cut.label;
+        b.title = cut.title;
+        b.addEventListener("click", () => {
+          if (lastDoneId && typeof WatchPlayer !== "undefined") {
+            WatchPlayer.open(lastDoneId, cut.id);
+          }
+        });
+        host.appendChild(b);
+      });
+      host.hidden = !host.childElementCount;
+    }
+
+    function clearCeremony() {
+      const node = el.renderCeremonyVideo;
+      if (node) {
+        try { node.pause(); } catch (_) {}
+        node.removeAttribute("src");
+        node.removeAttribute("data-src");
+        try { node.load(); } catch (_) {}
+        node.classList.add("hidden");
+      }
+      if (el.renderCeremonyStill) {
+        el.renderCeremonyStill.removeAttribute("src");
+        el.renderCeremonyStill.classList.add("hidden");
+      }
+      if (el.renderCeremonyEmpty) {
+        el.renderCeremonyEmpty.textContent = "Saving the reel\u2026";
+        el.renderCeremonyEmpty.classList.remove("hidden");
+      }
+      if (el.renderDone) el.renderDone.classList.remove("has-reel");
+      if (el.renderPlayVideo) el.renderPlayVideo.classList.add("hidden");
+      if (el.watchReviewCuts) {
+        el.watchReviewCuts.innerHTML = "";
+        el.watchReviewCuts.hidden = true;
+      }
+    }
+
+    function stopCeremonyWatch() {
+      if (ceremonyTimer) {
+        clearInterval(ceremonyTimer);
+        ceremonyTimer = null;
+      }
+    }
+
+    function paintCeremony(art, job) {
+      ensureCeremonyDom();
+      const held = paintHoldStill(job || { artifacts: art, frames: (art && art.frames) || progressFrames });
+      const vid = bestVideo(art);
+      const node = el.renderCeremonyVideo;
+      const watch = document.body.classList.contains("mode-watch");
+      // Watch holds the last still. Autoplaying a cut here is what replaced
+      // the ending with the Story/debug reel. Replay is a choice.
+      if (watch) {
+        if (node) {
+          try { node.pause(); } catch (_) {}
+          node.removeAttribute("src");
+          node.removeAttribute("data-src");
+          try { node.load(); } catch (_) {}
+          node.classList.add("hidden");
+        }
+        if (el.renderCeremonyEmpty) {
+          el.renderCeremonyEmpty.textContent = held ? "" : "Saving the last frame\u2026";
+          el.renderCeremonyEmpty.classList.toggle("hidden", !!held);
+        }
+        if (el.renderDone) el.renderDone.classList.toggle("has-reel", !!vid);
+        if (el.renderPlayVideo) {
+          el.renderPlayVideo.textContent = "REPLAY";
+          el.renderPlayVideo.classList.toggle("hidden", !lastDoneId);
+        }
+        paintWatchCuts(art);
+        return !!vid;
+      }
+      if (node && vid) {
+        const src = "/api/render/file/" + vid;
+        if (node.getAttribute("data-src") !== src) {
+          node.setAttribute("data-src", src);
+          node.src = src;
+          try { node.load(); } catch (_) {}
+        }
+        node.classList.remove("hidden");
+        try {
+          node.muted = true;
+          const play = node.play();
+          if (play && play.catch) play.catch(() => {});
+        } catch (_) {}
+      } else if (node) {
+        node.classList.add("hidden");
+      }
+      if (el.renderCeremonyEmpty) {
+        el.renderCeremonyEmpty.textContent = vid || held ? "" : "Encoding the reel\u2026";
+        el.renderCeremonyEmpty.classList.toggle("hidden", !!(vid || held));
+      }
+      if (el.renderDone) el.renderDone.classList.toggle("has-reel", !!vid);
+      if (el.renderPlayVideo) {
+        el.renderPlayVideo.textContent = "REPLAY";
+        el.renderPlayVideo.classList.toggle("hidden", !lastDoneId);
+      }
+      return !!vid;
+    }
+
+    function waitForReel(jobId) {
+      stopCeremonyWatch();
+      if (!jobId) return;
+      let n = 0;
+      ceremonyTimer = setInterval(async () => {
+        n += 1;
+        if (n > 45 || lastDoneId !== jobId) {
+          stopCeremonyWatch();
+          return;
+        }
+        try {
+          const r = await fetch("/api/render/run/" + encodeURIComponent(jobId));
+          if (!r.ok) return;
+          const data = await r.json();
+          if (paintCeremony(data.artifacts || {}, data)) {
+            stopCeremonyWatch();
+            loadHistory();
+          }
+        } catch (_) { /* keep waiting */ }
+      }, 2000);
+    }
+
+    function paintDone(job) {
+      ensureCeremonyDom();
+      lastDoneId = job.id || null;
+      const v = job.verdict || {};
+      const failed = v.passed === false || job.state === "failed";
+      if (el.renderVerdict) {
+        el.renderVerdict.classList.toggle("fail", failed);
+        const head = job.state === "stopped" ? "SAVED"
+          : job.state === "failed" ? "FAILED"
+          : (v.passed === false ? "DONE \u00b7 checks failed" : "DONE");
+        const bits = [
+          head,
+          (job.turn || 0) + "/" + job.turns + " turns",
+          clock(job.elapsed_s),
+        ];
+        el.renderVerdict.textContent = bits.join(" \u00b7 ")
+          + (job.error ? " \u2014 " + job.error : "");
+      }
+      const art = job.artifacts || {};
+      const hasReel = paintCeremony(art, job);
+      if (!hasReel) waitForReel(job.id);
+      if (el.renderStrip) {
+        el.renderStrip.innerHTML = "";
+        (art.frames || []).forEach((f) => {
+          const img = document.createElement("img");
+          img.src = "/api/render/file/" + f;
+          img.alt = f;
+          img.addEventListener("click", () => Review.open(job.id));
+          el.renderStrip.appendChild(img);
+        });
+      }
+      if (el.renderOpen) el.renderOpen.disabled = !lastDoneId;
+      lastDoneRemaining = Math.max(0, (job.turns || 0) - (job.turn || 0));
+      const resumable = lastDoneRemaining > 0 && (job.state === "stopped" || job.state === "done");
+      if (el.renderResume) el.renderResume.classList.toggle("hidden", !resumable);
+      if (el.renderResumeCount) el.renderResumeCount.textContent = lastDoneRemaining;
+    }
+
+    function resumeFromDone() {
+      show("form");
+      if (el.renderTurns && lastDoneRemaining > 0) el.renderTurns.value = lastDoneRemaining;
+    }
+
+    // ── past renders ────────────────────────────────────────────────────
+    async function loadHistory() {
+      if (!el.renderHistory) return;
+      try {
+        const r = await fetch("/api/render/history");
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        paintHistory((await r.json()).renders || []);
+      } catch (err) {
+        console.warn("[RENDER] history failed:", err);
+        el.renderHistory.innerHTML =
+          '<div class="render-note" style="margin:0">Couldn\u2019t list past renders.</div>';
+      }
+    }
+
+    function paintHistory(runs) {
+      if (!runs.length) {
+        el.renderHistory.innerHTML =
+          '<div class="render-hist-empty">No playtests yet</div>';
+        try {
+          if (typeof WatchMode !== "undefined" && WatchMode.selectRun) {
+            WatchMode.selectRun(null);
+          }
+        } catch (_) {}
+        return;
+      }
+      el.renderHistory.innerHTML = "";
+      runs.forEach((run) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "render-hist";
+        b.dataset.runId = run.id || "";
+        const when = run.started_at
+          ? new Date(run.started_at).toLocaleString(undefined, {
+              month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+            })
+          : run.id;
+        const m = run.models || {};
+        const size = m.image_size ? " @ " + m.image_size : "";
+        const mb = run.bytes ? Math.round(run.bytes / 1048576) + "MB" : "";
+        const bad = run.passed === false || run.state === "failed";
+        const playable = run.has_video === undefined ? true : !!run.has_video;
+        b.innerHTML =
+          `<span class="render-hist-thumb">` +
+            (run.thumbnail
+              ? `<img src="/api/render/file/${esc(run.thumbnail)}" alt="">`
+              : `<img alt="">`) +
+            (playable ? `<span class="render-hist-play" aria-hidden="true">\u25B6</span>` : "") +
+          `</span>` +
+          `<span class="render-hist-txt">` +
+            `<span class="render-hist-top">${esc(when)}</span>` +
+            `<span class="render-hist-sub">${esc((m.image_model || "?") + size)}</span>` +
+            `<span class="render-hist-sub">${run.turns_done}/${run.turns_requested} turns \u00b7 ` +
+              `${esc(mb)}${bad ? ' \u00b7 <span class="fail">checks failed</span>' : ""}</span>` +
+          `</span>`;
+        // Watch: put the still on the TV, then play. Elsewhere: same play path.
+        b.addEventListener("click", () => {
+          try {
+            if (typeof WatchMode !== "undefined" && WatchMode.selectRun) {
+              WatchMode.selectRun(run);
+            }
+          } catch (_) {}
+          playable ? WatchPlayer.open(run.id) : Review.open(run.id);
+        });
+        el.renderHistory.appendChild(b);
+      });
+      try {
+        if (typeof WatchMode !== "undefined" && WatchMode.syncSelected) {
+          WatchMode.syncSelected(runs);
+        }
+      } catch (_) {}
+    }
+
+    function init() {
+      ensureAspectDom();
+      ensurePictureDom();
+      ensureTimelineDom();
+      if (el.renderFrame) {
+        el.renderFrame.addEventListener("load", () => layoutOverlay());
+      }
+      if (el.renderHide) el.renderHide.addEventListener("click", hide);
+      if (el.renderStart) el.renderStart.addEventListener("click", start);
+      if (el.renderTurns) {
+        el.renderTurns.addEventListener("input", rememberTurns);
+        el.renderTurns.addEventListener("change", rememberTurns);
+        el.renderTurns.addEventListener("blur", rememberTurns);
+      }
+      if (el.renderCancel) el.renderCancel.addEventListener("click", stop);
+      if (el.renderPrev) el.renderPrev.addEventListener("click", () => stepFrame(-1));
+      if (el.renderNext) el.renderNext.addEventListener("click", () => stepFrame(1));
+      if (el.renderLiveBadge) el.renderLiveBadge.addEventListener("click", jumpLive);
+      if (el.renderAgain) el.renderAgain.addEventListener("click", () => { show("form"); });
+      if (el.renderResume) el.renderResume.addEventListener("click", resumeFromDone);
+      if (el.renderOpen) el.renderOpen.addEventListener("click", () => {
+        if (lastDoneId) Review.open(lastDoneId);
+      });
+      if (el.renderPlayVideo) el.renderPlayVideo.addEventListener("click", () => {
+        if (lastDoneId) WatchPlayer.open(lastDoneId);
+      });
+      if (el.renderRefresh) el.renderRefresh.addEventListener("click", loadHistory);
+      // Bound here rather than in fillModels so a retried load can't stack
+      // duplicate handlers on the same <select>.
+      [el.renderImageModel, el.renderTextModel].forEach((n) => {
+        if (n) n.addEventListener("change", () => { redrawSegs(); syncNotes(); });
+      });
+      // Paint the last desk immediately so a failed options fetch can't
+      // leave the factory 40 sitting in the box.
+      applySavedTurns();
+    }
+
+    return { toggle, hide, init, visible, loadHistory, onKey, progressVisible, show, start };
+  })();
+
+  // ── QUIT ───────────────────────────────────────────────────────────────
+  // EXIT closes the app for real: it stops the local server, which is the only
+  // way to be sure nothing keeps spending after you walk away. A render in
+  // particular runs in its own process and would happily keep buying frames.
+  //
+  // Two presses, not a confirm() dialog: the native window is frameless and a
+  // system modal there looks like a fault, so the button arms itself instead
+  // and disarms on its own if the first press was a misclick.
+  const Quit = (function () {
+    const ARM_MS = 3200;
+    let armed = null;      // timer id while waiting for the second press
+    let going = false;
+
+    function markArmed(on) {
+      const title = on ? "Press again to quit" : "Exit — close the app and stop the server";
+      [el.btnExit, el.startExit, el.xpExit].forEach((btn) => {
+        if (!btn) return;
+        btn.classList.toggle("arming", on);
+        btn.title = title;
+        if (btn.id === "btn-exit") btn.textContent = on ? "AGAIN" : "QUIT";
+        else btn.textContent = on ? "AGAIN" : "EXIT";
+      });
+    }
+
+    function disarm() {
+      clearTimeout(armed);
+      armed = null;
+      markArmed(false);
+    }
+
+    function arm() {
+      markArmed(true);
+      try { showRendererToast("Press again to quit", 3000); } catch (_) {}
+      armed = setTimeout(disarm, ARM_MS);
+    }
+
+    function veil(stateText, note) {
+      if (!el.exitVeil) return;
+      el.exitVeil.classList.remove("hidden");
+      el.exitVeil.setAttribute("aria-hidden", "false");
+      if (el.exitState) el.exitState.textContent = stateText;
+      if (el.exitNote) el.exitNote.textContent = note || "";
+    }
+
+    /** Stop everything on THIS side that costs something or makes noise.
+     *
+     * The server is about to die either way, but its last moments shouldn't be
+     * spent answering a poll, and the ambient bed shouldn't play over a
+     * shutdown card.
+     */
+    function silence() {
+      const quietly = (fn) => { try { fn(); } catch (_) {} };
+      quietly(() => stopPolling());
+      quietly(() => clearTurnWatchdog());
+      quietly(() => setAutoPlay(false));
+      quietly(() => Narrator.stop());
+      quietly(() => Talk.close());
+      quietly(() => SceneAudio.reset());
+      quietly(() => closeScan());
+      quietly(() => closeTouch());
+      quietly(() => Photo.hide());   // also clears the receipt's timers
+      // The live world model is a streaming connection to a paid renderer, so
+      // it gets closed rather than merely hidden.
+      quietly(() => {
+        if (window.ReactorRenderer && window.ReactorRenderer.disable) {
+          window.ReactorRenderer.disable();
+        }
+      });
+    }
+
+    async function commit() {
+      if (going) return;
+      going = true;
+      disarm();
+      silence();
+      veil("closing down", "stopping the server so nothing keeps rendering");
+
+      let res = null, refused = null;
+      try {
+        res = await postJSON("/api/shutdown", {});
+      } catch (err) {
+        // Two very different failures arrive here. An HTTP status means the
+        // server answered and said no — it's hosted, or not armed — and it is
+        // still very much alive. No status means the socket died, which is
+        // what a server exiting mid-response looks like: that's success.
+        if (err && err.status) {
+          refused = (err.body && err.body.error) || `HTTP ${err.status}`;
+        }
+      }
+
+      if (refused) {
+        going = false;
+        veil("still running", refused);
+        setTimeout(() => {
+          if (el.exitVeil) {
+            el.exitVeil.classList.add("hidden");
+            el.exitVeil.setAttribute("aria-hidden", "true");
+          }
+        }, 4000);
+        return;
+      }
+
+      const stopped = (res && res.stopped && res.stopped.length)
+        ? `stopped ${res.stopped.join(", ")}` : "";
+      veil("closed", stopped);
+
+      // The native window closes itself a moment from now. A browser tab can't
+      // be closed by script it didn't open, so tell the truth there instead of
+      // leaving what looks like a hang.
+      setTimeout(() => {
+        veil("closed", "The server has stopped. You can close this window.");
+        try { window.close(); } catch (_) {}
+      }, 1500);
+    }
+
+    function press() {
+      if (going) return;
+      if (armed) { commit(); return; }
+      arm();
+    }
+
+    return { press, commit, isArmed: () => !!armed };
+  })();
+
+  // ── RENDER REVIEW ──────────────────────────────────────────────────────
+  // A finished render is a folder of large pictures and the story that produced
+  // them. Reviewing that in a 320px sidebar defeats the point of having rendered
+  // it large, so this takes the whole screen: one frame at a time, with the
+  // action and narrative for that turn beside it, and every file one click from
+  // a download. It reads from disk, so a render from last week opens the same
+  // way as the one that finished a minute ago.
+  const Review = (function () {
+    // The causal triplet, in reading order: what the player saw, what was
+    // on offer, and which one got taken. Turn N+1's VIEW is what SELECTED
+    // produced — that's the check this panel exists to let you make.
+    const VARIANTS = [
+      { id: "view", label: "VIEW", title: "The frame the player is looking at" },
+      { id: "choices", label: "CHOICES", title: "What SCAN found, or the button slate" },
+      { id: "selected", label: "SELECTED", title: "The one the run committed to" },
+    ];
+    let run = null;
+    let idx = 0;
+    let variant = "view";
+
+    function visible() {
+      return el.rvRoot && !el.rvRoot.classList.contains("hidden");
+    }
+
+    async function open(runId) {
+      if (!runId || !el.rvRoot) return;
+      try {
+        const r = await fetch("/api/render/run/" + encodeURIComponent(runId));
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        run = await r.json();
+      } catch (err) {
+        console.warn("[REVIEW] load failed:", err);
+        showRendererToast("Couldn\u2019t open that render");
+        return;
+      }
+      idx = 0;
+      variant = "view";
+      el.rvRoot.classList.remove("hidden");
+      paint();
+    }
+
+    function close() {
+      if (el.rvRoot) el.rvRoot.classList.add("hidden");
+      run = null;
+    }
+
+    function esc(s) {
+      return String(s == null ? "" : s)
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    }
+
+    function turns() { return (run && run.turns) || []; }
+
+    function setFold(name, on) {
+      const node = el.rvRoot && el.rvRoot.querySelector('.rv-fold[data-fold="' + name + '"]');
+      if (node) node.classList.toggle("hidden", !on);
+    }
+
+    function frameOf(t) {
+      // Every turn has all three now, scan or not — CHOICES/SELECTED fall
+      // back to a menu overlay when there was nothing to box. Fall back
+      // rather than showing a broken image regardless.
+      return (t && (t[variant] || t.view || t.selected || t.choices)) || null;
+    }
+
+    function step(by) {
+      const n = turns().length;
+      if (!n) return;
+      idx = Math.min(n - 1, Math.max(0, idx + by));
+      paint();
+    }
+
+    function paint() {
+      if (!run) return;
+      const list = turns();
+      const t = list[idx] || null;
+      const m = run.models || {};
+
+      if (el.rvTitle) el.rvTitle.textContent = run.id;
+      if (el.rvModels) {
+        el.rvModels.textContent = [
+          m.image_model + (m.image_size ? " @ " + m.image_size : ""),
+          m.text_model, run.mode, clockish(run.elapsed_s),
+        ].filter(Boolean).join("  \u00b7  ");
+      }
+      if (el.rvDownload) el.rvDownload.href = "/api/render/download/" + encodeURIComponent(run.id);
+
+      const src = frameOf(t);
+      if (el.rvImage) {
+        el.rvImage.classList.toggle("hidden", !src);
+        if (src) el.rvImage.src = "/api/render/file/" + src;
+      }
+      if (el.rvEmpty) {
+        el.rvEmpty.classList.toggle("hidden", !!src);
+        // A swept run still has its flipbooks, so say that rather than leaving
+        // a bare "no frames" on a run that is perfectly watchable.
+        el.rvEmpty.textContent = run.stills_swept
+          ? "Stills were swept to save disk. The flipbooks below have every frame."
+          : "No frames in this render.";
+      }
+
+      if (el.rvCounter) el.rvCounter.textContent = `TURN ${t ? t.turn : 0} / ${list.length}`;
+      if (el.rvPrev) el.rvPrev.disabled = idx <= 0;
+      if (el.rvNext) el.rvNext.disabled = idx >= list.length - 1;
+
+      if (el.rvVariant) {
+        el.rvVariant.innerHTML = "";
+        VARIANTS.forEach((v) => {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.className = "render-seg-btn" + (v.id === variant ? " active" : "");
+          b.textContent = v.label;
+          b.title = v.title;
+          b.disabled = !(t && t[v.id]);
+          b.addEventListener("click", () => { variant = v.id; paint(); });
+          el.rvVariant.appendChild(b);
+        });
+      }
+
+      if (el.rvAction) {
+        el.rvAction.textContent = t ? (t.action || "") : "";
+        el.rvAction.classList.toggle("hidden", !el.rvAction.textContent);
+      }
+      if (el.rvNarrative) {
+        el.rvNarrative.textContent = t ? (t.narrative || "")
+          : (run.intro || "");
+        el.rvNarrative.classList.toggle("hidden", !el.rvNarrative.textContent);
+      }
+      const hasTurn = !!(t && (t.action || t.narrative)) || !!(run.intro && !t);
+      setFold("turn", hasTurn);
+
+      if (el.rvDials) {
+        // time_of_day is a composite the image prompt consumes whole
+        // ("7:14pm | weather: … | mood: …"). Only the clock belongs on a pill.
+        const tod = (t && t.time_of_day || "").split("|")[0].trim();
+        const dials = t ? [
+          t.kind, t.subject,
+          tod, t.phase && "phase " + t.phase,
+          t.chaos != null && "chaos " + t.chaos,
+          t.detection && "detect " + t.detection,
+          t.scene_changed === false && "same vantage",
+        ].filter(Boolean) : [];
+        el.rvDials.innerHTML = dials
+          .map((d) => `<span class="rv-dial">${esc(d)}</span>`).join("");
+        setFold("state", dials.length > 0);
+      }
+
+      if (el.rvLinks) {
+        const art = run.artifacts || {};
+        const named = [
+          ["gif", "GIF"], ["live_video", "FILM MP4"], ["review_video", "WALKTHROUGH MP4"],
+          ["view_video", "VIEW MP4"], ["choices_video", "CHOICES MP4"],
+          ["selected_video", "SELECTED MP4"], ["summary", "SUMMARY.md"],
+          ["transcript", "TRANSCRIPT"],
+        ];
+        const parts = named.filter(([k]) => art[k]).map(([k, label]) =>
+          `<a href="/api/render/file/${esc(art[k])}" target="_blank" rel="noopener">${label}</a>` +
+          `<a href="/api/render/file/${esc(art[k])}?download=1" download title="Download ${label}">\u2193</a>`);
+        if (src) {
+          parts.push(`<a href="/api/render/file/${esc(src)}?download=1" download>THIS FRAME \u2193</a>`);
+        }
+        el.rvLinks.innerHTML = parts.join("");
+        setFold("files", parts.length > 0);
+      }
+
+      paintStrip(list);
+    }
+
+    function paintStrip(list) {
+      if (!el.rvStrip) return;
+      el.rvStrip.innerHTML = "";
+      list.forEach((t, i) => {
+        const src = t[variant] || t.view || t.selected;
+        if (!src) return;
+        const img = document.createElement("img");
+        img.src = "/api/render/file/" + src;
+        img.alt = "turn " + t.turn;
+        img.title = "Turn " + t.turn;
+        if (i === idx) img.className = "on";
+        img.addEventListener("click", () => { idx = i; paint(); });
+        el.rvStrip.appendChild(img);
+      });
+      const on = el.rvStrip.querySelector("img.on");
+      if (on && on.scrollIntoView) {
+        on.scrollIntoView({ block: "nearest", inline: "center" });
+      }
+    }
+
+    function clockish(s) {
+      if (!s) return "";
+      const t = Math.round(s);
+      return t < 60 ? t + "s" : Math.floor(t / 60) + "m" + String(t % 60).padStart(2, "0") + "s";
+    }
+
+    function onKey(e) {
+      if (!visible()) return false;
+      if (e.key === "Escape") { close(); return true; }
+      if (e.key === "ArrowLeft") { step(-1); return true; }
+      if (e.key === "ArrowRight") { step(1); return true; }
+      return false;
+    }
+
+    function init() {
+      if (el.rvClose) el.rvClose.addEventListener("click", close);
+      if (el.rvPrev) el.rvPrev.addEventListener("click", () => step(-1));
+      if (el.rvNext) el.rvNext.addEventListener("click", () => step(1));
+    }
+
+    return { open, close, init, visible, onKey };
+  })();
+
+  // ── WATCH PLAYER ───────────────────────────────────────────────────────
+  // The film. Custom transport, chrome that recedes. Cuts and stills live
+  // in one menu. Reads the same finished-run payload as the stills reviewer.
+  const WatchPlayer = (function () {
+    // Film first (what they just watched), then View (the scenes), then
+    // Story (the debug stills-with-choices cut). available() skips missing
+    // keys, so a stills-only run opens on View if it exists, else Story.
+    const VARIANTS = [
+      { id: "live_video", label: "Film", title: "The live take you just watched" },
+      { id: "view_video", label: "View", title: "The scenes, in order" },
+      { id: "review_video", label: "Story", title: "Stills with choices on top" },
+      { id: "choices_video", label: "Choices", title: "Every option offered" },
+      { id: "selected_video", label: "Pick", title: "The option the run took" },
+    ];
+    const SEEK_MAX = 1000;
+    let run = null;
+    let key = null;
+    let lastOvKey = "";
+    let bound = false;
+    let ovRO = null;
+    let chromeTimer = null;
+    let menuOpen = false;
+    let scrubbing = false;
+
+    function visible() { return el.watchPlayer && !el.watchPlayer.classList.contains("hidden"); }
+
+    function available() {
+      const art = (run && run.artifacts) || {};
+      return VARIANTS.filter((v) => art[v.id]);
+    }
+
+    function overlaySpec() {
+      const ov = (run && run.overlay) || {};
+      return {
+        variant: key || "review_video",
+        reviewPageS: ov.review_page_s || 1.1,
+        flipbookPageS: ov.flipbook_page_s || 0.5,
+        burnedIn: !!ov.burned_in,
+        // The live film's overlays are placed by recorded wall-clock, not a
+        // fixed page cadence (each scene appeared when it appeared).
+        timeline: Array.isArray(ov.timeline) ? ov.timeline : null,
+      };
+    }
+
+    function syncOverlay() {
+      if (!el.wpOverlay) return;
+      const beats = (run && run.beats) || [];
+      if (!beats.length || !el.wpVideo || el.wpVideo.classList.contains("hidden")) {
+        WatchOverlay.clear(el.wpOverlay);
+        lastOvKey = "";
+        return;
+      }
+      const spec = overlaySpec();
+      const t = el.wpVideo.currentTime || 0;
+      // Live film: map time onto beats by the recorded scene timeline. Without
+      // a timeline (or on any other cut) fall back to the page-cadence mapping.
+      const state = (spec.variant === "live_video" && spec.timeline && spec.timeline.length)
+        ? WatchOverlay.stateAtTimeline(beats, t, spec.timeline)
+        : WatchOverlay.stateAtTime(beats, t, spec);
+      const sig = spec.variant + ":" + state.phase + ":" + (state.selected || "")
+        + ":" + (state.choices || []).join("|")
+        + ":" + (state.boxes || []).map((b) => b.label).join("|")
+        + ":" + (state.caption || "");
+      const animate = sig !== lastOvKey;
+      lastOvKey = sig;
+      WatchOverlay.paint(el.wpOverlay, el.wpVideo, state, { animate: animate });
+    }
+
+    function fmtTime(s) {
+      if (!isFinite(s) || s < 0) s = 0;
+      s = Math.floor(s);
+      const h = Math.floor(s / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      const sec = String(s % 60).padStart(2, "0");
+      return h ? (h + ":" + String(m).padStart(2, "0") + ":" + sec) : (m + ":" + sec);
+    }
+
+    function showChrome(hold) {
+      if (!el.watchPlayer) return;
+      el.watchPlayer.classList.add("wp-chrome-on");
+      if (chromeTimer) { clearTimeout(chromeTimer); chromeTimer = null; }
+      if (hold || menuOpen || scrubbing) return;
+      if (el.wpVideo && el.wpVideo.paused) return;
+      chromeTimer = setTimeout(() => {
+        if (menuOpen || scrubbing) return;
+        if (el.watchPlayer) el.watchPlayer.classList.remove("wp-chrome-on");
+      }, 2400);
+    }
+
+    function setMenuOpen(on) {
+      menuOpen = !!on;
+      if (el.wpMenu) el.wpMenu.classList.toggle("hidden", !menuOpen);
+      if (el.wpMore) el.wpMore.setAttribute("aria-expanded", menuOpen ? "true" : "false");
+      showChrome(menuOpen);
+    }
+
+    function paintTransport() {
+      const v = el.wpVideo;
+      const dur = v && isFinite(v.duration) ? v.duration : 0;
+      const t = v ? (v.currentTime || 0) : 0;
+      const paused = !v || v.paused || v.ended;
+      if (el.wpPlay) {
+        el.wpPlay.textContent = paused ? "\u25B6" : "\u275A\u275A";
+        el.wpPlay.setAttribute("aria-label", paused ? "Play" : "Pause");
+        el.wpPlay.title = paused ? "Play (Space)" : "Pause (Space)";
+      }
+      if (el.wpTime) el.wpTime.textContent = fmtTime(t) + " / " + fmtTime(dur);
+      if (el.wpSeek && !scrubbing) {
+        const pct = dur > 0 ? (t / dur) * 100 : 0;
+        el.wpSeek.value = String(dur > 0 ? Math.round((t / dur) * SEEK_MAX) : 0);
+        el.wpSeek.style.setProperty("--wp-played", pct + "%");
+      }
+      if (el.wpMute) {
+        const muted = !!(v && v.muted);
+        el.wpMute.textContent = muted ? "OFF" : "\u266A";
+        el.wpMute.setAttribute("aria-label", muted ? "Unmute" : "Mute");
+        el.wpMute.title = muted ? "Unmute (M)" : "Mute (M)";
+        el.wpMute.classList.toggle("is-off", muted);
+      }
+    }
+
+    function togglePlay() {
+      if (!el.wpVideo) return;
+      if (el.wpVideo.paused || el.wpVideo.ended) {
+        el.wpVideo.play().catch(() => {});
+      } else {
+        el.wpVideo.pause();
+      }
+      paintTransport();
+      showChrome(el.wpVideo.paused);
+    }
+
+    function seekTo(frac) {
+      if (!el.wpVideo || !isFinite(el.wpVideo.duration) || el.wpVideo.duration <= 0) return;
+      el.wpVideo.currentTime = Math.max(0, Math.min(1, frac)) * el.wpVideo.duration;
+      paintTransport();
+      syncOverlay();
+    }
+
+    function nudge(seconds) {
+      if (!el.wpVideo || !isFinite(el.wpVideo.duration)) return;
+      el.wpVideo.currentTime = Math.max(0, Math.min(el.wpVideo.duration, (el.wpVideo.currentTime || 0) + seconds));
+      paintTransport();
+      syncOverlay();
+      showChrome();
+    }
+
+    function toggleMute() {
+      if (!el.wpVideo) return;
+      el.wpVideo.muted = !el.wpVideo.muted;
+      paintTransport();
+      showChrome();
+    }
+
+    function toggleFs() {
+      const root = el.watchPlayer;
+      if (!root) return;
+      const doc = document;
+      const active = doc.fullscreenElement || doc.webkitFullscreenElement;
+      if (active) {
+        const exit = doc.exitFullscreen || doc.webkitExitFullscreen;
+        if (exit) exit.call(doc);
+      } else {
+        const req = root.requestFullscreen || root.webkitRequestFullscreen;
+        if (req) req.call(root);
+      }
+      showChrome();
+    }
+
+    function bindVideo() {
+      if (bound || !el.wpVideo) return;
+      bound = true;
+      ["timeupdate", "seeked", "loadedmetadata", "play", "pause", "ended", "resize"].forEach((ev) => {
+        el.wpVideo.addEventListener(ev, () => {
+          if (ev === "play" || ev === "pause" || ev === "ended") {
+            paintTransport();
+            showChrome(ev !== "play");
+          } else if (ev === "timeupdate" || ev === "seeked" || ev === "loadedmetadata") {
+            paintTransport();
+          }
+          syncOverlay();
+        });
+      });
+      if (el.watchPlayer) {
+        el.watchPlayer.addEventListener("mousemove", () => showChrome());
+        el.watchPlayer.addEventListener("pointerdown", () => showChrome());
+      }
+      if (el.wpVideo) {
+        el.wpVideo.addEventListener("click", (e) => {
+          e.preventDefault();
+          togglePlay();
+        });
+      }
+      if (!ovRO && typeof ResizeObserver !== "undefined" && el.wpOverlay) {
+        ovRO = new ResizeObserver(() => WatchOverlay.layout(el.wpOverlay));
+        if (el.wpOverlay.parentElement) ovRO.observe(el.wpOverlay.parentElement);
+      }
+    }
+
+    async function open(runId, preferredKey) {
+      if (!runId || !el.watchPlayer) return;
+      try {
+        const r = await fetch("/api/render/run/" + encodeURIComponent(runId));
+        if (!r.ok) throw new Error("HTTP " + r.status);
+        run = await r.json();
+      } catch (err) {
+        console.warn("[WATCH] load failed:", err);
+        showRendererToast("Couldn\u2019t open that run");
+        return;
+      }
+      const art = (run && run.artifacts) || {};
+      const avail = available();
+      key = (preferredKey && art[preferredKey]) ? preferredKey
+        : (avail.length ? avail[0].id : null);
+      lastOvKey = "";
+      setMenuOpen(false);
+      bindVideo();
+      el.watchPlayer.classList.remove("hidden");
+      paint();
+      paintTransport();
+      showChrome(true);
+      syncOverlay();
+      if (key) { try { el.wpVideo.play().catch(() => {}); } catch (_) {} }
+    }
+
+    function close() {
+      setMenuOpen(false);
+      if (chromeTimer) { clearTimeout(chromeTimer); chromeTimer = null; }
+      const doc = document;
+      const active = doc.fullscreenElement || doc.webkitFullscreenElement;
+      if (active && el.watchPlayer && (active === el.watchPlayer || el.watchPlayer.contains(active))) {
+        const exit = doc.exitFullscreen || doc.webkitExitFullscreen;
+        if (exit) { try { exit.call(doc); } catch (_) {} }
+      }
+      if (el.wpVideo) {
+        try { el.wpVideo.pause(); } catch (_) {}
+        el.wpVideo.removeAttribute("src");
+        try { el.wpVideo.load(); } catch (_) {}
+      }
+      WatchOverlay.clear(el.wpOverlay);
+      lastOvKey = "";
+      if (el.watchPlayer) el.watchPlayer.classList.add("hidden");
+      run = null;
+      key = null;
+    }
+
+    function setKey(k) {
+      const art = (run && run.artifacts) || {};
+      if (!art[k]) return;
+      key = k;
+      lastOvKey = "";
+      if (el.wpVideo) {
+        el.wpVideo.src = "/api/render/file/" + art[k];
+        try { el.wpVideo.load(); el.wpVideo.play().catch(() => {}); } catch (_) {}
+      }
+      setMenuOpen(false);
+      paintSeg();
+      paintTransport();
+      syncOverlay();
+    }
+
+    function paintSegHost(host, itemClass, role) {
+      if (!host) return;
+      const art = (run && run.artifacts) || {};
+      host.innerHTML = "";
+      VARIANTS.forEach((v) => {
+        if (host === el.wpCuts && !art[v.id]) return;
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = itemClass + (v.id === key ? " active" : "");
+        b.setAttribute("role", role);
+        b.setAttribute("aria-checked", v.id === key ? "true" : "false");
+        b.textContent = v.label;
+        b.title = v.title;
+        b.disabled = !art[v.id];
+        b.addEventListener("click", () => setKey(v.id));
+        host.appendChild(b);
+      });
+    }
+
+    function paintSeg() {
+      paintSegHost(el.wpCuts, "wp-cut", "tab");
+      paintSegHost(el.wpVariant, "wp-menu-item", "menuitemradio");
+    }
+
+    function paint() {
+      if (!run) return;
+      const m = run.models || {};
+      if (el.wpTitle) el.wpTitle.textContent = "WATCH";
+      if (el.wpModels) {
+        el.wpModels.textContent = [
+          m.image_model + (m.image_size ? " @ " + m.image_size : ""),
+          m.text_model, run.mode,
+        ].filter(Boolean).join("  \u00b7  ");
+      }
+      const art = run.artifacts || {};
+      const has = !!(key && art[key]);
+      if (el.wpVideo) {
+        el.wpVideo.classList.toggle("hidden", !has);
+        if (has) { el.wpVideo.src = "/api/render/file/" + art[key]; try { el.wpVideo.load(); } catch (_) {} }
+      }
+      if (el.wpEmpty) el.wpEmpty.classList.toggle("hidden", has);
+      paintSeg();
+      paintTransport();
+      syncOverlay();
+    }
+
+    function onKey(e) {
+      if (!visible()) return false;
+      if (e.key === "Escape") {
+        if (menuOpen) { setMenuOpen(false); return true; }
+        close();
+        return true;
+      }
+      if (e.key === " " || e.key === "Spacebar") { togglePlay(); return true; }
+      if (e.key === "ArrowLeft") { nudge(-5); return true; }
+      if (e.key === "ArrowRight") { nudge(5); return true; }
+      if (e.key === "f" || e.key === "F") { toggleFs(); return true; }
+      if (e.key === "m" || e.key === "M") { toggleMute(); return true; }
+      return false;
+    }
+
+    function init() {
+      if (!el.wpCuts && el.watchPlayer) {
+        const top = el.watchPlayer.querySelector(".wp-top");
+        const cuts = document.createElement("div");
+        cuts.id = "wp-cuts";
+        cuts.className = "wp-cuts";
+        cuts.setAttribute("role", "tablist");
+        cuts.setAttribute("aria-label", "Which cut");
+        if (top && el.wpTitle && el.wpTitle.parentNode === top) {
+          top.insertBefore(cuts, el.wpTitle.nextSibling);
+        } else if (top) {
+          top.appendChild(cuts);
+        }
+        el.wpCuts = cuts;
+      }
+      if (el.wpClose) el.wpClose.addEventListener("click", close);
+      if (el.wpMore) el.wpMore.addEventListener("click", (e) => {
+        e.stopPropagation();
+        setMenuOpen(!menuOpen);
+      });
+      if (el.wpMenu) el.wpMenu.addEventListener("click", (e) => e.stopPropagation());
+      if (el.watchPlayer) {
+        el.watchPlayer.addEventListener("click", () => { if (menuOpen) setMenuOpen(false); });
+      }
+      if (el.wpReview) el.wpReview.addEventListener("click", () => {
+        const id = run && run.id;
+        close();
+        if (id) Review.open(id);
+      });
+      if (el.wpPlay) el.wpPlay.addEventListener("click", (e) => { e.stopPropagation(); togglePlay(); });
+      if (el.wpMute) el.wpMute.addEventListener("click", (e) => { e.stopPropagation(); toggleMute(); });
+      if (el.wpFs) el.wpFs.addEventListener("click", (e) => { e.stopPropagation(); toggleFs(); });
+      if (el.wpSeek) {
+        el.wpSeek.addEventListener("pointerdown", () => { scrubbing = true; showChrome(true); });
+        el.wpSeek.addEventListener("input", () => {
+          scrubbing = true;
+          seekTo((Number(el.wpSeek.value) || 0) / SEEK_MAX);
+          showChrome(true);
+        });
+        const endScrub = () => { scrubbing = false; showChrome(); };
+        el.wpSeek.addEventListener("pointerup", endScrub);
+        el.wpSeek.addEventListener("change", endScrub);
+      }
+    }
+
+    return { open, close, init, visible, onKey, syncOverlay };
+  })();
+
+  // ── WATCH FILM ─────────────────────────────────────────────────────────
+  // Turns a Watch render into an animated FILM instead of a slideshow. The
+  // server-side stills run is unchanged: it still drives the same endpoints and
+  // writes the same frames/flipbooks. In parallel, when PICTURE = Live and the
+  // world model is reachable, this drives the Reactor stream INSIDE the Watch TV
+  // from each arriving VIEW still, records that live video, and uploads it as
+  // the run's Film cut. If Reactor is unavailable, the tab closes, or recording
+  // fails, nothing here fires and the run falls back to today's flipbook film.
+  const WatchFilm = (function () {
+    // How long to keep trying to start the recorder (waiting for the first live
+    // frame) before giving up on this run and letting the flipbook be the film.
+    const RECORD_START_TRIES = 40; // ~40 polls · 800ms ≈ 30s
+    const MIN_UPLOAD_BYTES = 4096; // smaller than this is an empty/garbage clip
+
+    let active = false;
+    let jobId = null;
+    let recorder = null;
+    let recording = false;
+    let chunks = [];
+    let recordStartWall = 0;
+    let sceneMarks = [];       // {turn, wall} — when each scene went live
+    let lastFrameKey = null;   // last VIEW frame we steered the world onto
+    let startTries = 0;
+    let moved = false;         // reactor nodes are parked in the Watch TV
+    const homes = [];          // [{node, parent, next}] to restore on teardown
+
+    function reactorOk() {
+      try {
+        return !!(window.ReactorRenderer && typeof window.ReactorRenderer.applyScene === "function");
+      } catch (_) { return false; }
+    }
+
+    function reactorNodes() {
+      return [
+        document.getElementById("reactor-video"),
+        document.getElementById("reactor-freeze"),
+        document.getElementById("reactor-fade"),
+      ].filter(Boolean);
+    }
+
+    // Park the live-video stack inside the Watch TV so the stream plays in the
+    // frame (over the still floor, under the chrome) instead of behind the
+    // opaque Watch backdrop. Moving a live <video> preserves its media stream.
+    function mount() {
+      if (moved) return;
+      const tv = document.getElementById("watch-tv");
+      if (!tv) return;
+      reactorNodes().forEach((node) => {
+        homes.push({ node: node, parent: node.parentNode, next: node.nextSibling });
+        tv.appendChild(node);
+      });
+      document.body.classList.add("watch-live");
+      moved = true;
+    }
+
+    function unmount() {
+      document.body.classList.remove("watch-live");
+      while (homes.length) {
+        const h = homes.pop();
+        if (!h.node) continue;
+        try {
+          if (h.next && h.next.parentNode === h.parent) h.parent.insertBefore(h.node, h.next);
+          else if (h.parent) h.parent.appendChild(h.node);
+        } catch (_) {}
+      }
+      moved = false;
+    }
+
+    // Best-effort: make sure the world model is connected. Play usually has it
+    // live already; this covers entering Watch on a still floor.
+    function ensureLive() {
+      if (!reactorOk()) return;
+      try {
+        if (typeof Renderer !== "undefined" && Renderer.upgradeToLive) {
+          Renderer.upgradeToLive({ reason: "watch-film" });
+        } else if (window.ReactorRenderer.enable) {
+          window.ReactorRenderer.enable();
+        }
+      } catch (_) {}
+    }
+
+    function turnOfFrame(key) {
+      const m = /turn_(\d+)_/.exec(String(key || ""));
+      return m ? parseInt(m[1], 10) : null;
+    }
+
+    function promptForTurn(beats, turn) {
+      const list = beats || [];
+      let hit = null;
+      for (let i = 0; i < list.length; i++) {
+        if (list[i] && Number(list[i].turn) === Number(turn)) { hit = list[i]; break; }
+      }
+      // Fall back to the newest beat's prompt, then whatever the world is
+      // already running, so a scene without a recorded prompt still re-steers.
+      const p = (hit && (hit.image_prompt || hit.prompt))
+        || (list.length && (list[list.length - 1].image_prompt || list[list.length - 1].prompt))
+        || "";
+      return String(p || "");
+    }
+
+    // Re-anchor the live world onto the still the run just produced. This is a
+    // SOFT transition on purpose: a new guide image re-anchors the stream by
+    // blending (continuous frames, no teardown) rather than cutting to black.
+    // The recording stays one unbroken take that drifts scene to scene like a
+    // movie, instead of a slideshow of hard cuts with black gaps between them.
+    function steer(prompt, imageUrl, turn) {
+      if (!reactorOk() || (!prompt && !imageUrl)) return;
+      try {
+        window.ReactorRenderer.applyScene({
+          prompt: prompt || (window.ReactorRenderer.getPrompt && window.ReactorRenderer.getPrompt()) || "",
+          imageUrl: imageUrl || null,
+          hardTransition: false,
+        });
+      } catch (_) {}
+      sceneMarks.push({ turn: turn, wall: Date.now() });
+    }
+
+    function pickMime() {
+      const want = [
+        "video/webm;codecs=vp9,opus", "video/webm;codecs=vp9",
+        "video/webm;codecs=vp8,opus", "video/webm;codecs=vp8",
+        "video/webm",
+      ];
+      try {
+        if (typeof MediaRecorder === "undefined" || !MediaRecorder.isTypeSupported) return "";
+        for (let i = 0; i < want.length; i++) {
+          if (MediaRecorder.isTypeSupported(want[i])) return want[i];
+        }
+      } catch (_) {}
+      return "";
+    }
+
+    function ensureRecording() {
+      if (recording || recorder) return;
+      if (typeof MediaRecorder === "undefined") return;
+      const video = document.getElementById("reactor-video");
+      const showing = reactorOk() && window.ReactorRenderer.isShowing
+        ? window.ReactorRenderer.isShowing()
+        : !!(video && video.videoWidth > 0);
+      if (!video || !showing) {
+        startTries += 1;
+        return; // next poll retries; caps below so a dead stream isn't forever
+      }
+      let source = null;
+      try {
+        source = video.captureStream ? video.captureStream()
+          : (video.mozCaptureStream ? video.mozCaptureStream() : null);
+      } catch (_) { source = null; }
+      const vtracks = source && source.getVideoTracks ? source.getVideoTracks() : [];
+      if (!vtracks.length) {
+        startTries += 1;
+        return;
+      }
+      // Video only — the film is meant to loop silently as a background, so we
+      // never carry the world's audio track into the recording.
+      let stream = null;
+      try { stream = new MediaStream(vtracks); }
+      catch (_) { stream = source; }
+      try {
+        const mime = pickMime();
+        recorder = mime
+          ? new MediaRecorder(stream, { mimeType: mime, videoBitsPerSecond: 6000000 })
+          : new MediaRecorder(stream);
+      } catch (_) { recorder = null; return; }
+      chunks = [];
+      recorder.ondataavailable = (e) => { if (e.data && e.data.size) chunks.push(e.data); };
+      try { recorder.start(1000); } catch (_) { recorder = null; return; }
+      recording = true;
+      recordStartWall = Date.now();
+    }
+
+    // Timeline the player uses to place overlays by wall-clock time rather than
+    // a fixed page cadence. Only scenes that appeared after recording began.
+    function buildTimeline() {
+      const out = [];
+      sceneMarks.forEach((m) => {
+        if (!recordStartWall || m.wall < recordStartWall) return;
+        out.push({ t: Math.max(0, (m.wall - recordStartWall) / 1000), turn: m.turn, phase: "scene" });
+      });
+      return out;
+    }
+
+    function upload(id) {
+      const blob = chunks.length ? new Blob(chunks, { type: (chunks[0] && chunks[0].type) || "video/webm" }) : null;
+      chunks = [];
+      if (!id || !blob || blob.size < MIN_UPLOAD_BYTES) return;
+      const fd = new FormData();
+      fd.append("job", id);
+      fd.append("timeline", JSON.stringify(buildTimeline()));
+      fd.append("film", blob, "playtest_live.webm");
+      fetch("/api/render/live", { method: "POST", body: fd })
+        .then((r) => { if (!r.ok) throw new Error("HTTP " + r.status); })
+        .catch((err) => console.warn("[WATCH FILM] upload failed:", err));
+    }
+
+    function stopRecording(done) {
+      if (recorder && recording) {
+        const rec = recorder;
+        recorder = null;
+        recording = false;
+        try {
+          rec.onstop = () => { try { done(); } catch (_) {} };
+          rec.stop();
+          return;
+        } catch (_) {}
+      }
+      recorder = null;
+      recording = false;
+      try { done(); } catch (_) {}
+    }
+
+    // Put Play back exactly as it was: re-anchor the world on Play's last scene
+    // and return the video stack to the body layer.
+    function teardown() {
+      unmount();
+      try {
+        if (reactorOk() && typeof Renderer !== "undefined" && Renderer.lastScene && Renderer.lastScene.prompt) {
+          window.ReactorRenderer.applyScene(Object.assign({}, Renderer.lastScene, { hardTransition: true }));
+        }
+      } catch (_) {}
+    }
+
+    function currentScene() {
+      try {
+        if (typeof Renderer !== "undefined" && Renderer.liveScene) {
+          const s = Renderer.liveScene();
+          if (s && (s.prompt || s.imageUrl)) return s;
+        }
+      } catch (_) {}
+      try {
+        if (typeof Renderer !== "undefined" && Renderer.lastScene) return Renderer.lastScene;
+      } catch (_) {}
+      let imageUrl = "";
+      try {
+        const ghost = document.getElementById("watch-tv-ghost");
+        const bg = ghost && ghost.style.backgroundImage;
+        const m = bg && /url\(["']?([^"')]+)["']?\)/.exec(bg);
+        if (m) imageUrl = m[1];
+      } catch (_) {}
+      let prompt = "";
+      try { prompt = (window.ReactorRenderer.getPrompt && window.ReactorRenderer.getPrompt()) || ""; } catch (_) {}
+      return { prompt: prompt, imageUrl: imageUrl || null, hardTransition: false };
+    }
+
+    // Cinema preview: put the live world in the Watch TV from the current
+    // still, without recording. Kept for a live picture while a run is
+    // armed; pressing WATCH starts a real run instead of sitting here.
+    function preview() {
+      if (active && jobId) return;
+      if (!reactorOk()) return;
+      active = true;
+      jobId = null;
+      recorder = null; recording = false; chunks = [];
+      recordStartWall = 0; sceneMarks = []; lastFrameKey = null;
+      startTries = RECORD_START_TRIES + 1;
+      mount();
+      ensureLive();
+      const scene = currentScene();
+      steer(scene.prompt, scene.imageUrl, 0);
+    }
+
+    function begin(job) {
+      if (active) abort();
+      if (!reactorOk()) return;
+      active = true;
+      jobId = (job && job.id) || null;
+      recorder = null; recording = false; chunks = [];
+      recordStartWall = 0; sceneMarks = []; lastFrameKey = null; startTries = 0;
+      mount();
+      ensureLive();
+    }
+
+    function onPoll(job) {
+      if (!active || !job || job.id !== jobId) return;
+      const frames = job.frames || [];
+      const newest = frames.length ? frames[frames.length - 1] : null;
+      if (newest && newest !== lastFrameKey) {
+        lastFrameKey = newest;
+        const turn = turnOfFrame(newest);
+        steer(promptForTurn(job.beats, turn), "/api/render/file/" + newest, turn);
+      }
+      if (!recording && startTries <= RECORD_START_TRIES) ensureRecording();
+    }
+
+    function finish(job) {
+      if (!active || (job && job.id !== jobId)) return;
+      const id = jobId;
+      active = false;
+      stopRecording(() => upload(id));
+      teardown();
+    }
+
+    // Watch left / tab hidden mid-run: save whatever was recorded and restore
+    // Play. The server-side stills run keeps going regardless.
+    function abort() {
+      if (!active) return;
+      const id = jobId;
+      active = false;
+      stopRecording(() => upload(id));
+      teardown();
+    }
+
+    function init() {
+      try {
+        document.addEventListener("visibilitychange", () => {
+          if (document.hidden && active) abort();
+        });
+      } catch (_) {}
+    }
+
+    return { begin, preview, onPoll, finish, abort, init, isActive: () => active };
+  })();
+  try { window.__WatchFilm = WatchFilm; } catch (_) {}
+
+  // ── WATCH MODE ─────────────────────────────────────────────────────────
+  // A cinema for the current Experience — same still Play uses, a WATCH
+  // hero, no playtest strip on the landing. WATCH starts a generated run.
+  // Previous films play from RUNS. Entering never starts a live game turn.
+  const WatchMode = (function () {
+    const homes = { form: null, panel: null, past: null, actions: null, verdict: null };
+    let deskPhase = null;
+    let selectedId = null;
+    let selectedPlayable = true;
+
+    function deskOpen() {
+      return !!(el.watchMode && el.watchMode.classList.contains("watch-desk-open"));
+    }
+
+    function runsOpen() {
+      return !!(el.watchMode && el.watchMode.classList.contains("watch-runs-open"));
+    }
+
+    function setDeskOpen(open) {
+      if (!el.watchMode) return;
+      if (open) setRunsOpen(false);
+      el.watchMode.classList.toggle("watch-desk-open", !!open);
+      if (el.watchLibraryToggle) {
+        el.watchLibraryToggle.setAttribute("aria-expanded", open ? "true" : "false");
+      }
+      if (el.watchDesk) {
+        if (open) el.watchDesk.removeAttribute("inert");
+        else el.watchDesk.setAttribute("inert", "");
+      }
+    }
+
+    function setRunsOpen(open) {
+      if (!el.watchMode) return;
+      if (open) setDeskOpen(false);
+      el.watchMode.classList.toggle("watch-runs-open", !!open);
+      if (el.watchRunsToggle) {
+        el.watchRunsToggle.setAttribute("aria-expanded", open ? "true" : "false");
+      }
+      if (el.watchReel) {
+        if (open) el.watchReel.removeAttribute("inert");
+        else el.watchReel.setAttribute("inert", "");
+      }
+    }
+
+    function toggleDesk() {
+      setDeskOpen(!deskOpen());
+    }
+
+    function toggleRuns() {
+      setRunsOpen(!runsOpen());
+    }
+
+    function syncDesk(which) {
+      if (!document.body.classList.contains("mode-watch")) return;
+      deskPhase = which;
+      // SETUP stays collapsed on enter. Starting or finishing a run tucks
+      // the row so the picture owns the room.
+      if (which === "progress" || which === "done") setDeskOpen(false);
+      if (el.watchReview) {
+        const on = which === "done";
+        el.watchReview.hidden = !on;
+        el.watchReview.setAttribute("aria-hidden", on ? "false" : "true");
+      }
+    }
+
+    function rememberHome(node) {
+      if (!node || !node.parentNode) return null;
+      return { parent: node.parentNode, next: node.nextSibling };
+    }
+
+    function restoreHome(node, home) {
+      if (!node || !home || !home.parent) return;
+      if (home.next && home.next.parentNode === home.parent) {
+        home.parent.insertBefore(node, home.next);
+      } else {
+        home.parent.appendChild(node);
+      }
+    }
+
+    function markHist(id) {
+      if (!el.renderHistory) return;
+      el.renderHistory.querySelectorAll(".render-hist").forEach((n) => {
+        n.classList.toggle("is-selected", !!(id && n.dataset.runId === id));
+      });
+    }
+
+    function showWatchHero(on) {
+      if (!el.watchTvPlay) return;
+      el.watchTvPlay.hidden = !on;
+      el.watchTvPlay.textContent = selectedId ? "PLAY" : "WATCH";
+      el.watchTvPlay.setAttribute("aria-hidden", on ? "false" : "true");
+      el.watchTvPlay.setAttribute("aria-label", selectedId ? "Play this run" : "Watch this Experience");
+    }
+
+    function paintExperienceStill(url) {
+      if (el.watchTvIdle) {
+        el.watchTvIdle.classList.toggle("has-experience", !!url);
+        el.watchTvIdle.classList.remove("has-selected");
+      }
+      showWatchHero(true);
+      try {
+        if (typeof Signal !== "undefined" && Signal.paintWatchGhost) {
+          Signal.paintWatchGhost(url || "");
+        }
+      } catch (_) {}
+    }
+
+    async function currentExperience() {
+      let url = "";
+      let name = "";
+      try { if (Signal.warm) await Signal.warm(); } catch (_) {}
+      try {
+        const data = await getJSON("/api/experiences");
+        const list = (data && data.data && data.data.experiences) || [];
+        const active = (data && data.data && data.data.active) || "";
+        const row = list.find((r) => r && (r.id === active || r.active)) || list[0] || null;
+        if (row) {
+          url = row.preview_url || "";
+          name = row.name || row.id || "";
+          if (row.sound) {
+            try { if (window.Sound && window.Sound.configure) window.Sound.configure(row.sound); } catch (_) {}
+          }
+        }
+      } catch (_) {}
+      if (!url) {
+        try {
+          const s = await getJSON("/api/status");
+          url = (s && (s.current_image_url || s.setting_plate_url)) || "";
+        } catch (_) {}
+      }
+      if (!url) {
+        try { url = (Signal.currentPlate && Signal.currentPlate()) || ""; } catch (_) {}
+      }
+      if (!url) {
+        try { url = (Renderer.lastScene && Renderer.lastScene.imageUrl) || ""; } catch (_) {}
+      }
+      return { url: url || "", name: name || "" };
+    }
+
+    async function paintExperience() {
+      const exp = await currentExperience();
+      if (el.watchSub) el.watchSub.textContent = exp.name || "";
+      paintExperienceStill(exp.url);
+      if (exp.url) {
+        try { Signal.hold(exp.url); } catch (_) {}
+      }
+    }
+
+    function paintSelectedStill(run) {
+      const url = run && run.thumbnail ? "/api/render/file/" + run.thumbnail : "";
+      if (el.watchTvIdle) {
+        el.watchTvIdle.classList.toggle("has-selected", !!url);
+        if (url) el.watchTvIdle.classList.remove("has-experience");
+      }
+      showWatchHero(!!run || !!(el.watchTvIdle && el.watchTvIdle.classList.contains("has-experience")));
+      if (!url) return;
+      try {
+        if (typeof Signal !== "undefined" && Signal.paintWatchGhost) {
+          Signal.paintWatchGhost(url);
+        }
+      } catch (_) {}
+    }
+
+    function selectRun(run) {
+      selectedId = run && run.id ? run.id : null;
+      selectedPlayable = !run || run.has_video === undefined ? true : !!run.has_video;
+      markHist(selectedId);
+      if (run) {
+        paintSelectedStill(run);
+        setRunsOpen(false);
+      } else paintExperience();
+    }
+
+    function syncSelected(runs) {
+      if (!document.body.classList.contains("mode-watch")) return;
+      const list = runs || [];
+      if (selectedId) {
+        const keep = list.find((r) => r && r.id === selectedId);
+        if (keep) { selectRun(keep); return; }
+        selectedId = null;
+      }
+      paintExperience();
+    }
+
+    function playSelected() {
+      if (!selectedId) return;
+      if (selectedPlayable) WatchPlayer.open(selectedId);
+      else Review.open(selectedId);
+    }
+
+    function beginWatch() {
+      // A run picked from RUNS: play that film. Otherwise WATCH means a
+      // new generated run, not a replay of whatever finished last.
+      if (selectedId) {
+        playSelected();
+        return;
+      }
+      try { if (typeof Render !== "undefined" && Render.start) Render.start(); } catch (_) {}
+    }
+
+    function placeExtras() {
+      if (!document.body.classList.contains("mode-watch")) return;
+      const actions = document.querySelector(".render-done-actions");
+      const review = el.watchReview;
+      if (review && el.renderVerdict) {
+        if (!homes.verdict) homes.verdict = rememberHome(el.renderVerdict);
+        if (el.renderVerdict.parentNode !== review) {
+          review.insertBefore(el.renderVerdict, review.firstChild);
+        }
+      }
+      if (review && actions) {
+        if (!homes.actions) homes.actions = rememberHome(actions);
+        const cuts = el.watchReviewCuts;
+        if (actions.parentNode !== review) {
+          if (cuts) review.insertBefore(actions, cuts);
+          else review.appendChild(actions);
+        }
+      }
+      if (el.renderPast && el.watchReel) {
+        if (!homes.past) homes.past = rememberHome(el.renderPast);
+        if (el.renderPast.parentNode !== el.watchReel) el.watchReel.appendChild(el.renderPast);
+      }
+    }
+
+    // Re-parent the RENDER form onto the SETUP strip and the panel into
+    // the TV. Moving a live node keeps its listeners and identity. Homes
+    // are remembered so leaving Watch can put the Play-mode drawer back.
+    function mount() {
+      if (!homes.form && el.renderForm) homes.form = rememberHome(el.renderForm);
+      if (!homes.panel && el.renderPanel) homes.panel = rememberHome(el.renderPanel);
+      if (el.watchDesk && el.renderForm) {
+        el.watchDesk.appendChild(el.renderForm);
+      }
+      if (el.watchGenerateMount && el.renderPanel) {
+        el.watchGenerateMount.appendChild(el.renderPanel);
+      }
+      placeExtras();
+    }
+
+    function unmount() {
+      restoreHome(el.renderForm, homes.form);
+      restoreHome(el.renderPanel, homes.panel);
+      restoreHome(el.renderPast, homes.past);
+      restoreHome(el.renderVerdict, homes.verdict);
+      restoreHome(document.querySelector(".render-done-actions"), homes.actions);
+      if (el.watchReview) {
+        el.watchReview.hidden = true;
+        el.watchReview.setAttribute("aria-hidden", "true");
+      }
+      deskPhase = null;
+      selectedId = null;
+      setDeskOpen(false);
+      if (el.watchTvIdle) el.watchTvIdle.classList.remove("has-selected");
+      if (el.watchTvPlay) {
+        el.watchTvPlay.hidden = true;
+        el.watchTvPlay.setAttribute("aria-hidden", "true");
+      }
+    }
+
+    function open() {
+      mount();
+      deskPhase = null;
+      selectedId = null;
+      if (el.watchMode) el.watchMode.classList.remove("watch-sitting");
+      setDeskOpen(false);
+      setRunsOpen(false);
+      // Idle TV first. A job already running swaps to progress on poll; a
+      // finished film stays in RUNS instead of taking the room.
+      try { if (Render && Render.show) Render.show("form"); } catch (_) {}
+      try { if (typeof Signal !== "undefined" && Signal.lock) Signal.lock("watch"); } catch (_) {}
+      paintExperience();
+      // Turn the RENDER panel "on" (loads options + status + history and starts
+      // polling) if it isn't already — reusing the panel's own entry path.
+      try { if (Render && !Render.visible()) Render.toggle(); } catch (_) {}
+    }
+
+    function leave() {
+      setDeskOpen(false);
+      setRunsOpen(false);
+      if (el.watchMode) el.watchMode.classList.remove("watch-sitting");
+      // A live film in progress: save what was recorded and hand the world
+      // model back to Play before we tear the studio down.
+      try { if (typeof WatchFilm !== "undefined") WatchFilm.abort(); } catch (_) {}
+      // Stop the panel polling when we step out of the studio.
+      try { if (Render && Render.visible()) Render.hide(); } catch (_) {}
+      unmount();
+    }
+
+    function onKey(e) {
+      if (!document.body.classList.contains("mode-watch")) return false;
+      if (e.key !== "Escape") return false;
+      if (deskOpen()) {
+        setDeskOpen(false);
+        return true;
+      }
+      if (runsOpen()) {
+        setRunsOpen(false);
+        return true;
+      }
+      if (el.watchMode && el.watchMode.classList.contains("watch-sitting")) {
+        el.watchMode.classList.remove("watch-sitting");
+        return true;
+      }
+      try { StartMenu.returnToPicker(); } catch (_) {}
+      return true;
+    }
+
+    function ensureReviewDom() {
+      const tv = document.getElementById("watch-tv");
+      if (!el.watchReview && tv) {
+        const dock = document.createElement("div");
+        dock.id = "watch-review";
+        dock.className = "watch-review";
+        dock.hidden = true;
+        dock.setAttribute("aria-hidden", "true");
+        const cuts = document.createElement("div");
+        cuts.id = "watch-review-cuts";
+        cuts.className = "watch-review-cuts";
+        cuts.setAttribute("role", "tablist");
+        cuts.setAttribute("aria-label", "Review cuts");
+        dock.appendChild(cuts);
+        tv.appendChild(dock);
+        el.watchReview = dock;
+        el.watchReviewCuts = cuts;
+      }
+      if (!el.watchReviewCuts && el.watchReview) {
+        const cuts = document.createElement("div");
+        cuts.id = "watch-review-cuts";
+        cuts.className = "watch-review-cuts";
+        cuts.setAttribute("role", "tablist");
+        cuts.setAttribute("aria-label", "Review cuts");
+        el.watchReview.appendChild(cuts);
+        el.watchReviewCuts = cuts;
+      }
+    }
+
+    function init() {
+      ensureReviewDom();
+      if (!el.watchTvPlay && el.watchTvIdle) {
+        const b = document.createElement("button");
+        b.id = "watch-tv-play";
+        b.className = "watch-tv-play";
+        b.type = "button";
+        b.hidden = true;
+        b.setAttribute("aria-hidden", "true");
+        b.textContent = "WATCH";
+        el.watchTvIdle.appendChild(b);
+        el.watchTvPlay = b;
+      }
+      if (el.watchMenu) el.watchMenu.addEventListener("click", () => StartMenu.returnToPicker());
+      if (!el.watchRunsToggle && el.watchLibraryToggle && el.watchLibraryToggle.parentNode) {
+        const wrap = el.watchLibraryToggle.parentNode;
+        if (!wrap.classList.contains("watch-handles")) {
+          const handles = document.createElement("div");
+          handles.id = "watch-handles";
+          handles.className = "watch-handles";
+          wrap.insertBefore(handles, el.watchLibraryToggle);
+          handles.appendChild(el.watchLibraryToggle);
+        }
+        const b = document.createElement("button");
+        b.id = "watch-runs-toggle";
+        b.className = "watch-desk-toggle";
+        b.type = "button";
+        b.title = "Previous runs";
+        b.setAttribute("aria-expanded", "false");
+        b.setAttribute("aria-controls", "watch-reel");
+        b.innerHTML = '<span class="watch-desk-toggle-lbl">RUNS</span>';
+        el.watchLibraryToggle.parentNode.appendChild(b);
+        el.watchRunsToggle = b;
+      }
+      if (el.watchLibraryToggle) {
+        el.watchLibraryToggle.addEventListener("click", (e) => {
+          e.stopPropagation();
+          toggleDesk();
+        });
+      }
+      if (el.watchRunsToggle) {
+        el.watchRunsToggle.addEventListener("click", (e) => {
+          e.stopPropagation();
+          toggleRuns();
+        });
+      }
+      if (el.watchTvPlay) {
+        el.watchTvPlay.addEventListener("click", (e) => {
+          e.stopPropagation();
+          beginWatch();
+        });
+      }
+      document.addEventListener("click", (e) => {
+        if (!document.body.classList.contains("mode-watch")) return;
+        if (document.body.classList.contains("world-editor-on")) return;
+        const t = e.target;
+        if (el.watchHandles && el.watchHandles.contains(t)) return;
+        if (el.watchLibraryToggle && el.watchLibraryToggle.contains(t)) return;
+        if (el.watchRunsToggle && el.watchRunsToggle.contains(t)) return;
+        if (el.editTab && el.editTab.contains(t)) return;
+        if (deskOpen()) {
+          if (el.watchDesk && el.watchDesk.contains(t)) return;
+          setDeskOpen(false);
+        }
+        if (runsOpen()) {
+          if (el.watchReel && el.watchReel.contains(t)) return;
+          setRunsOpen(false);
+        }
+      });
+    }
+
+    return {
+      open, leave, init, onKey, setDeskOpen, setRunsOpen, syncDesk, placeExtras,
+      selectRun, syncSelected,
+    };
+  })();
+
+  // ── SIGNAL ─────────────────────────────────────────────────────────────
+  // Last-run footage is the start-menu wallpaper. SOMEWHERE sits on top.
+  // Prefers the latest Watch video, then its GIF/frames, then the Play tape,
+  // then a single still. No paid generation.
+  const Signal = (function () {
+    const STILL_MS = 2400;
+    const VIDEO_RATE = 0.72;
+    const MAX_FRAMES = 24;
+    let playUrl = null;
+    let watchUrl = null;
+    let playFrames = [];
+    let watchFrames = [];
+    let playVideoUrl = "";
+    let watchVideoUrl = "";
+    let holdPlate = false;
+    let peekMode = null;
+    let hideTimer = null;
+    let cycleTimer = null;
+    let cycleIdx = 0;
+    let cycleList = [];
+    let cycleOnB = false;
+    let activeVideo = "";
+    let videoRaf = 0;
+
+    function reduceMotion() {
+      try { return window.matchMedia("(prefers-reduced-motion: reduce)").matches; }
+      catch (_) { return false; }
+    }
+
+    function decode(url) {
+      return new Promise((resolve) => {
+        if (!url) return resolve(null);
+        const img = new Image();
+        img.decoding = "async";
+        img.onload = () => resolve(url);
+        img.onerror = () => resolve(null);
+        img.src = url;
+      });
+    }
+
+    function bindEls() {
+      el.startBrand = document.getElementById("start-brand")
+        || document.querySelector("#start-menu .start-brand");
+      el.startSignal = document.getElementById("start-signal");
+      el.startSignalImg = document.getElementById("start-signal-img");
+      el.startSignalImgB = document.getElementById("start-signal-img-b");
+      el.startSignalVideo = document.getElementById("start-signal-video");
+      el.startSignalCanvas = document.getElementById("start-signal-canvas");
+    }
+
+    function ensureDom() {
+      bindEls();
+      const menu = document.getElementById("start-menu");
+      const brand = el.startBrand;
+      if (!menu || !brand) return;
+      if (!brand.id) brand.id = "start-brand";
+      if (el.startSignal && el.startSignal.parentElement !== menu) {
+        menu.insertBefore(el.startSignal, menu.firstChild);
+      }
+      if (!el.startSignal) {
+        const host = document.createElement("div");
+        host.id = "start-signal";
+        host.className = "start-signal";
+        host.setAttribute("aria-hidden", "true");
+        host.innerHTML =
+          '<video id="start-signal-video" class="start-signal-video" muted loop playsinline preload="none"></video>' +
+          '<canvas id="start-signal-canvas" class="start-signal-canvas"></canvas>' +
+          '<div id="start-signal-img" class="start-signal-img"></div>' +
+          '<div id="start-signal-img-b" class="start-signal-img"></div>';
+        menu.insertBefore(host, menu.firstChild);
+      }
+      if (brand.querySelector(".start-brand-knockout")) {
+        const word = ((brand.querySelector(".start-brand-type") || brand).textContent || "").trim() || "SOMEWHERE";
+        brand.innerHTML = '<span class="start-brand-type"></span>';
+        const type = brand.querySelector(".start-brand-type");
+        if (type) type.textContent = word;
+      }
+      bindEls();
+      el.startBrand = brand;
+    }
+
+    function markMedia(on) {
+      const menu = document.getElementById("start-menu");
+      if (menu) menu.classList.toggle("has-media", !!on);
+      if (el.startBrand) el.startBrand.classList.toggle("has-media", !!on);
+      if (el.startSignal) el.startSignal.classList.toggle("has-img", !!on);
+    }
+
+    function stopPump() {
+      if (videoRaf) { cancelAnimationFrame(videoRaf); videoRaf = 0; }
+    }
+
+    function pumpCanvas() {
+      videoRaf = 0;
+      const v = el.startSignalVideo;
+      const c = el.startSignalCanvas;
+      if (!v || !c || !el.startSignal || !el.startSignal.classList.contains("has-video")) return;
+      const box = el.startSignal.getBoundingClientRect();
+      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      const w = Math.max(1, Math.round(box.width * dpr));
+      const h = Math.max(1, Math.round(box.height * dpr));
+      if (c.width !== w) c.width = w;
+      if (c.height !== h) c.height = h;
+      const ctx = c.getContext("2d");
+      if (ctx && v.readyState >= 2 && v.videoWidth) {
+        const vw = v.videoWidth, vh = v.videoHeight;
+        const scale = Math.max(w / vw, h / vh);
+        const dw = vw * scale, dh = vh * scale;
+        ctx.drawImage(v, (w - dw) / 2, (h - dh) / 2, dw, dh);
+      }
+      videoRaf = requestAnimationFrame(pumpCanvas);
+    }
+
+    function stopVideo() {
+      const v = el.startSignalVideo;
+      stopPump();
+      if (!v) return;
+      try { v.pause(); } catch (_) {}
+      if (el.startSignal) el.startSignal.classList.remove("has-video");
+      if (v.getAttribute("src")) {
+        try { v.removeAttribute("src"); v.load(); } catch (_) {}
+      }
+      activeVideo = "";
+    }
+
+    function stopCycle() {
+      if (cycleTimer) { clearInterval(cycleTimer); cycleTimer = null; }
+      cycleList = [];
+      cycleIdx = 0;
+    }
+
+    function paintLayer(node, url) {
+      if (!node) return;
+      node.style.backgroundImage = url ? `url("${url}")` : "";
+    }
+
+    function showStill(url, instant) {
+      if (!el.startSignalImg) return;
+      if (!url) {
+        paintLayer(el.startSignalImg, "");
+        paintLayer(el.startSignalImgB, "");
+        el.startSignalImg.classList.remove("is-on");
+        if (el.startSignalImgB) el.startSignalImgB.classList.remove("is-on");
+        markMedia(false);
+        return;
+      }
+      markMedia(true);
+      const incoming = cycleOnB ? el.startSignalImg : el.startSignalImgB;
+      const outgoing = cycleOnB ? el.startSignalImgB : el.startSignalImg;
+      if (!el.startSignalImgB || instant || !outgoing || !outgoing.classList.contains("is-on")) {
+        paintLayer(el.startSignalImg, url);
+        el.startSignalImg.classList.add("is-on");
+        if (el.startSignalImgB) {
+          el.startSignalImgB.classList.remove("is-on");
+          paintLayer(el.startSignalImgB, "");
+        }
+        cycleOnB = false;
+        return;
+      }
+      paintLayer(incoming, url);
+      incoming.classList.add("is-on");
+      outgoing.classList.remove("is-on");
+      cycleOnB = !cycleOnB;
+    }
+
+    function startCycle(frames) {
+      stopCycle();
+      cycleList = (frames || []).filter(Boolean);
+      if (!cycleList.length) { showStill("", true); return; }
+      cycleIdx = 0;
+      showStill(cycleList[0], true);
+      if (cycleList.length < 2 || reduceMotion()) return;
+      cycleTimer = setInterval(() => {
+        cycleIdx = (cycleIdx + 1) % cycleList.length;
+        showStill(cycleList[cycleIdx], false);
+      }, STILL_MS);
+    }
+
+    function startVideo(url) {
+      const v = el.startSignalVideo;
+      if (!v || !url || reduceMotion()) return false;
+      stopCycle();
+      if (activeVideo === url && el.startSignal && el.startSignal.classList.contains("has-video")) {
+        try { v.play().catch(() => {}); } catch (_) {}
+        markMedia(true);
+        return true;
+      }
+      activeVideo = url;
+      v.src = url;
+      try { v.playbackRate = VIDEO_RATE; } catch (_) {}
+      if (el.startSignal) el.startSignal.classList.add("has-video");
+      markMedia(true);
+      stopPump();
+      const go = v.play();
+      if (go && go.catch) {
+        go.catch(() => {
+          if (el.startSignal) el.startSignal.classList.remove("has-video");
+          stopPump();
+          activeVideo = "";
+          startCycle(watchFrames.length ? watchFrames : playFrames);
+        });
+      }
+      return true;
+    }
+
+    function sourceFor(mode) {
+      const preferWatch = mode === "watch" || (!mode && (watchVideoUrl || watchFrames.length));
+      if (preferWatch) {
+        return {
+          video: watchVideoUrl,
+          frames: watchFrames.length ? watchFrames : (watchUrl ? [watchUrl] : playFrames),
+        };
+      }
+      return {
+        video: playVideoUrl,
+        frames: playFrames.length ? playFrames : (playUrl ? [playUrl] : watchFrames),
+      };
+    }
+
+    function apply() {
+      const src = sourceFor(peekMode);
+      if (src.video && startVideo(src.video)) return;
+      if (src.frames && src.frames.length) {
+        stopVideo();
+        startCycle(src.frames);
+        return;
+      }
+      stopVideo();
+      startCycle([]);
+    }
+
+    function paintWatchGhost(url) {
+      if (!el.watchTvIdle || !el.watchTvGhost) return;
+      if (!url) {
+        el.watchTvIdle.classList.remove("has-ghost");
+        el.watchTvGhost.style.backgroundImage = "";
+        return;
+      }
+      el.watchTvGhost.style.backgroundImage = `url("${url}")`;
+      el.watchTvIdle.classList.add("has-ghost");
+    }
+
+    function peek(mode) {
+      peekMode = mode || null;
+      document.body.classList.toggle("signal-peek-play", peekMode === "play");
+      document.body.classList.toggle("signal-peek-watch", peekMode === "watch");
+      apply();
+    }
+
+    async function decodeList(urls) {
+      const got = await Promise.all((urls || []).slice(0, MAX_FRAMES).map(decode));
+      return got.filter(Boolean);
+    }
+
+    async function warm() {
+      try {
+        ensureDom();
+        const [status, tape] = await Promise.all([
+          getJSON("/api/status").catch(() => ({})),
+          fetch("/api/tape")
+            .then((r) => (r.ok ? r.json() : { frames: [] }))
+            .catch(() => ({ frames: [] })),
+        ]);
+        const still = (status && (status.current_image_url || status.setting_plate_url)) || "";
+        const tapeList = ((tape && tape.frames) || []).filter((u) => typeof u === "string" && u);
+
+        // Play and Watch share the current Experience still. A playtest
+        // tape is not the wallpaper for either.
+        watchVideoUrl = "";
+        playVideoUrl = "";
+
+        const [okStill, okTape] = await Promise.all([
+          decode(still),
+          decodeList(tapeList),
+        ]);
+        playUrl = okStill || (okTape[0] || null);
+        playFrames = okTape.length ? okTape : (okStill ? [okStill] : []);
+        watchFrames = playFrames;
+        watchUrl = playUrl;
+        paintWatchGhost(watchUrl);
+        apply();
+      } catch (_) {}
+    }
+
+    function lock(mode) {
+      peek(mode);
+      if (mode === "play" && playUrl) {
+        holdPlate = true;
+        try { setScene(playUrl, { silent: true, instant: true }); } catch (_) {}
+      }
+      if (mode === "watch") paintWatchGhost(watchUrl);
+    }
+
+    function hold(url) {
+      if (!url) return;
+      playUrl = url;
+      holdPlate = true;
+      try { setScene(url, { silent: true, instant: true }); } catch (_) {}
+    }
+
+    function takeHold() {
+      const v = holdPlate;
+      holdPlate = false;
+      return v;
+    }
+
+    function hideMenu(_cinematic) {
+      // The buck veil owns the cover now. Drop the menu instantly at peak
+      // so the destination is already sitting under the wash when it lifts.
+      clearTimeout(hideTimer);
+      stopCycle();
+      stopVideo();
+      document.body.classList.remove(
+        "start-menu-on", "signal-lock", "signal-peek-play", "signal-peek-watch",
+      );
+    }
+
+    function currentPlate() {
+      return playUrl || watchUrl || "";
+    }
+
+    return { warm, peek, lock, hold, takeHold, hideMenu, paintWatchGhost, currentPlate };
+  })();
+
+  // ── BUCK ───────────────────────────────────────────────────────────────
+  // Shared cinematic between Play, Watch, Keys, and Coin. A growing mint-black
+  // wash covers the frame, the destination swaps at peak, then the wash recedes.
+  // Deep links and reduced-motion skip the motion and just swap.
+  const Buck = (function () {
+    const COVER_MS = 560;
+    const REVEAL_MS = 780;
+    let busy = false;
+    let coverTimer = null;
+    let revealTimer = null;
+
+    function isBusy() { return busy; }
+
+    function ensure() {
+      let node = document.getElementById("buck-veil");
+      if (node) return node;
+      node = document.createElement("div");
+      node.id = "buck-veil";
+      node.className = "buck-veil";
+      node.setAttribute("aria-hidden", "true");
+      node.innerHTML = [
+        '<span class="buck-wash"></span>',
+        '<span class="buck-bloom buck-bloom-a"></span>',
+        '<span class="buck-bloom buck-bloom-b"></span>',
+        '<span class="buck-bloom buck-bloom-c"></span>',
+      ].join("");
+      document.body.appendChild(node);
+      return node;
+    }
+
+    function clear() {
+      clearTimeout(coverTimer);
+      clearTimeout(revealTimer);
+      coverTimer = null;
+      revealTimer = null;
+    }
+
+    function finish() {
+      document.body.classList.remove("buck-on", "buck-out");
+      busy = false;
+      clear();
+    }
+
+    function play(swap) {
+      const go = typeof swap === "function" ? swap : function () {};
+      let reduce = false;
+      try { reduce = prefersReducedMotion(); } catch (_) {}
+      if (reduce) { go(); return Promise.resolve(); }
+      if (busy) return Promise.resolve();
+      busy = true;
+      clear();
+      const veil = ensure();
+      document.body.classList.remove("buck-out");
+      document.body.classList.add("buck-on");
+      try { void veil.offsetWidth; } catch (_) {}
+      return new Promise((resolve) => {
+        coverTimer = setTimeout(() => {
+          try { go(); } catch (_) {}
+          document.body.classList.add("buck-out");
+          try { void veil.offsetWidth; } catch (_) {}
+          revealTimer = setTimeout(() => {
+            finish();
+            resolve();
+          }, REVEAL_MS);
+        }, COVER_MS);
+      });
+    }
+
+    return { play, isBusy };
+  })();
+
+  // ── START MENU ─────────────────────────────────────────────────────────
+  // The app opens here. PLAY opens the Experience picker; confirming PLAY
+  // boots the live game. Watch sits under that PLAY word and never POSTs
+  // /api/reset. ?mode=play / ?mode=watch skips the menu for deep links,
+  // and a Stripe return (?coinop=success) goes straight into the paid-for
+  // run so the menu cannot blow it away.
+  const StartMenu = (function () {
+    let booted = false;   // has the live game bootstrap() run yet
+    let arrived = false;  // splash has already given way to the menu
+    let xpItems = [];
+    let xpIndex = 0;
+    let xpLiftTimer = null;
+    let xpStageUrl = "";
+    let xpStageOnB = false;
+
+    function isMenuOpen() {
+      return document.body.classList.contains("start-menu-on");
+    }
+
+    function isPickerOpen() {
+      return document.body.classList.contains("xp-open");
+    }
+
+    function revealMenu() {
+      arrived = true;
+      document.body.classList.add("start-arrived");
+      if (el.startMenu) el.startMenu.setAttribute("aria-busy", "false");
+    }
+
+    function scheduleReveal() {
+      if (arrived) return;
+      let reduce = false;
+      try { reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches; }
+      catch (_) {}
+      if (reduce) { revealMenu(); return; }
+      const t0 = performance.now();
+      const MIN_MS = 1600;
+      const go = () => {
+        const wait = Math.max(0, MIN_MS - (performance.now() - t0));
+        setTimeout(revealMenu, wait);
+      };
+      if (document.fonts && document.fonts.ready) {
+        document.fonts.ready.then(go).catch(go);
+      } else {
+        go();
+      }
+    }
+
+    function showMenu() {
+      document.body.classList.add("start-menu-on");
+      document.body.classList.remove(
+        "signal-peek-play", "signal-peek-watch", "xp-open", "xp-ready",
+      );
+      closePickerChrome();
+      if (arrived) {
+        document.body.classList.add("start-arrived");
+        if (el.startMenu) el.startMenu.setAttribute("aria-busy", "false");
+      }
+      try { Signal.warm(); } catch (_) {}
+      try { SceneAudio.enterMenu(); } catch (_) {}
+    }
+
+    function hideMenu(opts) {
+      document.body.classList.remove("xp-open", "xp-ready");
+      closePickerChrome();
+      try { SceneAudio.leaveMenu(); } catch (_) {}
+      try { Signal.hideMenu(!!(opts && opts.cinematic)); }
+      catch (_) { document.body.classList.remove("start-menu-on"); }
+      try { if (window.Cutscene && Cutscene.onMenuClosed) Cutscene.onMenuClosed(); } catch (_) {}
+    }
+
+    function settlePlay() {
+      try { Accounts.close({ silent: true }); } catch (_) {}
+      try { Machine.close({ silent: true }); } catch (_) {}
+      hideMenu();
+      document.body.classList.remove("mode-watch");
+      document.body.classList.add("mode-play");
+      try { WatchMode.leave(); } catch (_) {}
+      if (!booted) { booted = true; try { bootstrap(); } catch (_) {} }
+    }
+
+    function ensurePlayViewport(opts) {
+      const forceReset = !!(opts && opts.reset);
+      const alreadyPlay = document.body.classList.contains("mode-play")
+        && !isMenuOpen() && booted;
+      try { Accounts.close({ silent: true }); } catch (_) {}
+      try { Machine.close({ silent: true }); } catch (_) {}
+      hideMenu();
+      document.body.classList.remove("mode-watch");
+      document.body.classList.add("mode-play");
+      try { WatchMode.leave(); } catch (_) {}
+      if (alreadyPlay && !forceReset) return Promise.resolve();
+      booted = true;
+      try { return Promise.resolve(resetGame()); }
+      catch (_) { return Promise.resolve(); }
+    }
+
+    function settleWatch() {
+      try { Accounts.close({ silent: true }); } catch (_) {}
+      try { Machine.close({ silent: true }); } catch (_) {}
+      hideMenu();
+      document.body.classList.remove("mode-play");
+      document.body.classList.add("mode-watch");
+      try { WatchMode.open(); } catch (_) {}
+    }
+
+    function enterPlay(opts) {
+      if (document.body.classList.contains("mode-play") && !isMenuOpen()) return;
+      if (Buck.isBusy()) return;
+      try { Signal.lock("play"); } catch (_) {}
+      if (opts && opts.instant) settlePlay();
+      else Buck.play(settlePlay);
+    }
+
+    function enterWatch(opts) {
+      if (document.body.classList.contains("mode-watch") && !isMenuOpen()) return;
+      if (Buck.isBusy()) return;
+      try { Signal.lock("watch"); } catch (_) {}
+      if (opts && opts.instant) settleWatch();
+      else Buck.play(settleWatch);
+    }
+
+    function returnHome() {
+      if (isMenuOpen() && !document.body.classList.contains("keys-open")
+          && !document.body.classList.contains("coin-open")
+          && !isPickerOpen()) return;
+      if (Buck.isBusy()) return;
+      Buck.play(() => {
+        try { Accounts.close({ silent: true }); } catch (_) {}
+        try { Machine.close({ silent: true }); } catch (_) {}
+        try { WatchMode.leave(); } catch (_) {}
+        document.body.classList.remove("mode-watch", "mode-play");
+        showMenu();
+      });
+    }
+
+    function returnToPicker() {
+      if (isMenuOpen() && isPickerOpen()
+          && !document.body.classList.contains("mode-watch")) return;
+      if (Buck.isBusy()) return;
+      Buck.play(() => {
+        try { Accounts.close({ silent: true }); } catch (_) {}
+        try { Machine.close({ silent: true }); } catch (_) {}
+        try { WatchMode.leave(); } catch (_) {}
+        document.body.classList.remove("mode-watch", "mode-play");
+        showMenu();
+        applyPickerOpen();
+      });
+    }
+
+    function switchMode(target) {
+      if (target === "watch") enterWatch();
+      else enterPlay();
+    }
+
+    function setHeroVisible(on) {
+      [el.xpPlay, el.xpWatch].forEach((node) => {
+        if (!node) return;
+        node.hidden = !on;
+        if (on) node.removeAttribute("hidden");
+        else node.setAttribute("hidden", "");
+      });
+    }
+
+    function closePickerChrome() {
+      if (el.xpPicker) {
+        el.xpPicker.hidden = true;
+        el.xpPicker.setAttribute("hidden", "");
+      }
+      setHeroVisible(false);
+      paintStage("");
+    }
+
+    function paintStageLayer(node, url) {
+      if (!node) return;
+      node.style.backgroundImage = url ? `url("${url}")` : "";
+    }
+
+    function paintStage(url) {
+      if (!el.xpStage || !el.xpStageImg) return;
+      if (!url) {
+        el.xpStage.classList.remove("has-img");
+        paintStageLayer(el.xpStageImg, "");
+        paintStageLayer(el.xpStageImgB, "");
+        el.xpStageImg.classList.remove("is-on");
+        if (el.xpStageImgB) el.xpStageImgB.classList.remove("is-on");
+        xpStageUrl = "";
+        xpStageOnB = false;
+        return;
+      }
+      if (url === xpStageUrl && el.xpStage.classList.contains("has-img")) return;
+      const reduce = (() => { try { return prefersReducedMotion(); } catch (_) { return false; } })();
+      const incoming = xpStageOnB ? el.xpStageImg : el.xpStageImgB;
+      const outgoing = xpStageOnB ? el.xpStageImgB : el.xpStageImg;
+      const canFade = !reduce && incoming && outgoing && outgoing.classList.contains("is-on");
+      if (!canFade) {
+        paintStageLayer(el.xpStageImg, url);
+        el.xpStageImg.classList.add("is-on");
+        if (el.xpStageImgB) {
+          el.xpStageImgB.classList.remove("is-on");
+          paintStageLayer(el.xpStageImgB, "");
+        }
+        xpStageOnB = false;
+      } else {
+        paintStageLayer(incoming, url);
+        incoming.classList.add("is-on");
+        outgoing.classList.remove("is-on");
+        xpStageOnB = !xpStageOnB;
+      }
+      xpStageUrl = url;
+      el.xpStage.classList.add("has-img");
+    }
+
+    function selectedItem() {
+      if (!xpItems.length) return null;
+      const n = xpItems.length;
+      xpIndex = ((xpIndex % n) + n) % n;
+      return xpItems[xpIndex];
+    }
+
+    function pinPickerFrame() {
+      if (el.startMenu) {
+        el.startMenu.scrollLeft = 0;
+        el.startMenu.scrollTop = 0;
+      }
+      if (el.xpPicker) {
+        el.xpPicker.scrollLeft = 0;
+        el.xpPicker.scrollTop = 0;
+      }
+    }
+
+    function keepCellInTrack(cell) {
+      const track = el.xpTrack;
+      if (!track || !cell) return;
+      const trackBox = track.getBoundingClientRect();
+      const cellBox = cell.getBoundingClientRect();
+      const pad = 20;
+      if (cellBox.left >= trackBox.left + pad && cellBox.right <= trackBox.right - pad) return;
+      const delta = cellBox.left < trackBox.left + pad
+        ? cellBox.left - trackBox.left - pad
+        : cellBox.right - trackBox.right + pad;
+      const next = Math.max(0, track.scrollLeft + delta);
+      let reduce = false;
+      try { reduce = prefersReducedMotion(); } catch (_) {}
+      try {
+        track.scrollTo({ left: next, behavior: reduce ? "auto" : "smooth" });
+      } catch (_) {
+        track.scrollLeft = next;
+      }
+    }
+
+    function markCells() {
+      if (!el.xpTrack) return;
+      pinPickerFrame();
+      const cells = el.xpTrack.querySelectorAll(".xp-cell");
+      cells.forEach((cell) => {
+        const on = Number(cell.getAttribute("data-i")) === xpIndex;
+        cell.classList.toggle("is-on", on);
+        cell.setAttribute("aria-selected", on ? "true" : "false");
+        if (on) keepCellInTrack(cell);
+      });
+    }
+
+    function selectXp(i) {
+      if (!xpItems.length) return;
+      const n = xpItems.length;
+      xpIndex = ((i % n) + n) % n;
+      const item = xpItems[xpIndex];
+      document.body.classList.add("xp-ready");
+      paintStage(item && item.preview_url ? item.preview_url : "");
+      setHeroVisible(true);
+      markCells();
+    }
+
+    function renderPicker() {
+      if (!el.xpTrack) return;
+      el.xpTrack.innerHTML = "";
+      if (!xpItems.length) {
+        xpItems = [{ id: "default", name: "Untitled Experience", preview_url: "" }];
+      }
+      xpItems.forEach((item, i) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "xp-cell";
+        btn.setAttribute("role", "option");
+        btn.setAttribute("data-i", String(i));
+        btn.setAttribute("aria-label", item.name || item.id || "Experience");
+        const shot = document.createElement("span");
+        shot.className = "xp-cell-shot" + (item.preview_url ? "" : " is-empty");
+        if (item.preview_url) {
+          const img = document.createElement("img");
+          img.src = item.preview_url;
+          img.alt = "";
+          shot.appendChild(img);
+        }
+        const name = document.createElement("span");
+        name.className = "xp-cell-name";
+        name.textContent = item.name || item.id || "Experience";
+        btn.appendChild(shot);
+        btn.appendChild(name);
+        btn.addEventListener("click", () => {
+          selectXp(i);
+          try { btn.focus({ preventScroll: true }); } catch (_) {}
+        });
+        el.xpTrack.appendChild(btn);
+      });
+    }
+
+    async function loadExperiences() {
+      xpItems = [];
+      try {
+        const data = await getJSON("/api/experiences");
+        const list = (data && data.data && data.data.experiences) || [];
+        const active = (data && data.data && data.data.active) || "default";
+        xpItems = list.map((row) => ({
+          id: row.id || "default",
+          name: row.name || row.id || "Untitled Experience",
+          preview_url: row.preview_url || "",
+          active: !!row.active,
+        }));
+        const at = xpItems.findIndex((row) => row.id === active || row.active);
+        xpIndex = at >= 0 ? at : 0;
+      } catch (_) {
+        xpItems = [{ id: "default", name: "Untitled Experience", preview_url: "" }];
+        xpIndex = 0;
+      }
+      if (!xpItems.length) {
+        xpItems = [{ id: "default", name: "Untitled Experience", preview_url: "" }];
+        xpIndex = 0;
+      }
+      renderPicker();
+      selectXp(xpIndex);
+    }
+
+    function applyPickerOpen() {
+      try { Accounts.close({ silent: true }); } catch (_) {}
+      try { Machine.close({ silent: true }); } catch (_) {}
+      document.body.classList.add("xp-open");
+      if (el.xpPicker) {
+        el.xpPicker.hidden = false;
+        el.xpPicker.removeAttribute("hidden");
+      }
+      loadExperiences();
+    }
+
+    function applyPickerClose() {
+      document.body.classList.remove("xp-open", "xp-ready");
+      closePickerChrome();
+    }
+
+    function openPicker() {
+      if (isPickerOpen()) return;
+      if (Buck.isBusy()) return;
+      Buck.play(applyPickerOpen);
+    }
+
+    function closePicker() {
+      if (!isPickerOpen()) return;
+      if (Buck.isBusy()) return;
+      Buck.play(applyPickerClose);
+    }
+
+    function settlePlayFromPicker() {
+      if (xpLiftTimer) { clearTimeout(xpLiftTimer); xpLiftTimer = null; }
+      document.body.classList.remove("xp-open", "xp-ready", "keys-open", "coin-open");
+      closePickerChrome();
+      document.body.classList.remove("start-arrived");
+      if (el.startMenu) el.startMenu.setAttribute("aria-busy", "true");
+      try { Accounts.close({ silent: true }); } catch (_) {}
+      try { Machine.close({ silent: true }); } catch (_) {}
+      document.body.classList.remove("mode-watch");
+      document.body.classList.add("mode-play");
+      try { WatchMode.leave(); } catch (_) {}
+      // PLAY from the picker is a new run, not a resume. Editor already
+      // boots (and may have advanced) the same session; leaving that live
+      // made PLAY feel like "continue from the desk."
+      booted = true;
+      try { resetGame(); } catch (_) {}
+      const lift = () => {
+        xpLiftTimer = null;
+        hideMenu();
+      };
+      let reduce = false;
+      try { reduce = prefersReducedMotion(); } catch (_) {}
+      if (reduce) lift();
+      else xpLiftTimer = setTimeout(lift, 1500);
+    }
+
+    async function activateSelected() {
+      const item = selectedItem();
+      const slug = (item && item.id) || "default";
+      try {
+        const resp = await fetch("/api/experiences/activate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ slug: slug }),
+        });
+        if (!resp.ok) return null;
+      } catch (_) { return null; }
+      return item;
+    }
+
+    // The picker highlight is not the active Experience until Play / Watch /
+    // Edit confirms it. Opening the editor from the rail or ` has to adopt
+    // that highlight, or you land in whatever was last on disk.
+    async function adoptSelection() {
+      if (!isPickerOpen()) return null;
+      return activateSelected();
+    }
+
+    async function confirmPlay() {
+      if (!isPickerOpen() || Buck.isBusy()) return;
+      const item = await activateSelected();
+      if (item && item.preview_url) {
+        try { Signal.hold(item.preview_url); } catch (_) {}
+      } else {
+        try { Signal.lock("play"); } catch (_) {}
+      }
+      Buck.play(settlePlayFromPicker);
+    }
+
+    async function confirmWatch() {
+      if (!isPickerOpen() || Buck.isBusy()) return;
+      const item = await activateSelected();
+      if (item && item.preview_url) {
+        try { Signal.hold(item.preview_url); } catch (_) {}
+      } else {
+        try { Signal.lock("watch"); } catch (_) {}
+      }
+      Buck.play(settleWatch);
+    }
+
+    async function confirmEdit() {
+      if (!isPickerOpen() || Buck.isBusy()) return;
+      const item = await activateSelected();
+      if (item && item.preview_url) {
+        try { Signal.hold(item.preview_url); } catch (_) {}
+      }
+      Buck.play(() => {
+        try { WorldEditor.open({ from: "picker", reset: true }); } catch (_) {}
+      });
+    }
+
+    function onKey(e) {
+      if (!isMenuOpen()) return false;
+      if (document.body.classList.contains("keys-open")) {
+        if (e.key === "Escape") { e.preventDefault(); Accounts.close(); return true; }
+        return false;
+      }
+      if (!isPickerOpen()) return false;
+      if (e.key === "Escape") { e.preventDefault(); closePicker(); return true; }
+      if (e.key === "ArrowLeft") { e.preventDefault(); selectXp(xpIndex - 1); return true; }
+      if (e.key === "ArrowRight") { e.preventDefault(); selectXp(xpIndex + 1); return true; }
+      if (e.key === "Enter") { e.preventDefault(); confirmPlay(); return true; }
+      return false;
+    }
+
+    function begin() {
+      let mode = null;
+      let openMachine = false;
+      try {
+        const q = new URLSearchParams(location.search);
+        if (q.get("machine") === "1") openMachine = true;
+        // Paid death/pause return still drops into PLAY. A machine drop
+        // opens ACCOUNT → USAGE so they can see spend, not arcade credits.
+        if (q.get("coinop") === "success" && !openMachine) mode = "play";
+        if (q.get("billing") === "success" || q.get("billing") === "cancel") {
+          openMachine = true;
+        }
+        try { if (Accounts.billingReturn) openMachine = true; } catch (_) {}
+        const m = (q.get("mode") || "").toLowerCase();
+        if ((m === "play" || m === "watch" || m === "create") && !openMachine) mode = m;
+        if (q.get("account") === "1") openMachine = true;
+      } catch (_) {}
+      if (mode === "play") { enterPlay({ instant: true }); return; }
+      if (mode === "watch") { enterWatch({ instant: true }); return; }
+      if (mode === "create") {
+        hideMenu();
+        document.body.classList.add("mode-create");
+        try { WorldEditor.open({ from: "create" }); } catch (_) {}
+        return;
+      }
+      showMenu();
+      if (openMachine) revealMenu();
+      else scheduleReveal();
+      if (openMachine) {
+        try { Accounts.open({ tab: "usage", instant: true }); } catch (_) {}
+        try {
+          const q = new URLSearchParams(location.search);
+          q.delete("machine");
+          const rest = q.toString();
+          history.replaceState(null, "", location.pathname + (rest ? `?${rest}` : "") + location.hash);
+        } catch (_) {}
+      }
+    }
+
+    function bindPeek(node, mode) {
+      if (!node) return;
+      node.addEventListener("pointerenter", () => { try { Signal.peek(mode); } catch (_) {} });
+      node.addEventListener("pointerleave", () => { try { Signal.peek(null); } catch (_) {} });
+      node.addEventListener("focus", () => { try { Signal.peek(mode); } catch (_) {} });
+      node.addEventListener("blur", () => { try { Signal.peek(null); } catch (_) {} });
+    }
+
+    function init() {
+      if (el.startPlay) el.startPlay.addEventListener("click", () => openPicker());
+      if (el.startCreate) el.startCreate.addEventListener("click", () => {
+        hideMenu();
+        document.body.classList.add("mode-create");
+        document.body.classList.remove("mode-play");
+        try { WorldEditor.open({ from: "create" }); } catch (_) {}
+      });
+      bindPeek(el.startPlay, "play");
+      bindPeek(el.startCreate, "play");
+      bindPeek(el.startAccount, "play");
+      bindPeek(el.xpWatch, "watch");
+      if (el.startExit) el.startExit.addEventListener("click", () => { Quit.press(); });
+      if (el.xpExit) el.xpExit.addEventListener("click", () => { Quit.press(); });
+      if (el.xpBack) el.xpBack.addEventListener("click", () => closePicker());
+      if (el.xpEdit) el.xpEdit.addEventListener("click", () => confirmEdit());
+      if (el.xpPlay) el.xpPlay.addEventListener("click", () => confirmPlay());
+      if (el.xpWatch) el.xpWatch.addEventListener("click", () => confirmWatch());
+      Accounts.init();
+    }
+
+    return { init, begin, showMenu, hideMenu, returnHome, returnToPicker, ensurePlayViewport, adoptSelection, isMenuOpen, switchMode, onKey };
+  })();
+
+  // ── ACCOUNT (keys + usage) ─────────────────────────────────────────────
+  // First-class start-menu surface. KEYS is BYOK; USAGE is the economy:
+  // ledger, linked email, Play plan, prepaid wallet, spend controls.
+  // GET /api/keys never returns a secret; PUT is refused on a hosted server.
+  const Accounts = (function () {
+    let snapshot = null;
+    let usageSnap = null;
+    let billingReturn = false;
+
+    function setMsg(text, kind) {
+      if (!el.keysMsg) return;
+      el.keysMsg.textContent = text || "";
+      el.keysMsg.classList.toggle("hidden", !text);
+      el.keysMsg.hidden = !text;
+      el.keysMsg.classList.toggle("is-error", kind === "error");
+      el.keysMsg.classList.toggle("is-ok", kind === "ok");
+    }
+
+    function setUsageMsg(text, kind) {
+      if (!el.usageMsg) return;
+      el.usageMsg.textContent = text || "";
+      el.usageMsg.classList.toggle("hidden", !text);
+      el.usageMsg.hidden = !text;
+      el.usageMsg.classList.toggle("is-error", kind === "error");
+      el.usageMsg.classList.toggle("is-ok", kind === "ok");
+    }
+
+    function vis(node, on) {
+      if (!node) return;
+      node.classList.toggle("hidden", !on);
+      node.hidden = !on;
+    }
+
+    function usd(n) {
+      const v = Number(n);
+      if (!Number.isFinite(v)) return "$0.00";
+      return "$" + v.toFixed(2);
+    }
+
+    function showTab(name) {
+      const usage = name === "usage";
+      if (el.accountTabKeys) {
+        el.accountTabKeys.classList.toggle("is-on", !usage);
+        el.accountTabKeys.setAttribute("aria-selected", usage ? "false" : "true");
+      }
+      if (el.accountTabUsage) {
+        el.accountTabUsage.classList.toggle("is-on", usage);
+        el.accountTabUsage.setAttribute("aria-selected", usage ? "true" : "false");
+      }
+      vis(el.accountPaneKeys, !usage);
+      vis(el.accountPaneUsage, usage);
+      if (usage) refreshUsage();
+    }
+
+    function fillBar(node, pct, over) {
+      if (!node) return;
+      const n = Math.max(0, Math.min(100, Number(pct) || 0));
+      node.style.width = n.toFixed(1) + "%";
+      const bar = node.parentElement;
+      if (bar) {
+        bar.classList.toggle("is-full", n >= 99.5 && !over);
+        bar.classList.toggle("is-over", !!over);
+      }
+    }
+
+    function resetNote(periodStart) {
+      try {
+        const parts = String(periodStart || "").split("-");
+        const y = Number(parts[0]);
+        const m = Number(parts[1]);
+        if (!y || !m) return "";
+        const next = new Date(y, m, 1);
+        const days = Math.max(0, Math.ceil((next.getTime() - Date.now()) / 86400000));
+        const when = next.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+        return "Usage resets " + when + " (" + days + " day" + (days === 1 ? "" : "s") + " left)";
+      } catch (_) {
+        return "";
+      }
+    }
+
+    function paintUsage(data) {
+      usageSnap = data || {};
+      const hosted = !!data.hosted_view || !!data.requires_wallet;
+      const linked = !!(data.account && data.account.linked);
+      const payOn = !!data.payments_enabled;
+      const play = !!(data.plan && data.plan.id === "play");
+      const cap = data.monthly_cap_usd;
+      const over = !!data.over_cap || !!data.account_over_cap;
+      const month = Number(hosted ? (data.billed_usd || 0) : data.spend_usd) || 0;
+      const included = Number((data.plan && data.plan.included_usd) || 0);
+      const includedLeft = Number((data.plan && data.plan.included_left_usd) || 0);
+      const includedUsed = Math.max(0, included - includedLeft);
+      paintAccount(data);
+      if (el.usagePlanName) {
+        el.usagePlanName.textContent = play
+          ? ((data.plan && data.plan.label) || "Play") + " $12/mo"
+          : "Free";
+      }
+      if (el.usagePlanNote) {
+        el.usagePlanNote.textContent = play
+          ? resetNote(data.period_start)
+          : "Your keys. Provider bill.";
+      }
+      if (el.usagePlanAdjust) {
+        el.usagePlanAdjust.hidden = false;
+        el.usagePlanAdjust.textContent = play ? "Add funds" : "Adjust plan";
+      }
+      paintFunds(data);
+      if (el.usageIncludedKicker) {
+        el.usageIncludedKicker.textContent = play ? "Included in Play" : "Included";
+      }
+      if (play && included > 0) {
+        if (el.usageIncludedLabel) el.usageIncludedLabel.textContent = "Included";
+        if (el.usageIncludedAmt) el.usageIncludedAmt.textContent = Math.round((includedUsed / included) * 100) + "% used";
+        fillBar(el.usageIncludedBar, (includedUsed / included) * 100, false);
+        if (el.usageIncludedHint) {
+          el.usageIncludedHint.textContent = usd(includedLeft) + " left of " + usd(included) + " this month.";
+        }
+      } else {
+        if (el.usageIncludedLabel) el.usageIncludedLabel.textContent = "This month";
+        if (el.usageIncludedAmt) el.usageIncludedAmt.textContent = usd(month);
+        fillBar(el.usageIncludedBar, cap ? Math.min(100, (month / cap) * 100) : 0, over);
+        if (el.usageIncludedHint) {
+          el.usageIncludedHint.textContent = hosted
+            ? "No included pool on Free. Play adds $10 each month."
+            : "Spend on your keys this month.";
+        }
+      }
+      const demand = play ? Math.max(0, month - includedUsed) : (cap ? month : 0);
+      if (el.usageOndemandAmt) {
+        el.usageOndemandAmt.textContent = cap == null ? "—" : (usd(demand) + " / " + usd(cap));
+      }
+      fillBar(el.usageOndemandBar, cap ? Math.min(100, (demand / cap) * 100) : 0, over);
+      const canEditCap = hosted ? linked : !!data.editable;
+      const fixed = cap != null;
+      if (el.usageCapMode) {
+        if (document.activeElement !== el.usageCapMode) {
+          el.usageCapMode.value = fixed ? "fixed" : "unlimited";
+        }
+        el.usageCapMode.disabled = !canEditCap;
+      }
+      if (el.usageCapInput) {
+        el.usageCapInput.hidden = !fixed && (el.usageCapMode && el.usageCapMode.value !== "fixed");
+        if (document.activeElement !== el.usageCapInput) {
+          el.usageCapInput.value = fixed ? String(cap) : "";
+        }
+        el.usageCapInput.disabled = !canEditCap;
+      }
+      if (el.usageCapSave) el.usageCapSave.disabled = !canEditCap;
+      syncCapInput();
+      if (over) {
+        setUsageMsg("Monthly limit reached. Raise it to keep generating.", "error");
+      } else if (data.requires_wallet && !linked) {
+        setUsageMsg("Sign in to play on our keys.", "");
+      } else if (data.requires_wallet && (data.available_usd || 0) <= 0) {
+        setUsageMsg("Usage balance empty. Add funds or start Play.", "error");
+      } else if (!payOn && hosted) {
+        setUsageMsg("", "");
+      } else {
+        setUsageMsg("", "");
+      }
+    }
+
+    const ACCOUNT_SITE = "https://www.5th-corner.com";
+    const GEAR_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>';
+    const PERSON_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="8" r="3.2"/><path d="M5.2 19.2a6.8 6.8 0 0 1 13.6 0"/></svg>';
+
+    function openAccountSite() {
+      try { window.open(ACCOUNT_SITE, "_blank", "noopener,noreferrer"); } catch (_) {
+        window.location.href = ACCOUNT_SITE;
+      }
+    }
+
+    function accountDisplayName(email) {
+      const local = String(email || "").split("@")[0] || "";
+      return local.replace(/[._-]+/g, " ").replace(/\s+/g, " ").trim().toLowerCase() || "account";
+    }
+
+    function accountInitials(name) {
+      const parts = String(name || "").trim().split(/\s+/).filter(Boolean);
+      if (!parts.length) return "";
+      if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+      return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+    }
+
+    function accountAvatarTone(email) {
+      const s = String(email || "");
+      let n = 0;
+      for (let i = 0; i < s.length; i++) n = (n + s.charCodeAt(i) * (i + 1)) % 360;
+      return "hsla(" + n + ", 22%, 32%, 0.95)";
+    }
+
+    function closeAccountMenu() {
+      const menu = el.usageAccount && el.usageAccount.querySelector(".bill-id-menu");
+      const gear = el.usageAccount && el.usageAccount.querySelector(".bill-id-gear");
+      if (menu) menu.hidden = true;
+      if (gear) gear.setAttribute("aria-expanded", "false");
+    }
+
+    function menuItem(label, onClick) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "bill-id-item";
+      btn.textContent = label;
+      btn.addEventListener("click", () => {
+        closeAccountMenu();
+        onClick();
+      });
+      return btn;
+    }
+
+    function paintAccount(data) {
+      if (!el.usageAccount) return;
+      el.usageAccount.innerHTML = "";
+      const linked = !!(data.account && data.account.linked);
+      const email = (data.account && data.account.email) || "";
+      const name = linked ? accountDisplayName(email) : "Sign in";
+
+      const row = document.createElement("div");
+      row.className = "bill-id-row";
+
+      const who = document.createElement(linked ? "div" : "button");
+      if (!linked) who.type = "button";
+      who.className = "bill-id-who" + (linked ? "" : " is-guest");
+      if (!linked) who.addEventListener("click", () => openAccountSite());
+
+      const face = document.createElement("div");
+      face.className = "bill-id-avatar" + (linked ? "" : " is-empty");
+      if (linked) {
+        face.textContent = accountInitials(name);
+        face.style.background = accountAvatarTone(email);
+      } else {
+        face.innerHTML = PERSON_SVG;
+      }
+
+      const label = document.createElement("div");
+      label.className = "bill-id-name" + (linked ? "" : " is-guest");
+      label.textContent = name;
+
+      who.appendChild(face);
+      who.appendChild(label);
+
+      const gear = document.createElement("button");
+      gear.type = "button";
+      gear.className = "bill-id-gear";
+      gear.setAttribute("aria-label", "Account settings");
+      gear.setAttribute("aria-haspopup", "menu");
+      gear.setAttribute("aria-expanded", "false");
+      gear.innerHTML = GEAR_SVG;
+
+      const menu = document.createElement("div");
+      menu.className = "bill-id-menu";
+      menu.setAttribute("role", "menu");
+      menu.hidden = true;
+
+      if (linked) {
+        const mail = document.createElement("div");
+        mail.className = "bill-id-mail";
+        mail.textContent = email;
+        menu.appendChild(mail);
+        menu.appendChild(menuItem("Manage account", () => openAccountSite()));
+        menu.appendChild(menuItem("Sign out", () => unlinkAccount()));
+      } else {
+        menu.appendChild(menuItem("Sign in", () => openAccountSite()));
+        menu.appendChild(menuItem("Create account", () => openAccountSite()));
+        const linkRow = document.createElement("div");
+        linkRow.className = "bill-id-link";
+        const input = document.createElement("input");
+        input.type = "email";
+        input.className = "usage-account-email";
+        input.placeholder = "you@email";
+        input.autocomplete = "email";
+        input.setAttribute("aria-label", "Account email");
+        const go = document.createElement("button");
+        go.type = "button";
+        go.className = "bill-btn";
+        go.textContent = "Link";
+        const send = () => linkAccount(input.value);
+        go.addEventListener("click", send);
+        input.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") { e.preventDefault(); send(); }
+        });
+        linkRow.appendChild(input);
+        linkRow.appendChild(go);
+        menu.appendChild(linkRow);
+      }
+
+      gear.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const open = menu.hidden;
+        menu.hidden = !open;
+        gear.setAttribute("aria-expanded", open ? "true" : "false");
+      });
+      menu.addEventListener("click", (e) => e.stopPropagation());
+
+      row.appendChild(who);
+      row.appendChild(gear);
+      el.usageAccount.appendChild(row);
+      el.usageAccount.appendChild(menu);
+    }
+
+    function paintFunds(data) {
+      if (!el.usageFunds) return;
+      el.usageFunds.innerHTML = "";
+      const canBuy = !!(data.payments_enabled && data.account && data.account.linked);
+      if (!canBuy || !el.usageFunds.dataset.open) {
+        el.usageFunds.hidden = true;
+        return;
+      }
+      const packs = Array.isArray(data.packs) ? data.packs : [];
+      packs.forEach((p) => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "bill-fund";
+        btn.textContent = p.display_price || p.label;
+        btn.addEventListener("click", () => startCheckout("pack", p.id));
+        el.usageFunds.appendChild(btn);
+      });
+      el.usageFunds.hidden = packs.length === 0;
+    }
+
+    function adjustPlan() {
+      const data = usageSnap || {};
+      const linked = !!(data.account && data.account.linked);
+      const play = !!(data.plan && data.plan.id === "play");
+      if (!linked) {
+        setUsageMsg("Sign in first.", "");
+        const gear = el.usageAccount && el.usageAccount.querySelector(".bill-id-gear");
+        if (gear) gear.click();
+        return;
+      }
+      if (!data.payments_enabled) {
+        setUsageMsg("Payments aren’t connected on this host yet.", "");
+        return;
+      }
+      if (!play) {
+        startCheckout("play");
+        return;
+      }
+      if (el.usageFunds) {
+        el.usageFunds.dataset.open = el.usageFunds.dataset.open ? "" : "1";
+        paintFunds(data);
+      }
+    }
+
+    function syncCapInput() {
+      if (!el.usageCapInput || !el.usageCapMode) return;
+      const fixed = el.usageCapMode.value === "fixed";
+      el.usageCapInput.hidden = !fixed;
+    }
+
+    async function refreshUsage() {
+      if (!el.accountPaneUsage) return;
+      try {
+        const r = await fetch("/api/usage", { cache: "no-store" });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error((data && (data.error || data.details)) || "Could not load usage.");
+        paintUsage(data);
+      } catch (err) {
+        setUsageMsg((err && err.message) || "Could not load usage.", "error");
+      }
+    }
+
+    async function linkAccount(raw) {
+      setUsageMsg("Linking…", "");
+      try {
+        const r = await fetch("/api/billing/account", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: raw }),
+        });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error((data && (data.error || data.details)) || "Could not link.");
+        paintUsage(data);
+        setUsageMsg("Account linked.", "ok");
+      } catch (err) {
+        setUsageMsg((err && err.message) || "Could not link.", "error");
+      }
+    }
+
+    async function unlinkAccount() {
+      setUsageMsg("Unlinking…", "");
+      try {
+        const r = await fetch("/api/billing/account", { method: "DELETE" });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error((data && (data.error || data.details)) || "Could not unlink.");
+        paintUsage(data);
+        setUsageMsg("Unlinked on this machine.", "ok");
+      } catch (err) {
+        setUsageMsg((err && err.message) || "Could not unlink.", "error");
+      }
+    }
+
+    async function startCheckout(kind, pack) {
+      setUsageMsg("Opening Stripe…", "");
+      try {
+        const r = await fetch("/api/billing/checkout", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ kind: kind, pack: pack || null }),
+        });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error((data && (data.error || data.details)) || "Checkout failed.");
+        if (data.url) {
+          window.location.href = data.url;
+          return;
+        }
+        throw new Error("Checkout did not return a URL.");
+      } catch (err) {
+        setUsageMsg((err && err.message) || "Checkout failed.", "error");
+      }
+    }
+
+    async function redeemReturn() {
+      let cs = "";
+      try {
+        const q = new URLSearchParams(location.search);
+        const billing = q.get("billing");
+        if (billing === "success" || billing === "cancel") billingReturn = true;
+        if (billing === "cancel") {
+          q.delete("billing");
+          q.delete("cs");
+          const rest = q.toString();
+          history.replaceState(null, "", location.pathname + (rest ? "?" + rest : "") + location.hash);
+          setUsageMsg("Checkout canceled.", "");
+          return;
+        }
+        if (billing !== "success") return;
+        cs = (q.get("cs") || "").trim();
+        q.delete("billing");
+        q.delete("cs");
+        const rest = q.toString();
+        history.replaceState(null, "", location.pathname + (rest ? "?" + rest : "") + location.hash);
+      } catch (_) { return; }
+      if (!cs) {
+        setUsageMsg("Payment returned without a receipt.", "error");
+        return;
+      }
+      setUsageMsg("Landing funds…", "");
+      try {
+        const r = await fetch("/api/billing/redeem", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ checkout_session_id: cs }),
+        });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok || !data.ok) {
+          throw new Error((data && (data.reason || data.error || data.details)) || "Redeem failed.");
+        }
+        if (data.usage) paintUsage(data.usage);
+        else await refreshUsage();
+        setUsageMsg(data.already_redeemed ? "Already applied." : "Payment landed.", "ok");
+      } catch (err) {
+        setUsageMsg((err && err.message) || "Could not apply payment.", "error");
+      }
+    }
+
+    async function saveCap() {
+      const fixed = el.usageCapMode && el.usageCapMode.value === "fixed";
+      const raw = String((el.usageCapInput && el.usageCapInput.value) || "").trim();
+      if (fixed && (!raw || !Number.isFinite(Number(raw)))) {
+        setUsageMsg("Enter a dollar amount.", "error");
+        return;
+      }
+      setUsageMsg("Saving…", "");
+      try {
+        const r = await fetch("/api/usage", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            monthly_cap_usd: fixed ? Number(raw) : null,
+            on_demand: true,
+          }),
+        });
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error((data && (data.error || data.details)) || "Could not save limit.");
+        paintUsage(data);
+        if (!(data.over_cap || data.account_over_cap)) setUsageMsg("Limit saved.", "ok");
+      } catch (err) {
+        setUsageMsg((err && err.message) || "Could not save limit.", "error");
+      }
+    }
+
+    function applyStatus(data) {
+      snapshot = data;
+      renderPanel(data);
+    }
+
+    function renderPanel(data) {
+      if (!el.keysList) return;
+      el.keysList.innerHTML = "";
+      if (el.keysLead) {
+        el.keysLead.textContent = data && data.editable
+          ? "Stay on this machine. Never sent to a hosted server."
+          : "This host already has keys. They can’t be edited here.";
+      }
+      const blurbs = {
+        gemini: "Play, Watch, and images.",
+        openai: "Optional narrator.",
+        anthropic: "Optional Claude narrator.",
+        krea: "Optional stills.",
+        reactor: "Live video renderer.",
+        elevenlabs: "Voice, music, world sound, and talk agents. Paste the sk_ secret.",
+      };
+      const providers = (data && data.providers) || [];
+      const needed = providers.filter((p) => p.required);
+      const extra = providers.filter((p) => !p.required);
+      function card(kicker, rows) {
+        if (!rows.length) return;
+        const wrap = document.createElement("section");
+        wrap.className = "bill-card";
+        const head = document.createElement("div");
+        head.className = "bill-kicker";
+        head.textContent = kicker;
+        wrap.appendChild(head);
+        rows.forEach((p) => wrap.appendChild(keyRow(p, data)));
+        el.keysList.appendChild(wrap);
+      }
+      function keyRow(p, data) {
+        const row = document.createElement("div");
+        row.className = "keys-row" + (p.usable !== false && p.set ? " is-live" : " is-dark");
+        const top = document.createElement("div");
+        top.className = "keys-row-top";
+        const name = document.createElement("div");
+        name.className = "keys-row-name";
+        name.textContent = p.label || p.id;
+        const state = document.createElement("div");
+        state.className = "keys-row-state" + (p.usable !== false && p.set ? " is-set" : "");
+        if (p.problem) {
+          state.textContent = "Won't work";
+        } else if (p.set) {
+          state.textContent = p.hint ? ("On · " + p.hint) : "On";
+        } else {
+          state.textContent = p.required ? "Needed" : "Off";
+        }
+        name.setAttribute("aria-label",
+          (p.label || p.id) + (p.set ? " on" : " off"));
+        const right = document.createElement("div");
+        right.className = "keys-row-right";
+        right.appendChild(state);
+        top.appendChild(name);
+        top.appendChild(right);
+        const blurb = document.createElement("p");
+        blurb.className = "keys-row-blurb";
+        blurb.textContent = p.problem || blurbs[p.id] || p.blurb || "";
+        row.appendChild(top);
+        row.appendChild(blurb);
+        if (data && data.editable) {
+          const actions = document.createElement("div");
+          actions.className = "keys-row-actions";
+          const input = document.createElement("input");
+          input.type = "password";
+          input.autocomplete = "off";
+          input.spellcheck = false;
+          input.className = "keys-input";
+          input.placeholder = p.set ? "Paste a new key" : "Paste key";
+          input.setAttribute("aria-label", (p.label || p.id) + " API key");
+          const save = document.createElement("button");
+          save.type = "button";
+          save.className = "keys-btn";
+          save.textContent = "Save";
+          const go = () => putKey(p.id, input.value);
+          save.addEventListener("click", go);
+          input.addEventListener("keydown", (e) => {
+            if (e.key === "Enter") { e.preventDefault(); go(); }
+          });
+          actions.appendChild(input);
+          actions.appendChild(save);
+          if (p.set) {
+            const clear = document.createElement("button");
+            clear.type = "button";
+            clear.className = "keys-btn";
+            clear.textContent = "Clear";
+            clear.addEventListener("click", () => putKey(p.id, ""));
+            actions.appendChild(clear);
+          }
+          if (!p.set && !p.required) {
+            actions.hidden = true;
+            const add = document.createElement("button");
+            add.type = "button";
+            add.className = "bill-btn";
+            add.textContent = "Add";
+            add.addEventListener("click", () => {
+              actions.hidden = false;
+              add.hidden = true;
+              input.focus();
+            });
+            right.appendChild(add);
+          }
+          row.appendChild(actions);
+        }
+        return row;
+      }
+      card("Needed for Play", needed);
+      card("Optional", extra);
+    }
+
+    async function refresh() {
+      try {
+        const r = await fetch("/api/keys", { cache: "no-store" });
+        const data = await r.json();
+        applyStatus(data);
+        return data;
+      } catch (_) {
+        applyStatus({ editable: false, play_ready: false, offline: true, providers: [] });
+        return null;
+      }
+    }
+
+    async function putKey(id, value) {
+      setMsg("", "");
+      try {
+        const r = await fetch("/api/keys", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: id, value: value }),
+        });
+        const data = await r.json();
+        if (!r.ok) {
+          setMsg((data && (data.error || data.details)) || "Could not save.", "error");
+          return;
+        }
+        applyStatus(data);
+        setMsg(value ? "Saved." : "Cleared.", "ok");
+        if (id === "reactor") {
+          try {
+            if (window.Renderer && window.Renderer.onReactorKeyChanged) {
+              window.Renderer.onReactorKeyChanged(!!value);
+            }
+          } catch (_) {}
+        }
+      } catch (_) {
+        setMsg("Could not reach the local store.", "error");
+      }
+    }
+
+    function applyOpen() {
+      try { Machine.close({ silent: true }); } catch (_) {}
+      document.body.classList.add("keys-open");
+      if (el.keysPanel) {
+        el.keysPanel.classList.remove("hidden");
+        el.keysPanel.hidden = false;
+      }
+    }
+
+    function applyClose() {
+      document.body.classList.remove("keys-open");
+      if (el.keysPanel) {
+        el.keysPanel.classList.add("hidden");
+        el.keysPanel.hidden = true;
+      }
+    }
+
+    function open(opts) {
+      opts = opts || {};
+      const tab = opts.tab === "usage" ? "usage" : "keys";
+      if (!document.body.classList.contains("start-menu-on")) {
+        try { StartMenu.showMenu(); } catch (_) {}
+      }
+      showTab(tab);
+      setMsg("", "");
+      refresh();
+      if (document.body.classList.contains("keys-open")) return;
+      if (opts.instant) { applyOpen(); return; }
+      if (Buck.isBusy()) return;
+      Buck.play(applyOpen);
+    }
+
+    function close(opts) {
+      if (!document.body.classList.contains("keys-open")) return;
+      if (opts && opts.silent) { applyClose(); return; }
+      if (Buck.isBusy()) return;
+      Buck.play(applyClose);
+    }
+
+    function init() {
+      if (el.startKeys) el.startKeys.addEventListener("click", () => open());
+      if (el.keysBack) el.keysBack.addEventListener("click", close);
+      if (el.accountTabKeys) el.accountTabKeys.addEventListener("click", () => showTab("keys"));
+      if (el.accountTabUsage) el.accountTabUsage.addEventListener("click", () => showTab("usage"));
+      if (el.usageCapSave) el.usageCapSave.addEventListener("click", () => saveCap());
+      if (el.usageCapInput) {
+        el.usageCapInput.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") { e.preventDefault(); saveCap(); }
+        });
+      }
+      if (el.usageCapMode) {
+        el.usageCapMode.addEventListener("change", () => syncCapInput());
+      }
+      if (el.usagePlanAdjust) el.usagePlanAdjust.addEventListener("click", () => adjustPlan());
+      document.addEventListener("click", () => closeAccountMenu());
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") closeAccountMenu();
+      });
+      refresh();
+      redeemReturn();
+    }
+
+    return {
+      init, refresh, refreshUsage, open, close, showTab, setUsageMsg,
+      get billingReturn() { return billingReturn; },
+    };
+  })();
+
   // Small transient on-screen note so it's obvious which renderer is active
   // (useful while testing / toggling with the G key).
   let _rendererToastTimer = null;
@@ -5776,58 +12758,63 @@
   //
   // Physical inputs map to SEMANTIC drive tokens the Movement layer already
   // understands (fwd / back / strafeL / strafeR / lookL / lookR / pitchUp /
-  // pitchDown). Two modes ship, toggled live in the WORLD EDITOR:
+  // pitchDown). The mouse is the same map — a device token (`keys.mouse =
+  // "look"`) rather than a side flag — so it remaps, persists, and resets
+  // with the rest of the scheme. Each CAMERA has its own scheme. Two starting
+  // layouts ship so a scheme has somewhere to begin; every bind is remappable
+  // after that.
   //
-  //   DOOM  W forward · S back · A look left · D look right   (no mouse look)
-  //   FPS   W forward · S back · A strafe left · D strafe right + MOUSE look
+  //   Look   WASD move · mouse looks                 (first-person default)
+  //   Tank   W/S move · A/D turn · Q/E strafe
   //
-  // DOOM is the default because it needs no pointer capture and works on any
-  // setup. Adding a mode = one entry in PROFILES; nothing in the drive loop
-  // changes. The choice persists per browser in localStorage.
+  // The live scheme follows the authored camera. Remaps persist on the world
+  // (camera_perspective.schemes) and, for this browser, in localStorage.
   // ------------------------------------------------------------------
   const InputBindings = (function () {
     const LS_KEY = "input_profile";
-    // Mouse-look tuning. The world model only takes a HELD look direction, which
-    // keeps rotating until stopped — so "turn while the mouse is moving" is the
-    // wrong contract: hand tremor alone sustains it and the camera spins forever.
-    // Instead every mouse delta deposits a finite BUDGET of turn (in px) that
-    // bleeds off over time. Rotation is therefore proportional to how far you
-    // actually moved the mouse, always winds down on its own, and jitter (which
-    // nets ~zero and drains away) can never hold the camera.
-    const MOUSE_SUBTLE = {
-      sensitivity: 8.0,    // mouse px -> queued turn px (tunable in the editor)
-      // Both of these scale WITH sensitivity, and they have to. At 8x a 1px hand
-      // tremor deposits 8px per event; against the old 0.4px/ms drain that was
-      // enough to sustain a turn indefinitely, which is the exact bug the budget
-      // model was built to kill. Draining faster keeps tremor inert (it deposits
-      // ~0 net and bleeds off) while a deliberate sweep still outruns it.
-      holdPx: 40,          // queued turn under this = camera at rest
-      drainPxPerMs: 2.0,   // bleed-off rate
-      // On Happy Oyster the turn RATE is the model's, not ours — there's no
-      // rotation-speed knob — so the only thing sensitivity can buy is how LONG
-      // the look is held. A 600ms ceiling therefore capped how far you could
-      // ever turn in one sweep, which is what made it feel dead no matter what
-      // the slider said. The ceiling exists to stop a flick spinning forever,
-      // and the budget model already handles that: motion deposits, stillness
-      // drains, reversing cancels. So it can be generous.
-      // Sized as MOMENTUM, not a spin: a long sweep keeps turning for up to this
-      // long after your hand stops, which is what buys extra turn on a model
-      // whose rate we can't change. 2600 felt like the camera had opinions of
-      // its own; a flick still only earns a fraction of it.
-      maxHoldMs: 1400,
-      maxIntensity: 1.0,   // full turn-rate range on models that have the knob
-      invertY: false,
-    };
+    const LS_SCHEMES = "input_schemes";
     const SENS_KEY = "input_look_sens";
     const SENS_MIN = 1, SENS_MAX = 30;
-    let sensitivity = MOUSE_SUBTLE.sensitivity;
-    const PROFILES = {
-      // Doom: the tank-style scheme — A/D swing the view, no mouse capture.
+    const ACTIONS = [
+      { id: "fwd", label: "Forward" },
+      { id: "back", label: "Back" },
+      { id: "strafeL", label: "Strafe left" },
+      { id: "strafeR", label: "Strafe right" },
+      { id: "lookL", label: "Look left" },
+      { id: "lookR", label: "Look right" },
+      { id: "pitchUp", label: "Look up" },
+      { id: "pitchDown", label: "Look down" },
+    ];
+    const ACTION_IDS = ACTIONS.map((a) => a.id);
+    const DEVICE = "mouse";
+    const DEVICE_ACTION = "look";
+    const FORBIDDEN = {
+      " ": 1, space: 1, spacebar: 1, enter: 1, escape: 1, tab: 1,
+      "`": 1, backquote: 1, meta: 1, control: 1, alt: 1, shift: 1,
+      mouse: 1,
+    };
+    const MOUSE_SUBTLE = {
+      sensitivity: 10.0,
+      // Deadzone is RAW mouse pixels, applied before sensitivity — so a
+      // higher LOOK setting cannot turn hand tremor into a held look.
+      deadPx: 3,
+      holdPx: 1,
+      drainPxPerMs: 1.4,
+      maxHoldMs: 450,
+      // No movement for this long → look is idle. World models hold a
+      // direction until told to stop; a 1.4s leftover budget was why a
+      // flick kept pitching up after the mouse was already still. 100ms
+      // killed the turn before LingBot's latent frame showed it.
+      idleMs: 180,
+      maxIntensity: 1.0,
+      invertY: false,
+    };
+    const TEMPLATES = {
       doom: {
-        label: "DOOM",
+        label: "Tank",
         hint: "W/S move · A/D turn · Q/E strafe",
         mouseLook: false,
-        mouse: null,
+        invertY: false,
         keys: {
           w: "fwd", s: "back",
           a: "lookL", d: "lookR",
@@ -5836,33 +12823,231 @@
           arrowup: "pitchUp", arrowdown: "pitchDown",
         },
       },
-      // FPS: WASD is pure locomotion, the MOUSE steers the camera.
       fps: {
-        label: "FPS",
-        hint: "WASD move · drag the world to look (double-click to capture, Esc frees)",
-        mouseLook: true,
-        mouse: MOUSE_SUBTLE,
+        label: "Look",
+        hint: "WASD move · mouse looks",
+        invertY: false,
         keys: {
           w: "fwd", s: "back",
           a: "strafeL", d: "strafeR",
           q: "strafeL", e: "strafeR",
           arrowleft: "lookL", arrowright: "lookR",
           arrowup: "pitchUp", arrowdown: "pitchDown",
+          mouse: "look",
         },
       },
     };
-    const ORDER = ["doom", "fps"];
-    let name = "doom";
+    const SCHEME_META = {
+      first_person: { label: "First person", template: "fps", yawOnly: false },
+      over_shoulder: { label: "Over the shoulder", template: "fps", yawOnly: true },
+      third_person: { label: "Third person", template: "fps", yawOnly: true },
+      fixed_cinematic: { label: "Fixed cinematic", template: "doom", yawOnly: false },
+    };
+    const SCHEME_IDS = Object.keys(SCHEME_META);
 
-    function load() {
-      try {
-        const v = localStorage.getItem(LS_KEY);
-        if (v && PROFILES[v]) name = v;
-      } catch (_) {}
-      try {
-        const s = parseFloat(localStorage.getItem(SENS_KEY));
-        if (isFinite(s)) sensitivity = clampSens(s);
-      } catch (_) {}
+    let sensitivity = MOUSE_SUBTLE.sensitivity;
+    let liveId = "first_person";
+    let editId = "first_person";
+    let schemes = {};
+    let persistTimer = null;
+
+    function hasMouseLook(scheme) {
+      return !!(scheme && scheme.keys && scheme.keys[DEVICE] === DEVICE_ACTION);
+    }
+    function writeMouseLook(keys, on) {
+      const out = Object.assign({}, keys || {});
+      if (on) out[DEVICE] = DEVICE_ACTION;
+      else delete out[DEVICE];
+      return out;
+    }
+    // Mouse look is `keys.mouse = "look"`. Older worlds stored a sibling
+    // `mouseLook` bool — honour that when the device token is absent so a
+    // saved scheme doesn't lose its look the first time this build loads it.
+    function readMouseLook(incoming, fallback) {
+      const keys = incoming && incoming.keys;
+      if (keys && typeof keys === "object" && Object.prototype.hasOwnProperty.call(keys, DEVICE)) {
+        return keys[DEVICE] === DEVICE_ACTION;
+      }
+      if (incoming && incoming.mouseLook !== undefined) return !!incoming.mouseLook;
+      return !!fallback;
+    }
+    function cloneTemplate(id) {
+      const t = TEMPLATES[id] || TEMPLATES.doom;
+      return {
+        invertY: !!t.invertY,
+        keys: Object.assign({}, t.keys),
+      };
+    }
+    function freshSchemes() {
+      const out = {};
+      SCHEME_IDS.forEach((id) => { out[id] = cloneTemplate(SCHEME_META[id].template); });
+      return out;
+    }
+    function mergeScheme(base, incoming) {
+      const out = {
+        invertY: !!(incoming && incoming.invertY !== undefined ? incoming.invertY : base.invertY),
+        keys: Object.assign({}, base.keys),
+      };
+      const keys = incoming && incoming.keys;
+      if (keys && typeof keys === "object") {
+        out.keys = {};
+        Object.keys(keys).forEach((k) => {
+          const key = String(k || "").toLowerCase();
+          const act = keys[k];
+          if (key === DEVICE) return;
+          if (key && ACTION_IDS.indexOf(act) >= 0) out.keys[key] = act;
+        });
+      }
+      out.keys = writeMouseLook(out.keys, readMouseLook(incoming, hasMouseLook(base)));
+      return out;
+    }
+    function adopt(incoming, opts) {
+      opts = opts || {};
+      if (!incoming || typeof incoming !== "object") return;
+      SCHEME_IDS.forEach((id) => {
+        if (!incoming[id]) return;
+        schemes[id] = mergeScheme(schemes[id] || cloneTemplate(SCHEME_META[id].template), incoming[id]);
+      });
+      if (opts.persistLocal !== false) writeLocal();
+      bump();
+    }
+    function writeLocal() {
+      try { localStorage.setItem(LS_SCHEMES, JSON.stringify(exportSchemes())); } catch (_) {}
+    }
+    function exportSchemes() {
+      const out = {};
+      SCHEME_IDS.forEach((id) => {
+        const s = schemes[id];
+        if (!s) return;
+        out[id] = {
+          mouseLook: hasMouseLook(s),
+          invertY: !!s.invertY,
+          keys: Object.assign({}, s.keys),
+        };
+      });
+      return out;
+    }
+    function persistWorld() {
+      writeLocal();
+      if (persistTimer) clearTimeout(persistTimer);
+      persistTimer = setTimeout(() => {
+        persistTimer = null;
+        try { WorldEditor.saveCameraSchemes(exportSchemes()); } catch (_) {}
+      }, 280);
+    }
+    function bump() {
+      try { MouseLook.onModeChanged(); } catch (_) {}
+      try { Movement.releaseAll(); } catch (_) {}
+      try { Movement.refreshHints(); } catch (_) {}
+      try { InputProfileUi.paint(); } catch (_) {}
+    }
+    function sameKeys(a, b) {
+      const ak = (a && a.keys) || {}, bk = (b && b.keys) || {};
+      const keys = Object.keys(ak);
+      if (keys.length !== Object.keys(bk).length) return false;
+      return keys.every((k) => ak[k] === bk[k]);
+    }
+    function matchingTemplate(scheme) {
+      if (!scheme) return "";
+      if (sameKeys(scheme, TEMPLATES.doom) && !hasMouseLook(scheme)) return "doom";
+      if (sameKeys(scheme, TEMPLATES.fps) && hasMouseLook(scheme)) return "fps";
+      return "";
+    }
+    function schemeOf(id) {
+      const sid = SCHEME_IDS.indexOf(id) >= 0 ? id : "first_person";
+      if (!schemes[sid]) schemes[sid] = cloneTemplate(SCHEME_META[sid].template);
+      return schemes[sid];
+    }
+    function liveSchemeId() {
+      return SCHEME_IDS.indexOf(liveId) >= 0 ? liveId : "first_person";
+    }
+    function profile() {
+      const s = schemeOf(liveSchemeId());
+      const hint = hintFor(s, liveSchemeId()) || "Your layout";
+      return {
+        label: (SCHEME_META[liveSchemeId()] || {}).label || liveSchemeId(),
+        hint: hint,
+        mouseLook: hasMouseLook(s),
+        invertY: !!s.invertY,
+        mouse: hasMouseLook(s) ? MOUSE_SUBTLE : null,
+        keys: s.keys,
+      };
+    }
+    function applyTemplate(schemeId, templateId, opts) {
+      opts = opts || {};
+      if (!TEMPLATES[templateId]) return false;
+      const sid = SCHEME_IDS.indexOf(schemeId) >= 0 ? schemeId : liveSchemeId();
+      schemes[sid] = cloneTemplate(templateId);
+      try { localStorage.setItem(LS_KEY, templateId); } catch (_) {}
+      if (opts.persist !== false) persistWorld();
+      bump();
+      return true;
+    }
+    function setProfile(id) {
+      if (!TEMPLATES[id]) return false;
+      return applyTemplate(editId || liveSchemeId(), id);
+    }
+    function setSchemeFlag(schemeId, flag, value) {
+      const s = schemeOf(schemeId);
+      if (flag === "mouseLook") {
+        s.keys = writeMouseLook(s.keys, !!value);
+      } else if (flag === "invertY") {
+        s.invertY = !!value;
+      } else {
+        return false;
+      }
+      persistWorld();
+      bump();
+      return true;
+    }
+    function bindKey(schemeId, key, action) {
+      key = String(key || "").toLowerCase();
+      if (!key || FORBIDDEN[key] || ACTION_IDS.indexOf(action) < 0) return false;
+      const s = schemeOf(schemeId);
+      Object.keys(s.keys).forEach((k) => {
+        if (k !== DEVICE && s.keys[k] === action) delete s.keys[k];
+      });
+      s.keys[key] = action;
+      persistWorld();
+      bump();
+      return true;
+    }
+    function unbindAction(schemeId, action) {
+      const s = schemeOf(schemeId);
+      if (action === DEVICE_ACTION) {
+        s.keys = writeMouseLook(s.keys, false);
+      } else {
+        Object.keys(s.keys).forEach((k) => { if (s.keys[k] === action) delete s.keys[k]; });
+      }
+      persistWorld();
+      bump();
+    }
+    function keysForAction(schemeId, action) {
+      const s = schemeOf(schemeId);
+      if (action === DEVICE_ACTION) return hasMouseLook(s) ? [DEVICE] : [];
+      return Object.keys(s.keys).filter((k) => k !== DEVICE && s.keys[k] === action);
+    }
+    function resetScheme(schemeId) {
+      const sid = SCHEME_IDS.indexOf(schemeId) >= 0 ? schemeId : liveSchemeId();
+      schemes[sid] = cloneTemplate(SCHEME_META[sid].template);
+      persistWorld();
+      bump();
+    }
+    function followCamera(camera) {
+      if (camera && camera.schemes) adopt(camera.schemes, { persistLocal: true });
+      const mode = camera && camera.mode;
+      if (mode && SCHEME_IDS.indexOf(mode) >= 0) {
+        const liveChanged = liveId !== mode;
+        liveId = mode;
+        if (liveChanged) editId = mode;
+        bump();
+      }
+    }
+    function setEdit(id) {
+      if (SCHEME_IDS.indexOf(id) < 0) return false;
+      editId = id;
+      try { InputProfileUi.paint(); } catch (_) {}
+      return true;
     }
     function clampSens(v) {
       v = Number(v);
@@ -5873,73 +13058,200 @@
       const next = clampSens(v);
       if (next === sensitivity) return sensitivity;
       sensitivity = next;
-      try { localStorage.setItem(SENS_KEY, String(sensitivity)); } catch (_) {}
+      try { localStorage.setItem(SENS_KEY, String(next)); } catch (_) {}
       return sensitivity;
     }
-    function profile() { return PROFILES[name] || PROFILES.doom; }
-    function setProfile(id) {
-      if (!PROFILES[id] || id === name) return false;
-      name = id;
-      try { localStorage.setItem(LS_KEY, name); } catch (_) {}
-      // Leaving a mouse-look mode must drop any pointer capture, and any keys
-      // held under the OLD map have to be released or they stay stuck down.
-      try { MouseLook.onModeChanged(); } catch (_) {}
-      try { Movement.releaseAll(); } catch (_) {}
-      try { Movement.refreshHints(); } catch (_) {}
-      try { InputProfileUi.paint(); } catch (_) {}
-      return true;
-    }
     function keyFor(key) {
-      const map = profile().keys || {};
-      return map[(key || "").toLowerCase()] || null;
+      const k = (key || "").toLowerCase();
+      if (!k || k === DEVICE) return null;
+      const map = (schemeOf(liveSchemeId()).keys) || {};
+      return map[k] || null;
+    }
+    function schemeYawOnly(id) {
+      return !!(SCHEME_META[id] && SCHEME_META[id].yawOnly);
+    }
+    function hintFor(scheme, schemeId) {
+      if (schemeYawOnly(schemeId) && hasMouseLook(scheme)) {
+        return "WASD move · mouse orbits";
+      }
+      const tmpl = matchingTemplate(scheme);
+      if (tmpl) return TEMPLATES[tmpl].hint;
+      const bits = [];
+      if (hasMouseLook(scheme)) bits.push("mouse looks");
+      const fwd = Object.keys(scheme.keys).filter((k) => scheme.keys[k] === "fwd")[0];
+      if (fwd) bits.push(fwd.toUpperCase() + " forward");
+      return bits.join(" · ") || "Custom layout";
+    }
+    function load() {
+      schemes = freshSchemes();
+      try {
+        const raw = JSON.parse(localStorage.getItem(LS_SCHEMES) || "null");
+        if (raw) adopt(raw, { persistLocal: false });
+      } catch (_) {}
+      try {
+        const legacy = localStorage.getItem(LS_KEY);
+        if ((legacy === "doom" || legacy === "fps") && !localStorage.getItem(LS_SCHEMES)) {
+          applyTemplate("first_person", legacy, { persist: false });
+        }
+      } catch (_) {}
+      try {
+        const s = parseFloat(localStorage.getItem(SENS_KEY));
+        // 3 and 8 were previous factory defaults. Treat those as unset so
+        // the current default actually lands for anyone who never moved
+        // the slider.
+        if (isFinite(s) && s !== 3 && s !== 8) sensitivity = clampSens(s);
+      } catch (_) {}
     }
 
     load();
     return {
-      current: () => name,
+      ACTIONS: ACTIONS,
+      SCHEME_IDS: SCHEME_IDS,
+      current: () => matchingTemplate(schemeOf(liveSchemeId())) || liveSchemeId(),
+      liveScheme: () => liveSchemeId(),
+      editScheme: () => (SCHEME_IDS.indexOf(editId) >= 0 ? editId : liveSchemeId()),
+      setEdit: setEdit,
       profile: profile,
-      list: () => ORDER.map((id) => ({ id: id, label: PROFILES[id].label, hint: PROFILES[id].hint })),
+      schemeList: () => SCHEME_IDS.map((id) => ({
+        id: id,
+        label: SCHEME_META[id].label,
+        hint: hintFor(schemeOf(id), id),
+        live: id === liveSchemeId(),
+      })),
+      list: () => ["doom", "fps"].map((id) => ({ id: id, label: TEMPLATES[id].label, hint: TEMPLATES[id].hint })),
       setProfile: setProfile,
+      applyTemplate: applyTemplate,
+      setSchemeFlag: setSchemeFlag,
+      bindKey: bindKey,
+      unbindAction: unbindAction,
+      keysForAction: keysForAction,
+      resetScheme: resetScheme,
+      followCamera: followCamera,
+      adopt: adopt,
+      exportSchemes: exportSchemes,
+      keyAllowed: (key) => !!key && !FORBIDDEN[String(key).toLowerCase()],
       keyFor: keyFor,
-      mouseLookEnabled: () => !!profile().mouseLook,
-      // The live mouse config: profile defaults, the player's sensitivity, and
-      // the pixel ceiling derived from the time ceiling.
+      mouseLookEnabled: () => hasMouseLook(schemeOf(liveSchemeId())),
       mouseConfig: () => {
-        const base = profile().mouse || MOUSE_SUBTLE;
+        const s = schemeOf(liveSchemeId());
+        const base = MOUSE_SUBTLE;
         const drain = base.drainPxPerMs || 0.4;
         return Object.assign({}, base, {
           sensitivity: sensitivity,
-          maxBudgetPx: (base.maxHoldMs || 600) * drain,
+          invertY: !!s.invertY,
+          deadPx: base.deadPx || 3,
+          idleMs: base.idleMs || 100,
+          maxBudgetPx: (base.maxHoldMs || 220) * drain,
         });
       },
+      bindMouse: (schemeId, on) => setSchemeFlag(schemeId, "mouseLook", on),
       sensitivity: () => sensitivity,
       setSensitivity: setSensitivity,
       sensitivityRange: () => ({ min: SENS_MIN, max: SENS_MAX }),
-      hint: () => profile().hint || "",
+      hint: () => hintFor(schemeOf(liveSchemeId()), liveSchemeId()),
+      schemeYawOnly: schemeYawOnly,
+      yawOnly: () => {
+        try { if (Camera.yawOnly && Camera.yawOnly()) return true; } catch (_) {}
+        return schemeYawOnly(liveSchemeId());
+      },
     };
   })();
   try { window.__InputBindings = InputBindings; } catch (_) {}
 
   // ------------------------------------------------------------------
-  // MouseLook — the FPS camera steer (FPS mode only).
+  // PlayFocus — editor vs viewport. Opening the desk (or clicking it) owns
+  // the pointer so moving the mouse across the live picture does not steer
+  // the character. Click the world to play; look / WASD only run then.
+  // ------------------------------------------------------------------
+  const PlayFocus = (function () {
+    const EDITOR = "#world-editor, #we-modal";
+    let focus = "viewport";
+    let ateFocusClick = false;
+    let wired = false;
+
+    function editorOpen() {
+      try { return !!(typeof WorldEditor !== "undefined" && WorldEditor.isOpen && WorldEditor.isOpen()); }
+      catch (_) { return false; }
+    }
+    function current() {
+      if (!editorOpen()) return "viewport";
+      return focus === "editor" ? "editor" : "viewport";
+    }
+    function paint() {
+      const cur = current();
+      document.body.classList.toggle("play-focus-editor", cur === "editor");
+      document.body.classList.toggle("play-focus-viewport", cur === "viewport");
+    }
+    function set(next) {
+      next = next === "editor" ? "editor" : "viewport";
+      if (!editorOpen()) next = "viewport";
+      const prev = current();
+      focus = next;
+      paint();
+      if (prev === next) return;
+      if (next === "editor") {
+        try { MouseLook.releaseLock(); } catch (_) {}
+        try { Movement.releaseAll(); } catch (_) {}
+      }
+    }
+    function toEditor() { set("editor"); }
+    function toViewport() { set("viewport"); }
+    function isViewport() { return current() === "viewport"; }
+    function isEditor() { return current() === "editor"; }
+    function ateClick() {
+      if (!ateFocusClick) return false;
+      ateFocusClick = false;
+      return true;
+    }
+    function isEditorChrome(t) {
+      try { return !!(t && t.closest && t.closest(EDITOR)); }
+      catch (_) { return false; }
+    }
+    function onPointerDown(e) {
+      if (!editorOpen()) { if (focus !== "viewport") set("viewport"); return; }
+      if (isEditorChrome(e.target)) { set("editor"); return; }
+      if (focus !== "viewport") {
+        set("viewport");
+        const onWorld = e.target === document.body ||
+          !!(e.target && e.target.closest &&
+             e.target.closest(".scene, #reactor-video, #reactor-freeze"));
+        if (onWorld) ateFocusClick = true;
+      }
+    }
+    function init() {
+      if (wired) return;
+      wired = true;
+      document.addEventListener("pointerdown", onPointerDown, true);
+      paint();
+    }
+    return { init, current, toEditor, toViewport, isViewport, isEditor, ateClick };
+  })();
+  try { window.__PlayFocus = PlayFocus; } catch (_) {}
+
+  // ------------------------------------------------------------------
+  // MouseLook — always-on FPS/TPS camera steer (Look scheme only).
   //
-  // World models take DISCRETE held look directions (keep turning until told to
-  // stop), not angles. So mouse motion deposits a finite TURN BUDGET that drains
-  // with time: while budget remains we hold that direction, and when it runs out
-  // we stop. Moving the mouse further turns further, holding still winds the turn
-  // down within a few hundred ms, and flicking back cancels the queued turn
-  // instead of fighting it. Two ways in, because a browser can always refuse
-  // pointer capture:
+  // In Look mode the mouse steers the live world camera without a button held.
+  // A CENTER DEAD ZONE (a full-height vertical strip) lets the cursor
+  // travel to click objects / scan tags above and below without turning
+  // the view. Park LEFT of the strip to orbit left; park RIGHT to orbit
+  // right. Direction comes from which side you are on — not from mouse
+  // deltas — so wiggling on a side cannot zig-zag the camera. Speed
+  // scales with how far past the edge you are (a nudge crawls, the
+  // screen edge is full speed). Coming back inside cancels the orbit.
+  // A click on the scene (even outside the strip) freezes orbit for a
+  // few seconds so a tag can be clicked without the camera sliding away.
+  // A click is never consumed here, so it still SCANs (the shoot
+  // button). World models take DISCRETE held look directions (keep turning
+  // until told to stop), not angles. Pointer-lock (and the e2e __feed
+  // hook) still bank a finite TURN BUDGET that drains with time.
   //
-  //   • Drag-look (primary) — hold the left button on the world and move. Always
-  //     works, never touches the cursor, and a click with no movement does
-  //     nothing, so it can't swallow a click the game needed.
-  //   • Pointer lock (opt-in) — DOUBLE-click the world to capture the cursor and
-  //     steer continuously (true FPS); Esc frees it. Deliberately NOT bound to a
-  //     single click: that silently stole the cursor from ordinary clicks, which
-  //     reads as the game freezing.
+  // Pointer lock (continuous 360\u00B0 steer with the cursor hidden) is kept
+  // plumbed for the upcoming CAMERA mode but is NOT taken here — nothing
+  // requests it, so an ordinary click can never lose the cursor. Lock has no
+  // dead zone (the cursor is gone; every delta is a look).
   //
-  // Everything here no-ops outside FPS mode / outside live video.
+  // Everything here no-ops outside Look mode / outside live video.
   // ------------------------------------------------------------------
   const MouseLook = (function () {
     // Real UI that must keep its own clicks/drags. Anything NOT matching this
@@ -5950,43 +13262,192 @@
       "#img-model, #agent-log, #world-editor, #we-modal, #talk-overlay, " +
       "#touch-layer, #scan-layer, #action-wheel, #objectives-hud, #shot-tally, " +
       "#investigations-tray, #case-overlay, #ceremony, #processing-veil, " +
-      "#scan-tutorial, #narrator-bar, #guide-thumb, #capture-thumb, " +
-      "#moment-overlay, .renderer-toast, #tape-overlay";
+      "#narrator-bar, #guide-thumb, #capture-thumb, " +
+      "#moment-overlay, .renderer-toast, #tape-overlay, " +
+      "#inventory-hud, #danger-health, #continues-hud, #lobby-count";
 
-    // Movement past this makes a gesture a LOOK, not a tap.
-    const DRAG_SLOP_PX = 8;
+    // Full-height center corridor: click tags at any Y without steering.
+    // Leave left or right of this strip to look. ~middle third of the frame.
+    const DEAD_W = 0.36;
+    const DEAD_H = 1;
+    const CLICK_HOLD_MS = 4000;
+    // HUD chrome: a click here is not "I want that object". Scan tags and
+    // the live picture are NOT in this list — those clicks freeze orbit.
+    const CHROME = "button, a, input, textarea, select, option, label, " +
+      "[role='dialog'], [contenteditable='true'], " +
+      "#move-pad, #verb-bar, #control-rail, #menu-toggle, #rt-log, #story-log, " +
+      "#img-model, #agent-log, #world-editor, #we-modal, #talk-overlay, " +
+      "#action-wheel, #objectives-hud, #shot-tally, " +
+      "#investigations-tray, #case-overlay, #ceremony, #processing-veil, " +
+      "#narrator-bar, #guide-thumb, #capture-thumb, " +
+      "#moment-overlay, .renderer-toast, #tape-overlay, " +
+      "#start-menu, #xp-picker, #watch-mode, " +
+      "#inventory-hud, #danger-health, #continues-hud, #lobby-count";
 
-    let locked = false;         // pointer lock held
-    let dragging = false;       // left button held on the world
+    let locked = false;         // pointer lock held (reserved for CAMERA mode)
+    let hovering = false;       // cursor is over the live world, Look is on
+    let outsideZone = false;    // cursor has left the center dead zone
+    let orbitDir = null;        // "left" | "right" | null — hover orbit side
+    let orbitMag = 0;           // 0..1, how far past the strip edge
+    let clickHoldUntil = 0;     // wall clock: orbit frozen after a scene click
+    let clickHoldTimer = null;
+    let resumeTries = 0;        // retries while the world is mid-restage
     let budgetX = 0;            // signed px of turn still owed to the player
     let budgetY = 0;
     let drainedAt = 0;          // wall clock of the last budget bleed
-    let lastClient = null;      // previous cursor pos (drag-look delta source)
-    let downAt = null;          // where the button went down (drag vs click)
-    let draggedFar = false;     // this gesture moved -> it steered, it didn't tap
+    let lastClient = null;      // previous cursor pos (hover-look / lock)
+    let lastFeedAt = 0;         // wall clock of the last real mouse delta
     let hinted = false;
     let reticle = null;
+    let deadFrame = null;
 
     function modeOn() { return InputBindings.mouseLookEnabled(); }
     function allowed() {
       if (!modeOn()) return false;
+      try { if (PlayFocus && !PlayFocus.isViewport()) return false; } catch (_) {}
       try { if (!Movement.enabled()) return false; } catch (_) { return false; }
       return true;
     }
     // Another instrument owns the pointer right now — never capture over it.
     function uiBusy() {
       try {
-        if (state.touchMode) return true;                       // photo aiming
+        if (isCameraMode() || state.touchMode) return true;     // photo aiming
         if (typeof tapeIsOpen === "function" && tapeIsOpen()) return true;
         if (el.actionWheel && el.actionWheel.classList.contains("fw-open")) return true;
-        if (el.worldEditor && !el.worldEditor.classList.contains("hidden")) return true;
+        // The editor is a glass desk over a live picture — only its own
+        // chrome (isUi) owns the pointer. Treating the whole desk as busy
+        // froze mouse-look on the Reactor / LingBot viewport.
         if (el.talkOverlay && !el.talkOverlay.classList.contains("hidden")) return true;
         if (document.body.classList.contains("awaiting-first-scene")) return true;
+        if (document.body.classList.contains("start-menu-on")) return true;
+        if (document.body.classList.contains("xp-open")) return true;
+        if (document.body.classList.contains("mode-watch")) return true;
       } catch (_) {}
       return false;
     }
     function isUi(t) {
       try { return !!(t && t.closest && t.closest(UI)); } catch (_) { return true; }
+    }
+    function isChrome(t) {
+      try {
+        if (t && t.closest && t.closest(".scan-tag, #scan-tags, #scan-layer")) return false;
+        return !!(t && t.closest && t.closest(CHROME));
+      } catch (_) { return true; }
+    }
+    function clickHoldMs() {
+      try {
+        const n = Number(window.__MOUSE_LOOK_CLICK_HOLD_MS__);
+        if (n > 0 && isFinite(n)) return n;
+      } catch (_) {}
+      return CLICK_HOLD_MS;
+    }
+    function clickHoldActive() { return Date.now() < clickHoldUntil; }
+    function clearClickHold() {
+      clickHoldUntil = 0;
+      resumeTries = 0;
+      if (clickHoldTimer) { clearTimeout(clickHoldTimer); clickHoldTimer = null; }
+    }
+    function resumeOrbitFromLast() {
+      if (locked || !modeOn() || clickHoldActive()) return;
+      if (!lastClient) return;
+      const o = orbitFromPoint(lastClient.x);
+      if (!o) return;
+      // A LingBot restage can flap isShowing() for a beat. Retry instead of
+      // dropping the parked-side orbit until the player happens to wiggle.
+      if (uiBusy() || !worldShowing()) {
+        if (resumeTries++ > 20) { resumeTries = 0; return; }
+        if (clickHoldTimer) clearTimeout(clickHoldTimer);
+        clickHoldTimer = setTimeout(() => {
+          clickHoldTimer = null;
+          resumeOrbitFromLast();
+        }, 120);
+        return;
+      }
+      resumeTries = 0;
+      // Cursor left the document during the hold — wait for mousemove.
+      // Auto-enterWorld here would start turning with no pointer in the game.
+      if (!hovering) return;
+      if (!allowed()) return;
+      outsideZone = true;
+      holdOrbit(o.dir, o.mag);
+      paint();
+    }
+    function idleLook() {
+      try { Movement.stopLook(); } catch (_) {}
+      try { Movement.onLookReleased(); } catch (_) {}
+    }
+    function armClickHold() {
+      const ms = clickHoldMs();
+      clickHoldUntil = Date.now() + ms;
+      orbitDir = null;
+      orbitMag = 0;
+      outsideZone = false;
+      resetBudget();
+      paint();
+      // Always idle LingBot look + rotation 0. A leftover deg/frame keeps
+      // the camera spinning after a click even when orbitDir is already null.
+      idleLook();
+      if (clickHoldTimer) clearTimeout(clickHoldTimer);
+      clickHoldTimer = setTimeout(() => {
+        clickHoldTimer = null;
+        // setTimeout can fire a tick before Date.now() reaches clickHoldUntil.
+        // Clear the hold here or resumeOrbitFromLast() bails and never retries.
+        clickHoldUntil = 0;
+        resumeOrbitFromLast();
+      }, ms);
+    }
+
+    function deadZoneRect() {
+      const w = window.innerWidth || 0;
+      const h = window.innerHeight || 0;
+      const zw = w * DEAD_W;
+      const zh = h * DEAD_H;
+      return {
+        left: (w - zw) / 2,
+        right: (w + zw) / 2,
+        top: (h - zh) / 2,
+        bottom: (h + zh) / 2,
+        widthFrac: DEAD_W,
+        heightFrac: DEAD_H,
+      };
+    }
+    function inDeadZone(x, y) {
+      const r = deadZoneRect();
+      return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
+    }
+    // Which side of the corridor the cursor is on. Direction is ONLY this —
+    // never the mouse delta — so a wiggle on the left cannot orbit right.
+    // Magnitude is 0 at the strip edge and 1 at the screen edge, so a
+    // small step outside crawls and a full-edge park is full speed.
+    function orbitFromPoint(x) {
+      const r = deadZoneRect();
+      const w = window.innerWidth || 0;
+      let dir = null, t = 0;
+      if (x < r.left) {
+        dir = "left";
+        t = (r.left - x) / Math.max(1, r.left);
+      } else if (x > r.right) {
+        dir = "right";
+        t = (x - r.right) / Math.max(1, w - r.right);
+      } else {
+        return null;
+      }
+      t = Math.max(0, Math.min(1, t));
+      return { dir: dir, mag: t };
+    }
+    function holdOrbit(dir, mag) {
+      orbitDir = dir;
+      orbitMag = mag;
+      lastFeedAt = Date.now();
+      try { Movement.noteActivity(); } catch (_) {}
+    }
+    function clearOrbit() {
+      const was = !!orbitDir || outsideZone;
+      orbitDir = null;
+      orbitMag = 0;
+      outsideZone = false;
+      resetBudget();
+      if (was) idleLook();
     }
 
     function ensureReticle() {
@@ -6002,18 +13463,66 @@
       }
       return reticle;
     }
+    function ensureDeadFrame() {
+      if (deadFrame && deadFrame.isConnected) return deadFrame;
+      deadFrame = document.getElementById("mouse-look-deadzone");
+      if (!deadFrame) {
+        deadFrame = document.createElement("div");
+        deadFrame.id = "mouse-look-deadzone";
+        deadFrame.className = "mouse-look-deadzone";
+        deadFrame.setAttribute("aria-hidden", "true");
+        deadFrame.innerHTML =
+          '<span class="ml-dz-edge ml-dz-l"></span><span class="ml-dz-edge ml-dz-r"></span>';
+        document.body.appendChild(deadFrame);
+      }
+      return deadFrame;
+    }
     function paint() {
-      const on = locked || dragging;
+      let camera = false;
+      try { camera = typeof isCameraMode === "function" && isCameraMode(); } catch (_) {}
+      if (camera) {
+        document.body.classList.remove("mouse-looking", "mouse-look-locked", "mouse-look-dead");
+        if (reticle) reticle.classList.remove("on");
+        if (deadFrame) deadFrame.classList.remove("on", "steering");
+        return;
+      }
+      const on = locked || hovering;
+      const holding = !locked && clickHoldActive();
       document.body.classList.toggle("mouse-looking", on);
       document.body.classList.toggle("mouse-look-locked", locked);
+      document.body.classList.toggle("mouse-look-dead", on && !locked && (!outsideZone || holding));
       ensureReticle().classList.toggle("on", on);
+      const frame = ensureDeadFrame();
+      frame.classList.toggle("on", on && !locked);
+      frame.classList.toggle("steering", on && outsideZone && !holding);
+      layoutDeadFrame();
+    }
+    function layoutDeadFrame() {
+      const frame = ensureDeadFrame();
+      const r = deadZoneRect();
+      frame.style.left = r.left + "px";
+      frame.style.width = Math.max(0, r.right - r.left) + "px";
+      frame.style.top = "0";
+      frame.style.height = "100%";
+      frame.style.transform = "none";
     }
 
-    function reset() {
+    function resetBudget() {
       budgetX = 0;
       budgetY = 0;
       drainedAt = 0;
+      lastFeedAt = 0;
+    }
+    function resetOrbit() {
+      resetBudget();
+      outsideZone = false;
+      orbitDir = null;
+      orbitMag = 0;
+    }
+    function reset() {
+      resetOrbit();
       lastClient = null;
+      clearClickHold();
     }
 
     function clamp(v, lim) { return v < -lim ? -lim : v > lim ? lim : v; }
@@ -6026,14 +13535,26 @@
 
     // Bank the turn this mouse movement earned. Opposite motion SUBTRACTS, so
     // flicking back cancels a queued turn rather than queueing a fight.
+    // Sensitivity scales how hard the turn is, not how long it keeps going —
+    // a still mouse must stop looking, or Happy Oyster holds Mouse_Up forever.
+    function yawOnlyLook() {
+      try { return !!(Camera.yawOnly && Camera.yawOnly()); } catch (_) { return false; }
+    }
+
     function feed(dx, dy) {
+      if (yawOnlyLook()) dy = 0;
       if (!dx && !dy) return;
       const cfg = InputBindings.mouseConfig();
+      const dead = cfg.deadPx || 6;
+      if (Math.abs(dx) < dead) dx = 0;
+      if (Math.abs(dy) < dead) dy = 0;
+      if (!dx && !dy) return;
       const s = cfg.sensitivity || 1;
       const lim = cfg.maxBudgetPx || 140;
       drain(); // charge elapsed time before depositing, so rate stays honest
       budgetX = clamp(budgetX + dx * s, lim);
       budgetY = clamp(budgetY + (cfg.invertY ? -dy : dy) * s, lim);
+      lastFeedAt = Date.now();
       // Keep the drive loop warm so the look lands on the very next tick.
       try { Movement.noteActivity(); } catch (_) {}
     }
@@ -6056,14 +13577,36 @@
     // the drive layer decides whether the live model can hold a real diagonal or
     // has to time-slice one.
     function intent() {
-      if (!modeOn() || (!locked && !dragging)) return null;
+      if (!modeOn() || (!locked && !hovering)) return null;
+      if (!locked && clickHoldActive()) return null;
+      // Hover orbit: held for as long as the cursor stays on that side.
+      if (!locked && orbitDir) {
+        const cfg = InputBindings.mouseConfig();
+        let s = 1;
+        try { s = (cfg.sensitivity || 10) / 10; } catch (_) {}
+        s = Math.max(0.35, Math.min(1.4, s));
+        const strength = Math.min(cfg.maxIntensity || 1, Math.max(0, orbitMag) * s);
+        return {
+          lookH: orbitDir,
+          lookV: "idle",
+          hMag: strength,
+          vMag: 0,
+          intensity: strength,
+          orbit: true,
+        };
+      }
       drain();
       const cfg = InputBindings.mouseConfig();
-      const hold = cfg.holdPx || 12;
+      const idle = cfg.idleMs || 100;
+      if (!lastFeedAt || (Date.now() - lastFeedAt) > idle) {
+        resetBudget();
+        return null;
+      }
+      const hold = cfg.holdPx || 1;
       const lim = cfg.maxBudgetPx || 240;
       const ax = Math.abs(budgetX), ay = Math.abs(budgetY);
       if (Math.max(ax, ay) < hold) return null;
-      const hOn = ax >= hold, vOn = ay >= hold;
+      const hOn = ax >= hold, vOn = !yawOnlyLook() && ay >= hold;
       const strength = Math.min(cfg.maxIntensity || 0.5, Math.max(ax, ay) / lim);
       return {
         lookH: hOn ? (budgetX < 0 ? "left" : "right") : "idle",
@@ -6074,7 +13617,41 @@
       };
     }
     function isActive() { return !!intent(); }
-    function isEngaged() { return locked || dragging; }
+    function isEngaged() { return locked || !!orbitDir; }
+    function isLocked() { return locked; }
+
+    // The cursor is somewhere we may steer from: Look on, the live world
+    // revealed, no other instrument holding the pointer, not over real UI.
+    function overWorld(target) {
+      if (!allowed() || uiBusy()) return false;
+      try {
+        if (!window.ReactorRenderer.isShowing || !window.ReactorRenderer.isShowing()) return false;
+      } catch (_) { return false; }
+      return !isUi(target);
+    }
+    // Cursor entered the live world — begin steering and warm the drive loop.
+    function enterWorld() {
+      if (hovering) return;
+      hovering = true;
+      paint();
+      if (!hinted) {
+        hinted = true;
+        showRendererToast(
+          "Park left or right to orbit \u2014 click inside to scan",
+          2600);
+      }
+    }
+    // Cursor left the world (onto UI, off-screen, mode off) — stop steering.
+    function leaveWorld() {
+      if (!hovering) return;
+      hovering = false;
+      // Keep an armed click-hold. Resetting here cancelled the 4s freeze
+      // when the cursor grazed the window chrome / taskbar mid-click.
+      if (clickHoldActive()) resetOrbit();
+      else reset();
+      paint();
+      idleLook();
+    }
 
     // ---- pointer lock ----
     function requestLock() {
@@ -6089,88 +13666,101 @@
       try { req.call(document.body); } catch (_) {}
     }
     function releaseLock() {
-      dragging = false;
+      const wasOn = locked || hovering;
       reset();
       if (locked) {
         const exit = document.exitPointerLock || document.mozExitPointerLock;
         if (exit) { try { exit.call(document); } catch (_) {} }
       }
+      hovering = false;
       paint();
-      try { Movement.onLookReleased(); } catch (_) {}
+      if (wasOn) idleLook();
+    }
+    function ownLockElement() {
+      const node = document.pointerLockElement || document.mozPointerLockElement;
+      return !!(node && node === document.body);
     }
     function onLockChange() {
-      locked = !!(document.pointerLockElement || document.mozPointerLockElement);
+      // Only claim a lock we requested on document.body. PHOTO viewfinder
+      // locks #touch-layer for planted FPS look; treating that as world-look
+      // would feed 3P yaw and swallow the shutter click.
+      locked = ownLockElement();
       reset();
       paint();
       if (locked) {
         RtLog.push("dim", "\u25CE mouse look \u00B7 captured");
       } else {
-        try { Movement.onLookReleased(); } catch (_) {}
+        idleLook();
       }
     }
 
     // ---- events ----
-    function onMouseDown(e) {
-      if (!allowed() || uiBusy()) return;
-      if (e.button !== 0 || isUi(e.target)) return;
-      if (locked) return;
-      // Drag-look starts immediately; the click that follows asks for the lock,
-      // so a plain click upgrades to full capture and a drag still steers if
-      // the browser refuses.
-      dragging = true;
-      lastClient = { x: e.clientX, y: e.clientY };
-      downAt = { x: e.clientX, y: e.clientY };
-      draggedFar = false;
-      paint();
-      if (!hinted) {
-        hinted = true;
-        showRendererToast("Mouse look \u2014 drag to steer \u00B7 double-click to capture the cursor", 3200);
-      }
-    }
-    function onMouseUp() {
-      if (!dragging) return;
-      dragging = false;
-      reset();
-      paint();
-      try { Movement.onLookReleased(); } catch (_) {}
+    // Always-on hover-look: moving the cursor over the live world steers. No
+    // button is held, so the click a player makes is never consumed here — it
+    // falls through to the world-tap scan (the shoot button).
+    function worldShowing() {
+      try {
+        return !!(window.ReactorRenderer.isShowing && window.ReactorRenderer.isShowing());
+      } catch (_) { return false; }
     }
     function onMouseMove(e) {
       if (!modeOn()) return;
+      try { if (isCameraMode() || state.touchMode) return; } catch (_) {}
       if (locked) { feed(e.movementX || 0, e.movementY || 0); return; }
-      if (!dragging) { lastClient = null; return; }
-      if (!allowed()) return;
-      if (lastClient) feed(e.clientX - lastClient.x, e.clientY - lastClient.y);
       lastClient = { x: e.clientX, y: e.clientY };
-      if (downAt && Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) > DRAG_SLOP_PX) {
-        draggedFar = true;
+      // A scene click bought a few seconds to land the pointer on a tag.
+      if (clickHoldActive()) {
+        if (!hovering && allowed() && worldShowing()) enterWorld();
+        return;
       }
+      // Side of the screen owns the orbit — not the hit target. A tag or
+      // HUD sliver on the left must not drop a left orbit (that zig-zags).
+      const orbit = orbitFromPoint(e.clientX);
+      if (!orbit) {
+        // In the strip: idle LingBot look axes immediately so a leftover
+        // pan cannot keep turning while you aim at a tag.
+        if (orbitDir || outsideZone) {
+          clearOrbit();
+          paint();
+        }
+        if (!hovering && allowed() && worldShowing()) enterWorld();
+        return;
+      }
+      const canStart = !!(allowed() && !uiBusy() && worldShowing());
+      const canHold = !!(hovering && orbitDir === orbit.dir && !uiBusy());
+      if (canStart || canHold) {
+        if (!hovering) enterWorld();
+        if (!outsideZone || orbitDir !== orbit.dir) {
+          outsideZone = true;
+          paint();
+        }
+        holdOrbit(orbit.dir, orbit.mag);
+        return;
+      }
+      if (!overWorld(e.target)) { if (hovering) leaveWorld(); }
     }
 
-    // Tapping the world fires a PAID detection pass (onWorldTap -> triggerScan),
-    // and the mouseup ending a look-drag produces a real click on the scene — so
-    // steering the camera was buying a scan every time you let go. A gesture that
-    // MOVED now eats its own click. Also swallowed: the second click of the
-    // double-click that takes pointer capture, and clicks while captured (their
-    // coordinates are frozen at the lock point, so they'd scan a stale spot).
-    // A stationary tap on the world is untouched and still scans.
+    function onPointerDownCapture(e) {
+      if (e.button !== 0) return;
+      if (!modeOn() || locked || uiBusy()) return;
+      try { if (PlayFocus && !PlayFocus.isViewport()) return; } catch (_) {}
+      if (!allowed()) return;
+      if (isChrome(e.target)) return;
+      if (!worldShowing()) return;
+      armClickHold();
+    }
+
+    // Clicks must reach the world-tap scan untouched — a click IS the scan. The
+    // only time we swallow one is while the cursor is captured (CAMERA mode,
+    // later), when its coordinates are frozen at the lock point and would scan a
+    // stale spot. Hover-look never captures, so this is inert today.
     function onClickCapture(e) {
-      if (!modeOn()) return;
-      const steering = draggedFar || locked || (e.detail || 0) >= 2;
-      draggedFar = false;
-      if (!steering) return;
+      if (!locked) return;
       e.stopImmediatePropagation();
       e.stopPropagation();
       e.preventDefault();
     }
-    // Explicit opt-in for full capture. A single click is left alone: the game
-    // uses clicks, and stealing the cursor from one looked like a freeze.
-    function onDblClick(e) {
-      if (locked || !allowed() || uiBusy()) return;
-      if (e.button != null && e.button !== 0) return;
-      if (isUi(e.target)) return;
-      requestLock();
-    }
-    function onBlur() { if (locked || dragging) releaseLock(); }
+    function onBlur() { if (locked || hovering) releaseLock(); }
 
     function onModeChanged() {
       if (!modeOn()) releaseLock();
@@ -6179,38 +13769,90 @@
 
     function init() {
       ensureReticle();
+      ensureDeadFrame();
       document.addEventListener("pointerlockchange", onLockChange);
       document.addEventListener("mozpointerlockchange", onLockChange);
-      document.addEventListener("mousedown", onMouseDown, true);
-      document.addEventListener("mouseup", onMouseUp, true);
       document.addEventListener("mousemove", onMouseMove);
-      document.addEventListener("dblclick", onDblClick, true);
+      // Leaving the document entirely can't fire a mousemove that clears hover,
+      // so stop steering explicitly when the cursor exits the window.
+      document.addEventListener("mouseleave", () => { if (hovering) leaveWorld(); });
+      window.addEventListener("pointerdown", onPointerDownCapture, true);
       // Capture phase on window: runs before the bubble-phase world-tap scan
-      // handler, which is the only way to cancel it.
+      // handler, which is the only way to cancel it (only used while captured).
       window.addEventListener("click", onClickCapture, true);
       window.addEventListener("blur", onBlur);
+      window.addEventListener("resize", () => { try { paint(); } catch (_) {} });
       paint();
     }
 
+    function haltForCamera() {
+      hovering = false;
+      outsideZone = false;
+      orbitDir = null;
+      orbitMag = 0;
+      resetBudget();
+      lastClient = null;
+      clearClickHold();
+      document.body.classList.remove("mouse-looking", "mouse-look-locked", "mouse-look-dead");
+      if (reticle) reticle.classList.remove("on");
+      if (deadFrame) deadFrame.classList.remove("on", "steering");
+      // Pointer lock paints pywebview's "127.0.0.1 — press Esc" banner over
+      // the viewfinder. Drop any leftover 3P lock on the way in.
+      if (locked) {
+        const exit = document.exitPointerLock || document.mozExitPointerLock;
+        if (exit) { try { exit.call(document); } catch (_) {} }
+        locked = false;
+      }
+      idleLook();
+    }
+
     return {
-      init, intent, isActive, isEngaged, requestLock, releaseLock,
-      onModeChanged, allowed,
-      // Debug/e2e: push a synthetic delta as if the mouse moved while captured.
-      __feed: (dx, dy) => { dragging = true; paint(); feed(dx, dy); },
+      init, intent, isActive, isEngaged, isLocked, requestLock, releaseLock,
+      onModeChanged, allowed, deadZone: deadZoneRect, inDeadZone, haltForCamera,
+      // Debug/e2e: push a synthetic delta as if the mouse moved over the world.
+      __feed: (dx, dy) => {
+        hovering = true;
+        outsideZone = true;
+        orbitDir = null;
+        orbitMag = 0;
+        paint();
+        feed(dx, dy);
+      },
+      __state: () => ({
+        hovering, outsideZone, orbitDir, orbitMag, locked,
+        clickHold: clickHoldActive(),
+      }),
+      __holdAt: (x, y) => {
+        hovering = true;
+        const o = orbitFromPoint(x);
+        if (!o) { outsideZone = false; clearOrbit(); paint(); return intent(); }
+        outsideZone = true;
+        holdOrbit(o.dir, o.mag);
+        paint();
+        return intent();
+      },
     };
   })();
   try { window.__MouseLook = MouseLook; } catch (_) {}
 
   // ------------------------------------------------------------------
-  // InputProfileUi — the CONTROLS switch (DOOM / FPS). Mounted in the WORLD
-  // EDITOR (the authoring surface) and mirrored in the WORLD MODEL panel, both
-  // driven from one place so a new mode shows up in both automatically.
+  // InputProfileUi — per-camera schemes, remappable keys + mouse. Tank / Look
+  // are starting layouts. The strip is loaned into the Controls window.
   // ------------------------------------------------------------------
   const InputProfileUi = (function () {
-    const MOUNTS = [
-      { seg: "we-input-profile", wrap: "we-input-opts", hint: "we-input-hint", always: true },
-      { seg: "rt-input-profile", wrap: "rt-input-opts", hint: null, always: false },
-    ];
+    const KEY_LABELS = {
+      arrowleft: "\u2190", arrowright: "\u2192", arrowup: "\u2191", arrowdown: "\u2193",
+    };
+    let listening = null;
+    let wired = false;
+
+    function prettyKey(key) {
+      if (!key) return "";
+      if (key === "mouse") return "MOUSE";
+      if (KEY_LABELS[key]) return KEY_LABELS[key];
+      if (key.length === 1) return key.toUpperCase();
+      return key.replace(/^arrow/, "").toUpperCase();
+    }
 
     function apply(id) {
       if (!InputBindings.setProfile(id)) return;
@@ -6219,23 +13861,167 @@
       try { RtLog.push("ok", "controls", (p.label || id) + " \u00B7 " + (p.hint || "")); } catch (_) {}
     }
 
-    function build(m) {
-      const host = document.getElementById(m.seg);
-      if (!host || host.childElementCount) return;
-      InputBindings.list().forEach((opt) => {
+    function stopListen() {
+      listening = null;
+      paintKeys();
+    }
+
+    function onListenKey(e) {
+      if (!listening) return;
+      const key = String(e.key || "").toLowerCase();
+      if (key === "escape") { e.preventDefault(); e.stopPropagation(); stopListen(); return; }
+      if (!InputBindings.keyAllowed(key)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      InputBindings.bindKey(listening.scheme, key, listening.action);
+      listening = null;
+    }
+
+    function wire() {
+      if (wired) return;
+      wired = true;
+      document.addEventListener("keydown", onListenKey, true);
+      const invert = document.getElementById("we-input-invert");
+      if (invert) invert.addEventListener("change", () => {
+        InputBindings.setSchemeFlag(InputBindings.editScheme(), "invertY", invert.checked);
+      });
+      const reset = document.getElementById("we-input-reset");
+      if (reset) reset.addEventListener("click", () => {
+        InputBindings.resetScheme(InputBindings.editScheme());
+      });
+    }
+
+    function buildSchemes() {
+      const host = document.getElementById("we-input-schemes");
+      if (!host) return;
+      const edit = InputBindings.editScheme();
+      host.innerHTML = "";
+      InputBindings.schemeList().forEach((opt) => {
         const b = document.createElement("button");
         b.type = "button";
-        b.className = "rt-ho-btn";
+        b.className = "we-input-scheme" + (opt.id === edit ? " on" : "") + (opt.live ? " is-live" : "");
         b.dataset.value = opt.id;
         b.textContent = opt.label;
-        b.title = opt.hint || opt.label;
-        b.addEventListener("click", () => apply(opt.id));
+        b.title = opt.live ? (opt.hint + " \u2014 live camera") : opt.hint;
+        b.addEventListener("click", () => InputBindings.setEdit(opt.id));
         host.appendChild(b);
       });
     }
 
-    // The sensitivity slider (editor only). Only meaningful in a mouse-look mode,
-    // so it dims out in DOOM rather than vanishing — the control stays findable.
+    function buildTemplates() {
+      const host = document.getElementById("we-input-profile");
+      if (!host) return;
+      if (!host.childElementCount) {
+        InputBindings.list().forEach((opt) => {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.className = "rt-ho-btn";
+          b.dataset.value = opt.id;
+          b.textContent = opt.label;
+          b.title = opt.hint || opt.label;
+          b.addEventListener("click", () => apply(opt.id));
+          host.appendChild(b);
+        });
+      }
+      const cur = InputBindings.current();
+      const editingLive = InputBindings.editScheme() === InputBindings.liveScheme();
+      Array.from(host.children).forEach((b) => {
+        b.classList.toggle("on", editingLive && b.dataset.value === cur);
+      });
+    }
+
+    function paintLead() {
+      const lead = document.getElementById("we-input-scheme-lead");
+      if (!lead) return;
+      const schemes = InputBindings.schemeList();
+      const edit = schemes.find((s) => s.id === InputBindings.editScheme()) || schemes[0];
+      const live = schemes.find((s) => s.live) || edit;
+      if (!edit) { lead.textContent = ""; return; }
+      if (edit.id === live.id) {
+        lead.textContent = (edit.hint || "Your layout") + ".";
+      } else {
+        lead.textContent = "Editing " + edit.label + " (" + (edit.hint || "custom") +
+          "). Live camera is " + live.label + ".";
+      }
+    }
+
+    function paintFlags() {
+      const sid = InputBindings.editScheme();
+      const exported = InputBindings.exportSchemes()[sid] || {};
+      const invert = document.getElementById("we-input-invert");
+      if (invert) invert.checked = !!exported.invertY;
+    }
+
+    function paintMouseRow(host, sid) {
+      const on = InputBindings.keysForAction(sid, "look").indexOf("mouse") >= 0;
+      const row = document.createElement("button");
+      row.type = "button";
+      row.id = "we-input-mouse";
+      row.className = "we-input-bind is-device" + (on ? " is-on" : "");
+      row.setAttribute("role", "listitem");
+      const orbit = InputBindings.schemeYawOnly(sid);
+      row.title = on
+        ? (orbit
+            ? "Mouse orbits left and right — click to unbind. A world click still scans."
+            : "Mouse looks — click to unbind. A world click still scans.")
+        : "Click to bind the mouse to look";
+      const name = document.createElement("span");
+      name.className = "we-input-bind-name";
+      name.textContent = "Mouse";
+      const val = document.createElement("span");
+      val.className = "we-input-bind-keys";
+      val.textContent = on ? (orbit ? "orbits" : "looks") : "\u2014";
+      row.appendChild(name);
+      row.appendChild(val);
+      row.addEventListener("click", (e) => {
+        e.preventDefault();
+        InputBindings.bindMouse(sid, !on);
+      });
+      row.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        InputBindings.unbindAction(sid, "look");
+      });
+      host.appendChild(row);
+    }
+
+    function paintKeys() {
+      const host = document.getElementById("we-input-keys");
+      if (!host) return;
+      const sid = InputBindings.editScheme();
+      host.innerHTML = "";
+      paintMouseRow(host, sid);
+      const hidePitch = InputBindings.schemeYawOnly(sid);
+      InputBindings.ACTIONS.forEach((act) => {
+        if (hidePitch && (act.id === "pitchUp" || act.id === "pitchDown")) return;
+        const keys = InputBindings.keysForAction(sid, act.id);
+        const row = document.createElement("button");
+        row.type = "button";
+        row.className = "we-input-bind" + (listening && listening.action === act.id ? " is-listen" : "");
+        row.setAttribute("role", "listitem");
+        const name = document.createElement("span");
+        name.className = "we-input-bind-name";
+        name.textContent = act.label;
+        const val = document.createElement("span");
+        val.className = "we-input-bind-keys";
+        val.textContent = listening && listening.action === act.id
+          ? "press a key"
+          : (keys.map(prettyKey).join("  ") || "\u2014");
+        row.appendChild(name);
+        row.appendChild(val);
+        row.addEventListener("click", (e) => {
+          e.preventDefault();
+          if (listening && listening.action === act.id) { stopListen(); return; }
+          listening = { scheme: sid, action: act.id };
+          paintKeys();
+        });
+        row.addEventListener("contextmenu", (e) => {
+          e.preventDefault();
+          InputBindings.unbindAction(sid, act.id);
+        });
+        host.appendChild(row);
+      });
+    }
+
     function buildSens() {
       const slider = document.getElementById("we-input-sens");
       if (!slider || slider.dataset.wired) return;
@@ -6252,46 +14038,34 @@
       const slider = document.getElementById("we-input-sens");
       const out = document.getElementById("we-input-sens-val");
       const wrap = document.getElementById("we-input-sens-wrap");
-      const on = InputBindings.mouseLookEnabled();
+      const invert = document.getElementById("we-input-invert-wrap");
+      const sid = InputBindings.editScheme();
+      const on = !!(InputBindings.exportSchemes()[sid] || {}).mouseLook;
       const s = InputBindings.sensitivity();
       if (slider) { slider.value = String(s); slider.disabled = !on; }
       if (out) out.textContent = s.toFixed(1) + "\u00D7";
       if (wrap) {
         wrap.classList.toggle("off", !on);
         wrap.title = on ? "How far the camera turns per mouse movement"
-                        : "Mouse look is only used in FPS mode";
+                        : "Turn mouse look on to use this";
       }
+      if (invert) invert.classList.toggle("off", !on || InputBindings.schemeYawOnly(sid));
     }
 
     function paint() {
-      const cur = InputBindings.current();
-      MOUNTS.forEach((m) => {
-        const host = document.getElementById(m.seg);
-        if (host) {
-          build(m);
-          Array.from(host.children).forEach((b) =>
-            b.classList.toggle("on", b.dataset.value === cur));
-        }
-        if (m.hint) {
-          const h = document.getElementById(m.hint);
-          if (h) h.textContent = InputBindings.hint();
-        }
-      });
+      wire();
+      buildSchemes();
+      buildTemplates();
+      paintLead();
+      paintFlags();
       buildSens();
       paintSens();
+      paintKeys();
     }
 
-    // The WORLD MODEL mirror only makes sense while a navigable model is live;
-    // the editor mount is always available (that's where you set up a rig).
     function update() {
-      let live = false;
-      try {
-        live = Renderer.mode === "reactor" && Renderer.reactorAvailable();
-      } catch (_) {}
-      MOUNTS.forEach((m) => {
-        const w = document.getElementById(m.wrap);
-        if (w && !m.always) w.classList.toggle("hidden", !live);
-      });
+      const w = document.getElementById("rt-input-opts");
+      if (w) w.classList.add("hidden");
       paint();
     }
 
@@ -6311,13 +14085,15 @@
   //                             Front/Back  (LingBot: set_move_longitudinal)
   //   • strafe left / right   (A / D in FPS · Q / E)      -> Happy Oyster move
   //                             Left/Right  (LingBot: set_move_lateral)
-  //   • yaw / pitch look      (mouse · arrows · stick x)  -> Happy Oyster look
-  //                             Mouse_*     (LingBot: set_look_*)
+  //   • yaw look              (mouse · arrows · stick x)  -> Happy Oyster look
+  //                             Mouse_Left/Right (LingBot: set_look_horizontal)
+  //   • pitch look            (first person only — follow cams orbit yaw)
+  //                             Mouse_Up/Down    (LingBot: set_look_vertical)
   //   • turn speed             a slow CONSTANT rate proportional to push
   //                             (LingBot set_rotation_speed_deg; Happy Oyster has
   //                             no turn-rate knob, so it's ignored there)
   //
-  // Key → action mapping lives in InputBindings (fps / classic profiles).
+  // Key → action mapping lives in InputBindings (per-camera schemes).
   // Movement is HELD state: the model keeps applying each direction until
   // released. Models without native navigation (Helios / blend-family) fall
   // back to a prompt nudge. Only active in realtime video mode.
@@ -6331,11 +14107,14 @@
     // it's easy to aim and never disorients — well under the model default of 5.
     const ROT_MIN = 1.875;           // deg/latent-frame at a gentle push (2.5x the prior 0.75)
     const ROT_MAX = 5;               // deg/latent-frame at a full push (2.5x the prior 2; 0..30 allowed)
-    // Mouse look on models WITH a turn-rate knob (LingBot). This used to top out
-    // at 2.75 deg/frame while a keyboard tap got 5, so the mouse was capped
-    // slower than the keys it replaced.
-    const MOUSE_ROT_MIN = 1.5;
-    const MOUSE_ROT_MAX = 6.0;
+    // Mouse look on models WITH a turn-rate knob (LingBot). The model allows
+    // 0..30; stay well under that so a sweep turns the view without spinning.
+    const MOUSE_ROT_MIN = 4.0;
+    const MOUSE_ROT_MAX = 14.0;
+    // LingBot orbit: analog deg/latent-frame. Small numbers compound, so
+    // keep this cinematic — a nudge crawls, the screen edge is a walk.
+    const ORBIT_ROT_MIN = 0.6;
+    const ORBIT_ROT_MAX = 2.8;
     const KEY_INTENSITY = 0.5;       // fixed push level for keyboard turning (no analog)
     const FALLBACK_SEND_MS = 950;    // prompt-fallback (non-native-nav) re-steer cadence
 
@@ -6359,8 +14138,10 @@
     const sent = { longitudinal: "idle", lateral: "idle", lookH: "idle", lookV: "idle", rot: null };
     let lastFallbackTs = 0;
     let lastFallbackKey = null;
+    let lastTravelling = false; // translation only — look does not set this
 
     function enabled() {
+      try { if (PlayFocus && !PlayFocus.isViewport()) return false; } catch (_) {}
       if (Renderer.mode !== "reactor" || !Renderer.reactorAvailable()) return false;
       // The Director experience has no movement/look — steering is text only.
       try {
@@ -6394,6 +14175,20 @@
     // Compose the desired DRIVE state from keyboard + stick + mouse-look.
     // Precedence per axis: keys > stick > mouse (keys win where non-idle).
     function compose() {
+      // PHOTO viewfinder: planted (no walk). Live look is yaw only — pitch
+      // made the in-camera world whip and roll.
+      if (isCameraMode()) {
+        const looking = !!(state.viewfinderLive && document.body.classList.contains("camera-live"));
+        const lookH = looking ? (state.photoLookH || "idle") : "idle";
+        const idle = {
+          longitudinal: "idle",
+          lateral: "idle",
+          lookH: lookH,
+          lookV: "idle",
+          rot: lookH !== "idle" ? 1.2 : 0,
+        };
+        return Object.assign({ raw: idle }, idle);
+      }
       // Keyboard contribution — mapped through the active InputBindings profile.
       let lon = keys.has("fwd") && !keys.has("back") ? "forward"
               : keys.has("back") && !keys.has("fwd") ? "back" : "idle";
@@ -6403,6 +14198,7 @@
               : keys.has("lookR") && !keys.has("lookL") ? "right" : "idle";
       let lv  = keys.has("pitchUp") && !keys.has("pitchDown") ? "up"
               : keys.has("pitchDown") && !keys.has("pitchUp") ? "down" : "idle";
+      try { if (Camera.yawOnly && Camera.yawOnly()) lv = "idle"; } catch (_) {}
       let keyLooking = lh !== "idle" || lv !== "idle";
       // Stick contribution: y = forward/back, x = yaw.
       let ptrTurnMag = 0;
@@ -6423,6 +14219,7 @@
       // axis, which reads as a diagonal sweep.
       let mouseIntensity = 0;
       let fromMouse = false;
+      let fromOrbit = false;
       if (lh === "idle" && lv === "idle") {
         let ml = null;
         try { ml = MouseLook.intent(); } catch (_) {}
@@ -6431,6 +14228,7 @@
           lv = ml.lookV || "idle";
           mouseIntensity = ml.intensity || 0;
           fromMouse = lh !== "idle" || lv !== "idle";
+          fromOrbit = !!(ml.orbit && fromMouse);
           // Same single-slot trap as movement: alternating Mouse_Left and
           // Mouse_Up restarts the rotation every slice, so a diagonal sweep
           // turned far LESS than a straight one. Commit to the axis the mouse
@@ -6441,12 +14239,16 @@
           }
         }
       }
-      // Turn speed (deg/frame): CONSTANT, predictable — no hold-time acceleration.
-      // Mouse uses a gentler band than stick/keys because latent video lags.
-      let rot = null;
+      try { if (Camera.yawOnly && Camera.yawOnly()) lv = "idle"; } catch (_) {}
+      // LingBot turn rate is analog. Orbit maps distance past the strip
+      // onto a slow band; idle look always sends 0 so a leftover speed
+      // cannot keep the camera spinning in the dead zone.
+      let rot = 0;
       if (lh !== "idle" || lv !== "idle") {
         if (fromMouse) {
-          rot = MOUSE_ROT_MIN + (MOUSE_ROT_MAX - MOUSE_ROT_MIN) * mouseIntensity;
+          const rMin = fromOrbit ? ORBIT_ROT_MIN : MOUSE_ROT_MIN;
+          const rMax = fromOrbit ? ORBIT_ROT_MAX : MOUSE_ROT_MAX;
+          rot = rMin + (rMax - rMin) * mouseIntensity;
         } else {
           const intensity = (pointerActive && !keyLooking) ? ptrTurnMag : KEY_INTENSITY;
           rot = ROT_MIN + (ROT_MAX - ROT_MIN) * intensity;
@@ -6493,9 +14295,10 @@
         else AXES.forEach((k) => R.setAxis(k, st[k])); // fallback for older renderer
       }
       const moved = AXES.some((k) => st[k] !== "idle");
-      if (st.rot != null && Math.round(st.rot) !== Math.round(sent.rot == null ? -1 : sent.rot)) {
-        sent.rot = st.rot;
-        R.setRotationSpeed(st.rot);
+      const nextRot = (st.rot == null) ? 0 : st.rot;
+      if (Math.round(nextRot * 2) !== Math.round((sent.rot == null ? -1 : sent.rot) * 2)) {
+        sent.rot = nextRot;
+        R.setRotationSpeed(nextRot);
       }
       if (moved && !window.ReactorRenderer.isShowing() && !warnedNotReady) {
         warnedNotReady = true;
@@ -6582,15 +14385,18 @@
       const st = compose();
       updateVisual(st);
       const label = actionLabel(st.raw || st);
-      // OCR hotspots follow REAL motion, not merely an engaged instrument —
-      // holding the mouse captured without moving must not keep SCAN disabled.
+      // OCR hotspots follow TRAVEL, not look. A mouse sweep used to call
+      // onMovementStart → closeScan, so aiming wiped the tags you just paid
+      // for. Walking/strafing still tears them down (the frame is gone);
+      // looking around leaves them up.
       const intent = st.raw || st;
-      const moving = intent.longitudinal !== "idle" || intent.lateral !== "idle" ||
-                     intent.lookH !== "idle" || intent.lookV !== "idle";
-      if (moving) { try { onMovementStart(); } catch (_) {} }
+      const travelling = intent.longitudinal !== "idle" || intent.lateral !== "idle";
+      const looking = intent.lookH !== "idle" || intent.lookV !== "idle";
+      lastTravelling = travelling;
+      if (travelling) { try { onMovementStart(); } catch (_) {} }
       else { try { onMovementStop(); } catch (_) {} }
       if (nativeMotion()) driveNative(st);
-      else if (moving) driveFallback(st, label);
+      else if (travelling || looking) driveFallback(st, label);
     }
 
     function startLoop() { if (!loopTimer) loopTimer = setInterval(tick, TICK_MS); }
@@ -6616,6 +14422,7 @@
         Renderer.steerMovement("Camera: the viewpoint eases to a halt and holds steady, the scene settling into a calm, stable shot.");
       }
       sent.longitudinal = "idle"; sent.lateral = "idle"; sent.lookH = "idle"; sent.lookV = "idle";
+      sent.rot = 0;
       lastFallbackKey = null;
     }
 
@@ -6627,6 +14434,7 @@
       keys.clear();
       keyOrder.length = 0;
       vec.x = 0; vec.y = 0; mag = 0;
+      lastTravelling = false;
       stopLoop();
       if (el.movePad) el.movePad.classList.remove("engaged");
       if (el.moveNub) el.moveNub.classList.remove("dragging");
@@ -6690,6 +14498,7 @@
     // ---- Keyboard ----
     function pressKey(tok) {
       if (!enabled() || !tok) return false;
+      if (isCameraMode()) return false;
       if (!keys.has(tok)) {
         keys.add(tok);
         keyOrder.push(tok);
@@ -6712,6 +14521,17 @@
       keyOrder.length = 0;
       if (engaged) disengage();
     }
+    // A LingBot restage (MOVE TO) resets the model axes. Forget what we last
+    // sent so the next tick re-pushes look as look — not a leftover strafe.
+    function onStageReset() {
+      sent.longitudinal = "idle";
+      sent.lateral = "idle";
+      sent.lookH = "idle";
+      sent.lookV = "idle";
+      sent.rot = null;
+      lastFallbackKey = null;
+      if (engaged) tick();
+    }
 
     // MouseLook calls these so look-driven motion engages the same OCR-hide /
     // drive loop path as a key press, and releases cleanly when the lock drops.
@@ -6721,6 +14541,20 @@
       tick();
     }
     // Pointer capture / drag ended: stop the camera unless a key still holds it.
+    function stopLook() {
+      sent.lookH = "idle";
+      sent.lookV = "idle";
+      sent.rot = 0;
+      if (nativeMotion() && window.ReactorRenderer) {
+        if (window.ReactorRenderer.setAxes) {
+          window.ReactorRenderer.setAxes({ lookH: "idle", lookV: "idle" });
+        }
+        if (window.ReactorRenderer.setRotationSpeed) {
+          window.ReactorRenderer.setRotationSpeed(0);
+        }
+      }
+      if (engaged) tick();
+    }
     function onLookReleased() {
       if (!engaged) return;
       if (!anyDriver()) disengage();
@@ -6756,8 +14590,9 @@
     }
 
     return {
-      init, enabled, keyFor, pressKey, releaseKey, releaseAll,
-      noteActivity, onLookReleased, retick, refreshHints,
+      init, enabled, keyFor, pressKey, releaseKey, releaseAll, onStageReset,
+      noteActivity, onLookReleased, stopLook, retick, refreshHints,
+      isTravelling: () => lastTravelling,
     };
   })();
   // Expose for debugging + e2e.
@@ -6888,7 +14723,7 @@
       update();
     }
 
-    return { init, update, onVerbs, onShift };
+    return { init, update, onVerbs, onShift, isSprint: () => shiftHeld };
   })();
   try { window.__VerbBar = VerbBar; } catch (_) {}
 
@@ -6984,18 +14819,22 @@
   try { window.__HappyOysterOptions = HappyOysterOptions; } catch (_) {}
 
   // ------------------------------------------------------------------
-  // Menu — the collapsible control rail (top-right). Starts COLLAPSED every
-  // load so the scene is unobstructed; the corner toggle opens/closes it. The
-  // keyboard shortcuts (T/V/M/…) still work while collapsed, so power users
-  // aren't slowed down — the menu is just the visual surface.
+  // Menu — pause overlay. Starts closed so the scene is unobstructed; the
+  // hamburger (or Escape) opens a 60% black fade with a text list. Shortcuts
+  // still work while closed.
   // ------------------------------------------------------------------
   const Menu = (function () {
     let open = false;
     function apply() {
       document.body.classList.toggle("menu-open", open);
+      if (el.controlRail) el.controlRail.setAttribute("aria-hidden", open ? "false" : "true");
       if (el.menuToggle) {
         el.menuToggle.setAttribute("aria-expanded", open ? "true" : "false");
-        el.menuToggle.title = open ? "Close menu" : "Menu";
+        el.menuToggle.title = open ? "Resume" : "Pause";
+        el.menuToggle.setAttribute("aria-label", open ? "Resume" : "Pause");
+      }
+      if (open && el.btnResume) {
+        try { el.btnResume.focus(); } catch (_) {}
       }
     }
     function set(next) {
@@ -7121,6 +14960,12 @@
 
   function showGuideThumbnail(imageUrl) {
     if (guideThumbHidden() || !imageUrl) return;
+    // Never paint the guide still over the black load / boot void.
+    try {
+      if (document.body.classList.contains("turn-active")) return;
+      if (document.body.classList.contains("awaiting-first-scene")) return;
+      if (typeof isCameraMode === "function" && isCameraMode()) return;
+    } catch (_) {}
     const wrap = ensureGuideThumb();
     const img = wrap.querySelector(".guide-thumb-img");
     if (img && img.getAttribute("src") !== imageUrl) img.setAttribute("src", imageUrl);
@@ -7318,6 +15163,7 @@
     state.gameOver = true;
     state.awaitingResolution = false;
     Talk.close(); // end any conversation — the run is over
+    try { if (window.Encounter && Encounter.abort) Encounter.abort(); } catch (_) {}
     Narrator.stop(); // silence any in-progress narration
     clearTurnWatchdog();
     // A closing narrated line over the death screen (the player has interacted,
@@ -7387,19 +15233,32 @@
     }
     if (item.id > state.lastId) state.lastId = item.id;
 
+    try {
+      if (window.Encounter && Encounter.isActive && Encounter.isActive() &&
+          Encounter.onFeedItem) {
+        Encounter.onFeedItem(item);
+      }
+    } catch (_) {}
+
     // Ambient world drift (see WorldDrift): a text-only simulation step between
     // turns. It carries a steer prompt but NO new guide image, so it must not go
     // through the generic scene path below — that treats a prompt as a new scene
     // (ceremony beats, scene sound, autoplay, ambient re-score) and on a
     // seed-locked model re-stages the whole world for an atmospheric beat.
     if (item.type === "world_drift") {
-      Renderer.applyDrift(item.metadata || {});
+      if (!encounterBusy()) Renderer.applyDrift(item.metadata || {});
       appendProse(item);
       Sound.text();
       return;
     }
 
-    if (item.image_url || (item.metadata && item.metadata.prompt)) {
+    // Only a real scene beat restages the picture. player_choice_prompt
+    // carries the PREVIOUS still as image_url so SCAN can read it, and it
+    // lands before the new scene_image — treating that as a scene was the
+    // MOVE TO flash: fade to black, rebuild the leaving world, fade again.
+    const restageScene = item.type === "scene_image"
+      || (item.metadata && item.metadata.prompt && item.type !== "player_choice_prompt");
+    if (restageScene && !encounterBusy()) {
       // The world's new composition is being submitted to the renderer — this
       // IS the "world updating" beat (prompt + seed pushed to the model).
       if (state.awaitingResolution && item.metadata && item.metadata.prompt) {
@@ -7409,7 +15268,8 @@
       // Re-score the ambient bed from this scene's descriptor. Works for both
       // the still (image) and realtime (reactor) renderers since both flow the
       // guide image + prompt through here.
-      const scenePrompt = (item.metadata && item.metadata.prompt) || item.content || "";
+      const scenePrompt = (item.metadata && (item.metadata.base || item.metadata.prompt))
+        || item.content || "";
       state.lastScenePrompt = scenePrompt;
       try { SceneAudio.score(scenePrompt); } catch (_) {}
     }
@@ -7431,7 +15291,7 @@
         // The image itself is the payload (handled above by setScene). Its
         // placeholder content ("The scene shifts...") is intentionally NOT
         // added to the prose feed — it would just be noise over the art.
-        Sound.scene(); // audible cue that the scene has materialised
+        if (!encounterBusy()) Sound.scene(); // audible cue that the scene has materialised
         // The world has responded (a new composition is on screen); the game
         // is now generating the next set of actions.
         if (state.awaitingResolution) {
@@ -7441,18 +15301,15 @@
         // The new frame is on screen — fade the progress bar back to the play
         // button (once the pipeline has also resolved).
         //
-        // REALTIME (reactor) mode: the scene_image feed item is NOT the frame
-        // that's actually on screen — the live video re-anchor is still
-        // establishing, so the world can be black/frozen for several seconds
-        // after this beat. Resolving the ceremony here fades the turn veil and
-        // unlocks the interaction layer (FORWARD / ACT / SCAN / move pad), which
-        // made those options appear while no video was playing yet — very
-        // visible right after switching to a slow/failing image provider.
-        // Defer the resolve to the reactor's video events (video_showing /
-        // video_black / video_recovered) so input is released only once a frame
-        // is genuinely on screen. Ceremony's guide-image fallback timer still
-        // guarantees the UI can never spin forever if the stream stalls.
-        if (!(Renderer.mode === "reactor" && Renderer.reactorAvailable())) {
+        // REALTIME (reactor) mode: if the live video is actually showing, the
+        // scene_image beat is NOT the on-screen frame — the re-anchor is still
+        // establishing, so wait for video_showing / video_black / video_stalled.
+        // When the stream never comes up (or has already fallen back), the
+        // still floor IS the picture. Resolve now so the loading bar hides and
+        // SCAN / PHOTO / ACT can use that still instead of sitting on
+        // "Guide Image Rendering" until the 30s fallback.
+        if (!scanInRealtime()) {
+          markSceneVisible();
           Ceremony.imageLoaded();
         }
         // Auto-play (IMAGE mode only): the still just rendered — advance soon.
@@ -7539,6 +15396,32 @@
         refreshStatus(); // update the inventory HUD right away
         return;
 
+      case "cutscene":
+        clearTurnWatchdog();
+        state.awaitingResolution = false;
+        try { Ceremony.complete(); } catch (_) {}
+        try { hideVeil(); } catch (_) {}
+        try { el.choices.innerHTML = ""; } catch (_) {}
+        try {
+          if (!(window.StartMenu && StartMenu.isMenuOpen && StartMenu.isMenuOpen())) {
+            appendProse(item);
+          }
+        } catch (_) { appendProse(item); }
+        try { if (window.Cutscene && Cutscene.onFeedItem) Cutscene.onFeedItem(item); } catch (_) {}
+        return;
+
+      case "world_transition":
+        appendProse(item);
+        Sound.text();
+        {
+          const to = item.metadata && item.metadata.to_world;
+          if (to) {
+            state.experienceWorldId = to;
+            try { WorldEditor.setLiveWorldId(to); } catch (_) {}
+          }
+        }
+        return;
+
       default:
         // Narrative / world-building text lands with a soft blip.
         appendProse(item);
@@ -7590,6 +15473,7 @@
       try { CoinOp.onRunReset(); } catch (_) {}
       exitGameOver();
       Talk.close(); // end any conversation from the prior run
+      try { if (window.Encounter && Encounter.abort) Encounter.abort(); } catch (_) {}
       Narrator.stop(); // silence any narration from the prior run
       closeScan(); // drop any scan tags/overlay from the dead run
       closeTouch(); // drop any camera overlay
@@ -7612,8 +15496,16 @@
       // live video and drains its queue). This runs regardless of the active
       // renderer so nothing from the dead run — image or video — can linger or
       // come back after the restart.
-      clearSceneLayers();
-      glitchTransition(820); // VCR static over the wipe so the cut isn't abrupt
+      // Menu→play can already be holding a warmed still. Keep it so the
+      // first generated frame crossfades over a picture, not a black void.
+      const holdPlate = (typeof Signal !== "undefined" && Signal.takeHold)
+        ? Signal.takeHold() : false;
+      if (!holdPlate) {
+        clearSceneLayers();
+        glitchTransition(820); // VCR static over the wipe so the cut isn't abrupt
+      } else {
+        try { glitchTransition(480); } catch (_) {}
+      }
       hideGuideThumbnail();
       if (Renderer.reactorAvailable()) {
         try { window.ReactorRenderer.reset(); } catch (_) {}
@@ -7696,16 +15588,32 @@
   // forced feed catch-up, then — if still unresolved — release the UI with
   // recovery choices so the game can continue.
   const TURN_WATCHDOG_MS = (typeof window !== "undefined" && window.__TURN_WATCHDOG_MS__) || 26000;
+  function encounterBusy() {
+    try {
+      return !!(window.Encounter && (
+        (Encounter.isActive && Encounter.isActive()) ||
+        (Encounter.isResolving && Encounter.isResolving())
+      ));
+    } catch (_) {
+      return false;
+    }
+  }
   function clearTurnWatchdog() {
     if (state.turnWatchdog) { clearTimeout(state.turnWatchdog); state.turnWatchdog = null; }
   }
   function armTurnWatchdog() {
     clearTurnWatchdog();
+    const ms = encounterBusy() ? 120000 : TURN_WATCHDOG_MS;
     state.turnWatchdog = setTimeout(async () => {
       state.turnWatchdog = null;
       if (!state.awaitingResolution) return; // already resolved
       try { await pollOnce(); } catch (_) {} // maybe a poll was just missed
       if (!state.awaitingResolution) return; // catch-up delivered the prompt
+      if (encounterBusy()) return; // do not dump explore verbs over a Moment
+      try {
+        if (window.Cutscene && Cutscene.isActive && Cutscene.isActive()) return;
+        if (window.Moments && Moments.topType && Moments.topType() === "cutscene") return;
+      } catch (_) {}
       console.error("[standalone] turn watchdog fired — no resolution; recovering UI");
       Ceremony.abort();
       hideVeil();
@@ -7720,11 +15628,15 @@
           { text: "Wait and listen." },
         ],
       });
-    }, TURN_WATCHDOG_MS);
+    }, ms);
   }
 
   async function makeChoice(choiceText, contextItemId, opts) {
     if (state.processing || state.gameOver) return;
+    try {
+      if (window.Cutscene && Cutscene.isActive && Cutscene.isActive()) return;
+      if (window.Moments && Moments.topType && Moments.topType() === "cutscene") return;
+    } catch (_) {}
     // `opts.source` marks HOW the action was issued (e.g. a SCAN object
     // interaction) so the backend can drive the story-escalation systems harder
     // for deliberate meddling — see _process_turn_background (engine.py).
@@ -7737,22 +15649,23 @@
     closeFreeWill(true); // picking any action closes the free-will gate
     clearScanTags();      // the scene is about to change — drop stale scan tags
     Narrator.stop();      // stop narration about the scene we're leaving
-    // MOVE TO always resolves as a hard transition (moveActionPhrase emits
-    // "enter"/"cross over", the engine's is_hard_transition triggers). Without
+    // MOVE TO always ends somewhere the camera wasn't now — the engine gives
+    // every scan_move action an unconditional hard cut (see is_move in
+    // advance_turn_image_fast), no wording-dependent guessing. Without
     // help, the LIVE video keeps drifting for however long the next guide image
     // takes to generate — the player commits to a trip and then watches the
     // world they're leaving flail (ridiculous). Kick off a bridging narrator
     // line NOW so a voice lands over the pause, and schedule a fade-to-black a
     // beat later so the departure reads as deliberate. The fresh scene's own
-    // re-anchor path lifts the fade once the new frame is on screen.
-    // Hard location changes (MOVE TO from SCAN, or LEAVE CAMP → new level)
-    // hold a fade-to-black until the next guide image re-anchors — never steer
-    // the world we're abandoning.
+    // re-anchor path lifts the fade once the new frame is on screen — which is
+    // also what sells the trip as travel rather than a cut.
     if (actionSource === "scan_move" || actionSource === "camp_leave") {
       beginMoveTransition(moveTarget);
     }
     el.choices.innerHTML = "";
-    Ceremony.begin(); // light up the turn pipeline — starting with "action selected"
+    if (actionSource !== "encounter") {
+      Ceremony.begin(); // light up the turn pipeline — starting with "action selected"
+    }
     state.awaitingResolution = true;
     state.lastTurnTs = Date.now(); // pre-warm defers around the turn
     armTurnWatchdog(choiceText, contextItemId);
@@ -7777,6 +15690,7 @@
     let actFrame = null;
     try {
       if (
+        actionSource !== "encounter" &&
         Renderer.mode === "reactor" &&
         Renderer.reactorAvailable() &&
         window.ReactorRenderer.isShowing &&
@@ -7813,7 +15727,8 @@
       Renderer.mode === "reactor" &&
       Renderer.reactorAvailable() &&
       actionSource !== "scan_move" &&
-      actionSource !== "camp_leave"
+      actionSource !== "camp_leave" &&
+      actionSource !== "encounter"
     ) {
       const steerVerb = (choiceText || "").trim();
       if (steerVerb) {
@@ -7822,7 +15737,7 @@
             window.ReactorRenderer.interact(steerVerb);
             try { RtLog.push("prompt", "\u25B8 interact", steerVerb); } catch (_) {}
           } else {
-            Renderer.steerRealtime(steerVerb);
+            Renderer.steerRealtime(steerVerb, { kind: "event" });
           }
         } catch (_) {}
       }
@@ -7858,17 +15773,38 @@
       // otherwise the count would drift until the next background poll.
       try { CoinOp.onTurnCompleted(); } catch (_) {}
     } catch (err) {
+      if (err && err.status === 402 && err.body && (err.body.needs_usage || err.body.needs_billing)) {
+        clearTurnWatchdog();
+        cancelMoveTransition();
+        hideVeil();
+        state.awaitingResolution = false;
+        appendProse({
+          id: -1,
+          type: "error_event",
+          content: (err.body && err.body.message) || "Usage paused. Open ACCOUNT to continue.",
+        });
+        try { StartMenu.showMenu(); } catch (_) {}
+        try { Accounts.open({ tab: "usage", instant: true }); } catch (_) {}
+        if (actionSource === "encounter") {
+          try { if (window.Encounter && Encounter.finish) Encounter.finish({ survived: true, aborted: true }); } catch (_) {}
+        }
+        return;
+      }
       // 402 + {needs_coin: true} = credit meter emptied out on the
       // server side. Pop the "INSERT COIN" pause overlay instead of
       // surfacing a raw error, and don't advance any turn state — the
       // engine didn't process the turn, so nothing was consumed and
-      // there's nothing to "undo".
+      // there's nothing to "undo". Hosted coin-op only; local BYOK
+      // uses the usage cap above.
       if (err && err.status === 402 && err.body && err.body.needs_coin) {
         clearTurnWatchdog();
         cancelMoveTransition();
         hideVeil();
         state.awaitingResolution = false;
         try { CoinOp.pausePrompt(err.body); } catch (_) {}
+        if (actionSource === "encounter") {
+          try { if (window.Encounter && Encounter.finish) Encounter.finish({ survived: true, aborted: true }); } catch (_) {}
+        }
         return;
       }
       console.error("[standalone] makeChoice failed:", err);
@@ -7877,6 +15813,9 @@
       hideVeil();
       state.awaitingResolution = false;
       appendProse({ id: -1, type: "error_event", content: `Action failed to send: ${err.message}` });
+      if (actionSource === "encounter") {
+        try { if (window.Encounter && Encounter.finish) Encounter.finish({ survived: true, aborted: true }); } catch (_) {}
+      }
     }
   }
 
@@ -7896,6 +15835,9 @@
   const MOVE_TRANSITION_FADE_DELAY_MS = 900;
   const MOVE_TRANSITION_FADE_SAFETY_MS = 60000;
   function beginMoveTransition(destinationLabel) {
+    // Drop held WASD / mouse look so the leaving world stops drifting and the
+    // fresh LingBot stage does not inherit a look that reads as A/D strafe.
+    try { Movement.releaseAll(); } catch (_) {}
     // Fire the narrator BEFORE the fade so a voice lands as fast as possible
     // over the black. Silent when audio isn't unlocked (transition() no-ops).
     let narrated = false;
@@ -7981,7 +15923,9 @@
   // Intrinsic size of whatever is currently on screen (video or still), for
   // mapping between screen space and the source frame.
   function currentSourceSize() {
-    if (scanInRealtime()) {
+    const kind = cameraCaptureKind();
+    if (kind === "wait") return null;
+    if (kind === "live" || (kind === "play" && scanInRealtime())) {
       return (window.ReactorRenderer.getVideoSize && window.ReactorRenderer.getVideoSize()) || null;
     }
     const img = getStillImage();
@@ -8029,17 +15973,40 @@
     return Math.round(Math.min(640, Math.max(280, Math.min(window.innerWidth, window.innerHeight) * 0.52)));
   }
 
-  // Crop a normalized region of the current scene to a JPEG data URL, preserving
-  // the region's aspect ratio (the capture frame is 16:9). `outSize` is the
-  // longest side. Uses the live video in realtime mode, or the still otherwise.
-  function captureSceneRegion(normBox, outSize) {
-    const out = outSize || 256;
-    if (scanInRealtime()) {
-      return window.ReactorRenderer.captureRegion
-        ? window.ReactorRenderer.captureRegion(normBox, out) : null;
-    }
-    const img = getStillImage();
-    if (!img) return null;
+  // SCAN detections are {cx, cy, w, h} in 0..1 source space (center + size).
+  // Convert to a padded {x, y, w, h} crop box so portrait img2img uses the
+  // actual pixels of the tagged figure, not the whole plate.
+  function subjectTalkCropBox(obj) {
+    // Detection boxes sit on the torso. Pull the top up so the head is in
+    // the crop the portrait img2img holds as likeness.
+    const box = subjectNormBox(obj, 0.22);
+    if (!box) return null;
+    const extraTop = Math.min(box.y, box.h * 0.5);
+    return {
+      x: box.x,
+      y: box.y - extraTop,
+      w: box.w,
+      h: Math.min(1 - (box.y - extraTop), box.h + extraTop),
+    };
+  }
+
+  function subjectNormBox(obj, pad) {
+    if (!obj) return null;
+    pad = (typeof pad === "number") ? pad : 0.12;
+    const w = Number(obj.w), h = Number(obj.h);
+    const cx = obj.cx != null ? Number(obj.cx) : NaN;
+    const cy = obj.cy != null ? Number(obj.cy) : NaN;
+    if (!(w > 0.02 && h > 0.02) || (w >= 0.98 && h >= 0.98)) return null;
+    if (!isFinite(w) || !isFinite(h) || !isFinite(cx) || !isFinite(cy)) return null;
+    const pw = Math.min(1, w * (1 + pad * 2));
+    const ph = Math.min(1, h * (1 + pad * 2));
+    const x = Math.max(0, Math.min(1 - pw, cx - pw / 2));
+    const y = Math.max(0, Math.min(1 - ph, cy - ph / 2));
+    return { x: x, y: y, w: pw, h: ph };
+  }
+
+  function cropStillRegion(img, normBox, outSize) {
+    const cap = outSize || 256;
     try {
       const vw = img.naturalWidth, vh = img.naturalHeight;
       let sx = Math.max(0, Math.min(1, normBox.x)) * vw;
@@ -8048,20 +16015,45 @@
       let sh = Math.max(1, Math.min(1, normBox.h) * vh);
       if (sx + sw > vw) sw = vw - sx;
       if (sy + sh > vh) sh = vh - sy;
-      // Preserve the region's aspect ratio (the capture frame is 16:9, not a
-      // square) — `out` is the longest side.
-      const aspect = sw / sh;
-      let ow = out, oh = out;
-      if (aspect >= 1) oh = Math.max(1, Math.round(out / aspect));
-      else ow = Math.max(1, Math.round(out * aspect));
+      // Keep the crop's native pixels. `cap` is a ceiling, not a target —
+      // forcing 512px was why shutter stills looked like 1/10 resolution
+      // when blown up on the cinema hold.
+      const nativeLong = Math.max(sw, sh);
+      const long = Math.max(1, Math.round(Math.min(nativeLong, cap)));
+      const scale = long / nativeLong;
+      const ow = Math.max(1, Math.round(sw * scale));
+      const oh = Math.max(1, Math.round(sh * scale));
       const c = document.createElement("canvas");
       c.width = ow; c.height = oh;
       c.getContext("2d").drawImage(img, sx, sy, sw, sh, 0, 0, ow, oh);
-      return c.toDataURL("image/jpeg", 0.82);
+      return c.toDataURL("image/jpeg", 0.92);
     } catch (e) {
       console.warn("[standalone] region capture failed:", e);
       return null;
     }
+  }
+
+  // Crop a normalized region of the current scene to a JPEG data URL, preserving
+  // the region's aspect ratio (the capture frame is 16:9). `outSize` is the
+  // longest side. CAMERA always reads the viewfinder plate. PLAY reads the live
+  // video when reactor is up, otherwise the still.
+  function captureSceneRegion(normBox, outSize) {
+    const out = outSize || 256;
+    const kind = cameraCaptureKind();
+    if (kind === "wait") return null;
+    if (kind === "plate") return cropStillRegion(getStillImage(), normBox, out);
+    const wantLive = kind === "live" || (kind === "play" &&
+      Renderer.mode === "reactor" && Renderer.reactorAvailable() && window.ReactorRenderer);
+    if (wantLive) {
+      const live = window.ReactorRenderer.captureRegion
+        ? window.ReactorRenderer.captureRegion(normBox, out) : null;
+      if (live) return live;
+      if (kind === "live" && getStillImage()) return cropStillRegion(getStillImage(), normBox, out);
+      return null;
+    }
+    const img = getStillImage();
+    if (!img) return null;
+    return cropStillRegion(img, normBox, out);
   }
 
   // ------------------------------------------------------------------
@@ -8781,6 +16773,8 @@
       add, update, remove, complete, fail, setProgress,
       setLead, syncCase, onDetect, onSubjectDocumented, onFocusGrade,
       toggle: toggleCollapsed,
+      open: () => setOpen(true),
+      close: () => setOpen(false),
       has, get, list: () => items.slice(),
       completedCount: () => items.filter((o) => o.status === "complete").length,
       isRevealed: () => revealed,
@@ -9077,49 +17071,407 @@
   }
 
   // ------------------------------------------------------------------
-  // CAMERA (SNAP) tool — arming it turns the whole scene into a capture surface:
-  // a CAMERA reticle follows the pointer/finger, and a tap/click shoots a photo
-  // of the region under it — collected as "evidence" in the case file with a
-  // satisfying flourish. Pointer-driven so it works on iOS (tap = capture).
-  // Realtime mode only (captures the live world-model frame).
+  // ControlMode — PLAY vs CAMERA. One owner for look, walk, pointer lock,
+  // and which pixels the shutter reads. Flags and CSS are written only here
+  // so CAMERA cannot leak into third-person after put-away.
+  // ------------------------------------------------------------------
+  function isCameraMode() { return state.controlMode === "camera"; }
+
+  const ControlMode = {
+    PLAY: "play",
+    CAMERA: "camera",
+    current() { return state.controlMode || "play"; },
+    isCamera: isCameraMode,
+    isPlay() { return !isCameraMode(); },
+    enterCamera: openTouch,
+    leaveCamera: closeTouch,
+  };
+  try { window.__ControlMode = ControlMode; } catch (_) {}
+
+  const PHOTO_ZOOM_MIN = 1.0;    // widest: the capture region = the whole 16:9 frame
+  const PHOTO_ZOOM_ARMED = 1.6;  // raise already pushed in — pan a sub-region
+  const PHOTO_ZOOM_MAX = 3.0;    // tightest crop
+  const PHOTO_CAPTURE_MAX = 2048; // shutter keeps native plate pixels up to this
+  const PHOTO_LOOK_ROT = 1.2;    // LingBot yaw crawl (orbit-band, not play look)
+  const PHOTO_LOOK_DEAD = 0.22;  // ignore near-center mouse so it does not spin
+  const PHOTO_LOOK_ON_MS = 50;   // Happy Oyster has no turn-rate — pulse look
+  const PHOTO_LOOK_OFF_MIN = 260;
+  const PHOTO_LOOK_OFF_MAX = 480;
+  const PHOTO_CSS_PAN = 0.35;    // plate-only: use a slice of the zoomed range
+
+  function grabLiveViewfinderSource() {
+    // Grab whatever pixels are on the world layer right now. Do not gate on
+    // isShowing() — fade / freeze / freezeArmed all report "not showing" even
+    // when captureFrame still has the live place. Missing this grab is how
+    // PHOTO restaged the opening still instead of where the player is.
+    try {
+      if (Renderer.mode !== "reactor" || !Renderer.reactorAvailable()) return null;
+      if (!window.ReactorRenderer || typeof window.ReactorRenderer.captureFrame !== "function") {
+        return null;
+      }
+      return window.ReactorRenderer.captureFrame(1024);
+    } catch (_) { return null; }
+  }
+
+  function plantForCamera() {
+    try { Movement.releaseAll(); } catch (_) {}
+    try {
+      if (window.ReactorRenderer && typeof window.ReactorRenderer.stopMotion === "function") {
+        window.ReactorRenderer.stopMotion();
+      }
+    } catch (_) {}
+  }
+
+  function revealPlayWorld() {
+    document.body.classList.remove(
+      "camera-mode", "touch-aiming", "photo-viewfinder", "photo-looking", "photo-focusing",
+      "photo-dragging", "photo-shake", "photo-kick", "photo-pinching",
+      "camera-live"
+    );
+    releaseViewfinderLook();
+  }
+
+  // Same #reactor-fade veil as MOVE TO / camp: down on raise, up when the
+  // in-camera feed (or the plate) is on screen. We never pause the world model.
+  function beginCameraFade() {
+    state.viewfinderFaded = true;
+    try {
+      const RR = window.ReactorRenderer;
+      if (RR && typeof RR.holdSceneFade === "function") RR.holdSceneFade(true);
+      if (RR && typeof RR.beginSceneFade === "function") {
+        RR.beginSceneFade({
+          safetyMs: MOVE_TRANSITION_FADE_SAFETY_MS,
+          awaitReanchor: true,
+        });
+        return;
+      }
+    } catch (_) {}
+    const f = document.getElementById("reactor-fade");
+    if (f) f.classList.add("down");
+  }
+  function endCameraFade() {
+    if (!state.viewfinderFaded) return;
+    state.viewfinderFaded = false;
+    try {
+      const RR = window.ReactorRenderer;
+      if (RR && typeof RR.holdSceneFade === "function") RR.holdSceneFade(false);
+      if (RR && typeof RR.endSceneFade === "function") {
+        RR.endSceneFade();
+        return;
+      }
+    } catch (_) {}
+    const f = document.getElementById("reactor-fade");
+    if (f) f.classList.remove("down");
+  }
+  function cameraVeilDown() {
+    const f = document.getElementById("reactor-fade");
+    if (!f || !f.classList.contains("down")) return false;
+    try { return parseFloat(getComputedStyle(f).opacity) >= 0.96; } catch (_) { return true; }
+  }
+  function whenCameraVeilDown(done) {
+    if (typeof done !== "function") return;
+    if (cameraVeilDown()) { done(); return; }
+    const f = document.getElementById("reactor-fade");
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      if (f) f.removeEventListener("transitionend", onEnd);
+      done();
+    };
+    const onEnd = (e) => {
+      if (e && e.target !== f) return;
+      if (e && e.propertyName && e.propertyName !== "opacity") return;
+      finish();
+    };
+    if (f) f.addEventListener("transitionend", onEnd);
+    setTimeout(finish, 920);
+  }
+  function whenImageReady(url, done) {
+    if (typeof done !== "function") return;
+    if (!url) { done(); return; }
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      done();
+    };
+    const img = new Image();
+    img.onload = finish;
+    img.onerror = finish;
+    img.src = url;
+    setTimeout(finish, 2400);
+  }
+  function coverPlayForCamera() {
+    document.body.classList.add("camera-mode", "touch-aiming", "photo-focusing");
+    try { hideGuideThumbnail(); } catch (_) {}
+    setPhotoZoom(PHOTO_ZOOM_ARMED, { silent: true, force: true });
+  }
+  function cameraPlateReady() {
+    return cameraCaptureKind() === "plate";
+  }
+  function cameraReactorLive() {
+    if (!isCameraMode() || !state.viewfinderLive) return false;
+    try {
+      return !!(window.ReactorRenderer && window.ReactorRenderer.isShowing &&
+        window.ReactorRenderer.isShowing());
+    } catch (_) { return false; }
+  }
+  // What PHOTO / SCAN must read. Never the hidden follow-cam once a restage
+  // has started: live = in-camera reactor, plate = FP still, wait = not yet.
+  function cameraCaptureKind() {
+    if (!isCameraMode()) return "play";
+    // In-camera reactor once FP frames are up. Until then the restaged plate.
+    // Never the hidden 3P follow-cam — that still has the hero in it.
+    if (state.viewfinderLive && document.body.classList.contains("camera-live")) {
+      return "live";
+    }
+    if (state.viewfinderUrl) return getStillImage() ? "plate" : "wait";
+    return "wait";
+  }
+  function snapshotPlayWorld() {
+    state.gameplayStillUrl = state.currentStillUrl ||
+      (Renderer.lastScene && Renderer.lastScene.imageUrl) || null;
+    let livePrompt = null;
+    try {
+      if (window.ReactorRenderer && typeof window.ReactorRenderer.getPrompt === "function") {
+        livePrompt = window.ReactorRenderer.getPrompt();
+      }
+    } catch (_) {}
+    state.gameplayPrompt = (Renderer.lastScene && Renderer.lastScene.prompt) ||
+      livePrompt || Renderer.lastImagePrompt || null;
+    try {
+      state.playCameraSnapshot = (window.ReactorRenderer && window.ReactorRenderer.getCamera)
+        ? window.ReactorRenderer.getCamera() : (Camera.contract || null);
+    } catch (_) {
+      state.playCameraSnapshot = Camera.contract || null;
+    }
+  }
+  function restorePlayCamera(snapshot) {
+    const cam = snapshot || Camera.contract;
+    if (!cam) return;
+    try {
+      if (window.ReactorRenderer && typeof window.ReactorRenderer.setAuthoredCamera === "function") {
+        window.ReactorRenderer.setAuthoredCamera(cam);
+      }
+    } catch (_) {}
+  }
+  function raiseCameraReactor(token, res) {
+    const url = res && res.image_url;
+    const prompt = res && res.prompt;
+    const cam = res && res.camera;
+    if (!prompt) return false;
+    if (!window.ReactorRenderer || typeof window.ReactorRenderer.applyScene !== "function") {
+      return false;
+    }
+    try {
+      if (cam && typeof window.ReactorRenderer.setAuthoredCamera === "function") {
+        window.ReactorRenderer.setAuthoredCamera(cam);
+      }
+    } catch (_) {}
+    try {
+      window.ReactorRenderer.applyScene({
+        prompt: prompt,
+        imageUrl: (res && res.seed_image === false) ? null : (url || null),
+        hardTransition: true,
+        silent: true,
+      });
+    } catch (err) {
+      console.warn("[standalone] in-camera reactor apply failed:", err);
+      return false;
+    }
+    state.viewfinderLive = true;
+    state.viewfinderAppliedAt = Date.now();
+    state.viewfinderPrompt = prompt;
+    waitForCameraVideo(token);
+    return true;
+  }
+  function cameraWorldIsViewfinder() {
+    let have = "";
+    try {
+      have = (window.ReactorRenderer && window.ReactorRenderer.getPrompt &&
+        window.ReactorRenderer.getPrompt()) || "";
+    } catch (_) {}
+    const mark = "planted and looking through their own eyes";
+    const want = state.viewfinderPrompt || "";
+    if (want && have && have === want) return true;
+    return !!(have && have.toLowerCase().indexOf(mark) >= 0);
+  }
+  function whenReactorReveals(token, done, opts) {
+    opts = opts || {};
+    const t0 = Date.now();
+    const minAge = opts.minAgeMs || 0;
+    const tick = () => {
+      if (token !== state.viewfinderToken) return;
+      let frames = false;
+      try {
+        if (window.ReactorRenderer && typeof window.ReactorRenderer.hasLiveFrames === "function") {
+          frames = !!window.ReactorRenderer.hasLiveFrames();
+        } else {
+          frames = !!(window.ReactorRenderer && window.ReactorRenderer.isShowing &&
+            window.ReactorRenderer.isShowing());
+        }
+      } catch (_) {}
+      const switched = opts.requireSwitch ? cameraWorldIsViewfinder() : true;
+      const aged = Date.now() - t0 >= minAge;
+      // Raise: wait until the FP prompt is the live prompt AND frames exist
+      // after the apply. getPrompt() stays on the old 3P line until flush
+      // finishes — matching that leftover string would uncover the hero.
+      if (switched && frames && aged) { done(); return; }
+      if (Date.now() - t0 > 14000) {
+        if (!opts.requireSwitch) done();
+        return;
+      }
+      setTimeout(tick, 160);
+    };
+    tick();
+  }
+  function markCameraVideoLive(on) {
+    document.body.classList.toggle("camera-live", !!on);
+    if (on) {
+      const v = document.getElementById("reactor-video");
+      if (v) v.classList.remove("hidden");
+      const c = captureCenter();
+      state.panFocus = { x: c.x, y: c.y };
+      applySceneTransform();
+    }
+  }
+  function waitForCameraVideo(token) {
+    const age = Math.max(0, 720 - (Date.now() - (state.viewfinderAppliedAt || Date.now())));
+    whenReactorReveals(token, () => {
+      if (token !== state.viewfinderToken || !isCameraMode()) return;
+      if (state.viewfinderUrl) {
+        try { setScene(state.viewfinderUrl, { silent: true, instant: true }); } catch (_) {}
+      }
+      markCameraVideoLive(true);
+      endCameraFade();
+    }, {
+      requireSwitch: true,
+      minAgeMs: age,
+    });
+  }
+  function restorePlayReactor() {
+    const back = state.gameplayStillUrl;
+    const prompt = state.gameplayPrompt;
+    restorePlayCamera(state.playCameraSnapshot);
+    if (!prompt || !window.ReactorRenderer || typeof window.ReactorRenderer.applyScene !== "function") {
+      return false;
+    }
+    try {
+      window.ReactorRenderer.applyScene({
+        prompt: prompt,
+        imageUrl: back || null,
+        hardTransition: true,
+      });
+      return true;
+    } catch (err) {
+      console.warn("[standalone] play reactor restore failed:", err);
+      return false;
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // CAMERA tool — planted first-person viewfinder over the live 3P world.
+  // Restage a first-person plate, then retarget the running world model onto
+  // that plate (FP contract, empty-eyes prompt). Look is zoom+pan of the
+  // frame plus planted world-model yaw/pitch. Never pause the stream.
   // ------------------------------------------------------------------
   function openTouch() {
     if (state.gameOver || state.freeWillOpen) return;
-    if (state.touchMode) { closeTouch(); return; } // toggle off if already armed
-    // Gate on "is there anything to photograph", not "is realtime on". Capture
-    // has worked on stills for a while (captureSceneRegion falls back to the
-    // scene <img>, and the C hotkey already used it), but the PHOTO tool itself
-    // was still locked behind the reactor check — so the whole camera loop, the
-    // dossier, and the case win were unreachable whenever realtime dropped to
-    // stills, which is exactly when Reactor is full or unconfigured.
+    if (isCameraMode()) { closeTouch(); return; }
     if (!currentSourceSize()) {
       showRendererToast("Nothing to photograph yet");
       return;
     }
-    closeScan(); // the two scene instruments are mutually exclusive
+    closeScan();
+    const liveFrame = grabLiveViewfinderSource();
+    plantForCamera();
+    try { releaseViewfinderLook(); } catch (_) {}
+    state.controlMode = "camera";
     state.touchMode = "aim";
+    state.viewfinderReady = false;
+    state.viewfinderFailed = false;
+    state.viewfinderLive = false;
+    state.viewfinderPrompt = null;
+    state.viewfinderAppliedAt = 0;
+    state.photoLookH = "idle";
+    state.photoLookV = "idle";
+    try { stopPhotoLookPulse(); } catch (_) {}
+    _photoLookIntent = "idle";
+    _photoLookMag = 0;
+    state.viewfinderLiveFrame = !!liveFrame;
+    state.viewfinderToken += 1;
+    snapshotPlayWorld();
+    state.viewfinderUrl = null;
     if (el.realtimeBtn) el.realtimeBtn.classList.add("aiming");
-    document.body.classList.add("touch-aiming");
-    // Open on the full 16:9 frame — the whole scene IS the shot. Pinch / scroll
-    // crops the capture region tighter; the scene is never magnified.
+    if (el.touchFocusing) el.touchFocusing.textContent = "raising camera";
+    document.body.classList.add("camera-mode", "photo-focusing");
+    state.photoZoom = PHOTO_ZOOM_ARMED;
+    markCameraVideoLive(false);
+    try { MouseLook.haltForCamera(); } catch (_) {}
+    try { hideGuideThumbnail(); } catch (_) {}
     state.photoPointers.clear();
     state.pinchBase = null;
     state.pinchActive = false;
-    // Open dead wide, then immediately + smoothly PUSH IN to a tighter FOV so
-    // raising the camera feels like snapping to a scope in an FPS — not a flat,
-    // fully-wide viewfinder you then have to fiddle with (see pushInToArmed).
-    setPhotoZoom(PHOTO_ZOOM_MIN, { silent: true, force: true });
-    try { Evidence.reveal(); } catch (_) {} // surface the CASE FILE goal on pickup
-    // The viewfinder is centered; seed the aim point at center for tap/drag math.
+    try { Evidence.reveal(); } catch (_) {}
     moveReticle(window.innerWidth / 2, window.innerHeight / 2);
     if (el.touchLayer) el.touchLayer.classList.remove("hidden");
-    pushInToArmed(); // the cinematic push-in
-    startPhotoTargeting(); // begin surfacing photographable subjects
-    // Raising the camera: a servo whir + haptic clunk so activating photo mode
-    // lands with weight. NO screen shake on entry — the shake is reserved for the
-    // moment a shot fires (see photoKick in the capture path).
+    // Fade the LIVE follow-cam first. Hiding video before the veil is down
+    // exposes the guide still floor — that is the flash on raise.
+    beginCameraFade();
+    raiseViewfinder(state.viewfinderToken, liveFrame);
     try { Sound.cameraOn(); } catch (_) {}
     try { Haptics.camera(); } catch (_) {}
+  }
+
+  function revealViewfinderPlate(token) {
+    if (token !== state.viewfinderToken || !isCameraMode()) return;
+    if (!state.viewfinderUrl) return;
+    coverPlayForCamera();
+    state.viewfinderReady = true;
+    state.viewfinderFailed = false;
+    document.body.classList.remove("photo-focusing");
+    startPhotoTargeting();
+    endCameraFade();
+  }
+  function failViewfinderRaise(token, message) {
+    if (token !== state.viewfinderToken || !isCameraMode() || state.viewfinderReady) return;
+    state.viewfinderFailed = true;
+    state.viewfinderLive = false;
+    if (el.touchFocusing) el.touchFocusing.textContent = "couldn't restage";
+    document.body.classList.add("photo-focusing");
+    showRendererToast(message || "Camera couldn't restage \u2014 put away and try again");
+    // Stay veiled. Uncovering without a plate flashes the 3P still (hero).
+  }
+  function raiseViewfinder(token, liveFrame) {
+    const body = liveFrame ? { frame: liveFrame } : {};
+    const waiting = setTimeout(() => {
+      if (token !== state.viewfinderToken || !isCameraMode() || state.viewfinderReady) return;
+      showRendererToast("Still raising the camera\u2026");
+    }, 12000);
+    postJSON("/api/viewfinder", body)
+      .then((res) => {
+        clearTimeout(waiting);
+        if (token !== state.viewfinderToken || !isCameraMode()) return;
+        const url = res && res.image_url;
+        if (!url) throw new Error("no plate");
+        state.viewfinderUrl = url;
+        state.viewfinderFailed = false;
+        state.viewfinderLiveFrame = !!(res && res.from_live);
+        state.scanStillImg = null;
+        try { setScene(url, { silent: true, instant: true }); } catch (_) {}
+        getStillImage();
+        raiseCameraReactor(token, res);
+        whenImageReady(url, () => {
+          whenCameraVeilDown(() => revealViewfinderPlate(token));
+        });
+      })
+      .catch((err) => {
+        clearTimeout(waiting);
+        if (token !== state.viewfinderToken || !isCameraMode()) return;
+        console.warn("[standalone] viewfinder render failed:", err);
+        failViewfinderRaise(token);
+      });
   }
 
   // ------------------------------------------------------------------
@@ -9129,11 +17481,6 @@
   // into the live view. A letterbox mask dims everything outside that window, so
   // what you see IS the photo you'll get.
   // ------------------------------------------------------------------
-  const PHOTO_ZOOM_MIN = 1.0;    // widest: the capture region = the whole 16:9 frame
-  const PHOTO_ZOOM_MAX = 3.0;    // tightest crop
-  const PHOTO_ZOOM_ARMED = 1.6;  // raising the camera pushes in to this tighter FOV
-  const PHOTO_PUSHIN_MS = 620;   // duration of the cinematic push-in on arming
-
   function clampZoom(z) { return Math.max(PHOTO_ZOOM_MIN, Math.min(PHOTO_ZOOM_MAX, z)); }
 
   const FRAME_ASPECT = 16 / 9;   // capture frame aspect ratio
@@ -9168,8 +17515,8 @@
   // cropped-in image, not a shrinking window. The capture-crop math inverts this
   // magnification in screenToNorm, so the shot matches exactly what's framed.
   function sceneScale() {
-    const z = state.touchMode ? (state.photoZoom || 1) : 1;
-    return Math.max(1, z);
+    if (!(isCameraMode() || state.touchMode)) return 1;
+    return Math.max(1, state.photoZoom || 1);
   }
 
   // The scene transform currently applied (identity unless the camera is armed).
@@ -9246,31 +17593,170 @@
     if (state.touchMode === "aim") layoutPhotoTargets();
   }
 
-  // FPS-style mouselook: while pushed in, the framed region simply FOLLOWS the
-  // cursor — no clicking, no dragging. The pointer's position within the frame
-  // maps absolutely onto the pan range (cursor at the left edge looks left, at
-  // the top looks up, dead-center recenters), and the eased CSS transform makes
-  // the view glide there smoothly. This is what makes aiming feel like sweeping
-  // a scope instead of hauling the scene around by hand. Caller re-lays the
-  // markers/reticle (via moveReticle) so we skip that here.
-  function lookAt(x, y) {
-    const z = sceneScale();
-    if (z <= 1) return; // nothing hidden to look toward at the full frame
+  // Zoomed-plate look: mouse pans a magnified sub-region. Horizontal is a
+  // left/right sweep; vertical is the same pan, which reads as looking up/down
+  // without pitching the world model.
+  function photoLookSens() {
+    try {
+      const s = (InputBindings.mouseConfig() || {}).sensitivity || 3;
+      return 0.4 + s * 0.28;
+    } catch (_) { return 1.2; }
+  }
+  function lookByDelta(dx, dy) {
+    if (!isCameraMode() && state.touchMode !== "aim") return;
+    if (isCameraMode() && sceneScale() <= 1) {
+      setPhotoZoom(PHOTO_ZOOM_ARMED, { silent: true, force: true });
+    }
+    if (sceneScale() <= 1) return;
+    const s = photoLookSens() * 0.35;
+    panBy(-dx * s, 0);
+  }
+  function driveCameraLook(dx, dy) {
+    if (!isCameraMode() && state.touchMode !== "aim") return;
+    if (!dx && !dy) return;
+    lookByDelta(dx, dy);
+  }
+  function viewfinderLookLocked() {
+    const locked = document.pointerLockElement || document.mozPointerLockElement;
+    return !!(locked && el.touchLayer && locked === el.touchLayer && state.touchMode === "aim");
+  }
+  function requestViewfinderLook() {
+    // Do not pointer-lock. pywebview paints "127.0.0.1 — press Esc to show
+    // your cursor" over the game. Look uses raw mouse deltas on the layer.
+  }
+  function releaseViewfinderLook() {
+    const locked = document.pointerLockElement || document.mozPointerLockElement;
+    if (locked) {
+      const exit = document.exitPointerLock || document.mozExitPointerLock;
+      try { if (exit) exit.call(document); } catch (_) {}
+    }
+    document.body.classList.remove("photo-looking");
+  }
+  function onViewfinderLockChange() {
+    const on = viewfinderLookLocked();
+    const wasOn = !!state.viewfinderLockOn;
+    state.viewfinderLockOn = on;
+    document.body.classList.toggle("photo-looking", on);
+    if (on) {
+      try { showRendererToast("Planted \u2014 line up a subject, click to shoot"); } catch (_) {}
+    } else if (wasOn && isCameraMode()) {
+      // Lock is unused. A stray unlock must not put the camera away.
+    }
+  }
+  function onViewfinderLookMove(e) {
+    if (!isCameraMode() && state.touchMode !== "aim") return;
+    // Whole-frame pan. No pointer lock, no dead zone — cursor position is the look.
+    lookAt(e.clientX, e.clientY);
+  }
+
+  // In-camera look is yaw only. Pitch walked the world-model horizon and
+  // stacked with the CSS crop, which is why PHOTO felt like a whip.
+  let _photoLookPulseTimer = 0;
+  let _photoLookPulseOn = false;
+  let _photoLookIntent = "idle";
+  let _photoLookMag = 0;
+
+  function stopPhotoLookPulse() {
+    if (_photoLookPulseTimer) { clearTimeout(_photoLookPulseTimer); _photoLookPulseTimer = 0; }
+    _photoLookPulseOn = false;
+  }
+  function pushPhotoLook(lookH) {
+    state.photoLookH = lookH || "idle";
+    state.photoLookV = "idle";
+    try {
+      if (window.ReactorRenderer && window.ReactorRenderer.setAxes) {
+        window.ReactorRenderer.setAxes({
+          longitudinal: "idle",
+          lateral: "idle",
+          lookH: state.photoLookH,
+          lookV: "idle",
+        });
+      }
+      if (window.ReactorRenderer && window.ReactorRenderer.setRotationSpeed) {
+        window.ReactorRenderer.setRotationSpeed(
+          state.photoLookH !== "idle" ? PHOTO_LOOK_ROT : 0
+        );
+      }
+    } catch (_) {}
+  }
+  function tickPhotoLookPulse() {
+    _photoLookPulseTimer = 0;
+    if (!isCameraMode() || !state.viewfinderLive) {
+      pushPhotoLook("idle");
+      _photoLookPulseOn = false;
+      return;
+    }
+    if (_photoLookIntent === "idle") {
+      pushPhotoLook("idle");
+      _photoLookPulseOn = false;
+      return;
+    }
+    _photoLookPulseOn = !_photoLookPulseOn;
+    if (_photoLookPulseOn) {
+      pushPhotoLook(_photoLookIntent);
+      _photoLookPulseTimer = setTimeout(tickPhotoLookPulse, PHOTO_LOOK_ON_MS);
+    } else {
+      pushPhotoLook("idle");
+      const off = PHOTO_LOOK_OFF_MAX - (PHOTO_LOOK_OFF_MAX - PHOTO_LOOK_OFF_MIN) * _photoLookMag;
+      _photoLookPulseTimer = setTimeout(tickPhotoLookPulse, off);
+    }
+  }
+  function drivePhotoWorldLook(x) {
+    if (!isCameraMode() || !state.viewfinderLive) return;
     const fit = frameFitPx();
     const c = captureCenter();
-    const m = displayedMediaRect();
-    const halfW = (fit.w / 2) / z, halfH = (fit.h / 2) / z;
-    const minX = m.ox + halfW, maxX = m.ox + m.dw - halfW;
-    const minY = m.oy + halfH, maxY = m.oy + m.dh - halfH;
-    // Cursor position as a 0..1 fraction across the centered capture frame.
-    const fx = Math.max(0, Math.min(1, (x - (c.x - fit.w / 2)) / fit.w));
-    const fy = Math.max(0, Math.min(1, (y - (c.y - fit.h / 2)) / fit.h));
-    state.panFocus = {
-      x: (minX <= maxX) ? (minX + fx * (maxX - minX)) : (m.ox + m.dw / 2),
-      y: (minY <= maxY) ? (minY + fy * (maxY - minY)) : (m.oy + m.dh / 2),
-    };
-    applySceneTransform();
-    updateDofMask();
+    const fx = (x - c.x) / Math.max(1, fit.w / 2);
+    const ax = Math.abs(fx);
+    const lookH = ax > PHOTO_LOOK_DEAD ? (fx < 0 ? "left" : "right") : "idle";
+    _photoLookIntent = lookH;
+    _photoLookMag = lookH === "idle" ? 0 :
+      Math.min(1, (ax - PHOTO_LOOK_DEAD) / Math.max(0.001, 1 - PHOTO_LOOK_DEAD));
+    let pulse = false;
+    try {
+      pulse = !!(window.ReactorRenderer && window.ReactorRenderer.looksOneAxisAtATime &&
+        window.ReactorRenderer.looksOneAxisAtATime());
+    } catch (_) {}
+    if (lookH === "idle") {
+      stopPhotoLookPulse();
+      pushPhotoLook("idle");
+      return;
+    }
+    if (!pulse) {
+      stopPhotoLookPulse();
+      if (state.photoLookH !== lookH) pushPhotoLook(lookH);
+      return;
+    }
+    if (!_photoLookPulseTimer && !_photoLookPulseOn) tickPhotoLookPulse();
+  }
+  function lookAt(x, y) {
+    if (isCameraMode() && !state.viewfinderReady && !document.body.classList.contains("touch-aiming")) {
+      return;
+    }
+    if (isCameraMode() && sceneScale() <= 1) {
+      setPhotoZoom(PHOTO_ZOOM_ARMED, { silent: true, force: true });
+    }
+    const live = !!(state.viewfinderLive && document.body.classList.contains("camera-live"));
+    const z = sceneScale();
+    // Live feed yaws itself. CSS-panning that video on top of the turn is
+    // what made look feel twice as fast. Plate-only: a small horizontal crop.
+    if (z > 1 && !live) {
+      const fit = frameFitPx();
+      const c = captureCenter();
+      const m = displayedMediaRect();
+      const halfW = (fit.w / 2) / z, halfH = (fit.h / 2) / z;
+      const minX = m.ox + halfW, maxX = m.ox + m.dw - halfW;
+      const midX = (minX + maxX) / 2;
+      const midY = m.oy + m.dh / 2;
+      const fx = Math.max(0, Math.min(1, (x - (c.x - fit.w / 2)) / fit.w));
+      const span = (maxX - minX) * PHOTO_CSS_PAN;
+      state.panFocus = {
+        x: (minX <= maxX) ? (midX + (fx - 0.5) * 2 * span) : midX,
+        y: midY,
+      };
+      applySceneTransform();
+      updateDofMask();
+    }
+    drivePhotoWorldLook(x);
   }
 
   // Drive the LETTERBOX MASK: a centered 16:9 window sized to the current capture
@@ -9310,30 +17796,6 @@
     if (!opts.silent && !opts.continuous) {
       try { Sound.zoom((clamped - PHOTO_ZOOM_MIN) / (PHOTO_ZOOM_MAX - PHOTO_ZOOM_MIN)); } catch (_) {}
     }
-  }
-
-  // The cinematic push-in. Raising the camera opens on the full wide frame, then
-  // this glides the zoom into PHOTO_ZOOM_ARMED over a long, eased transform so it
-  // reads as "snapping to a scope" — immediate, but smooth. A dedicated
-  // `photo-pushing` class swaps in the longer easing for just this beat; normal
-  // zoom (wheel/pinch) keeps its snappy 0.16s chase. Under reduced-motion we just
-  // land on the armed FOV with no animation.
-  function pushInToArmed() {
-    if (prefersReducedMotion()) {
-      setPhotoZoom(PHOTO_ZOOM_ARMED, { silent: true, force: true });
-      return;
-    }
-    document.body.classList.add("photo-pushing");
-    // Commit the wide (1×) frame first, THEN kick the zoom, so the transform has
-    // a real starting value to ease from (a two-rAF settle avoids the browser
-    // collapsing both into one non-animated jump).
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        if (state.touchMode !== "aim") { document.body.classList.remove("photo-pushing"); return; }
-        setPhotoZoom(PHOTO_ZOOM_ARMED, { silent: true, force: true });
-      });
-    });
-    setTimeout(() => document.body.classList.remove("photo-pushing"), PHOTO_PUSHIN_MS + 40);
   }
 
   function clearSceneZoom() {
@@ -9492,11 +17954,12 @@
   }
 
   function startPhotoTargeting() {
+    // Detect boxes sit off the live view. Park the overlay until we can
+    // lock them to the frame; shutter still works (photoDetected stays false).
     state.photoTargets = [];
     state.photoDetected = false;
     state.photoLockedLabel = null;
     if (el.touchTargets) el.touchTargets.innerHTML = "";
-    runPhotoDetect(true);
   }
 
   function stopPhotoTargeting() {
@@ -9528,7 +17991,7 @@
     if (!cap || !cap.frame) { schedulePhotoDetect(); return; }
     state.photoDetectBusy = true;
     state.photoDetectLast = now;
-    postJSON("/api/detect", { frame: cap.frame })
+    postJSON("/api/detect", { frame: cap.frame, viewfinder: true })
       .then((res) => {
         if (state.touchMode !== "aim") return;
         state.photoDetected = true;
@@ -9680,11 +18143,8 @@
       }
       return; // don't fall through into the single-finger drag path
     }
-    // DESKTOP FPS-LOOK: a mouse doesn't need to grab-and-drag to reframe. While
-    // pushed in, the view simply follows the cursor (hover OR click-held alike),
-    // so aiming feels like sweeping a scope. A click still shoots (onTouchUp),
-    // it just no longer has to double as a pan handle. Touch keeps drag-to-pan
-    // below since it has no hover.
+    // Desktop look: relative mouse deltas pan the zoomed plate. A click still
+    // shoots (onTouchUp). Touch keeps drag-to-pan below.
     if (!isTouchPointer(e)) {
       lookAt(e.clientX, e.clientY);
       const gm = state.touchGesture;
@@ -9723,6 +18183,12 @@
   function onTouchDown(e) {
     if (state.touchMode !== "aim") return;
     if (e.button && e.button !== 0) { e.preventDefault(); closeTouch(); return; }
+    // Pointer lock is for planted look only. It must never swallow the shutter
+    // click — if lock is denied (common) the old early-return meant a mouse
+    // click could never take a photo.
+    if (!isTouchPointer(e) && !viewfinderLookLocked()) {
+      /* look is unlocked — do not request pointer lock */
+    }
     e.preventDefault();
     try { if (el.touchLayer && el.touchLayer.setPointerCapture) el.touchLayer.setPointerCapture(e.pointerId); } catch (_) {}
     state.photoPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -9811,6 +18277,14 @@
   // the case file, and pop the satisfying evidence flourish. Stays armed so you
   // can keep gathering evidence tap after tap.
   function captureAt() {
+    if (state.viewfinderFailed) {
+      showRendererToast("Camera couldn't restage \u2014 put away and try again");
+      return;
+    }
+    if (state.touchMode === "aim" && !state.viewfinderReady) {
+      showRendererToast("Focusing\u2026");
+      return;
+    }
     // The viewfinder is centered + fixed, so a shot always captures the centered
     // 16:9 region — exactly the bright area framed by the letterbox mask.
     const c = captureCenter();
@@ -9826,7 +18300,7 @@
     }
     const subject = shot.ok ? shot.subject : null;
     const region = screenBoxToNorm(c.x, c.y, boxPx.w, boxPx.h);
-    const texture = captureSceneRegion(region, 512); // larger region → keep detail
+    const texture = captureSceneRegion(region, PHOTO_CAPTURE_MAX);
     if (!texture) { showRendererToast("Couldn't capture \u2014 hold steady"); return; }
     flashShutter();
     photoKick();
@@ -9845,27 +18319,73 @@
   }
 
   function closeTouch() {
-    if (!state.touchMode) return;
+    if (!isCameraMode() && !state.touchMode) return;
+    const retargeted = !!state.viewfinderLive;
+    const hadPlate = !!state.viewfinderUrl;
+    const wasFaded = !!state.viewfinderFaded;
+    state.controlMode = "play";
     state.touchMode = null;
-    // Kill any in-flight wheel-tail so a phantom zoom sound can't land after
-    // the camera has already been put away.
+    state.viewfinderToken += 1;
+    state.viewfinderReady = false;
+    state.viewfinderFailed = false;
+    state.viewfinderUrl = null;
+    state.viewfinderLiveFrame = false;
+    state.viewfinderLive = false;
+    state.viewfinderPrompt = null;
+    state.photoLookH = "idle";
+    state.photoLookV = "idle";
+    try { stopPhotoLookPulse(); } catch (_) {}
+    try {
+      if (window.ReactorRenderer && window.ReactorRenderer.setAxes) {
+        window.ReactorRenderer.setAxes({
+          longitudinal: "idle", lateral: "idle", lookH: "idle", lookV: "idle",
+        });
+      }
+      if (window.ReactorRenderer && window.ReactorRenderer.setRotationSpeed) {
+        window.ReactorRenderer.setRotationSpeed(0);
+      }
+    } catch (_) {}
+    const back = state.gameplayStillUrl;
+    const token = state.viewfinderToken;
     if (_wheelTailTimer) { clearTimeout(_wheelTailTimer); _wheelTailTimer = 0; }
-    // Release the viewfinder magnification back to full wide.
     state.photoPointers.clear();
     state.touchGesture = null;
     state.pinchBase = null;
     state.pinchActive = false;
-    document.body.classList.remove("photo-dragging");
-    clearSceneZoom();
     stopPhotoTargeting();
     if (el.touchLayer) el.touchLayer.classList.add("hidden");
     if (el.touchReticle) el.touchReticle.classList.remove("holding");
     if (el.touchCaptureFrame) el.touchCaptureFrame.classList.remove("grab");
     if (el.realtimeBtn) el.realtimeBtn.classList.remove("aiming");
-    document.body.classList.remove("touch-aiming", "photo-shake", "photo-kick", "photo-pinching");
+    const putAway = () => {
+      if (token !== state.viewfinderToken) return;
+      clearSceneZoom();
+      revealPlayWorld();
+      if (back) setScene(back, { instant: true });
+      const steered = retargeted ? restorePlayReactor() : false;
+      state.gameplayStillUrl = null;
+      state.gameplayPrompt = null;
+      state.playCameraSnapshot = null;
+      if (!steered) endCameraFade();
+      else {
+        whenReactorReveals(token, () => {
+          if (token !== state.viewfinderToken) return;
+          endCameraFade();
+        });
+      }
+    };
+    // Fade first. Clearing zoom or un-hiding video before the veil is down
+    // flashes the plate and the guide still. A failed raise is already
+    // veiled — wait for that too so put-away does not uncover 3P mid-fade.
+    if (retargeted || hadPlate || wasFaded) {
+      beginCameraFade();
+      whenCameraVeilDown(putAway);
+    } else {
+      putAway();
+    }
     try { Sound.cameraOff(); } catch (_) {}
     try { Haptics.soft(); } catch (_) {}
-    updateScanButton(); // the SCAN button is available again once the camera is put away
+    updateScanButton();
   }
 
   // Turn a viewport position into a human region phrase (used to label evidence).
@@ -9953,7 +18473,7 @@
     if (state.photoDetected && !shot.ok) { photoMiss(shot.reason); return; }
     const subject = shot.ok ? shot.subject : null;
     const region = screenBoxToNorm(center.x, center.y, box.w, box.h);
-    const texture = captureSceneRegion(region, 512);
+    const texture = captureSceneRegion(region, PHOTO_CAPTURE_MAX);
     if (!texture) { showRendererToast("Couldn't capture the frame"); return; }
     flashShutter();
     photoKick();
@@ -9998,6 +18518,9 @@
   //  • realtime (reactor): scans the live video frame.
   //  • stills (image): scans the current scene still.
   function scanInRealtime() {
+    const kind = cameraCaptureKind();
+    if (kind === "live") return true;
+    if (kind === "plate" || kind === "wait") return false;
     return Renderer.mode === "reactor" && Renderer.reactorAvailable() &&
       window.ReactorRenderer.isShowing && window.ReactorRenderer.isShowing();
   }
@@ -10006,7 +18529,8 @@
   // while it hasn't decoded yet. Served same-origin (/images/…) so it can be
   // drawn to a canvas without tainting it.
   function getStillImage() {
-    const url = state.currentStillUrl ||
+    const url = (isCameraMode() && state.viewfinderUrl) ||
+      state.currentStillUrl ||
       (Renderer.lastScene && Renderer.lastScene.imageUrl) || null;
     if (!url) return null;
     if (!state.scanStillImg || state.scanStillImg.getAttribute("data-src") !== url) {
@@ -10035,22 +18559,12 @@
     // of signal is the common case), that still IS what's on screen and it is
     // perfectly scannable. Requiring mode !== "reactor" here greyed SCAN out for
     // exactly that window and left no way back until the stream arrived, which
-    // reads as the tool being broken. captureScanFrame already falls through to
-    // the same still, so the two agree.
+    // reads as the tool being broken. When the stream is not showing we scan
+    // the still floor; when it is showing we scan ONLY the live frame.
     return !!getStillImage();
   }
 
-  // Grab the current scene as a JPEG data URL + its intrinsic size (for
-  // cover-mapping tags), from whichever renderer is live.
-  function captureScanFrame() {
-    if (scanInRealtime()) {
-      const frame = window.ReactorRenderer.captureFrame
-        ? window.ReactorRenderer.captureFrame(640) : null;
-      const size = (window.ReactorRenderer.getVideoSize && window.ReactorRenderer.getVideoSize()) || null;
-      return frame ? { frame, size } : null;
-    }
-    const img = getStillImage();
-    if (!img) return null;
+  function stillScanFrame(img) {
     try {
       const cap = 640;
       const scale = Math.min(1, cap / img.naturalWidth);
@@ -10064,6 +18578,26 @@
       console.warn("[standalone] still capture failed:", e);
       return null;
     }
+  }
+
+  // Grab the current scene as a JPEG data URL + its intrinsic size (for
+  // cover-mapping tags), from whichever renderer is live.
+  function captureScanFrame() {
+    const kind = cameraCaptureKind();
+    if (kind === "wait") return null;
+    if (kind === "plate") return stillScanFrame(getStillImage());
+    const reactorUp = kind === "live" || (kind === "play" &&
+      Renderer.mode === "reactor" && Renderer.reactorAvailable() && window.ReactorRenderer);
+    if (reactorUp) {
+      const frame = window.ReactorRenderer.captureFrame
+        ? window.ReactorRenderer.captureFrame(640) : null;
+      const size = (window.ReactorRenderer.getVideoSize && window.ReactorRenderer.getVideoSize()) || null;
+      if (frame) return { frame, size };
+      if (kind === "live" && getStillImage()) return stillScanFrame(getStillImage());
+      return null;
+    }
+    const img = getStillImage();
+    return img ? stillScanFrame(img) : null;
   }
 
   // Ambient scan is allowed whenever there's a scene to read and no full-screen
@@ -10119,7 +18653,11 @@
     if (origin && typeof origin.x === "number") spawnTapRipple(origin.x, origin.y);
     try { Sound.scan(); } catch (_) {} // radar sweep on the press
     try { Haptics.soft && Haptics.soft(); } catch (_) {}
-    postJSON("/api/detect", { frame: cap.frame })
+    // purpose: "scan" asks the server to REMEMBER these labels for this turn, so
+    // the consequence we commit next is grounded in what we can see (see
+    // engine.record_scene_objects). Photo targeting deliberately omits it — it
+    // polls this endpoint every ~2.5s and must stay a read-only probe.
+    postJSON("/api/detect", { frame: cap.frame, purpose: "scan" })
       .then((res) => {
         const objs = (res && Array.isArray(res.objects)) ? res.objects : [];
         // The view may have been claimed while the pass was in flight.
@@ -10273,6 +18811,7 @@
     if (window.Moments && window.Moments.isActive && window.Moments.isActive()) return;
     try { closeScan(); } catch (_) {}
     try { closeFreeWill(true); } catch (_) {}
+    try { Movement.releaseAll(); } catch (_) {}
 
     state.campEntering = true;
     updateCampButton();
@@ -10434,10 +18973,10 @@
   }
 
   // ---- Movement ↔ ambient hotspots ----------------------------------------
-  // The OCR hotspots (and the choices grounded on them) are detected against the
-  // current frame, so they're wrong the instant the camera starts travelling.
-  // Hide them the moment movement begins; regenerate + reveal once it stops and
-  // the view has settled on the new vantage.
+  // The OCR hotspots are detected against the current frame, so they're wrong
+  // the instant the camera TRAVELS (WASD / strafe). Looking around is not
+  // travel — wiping tags on a mouse sweep made SCAN feel broken. Hide them
+  // when we start walking; looking leaves them up.
   const MOVE_SETTLE_MS = (typeof window !== "undefined" && window.__MOVE_SETTLE_MS__) || 900;
 
   function onMovementStart() {
@@ -10496,17 +19035,42 @@
   // a mouse click or a touch tap — both land here as the same synthetic
   // "click" (see onWorldTap) with real clientX/clientY — but touch gets the
   // wider scanTapRadius() tolerance above.
+  // Map a detection's normalized box onto the displayed scene so a tap on
+  // any part of the thing — not just a 150px disc around its center —
+  // counts as investigating it. Close-ups of a person or a crate at the
+  // edge were reading as misses because the player tapped the object and
+  // the old test only measured distance to the box center.
+  function detectionScreenRect(o) {
+    const c = mapNormToScreen(o.cx, o.cy);
+    const W = window.innerWidth, H = window.innerHeight;
+    const size = state.scanSrcSize ||
+      (window.ReactorRenderer.getVideoSize && window.ReactorRenderer.getVideoSize()) || null;
+    if (!size || !size.w || !size.h) return { cx: c.x, cy: c.y, hw: 48, hh: 48 };
+    const scale = mediaFitScale(W, H, size.w, size.h);
+    return {
+      cx: c.x,
+      cy: c.y,
+      hw: Math.max(28, ((typeof o.w === "number" ? o.w : 0.08) * size.w * scale) / 2),
+      hh: Math.max(28, ((typeof o.h === "number" ? o.h : 0.08) * size.h * scale) / 2),
+    };
+  }
+
   function nearestDetectionToPoint(objects, point) {
     if (!point || typeof point.x !== "number" || !Array.isArray(objects) || !objects.length) return null;
-    let best = null, bestD = Infinity;
+    const pad = 32;
+    let best = null, bestD = Infinity, hit = null, hitD = Infinity;
     objects.forEach((o) => {
-      const p = mapNormToScreen(o.cx, o.cy);
-      const dx = p.x - point.x, dy = p.y - point.y;
+      const r = detectionScreenRect(o);
+      const dx = point.x - r.cx, dy = point.y - r.cy;
       const d = dx * dx + dy * dy;
+      if (Math.abs(dx) <= r.hw + pad && Math.abs(dy) <= r.hh + pad && d < hitD) {
+        hitD = d; hit = o;
+      }
       if (d < bestD) { bestD = d; best = o; }
     });
-    const r = scanTapRadius();
-    if (!best || bestD > r * r) return null;
+    if (hit) return hit;
+    const rad = scanTapRadius();
+    if (!best || bestD > rad * rad) return null;
     return best;
   }
 
@@ -10527,10 +19091,12 @@
   // gates on context (camera/tape/talk/turn/paused/…) and only ripples if it
   // actually starts. The cinematic Moment scrim sits above the scene and has
   // its own pointer-events, so a Moment tap never reaches these surfaces.
-  const WORLD_TAP_SURFACES = ".scene, #reactor-video, #reactor-freeze";
+  const WORLD_TAP_SURFACES = ".scene, #reactor-video, #reactor-freeze, " +
+    "#mouse-look-reticle, #mouse-look-deadzone";
   function onWorldTap(e) {
     // Only primary (left) button / touch taps scan the world.
     if (typeof e.button === "number" && e.button !== 0) return;
+    try { if (PlayFocus.ateClick && PlayFocus.ateClick()) return; } catch (_) {}
     const t = e.target;
     const onWorld = t === document.body ||
       !!(t && t.closest && t.closest(WORLD_TAP_SURFACES));
@@ -10652,34 +19218,35 @@
   // The actions a player can take on a detected object. They split into two
   // distinct kinds:
   //   • MOVE — resolves a FULL turn that RELOCATES you: a full change of scenery
-  //     (hard transition) to a fresh scene composed around the object.
+  //     (hard transition) to a fresh scene composed around the object, EVERY
+  //     time, unconditionally. MOVE is currently the only object verb on the bar.
   //   • INTERACT — injects a LIVE realtime event into the running world model (a
   //     prompt hot-swap) so the world reacts in place, without changing scene.
+  //     Shelved for now; see INTERACT_ENABLED below.
   //   • TALK — opens a live conversation overlay (unchanged).
   // MOVE composes a clean, natural prompt from the verb + the object's own name;
   // the consequence LLM (server-side) turns that intent into an in-world outcome
   // + a fresh scene, so there's no need for a separate "action-writing" LLM.
-  // Objects you can go INSIDE / through — a passage, opening, vehicle, or
-  // structure. When "MOVE TO" targets one of these, we phrase it as an ENTRY
-  // ("enter …"); every other object is phrased as a relocation ("cross over").
-  // Both are hard transitions (is_hard_transition fires on "enter"/"cross
-  // over"), so MOVE always yields a genuinely new scene rather than drifting in
-  // place — which is why plain "move to the X" used to look static.
-  const ENTERABLE_RE = /\b(door|doorway|gate|gateway|entrance|entry|hatch|portal|threshold|arch|archway|opening|mouth|maw|tunnel|pipe|duct|corridor|hallway|hall|passage|passageway|stair|stairs|stairway|stairwell|room|building|house|cabin|shack|shed|garage|barn|cave|cavern|vault|chamber|window|breach|gap|hole|vent|shaft|elevator|lift|airlock|tent|bunker|silo|structure|ruin|ruins|store|shop|church|warehouse|facility|lab|laboratory|booth|trailer|van|truck|car|bus|train|carriage|wagon|boat|ship|cockpit|rig|derrick)\b/i;
-
+  //
+  // This used to pick between TWO phrasings — "Enter the X, moving inside into
+  // the space beyond" for objects matching a curated "enterable" word list
+  // (door, tunnel, shed, ...), and "Walk over to the X and stop right in front
+  // of it" for everything else — because the SERVER decided hard-cut-vs-not by
+  // pattern-matching the resulting text (see is_hard_transition/transition_kind
+  // in engine.py), and the two phrasings were tuned to land on opposite sides
+  // of that classifier. The result was that whether MOVE actually changed the
+  // scene depended on whether the tapped object's NAME happened to be on a
+  // word list — a broken window or a car door quietly got the "walk over to"
+  // treatment and rendered as the old frame with the object nudged in, while a
+  // door got a real cut. That inconsistency is exactly what MOVE TO should
+  // never do. The engine no longer infers a MOVE's behavior from wording at
+  // all — every scan_move action is now an unconditional hard cut (see
+  // is_move in advance_turn_image_fast) — so one phrase covers every object,
+  // and a verb that should NOT cut scenes (in-place, no-relocation feedback)
+  // belongs on a genuinely different action (INTERACT, currently shelved
+  // below), never on a quietly softened MOVE.
   function moveActionPhrase(o) {
-    if (ENTERABLE_RE.test(o)) {
-      // "Enter …" -> hard transition -> a genuinely new interior scene.
-      return "Enter the " + o + ", moving inside into the space beyond.";
-    }
-    // MOVE always RELOCATES you — a full change of scenery, not a camera drift
-    // in place. "Cross over" is one of the engine's hard-transition triggers
-    // (is_hard_transition matches the literal phrase), so the turn cuts to a
-    // fresh scene composed around the object at your new vantage instead of
-    // merely advancing the camera. The wording MUST contain "cross over"
-    // verbatim or the transition won't fire (that's why plain "move to the X"
-    // used to look static).
-    return "Travel to the " + o + ", cross over to it, and arrive at a new vantage where the surroundings have completely changed.";
+    return "Move to the " + o + ".";
   }
 
   // A short spatial anchor for a detected object, derived from its normalized
@@ -10711,6 +19278,27 @@
     return TALKABLE_LABEL_RE.test(obj.label || "");
   }
 
+  // Beings get a cinematic living portrait. Machines/objects must stay the
+  // live crop — re-anchoring the world model with "standing and breathing"
+  // is how talking to a computer monitor produced a random guy in a new room.
+  const OBJECT_LABEL_RE = /\b(radio|intercom|speaker|phone|telephone|handset|walkie|transceiver|terminal|console|computer|monitor|screen|laptop|keyboard|display|panel|loudspeaker|megaphone)\b/i;
+  function subjectIsFigure(obj) {
+    if (!obj) return true;
+    const kind = (obj.kind || "").toLowerCase();
+    if (kind === "machine" || kind === "object") return false;
+    if (kind === "person" || kind === "character" || kind === "creature" || kind === "animal") return true;
+    return !OBJECT_LABEL_RE.test(obj.label || "");
+  }
+
+  // INTERACT is shelved. Its whole premise is that the live world model reacts
+  // to a poke in place — no backend turn, no new scene — and today's models are
+  // not good enough for that to read as anything happening at all. Offering it
+  // beside MOVE TO just splits players onto the dead path. MOVE crosses ground
+  // and comes back with a new vantage, which is the verb that actually shows.
+  // Flip this back on when the world model can honour interact() visibly; the
+  // action definition below is kept intact for that day.
+  const INTERACT_ENABLED = false;
+
   const SCAN_ACTIONS = [
     {
       id: "move", label: "MOVE TO", title: "Move to",
@@ -10725,6 +19313,7 @@
       // to the poke NOW where the object sits. Falls back to a full turn when
       // realtime isn't live (still mode).
       id: "interact", label: "INTERACT", title: "Interact with",
+      when: () => INTERACT_ENABLED,
       realtime: true,
       phrase: (o) => "Interact with the " + o + ".",
       // Happy Oyster interaction verb — a concise action string handed to
@@ -11062,7 +19651,7 @@
   // ------------------------------------------------------------------
   const Talk = (function () {
     let open = false;
-    let subject = null;         // {label, kind, speaks}
+    let subject = null;         // {label, kind, speaks, cx, cy, w, h}
     let messages = [];          // text-mode transcript sent to /api/talk/message
     let busy = false;           // text-mode request in flight
     let mode = "text";          // "text" | "voice"
@@ -11204,6 +19793,12 @@
 
     let floatTimer = 0;
     let inMoment = false; // true while a Conversation Moment chrome is up
+    // Off by default. Re-anchoring the single world-model session (a
+    // third-person player follow-cam) onto a portrait and then mirroring
+    // #reactor-video into the conversation frame put the PLAYER on the
+    // speak screen — never the person the player clicked. The live SCAN
+    // crop + CSS living-portrait is the likeness-preserving path.
+    // Opt in with window.__CONVERSATION_ANIMATE__ = true.
     // Live character animation via the ONE world-model session: on enter we
     // re-anchor the session onto the character portrait (so the world model
     // animates them) and mirror that live feed into the full-screen portrait;
@@ -11216,6 +19811,7 @@
     let savedEnvFrameDataUrl = null; // live env frame grabbed BEFORE character re-anchor
     let portraitPollTimer = null;  // waits for the character feed to go live
     let restoreInFlight = null;    // promise for the async exit restore
+    let greetingShown = false;     // first line already on screen / in transcript
 
     function isOpen() { return open; }
     function isCinematic() { return !!(inMoment && open); }
@@ -11241,22 +19837,26 @@
 
     // Fetch the cinematic portrait in parallel with the talk session. Best-
     // effort: a missing/failed portrait just leaves the developing shimmer.
-    // `referenceFrame` (a data-URL grab of the CURRENT scene) lets the server
-    // img2img the character INTO the same environment so it reads as the next
-    // shot in the same place, not a brand-new location.
-    async function fetchPortrait(subj, referenceFrame) {
+    // `referenceFrame` should be the SCAN bounding-box crop of this figure
+    // (their actual pixels). `opts.cropped` tells the server not to crop again.
+    async function fetchPortrait(subj, referenceFrame, opts) {
+      opts = opts || {};
       try {
         const res = await postJSON("/api/talk/portrait", {
           subject: subj,
           reference_image: referenceFrame || undefined,
+          reference_cropped: opts.cropped ? true : undefined,
         });
         if (!open || !inMoment) return;
         if (res && res.image_url && window.Moments) {
-          // Show the cinematic still immediately, then animate the character
-          // with the world model (re-anchor + mirror the live feed) so they
-          // move. The still is the instant content + graceful fallback.
-          window.Moments.setPortrait(res.image_url);
-          try { animateCharacter(res.image_url, res.prompt, subj); } catch (_) {}
+          // Crop is pinned first so the channel is not empty. Replace it
+          // when the cinematic plate lands (img2img from that crop).
+          if (res.mode !== "crop" || !opts.pinnedCrop) {
+            window.Moments.setPortrait(res.image_url);
+          }
+          if (subjectIsFigure(subj)) {
+            try { animateCharacter(res.image_url, res.prompt, subj); } catch (_) {}
+          }
           // The server stored this character (with their portrait) as a
           // COMPANION for the roster — surface it the first time we meet them
           // so the player feels the world remembering people.
@@ -11268,16 +19868,18 @@
               });
             }
           } catch (_) {}
-        } else if (window.Moments) {
+        } else if (window.Moments && !opts.pinnedCrop) {
           const p = document.getElementById("moment-portrait");
           if (p) { p.classList.remove("developing"); p.classList.add("ready"); }
         }
       } catch (err) {
         console.warn("[talk] portrait failed:", err);
-        try {
-          const p = document.getElementById("moment-portrait");
-          if (p) { p.classList.remove("developing"); p.classList.add("ready"); }
-        } catch (_) {}
+        if (!opts.pinnedCrop) {
+          try {
+            const p = document.getElementById("moment-portrait");
+            if (p) { p.classList.remove("developing"); p.classList.add("ready"); }
+          } catch (_) {}
+        }
       }
     }
 
@@ -11295,6 +19897,13 @@
     function buildPortraitWorldPrompt(worldPrompt, subj) {
       const who = (subj && subj.label) ? subj.label : "the figure";
       const base = (worldPrompt || "").toString().slice(0, 320);
+      if (!subjectIsFigure(subj)) {
+        return (base ? base + " " : "") +
+          "Cinematic close-up of the " + who + " filling the frame. The same " +
+          "object from the reference, same materials, same light. Subtle idle " +
+          "motion only \u2014 a flicker, dust in the air, a faint reflection " +
+          "shift. Camera holds steady. No person, no face, no figure.";
+      }
       return (base ? base + " " : "") +
         "Cinematic medium shot of " + who + " facing the camera, standing and " +
         "breathing with subtle idle motion \u2014 a slight sway, a blink, weight " +
@@ -11305,12 +19914,26 @@
     // onto the portrait and mirror its live feed into the full-screen portrait.
     // The env world's id (+ a live frame grab) is saved first so exit can reopen
     // it with attach_world even when the original guide PNG was swept (404).
-    // Opt out with window.__CONVERSATION_ANIMATE__ === false; reduced-motion /
+    // Opt in with window.__CONVERSATION_ANIMATE__ === true; reduced-motion /
     // still mode keep the CSS living portrait.
+    function fallbackOpening(subj) {
+      const kind = (subj && subj.kind) || "";
+      const label = (subj && subj.label) || "figure";
+      if (kind === "machine" || kind === "object") {
+        return "[the " + label + " crackles]\u2026 is someone there? Say something.";
+      }
+      return "You. You shouldn't be here. What do you want?";
+    }
+
     function animateCharacter(imageUrl, worldPrompt, subj) {
-      if (typeof window !== "undefined" && window.__CONVERSATION_ANIMATE__ === false) return;
+      // Must be explicitly opted in. The default path used to re-anchor the
+      // follow-cam world and immediately setPortraitStream() the still-showing
+      // env video — isShowing() is already true — so The Watcher became the
+      // player from behind.
+      if (typeof window === "undefined" || window.__CONVERSATION_ANIMATE__ !== true) return;
       if (prefersReducedMotion && prefersReducedMotion()) return;
       if (!imageUrl || !reactorLive()) return;
+      if (!subjectIsFigure(subj)) return;
       const RR = window.ReactorRenderer;
       // Save the world we're leaving BEFORE re-anchoring (getWorldId returns the
       // CURRENT world, which becomes the character's after applyScene).
@@ -11510,6 +20133,11 @@
     async function start(subj) {
       if (open) return;
       subject = { label: (subj.label || "figure"), kind: subj.kind || "", speaks: true };
+      // Keep the SCAN bbox so portrait img2img can crop the actual figure.
+      if (typeof subj.cx === "number") subject.cx = subj.cx;
+      if (typeof subj.cy === "number") subject.cy = subj.cy;
+      if (typeof subj.w === "number") subject.w = subj.w;
+      if (typeof subj.h === "number") subject.h = subj.h;
       messages = [];
       busy = false;
       mode = "text";
@@ -11522,6 +20150,7 @@
       pendingDesignedVoiceId = "";
       aiIsSpeaking = false;
       openingSpoken = false;
+      greetingShown = false;
       lastFocus = document.activeElement;
       Narrator.stop(); // a two-way conversation takes over from ambient narration
       // Auto-play shouldn't advance the world mid-conversation (restore on close).
@@ -11543,20 +20172,39 @@
       document.body.classList.add("talking");
       requestAnimationFrame(() => el.talkOverlay.classList.add("talk-in"));
       Haptics.select();
+      // Speak immediately — do not wait for /api/talk/session (vision +
+      // voice signing used to leave this screen silent for many seconds).
+      const firstLine = fallbackOpening(subject);
+      messages.push({ role: "assistant", content: firstLine });
+      addLine("assistant", firstLine);
+      greetingShown = true;
+      Sound.talkLine();
+      setSub("speak or type");
+      setOrbState("idle");
 
-      // Grab the CURRENT scene frame NOW — before the letterbox/dim covers it —
-      // so the portrait can be img2img'd into this exact environment (the
-      // character as the next shot in the same place). Captured from whichever
-      // renderer is live; null in text-only mode (portrait falls back to
-      // text2img). captureScanFrame() returns { frame, size }.
-      // Camp hotspots may pass a pre-captured firelit frame via
-      // subject.reference_image so the close-up stays lit by the campfire.
+      // Crop the SCAN subject's bounding box NOW — before the letterbox/dim
+      // covers the scene — so portrait img2img is this figure's actual pixels,
+      // not a face invented from the whole plate. Camp hotspots may pass a
+      // pre-captured firelit frame via subject.reference_image; trust that.
       let referenceFrame = (subj && subj.reference_image) || null;
+      let referenceCropped = !!referenceFrame;
       if (!referenceFrame) {
-        try {
-          const cap = (typeof captureScanFrame === "function") ? captureScanFrame() : null;
-          referenceFrame = cap && cap.frame ? cap.frame : null;
-        } catch (_) { referenceFrame = null; }
+        const box = (typeof subjectTalkCropBox === "function")
+          ? subjectTalkCropBox(subj)
+          : ((typeof subjectNormBox === "function") ? subjectNormBox(subj) : null);
+        if (box) {
+          try {
+            const crop = captureSceneRegion(box, 768);
+            if (crop) {
+              referenceFrame = crop;
+              referenceCropped = true;
+            }
+          } catch (_) {}
+        }
+        // Do NOT fall back to a full-frame capture. In third-person the
+        // player fills the plate; img2img "keep this exact person" then
+        // paints them as the conversation subject (The Watcher → the
+        // player from behind). No crop → keep the shimmer / nameplate.
       }
 
       // Push the Conversation Moment chrome (letterbox + portrait frame + HUD
@@ -11582,22 +20230,30 @@
       }
       if (!inMoment) Sound.talkOpen();
 
+      // Pin the live crop on screen NOW so the player sees the selected object
+      // (the computer monitor, the radio) while img2img refines it. Without
+      // this the developing shimmer sits until Gemini returns — and a person-
+      // phrased generate used to return a random guy in a different room.
+      if (inMoment && referenceFrame && window.Moments) {
+        try { window.Moments.setPortrait(referenceFrame); } catch (_) {}
+      }
+
       // Fire session + portrait in parallel so time-to-content is the slower
       // of the two, not their sum.
-      const sessionP = postJSON("/api/talk/session", {
+      const sessionP = withTimeout(postJSON("/api/talk/session", {
         subject, voice_id: selectedVoiceId || undefined,
-      }).catch((err) => { console.warn("[talk] session failed:", err); return null; });
-      // Fire-and-forget alongside session; img2img off the captured frame when
-      // we have one so the character lands in the same environment.
-      if (inMoment) fetchPortrait(subject, referenceFrame);
+        opening_line: firstLine,
+      }), 25000, "talk session").catch((err) => { console.warn("[talk] session failed:", err); return null; });
+      // Fire-and-forget alongside session; img2img off the SCAN bbox crop.
+      if (inMoment) fetchPortrait(subject, referenceFrame, {
+        cropped: referenceCropped, pinnedCrop: !!referenceFrame,
+      });
 
       // Intimate conversation bed (ducked). Best-effort; silence is fine.
       try {
-        const scoreKey = [
-          subject.label,
-          subject.kind || "",
-          (state && state.lastScenePrompt) || "",
-        ].filter(Boolean).join(" — ").slice(0, 240);
+        const scene = ((state && state.lastScenePrompt) || "").trim();
+        const tail = scene.length > 200 ? scene.slice(-200) : scene;
+        const scoreKey = [subject.label, subject.kind || "", tail].filter(Boolean).join(" — ");
         if (scoreKey && SceneAudio && SceneAudio.scoreConversation) {
           SceneAudio.scoreConversation(scoreKey);
         }
@@ -11607,8 +20263,12 @@
       try { session = await sessionP; } catch (_) { session = null; }
       if (!open) return; // closed while awaiting
 
-      if (session && session.voices) voices = session.voices;
-      const opening = (session && session.context && session.context.opening_line) || "";
+      adoptVoiceCatalog(session);
+      const opening = (session && session.context && session.context.opening_line)
+        || firstLine;
+      if (opening && opening !== firstLine) {
+        try { showFloat(opening, subject.label.toUpperCase()); } catch (_) {}
+      }
       if (inMoment && window.Moments) {
         try {
           window.Moments.notify({
@@ -11617,18 +20277,21 @@
           });
         } catch (_) {}
       }
+      // A key-ID / malformed secret cannot mint a signed URL. Trying the
+      // (private) agent by id then hung on "opening channel…". Only open
+      // voice when we have a signature, or a public agent and no key error.
+      const canVoice = !!(session && session.mode === "voice" &&
+        (session.signed_url || (session.agent_id && !session.voice_error)));
       if (session && session.voice_error) {
-        // The server already knows voice can't work (no key, a malformed key,
-        // a rejected signing request). Don't open a channel that will never
-        // connect — go straight to the text conversation, which does work, and
-        // say why once so it's diagnosable instead of mysterious.
-        console.warn("[talk] voice unavailable:", session.voice_error);
-        try { AgentLog.push("error", "voice unavailable", session.voice_error); } catch (_) {}
-        beginText(opening, "text transmission \u00b7 voice unavailable");
-      } else if (session && session.mode === "voice" && (session.agent_id || session.signed_url)) {
+        console.warn("[talk] voice signing:", session.voice_error);
+        try { AgentLog.push("warn", "voice signing", session.voice_error); } catch (_) {}
+      }
+      if (canVoice) {
         beginVoice(session, opening);
       } else {
-        beginText(opening);
+        beginText(opening, session && session.voice_error
+          ? "text transmission \u00b7 voice needs an sk_ key"
+          : "text transmission");
       }
     }
 
@@ -11639,11 +20302,12 @@
       setOrbState("idle");
       el.talkModeToggle.classList.add("hidden");
       el.talkInput.setAttribute("placeholder", "say something…");
-      if (opening) {
+      if (opening && !greetingShown) {
         messages.push({ role: "assistant", content: opening });
         addLine("assistant", opening);
         Sound.talkLine();
         pulseOrb();
+        greetingShown = true;
       }
       setTimeout(() => { if (open) el.talkInput.focus(); }, 220);
     }
@@ -11654,11 +20318,13 @@
     // Any failure (SDK blocked, mic denied, connect error) degrades to the
     // server text conversation so TALK always works.
     async function beginVoice(session, opening, opts_ext) {
-      mode = "voice";
+      // Stay on text until onConnect. Flipping to voice here made send()
+      // drop typed lines (convo is still null) and a hung startSession
+      // left the speak screen mute.
       lastSession = session;
-      if (session && session.voices) voices = session.voices;
-      setSub(switching ? "switching voice\u2026" : "opening channel\u2026");
-      setOrbState("connecting");
+      adoptVoiceCatalog(session);
+      setSub(switching ? "switching voice\u2026" : "speak or type");
+      setOrbState(switching ? "connecting" : "idle");
       el.talkInput.setAttribute("placeholder", "speak, or type\u2026");
       // Hot-swap path passes { suppressFirstMessage: true } so the character
       // doesn't re-greet in the new voice — the opening was already said in
@@ -11667,23 +20333,35 @@
       var suppressFirst = !!(opts_ext && opts_ext.suppressFirstMessage);
       if (!suppressFirst) openingSpoken = false;
 
+      let connected = false;
+      let connectTimer = null;
+      let finished = false;
+      const clearConnectTimer = () => { if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; } };
+      const failToText = (why) => {
+        if (finished || !open || connected) return;
+        finished = true;
+        clearConnectTimer();
+        console.warn("[talk] voice channel never opened — falling back to text:", why || "");
+        try { AgentLog.push("error", "voice channel never opened", why || "falling back to text"); } catch (_) {}
+        try { if (convo) convo.endSession(); } catch (_) {}
+        convo = null;
+        beginText(opening || fallbackOpening(subject), "text transmission \u00b7 voice didn't connect");
+      };
+      // Arm before SDK load AND startSession. Either can hang; the greeting
+      // is already on screen and typing stays on the text path until connect.
+      const connectBudget = (session && session.signed_url)
+        ? TALK_CONNECT_TIMEOUT_MS
+        : Math.min(TALK_CONNECT_TIMEOUT_MS, 6000);
+      connectTimer = setTimeout(() => failToText("timeout"), connectBudget);
+
       let Conversation;
       try {
         Conversation = await ensureSdk();
       } catch (e) {
         console.warn("[talk] SDK load failed, falling back to text:", e);
-        return beginText(opening, "text transmission (voice unavailable)");
+        return failToText((e && e.message) || "sdk");
       }
-      if (!open || mode !== "voice") return;
-
-      // A channel that never opens must not look like one that is still
-      // opening. startSession() can resolve happily and then simply never
-      // connect — an unauthorised private agent does exactly that — which left
-      // the player staring at "opening channel…" with a dead mic and no way to
-      // tell it had failed. Give it a bounded window, then use text.
-      let connected = false;
-      let connectTimer = null;
-      const clearConnectTimer = () => { if (connectTimer) { clearTimeout(connectTimer); connectTimer = null; } };
+      if (!open) { clearConnectTimer(); return; }
 
       const opts = {
         connectionType: "websocket",
@@ -11691,6 +20369,8 @@
         onConnect: () => {
           if (!open) return;
           connected = true;
+          finished = true;
+          mode = "voice";
           clearConnectTimer();
           switching = false;
           AgentLog.push("ok", "talk connected", subject && subject.label);
@@ -11786,21 +20466,9 @@
       } catch (e) {
         console.warn("[talk] voice start failed, falling back to text:", e);
         convo = null;
-        clearConnectTimer();
-        return beginText(opening, "text transmission (mic unavailable)");
+        return failToText((e && e.message) || "mic unavailable");
       }
       if (!open) { try { convo.endSession(); } catch (_) {} convo = null; clearConnectTimer(); return; }
-      // Armed only after startSession resolves, so a slow SDK handshake isn't
-      // counted against the connect budget.
-      connectTimer = setTimeout(() => {
-        connectTimer = null;
-        if (!open || connected || mode !== "voice") return;
-        console.warn("[talk] voice channel never connected — falling back to text");
-        try { AgentLog.push("error", "voice channel never opened", "falling back to text"); } catch (_) {}
-        try { if (convo) convo.endSession(); } catch (_) {}
-        convo = null;
-        beginText(opening, "text transmission \u00b7 voice didn't connect");
-      }, TALK_CONNECT_TIMEOUT_MS);
       setTimeout(() => { if (open) el.talkInput.focus(); }, 200);
     }
 
@@ -11815,6 +20483,15 @@
     }
 
     // ---- Live voice switching -------------------------------------------
+    function adoptVoiceCatalog(session) {
+      if (session && session.voices) voices = session.voices;
+      const list = (voices && voices.voices) || [];
+      if (selectedVoiceId && list.length && !list.some((v) => v.id === selectedVoiceId)) {
+        selectedVoiceId = "";
+        try { localStorage.removeItem("talk_voice_id"); } catch (_) {}
+      }
+    }
+
     function voiceName(id) {
       const list = (voices && voices.voices) || [];
       const v = list.find((x) => x.id === id);
@@ -11840,8 +20517,9 @@
         item.type = "button";
         item.className = "talk-voice-item" + (v.id === active ? " active" : "");
         item.setAttribute("role", "option");
+        const tag = v.tag || (v.category && v.category !== "premade" ? "yours" : "");
         item.innerHTML = '<span class="tv-name">' + v.name + "</span>" +
-          (v.tag ? '<span class="tv-tag">' + v.tag + "</span>" : "");
+          (tag ? '<span class="tv-tag">' + tag + "</span>" : "");
         item.addEventListener("click", (e) => { e.stopPropagation(); changeVoice(v.id); });
         el.talkVoiceMenu.appendChild(item);
       });
@@ -11896,8 +20574,9 @@
       if (!text || !open) return;
 
       // VOICE: hand the typed line to the live agent (it takes its turn).
-      if (mode === "voice") {
-        if (!convo) return;
+      // If the socket isn't up yet, fall through to text so a hung
+      // startSession cannot swallow what the player typed.
+      if (mode === "voice" && convo) {
         addLine("user", text);
         el.talkInput.value = "";
         Sound.submit();
@@ -11948,6 +20627,7 @@
       pendingDesignedVoiceId = "";
       aiIsSpeaking = false;
       openingSpoken = false;
+      greetingShown = false;
       // Notify the server so it drops the refcount on the voice we've been
       // using AND records a lightweight per-character memory entry. Capture
       // subject before we null it out.
@@ -12054,6 +20734,1112 @@
       },
     });
   })();
+
+  // ------------------------------------------------------------------
+  // Encounter — generated character + danger interrupt.
+  // Hitch the live world, develop a confrontation plate of THIS place, offer
+  // three laned verbs, then POST /api/encounter/resolve so the play-out
+  // still becomes the world you keep walking (if you survive).
+  // ------------------------------------------------------------------
+  const Encounter = (function () {
+    let active = false;
+    let resolving = false;
+    let finishing = false;
+    let brief = null;
+    let choices = [];
+    let plateUrl = null;
+    let pinnedFrame = null;
+    let aftermath = null;
+    let rollTimer = null;
+    let travelAcc = 0;
+    let lastTravelTs = 0;
+    let travelInFlight = false;
+    let plateLive = false;
+    let savedExploreScene = null;
+    let resolveShown = false;
+    let pendingFinish = null;
+    let releasePending = false;
+    let releaseWatchdog = null;
+    // Last resort for a released fight whose aftermath never arrives. The
+    // global turn watchdog stands down while an encounter is busy, so without
+    // this a lost turn leaves the player staring at a frozen standoff.
+    const RELEASE_WATCHDOG_MS = 45000;
+
+    function clearReleaseWatchdog() {
+      if (releaseWatchdog) { clearTimeout(releaseWatchdog); releaseWatchdog = null; }
+    }
+
+    function armReleaseWatchdog() {
+      clearReleaseWatchdog();
+      releaseWatchdog = setTimeout(() => {
+        releaseWatchdog = null;
+        if (!active || !releasePending) return;
+        console.warn("[encounter] aftermath never arrived — leaving the fight anyway");
+        finish({ survived: true });
+      }, RELEASE_WATCHDOG_MS);
+    }
+
+    function isActive() { return active; }
+    function isResolving() { return !!resolving; }
+
+    function captureFullFrame() {
+      const full = { x: 0, y: 0, w: 1, h: 1 };
+      try {
+        const crop = captureSceneRegion(full, 1024);
+        if (crop) return crop;
+      } catch (_) {}
+      try {
+        if (Renderer.mode === "reactor" && window.ReactorRenderer &&
+            typeof window.ReactorRenderer.captureFrame === "function") {
+          return window.ReactorRenderer.captureFrame();
+        }
+      } catch (_) {}
+      return null;
+    }
+
+    function waitMs(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    function hitch() {
+      document.body.classList.add("encounter-hitch");
+      try { if (Sound.prefetchEncounter) Sound.prefetchEncounter(); } catch (_) {}
+      try { Sound.encounterHitch(); } catch (_) {}
+      try { if (Haptics && Haptics.encounter) Haptics.encounter(); } catch (_) {}
+      try { if (Sound.heartbeatStart) Sound.heartbeatStart(76); } catch (_) {}
+      try {
+        if (SceneAudio && SceneAudio.scoreEncounter) {
+          SceneAudio.scoreEncounter("a sudden confrontation holds; danger in this place");
+        }
+      } catch (_) {}
+      const hitchEl = document.getElementById("encounter-hitch");
+      if (hitchEl) {
+        hitchEl.classList.remove("hidden");
+        hitchEl.setAttribute("aria-hidden", "false");
+      }
+      const reduce = (typeof prefersReducedMotion === "function" && prefersReducedMotion());
+      return waitMs(reduce ? 60 : 520).then(() => {
+        document.body.classList.remove("encounter-hitch");
+        if (hitchEl) {
+          hitchEl.classList.add("hidden");
+          hitchEl.setAttribute("aria-hidden", "true");
+        }
+      });
+    }
+
+    function playCeremony(word) {
+      const reduce = (typeof prefersReducedMotion === "function" && prefersReducedMotion());
+      const el = document.getElementById("encounter-ceremony");
+      const wordEl = el && el.querySelector(".encounter-ceremony-word");
+      if (wordEl) wordEl.textContent = word || "ENCOUNTER";
+      document.body.classList.add("encounter-ceremony");
+      if (el) {
+        el.classList.remove("hidden");
+        el.setAttribute("aria-hidden", "false");
+      }
+      try { Sound.encounterTitle(); } catch (_) {}
+      try { if (Haptics && Haptics.encounter) Haptics.encounter(); } catch (_) {}
+      return waitMs(reduce ? 80 : 840).then(() => {
+        document.body.classList.remove("encounter-ceremony");
+        if (el) {
+          el.classList.add("hidden");
+          el.setAttribute("aria-hidden", "true");
+        }
+        if (wordEl && word && word !== "ENCOUNTER") wordEl.textContent = "ENCOUNTER";
+      });
+    }
+
+    function playVerdict(outcome, sub) {
+      const reduce = (typeof prefersReducedMotion === "function" && prefersReducedMotion());
+      const el = document.getElementById("encounter-verdict");
+      const wordEl = el && el.querySelector(".encounter-verdict-word");
+      const subEl = el && el.querySelector(".encounter-verdict-sub");
+      const labels = {
+        survive: "SURVIVED",
+        wounded: "HURT",
+        escape: "CLEAR",
+        die: "DEAD",
+      };
+      const word = labels[outcome] || "SURVIVED";
+      if (wordEl) wordEl.textContent = word;
+      if (subEl) subEl.textContent = sub || "";
+      if (el) {
+        el.classList.remove("is-dead", "is-hurt", "is-clear");
+        if (outcome === "die") el.classList.add("is-dead");
+        else if (outcome === "wounded") el.classList.add("is-hurt");
+        else if (outcome === "escape") el.classList.add("is-clear");
+        el.classList.remove("hidden");
+        el.setAttribute("aria-hidden", "false");
+      }
+      document.body.classList.add("encounter-verdict");
+      try {
+        if (outcome === "die" && Sound.encounterDie) Sound.encounterDie();
+        else if (Sound.encounterSurvive) Sound.encounterSurvive();
+      } catch (_) {}
+      try { if (Haptics && Haptics.encounter) Haptics.encounter(); } catch (_) {}
+      return waitMs(reduce ? 120 : 1350).then(() => {
+        document.body.classList.remove("encounter-verdict");
+        if (el) {
+          el.classList.add("hidden");
+          el.setAttribute("aria-hidden", "true");
+        }
+      });
+    }
+
+    async function liveThePlate(url, prompt) {
+      if (!url) return false;
+      if (typeof prefersReducedMotion === "function" && prefersReducedMotion()) return false;
+      if (Renderer.mode !== "reactor" || !window.ReactorRenderer) return false;
+      const RR = window.ReactorRenderer;
+      if (typeof RR.applyScene !== "function") return false;
+      try {
+        savedExploreScene = Renderer.lastScene ? Object.assign({}, Renderer.lastScene) : null;
+      } catch (_) { savedExploreScene = null; }
+      const livePrompt = prompt || "the confrontation holds; this exact place; the new character is already here; figures breathe; dust and light move; no HUD; no captions";
+      try { RR.resume && RR.resume(); } catch (_) {}
+      try {
+        if (typeof Renderer.applyScene === "function") {
+          Renderer.applyScene(url, livePrompt, { hard_transition: true });
+        } else {
+          RR.applyScene({
+            prompt: livePrompt,
+            imageUrl: url,
+            hardTransition: true,
+          });
+        }
+      } catch (_) {
+        return false;
+      }
+      plateLive = true;
+      // Re-anchor the underlay so exit lands on this still. Do NOT punch
+      // the overlay through (setSceneLive): #moment-overlay is opaque
+      // #050505 during encounter, so hiding the still just shows black.
+      return true;
+    }
+
+    function restoreExploreIfAborted() {
+      if (!plateLive) return;
+      plateLive = false;
+      try {
+        if (window.Moments && typeof window.Moments.setSceneLive === "function") {
+          window.Moments.setSceneLive(false);
+        }
+      } catch (_) {}
+      const scene = savedExploreScene;
+      savedExploreScene = null;
+      if (!scene || !scene.prompt) return;
+      try {
+        const RR = window.ReactorRenderer;
+        if (RR && typeof RR.applyScene === "function") {
+          RR.applyScene({
+            prompt: scene.prompt,
+            imageUrl: scene.imageUrl || null,
+            hardTransition: true,
+          });
+        }
+      } catch (_) {}
+    }
+
+    function waitSceneReady() {
+      return new Promise((resolve) => {
+        const sc = document.getElementById("moment-scene");
+        if (!sc || sc.classList.contains("ready")) {
+          resolve();
+          return;
+        }
+        let hops = 0;
+        const t = setInterval(() => {
+          hops += 1;
+          if (!sc || sc.classList.contains("ready") || hops > 40) {
+            clearInterval(t);
+            resolve();
+          }
+        }, 50);
+      });
+    }
+
+    function showChoices(items) {
+      choices = Array.isArray(items) ? items.slice(0, 3) : [];
+      if (!window.Moments || typeof window.Moments.setChoices !== "function") return;
+      const mapped = choices.map((c) => {
+        if (typeof c === "string") return { label: c, text: c };
+        return {
+          label: c.text || c.label || "",
+          text: c.text || c.label || "",
+          lane: c.lane || "",
+        };
+      }).filter((c) => c.label);
+      window.Moments.setChoices(mapped, (item) => pick(item));
+    }
+
+    function stayLocked(nextChoices) {
+      resolving = false;
+      releasePending = false;
+      resolveShown = false;
+      pendingFinish = null;
+      clearReleaseWatchdog();
+      try { clearTurnWatchdog(); } catch (_) {}
+      state.awaitingResolution = false;
+      const name = (brief && brief.character && brief.character.label) || "…";
+      const danger = (brief && brief.danger) || "still here";
+      try { window.Moments.setNameplate(name, danger); } catch (_) {}
+      showChoices(nextChoices && nextChoices.length ? nextChoices : choices);
+    }
+
+    function failResolve(err) {
+      if (err && err.status === 402 && err.body && (err.body.needs_usage || err.body.needs_billing)) {
+        try { StartMenu.showMenu(); } catch (_) {}
+        try { Accounts.open({ tab: "usage", instant: true }); } catch (_) {}
+        try { clearTurnWatchdog(); } catch (_) {}
+        state.awaitingResolution = false;
+        finish({ survived: true, aborted: true });
+        return;
+      }
+      if (err && err.status === 402 && err.body && err.body.needs_coin) {
+        try { CoinOp.pausePrompt(err.body); } catch (_) {}
+        try { clearTurnWatchdog(); } catch (_) {}
+        state.awaitingResolution = false;
+        finish({ survived: true, aborted: true });
+        return;
+      }
+      if (err) console.warn("[encounter] resolve failed:", err);
+      try { window.Moments.notify({ text: "The moment holds." }); } catch (_) {}
+      stayLocked(choices);
+    }
+
+    async function pick(item) {
+      if (!active || resolving || state.processing || state.gameOver) return;
+      const text = (item && (item.text || item.label)) || "";
+      if (!text) return;
+      resolving = true;
+      releasePending = false;
+      aftermath = null;
+      resolveShown = false;
+      pendingFinish = null;
+      try { Sound.encounterResolve(); } catch (_) {}
+      try { if (Haptics && Haptics.encounterResolve) Haptics.encounterResolve(); } catch (_) {}
+      try { if (Sound.heartbeatSetBpm) Sound.heartbeatSetBpm(108); } catch (_) {}
+      try { window.Moments.clearChoices(); } catch (_) {}
+      const name = (brief && brief.character && brief.character.label) || "…";
+      try { window.Moments.setNameplate(name, text); } catch (_) {}
+      try {
+        if (window.Moments && typeof window.Moments.setSceneLive === "function") {
+          window.Moments.setSceneLive(false);
+        }
+      } catch (_) {}
+      try {
+        if (window.Moments && typeof window.Moments.holdBlack === "function") {
+          window.Moments.holdBlack();
+        }
+      } catch (_) {}
+      await playCeremony("COMMIT");
+      if (!active || !resolving) return;
+      state.awaitingResolution = true;
+      state.lastTurnTs = Date.now();
+      try { armTurnWatchdog(); } catch (_) {}
+      let res = null;
+      try {
+        res = await postJSON("/api/encounter/resolve", {
+          choice: text,
+          lane: (item && item.lane) || "",
+        });
+        try { CoinOp.onTurnCompleted(); } catch (_) {}
+        try { beginFastPolling(); } catch (_) {}
+      } catch (err) {
+        failResolve(err);
+        return;
+      }
+      if (!active || !resolving) return;
+      if (!res || res.error || !res.resolve_url) {
+        failResolve(res);
+        return;
+      }
+      aftermath = {
+        image_url: res.resolve_url,
+        prompt: res.prompt || "",
+        metadata: { outcome: res.outcome, lane: res.lane, hard_transition: true },
+      };
+      plateUrl = res.resolve_url;
+      if (brief) {
+        if (res.danger) brief.danger = res.danger;
+        if (res.stakes) brief.stakes = res.stakes;
+      }
+      try { window.Moments.setScene(res.resolve_url); } catch (_) {}
+      await waitSceneReady();
+      if (!active || !resolving) return;
+      // Do not send the action still through the world model. liveThePlate
+      // restages it as a breathing standoff and recasts the people.
+      const outcome = res.outcome || "";
+      const released = res.released === true || outcome === "escape" || outcome === "die";
+      const consequence = (res.dispatch || res.stakes || "").trim();
+      await playVerdict(outcome, consequence);
+      if (!active || !resolving) return;
+      resolveShown = true;
+      if (consequence) {
+        try { window.Moments.notify({ text: consequence }); } catch (_) {}
+      } else if (outcome === "wounded") {
+        try { window.Moments.notify({ text: "You are hurt." }); } catch (_) {}
+      } else if (outcome === "survive" && !released) {
+        try { window.Moments.notify({ text: "They are still here." }); } catch (_) {}
+      } else if (outcome === "escape") {
+        try { window.Moments.notify({ text: "You are clear." }); } catch (_) {}
+      }
+      if (!released) {
+        stayLocked(res.choices);
+        return;
+      }
+      releasePending = true;
+      if (pendingFinish) {
+        const next = pendingFinish;
+        pendingFinish = null;
+        finish(next);
+        return;
+      }
+      armReleaseWatchdog();
+    }
+
+    async function start(opts) {
+      opts = opts || {};
+      if (active || resolving || state.processing || state.gameOver) return false;
+      if (state.inCamp) return false;
+      if (typeof Talk !== "undefined" && Talk.isOpen && Talk.isOpen()) return false;
+      if (window.Moments && window.Moments.isActive && window.Moments.isActive()) return false;
+      if (typeof CoinOp !== "undefined" && CoinOp.isPaused && CoinOp.isPaused()) return false;
+      if (!window.Moments || typeof window.Moments.push !== "function") return false;
+
+      pinnedFrame = captureFullFrame();
+      resolving = false;
+      finishing = false;
+      brief = null;
+      choices = [];
+      plateUrl = null;
+      aftermath = null;
+      plateLive = false;
+      savedExploreScene = null;
+      resolveShown = false;
+      pendingFinish = null;
+      releasePending = false;
+      clearReleaseWatchdog();
+      active = true;
+      await hitch();
+      if (state.gameOver) { resetLocal(); return false; }
+      await playCeremony();
+
+      try {
+        const pushed = await window.Moments.push("encounter", {
+          frame: pinnedFrame,
+          demo: !!opts.demo,
+        });
+        if (!pushed && !(window.Moments.topType && window.Moments.topType() === "encounter")) {
+          resetLocal();
+          return false;
+        }
+      } catch (err) {
+        console.warn("[encounter] push failed:", err);
+        resetLocal();
+        return false;
+      }
+      return true;
+    }
+
+    async function beginFromServer(payload, entry) {
+      // Hold black while the plate generates. Painting the live-frame grab
+      // here was the "screen capture" flash — the overlay is already #050505.
+      try {
+        if (window.Moments && typeof window.Moments.holdBlack === "function") {
+          window.Moments.holdBlack();
+        }
+      } catch (_) {}
+      try { window.Moments.setNameplate("…", "something is here"); } catch (_) {}
+
+      let res = null;
+      try {
+        res = await postJSON("/api/encounter/begin", {
+          frame: pinnedFrame,
+          force: !!(payload && payload.demo),
+          demo: !!(payload && payload.demo),
+        });
+      } catch (err) {
+        console.warn("[encounter] begin failed:", err);
+      }
+      if (entry && entry.aborted) return false;
+      if (!res || res.error) {
+        try { window.Moments.notify({ text: "The presence fades." }); } catch (_) {}
+        finish({ survived: true, aborted: true });
+        return false;
+      }
+
+      brief = res.encounter || null;
+      choices = res.choices || [];
+      plateUrl = res.plate_url || null;
+      const name = (brief && brief.character && brief.character.label) || "A stranger";
+      const danger = (brief && brief.danger) || "";
+      try { window.Moments.setNameplate(name, danger); } catch (_) {}
+      if (brief && brief.stakes) {
+        try { window.Moments.notify({ text: brief.stakes }); } catch (_) {}
+      }
+      if (plateUrl) {
+        const sc = document.getElementById("moment-scene");
+        if (sc) {
+          sc.classList.add("developing");
+          sc.classList.remove("ready");
+        }
+        try { window.Moments.setScene(plateUrl); } catch (_) {}
+        await waitSceneReady();
+        if (entry && entry.aborted) return false;
+        await liveThePlate(plateUrl, res.prompt || "");
+      }
+      if (entry && entry.aborted) return false;
+      try { Sound.encounterLock(); } catch (_) {}
+      try { if (Haptics && Haptics.encounterLock) Haptics.encounterLock(); } catch (_) {}
+      const stance = (brief && brief.character && brief.character.stance) || "hostile";
+      const kind = (brief && brief.character && brief.character.kind) || "";
+      const stanceCue = kind === "creature" ? "creature" : stance;
+      try { Sound.encounterStance(stanceCue); } catch (_) {}
+      const pulse = kind === "creature" ? 62
+        : stance === "desperate" ? 96
+        : stance === "opportunistic" ? 68
+        : 84;
+      try { if (Sound.heartbeatSetBpm) Sound.heartbeatSetBpm(pulse); } catch (_) {}
+      showChoices(choices);
+      try {
+        if (res.stingers && Sound.ingestEncounterStingers) {
+          Sound.ingestEncounterStingers(res.stingers);
+        }
+      } catch (_) {}
+      const scoreKey = res.music_prompt || [
+        stance,
+        kind,
+        name,
+        danger,
+        (brief && brief.stakes) || "",
+      ].filter(Boolean).join(" — ");
+      try {
+        if (SceneAudio && SceneAudio.scoreEncounter) SceneAudio.scoreEncounter(scoreKey);
+      } catch (_) {}
+      return true;
+    }
+
+    function requestFinish(result) {
+      const payload = result || {};
+      // The aftermath turn can land before the verdict ceremony has finished.
+      // Winning a fight skips image generation on the server side, so that
+      // turn can come back in a second or two while this client is still
+      // inside waitSceneReady() and the 1350ms SURVIVED card — i.e. before
+      // releasePending is set. Returning here dropped the only exit signal
+      // the encounter ever gets, and nothing re-sent it: finish() never ran,
+      // so the aftermath frame was never applied and the fight stayed open
+      // with no choices and no way back to the world. The global turn
+      // watchdog cannot rescue it either; it bails out while an encounter is
+      // busy. Hold the signal instead. pick(), stayLocked() and start() all
+      // clear pendingFinish, so one from a round that did not release cannot
+      // leak into the next round.
+      if (resolveShown && (releasePending || payload.survived === false)) {
+        finish(payload);
+        return;
+      }
+      pendingFinish = payload;
+    }
+
+    function onFeedItem(item) {
+      if (!active || !item) return;
+      if (item.type === "scene_image") {
+        if (aftermath && aftermath.image_url) return;
+        aftermath = {
+          image_url: item.image_url || null,
+          prompt: (item.metadata && (item.metadata.base || item.metadata.prompt)) || item.content || "",
+          metadata: item.metadata || {},
+        };
+        return;
+      }
+      if (item.type === "game_over") {
+        releasePending = true;
+        requestFinish({ survived: false });
+        return;
+      }
+      if (item.type === "error_event" && releasePending) {
+        requestFinish({ survived: true, aborted: true });
+        return;
+      }
+      // Not gated on releasePending: the prompt is the aftermath turn saying
+      // it is done, and it can arrive before this client has finished playing
+      // the verdict. requestFinish holds it until the release is ready.
+      if (item.type === "player_choice_prompt") {
+        requestFinish({ survived: true });
+      }
+    }
+
+    function finish(result) {
+      if (finishing) return;
+      finishing = true;
+      clearReleaseWatchdog();
+      try { clearTurnWatchdog(); } catch (_) {}
+      state.awaitingResolution = false;
+      const payload = result || {};
+      if (payload.survived !== false && aftermath) {
+        payload.image_url = payload.image_url || aftermath.image_url;
+        payload.prompt = payload.prompt || aftermath.prompt;
+        payload.metadata = payload.metadata || aftermath.metadata;
+      }
+      if (window.Moments && window.Moments.topType && window.Moments.topType() === "encounter") {
+        try { window.Moments.pop(payload); } catch (e) {
+          console.warn("[encounter] pop failed:", e);
+          resetLocal();
+        }
+      } else {
+        resetLocal();
+      }
+    }
+
+    function abort() {
+      if (!active) return;
+      finish({ survived: true, aborted: true });
+    }
+
+    function resetLocal(opts) {
+      active = false;
+      resolving = false;
+      finishing = false;
+      brief = null;
+      choices = [];
+      plateUrl = null;
+      pinnedFrame = null;
+      aftermath = null;
+      plateLive = false;
+      savedExploreScene = null;
+      resolveShown = false;
+      pendingFinish = null;
+      releasePending = false;
+      try { if (Sound && Sound.heartbeatStop) Sound.heartbeatStop(); } catch (_) {}
+      try {
+        if (SceneAudio && typeof SceneAudio.endEncounter === "function") {
+          SceneAudio.endEncounter({ restore: !opts || opts.restore !== false });
+        }
+      } catch (_) {}
+    }
+
+    function onKey(e) {
+      if (!active) return false;
+      if (resolving) return true;
+      const k = e && e.key;
+      if (k === "1" || k === "2" || k === "3") {
+        const idx = parseInt(k, 10) - 1;
+        if (choices[idx]) {
+          const c = choices[idx];
+          pick(typeof c === "string" ? { text: c } : c);
+        }
+        return true;
+      }
+      return false;
+    }
+
+    function onEsc() {
+      if (!active) return false;
+      if (resolving) return true;
+      const evade = choices.find((c) => c && typeof c === "object" && c.lane === "evade");
+      const pickItem = evade || choices[1] || choices[choices.length - 1];
+      if (pickItem) {
+        pick(typeof pickItem === "string" ? { text: pickItem, lane: "evade" } : pickItem);
+        return true;
+      }
+      return true;
+    }
+
+    function isTravelling() {
+      try {
+        if (window.__Movement && typeof window.__Movement.isTravelling === "function") {
+          return !!window.__Movement.isTravelling();
+        }
+      } catch (_) {}
+      // Fallback: state.moving is already travel-only (look does not set it).
+      return !!state.moving;
+    }
+
+    function travelBlocked() {
+      if (active || resolving || state.processing || state.gameOver) return true;
+      if (state.inCamp) return true;
+      if (typeof Talk !== "undefined" && Talk.isOpen && Talk.isOpen()) return true;
+      if (window.Moments && window.Moments.isActive && window.Moments.isActive()) return true;
+      if (typeof CoinOp !== "undefined" && CoinOp.isPaused && CoinOp.isPaused()) return true;
+      return false;
+    }
+
+    async function reportTravel(dt) {
+      if (travelBlocked() || travelInFlight) return;
+      if (!(dt > 0)) return;
+      travelInFlight = true;
+      try {
+        const res = await postJSON("/api/encounter/travel", { dt: dt });
+        if (res && res.fire) start({ demo: false });
+      } catch (_) {
+      } finally {
+        travelInFlight = false;
+      }
+    }
+
+    function startTravelWatch() {
+      if (rollTimer) return;
+      // 250ms so a short dash still counts; looking / standing freezes the clock.
+      rollTimer = setInterval(() => {
+        try {
+          if (travelBlocked()) {
+            lastTravelTs = 0;
+            return;
+          }
+          if (!isTravelling()) {
+            lastTravelTs = 0;
+            return;
+          }
+          const now = Date.now();
+          if (!lastTravelTs) {
+            lastTravelTs = now;
+            return;
+          }
+          let dt = (now - lastTravelTs) / 1000;
+          lastTravelTs = now;
+          try {
+            if (typeof VerbBar !== "undefined" && VerbBar.isSprint && VerbBar.isSprint()) {
+              dt *= 1.35;
+            }
+          } catch (_) {}
+          if (dt > 1.2) dt = 1.2;
+          travelAcc += dt;
+          if (travelAcc < 0.75) return;
+          const send = travelAcc;
+          travelAcc = 0;
+          reportTravel(send);
+        } catch (_) {}
+      }, 250);
+    }
+
+    if (window.Moments && typeof window.Moments.register === "function") {
+      window.Moments.register("encounter", {
+        transition: "develop",
+        enterSound: "encounterEnter",
+        exitSound: false,
+        async enter(payload, entry) {
+          return beginFromServer(payload, entry);
+        },
+        async exit(result) {
+          // Apply the aftermath WHILE the overlay still covers the world so
+          // resumeUnderlay reveals the modified scene, not the paused explore
+          // frame. Death / abort skip the restage.
+          const survived = !result || result.survived !== false;
+          const aborted = !!(result && result.aborted);
+          if (!survived) {
+            try { Sound.encounterDie(); } catch (_) {}
+            try { if (Haptics && Haptics.encounterDie) Haptics.encounterDie(); } catch (_) {}
+          } else if (!aborted) {
+            try { if (Haptics && Haptics.encounterSurvive) Haptics.encounterSurvive(); } catch (_) {}
+            const nextPrompt = (result && result.prompt) || (aftermath && aftermath.prompt);
+            if (nextPrompt && SceneAudio && typeof SceneAudio.score === "function") {
+              try { SceneAudio.score(nextPrompt); } catch (_) {}
+            }
+          }
+          if (survived && !aborted && result.image_url) {
+            try {
+              const meta = Object.assign({}, result.metadata || {}, {
+                hard_transition: true,
+                still_only: true,
+              });
+              Renderer.applyScene(result.image_url, result.prompt || "", meta);
+            } catch (e) {
+              console.warn("[encounter] aftermath apply failed:", e);
+            }
+          } else if (aborted) {
+            restoreExploreIfAborted();
+          }
+          resetLocal({ restore: aborted || !survived });
+          return true;
+        },
+        onEsc() {
+          return onEsc();
+        },
+      });
+    }
+
+    startTravelWatch();
+
+    return {
+      start, abort, finish, isActive, isResolving, onFeedItem, onKey, onEsc,
+      reportTravel,
+    };
+  })();
+  try { window.Encounter = Encounter; } catch (_) {}
+
+  // ═══════════════════════════════════════════════════════════════════
+  // CUTSCENE — 4-shot cinematic montage (revived flipbook as stills)
+  // ═══════════════════════════════════════════════════════════════════
+  const Cutscene = (() => {
+    let playing = false;
+    let completing = false;
+    let generating = false;
+    let shots = [];
+    let index = 0;
+    let graph = false;
+    let timer = 0;
+    let durationMs = 1600;
+    let lastPayload = null;
+    let seq = 0;
+    let queued = null;
+    let flushTimer = 0;
+
+    function reduced() {
+      try {
+        return !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+      } catch (_) { return false; }
+    }
+
+    function menuOpen() {
+      try {
+        return !!(window.StartMenu && StartMenu.isMenuOpen && StartMenu.isMenuOpen());
+      } catch (_) { return false; }
+    }
+
+    function sceneImg() { return document.getElementById("moment-scene-img"); }
+
+    function plateUrl() {
+      const url = state.currentStillUrl
+        || (window.Renderer && Renderer.lastScene && Renderer.lastScene.imageUrl)
+        || "";
+      if (!url || /^(blob:|data:)/i.test(String(url))) return "";
+      return url;
+    }
+
+    function clearTimer() {
+      if (timer) { clearTimeout(timer); timer = 0; }
+    }
+
+    function showShot(i) {
+      const shot = shots[i];
+      if (!shot) return;
+      index = i;
+      const url = shot.url || shot;
+      const label = (shot && shot.label) || ("Shot " + (i + 1));
+      try {
+        window.Moments.setNameplate(
+          (lastPayload && lastPayload.name) || "CUTSCENE",
+          label
+        );
+      } catch (_) {}
+      const img = sceneImg();
+      if (img) {
+        img.classList.remove("cutscene-ken");
+        void img.offsetWidth;
+        if (!reduced()) img.classList.add("cutscene-ken");
+      }
+      try { window.Moments.setScene(url); } catch (_) {}
+    }
+
+    function scheduleNext() {
+      clearTimer();
+      const hold = reduced() ? 280 : durationMs;
+      timer = setTimeout(() => { advance(); }, hold);
+    }
+
+    function advance() {
+      if (!playing) return;
+      if (index + 1 >= shots.length) {
+        finish();
+        return;
+      }
+      showShot(index + 1);
+      scheduleNext();
+    }
+
+    function readHop(res) {
+      const hop = { nextCut: null, destUrl: "", destWorld: "", choicesItem: null };
+      if (!res) return hop;
+      if (res.kind === "cutscene") {
+        hop.nextCut = res.cutscene || res;
+        if (res.cutscene_id) hop.nextCut.cutscene_id = res.cutscene_id;
+        if (res.name) hop.nextCut.name = res.name;
+        if (res.mood) hop.nextCut.mood = res.mood;
+      }
+      if (res.image_url) hop.destUrl = res.image_url;
+      if (res.to_world) hop.destWorld = res.to_world;
+      if (res.choices) hop.choicesItem = res.choices;
+      return hop;
+    }
+
+    function applyDest(hop) {
+      if (hop.destUrl) {
+        try { Renderer.applyScene(hop.destUrl, "", { hard_transition: true }); } catch (_) {}
+      }
+      if (hop.destWorld) {
+        state.experienceWorldId = hop.destWorld;
+        try { WorldEditor.setLiveWorldId(hop.destWorld); } catch (_) {}
+      }
+    }
+
+    function playNextCut(hop) {
+      if (hop && hop.nextCut && hop.nextCut.cutscene_id) {
+        play({
+          cutscene_id: hop.nextCut.cutscene_id,
+          name: hop.nextCut.name || "CUTSCENE",
+          mood: hop.nextCut.mood || "threshold",
+          graph: true,
+        });
+      }
+    }
+
+    async function unstickGraph() {
+      try {
+        const hop = readHop(await postJSON("/api/cutscene/complete", {}));
+        applyDest(hop);
+        if (hop.choicesItem) {
+          try { renderItem(hop.choicesItem); } catch (_) {}
+        }
+        playNextCut(hop);
+      } catch (err) {
+        console.warn("[cutscene] unstick failed:", err);
+      }
+    }
+
+    async function finish() {
+      if (completing) return;
+      completing = true;
+      generating = false;
+      seq += 1;
+      clearTimer();
+      playing = false;
+      const wasGraph = graph;
+      graph = false;
+      let hop = { nextCut: null, destUrl: "", destWorld: "", choicesItem: null };
+      if (wasGraph) {
+        try {
+          hop = readHop(await postJSON("/api/cutscene/complete", {}));
+        } catch (err) {
+          console.warn("[cutscene] complete failed:", err);
+        }
+      }
+      applyDest(hop);
+      try {
+        if (window.Moments && window.Moments.pop) {
+          await window.Moments.pop({ cutscene: true });
+        }
+      } catch (_) {}
+      if (hop.choicesItem) {
+        try { renderItem(hop.choicesItem); } catch (_) {}
+      }
+      completing = false;
+      playNextCut(hop);
+    }
+
+    function onEsc() {
+      // Always finish — Esc during "developing…" used to pop without
+      // completing, which left the run parked on the Cutscene node.
+      finish();
+      return true;
+    }
+
+    function onKey(e) {
+      if (!playing && !generating) return false;
+      const k = e && e.key;
+      if (k === " " || k === "Spacebar" || k === "Enter" || k === "ArrowRight") {
+        if (generating) { finish(); return true; }
+        advance();
+        return true;
+      }
+      return false;
+    }
+
+    function onOverlayClick(e) {
+      if (!playing && !generating) return;
+      if (e && e.target && e.target.closest && e.target.closest("#moment-choices")) return;
+      if (generating) { finish(); return; }
+      advance();
+    }
+
+    async function enterFromServer(payload, entry) {
+      const mine = seq;
+      generating = true;
+      lastPayload = payload || {};
+      durationMs = Math.max(600, parseInt(lastPayload.duration_ms, 10) || 1600);
+      graph = !!lastPayload.graph;
+      shots = Array.isArray(lastPayload.shots) ? lastPayload.shots.slice() : [];
+      if (!shots.length) {
+        try { window.Moments.setNameplate(lastPayload.name || "CUTSCENE", "developing…"); } catch (_) {}
+        let res = null;
+        const playBody = {
+          cutscene_id: lastPayload.cutscene_id || "",
+          mood: lastPayload.mood || "threshold",
+          name: lastPayload.name || "",
+          offline: !!lastPayload.offline,
+          demo: !!lastPayload.demo,
+          source_url: plateUrl(),
+        };
+        try {
+          res = await postJSON("/api/cutscene/play", playBody);
+        } catch (err) {
+          if (err && err.status === 429) {
+            await new Promise((r) => setTimeout(r, 400));
+            if (mine !== seq || (entry && entry.aborted)) {
+              generating = false;
+              return false;
+            }
+            try { res = await postJSON("/api/cutscene/play", playBody); }
+            catch (err2) { console.warn("[cutscene] play failed:", err2); }
+          } else {
+            console.warn("[cutscene] play failed:", err);
+          }
+        }
+        if (mine !== seq || (entry && entry.aborted)) {
+          generating = false;
+          return false;
+        }
+        if (!res || !res.ok || !(res.shots || []).length) {
+          try { window.Moments.notify({ text: "The cutscene fails to develop." }); } catch (_) {}
+          playing = false;
+          generating = false;
+          let hop = { nextCut: null, destUrl: "", destWorld: "", choicesItem: null };
+          if (graph) {
+            try { hop = readHop(await postJSON("/api/cutscene/complete", {})); } catch (_) {}
+          }
+          applyDest(hop);
+          try {
+            if (window.Moments && window.Moments.pop) {
+              await window.Moments.pop({ aborted: true });
+            }
+          } catch (_) {}
+          if (hop.choicesItem) {
+            try { renderItem(hop.choicesItem); } catch (_) {}
+          }
+          playNextCut(hop);
+          return false;
+        }
+        shots = res.shots;
+        durationMs = Math.max(600, parseInt(res.duration_ms, 10) || durationMs);
+        graph = graph || !!res.graph;
+        lastPayload = Object.assign({}, lastPayload, res);
+      }
+      if (mine !== seq || (entry && entry.aborted)) {
+        generating = false;
+        return false;
+      }
+      index = -1;
+      if (reduced() && shots.length) showShot(shots.length - 1);
+      else showShot(0);
+      try {
+        if (entry && window.Moments.revealFromFade) {
+          await window.Moments.revealFromFade(entry);
+        }
+      } catch (_) {}
+      if (mine !== seq || (entry && entry.aborted)) {
+        generating = false;
+        return false;
+      }
+      generating = false;
+      playing = true;
+      scheduleNext();
+      return true;
+    }
+
+    async function play(opts) {
+      opts = opts || {};
+      if (playing || completing || generating || state.processing || state.gameOver) return false;
+      if (menuOpen()) return false;
+      if (window.Moments && window.Moments.isActive && window.Moments.isActive()) return false;
+      if (!window.Moments || typeof window.Moments.push !== "function") {
+        if (opts.graph) await unstickGraph();
+        return false;
+      }
+      try {
+        const pushed = await window.Moments.push("cutscene", {
+          name: opts.name || "CUTSCENE",
+          mood: opts.mood || "threshold",
+          cutscene_id: opts.cutscene_id || "",
+          shots: opts.shots || [],
+          duration_ms: opts.duration_ms,
+          offline: !!opts.offline,
+          demo: !!opts.demo,
+          graph: !!opts.graph,
+          label: opts.name || "CUTSCENE",
+          sub: opts.mood || "montage",
+        });
+        if (!pushed && opts.graph) await unstickGraph();
+        return !!pushed;
+      } catch (err) {
+        console.warn("[cutscene] push failed:", err);
+        if (opts.graph) await unstickGraph();
+        return false;
+      }
+    }
+
+    function onFeedItem(item) {
+      const meta = (item && item.metadata) || {};
+      const opts = {
+        name: meta.name || item.content || "CUTSCENE",
+        mood: meta.mood || "threshold",
+        cutscene_id: meta.cutscene_id || "",
+        shots: meta.shots || [],
+        duration_ms: meta.duration_ms,
+        graph: true,
+      };
+      if (menuOpen()) {
+        queued = opts;
+        armFlush();
+        return;
+      }
+      play(opts);
+    }
+
+    function armFlush() {
+      if (flushTimer) return;
+      flushTimer = setInterval(() => {
+        if (menuOpen()) return;
+        clearInterval(flushTimer);
+        flushTimer = 0;
+        onMenuClosed();
+      }, 200);
+      setTimeout(() => {
+        if (!flushTimer) return;
+        clearInterval(flushTimer);
+        flushTimer = 0;
+      }, 12000);
+    }
+
+    function onMenuClosed() {
+      if (!queued) return;
+      if (menuOpen()) { armFlush(); return; }
+      const opts = queued;
+      queued = null;
+      play(opts);
+    }
+
+    if (window.Moments && typeof window.Moments.register === "function") {
+      window.Moments.register("cutscene", {
+        transition: "fade",
+        async enter(payload, entry) {
+          return enterFromServer(payload, entry);
+        },
+        async exit() {
+          clearTimer();
+          playing = false;
+          generating = false;
+          const img = sceneImg();
+          if (img) img.classList.remove("cutscene-ken");
+          return true;
+        },
+        onEsc() {
+          return onEsc();
+        },
+      });
+    }
+    try {
+      const ov = document.getElementById("moment-overlay");
+      if (ov) ov.addEventListener("click", onOverlayClick);
+    } catch (_) {}
+
+    return {
+      play,
+      onFeedItem,
+      onKey,
+      onMenuClosed,
+      isActive: () => playing || completing || generating,
+    };
+  })();
+  try { window.Cutscene = Cutscene; } catch (_) {}
 
   // QA hook: expose the real Talk controller ONLY when explicitly requested via
   // ?talkdev in the URL, so automated/manual tests can open a conversation
@@ -12431,6 +22217,10 @@
           multi: false, speak: false,
           focus: bridgeFocus,
           follow_focus: truthFocus,
+          // last_choice is still the previous pick — this click has not
+          // landed on /api/choose yet. Name the trip so the line is about
+          // leaving, not a recap of the still on screen.
+          acted: dest ? ("Move to " + dest) : "travel to a new location",
         });
         if (myGen !== gen) return;
         agentCfg = (res && res.agent) || agentCfg;
@@ -12528,6 +22318,7 @@
       // lockstep).
       if (!(state.autoPlay && !state.processing && !state.gameOver &&
             !state.freeWillOpen && !tapeIsOpen() &&
+            !(window.Moments && window.Moments.isActive && window.Moments.isActive()) &&
             el.choices.children.length &&
             state.currentPromptId != null &&
             state.currentPromptId !== state.lastAdvancedPromptId)) return;
@@ -12601,7 +22392,13 @@
     el.customInput.value = "";
     Sound.submit(); // custom free-will action sent
     closeFreeWill(true); // gate closes on submit
-    makeChoice(text, null);
+    // source: "typed" is the ONLY signal the server has for "this is genuinely
+    // player-authored text, not a curated choice" — a tapped choice pill (see
+    // the plain makeChoice(choice.text, ...) call above) sends no source at
+    // all, so without this the engine can't tell the two apart and used to
+    // guess from the choice text itself, which broke the moment choices
+    // stopped being phrased "Approach X" / "Examine Y".
+    makeChoice(text, null, { source: "typed" });
   }
 
   // ------------------------------------------------------------------
@@ -12668,6 +22465,41 @@
     return false;
   }
 
+  // The detection chip, from server state.
+  //
+  // This used to also drive a VITAL bar off `s.health` / `s.health_max`. The
+  // server no longer has a hit-point pool to report (see engine's "how a run
+  // ends"), so the only thing left worth showing here is how much the world
+  // knows about the player — which is now the dial they watch climb toward a
+  // death. The bar's markup and the client-side DangerSystem that owns it are
+  // untouched; this simply stops the server pretending to drive them.
+  const CONDITION_LEVELS = ["hidden", "suspicious", "alerted", "hunted"];
+  function renderCondition(s) {
+    const wrap = document.getElementById("danger-health");
+    if (!wrap) return;
+    const level = CONDITION_LEVELS.includes(s.detection) ? s.detection : "hidden";
+
+    // Stay out of the way of an untouched run: nothing to say while nothing
+    // has noticed the player.
+    const worthShowing = level !== "hidden" || s.alive === false;
+    const editorOn = document.body.classList.contains("world-editor-on");
+    wrap.classList.toggle("hidden", !worthShowing && !editorOn);
+    if (!worthShowing && !editorOn) return;
+
+    const chip = document.getElementById("condition-detect");
+    const text = document.getElementById("condition-detect-text");
+    if (chip) chip.dataset.level = level;
+    if (text) text.textContent = level.toUpperCase();
+    // Being noticed is a beat in itself — give it the escalation sting the
+    // phase change gets, but only when it gets worse.
+    const wasLevel = CONDITION_LEVELS.indexOf(state._lastDetect || "hidden");
+    if (state._lastDetect !== undefined &&
+        CONDITION_LEVELS.indexOf(level) > wasLevel) {
+      try { Sound.escalate(); } catch (_) {}
+    }
+    state._lastDetect = level;
+  }
+
   async function refreshStatus() {
     try {
       const s = await getJSON("/api/status");
@@ -12689,11 +22521,7 @@
         el.backendName.textContent = label;
       }
       if (typeof s.image_enabled === "boolean") state.imagesEnabled = s.image_enabled;
-      // HEALTH has no readout. It used to sit in the dossier HUD next to the
-      // score, which meant carrying that whole panel for a number that never
-      // moves while DAMAGE_SYSTEM_ENABLED is false. When combat returns, health
-      // wants its own surface tied to the danger vignette that actually drains
-      // it — not a digit parked beside the photo tally.
+      renderCondition(s);
       renderInventory(s.inventory);
       if (el.hudTimeWrap && el.hudTime) {
         if (s.time_of_day) {
@@ -12717,10 +22545,20 @@
       // Log the image-generation prompt (the text we sent Gemini to draw the
       // guide still) whenever it changes — the other half of "what did we send".
       const ip = (s.current_image_prompt || "").trim();
+      const rp = (s.current_render_prompt || "").trim();
+      if (rp) {
+        try { Renderer.lastRenderPrompt = rp; } catch (_) {}
+      }
       if (ip && ip !== state._lastImagePrompt) {
         state._lastImagePrompt = ip;
+        try { Renderer.rememberImagePrompt(ip); } catch (_) { Renderer.lastImagePrompt = ip; }
         RtLog.push("img", "image prompt", RtLog.clip(ip, 180));
       }
+      const liveId = s.experience_world_id || "";
+      if (liveId !== (state.experienceWorldId || "")) {
+        state.experienceWorldId = liveId;
+      }
+      try { WorldEditor.setLiveWorldId(liveId); } catch (_) {}
     } catch (err) {
       if (el.backendName) el.backendName.textContent = "offline";
     }
@@ -12928,11 +22766,18 @@
   }
 
   function onKeydown(e) {
-    // First-run tutorial is a modal takeover: any key dismisses it and is
-    // swallowed so a world shortcut (S=scan, C=photo…) doesn't fire behind it.
-    if (el.scanTutorial && !el.scanTutorial.classList.contains("hidden")) {
+    // PHOTO put-away wins over editor / menu / pause. Esc while pointer-locked
+    // often never reaches here — see onViewfinderLockChange.
+    if ((isCameraMode() || state.touchMode) &&
+        (e.key === "Escape" || (e.key && e.key.toLowerCase() === "h"))) {
       e.preventDefault();
-      dismissScanTutorial();
+      e.stopPropagation();
+      closeTouch();
+      return;
+    }
+    // The start menu is a full takeover: nothing behind it should hear a key.
+    if (StartMenu.isMenuOpen()) {
+      if (StartMenu.onKey && StartMenu.onKey(e)) return;
       return;
     }
     // WORLD EDITOR — backtick (`) toggles it from anywhere; Esc closes it.
@@ -12951,8 +22796,14 @@
           e.preventDefault();
           // In the graph, Esc first closes the open window, then surfaces one
           // cell at a time; only at the root does it close the editor.
-          if (_typing) _ae.blur();
-          else if (!WorldEditor.onEscape()) WorldEditor.close();
+          if (_typing) { _ae.blur(); return; }
+          try {
+            if (MouseLook.isLocked && MouseLook.isLocked()) {
+              MouseLook.releaseLock();
+              return;
+            }
+          } catch (_) {}
+          if (!WorldEditor.onEscape()) WorldEditor.close();
           return;
         }
         if (_isEditorToggleKey(e) && !_typing) { e.preventDefault(); WorldEditor.close(); return; }
@@ -12964,7 +22815,30 @@
           if (WorldEditor.toggleDev) WorldEditor.toggleDev();
           return;
         }
-        return; // typing passes through; all other shortcuts are blocked behind the editor
+        if (_typing) return;
+        // The live viewport is still the game — but only when it's focused.
+        // Click the world to play; click the desk and WASD / look stay off
+        // so moving the mouse across the picture doesn't steer the character.
+        if (Movement.enabled() && !e.ctrlKey && !e.metaKey && !e.altKey) {
+          try {
+            if (e.key === "Escape" && MouseLook.isLocked && MouseLook.isLocked()) {
+              MouseLook.releaseLock();
+              e.preventDefault();
+              return;
+            }
+          } catch (_) {}
+          const mk = Movement.keyFor(e.key);
+          if (mk) {
+            e.preventDefault();
+            if (!e.repeat) Movement.pressKey(mk);
+            return;
+          }
+          if (e.key === "Shift") {
+            if (!e.repeat) { try { VerbBar.onShift(true); } catch (_) {} }
+            return;
+          }
+        }
+        return;
       } else if (_isEditorToggleKey(e) && !_typing) {
         e.preventDefault(); WorldEditor.open(); return;
       }
@@ -12988,13 +22862,56 @@
         try { window.Moments.onEscape(); } catch (_) {}
         return;
       }
+      try {
+        if (window.Encounter && Encounter.onKey && Encounter.onKey(e)) {
+          e.preventDefault();
+          return;
+        }
+        try {
+          if (window.Cutscene && Cutscene.onKey && Cutscene.onKey(e)) {
+            e.preventDefault();
+            return;
+          }
+        } catch (_) {}
+      } catch (_) {}
       return; // any active Moment owns the keyboard
     }
     // Playable camp level: Esc drives out (same as LEAVE CAMP). Instruments
     // above (Talk / Moments / tape / camera) already returned.
+    if (Menu.isOpen()) {
+      if (e.key === "Escape") { e.preventDefault(); Menu.close(); return; }
+      if (e.key === "Tab" || e.key === "Enter") return;
+      if ((e.key === " " || e.key === "Spacebar") &&
+          document.activeElement && document.activeElement.classList.contains("pause-item")) return;
+      e.preventDefault();
+      return;
+    }
     if (state.inCamp && e.key === "Escape") {
       e.preventDefault();
       leaveCamp();
+      return;
+    }
+    // The video player is full-screen and owns the keyboard while open (Esc
+    // closes; space / arrows / F / M drive the custom transport).
+    if (WatchPlayer.visible()) {
+      if (WatchPlayer.onKey(e)) e.preventDefault();
+      return;
+    }
+    // The render reviewer is full-screen and owns the keyboard while open —
+    // arrows step turns, Esc closes. Checked before the tape and the movement
+    // keys so reviewing footage can't accidentally drive the live game.
+    if (Review.visible()) {
+      if (Review.onKey(e)) e.preventDefault();
+      return;
+    }
+    if (WatchMode.onKey && WatchMode.onKey(e)) {
+      e.preventDefault();
+      return;
+    }
+    // A render in progress owns arrow keys while its live stage is showing,
+    // so scrubbing the captured frames can't also drive the (unbooted) game.
+    if (Render.progressVisible()) {
+      if (Render.onKey(e)) e.preventDefault();
       return;
     }
     // Tape playback owns the keyboard while open.
@@ -13014,9 +22931,17 @@
       closeTagPrompt(state.scanTagActing);
       return;
     }
-    // Camera (SNAP) tool owns the keyboard while armed: Esc or H closes it.
-    if (state.touchMode) {
-      if (e.key === "Escape" || e.key.toLowerCase() === "h") closeTouch();
+    // Camera owns the keyboard while armed: Esc / H put it away. Space / C shoot.
+    if (isCameraMode() || state.touchMode) {
+      if (e.key === "Escape" || e.key.toLowerCase() === "h") {
+        e.preventDefault();
+        closeTouch();
+        return;
+      }
+      if (e.key === " " || e.key === "Spacebar" || e.key.toLowerCase() === "c") {
+        e.preventDefault();
+        captureAt();
+      }
       return;
     }
     // Case-closed win screen: R starts a new case, Esc dismisses to keep shooting.
@@ -13045,11 +22970,10 @@
       if (e.key === "Escape") { return; }
     }
     // Drive joystick owns the drive keys while realtime video is on — hold to
-    // go, release to stop. Mapping comes from InputBindings (default FPS:
-    // WASD move, arrows look; CLASSIC: A/D look). Mouse look is separate
-    // (pointer-lock). This reassigns those keys in LIVE mode only (D no longer
-    // toggles the debug log — use the DEBUG button). In still mode the keys
-    // keep their old meaning.
+    // go, release to stop. Mapping comes from InputBindings (Look: WASD move
+    // + mouse look; Tank: A/D turn, Q/E strafe). This reassigns those keys
+    // in LIVE mode only (D no longer toggles the debug log — use the DEBUG
+    // button). In still mode the keys keep their old meaning.
     if (Movement.enabled() && !e.ctrlKey && !e.metaKey && !e.altKey) {
       // Esc releases mouse-look pointer-lock first (browser also exits lock).
       if (e.key === "Escape") {
@@ -13077,6 +23001,12 @@
       toggleSound();
     } else if (e.key.toLowerCase() === "t") {
       openTape();
+    } else if (e.shiftKey && (e.key === "N" || e.key === "n")) {
+      // Encounter demo — fire a confrontation interrupt on demand.
+      try { Encounter.start({ demo: true }); } catch (_) {}
+    } else if (e.shiftKey && (e.key === "K" || e.key === "k")) {
+      // Cutscene demo — 4-shot montage from the current plate.
+      try { Cutscene.play({ demo: true, offline: false, name: "CUTSCENE" }); } catch (_) {}
     } else if (e.key.toLowerCase() === "n") {
       toggleNarrator(); // narrator — a voice frames the world
     } else if (e.shiftKey && e.key === "D") {
@@ -13100,6 +23030,8 @@
       RtLog.toggle(); // show/hide the world-model inspector log
     } else if (e.key.toLowerCase() === "i") {
       ImageModel.toggle(); // show/hide the image-generator (still-frame) model menu
+    } else if (e.key.toLowerCase() === "k") {
+      StartMenu.switchMode("watch"); // jump to Watch for the current Experience
     } else if (e.key.toLowerCase() === "j") {
       StoryLog.toggle(); // show/hide the story log (the run chronicle)
     } else if (e.key.toLowerCase() === "o") {
@@ -13111,8 +23043,9 @@
       e.preventDefault();
       moveForward();
     } else if (e.key === "Escape") {
-      if (state.scanTagActing) closeTagPrompt(state.scanTagActing); // dismiss an open action bar
-      closeFreeWill(true);
+      if (state.scanTagActing) { closeTagPrompt(state.scanTagActing); return; }
+      if (state.freeWillOpen) { closeFreeWill(true); return; }
+      Menu.toggle();
     }
   }
 
@@ -13149,6 +23082,7 @@
     // pause overlay after a top-up. Missing/zeroed shape until the
     // first successful fetchBalance() lands.
     let bal = { balance: 0, spent_cents: 0, gating_enabled: false };
+    let selectedPack = "roll";
     // Poll timer for the meter — used only in realtime sessions where
     // "turn boundaries" don't cleanly correspond to a client action
     // (the danger system can spend credits via server-side hooks in
@@ -13220,6 +23154,59 @@
       }
     }
 
+    function packList() {
+      return Array.isArray(cfg.packs) ? cfg.packs : [];
+    }
+
+    function selectedPackId() {
+      const packs = packList();
+      if (packs.some((p) => p.id === selectedPack)) return selectedPack;
+      return cfg.default_pack || "roll";
+    }
+
+    function selectedPackInfo() {
+      const id = selectedPackId();
+      return packList().find((p) => p.id === id) || {
+        id: "roll",
+        label: "ROLL",
+        credits: Number(cfg.credits_per_coin || 80),
+        display_price: cfg.display_price || "$4.99",
+      };
+    }
+
+    function setSelectedPack(id) {
+      selectedPack = (id || "").trim().toLowerCase() || selectedPackId();
+      paintAllMoney();
+    }
+
+    function paintPackHost(host) {
+      if (!host) return;
+      const packs = packList();
+      if (!packs.length) { host.innerHTML = ""; return; }
+      const current = selectedPackId();
+      host.innerHTML = packs.map((p) => {
+        const usual = p.usual ? " is-usual" : "";
+        const on = p.id === current ? " is-on" : "";
+        const price = p.display_price || "";
+        return `<button type="button" class="coin-pack${usual}${on}" data-pack="${p.id}">`
+          + `<span class="coin-pack-name">${p.label}</span>`
+          + `<span class="coin-pack-meta">${p.credits} credits · ${price}</span>`
+          + `</button>`;
+      }).join("");
+      host.querySelectorAll("[data-pack]").forEach((btn) => {
+        btn.addEventListener("click", () => setSelectedPack(btn.getAttribute("data-pack")));
+      });
+    }
+
+    function paintAllMoney() {
+      paintPackHost(el.coinPacks);
+      paintPackHost(el.deathPacks);
+      paintPackHost(el.pausePacks);
+      paintButton();
+      paintPauseButton();
+      try { Machine.paint(); } catch (_) {}
+    }
+
     function paintButton() {
       if (!el.deathContinue) return;
       // The wrapping .coinop-block owns visibility now — the button itself
@@ -13230,6 +23217,7 @@
         return;
       }
       if (el.coinopBlock) el.coinopBlock.classList.remove("hidden");
+      const pack = selectedPackInfo();
       const labelEl = el.deathContinue.querySelector(".continue-label");
       const slotEl = el.deathContinue.querySelector(".coin-slot");
       const compActive = !!(cfg.comp && cfg.comp.active);
@@ -13239,19 +23227,21 @@
         // watching a screen recording knows this isn't a real charge. The
         // button keeps its shape/animation for demo footage.
         el.deathContinue.classList.add("comp");
-        if (labelEl) labelEl.textContent = cfg.comp.label || "Free Continue";
+        if (labelEl) labelEl.textContent = cfg.comp.label || `Free ${pack.label}`;
         if (slotEl) slotEl.textContent = "\u26A1"; // lightning bolt
         if (el.deathContinuePrice) {
           el.deathContinuePrice.textContent = (cfg.comp.remaining != null)
             ? `(${cfg.comp.remaining} left)`
-            : "";
+            : `+${pack.credits}`;
         }
       } else {
         el.deathContinue.classList.remove("comp");
-        if (labelEl && cfg.label) labelEl.textContent = cfg.label;
+        if (labelEl) labelEl.textContent = `Insert ${pack.label} — Continue`;
         if (slotEl) slotEl.textContent = "\u25C9"; // filled circle (coin)
         if (el.deathContinuePrice) {
-          el.deathContinuePrice.textContent = cfg.display_price ? `(${cfg.display_price})` : "";
+          el.deathContinuePrice.textContent = pack.display_price
+            ? `(${pack.display_price})`
+            : "";
         }
       }
     }
@@ -13397,6 +23387,7 @@
             body: JSON.stringify({
               session_id: SESSION_ID,
               comp: compCode || undefined,
+              pack: selectedPackId(),
             }),
           }),
         ]);
@@ -13483,6 +23474,7 @@
         // The revive endpoint also grants a fresh pack of credits — pull
         // the new balance so the arcade meter chip glows on the way up.
         try { await refreshBalance(); } catch (_) {}
+        try { Machine.paint(); } catch (_) {}
         return true;
       } catch (err) {
         console.error("[coinop] redeem failed:", err);
@@ -13503,9 +23495,11 @@
       const status = q.get("coinop");
       if (!status) return;
       const csId = q.get("cs") || "";
+      const fromMachine = q.get("machine") === "1";
 
       // Clean the URL immediately so a refresh doesn't re-trigger anything
       // and so a copy/paste of the return URL doesn't leak the session id.
+      // Leave machine=1 for StartMenu.begin so the cabinet stays open.
       try {
         q.delete("coinop");
         q.delete("cs");
@@ -13515,7 +23509,10 @@
       } catch (_) {}
 
       if (status === "cancel") {
-        setStatus("Checkout cancelled. You can still restart.", false);
+        const msg = "Checkout cancelled. You can still drop another pack in.";
+        setStatus(msg, false);
+        setPauseStatus(msg, false);
+        try { Machine.setMsg(msg, ""); } catch (_) {}
         return;
       }
       if (status !== "success" || !csId) return;
@@ -13525,8 +23522,52 @@
         setStatus("Continue is not available on this server.", true);
         return;
       }
-      setStatus("Verifying payment…", false);
-      await redeem(csId, /* isComp */ false);
+      if (fromMachine) {
+        await creditOnly(csId, /* isComp */ false);
+        return;
+      }
+      if (state.gameOver) {
+        setStatus("Verifying payment…", false);
+        await redeem(csId, /* isComp */ false);
+        return;
+      }
+      setPauseStatus("Verifying payment…", false);
+      await pauseRedeem(csId, /* isComp */ false);
+    }
+
+    async function creditOnly(checkoutSessionId, isComp) {
+      try {
+        Machine.setMsg("Verifying payment…", "");
+        const resp = await fetch("/api/coinop/redeem", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Session-Id": SESSION_ID,
+          },
+          body: JSON.stringify({
+            session_id: SESSION_ID,
+            checkout_session_id: checkoutSessionId,
+          }),
+        });
+        const data = await resp.json();
+        if (!resp.ok || !data.ok) {
+          const reason = (data && data.reason) || `HTTP ${resp.status}`;
+          Machine.setMsg(
+            isComp ? `Comp failed: ${reason}.` : `Drop failed: ${reason}.`,
+            "error",
+          );
+          return false;
+        }
+        await refreshBalance();
+        const added = Number((data && data.credits_added) || 0);
+        Machine.setMsg(added ? `${added} credits in the machine.` : "Credits landed.", "ok");
+        try { Machine.paint(); } catch (_) {}
+        return true;
+      } catch (err) {
+        console.error("[coinop] creditOnly failed:", err);
+        try { Machine.setMsg("Could not verify payment.", "error"); } catch (_) {}
+        return false;
+      }
     }
 
     // Public helper used by the C keyboard shortcut and any other caller
@@ -13538,6 +23579,10 @@
     // gameOver in practice, but the ordering here matches user intent
     // in the edge case).
     function insertCoin() {
+      if (document.body.classList.contains("coin-open")) {
+        try { Machine.insert(); } catch (_) {}
+        return;
+      }
       if (!cfg.enabled) return;
       if (pauseOpen && el.pauseContinue) {
         if (el.pauseContinue.classList.contains("busy")) return;
@@ -13627,6 +23672,7 @@
       if (opts && opts.silent) return next;
       if (typeof wasBalance === "number" && Number(next.balance) < wasBalance) flashMeterTick();
       if (typeof wasBalance === "number" && Number(next.balance) > wasBalance) flashMeterRefilled();
+      try { Machine.paint(); } catch (_) {}
       return next;
     }
 
@@ -13665,28 +23711,28 @@
       const labelEl = el.pauseContinue.querySelector(".continue-label");
       const slotEl = el.pauseContinue.querySelector(".coin-slot");
       const compActive = !!(cfg.comp && cfg.comp.active);
-      const pack = Number(cfg.credits_per_coin || 20);
+      const pack = selectedPackInfo();
       if (compActive) {
         el.pauseContinue.classList.add("comp");
-        if (labelEl) labelEl.textContent = cfg.comp.label || `Free · +${pack} credits`;
+        if (labelEl) labelEl.textContent = cfg.comp.label || `Free · +${pack.credits} credits`;
         if (slotEl) slotEl.textContent = "\u26A1";
         if (el.pauseContinuePrice) {
           el.pauseContinuePrice.textContent = (cfg.comp.remaining != null)
             ? `(${cfg.comp.remaining} left)`
-            : "";
+            : `+${pack.credits}`;
         }
       } else {
         el.pauseContinue.classList.remove("comp");
-        if (labelEl) labelEl.textContent = `Insert Coin · +${pack} credits`;
+        if (labelEl) labelEl.textContent = `Insert ${pack.label} · +${pack.credits} credits`;
         if (slotEl) slotEl.textContent = "\u25C9";
         if (el.pauseContinuePrice) {
-          el.pauseContinuePrice.textContent = cfg.display_price ? `(${cfg.display_price})` : "";
+          el.pauseContinuePrice.textContent = pack.display_price ? `(${pack.display_price})` : "";
         }
       }
       if (el.pausePackBlurb) {
         el.pausePackBlurb.textContent = compActive
-          ? `${pack} credits · comp, on the house.`
-          : `${pack} credits per coin.`;
+          ? `${pack.credits} credits · ${pack.label}, on the house.`
+          : `${pack.label} · ${pack.credits} credits.`;
       }
     }
 
@@ -13826,6 +23872,7 @@
             body: JSON.stringify({
               session_id: SESSION_ID,
               comp: compCode || undefined,
+              pack: selectedPackId(),
             }),
           }),
         ]);
@@ -13912,11 +23959,51 @@
       refreshBalance({ silent: false }).catch(() => {});
     }
 
+    async function checkoutFromMachine() {
+      if (!cfg.enabled) return;
+      const pack = selectedPackInfo();
+      const compActive = !!(cfg.comp && cfg.comp.active);
+      if (el.coinInsert) el.coinInsert.classList.add("busy");
+      try { Machine.setMsg(compActive ? "Coin registered…" : "Opening Stripe Checkout…", ""); } catch (_) {}
+      try { Sound.coin(); } catch (_) {}
+      try {
+        const resp = await fetch("/api/coinop/checkout", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Session-Id": SESSION_ID,
+          },
+          body: JSON.stringify({
+            session_id: SESSION_ID,
+            comp: compCode || undefined,
+            pack: selectedPackId(),
+            return_to: "machine",
+          }),
+        });
+        if (!resp.ok) throw new Error(`checkout HTTP ${resp.status}`);
+        const data = await resp.json();
+        if (data.comp && data.checkout_session_id) {
+          await creditOnly(data.checkout_session_id, /* isComp */ true);
+          return;
+        }
+        if (!data.url) throw new Error("no checkout url returned");
+        try { Sound.glitch(); } catch (_) {}
+        try { glitchTransition && glitchTransition(280); } catch (_) {}
+        try { window.top.location.href = data.url; }
+        catch (_) { window.location.href = data.url; }
+      } catch (err) {
+        console.error("[coinop] machine checkout failed:", err);
+        try { Machine.setMsg("Could not open checkout. Try again in a moment.", "error"); } catch (_) {}
+      } finally {
+        if (el.coinInsert) el.coinInsert.classList.remove("busy");
+      }
+    }
+
     async function init() {
       compCode = readCompFromUrlOrStorage();
       cfg = await fetchConfig();
-      paintButton();
-      paintPauseButton();
+      selectedPack = cfg.default_pack || "roll";
+      paintAllMoney();
       if (el.deathContinue) {
         el.deathContinue.addEventListener("click", startCheckout);
       }
@@ -13978,7 +24065,39 @@
         setTimeout(() => refreshBalance({ silent: true }).catch(() => {}), 200);
       },
       isEnabled() { return !!cfg.enabled; },
+      config: () => cfg,
+      balance: () => bal,
+      selectedPack: () => selectedPackInfo(),
+      setPack: setSelectedPack,
+      checkoutFromMachine,
     };
+  })();
+
+  // ── ACCOUNT shim for old cabinet callers ──────────────────────────────
+  // Stripe return_to=machine and CoinOp.checkoutFromMachine still call
+  // Machine.open / setMsg. Those now land on ACCOUNT → USAGE.
+  const Machine = (function () {
+    function setMsg(text, kind) {
+      try { Accounts.setUsageMsg(text, kind === "error" ? "error" : (kind === "ok" ? "ok" : "")); } catch (_) {}
+    }
+
+    function paint() {
+      try { Accounts.refreshUsage(); } catch (_) {}
+    }
+
+    function open(opts) {
+      try { Accounts.open({ tab: "usage", instant: !!(opts && opts.instant) }); } catch (_) {}
+    }
+
+    function close() {
+      document.body.classList.remove("coin-open");
+    }
+
+    function insert() {}
+
+    function init() {}
+
+    return { init, open, close, paint, insert, setMsg };
   })();
 
   // ------------------------------------------------------------------
@@ -14084,18 +24203,33 @@
     // adapt: phones get a "truly mobile" layout + media fit, desktops keep the
     // cinematic full-bleed experience.
     Device.init();
-    el.btnReset.addEventListener("click", resetGame);
+    el.btnReset.addEventListener("click", () => { Menu.close(); resetGame(); });
     el.btnVhs.addEventListener("click", toggleVhs);
     el.btnSnd.addEventListener("click", toggleSound);
     if (el.rendererBtn) {
       el.rendererBtn.addEventListener("click", () => { Renderer.toggle(); Sound.toggle(); });
     }
     if (el.menuToggle) el.menuToggle.addEventListener("click", () => Menu.toggle());
+    if (el.pauseScrim) el.pauseScrim.addEventListener("click", () => Menu.close());
+    if (el.btnResume) el.btnResume.addEventListener("click", () => Menu.close());
+    if (el.btnLeave) el.btnLeave.addEventListener("click", () => {
+      Menu.close();
+      try { StartMenu.returnHome(); } catch (_) {}
+    });
     if (el.btnModel) el.btnModel.addEventListener("click", () => { RtLog.toggle(); });
     if (el.btnImgModel) el.btnImgModel.addEventListener("click", () => { ImageModel.toggle(); });
-    if (el.btnStory) el.btnStory.addEventListener("click", () => { StoryLog.toggle(); });
-    if (el.btnObjectives) el.btnObjectives.addEventListener("click", () => { Objectives.toggle(); });
-    if (el.btnEditor) el.btnEditor.addEventListener("click", () => { WorldEditor.toggle(); });
+    if (el.btnStory) el.btnStory.addEventListener("click", () => {
+      const already = StoryLog.visible();
+      Menu.close();
+      if (!already) StoryLog.toggle();
+    });
+    if (el.btnObjectives) el.btnObjectives.addEventListener("click", () => {
+      Menu.close();
+      try { Objectives.open(); } catch (_) { Objectives.toggle(); }
+    });
+    // EDIT is now an always-on handle (both modes), not a rail button.
+    if (el.editTab) el.editTab.addEventListener("click", () => { WorldEditor.toggle(); });
+    if (el.btnExit) el.btnExit.addEventListener("click", () => { Quit.press(); });
     if (el.objHead) el.objHead.addEventListener("click", (ev) => {
       // The header is the collapse handle, but let the ✕/▾ button own its click.
       if (el.objCollapse && el.objCollapse.contains(ev.target)) return;
@@ -14107,18 +24241,25 @@
     Lobby.init();
     WorldEditor.init();
     ImageModel.init();
+    Render.init();
+    Review.init();
+    WatchPlayer.init();
+    WatchFilm.init();
+    WatchMode.init();
+    StartMenu.init();
     Menu.init();
     Tactile.init();
     el.deathRestart.addEventListener("click", resetGame);
     CoinOp.init();
+    Machine.init();
     if (el.caseRestart) el.caseRestart.addEventListener("click", resetGame);
     if (el.caseContinue) el.caseContinue.addEventListener("click", hideCaseWin);
     el.freeWillBtn.addEventListener("click", openFreeWill);
-    if (el.realtimeBtn) el.realtimeBtn.addEventListener("click", openTouch);
+    if (el.realtimeBtn) el.realtimeBtn.addEventListener("click", (e) => {
+      if (e) { e.preventDefault(); e.stopPropagation(); }
+      openTouch();
+    });
     if (el.scanBtn) el.scanBtn.addEventListener("click", () => triggerScan());
-    // First-run tutorial: dismiss on the button OR a tap anywhere on the card.
-    if (el.tutDismiss) el.tutDismiss.addEventListener("click", (e) => { e.stopPropagation(); dismissScanTutorial(); });
-    if (el.scanTutorial) el.scanTutorial.addEventListener("click", () => dismissScanTutorial());
     if (el.campBtn) el.campBtn.addEventListener("click", () => openCamp());
     if (el.leaveCampBtn) el.leaveCampBtn.addEventListener("click", () => leaveCamp());
     if (el.touchLayer) {
@@ -14132,6 +24273,10 @@
       el.touchLayer.addEventListener("contextmenu", onTouchContextMenu);
       // Scroll to zoom (needs passive:false so we can preventDefault the page).
       el.touchLayer.addEventListener("wheel", onTouchWheel, { passive: false });
+      document.addEventListener("pointerlockchange", onViewfinderLockChange);
+      document.addEventListener("mozpointerlockchange", onViewfinderLockChange);
+      document.addEventListener("mousemove", onViewfinderLookMove);
+      window.addEventListener("pointermove", onViewfinderLookMove, true);
     }
     // Global cleanup so a pointer lifting over a raised control (e.g. the PHOTO
     // button) can't leave the tap/pinch state stuck.
@@ -14185,10 +24330,19 @@
     if (el.narratorBtn) el.narratorBtn.addEventListener("click", toggleNarrator);
     if (el.narratorStop) el.narratorStop.addEventListener("click", () => Narrator.stop());
     if (el.agentDebugBtn) el.agentDebugBtn.addEventListener("click", () => AgentLog.toggle());
+    const encounterDebugBtn = document.getElementById("encounter-debug-btn");
+    if (encounterDebugBtn) {
+      encounterDebugBtn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        try { Encounter.start({ demo: true }); } catch (_) {}
+      });
+    }
     AgentLog.init();
     Movement.init();
     // Independent of the joystick element: mouse look and the CONTROLS switch
     // must come up even on layouts without a #move-pad.
+    PlayFocus.init();
     MouseLook.init();
     InputProfileUi.init();
     Movement.refreshHints();
@@ -14196,8 +24350,15 @@
     HappyOysterOptions.init();
     // Learn which camera the game was authored with before the first scene
     // lands, so the world is BUILT with it rather than corrected afterwards.
-    Camera.load();
+    const cameraReady = Camera.load();
     document.addEventListener("keydown", onKeydown);
+    document.addEventListener("keydown", (e) => {
+      if (!(isCameraMode() || state.touchMode)) return;
+      if (e.key !== "Escape" && !(e.key && e.key.toLowerCase() === "h")) return;
+      e.preventDefault();
+      e.stopPropagation();
+      closeTouch();
+    }, true);
     // Release joystick directions on keyup so held W/A/S/D/Q/E/arrows stop the
     // moment the key lifts (movement is a "hold to travel" control). Shift ends
     // a held Sprint.
@@ -14218,13 +24379,31 @@
       // Fire a cold open that was deferred because audio wasn't unlocked yet,
       // so the first playthrough gets narration rather than only the second run.
       try { Narrator.onAudioUnlocked(); } catch (_) {}
+      // Title music is requested on boot, before any gesture. Replay it now
+      // that the context is actually allowed to make sound — but only while
+      // the menu is still up. PLAY already called leaveMenu; a late
+      // enterMenu must not start the title track over the match.
+      if (document.body.classList.contains("start-menu-on")) {
+        try { SceneAudio.enterMenu(); } catch (_) {}
+      } else {
+        try { SceneAudio.onUnlocked(); } catch (_) {}
+      }
     };
     document.addEventListener("pointerdown", unlockAudio, { once: true });
     document.addEventListener("keydown", unlockAudio, { once: true });
     // Learn whether narrator VOICE is available so the control can say so.
     Narrator.preflight();
 
-    Renderer.init(); // async: resolves default renderer + warms realtime session
+    // Camera first: the first world used to be built first-person because
+    // upgradeToLive raced Camera.load, and LingBot never restaged afterwards.
+    let rendererBooted = false;
+    const bootRenderer = () => {
+      if (rendererBooted) return;
+      rendererBooted = true;
+      Renderer.init();
+    };
+    cameraReady.then(bootRenderer, bootRenderer);
+    setTimeout(bootRenderer, 2000);
     try { Investigations.render(); } catch (_) {} // show any persisted case file
     initVhsGrain();
     initKeyboardInset();
@@ -14253,11 +24432,31 @@
         setTimeout(() => { try { DangerSystem.demo(); } catch (_) {} }, 2600);
       }
       if (q.get("danger_debug") === "1") mountDangerDebugHud();
+      if (q.get("encounter_demo") === "1") {
+        setTimeout(() => { try { Encounter.start({ demo: true }); } catch (_) {} }, 3200);
+      }
+      if (q.get("cutscene_demo") === "1") {
+        window.__CUTSCENE_DEMO__ = true;
+        const tryDemo = () => {
+          try {
+            if (window.StartMenu && StartMenu.isMenuOpen && StartMenu.isMenuOpen()) return;
+            const plate = state.currentStillUrl
+              || (window.Renderer && Renderer.lastScene && Renderer.lastScene.imageUrl);
+            if (!plate) return;
+            clearInterval(tryDemo._t);
+            Cutscene.play({ demo: true, name: "CUTSCENE" });
+          } catch (_) {}
+        };
+        tryDemo._t = setInterval(tryDemo, 800);
+        setTimeout(() => { try { clearInterval(tryDemo._t); } catch (_) {} }, 45000);
+      }
     } catch (_) {}
 
-    // Resume an in-progress run if one exists, otherwise auto-start a fresh
-    // game so a first-time visitor is never greeted by a blank screen.
-    bootstrap();
+    // The app opens on the start menu (PLAY / ACCOUNT). PLAY opens the
+    // Experience picker; Watch lives under that PLAY word. PLAY boots a
+    // live run; Watch opens the studio without ever resetting
+    // the game. ?mode=play / ?mode=watch (or a Stripe return) skip the menu.
+    StartMenu.begin();
   }
 
   // Debug HUD for the danger system. Off by default; enable with
