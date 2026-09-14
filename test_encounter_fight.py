@@ -418,6 +418,15 @@ class TestThePlateLocksOntoTheStrangerNotThePlayer(unittest.TestCase):
     evidence for which described person is not the player.
     """
 
+    def setUp(self):
+        # Without this the guard learns from whatever the live default
+        # session last rendered, so the result changes between runs.
+        encounter._LOOK_READ_CACHE.clear()
+        p = mock.patch.object(encounter, "observed_player_look", return_value="")
+        p.start()
+        self.addCleanup(p.stop)
+        self.addCleanup(encounter._LOOK_READ_CACHE.clear)
+
     def _locked(self, plate, invented):
         return encounter.plate_stranger_look(plate, fallback=invented).lower()
 
@@ -454,6 +463,17 @@ class TestThePlateLocksOntoTheStrangerNotThePlayer(unittest.TestCase):
         self.assertIn("coverall", got)
         for junk in ("another", "and ", "steps"):
             self.assertNotIn(junk, got)
+
+    def test_one_persons_description_is_not_cut_at_its_commas(self):
+        # "The man has long, matted hair and a torn flannel shirt" was being
+        # split at the comma, and the stub "The man has long" still held a
+        # person noun — so the enemy was locked to the phrase "The man has
+        # long" and every later frame was prompted with it.
+        got = self._locked(
+            "The man has long, matted hair and a torn flannel shirt.",
+            "a dishevelled man in a torn flannel shirt")
+        self.assertIn("flannel", got)
+        self.assertNotIn("the man has long,", got + ",")
 
 
 class TestTheObservedLookComesFromTheImageNotTheSheet(unittest.TestCase):
@@ -653,6 +673,166 @@ class TestWinningAFightGetsYouOutOfIt(unittest.TestCase):
         self.assertFalse(encounter.encounter_turn_skip_image("escape"))
 
 
+class TestTheSlateOffersThreeDifferentAnswers(unittest.TestCase):
+    """Violence, escape, peace — not three verbs from the same scuffle.
+
+    The third lane used to be "use": turn their grip or their weapon against
+    them, which is a second way to hit someone. Every slate came out as three
+    variations on grappling and none of them was a decision.
+    """
+
+    def test_the_lanes_are_violence_escape_and_peace(self):
+        self.assertEqual(encounter.ENCOUNTER_LANES,
+                         ("confront", "evade", "parley"))
+
+    def test_the_asked_for_slate_is_not_three_fighting_moves(self):
+        for text in (encounter.DEFAULT_CHOICE_INSTRUCTIONS,
+                     encounter.DEFAULT_CHOICE_OVERLAY):
+            low = text.lower()
+            self.assertIn("parley" if "parley" in low else "peace", low)
+            self.assertNotIn("their momentum", low)
+            self.assertNotIn("(3) turn the moment against", low)
+        instructions = encounter.DEFAULT_CHOICE_INSTRUCTIONS.lower()
+        # The old confront lane asked for a shove, which is what made the
+        # violence option feel like nothing.
+        self.assertIn("extreme", instructions)
+        self.assertIn("never shove", instructions)
+        self.assertIn("keys confront, evade, parley", instructions)
+
+    def test_the_schema_asks_for_the_peace_lane(self):
+        props = encounter.ENCOUNTER_CHOICE_SCHEMA["properties"]
+        self.assertIn("parley", props)
+        self.assertNotIn("use", props)
+        self.assertEqual(sorted(encounter.ENCOUNTER_CHOICE_SCHEMA["required"]),
+                         ["confront", "evade", "parley"])
+
+    def test_a_dict_of_lanes_survives_the_rename(self):
+        slate = encounter._parse_choice_payload({
+            "confront": "Drive the pipe through him",
+            "evade": "Bolt for the fence line",
+            "parley": "Hand over the tape",
+        })
+        self.assertEqual([c["lane"] for c in slate],
+                         ["confront", "evade", "parley"])
+
+    def test_a_model_answering_with_the_old_key_keeps_its_slate(self):
+        slate = encounter._parse_choice_payload({
+            "confront": "Drive the pipe through him",
+            "evade": "Bolt for the fence line",
+            "use": "Hand over the tape",
+        })
+        self.assertEqual(len(slate), 3)
+        self.assertEqual(slate[-1]["text"], "Hand over the tape")
+        self.assertEqual(slate[-1]["lane"], "parley")
+
+    def test_peaceful_wording_is_read_as_the_peace_lane(self):
+        for verb in ("Hand over the tape", "Tell them who sent you",
+                     "Give them the camera", "Stand down and talk"):
+            with self.subTest(verb=verb):
+                self.assertEqual(encounter.classify_encounter_lane(verb),
+                                 "parley")
+
+    def test_extreme_wording_is_read_as_violence(self):
+        for verb in ("Smash the lamp into him", "Choke him out",
+                     "Put the foreman down"):
+            with self.subTest(verb=verb):
+                self.assertEqual(encounter.classify_encounter_lane(verb),
+                                 "confront")
+
+    def test_the_fallback_slate_also_fans_three_ways(self):
+        slate = encounter.fallback_encounter_choices(
+            {"character": {"label": "A site foreman", "look": "a man in a hard hat"}})
+        self.assertEqual([c["lane"] for c in slate],
+                         ["confront", "evade", "parley"])
+
+    def test_talking_can_settle_a_person_but_never_a_creature(self):
+        rng = random.Random(11)
+        person = {encounter.advance_enemy_state(
+            "parley", "survive", "ready", rng=rng,
+            stance="opportunistic", kind="person") for _ in range(200)}
+        self.assertIn("standing_down", person)
+
+        rng = random.Random(11)
+        creature = {encounter.advance_enemy_state(
+            "parley", "survive", "ready", rng=rng,
+            stance="hostile", kind="creature") for _ in range(200)}
+        self.assertNotIn("standing_down", creature)
+
+    def test_a_settled_body_stays_settled(self):
+        rng = random.Random(3)
+        for _ in range(50):
+            self.assertEqual(
+                encounter.advance_enemy_state("confront", "survive",
+                                              "standing_down", rng=rng),
+                "standing_down")
+
+    def test_peace_is_the_safest_lane_but_not_a_free_pass(self):
+        talk = encounter.encounter_outcome_weights("parley", stance="hostile")
+        hit = encounter.encounter_outcome_weights("confront", stance="hostile")
+        self.assertLess(talk["die"] + talk["wounded"],
+                        hit["die"] + hit["wounded"])
+        beast = encounter.encounter_outcome_weights("parley", kind="creature")
+        self.assertGreater(beast["wounded"], talk["wounded"])
+
+    def test_a_clean_escape_or_parley_is_not_thrown_away(self):
+        """The filter that swaps landscape choices for canned text only knew
+        the old grappling verbs, so it replaced the model's real slate."""
+        brief = {"character": {"label": "A man in plaid shirt"}}
+        for text in ("Sprint away dropping the bag", "Toss him your camera bag",
+                     "Hand over the camera gear", "Shatter his skull",
+                     "Flee while dropping the camera"):
+            with self.subTest(text=text):
+                self.assertTrue(encounter.choice_addresses_threat(text, brief))
+
+    def test_landscape_choices_are_still_replaced(self):
+        brief = {"character": {"label": "A man in plaid shirt"}}
+        for text in ("Sprint toward the mining processor",
+                     "Vault over the debris pile",
+                     "Climb the chain-link fence"):
+            with self.subTest(text=text):
+                self.assertFalse(encounter.choice_addresses_threat(text, brief))
+
+    def test_a_pronoun_hiding_inside_another_word_does_not_count(self):
+        # "her" lives inside "other" and "he" inside "shed"; a substring
+        # test called these choices grounded when they name no one.
+        brief = {"character": {"label": "A drifter"}}
+        self.assertFalse(
+            encounter.choice_addresses_threat("Cross to the other shed", brief))
+
+    def test_the_whole_slate_survives_the_filter(self):
+        brief = {"character": {"label": "A man in plaid shirt"}}
+        slate = encounter.prefer_threat_choices([
+            {"text": "Drive a blade through him", "lane": "confront"},
+            {"text": "Sprint past him into brush", "lane": "evade"},
+            {"text": "Toss your camera bag away", "lane": "parley"},
+        ], brief)
+        self.assertEqual([c["text"] for c in slate],
+                         ["Drive a blade through him",
+                          "Sprint past him into brush",
+                          "Toss your camera bag away"])
+
+    def test_violence_is_not_allowed_to_conjure_a_weapon(self):
+        low = encounter.DEFAULT_CHOICE_INSTRUCTIONS.lower()
+        self.assertIn("not arm them with a weapon", low)
+
+    def test_the_stakes_line_reports_a_body_that_gave_up(self):
+        brief = {"character": {"label": "A site foreman"},
+                 "enemy_state": "standing_down"}
+        line = encounter.stakes_after_verb(brief, "Hand over the tape",
+                                           "parley", "survive")
+        self.assertIn("stood down", line.lower())
+        self.assertNotIn("still here", line.lower())
+
+    def test_walking_away_from_a_deal_is_not_narrated_as_a_scramble(self):
+        brief = {"character": {"label": "A man"}}
+        talked = encounter.stakes_after_verb(brief, "Toss him your memory card",
+                                              "parley", "escape")
+        ran = encounter.stakes_after_verb(brief, "Sprint past the truck",
+                                           "evade", "escape")
+        self.assertIn("let you go", talked.lower())
+        self.assertIn("broke clear", ran.lower())
+
+
 class TestAFightActuallyEnds(unittest.TestCase):
     """`encounter_releases` only fires on escape, death, or the other body
     going down, and `advance_enemy_state` is the only thing that reaches
@@ -678,13 +858,17 @@ class TestAFightActuallyEnds(unittest.TestCase):
         return worst
 
     def test_every_lane_terminates(self):
-        for lane in ("confront", "evade", "use"):
+        for lane in encounter.ENCOUNTER_LANES:
             with self.subTest(lane=lane):
                 self.assertLess(self._rounds_to_end(lane), 40)
 
     def test_putting_them_down_is_a_way_out(self):
         self.assertTrue(encounter.encounter_releases("survive", {"enemy_state": "down"}))
         self.assertFalse(encounter.encounter_releases("survive", {"enemy_state": "staggered"}))
+
+    def test_talking_them_down_is_also_a_way_out(self):
+        self.assertTrue(
+            encounter.encounter_releases("survive", {"enemy_state": "standing_down"}))
 
     def test_pressing_a_staggered_body_can_finish_it(self):
         rng = random.Random(7)

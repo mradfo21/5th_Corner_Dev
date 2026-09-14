@@ -24,7 +24,11 @@ from typing import Any, Dict, Optional
 
 ENCOUNTER_STANCES = ("hostile", "desperate", "opportunistic")
 ENCOUNTER_KINDS = ("person", "creature", "character")
-ENCOUNTER_LANES = ("confront", "evade", "use")
+# Three different ANSWERS to a confrontation, not three fighting moves. The
+# third lane used to be "use" — turn their grip or their weapon against them —
+# which is just a second way to hit someone, so every slate came out as three
+# variations on scuffling and none of them felt like a decision.
+ENCOUNTER_LANES = ("confront", "evade", "parley")
 ENCOUNTER_OUTCOMES = ("survive", "escape", "wounded", "die")
 ENCOUNTER_CONDITIONS = ("ok", "wounded")
 # Where the other body is in the exchange. Without this the fight had no
@@ -32,7 +36,10 @@ ENCOUNTER_CONDITIONS = ("ok", "wounded")
 # so committing to a verb could not change the situation, only repeat it or
 # end the run. "down" is the win the player previously had no way to reach —
 # confront could only loop (50% survive, nothing changes) or kill you.
-ENCOUNTER_ENEMY_STATES = ("ready", "staggered", "down")
+# "standing_down" is that same ending reached without a blow: the parley
+# landed and they are no longer coming. Both settle the encounter.
+ENCOUNTER_ENEMY_STATES = ("ready", "staggered", "down", "standing_down")
+ENCOUNTER_ENEMY_SETTLED = ("down", "standing_down")
 
 ENCOUNTER_PLATE_STYLE_ANCHOR = os.getenv(
     "ENCOUNTER_PLATE_STYLE_ANCHOR",
@@ -171,11 +178,12 @@ ENCOUNTER_BRIEF_SCHEMA = {
             },
             "required": ["label", "look", "stance"],
         },
+        "motive": {"type": "string"},
         "danger": {"type": "string"},
         "stakes": {"type": "string"},
         "place_hold": {"type": "string"},
     },
-    "required": ["character", "danger", "stakes"],
+    "required": ["character", "motive", "danger", "stakes"],
 }
 
 # Place-neutral only. Never invent a pipe, flare, or room the frame does not
@@ -222,44 +230,78 @@ DEFAULT_CHOICE_OVERLAY = (
     "is challenging the player IN FRAME. Every choice is about THEM.\n"
     "Do not write choices about the landscape, a fence, a ridge, a door, "
     "a hatch, a pipe, or walking to a landmark. Those are explore choices.\n"
-    "Generate exactly 3 bodily verbs that fan:\n"
-    "(1) confront THEM — shove, strike, grab, charge\n"
-    "(2) evade THEM — dive, break away, slip past\n"
-    "(3) turn the moment against THEM — their grip, their weapon, "
-    "their momentum. Not the scenery.\n"
+    "Exactly 3 choices, and they are three DIFFERENT ANSWERS to this "
+    "moment — not three ways to scuffle:\n"
+    "(1) violence — ONE committed, extreme act, with the body or with "
+    "something already in the photograph. Never a shove, a grapple, or a "
+    "try, and never a weapon the player was not shown holding.\n"
+    "(2) escape — leave. Break contact and get out of reach, at a cost.\n"
+    "(3) peace — end it with no blow struck. Answer what they came for, "
+    "give something up, say the thing that stops them.\n"
     "No Attack/Defend/Item. No observe/wait/photograph. 3-6 words."
 )
 
 DEFAULT_CHOICE_INSTRUCTIONS = (
     "This is a confrontation still. A person or creature is already in the "
-    "player's face. Write exactly three short bodily actions about THAT "
-    "figure — not the place.\n"
-    "Return JSON only with keys confront, evade, use. Each value is 3-6 words.\n"
-    "confront: shove / strike / grab / charge THEM.\n"
-    "evade: dive / break away / slip past THEM.\n"
-    "use: turn THEIR grip, weapon, or momentum against them.\n"
+    "player's face. Write exactly three short actions about THAT figure — "
+    "not the place.\n"
+    "Return JSON only with keys confront, evade, parley. Each is 3-6 words.\n"
+    # Three verbs from the same fistfight is what made every slate feel
+    # like no decision at all. These are three different ways the next
+    # minute goes, and the player should not be able to have two of them.
+    "These are three DIFFERENT ANSWERS. If all three could happen in the "
+    "same scuffle, all three are wrong.\n"
+    "confront: ONE extreme, committed act of violence — the thing that "
+    "cannot be undone. Never shove, scuffle, grapple, wrestle, or 'try to'. "
+    "Use the player's body or something already visible in the photograph; "
+    "do not arm them with a weapon they were never shown holding.\n"
+    "evade: leave. Break contact and get out of their reach, at a cost.\n"
+    # The only slot where the player can act on WHY this is happening,
+    # which is what makes a fight part of the story and not an obstacle.
+    "parley: end it with no blow struck — answer what they came for, hand "
+    "something over, or say the thing that stops them. Name it.\n"
     "Name the figure if you can see them. Never name a fence, ridge, door, "
-    "pipe, hatch, mesa, or shed unless you use it to hit THEM.\n"
+    "pipe, hatch, mesa, or shed unless you use it on THEM.\n"
     "No observe, wait, photograph, climb, or walk-to."
 )
 
 DEFAULT_BRIEF_INSTRUCTIONS = (
     "Invent ONE new encounter for the attached image of the place the player is in.\n"
-    "Return JSON only. The character is a specific human or creature who could "
-    "already be in THIS photograph — face, clothes, gender, stance, already "
-    "close enough to hurt the player. label is a grounded reading of how they "
-    "look (a wounded worker, a man in coveralls) — not a comic title, rank, "
-    "or sci-fi class. No Sentinel, Warden, Knight, or robot. This world is "
-    "1993 industrial horror: people and flesh, not energy weapons.\n"
+    "Return JSON only.\n"
+    "\n"
+    "THIS MUST COME OUT OF THE STORY, NOT OUT OF NOWHERE. Read the world and "
+    "the recent beats above. Whoever arrives belongs to something already "
+    "named there — a faction, an operation, an event, a person already "
+    "mentioned, the thing the player has been digging into. They arrive "
+    "because of what the player has been doing. A stranger with no "
+    "connection to any of it is the one answer that is always wrong.\n"
+    "\n"
+    "motive is what they WANT, in one clause, and it must be specific to "
+    "this story: something to take, something to stop, something to protect, "
+    "something to find out, something to settle. 'They are hostile' is not a "
+    "motive. The best encounters are ones where the player realises the "
+    "other person knows something.\n"
+    "\n"
+    "label is a grounded reading of who they are, tied to the world — their "
+    "job, allegiance, or condition (a Horizon site foreman, a quarantine "
+    "sentry, a scavenger who got too close). Not a comic title or rank. No "
+    "Sentinel, Warden, Knight, or robot. This world is 1993 industrial "
+    "horror: people and flesh, never machines or energy weapons.\n"
     "look is the visible body: hair, clothes, wound, what they hold.\n"
-    "The DANGER is what THIS FIGURE is doing to the player right now with "
-    "their body. Do not invent a collapse, fire, grate, sparking weapon, or "
-    "sealed exit unless it is already visible AND they are using it.\n"
+    "\n"
+    "DANGER is what makes this the wrong moment to be standing here, and it "
+    "is happening NOW. Usually that is what this figure is doing with their "
+    "body or with something they carry. It may also be what their arrival "
+    "means — who is behind them, what they are about to do, what they will "
+    "take. Do not invent a collapse, fire, grate, or sealed exit that the "
+    "photograph does not already show.\n"
+    "\n"
     "If the image is outdoors, stay outdoors. Do not invent an interior.\n"
     "If the image is indoors, stay in that same room.\n"
-    "Stakes are one second-person sentence about what THIS FIGURE does "
-    "to the player if they hesitate. place_hold is 1-2 visual locks from "
-    "the image so a restage cannot teleport (ground, sky, walls, a landmark).\n"
+    "Stakes are one second-person sentence about what the player loses if "
+    "they hesitate — and losing the thread of the story is a real loss here, "
+    "not only losing blood. place_hold is 1-2 visual locks from the image so "
+    "a restage cannot teleport (ground, sky, walls, a landmark).\n"
     "stance must be one of: hostile, desperate, opportunistic.\n"
     "kind must be one of: person, creature, character."
 )
@@ -269,9 +311,9 @@ ENCOUNTER_CHOICE_SCHEMA = {
     "properties": {
         "confront": {"type": "string"},
         "evade": {"type": "string"},
-        "use": {"type": "string"},
+        "parley": {"type": "string"},
     },
-    "required": ["confront", "evade", "use"],
+    "required": ["confront", "evade", "parley"],
 }
 
 # Landscape / travel verbs that made encounter slates read as explore turns.
@@ -357,13 +399,24 @@ def stakes_after_verb(brief: dict, verb: str, lane: str, outcome: str) -> str:
         label = "them"
     verb_s = _clip(verb, "the move", 40).rstrip(".")
     out = str(outcome or "").strip().lower()
+    lane_s = str(lane or "").strip().lower()
     if out == "escape":
+        # Handing something over and walking is not breaking clear, and
+        # reporting it as a scramble argued with the frame above it.
+        if lane_s == "parley":
+            return f"{label} let you go. Keep moving."
         return f"You broke clear of {label}. Keep moving."
     if out == "wounded":
         return f"{verb_s} cost you — {label} is still in reach."
     if out == "die":
         return f"{label} has you."
-    _ = lane
+    # Without these, settling an encounter still reported "still here" and the
+    # stakes line argued with the frame that had just shown them giving up.
+    state = str((brief or {}).get("enemy_state") or "").strip().lower()
+    if state == "standing_down":
+        return f"{label} stood down. Nobody swung."
+    if state == "down":
+        return f"{label} is down. You have the ground."
     return f"{verb_s} landed. {label} is still here."
 
 
@@ -404,6 +457,21 @@ _GARMENT_FILLER = frozenset({
     "foreground", "background", "front", "behind", "near", "stands",
     "standing", "holding", "carrying", "wearing", "some", "sort", "kind",
 })
+
+
+def _look_words(text: str) -> set:
+    """Distinctive words in a description, minus the ones everybody shares.
+
+    Garments alone cannot separate two people who are both wearing a hat:
+    "an older man in a plaid shirt" and "a man in a baseball cap" tie on
+    garment count, and the tie went to whoever was described first — the
+    player. Age, build, and condition words break that tie.
+    """
+    return {
+        w for w in re.split(r"[^a-z0-9'-]+", str(text or "").lower())
+        if len(w) > 3 and w not in _GENERIC_LOOK_WORDS
+        and w not in _GARMENT_FILLER and w not in _WARDROBE_STOP
+    }
 
 
 def wardrobe_tokens_from_text(text: str) -> set:
@@ -744,6 +812,34 @@ def encounter_identity_paths() -> list:
         return []
 
 
+# Word boundaries matter here: a substring test finds "her" inside "other"
+# and "he" inside "shed", so choices about the landscape read as choices
+# about the person and sailed through the filter this guard exists for.
+_THREAT_PRONOUNS = re.compile(
+    r"\b(?:them|they|their|theirs|him|his|he|her|hers|she|"
+    r"the\s+(?:figure|stranger|creature|presence|man|woman|kid|boy|girl))\b",
+    re.I,
+)
+
+# One entry per lane. This list only ever held the grappling verbs of the
+# old third lane, so a clean escape ("Sprint away dropping the bag") and a
+# clean parley ("Toss him your camera bag") both looked like landscape
+# choices and were swapped out for canned text — the player picked from
+# three useless moves while the model's actual slate was thrown away.
+_THREAT_VERBS = (
+    "shove", "tackle", "strike", "grab", "lunge", "charge", "smash",
+    "crack", "choke", "stab", "swing", "club", "beat", "crush",
+    "put down", "drive into", "bring down", "shatter",
+    "dodge", "evade", "break away", "slip past", "flee", "run",
+    "sprint", "bolt", "scramble", "retreat", "back away", "get clear",
+    "get out", "duck", "dive",
+    "hand", "give", "offer", "tell", "say", "talk", "speak", "answer",
+    "trade", "toss", "surrender", "stand down", "back down", "plead",
+    "bargain", "explain", "warn", "promise", "show", "lower",
+    "grip", "momentum",
+)
+
+
 def choice_addresses_threat(text: str, brief: Optional[dict] = None) -> bool:
     """True when a choice is about the figure, not the landscape."""
     blob = re.sub(r"\s+", " ", str(text or "")).strip().lower()
@@ -756,18 +852,12 @@ def choice_addresses_threat(text: str, brief: Optional[dict] = None) -> bool:
         if len(w) > 2 and w not in ("the", "and", "for", "with")
     ]
     names_figure = bool(tokens and any(t in blob for t in tokens))
-    names_pronoun = any(w in blob for w in (
-        "them", "him", "her", "their", "the figure", "the stranger",
-        "the creature", "the presence",
-    ))
-    body_verb = any(w in blob for w in (
-        "shove", "tackle", "strike", "grab", "lunge", "charge",
-        "dodge", "evade", "break away", "slip past", "grip", "momentum",
-    ))
+    names_pronoun = bool(_THREAT_PRONOUNS.search(blob))
+    lane_verb = any(w in blob for w in _THREAT_VERBS)
     place_only = any(m in blob for m in _PLACE_ONLY_MARKERS)
     if names_figure or names_pronoun:
         return True
-    if body_verb and not place_only:
+    if lane_verb and not place_only:
         return True
     return False
 
@@ -830,6 +920,7 @@ def normalize_encounter_brief(raw: Any, place_hold: str = "") -> dict:
     if _is_clothing_clause_label(label):
         label = _grounded_label_from_look(look, data.get("plate_seen") or "")
     danger = _clip(data.get("danger"), "something in this place can hurt you now", 140)
+    motive = _clip(data.get("motive"), "", 120)
     stakes = _clip(data.get("stakes"), "If you hesitate you will not walk away clean.", 140)
     hold = _clip(data.get("place_hold") or place_hold, "", 160)
     if stakes and not stakes.endswith((".", "!", "?")):
@@ -848,6 +939,11 @@ def normalize_encounter_brief(raw: Any, place_hold: str = "") -> dict:
         "stakes": stakes,
         "place_hold": hold,
     }
+    # What they want. Carried on the brief so the choices, the prose and the
+    # plate can all point at the same intention instead of each inventing
+    # their own reason for the fight.
+    if motive:
+        out["motive"] = motive
     if locked_look:
         out["character"]["locked_look"] = locked_look
     # Preserve where the exchange got to; normalize rebuilds from scratch and
@@ -891,15 +987,22 @@ _WARDROBE_STOP = frozenset((
 ))
 _DEFAULT_STRANGER_LOOK = "a weathered stranger in a torn work coat and knit cap"
 
-# Where one person's description ends and the next begins. Punctuation alone
-# is not enough: "a man in a green vest faces an older man in a plaid shirt"
-# is one comma-free sentence holding two people, and treating it as a single
-# clause is how the player and the stranger got merged into one look.
+# Where one person's description ends and the NEXT PERSON begins.
+#
+# Splitting on punctuation alone fails in both directions. It misses "a man
+# in a green vest faces an older man in a plaid shirt", one comma-free
+# sentence holding two people. And it over-cuts "The man has long, matted
+# hair and a torn shirt" into "The man has long," — a stub that still
+# contains a person noun, so it won the enemy's look and the stranger was
+# locked to the phrase "The man has long". A boundary only counts when a new
+# person is actually introduced after it.
 _PERSON_SPLIT_RE = re.compile(
-    r"(?<=[,.;])\s+|"
-    r"\s+(?=\b(?:beside|facing|faces|confronting|confronts|opposite|while|"
-    r"whilst|across from|in front of|behind)\b)|"
-    r"\s+(?=\band\s+(?:a|an|another|the\s+other)\b)",
+    r"(?:(?<=[,.;])\s+|\s+)"
+    r"(?=(?:and|but|while|whilst|facing|faces|confronting|confronts|"
+    r"opposite|beside|behind|across\s+from|in\s+front\s+of)?\s*"
+    r"(?:a|an|the|another|one|second|other)\s+"
+    r"(?:[a-z][a-z'-]+\s+){0,3}"
+    r"(?:" + "|".join(_PERSON_NOUNS) + r")\b)",
     re.I,
 )
 
@@ -946,6 +1049,7 @@ def plate_stranger_look(plate_seen: str, fallback: str = "") -> str:
     # The brief invented this stranger before any pixels existed, so it is
     # the best evidence for which of the described people is NOT the player.
     wanted = wardrobe_tokens_from_text(fallback)
+    wanted_words = _look_words(fallback)
     owned = player_wardrobe_tokens()
     candidates = []
     for clause in _PERSON_SPLIT_RE.split(stripped):
@@ -982,7 +1086,9 @@ def plate_stranger_look(plate_seen: str, fallback: str = "") -> str:
         # like the stranger the brief asked for, and lean away from anything
         # wearing what the player wears.
         worn = wardrobe_tokens_from_text(c)
-        score = 2 * len(worn & wanted) - 3 * len(worn & owned)
+        words = _look_words(c)
+        score = (2 * len(worn & wanted) + len(words & wanted_words)
+                 - 3 * len(worn & owned) - 2 * len(words & owned))
         if re.search(r"\b(?:wearing|dressed|in|with)\b", c, re.I):
             score += 1
         # Ties keep the earlier clause, which is the old behaviour.
@@ -1171,6 +1277,72 @@ def fallback_encounter_brief(place_hold: str = "", seed: str = "",
     return brief
 
 
+def encounter_lore_context(session_id: str, cap: int = 1500) -> str:
+    """What this world is actually about, for the brief that invents people.
+
+    The brief used to get 400 characters of world prompt and ``use_lore``
+    switched off, so the only thing it knew was that there was a yard. With
+    nothing to draw on it invented the most generic human it could — the
+    "random guy" problem. Everything here is already written down somewhere
+    in the run; it was simply never handed over.
+    """
+    import engine
+    bits = []
+
+    try:
+        import experience_store
+        lore = str(experience_store.lore_brief() or "").strip()
+        if lore:
+            bits.append("WHAT THIS WORLD IS:\n" + lore[:cap])
+    except Exception:
+        pass
+
+    st = {}
+    try:
+        st = engine._load_state(session_id) or {}
+    except Exception:
+        st = {}
+
+    world = str(st.get("world_prompt") or "").strip()
+    if world:
+        bits.append("WHERE THE STORY HAS GOT TO:\n" + world[:900])
+
+    # The last few beats, so a new arrival can be a consequence of something
+    # the player did rather than a stranger who wandered in.
+    recent = []
+    try:
+        for entry in reversed(engine._load_history(session_id) or []):
+            if not isinstance(entry, dict):
+                continue
+            beat = str(entry.get("dispatch") or "").strip()
+            if beat:
+                recent.append(_clip(beat, "", 180))
+            if len(recent) >= 3:
+                break
+    except Exception:
+        pass
+    if recent:
+        bits.append("JUST HAPPENED (newest first):\n- " + "\n- ".join(recent))
+
+    seen = st.get("seen_elements")
+    if isinstance(seen, (list, tuple)) and seen:
+        names = [str(s) for s in seen if s][-12:]
+        if names:
+            bits.append("ALREADY ESTABLISHED IN THIS RUN: " + ", ".join(names))
+
+    phase = str(st.get("current_phase") or "").strip()
+    threat = st.get("threat_level")
+    tail = []
+    if phase:
+        tail.append(f"phase {phase}")
+    if isinstance(threat, (int, float)):
+        tail.append(f"threat {threat}")
+    if tail:
+        bits.append("PRESSURE: " + ", ".join(tail))
+
+    return "\n\n".join(bits)
+
+
 def read_place_lock(session_id: str, image_path: Optional[str] = None) -> dict:
     """Lock the restage to the current frame: setting, spatial, description."""
     setting = ""
@@ -1233,12 +1405,15 @@ def encounter_releases(outcome: str, record: Optional[dict] = None) -> bool:
 
     Putting the other body down also ends it. Without that there was no way to
     WIN a confrontation — confront could only loop you back into the same
-    standoff or kill you, so the only winning move was always to run.
+    standoff or kill you, so the only winning move was always to run. Talking
+    them down ends it the same way, or the peace lane would be a choice that
+    never resolves anything.
     """
     if str(outcome or "").strip().lower() in ("escape", "die"):
         return True
     if isinstance(record, dict):
-        return str(record.get("enemy_state") or "").strip().lower() == "down"
+        state = str(record.get("enemy_state") or "").strip().lower()
+        return state in ENCOUNTER_ENEMY_SETTLED
     return False
 
 
@@ -1263,13 +1438,21 @@ def encounter_choice_overlay(brief: dict, continued: bool = False) -> str:
     seen_line = f"\nTHE IMAGE SHOWS: {seen}\n" if seen else ""
     last = _clip(brief.get("last_dispatch"), "", 280)
     last_line = f"\nLAST BEAT (the world just did this): {last}\n" if last else ""
+    # A fight the player understands the point of plays very differently
+    # from three ways to shove a stranger, so the slate is told what the
+    # other person actually wants.
+    motive = _clip(brief.get("motive"), "", 120)
+    motive_line = f"THEY WANT: {motive}.\n" if motive else ""
     return (
         f"{base}{extra}{seen_line}{last_line}\n"
         f"THE FIGURE: {char.get('label') or 'a stranger'} "
         f"({char.get('stance') or 'hostile'}) — {char.get('look') or 'a figure'}.\n"
+        f"{motive_line}"
         f"THEY ARE DOING: {brief.get('danger') or 'challenging you'}.\n"
         f"STAKES: {brief.get('stakes') or 'Hesitation costs you.'}\n"
-        "Every choice names them or a verb against them. No landscape."
+        "Every choice names them or a verb against them. No landscape.\n"
+        "At least one option should go at what they want — take it, deny "
+        "it, or get it out of them — not only at their body."
     )
 
 
@@ -1353,15 +1536,23 @@ _LANE_KEYWORDS = {
         "shove", "tackle", "strike", "grab", "charge", "lunge", "hit",
         "rush", "confront", "fight", "slam", "punch", "kick them",
         "shoulder", "wrestle", "drive into",
+        # The lane is an extreme act now, so the decisive verbs have to
+        # land here rather than falling through to the index fallback.
+        "smash", "crack", "choke", "stab", "swing", "bring down",
+        "put down", "break their", "drive them", "throw them",
+        "crush", "club", "beat",
     ),
     "evade": (
         "dive", "dodge", "duck", "flee", "run", "slip", "cover", "evade",
         "retreat", "back away", "roll", "sidestep", "break away", "get clear",
+        "bolt", "sprint", "vault", "get out", "leave", "walk away",
     ),
-    "use": (
-        "use", "throw", "pull", "wedge", "turn their", "their grip",
-        "their weapon", "their momentum", "from them", "against them",
-        "grab their", "twist", "rip the",
+    "parley": (
+        "talk", "speak", "answer", "offer", "tell them", "say", "name",
+        "hand over", "hand them", "give them", "give up", "surrender",
+        "stand down", "lower", "back down", "agree", "promise", "bargain",
+        "explain", "apolog", "let them", "show them", "warn them",
+        "trade", "concede", "plead", "reason with", "call them",
     ),
 }
 
@@ -1429,9 +1620,9 @@ def short_figure_ref(brief: dict) -> str:
 def fallback_encounter_choices(brief: dict) -> list:
     short = short_figure_ref(brief)
     return [
-        {"text": f"Shove {short}", "lane": "confront"},
+        {"text": f"Put {short} down", "lane": "confront"},
         {"text": f"Break away from {short}", "lane": "evade"},
-        {"text": f"Turn {short}'s grip", "lane": "use"},
+        {"text": f"Give {short} what they want", "lane": "parley"},
     ]
 
 
@@ -1495,18 +1686,27 @@ def encounter_outcome_weights(lane: str, stance: str = "hostile",
             w["wounded"] = w.get("wounded", 0) + 10
             w["escape"] = max(20, w["escape"] - 15)
     else:
-        if stance_l == "opportunistic":
-            w = {"survive": 45, "escape": 35, "wounded": 20, "die": 0}
+        # Parley. Talking is the safest lane by a wide margin, which is the
+        # point — it is the option that costs you something other than blood.
+        # It is not free: a creature has no use for what you are offering,
+        # and a desperate person is the one most likely to swing anyway.
+        if kind_l == "creature":
+            w = {"survive": 30, "escape": 12, "wounded": 48, "die": 10}
+        elif stance_l == "opportunistic":
+            w = {"survive": 80, "escape": 12, "wounded": 8, "die": 0}
         elif stance_l == "desperate":
-            w = {"survive": 55, "escape": 10, "wounded": 35, "die": 0}
-        elif kind_l == "creature":
-            w = {"survive": 40, "escape": 10, "wounded": 40, "die": 10}
+            w = {"survive": 58, "escape": 10, "wounded": 30, "die": 2}
         else:
-            w = {"survive": 50, "escape": 15, "wounded": 30, "die": 5}
+            w = {"survive": 65, "escape": 10, "wounded": 22, "die": 3}
+        if staggered:
+            # They have already had the worst of it and want a way out.
+            w["survive"] = w.get("survive", 0) + 15
+            w["wounded"] = max(0, w.get("wounded", 0) - 10)
         if wounded:
-            w["die"] = w.get("die", 0) + 10
+            # Bleeding in front of someone who wants something is leverage
+            # against you, not for you.
             w["wounded"] = w.get("wounded", 0) + 10
-            w["survive"] = max(15, w["survive"] - 15)
+            w["survive"] = max(15, w["survive"] - 10)
 
     if fate_l == "LUCKY":
         w["die"] = max(0, w.get("die", 0) - 15)
@@ -1521,7 +1721,8 @@ def encounter_outcome_weights(lane: str, stance: str = "hostile",
 
 
 def advance_enemy_state(lane: str, outcome: str, enemy_state: str = "ready",
-                        rng: Any = None) -> str:
+                        rng: Any = None, stance: str = "hostile",
+                        kind: str = "person") -> str:
     """How the other body changes as a result of this exchange.
 
     This is the escalation the encounter never had. Pressing a confront moves
@@ -1532,18 +1733,25 @@ def advance_enemy_state(lane: str, outcome: str, enemy_state: str = "ready",
     state = str(enemy_state or "ready").strip().lower()
     if state not in ENCOUNTER_ENEMY_STATES:
         state = "ready"
-    if outcome in ("die", "escape") or state == "down":
+    if outcome in ("die", "escape") or state in ENCOUNTER_ENEMY_SETTLED:
         return state
     roll = rng.random() if rng is not None else random.random()
     if lane == "confront":
         if state == "staggered":
             return "down" if roll < 0.62 else "staggered"
         return "staggered" if roll < 0.55 else "ready"
-    if lane == "use":
-        # Turning their own weight or tool against them unbalances, rarely ends it.
+    if lane == "parley":
+        # This is the other way to win, and the only one that does not
+        # cost a body. A creature has no use for what the player is
+        # offering, so talking at it changes nothing.
+        if str(kind or "person").strip().lower() == "creature":
+            return state
+        chance = 0.55 if str(stance or "").strip().lower() == "opportunistic" else 0.35
         if state == "staggered":
-            return "down" if roll < 0.35 else "staggered"
-        return "staggered" if roll < 0.40 else "ready"
+            chance += 0.20
+        if outcome == "wounded":
+            chance -= 0.25
+        return "standing_down" if roll < max(0.0, chance) else state
     # Evading buys distance; they recover their footing.
     return "ready" if roll < 0.6 else state
 
@@ -1566,7 +1774,8 @@ def roll_encounter_outcome(lane: str, stance: str = "hostile",
             outcome = name
             break
     prev = "wounded" if str(condition or "").strip().lower() == "wounded" else "ok"
-    next_enemy = advance_enemy_state(lane, outcome, enemy_state, rng=rng)
+    next_enemy = advance_enemy_state(lane, outcome, enemy_state, rng=rng,
+                                     stance=stance, kind=kind)
     if outcome == "die":
         next_cond = prev
         alive = False
@@ -1676,6 +1885,35 @@ def apply_travel(state: dict, dt: float, *, now: Optional[float] = None,
     return True, "due", 0.0
 
 
+def cinematic_composition(action: bool = False) -> str:
+    """Stage inside the frame like a film still instead of a snapshot.
+
+    Nothing told the model where to PUT anybody, only who to draw, so it
+    fell back on the safest arrangement it knows: two figures centred,
+    equal size, squared up, flat against the background. Every encounter
+    came out as the same photograph of two people standing apart.
+    """
+    bits = [
+        "COMPOSITION — this is a frame from a film, not a snapshot. "
+        "Put the figures on the thirds: nobody dead centre, nobody "
+        "mirrored against the other.",
+        "Build depth in three layers — something belonging to this place "
+        "close to the lens and out of focus, the people in the midground, "
+        "the rest of the location falling away behind them.",
+        "Run the line between them diagonally across the frame rather "
+        "than flat across it, and make them different sizes: one nearer "
+        "the camera, one further back.",
+        "Leave the space they are about to move into open, so the frame "
+        "leans where this is going.",
+    ]
+    if action:
+        bits.append(
+            "Get close and off-axis. Let a body break the edge of the "
+            "frame. The horizon can tilt."
+        )
+    return " ".join(bits)
+
+
 def build_encounter_plate_prompt(brief: dict, img2img: bool = True,
                                  setting: str = "") -> str:
     """Cinematic restage of THIS place with the new character and danger visible."""
@@ -1764,8 +2002,9 @@ def build_encounter_plate_prompt(brief: dict, img2img: bool = True,
             f"facing the player. They read as two different people: "
             f"different face, different clothes, no shared wardrobe, not a "
             f"copy of the player. Keep their genders and faces distinct. "
-            f"The tension is in the stillness — nobody has swung yet, "
-            f"nothing has landed, no choke and no takedown."
+            f"Both are caught mid-movement — a step already taken, weight "
+            f"already committed, coats and dust still moving — but nothing "
+            f"has landed yet: no contact, no choke, no takedown."
         )
     else:
         # First person. Demanding a two-shot here left the player's body out of
@@ -1790,6 +2029,16 @@ def build_encounter_plate_prompt(brief: dict, img2img: bool = True,
         f"Keep every object in the frame to what the reference photograph "
         f"already shows."
     )
+    # An antagonist who wants something photographs differently from one who
+    # is simply hostile: it shows in where they are looking and what they
+    # are reaching for.
+    motive = _clip(brief.get("motive"), "", 120)
+    if motive:
+        bits.append(
+            f"What they came for is readable in the frame: {motive}. "
+            f"Let it show in where they are looking and what they are "
+            f"reaching toward."
+        )
     if brief.get("place_hold"):
         bits.append(f"Hold these place locks: {brief['place_hold']}.")
     if _camera_shows_player():
@@ -1798,14 +2047,16 @@ def build_encounter_plate_prompt(brief: dict, img2img: bool = True,
             # in the editor, which is half of why the plate never looked like
             # the scene it interrupted. Ask for readability, let the world's
             # own camera decide the framing.
-            "Hold the established camera. Both bodies readable in the frame, "
-            "empty hands, no HUD, no game UI, no captions, no letterbox. "
-            "A finished 1993 photograph."
+            "Hold the established camera. " + cinematic_composition() +
+            " Both bodies readable, empty hands, no HUD, no game UI, "
+            "no captions, no letterbox. A finished 1993 photograph."
         )
     else:
         bits.append(
-            "Point-of-view framing, one figure close to the lens. "
-            "No HUD, no game UI, no captions, no letterbox. A finished 1993 photograph."
+            "Point-of-view framing, one figure close to the lens. " +
+            cinematic_composition() +
+            " No HUD, no game UI, no captions, no letterbox. "
+            "A finished 1993 photograph."
         )
     prompt = " ".join(bits)
     try:
@@ -1884,9 +2135,11 @@ def build_encounter_resolve_prompt(brief: dict, verb: str, lane: str,
             f"{actor} Their body is already past the other person — a miss, "
             "a gap. The other person grabs air."
         ),
-        "use": (
-            f"{actor} Their hands are on the other person's arm or tool, "
-            "turning it against them."
+        "parley": (
+            f"{actor} No blow is being struck. They are still close, but "
+            "the violence has gone out of it — an open and empty hand, "
+            "something held out or set down between them, the other "
+            "person's weight coming off their front foot."
         ),
     }.get(lane_s, f"{actor} Bodies in contact. The player is acting.")
     bits.append(
@@ -1895,28 +2148,56 @@ def build_encounter_resolve_prompt(brief: dict, verb: str, lane: str,
         f"They are NOT wearing the player's vest or PRESS gear. "
         f"Do not recast. Do not add a third person. Do not draw a character sheet."
     )
-    bits.append(
-        f"AGENCY LOCK — HARD. {actor} "
-        f"The other person is the TARGET, not the attacker. "
-        f"If the reference already shows the stranger attacking the player, "
-        f"REVERSE the contact: the player's hands are now on them. "
-        f"Do not show the stranger choking, striking, or throwing the player "
-        f"unless this is a die/wounded beat where the player failed."
-    )
+    if lane_s == "parley":
+        bits.append(
+            f"AGENCY LOCK — HARD. {actor} The player is the one defusing "
+            f"this. Nobody is being struck, grabbed, or thrown. Do not "
+            f"show a blow from either of them."
+        )
+    else:
+        bits.append(
+            f"AGENCY LOCK — HARD. {actor} "
+            f"The other person is the TARGET, not the attacker. "
+            f"If the reference already shows the stranger attacking the player, "
+            f"REVERSE the contact: the player's hands are now on them. "
+            f"Do not show the stranger choking, striking, or throwing the player "
+            f"unless this is a die/wounded beat where the player failed."
+        )
     shot = ENCOUNTER_SHOT_LADDER[
         min(max(1, int(brief.get("round_no") or 1)), len(ENCOUNTER_SHOT_LADDER)) - 1
     ]
+    if lane_s == "parley":
+        # The generic contact rule reads as an order to draw a punch, which
+        # is the one thing this beat must not contain.
+        contact = (
+            "They are still close enough to touch, but the fight is coming "
+            "out of the moment and it has to be legible on their bodies — "
+            "hands, shoulders, where the weight sits. If you show a blow "
+            "landing, you failed. If you return the previous standoff "
+            "unchanged, you failed."
+        )
+    else:
+        contact = (
+            "Bodies are in contact or a hand's width apart — this is an "
+            "exchange, not a conversation. If you return the previous "
+            "standoff with a small pose change, you failed. If the two "
+            "people are standing apart looking at each other, you failed. "
+            "If you show the stranger doing the verb to the player, you failed."
+        )
     bits.append(
         f"THIS IS A HARD CUT. New camera, new blocking. {shot} "
         f"Show the instant the verb lands: {verb_s} ({lane_s}). {motion} "
-        f"Bodies are in contact or a hand's width apart — this is an exchange, "
-        f"not a conversation. If you return the previous standoff with a small "
-        f"pose change, you failed. If the two people are standing apart looking "
-        f"at each other, you failed. "
-        f"If you show the stranger doing the verb to the player, you failed."
+        f"{contact}"
     )
     enemy_state = str(brief.get("enemy_state") or "ready").strip().lower()
-    if out_s in ("survive", "wounded") and enemy_state == "down":
+    if out_s in ("survive", "wounded") and enemy_state == "standing_down":
+        bits.append(
+            "THIS IS THE FINISH, AND NOBODY WON IT WITH THEIR HANDS. The "
+            "other person has given it up — hands lowered or open, weight "
+            "back on the heels, eyes off the player, already turning away. "
+            "Nobody is on the ground. Nobody is hurt."
+        )
+    elif out_s in ("survive", "wounded") and enemy_state == "down":
         bits.append(
             "THIS IS THE FINISH. The other person is going down — knees "
             "buckling or already on the ground, no longer a threat. The "
@@ -1951,7 +2232,8 @@ def build_encounter_resolve_prompt(brief: dict, verb: str, lane: str,
             f"{char['label']} dominates the frame. Same face as the reference."
         )
     bits.append(
-        "No HUD, no game UI, no captions, no letterbox. "
+        cinematic_composition(action=True) +
+        " No HUD, no game UI, no captions, no letterbox. "
         "A finished 1993 photograph."
     )
     prompt = " ".join(bits)
@@ -1983,8 +2265,11 @@ def build_encounter_brief(session_id: str = "default", image_path: Optional[str]
     )
     setting = vis.get("setting") or ""
     visible = vis.get("description") or ""
+    # 400 characters of world prompt was the entire briefing, which is why
+    # every encounter was a man in coveralls with no reason to be there.
+    lore = encounter_lore_context(session_id)
     prompt = (
-        f"{instructions}\n\nWORLD (trim): {world}\n"
+        f"{instructions}\n\n{lore or ('WORLD (trim): ' + world)}\n\n"
         f"SETTING: {setting or 'unknown'}\n"
         f"VISIBLE: {visible[:400]}\n"
         "The character and danger MUST fit THIS setting. "
@@ -1992,7 +2277,8 @@ def build_encounter_brief(session_id: str = "default", image_path: Optional[str]
         "label names the body you can photograph — clothes, wound, job. "
         "Do not invent a rank or sci-fi class this 1993 world cannot show.\n"
         f"{_brief_cast_rule()}"
-        "Return one JSON object with character, danger, stakes, place_hold."
+        "Return one JSON object with character, motive, danger, stakes, "
+        "place_hold."
     )
     raw = ""
     try:
@@ -2000,7 +2286,9 @@ def build_encounter_brief(session_id: str = "default", image_path: Optional[str]
             prompt,
             model="gemini",
             temp=0.9,
-            tokens=220,
+            # The brief now answers with a motive as well, and a clipped
+            # reply loses the field the whole encounter hangs on.
+            tokens=340,
             image_path=image_path,
             use_lore=False,
             response_schema=ENCOUNTER_BRIEF_SCHEMA,
@@ -2057,7 +2345,7 @@ def plate_shows_confrontation(vision: Optional[dict], brief: Optional[dict] = No
 
 
 def _parse_choice_payload(raw: Any) -> list:
-    """Accept JSON {confront,evade,use} or numbered lines."""
+    """Accept JSON {confront,evade,parley} or numbered lines."""
     data = raw
     if isinstance(raw, str):
         blob = raw.strip()
@@ -2081,6 +2369,22 @@ def _parse_choice_payload(raw: Any) -> list:
             text = str(data.get(lane) or "").strip()
             if text:
                 ordered.append({"text": text, "lane": lane})
+        # A model answering in its own words ("use", "talk", "flee") used to
+        # cost the whole slate and drop the player onto the canned fallback.
+        # Keep the writing and work out the lane from the verb.
+        if len(ordered) < len(ENCOUNTER_LANES):
+            taken = {c["lane"] for c in ordered}
+            for key, value in data.items():
+                if key in ENCOUNTER_LANES or not isinstance(value, str):
+                    continue
+                text = value.strip()
+                if not text:
+                    continue
+                lane = classify_encounter_lane(text)
+                if lane in taken:
+                    continue
+                ordered.append({"text": text, "lane": lane})
+                taken.add(lane)
         return ordered
     if isinstance(data, list):
         return structure_encounter_choices(data)
