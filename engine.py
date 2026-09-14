@@ -8982,7 +8982,11 @@ def _apply_cached_opening_frame(
     except Exception:
         slug = world_frames.start_world_slug()
     rec = world_frames.record(slug) if slug else {}
-    if not rec.get("url") or not rec.get("path"):
+    # A placeholder is a 64px mint square that world_frames installs the
+    # moment a frame goes missing, and it stays there if the paid render
+    # then fails. Opening a run on it is the flat green screen on Start.
+    # Treat it as no cache at all and let the intro render for real.
+    if not rec.get("url") or not rec.get("path") or not world_frames.is_real_still(rec):
         # Warm this World in the background so the *next* reset is instant.
         if slug:
             try:

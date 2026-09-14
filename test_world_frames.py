@@ -71,6 +71,21 @@ class _Isolated(unittest.TestCase):
                     pass
             wf._timers.clear()
 
+    def _rendered_world(self, name: str = "Yard") -> dict:
+        """A World whose frame is a real opening shot.
+
+        The harness runs with images off, so ensure() can only produce a mint
+        placeholder. Anything testing what a player sees on Start needs a
+        frame that claims to be rendered, because Play now refuses to open a
+        run on a placeholder.
+        """
+        info = self._world(name)
+        wf.ensure(info["slug"], wait=True)
+        wf.install_from_file(info["slug"], wf.frame_path(info["slug"]),
+                             wf.fingerprint_for_slug(info["slug"]),
+                             source="generated")
+        return info
+
     def tearDown(self):
         self._images_patch.stop()
         with wf._lock:
@@ -343,8 +358,8 @@ class TestAnnotate(_Isolated):
 
 class TestInject(_Isolated):
     def test_reset_injects_cached_scene_image_and_skips_spawn_when_clean(self):
-        info = self._world("Yard")
-        rec = wf.ensure(info["slug"], wait=True)
+        info = self._rendered_world("Yard")
+        rec = wf.record(info["slug"])
         self.assertEqual(rec["status"], "ready")
         exp = xs.get_experience()
         exp["worlds"][0]["slug"] = info["slug"]
@@ -373,6 +388,35 @@ class TestInject(_Isolated):
         self.assertTrue((items[0].get("metadata") or {}).get("image_prompt"))
         self.assertEqual(state["current_image_prompt"],
                          (items[0].get("metadata") or {}).get("image_prompt"))
+
+    def test_a_placeholder_is_not_an_opening_frame(self):
+        """world_frames drops a mint square in whenever a frame goes missing
+        and leaves it there if the render fails. Opening a run on it is the
+        flat green screen players get when they press Start."""
+        info = self._world("Yard")
+        with patch.object(wf, "_images_enabled", return_value=False):
+            rec = wf.ensure(info["slug"], wait=True)
+        self.assertEqual(rec["source"], "placeholder")
+        self.assertFalse(wf.is_real_still(rec))
+        exp = xs.get_experience()
+        exp["worlds"][0]["slug"] = info["slug"]
+        xs.save_experience(exp)
+        items = []
+        with patch.object(engine, "_load_history", return_value=[]), \
+             patch.object(engine, "_save_history"), \
+             patch.object(engine, "_sync_ambient_history"), \
+             patch.object(engine, "_spawn_cached_opening_vision"), \
+             patch.object(wf, "ensure"):
+            need_spawn = engine._apply_cached_opening_frame(
+                "wf-test",
+                {"experience_world_id": exp["worlds"][0]["id"], "tape_frames": []},
+                items, {"caption": "x", "dispatch": "y"})
+        self.assertTrue(need_spawn, "a placeholder must not stand in for the opening")
+        self.assertEqual(items, [], "nothing green should reach the feed")
+
+    def test_a_rendered_frame_is_still_good_enough_to_open_on(self):
+        info = self._rendered_world("Yard")
+        self.assertTrue(wf.is_real_still(wf.record(info["slug"])))
 
     def test_missing_cache_asks_for_spawn(self):
         items = []
@@ -438,8 +482,8 @@ class TestTheOpeningFrameIsActuallyLookedAt(_Isolated):
         self.assertNotIn(base64.b64encode(small.read_bytes()).decode(), blob)
 
     def test_the_cached_opening_does_not_go_into_history_unseen(self):
-        info = self._world("Yard")
-        rec = wf.ensure(info["slug"], wait=True)
+        info = self._rendered_world("Yard")
+        rec = wf.record(info["slug"])
         self.assertEqual(rec["status"], "ready")
         exp = xs.get_experience()
         exp["worlds"][0]["slug"] = info["slug"]
