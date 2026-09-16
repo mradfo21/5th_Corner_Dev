@@ -3609,6 +3609,53 @@ def admin_studio_identity_fill():
         return error_response("Failed to draft the sheet", str(e))
 
 
+@app.route('/api/admin/studio/regenerate', methods=['GET', 'POST'])
+def admin_studio_regenerate():
+    """Regenerate everything the world has not been told, and report each field.
+
+    GET  — what is currently unauthored, changing nothing.
+    POST — draft it. {"overwrite": true} redraws fields that already have text,
+           which is what a re-draw means; without it only blanks are filled so
+           authored work is never lost. {"block": "..."} limits the pass.
+
+    Editor-wide on purpose. The old contract covered character and level sheets
+    that had a plate attached, and nothing else: camera_perspective's lens and
+    notes could not be filled by any path (every route was gated on supporting
+    images, and a camera has no photograph to read), and music direction was not
+    in the identity spec at all so nobody regenerated it. The report is half the
+    point — a regeneration you cannot see is indistinguishable from one that did
+    not happen, which is how the world stayed hollow through a dozen runs.
+    """
+    if not _admin_token_ok():
+        return _admin_unauthorized()
+    try:
+        import world_regen
+        if request.method == 'GET':
+            return jsonify(success_response({"plan": world_regen.plan()},
+                                            "Nothing changed"))
+        body = request.get_json(silent=True) or {}
+        blocks = body.get('block')
+        if isinstance(blocks, str):
+            blocks = [blocks]
+        report = world_regen.regenerate(
+            overwrite=bool(body.get('overwrite')), blocks=blocks,
+        )
+        for line in world_regen.describe(report):
+            print(f"[WORLD REGEN] {line}", flush=True)
+        count = report.get('filled', 0)
+        import game_identity
+        return jsonify(success_response(
+            {"report": report,
+             "lines": world_regen.describe(report),
+             "identity": game_identity.get_spec(),
+             "preview": game_identity.preview()},
+            f"Regenerated {count} field(s)" if count
+            else "Nothing to regenerate — the world is fully authored"))
+    except Exception as e:
+        traceback.print_exc()
+        return error_response("Failed to regenerate the world", str(e))
+
+
 @app.route('/api/admin/studio/reference', methods=['POST'])
 def admin_studio_reference_upload():
     """Store an uploaded character sheet / level plate.

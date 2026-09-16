@@ -837,6 +837,51 @@ def image_fillable_blocks() -> List[str]:
     return [b["id"] for b in IDENTITY_SCHEMA if b.get("supports_images")]
 
 
+def text_fillable_blocks() -> List[str]:
+    """Blocks that can draft from the world's prose — a wider set than images.
+
+    A photograph is one source and the world bible is another, and they do not
+    cover the same blocks. `camera_perspective` rightly does not support images
+    (you cannot read a lens choice off a plate) and it does have two fillable text
+    fields, `lens` and `notes` — which meant nothing could ever fill them, because
+    every fill path was gated on supports_images. Both sat empty.
+    """
+    return [b["id"] for b in IDENTITY_SCHEMA if fillable_text_fields(b["id"])]
+
+
+def apply_text_fill(block_id: str, *, overwrite: bool = False) -> Dict[str, Any]:
+    """Draft a block's fields from the world's prose and persist.
+
+    The text-only sibling of apply_image_fill, and the only fill path open to a
+    block that has no plate to read.
+    """
+    if block_id not in text_fillable_blocks():
+        return {"filled": {}, "skipped": True, "reason": "not_fillable"}
+    wanted = [f["id"] for f in fillable_text_fields(block_id)]
+    if not overwrite:
+        wanted = empty_fill_fields(block_id)
+        if not wanted:
+            return {"filled": {}, "skipped": True, "reason": "all_filled"}
+
+    inferred = infer_fields_from_text(block_id, wanted)
+    current = get_spec().get(block_id) or {}
+    patch = {}
+    for key, value in inferred.items():
+        if not value:
+            continue
+        if overwrite or not str(current.get(key, "") or "").strip():
+            patch[key] = value
+    if patch:
+        save_spec({block_id: patch})
+    return {
+        "filled": patch,
+        "skipped": not bool(patch),
+        "reason": "" if patch else "nothing_inferred",
+        "fields": list(patch.keys()),
+        "source": "text",
+    }
+
+
 def block_for_image_kind(kind: str) -> Optional[str]:
     """Map an upload `kind` (character/setting) or a block id to a fillable sheet."""
     raw = (kind or "").strip().lower()

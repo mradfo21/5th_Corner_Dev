@@ -22,6 +22,7 @@
     "enabled": true,
     "name": "the Four Corners fence",
     "summary": "Horizon Industries quarantine perimeter under the red mesa.",
+    "goal": "The pump house with the red door, where the yard's manifests are still bolted to the wall.",
     "era": "1993",
     "palette": "golden hour, rust, red dust, chain-link steel",
     "landmarks": "chain-link fence, red mesa, rusted tanks, 1990s pickup",
@@ -31,8 +32,9 @@
   "camera_perspective": {
     "mode": "third_person",
     "show_hands": false,
-    "lens": "",
-    "notes": ""
+    "lens": "35mm prime, over-the-shoulder tracking, shallow depth of field",
+    "notes": "Keep the camera height at chest level to emphasize the claustrophobia of the red biome growths. Use heavy film grain and slight chromatic aberration to mimic 1993 camcorder optics.",
+    "schemes": {}
   },
   "_comment_text_generation": "═══════════════════════════════════════════════════════════════════",
   "_comment_text_generation_desc": "TEXT GENERATION - LLM instructions for narrative, choices, world state",

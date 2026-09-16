@@ -115,6 +115,7 @@ test_*.py
 !test_turn_memory.py
 !test_viewfinder.py
 !test_watch_overlay.py
+!test_world_regen.py
 
 # Turn-thread scratch markers (swept at runtime; see _sweep_thread_signals)
 thread_signal_*.tmp

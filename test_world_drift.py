@@ -511,18 +511,23 @@ class TestChoicesAreGroundedOnTheRenderedFrame(unittest.TestCase):
                        .split("\ndef ", 1)[0]
 
     def test_the_turn_looks_at_the_frame_it_just_rendered(self):
-        # The inverted guard (`not analysis_img_url`) meant vision ran ONLY when
-        # there was no picture — exactly backwards.
+        # The read now runs on a background thread in parallel with the choice
+        # call, but it must still LOOK at the frame it rendered — gated on the
+        # frame existing (not the old inverted `not analysis_img_url`) — and it
+        # must be joined before the history entry is written.
         phase2 = self._phase2()
-        self.assertIn("if analysis_img_url and VISION_ENABLED:", phase2)
+        self.assertIn("_vision_analyze_all(analysis_img_url)", phase2)
+        self.assertIn("analysis_img_url and VISION_ENABLED", phase2)
         self.assertNotIn("if (not analysis_img_url) and VISION_ENABLED:", phase2)
+        self.assertIn("_vision_thread.join(", phase2)
 
     def test_a_failed_vision_read_keeps_the_render_caption(self):
         # Blanking it left the slate with no scene text at all, which is worse
-        # than grounding on the request.
+        # than grounding on the request. The read caption is the initial value
+        # and is only displaced once a real description comes back.
         phase2 = self._phase2()
         self.assertNotIn('vision_analysis_text  = ""', phase2)
-        self.assertIn("if _rendered_desc:", phase2)
+        self.assertIn('if _vision_holder["description"]:', phase2)
 
     def test_the_rendered_description_reaches_the_next_turn(self):
         phase2 = self._phase2()
