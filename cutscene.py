@@ -64,23 +64,61 @@ MOODS: Dict[str, Dict[str, Any]] = {
     # outside" or "open ground". An indoor level also gets an approach (down the
     # length of the space toward the far door), and naming the outdoors here
     # contradicted the indoor/outdoor clause the prompt adds below it.
+    # The opening montage. Three of these four shots deliberately have NOBODY in
+    # them and are not the same moment as each other — see OPENING_IS_DISCONTINUOUS
+    # in build_cutscene_prompt. The old version was four angles on one continuous
+    # walk-in, all containing the character, and it played as the same shot four
+    # times with the figure sliding around: repetitive, and it gave the model four
+    # chances to redraw the protagonist badly.
+    #
+    # The grammar borrowed here is the arthouse cold open: hold on landscape,
+    # hold on a detail, hold on an empty built thing, and only then cut to the
+    # person. Unrelated scales and subjects, no implied continuity, no motion —
+    # each one is a photograph that establishes the place and its dread. Panel 4
+    # is the only one that carries the character, and it is the composition the
+    # game continues from, so it is the one that has to be exactly right.
     "approach": {
         "label": "Approach",
-        "hint": "Arriving at a level, with what you came for still in the distance.",
+        "hint": "A cold open on this place. Nobody until the last frame.",
         "shots": (
-            ("establish", "Establishing wide",
-             "extreme wide establishing shot taking in the whole approach to this "
-             "place, the destination small and far off at the end of it, the "
-             "distance between here and there readable"),
-            ("approach", "The approach",
-             "from behind and well back, the walk in toward the destination — it is "
-             "ahead in frame and still a long way off"),
-            ("distant", "The goal, distant",
-             "long lens down the length of the approach onto the destination itself "
-             "— small in frame, unreached, the distance still to be crossed readable"),
-            ("threshold", "Threshold",
-             "arrived at the edge of it, looking in, the way forward open — a "
-             "settled, held composition, the frame the story starts from"),
+            # Deliberately distance-neutral and never named as outdoors: an
+            # indoor level gets an approach too, and the prompt adds "stay in this
+            # same room" from the environment label, so a brief that says
+            # "outside" or "sky" contradicts it in the same payload.
+            ("vista", "The widest view",
+             "NO PEOPLE. The widest, emptiest view this place affords, held as a "
+             "plate — the full depth and scale of it running away from the lens, "
+             "weather and light doing the work. Nothing in particular is the "
+             "subject; the scale is. No figure anywhere in frame"),
+            ("detail", "A detail",
+             "NO PEOPLE. A tight, patient close-up of one small worn thing that "
+             "belongs to this place — rust bleeding down painted metal, wire, "
+             "cracked ground, a stencilled number, dust on glass. Shallow focus, "
+             "filling the frame, abstracted by how close it is. Not a wide, not a "
+             "building, not a person"),
+            ("structure", "The built thing",
+             "NO PEOPLE. A static, symmetrical wide of the man-made structure of "
+             "this place, standing empty — architecture as portrait, deadpan and "
+             "frontal, nobody in it and nothing happening. The emptiness is the "
+             "subject"),
+            # Camera id stays "threshold": this panel becomes history[0], and it
+            # is the settled composition play starts from.
+            # The camera language here is deliberately the same discipline the
+            # main image pipeline uses, because this panel becomes the first
+            # playable frame and the game is a third-person follow-cam. Left to
+            # itself the model returns a front-facing portrait — it did, and the
+            # run then opened on a face-on shot the rest of the game never uses.
+            ("threshold", "The character",
+             "THIS PANEL HAS THE CHARACTER IN IT. Third-person follow-cam, shot "
+             "FROM BEHIND: the camera is several metres behind the player "
+             "character at chest height, looking over their back into the place "
+             "they face. We see the BACK of their head and shoulders; the location "
+             "opens up in the depth in front of them. Full body, reading about a "
+             "third to a half of the frame height. NOT a portrait. NOT facing the "
+             "lens, NOT looking at camera, NOT walking toward camera, no face-on "
+             "reverse — a sliver of cheek in profile is the most face this panel "
+             "may show. A settled, held, level composition: the exact frame the "
+             "story starts from and continues in"),
         ),
     },
     "arrival": {
@@ -141,6 +179,23 @@ HOLD_MS = DEFAULT_DURATION_MS
 GRID_COLS = 2
 GRID_ROWS = 2
 
+# The montage is ONE generation cut into four, so the panel resolution is the
+# render resolution divided by two in each direction. At the play setting
+# (gemini-3.1-flash-lite-image @ 1K) that is 672x376 a panel, and it shows: the
+# unpeopled establishing shots came back soft, with the drifting invented detail
+# a small render produces in landscape and macro subjects — exactly the frames
+# that have to look photographic. It also matters more here than anywhere else,
+# because the last panel is the img2img reference the whole run is generated
+# from, so its softness compounds into every later frame.
+#
+# So the opening pays for the good model at 4K: 2048x1152 a panel. It is one
+# generation per run, not one per turn. gemini-3.1-flash-lite-image tops out at
+# 2K, hence the model override travelling with the size (see the sizes in
+# ai_provider_manager.available_model_catalogue("image")); if the model is
+# unavailable the call falls back and the montage still renders, just smaller.
+GRID_RENDER_MODEL = "gemini-3-pro-image"
+GRID_RENDER_SIZE = "4K"
+
 # Optical crops (left, top, right, bottom) as fractions of the source plate.
 # Wide / medium / close / offset — a cheap stand-in for four camera moves.
 _OPTICAL_BOXES = (
@@ -149,6 +204,22 @@ _OPTICAL_BOXES = (
     (0.28, 0.10, 0.72, 0.62),
     (0.36, 0.30, 0.98, 0.94),
 )
+
+
+def _cell_name(index: int, cols: int = GRID_COLS, rows: int = GRID_ROWS) -> str:
+    """"BOTTOM-RIGHT" for panel 4 of a 2x2. Ordinals alone do not bind.
+
+    A render obeyed all four shot briefs and then placed them in the wrong cells.
+    That matters beyond tidiness: the LAST cell is sliced out as the frame the run
+    continues from, so a detail landing there starts the game on a close-up.
+    """
+    i = max(1, int(index)) - 1
+    row, col = divmod(i, max(1, cols))
+    vertical = ("TOP", "BOTTOM") if rows == 2 else (f"ROW {row + 1}",) * rows
+    horizontal = ("LEFT", "RIGHT") if cols == 2 else (f"COLUMN {col + 1}",) * cols
+    v = vertical[row] if row < len(vertical) else f"ROW {row + 1}"
+    h = horizontal[col] if col < len(horizontal) else f"COLUMN {col + 1}"
+    return f"{v}-{h}"
 
 
 def normalize_mood(raw: Any) -> str:
@@ -301,21 +372,50 @@ def build_cutscene_prompt(
         bits.append(
             "1993 analog photograph, cinematic game cutscene, practical light."
         )
+    opening = (plate_role == "destination")
     bits.append(
         "MUST be a 2×2 grid of FOUR stills. Same resolution per panel. "
         "No panel borders, numbers, captions, letterbox, HUD, or game UI. "
-        "Reading order left-to-right, top-to-bottom. Each panel is a different "
-        "cinematic camera on the SAME moment and the SAME place."
+        "Reading order left-to-right, top-to-bottom."
     )
+    if opening:
+        # The opening is NOT a beat seen four ways. It is a cold open: unrelated
+        # photographs of one place, then the character. Saying "the SAME moment"
+        # here (which is right for every other mood) is what made the montage
+        # play as one shot repeated with the figure sliding around inside it.
+        bits.append(
+            "THESE FOUR PANELS ARE NOT THE SAME MOMENT AND NOT ONE CONTINUOUS SHOT. "
+            "This is a title-sequence cold open: four separate photographs of one "
+            "place, taken at different times, from unrelated distances, of "
+            "unrelated subjects. Do NOT carry a pose, an action or a figure from "
+            "one panel into the next. Do NOT make them read as a walk, a move, or "
+            "a sequence of events. Nothing is happening in any of them — each is a "
+            "held, static, patient frame with no motion blur and no action in "
+            "progress. Vary the scale hard between panels: one of them is a "
+            "landscape, one is a macro detail, one is a frontal architectural "
+            "wide. They belong together because they are the same place and the "
+            "same light, not because they are the same instant.\n"
+            "PANELS 1, 2 AND 3 ARE COMPLETELY EMPTY OF PEOPLE — no figure, no "
+            "face, no back, no hands, no silhouette, no crowd, nobody in the "
+            "distance. If a person appears in panels 1-3 the render has failed.\n"
+            "PANEL 4 IS THE ONLY PANEL WITH A PERSON IN IT, and it is the shot the "
+            "game continues from, so it must be the cleanest of the four."
+        )
+    else:
+        bits.append(
+            "Each panel is a different cinematic camera on the SAME moment and "
+            "the SAME place."
+        )
     if plate_role == "destination":
         bits.append(
-            "PLACE LOCK — HARD. The reference photograph is this place as it "
-            "looks once you are standing in it: keep its location, architecture, "
-            "materials, ground, sky, light, and the people and wardrobe already "
-            "in it. But the camera has NOT ARRIVED YET. All four shots sit "
-            "FURTHER BACK than the reference and look toward it across the "
-            "distance still to be crossed. Do not reproduce the reference's "
-            "framing in any panel, and do not invent a different place."
+            "PLACE LOCK — HARD. The reference photograph is this place and this "
+            "light: keep its location, architecture, materials, ground, sky, "
+            "weather and palette, and the wardrobe of the person in it. It is the "
+            "world these four photographs were taken in. Panels 1-3 look at parts "
+            "of it the reference does not frame — other distances, other subjects, "
+            "the land around it, a detail inside it — so do not reproduce the "
+            "reference's framing in those. Do not invent a different place, a "
+            "different era or a different climate."
         )
     else:
         bits.append(
@@ -324,12 +424,22 @@ def build_cutscene_prompt(
             "sky, and light. Do not teleport. Do not invent a new set."
         )
     if goal:
-        bits.append(
-            f"WHAT THE PLAYER CAME HERE FOR: {goal.rstrip('. ')}. It is visible "
-            "in these shots and is NOT REACHED in any of them — keep it far off, "
-            "small in frame, across distance the player still has to cross. Never "
-            "cut to it up close, never show it entered or opened."
-        )
+        if opening:
+            bits.append(
+                f"WHAT THE PLAYER CAME HERE FOR: {goal.rstrip('. ')}. It is NOT "
+                "REACHED, NOT ENTERED and NOT OPENED in any panel. Where it appears "
+                "at all it is far off and small — a thing on the horizon the player "
+                "still has to walk to. It does not have to appear in every panel; "
+                "a landscape or a detail that only implies it is better than four "
+                "panels all pointing at the same building."
+            )
+        else:
+            bits.append(
+                f"WHAT THE PLAYER CAME HERE FOR: {goal.rstrip('. ')}. It is visible "
+                "in these shots and is NOT REACHED in any of them — keep it far off, "
+                "small in frame, across distance the player still has to cross. Never "
+                "cut to it up close, never show it entered or opened."
+            )
     if (setting or "").lower().startswith("outdoor"):
         bits.append("This frame is OUTDOORS. Stay outdoors. Same sky, same ground.")
     elif (setting or "").lower().startswith("indoor"):
@@ -339,8 +449,21 @@ def build_cutscene_prompt(
     if shot_brief:
         bits.append(f"Author direction: {shot_brief.strip()}")
     bits.append(f"Mood: {pack['label']}. {pack.get('hint') or ''}".strip())
+    # Name the CELL, not just the ordinal. "Panel 4" was not binding: a render
+    # put the character in the top-right and a signage detail in the bottom-right,
+    # and because the bottom-right panel is the one handed to the game as its
+    # opening frame, the run would have started on a close-up of a sign.
     for i, (_cam, label, instruction) in enumerate(pack["shots"], start=1):
-        bits.append(f"Panel {i} ({label}): {instruction}.")
+        bits.append(f"Panel {i} — {_cell_name(i)} ({label}): {instruction}.")
+    if opening:
+        bits.append(
+            f"PANEL PLACEMENT IS NOT INTERCHANGEABLE. Each instruction belongs to "
+            f"the cell it names and nowhere else. In particular the "
+            f"{_cell_name(len(pack['shots']))} panel is the one with the character "
+            f"in it — it is the frame the game continues from — and the other three "
+            f"cells are the empty ones. Putting the character in any other cell, or "
+            f"a detail in that one, is a failed render."
+        )
     bits.append(
         "A finished 1993 photograph in each panel. Empty hands, no text, "
         "no watermarks. Preserve the people and wardrobe already in the reference."
@@ -507,6 +630,11 @@ def generate_shots(
                 output_dir=output_dir,
                 is_flipbook=False,
                 include_people=True,
+                # See GRID_RENDER_SIZE: four panels sliced out of one generation
+                # need the render to be big enough that a quarter of it is still
+                # a photograph.
+                model=GRID_RENDER_MODEL,
+                image_size=GRID_RENDER_SIZE,
             )
             if grid_file and Path(grid_file).exists():
                 grid_path = Path(grid_file)

@@ -937,10 +937,17 @@ def generate_gemini_img2img(
     spec: dict | None = None,
     include_people: bool = False,
     hold_cast: bool = False,
+    image_size: str | None = None,
+    model: str | None = None,
 ) -> str:
     """
     Edit an image using Google Gemini (image-to-image).
     Supports up to 6 reference images for better continuity.
+
+    ``image_size`` ("1K" / "2K" / "4K") and ``model`` override the configured play
+    settings for this one call. Grid renders need both: the panels are slices of a
+    single generation, so a 2x2 at the play setting of 1K is only 672x376 per
+    panel, and the fast play model tops out at 2K — 4K needs gemini-3-pro-image.
     
     Args:
         prompt: The FULL editing instruction WITH ALL DETAILED POV INSTRUCTIONS
@@ -1514,9 +1521,28 @@ def generate_gemini_img2img(
               f"truncating to {MAX_PROMPT_CHARS}. The tail will not reach the model.", flush=True)
         full_prompt = full_prompt[:MAX_PROMPT_CHARS]
     
-    # Model and resolution come from ai_config.json (see generate_with_gemini).
-    selected_model = resolve_model()
+    # Model and resolution come from ai_config.json (see generate_with_gemini),
+    # unless the caller names a size. A grid render is the case that needs to:
+    # every panel is a SLICE of one generation, so a 2x2 grid at the play setting
+    # of 1K yields 672x376 panels, and at that size the early panels come back
+    # soft and full of drifting detail. Raising the ceiling for the whole game
+    # instead would make every ordinary turn pay for it.
+    import ai_provider_manager
+    selected_model = model or resolve_model()
     selected_size = resolve_image_size()
+    if image_size:
+        want = str(image_size).strip().upper()
+        allowed = ((ai_provider_manager.find_model("image", selected_model) or {})
+                   .get("sizes") or list(ai_provider_manager.IMAGE_SIZES))
+        if want in allowed:
+            selected_size = want
+        else:
+            # Asking flash-lite for 4K would be refused on the wire and come back
+            # as a blank frame, which reads as a generation failure rather than a
+            # bad setting. Say so and use the best the model does offer.
+            selected_size = allowed[-1]
+            print(f"[GOOGLE GEMINI] {selected_model} does not offer {want}; "
+                  f"using {selected_size} (offers {allowed})", flush=True)
     mode_name = "FAST MODE" if selected_model == GEMINI_FLASH_IMAGE else "RENDER MODE"
 
     print(f"[GOOGLE GEMINI {mode_name}] Editing image to show next moment...")

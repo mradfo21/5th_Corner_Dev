@@ -16,6 +16,11 @@
       "unit_type": "images",
       "per_unit": 0.039
     },
+    "gemini:gemini-3-pro-image": {
+      "unit_type": "images",
+      "per_unit": 0.24,
+      "note": "Estimate. Used for the opening cutscene grid only (one render per run, at 4K) - see cutscene.GRID_RENDER_MODEL. Priced high on purpose so the ledger over-reports rather than hiding it."
+    },
     "gemini:gemini-3.1-flash-lite-image": {
       "unit_type": "images",
       "per_unit": 0.02
