@@ -402,19 +402,26 @@ def start_run(page, log):
         # the turn as playable during it made every run screenshot pure black and
         # file the intended behaviour as a black-screen fault.
         blacked_out = "opening-blackout" in (s.get("cls") or "")
-        if s["prose"] and not s["gated"] and not blacked_out:
+        m, d = analyse(page.screenshot())
+        # Prose, ungated, black lifted — AND a picture actually on screen. The
+        # last clause matters: the montage paints into the Moment overlay and the
+        # main scene layer paints when it pops, so there is a window where every
+        # state flag says playable and the screen is still black. Sampling in that
+        # window reported "black picture on an idle, playable turn" on runs whose
+        # frames were measured healthy on disk (luma 78-105) — a false alarm
+        # about the harness's own timing.
+        if s["prose"] and not s["gated"] and not blacked_out and not is_black(m, d):
             log(f">>> turn 1 playable after {time.time() - t0:.1f}s"
                 + (f" ({black} black samples while loading)" if black else "")
                 + (f" [{held} of them the opening blackout, by design]" if held else ""))
             return True
-        m, d = analyse(page.screenshot())
         if is_black(m, d):
             black += 1
             # The opening is SUPPOSED to be black. PLAY fades down and holds it
             # until there is a picture to fade up to, so counting those samples
             # as a fault would file the intended behaviour as the bug — and a
             # harness that cries wolf about its own feature gets ignored.
-            if "opening-blackout" in (s.get("cls") or ""):
+            if blacked_out:
                 held += 1
     log(f"!! no playable turn after {TURN_TIMEOUT}s")
     snap(page, "start_FAILED.png")
