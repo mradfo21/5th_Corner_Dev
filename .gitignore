@@ -94,6 +94,27 @@ test_*.py
 !test_bug_report.py
 !test_interact_dive_options.py
 !test_replay_cache.py
+# Sixteen curated suites were never added to this allowlist, so the `test_*.py`
+# rule above was silently ignoring them: test_cutscene.py alone is 50 tests
+# encoding what two days of live renders taught us about the opening montage, and
+# none of it could be committed. Found when `git show <sha>:test_cutscene.py` came
+# back "exists on disk, but not in <sha>". They run and they belong in the repo.
+!test_ceremony_hud.py
+!test_coinop.py
+!test_cutscene.py
+!test_editor_lands_e2e.py
+!test_editor_responsiveness.py
+!test_editor_wiring.py
+!test_encounter_custom_action.py
+!test_encounter_roster.py
+!test_exit_button.py
+!test_flipbook.py
+!test_move_moves_the_camera.py
+!test_third_person_orbit.py
+!test_transition_types.py
+!test_turn_memory.py
+!test_viewfinder.py
+!test_watch_overlay.py
 
 # Turn-thread scratch markers (swept at runtime; see _sweep_thread_signals)
 thread_signal_*.tmp
