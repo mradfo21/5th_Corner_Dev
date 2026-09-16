@@ -199,13 +199,19 @@ GRID_ROWS = 2
 # because the last panel is the img2img reference the whole run is generated
 # from, so its softness compounds into every later frame.
 #
-# So the opening pays for the good model at 4K: 2048x1152 a panel. It is one
-# generation per run, not one per turn. gemini-3.1-flash-lite-image tops out at
-# 2K, hence the model override travelling with the size (see the sizes in
-# ai_provider_manager.available_model_catalogue("image")); if the model is
-# unavailable the call falls back and the montage still renders, just smaller.
+# So the opening pays for the good model at a raised resolution. 2K gives
+# ~1376x768 a panel — still twice the width and height of the play setting, which
+# is what the establishing shots needed — and it generates appreciably faster than
+# 4K, which is the whole reason it is not 4K: at 4K the montage took long enough
+# that the opening held black for around a minute before the first shot appeared.
+#
+# The model override travels with the size because the sizes are per-model (see
+# ai_provider_manager.available_model_catalogue("image")): flash-lite tops out at
+# 2K, so 2K is reachable on either, and gemini-3-pro-image is kept for the
+# fidelity of the macro and landscape panels. If it is unavailable the call falls
+# back and the montage still renders, just smaller.
 GRID_RENDER_MODEL = "gemini-3-pro-image"
-GRID_RENDER_SIZE = "4K"
+GRID_RENDER_SIZE = "2K"
 
 # Optical crops (left, top, right, bottom) as fractions of the source plate.
 # Wide / medium / close / offset — a cheap stand-in for four camera moves.

@@ -370,6 +370,45 @@ try:
 except Exception as _tun_err:  # noqa: BLE001
     print(f"[API INIT] tunables not applied: {_tun_err}", flush=True)
 
+
+def _warn_if_the_world_is_hollow():
+    """Say so at boot when nothing anchors the place.
+
+    A `setting_reference` with a name and no summary, era, palette or landmarks
+    reads to the engine as a place with no properties, so every turn's generation
+    invents a new one and a single run walks from a desert basin to a canyon to a
+    shipbreaking yard without the player moving. It looks exactly like a
+    rendering bug and it is an empty field.
+
+    This has now silently reverted twice — the live prompt file is rewritten by
+    the active Experience on every reset, and by the world editor on save, so any
+    of several paths can leave it hollow. Nobody can be expected to notice by
+    reading images. Twenty minutes of play chasing "the world is incoherent"
+    is the cost of not printing this line.
+    """
+    try:
+        import prompts_store
+        setting = prompts_store.PROMPTS.get("setting_reference")
+        setting = setting if isinstance(setting, dict) else {}
+        filled = [f for f in ("summary", "era", "palette", "landmarks", "opening_shot")
+                  if str(setting.get(f) or "").strip()]
+        if filled:
+            return
+        name = str(setting.get("name") or "(unnamed)")
+        print("=" * 72, flush=True)
+        print(f"[WORLD] SETTING IS HOLLOW: '{name}' has a name and nothing else — "
+              f"no summary, era, palette, landmarks or opening shot.", flush=True)
+        print("[WORLD] Nothing anchors the place, so every turn will invent a new "
+              "one and the run will not stay in one location.", flush=True)
+        print("[WORLD] Fix:  python tools/restore_somewhere.py --apply"
+              "   (inspect with tools/audit_worlds.py)", flush=True)
+        print("=" * 72, flush=True)
+    except Exception:
+        pass
+
+
+_warn_if_the_world_is_hollow()
+
 # Build the on-device detector now, on the main thread, before any request can
 # ask for it. Two reasons this is not left to the first /api/detect: it moves a
 # ~440 ms one-off (mediapipe import + TFLite graph build) off the critical path
