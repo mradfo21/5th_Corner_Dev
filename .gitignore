@@ -19,9 +19,19 @@ archives/*
 # Uploaded character/setting reference plates (Cast & Camera) — runtime user data
 assets/references/*
 !assets/references/.gitkeep
-# Saved "worlds" (named prompt-set snapshots) — runtime user data
+# Saved "worlds" (named prompt-set snapshots) — this machine's authoring.
+# The shipped SOMEWHERE demo is the only World that goes in a build.
 worlds/*
 !worlds/.gitkeep
+!worlds/somewhere.json
+!worlds/somewhere-fp.json
+!worlds/somewhere.frame.png
+!worlds/somewhere.frame.json
+# Experience graphs — this machine's authoring, except the shipped demo.
+experiences/*
+!experiences/.gitkeep
+!experiences/somewhere.json
+experiences/.active
 autotest/*.json
 autotest/*.txt
 test_sessions/
@@ -41,6 +51,7 @@ RENDER_SETUP.txt
 test_*.py
 # Keep the curated test suites in version control
 !test_experience_mode.py
+!test_experience_graph.py
 !test_detect_filter.py
 !test_local_vision.py
 !test_local_vision_e2e.py
@@ -68,6 +79,18 @@ test_*.py
 !test_editor_graph_e2e.py
 !test_object_permanence.py
 !test_narrator_grounding.py
+!test_danger_simulation.py
+!test_playtest_interactive.py
+!test_render_mode.py
+!test_scene_objects.py
+!test_simulation_pacing.py
+!test_keys_store.py
+!test_scene_audio.py
+!test_usage_limits.py
+!test_billing.py
+!test_world_frames.py
+!test_somewhere_snapshot.py
+!test_encounter.py
 
 # Turn-thread scratch markers (swept at runtime; see _sweep_thread_signals)
 thread_signal_*.tmp
@@ -85,3 +108,35 @@ levels/*
 tunables.json
 assets/music/*
 !assets/music/.gitkeep
+
+# Playtest and render output. Runs write ~1 GB of stills apiece; the videos and
+# transcripts are the deliverable and live on disk, not in git.
+# Sweep with: python tools/clean_artifacts.py --apply
+playtest_results/
+test_flipbook_output/
+
+# PyInstaller build output (see tools/build_exe.py)
+build/
+dist/
+*.spec.bak
+
+# Scratch probes and the stdout/stderr they were redirected into. A debugging
+# session leaves dozens of these and none of them are ever the deliverable;
+# left untracked they bury `git status` and make the real diff unreadable.
+# Convention: give a throwaway a leading underscore at the repo root and it
+# stays out of git. Anything worth keeping goes in tools/ with a real name.
+/_*.py
+/_*.txt
+/_*.ps1
+/_*.json
+/_playthrough/
+*.bak
+
+# In-game bug captures (frame + logs + state + prompts). Local evidence for a
+# report, regenerated on demand — see /api/bug/capture.
+bugs/
+
+# Recorded generations: vision analyses keyed by frame hash, and the image/text
+# replay ledger. Reproducible by paying for the run again, so not source — but
+# do not delete these casually, they are what makes a replay run free.
+.cache/
