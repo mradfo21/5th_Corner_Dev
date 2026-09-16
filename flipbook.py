@@ -275,6 +275,16 @@ def grid_prompt(frames, seconds: float = 2.0) -> str:
     flipbook prompt that is a function of the grid: the old prompt was prose
     hand-written for 4x4, with a sixteen-cell ASCII diagram and per-row
     commentary, so any other count silently contradicted the picture it drew.
+
+    The continuity rules below are about ANIMATION — one camera, time moving,
+    nothing teleporting between frames. They are deliberately not about what may
+    happen in the shot. An earlier draft said "nothing appears or vanishes
+    between panels", which reads as a ban on anything new entering frame at all,
+    and the model obeyed it over the scene it had been asked to draw: an
+    encounter came back as four panels of the player alone inspecting a fence
+    while the choices offered to fight a man with bolt cutters who was never
+    drawn. A rule meant to keep a shot physically coherent had quietly become a
+    rule against events.
     """
     frames = normalize_frames(frames)
     rows, cols = shape_for(frames)
@@ -332,9 +342,15 @@ def grid_prompt(frames, seconds: float = 2.0) -> str:
         f"LOCKED BETWEEN PANELS (this is what makes it read as one shot):\n"
         f"- The camera does not move, cut, pan, zoom or change height. Every "
         f"panel is the same lens from the same spot.\n"
-        f"- Every fixed thing — walls, doors, vehicles, machinery, horizon — "
-        f"stays at the same size and the same place in frame. Nothing appears "
-        f"or vanishes between panels.\n"
+        f"- The SETTING holds still: walls, doors, vehicles, machinery and the "
+        f"horizon stay the same size in the same place. The place does not "
+        f"rebuild itself between panels.\n"
+        f"- Things that MOVE are free to. Whatever the scene calls for can enter "
+        f"the frame, cross it, leave it, be revealed, catch fire or fall over — "
+        f"this is a moving shot and something is supposed to happen in it. What "
+        f"is forbidden is teleporting: no jumping between panels, no blinking in "
+        f"and out, no arriving in one panel and being absent in the next. If "
+        f"something enters, it enters continuously and stays.\n"
         f"- The light does not change: same time of day, same sources, same "
         f"direction of shadow.\n"
         f"- Anything that moves travels in ONE consistent direction across the "

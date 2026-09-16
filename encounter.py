@@ -2662,8 +2662,17 @@ def build_encounter_plate_prompt(brief: dict, img2img: bool = True,
         # asks for. Frame it as the thing about to land instead.
         f"The danger is THIS FIGURE's body and what they are about to do: "
         f"{brief['danger']} — caught at the edge of happening, not yet done. "
-        f"Keep every object in the frame to what the reference photograph "
-        f"already shows."
+        # Scoped to the PLACE on purpose. This used to read "keep every object in
+        # the frame to what the reference photograph already shows", which was
+        # aimed at plates inventing hazards that had never rendered — but it
+        # landed in the same sentence as the danger, so a brief reading "swinging
+        # a length of rebar at your head" was immediately told that no object
+        # outside the reference may exist. The antagonist's own gear is not set
+        # dressing; it arrived with them.
+        f"Hold the PLACE to what the reference photograph shows: do not add "
+        f"structures, vehicles, machinery or hazards that are not already there. "
+        f"What this person brought with them is theirs — whatever they are "
+        f"carrying or reaching for belongs in the frame."
     )
     # An antagonist who wants something photographs differently from one who
     # is simply hostile: it shows in where they are looking and what they

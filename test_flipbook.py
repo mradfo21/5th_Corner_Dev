@@ -231,6 +231,28 @@ class TestThePromptFollowsTheShape(unittest.TestCase):
     """The prompt used to be prose hand-written for 4x4, including a sixteen
     cell ASCII diagram. Any other count contradicted the picture it drew."""
 
+    def test_the_continuity_rules_forbid_teleporting_not_events(self):
+        """These rules are about animation, not about what may happen.
+
+        "Nothing appears or vanishes between panels" was meant to stop things
+        popping in and out of a single continuous shot. Read literally it bans
+        anything new entering frame at all, and the model obeyed it over the
+        scene: an encounter came back as four panels of the player alone
+        inspecting a fence while the choices offered to fight a man with bolt
+        cutters who was never drawn. A rule for physical coherence had become a
+        rule against events.
+        """
+        text = flipbook.grid_prompt(4)
+        low = text.lower()
+        self.assertNotIn("nothing appears or vanishes", low)
+        # The setting still holds still...
+        self.assertIn("the setting holds still", low)
+        # ...and movement, including arrival, is explicitly allowed.
+        self.assertIn("enter the frame", low)
+        self.assertIn("teleporting", low)
+        for allowed in ("be revealed", "catch fire", "fall over"):
+            self.assertIn(allowed, low, allowed)
+
     def test_the_no_text_rule_comes_before_the_diagram(self):
         """Panels came back with "T=0s" burned into the corner.
 
