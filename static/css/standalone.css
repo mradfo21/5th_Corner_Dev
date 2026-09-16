@@ -4899,15 +4899,13 @@ body.moment-cutscene #moment-overlay {
   pointer-events: auto;
   cursor: pointer;
 }
+/* No push. These are photographs, and a slow 6% scale on every shot read as the
+   image lurching in and out rather than as a camera move — there is no camera
+   here to move. It also fought the framing: with object-fit: cover the scale
+   cropped further into a composition that was already being cropped. */
 body.moment-cutscene #moment-scene-img.cutscene-ken {
-  animation: cutscene-push 1.65s ease-out forwards;
-}
-@keyframes cutscene-push {
-  from { transform: scale(1.0); }
-  to { transform: scale(1.06); }
-}
-@media (prefers-reduced-motion: reduce) {
-  body.moment-cutscene #moment-scene-img.cutscene-ken { animation: none; }
+  animation: none;
+  transform: none;
 }
 /* Quiet dark hold while generating — never a warm/yellow wash. */
 #moment-scene-shimmer {
@@ -5229,6 +5227,21 @@ body.game-over #encounter-debug-btn {
   background: rgba(30, 8, 6, 0.92);
 }
 body.start-menu-on #bug-capture-btn { display: none; }
+
+/* ==========================================================================
+   Cutscene framing — show the whole composed frame.
+   The montage renders 2752x1536 panels and `object-fit: cover` (right for a
+   gameplay still, which must fill the screen) cropped them to whatever shape the
+   window happened to be: the sides of a deliberately composed wide were simply
+   cut off, which read as "the aspect ratio is clipped". A montage is a film, so
+   it letterboxes instead — the frame the model composed is the frame you see.
+   Declared last so the shared #moment-scene-img rule cannot win on source order.
+   ========================================================================== */
+body.moment-cutscene #moment-scene-img {
+  object-fit: contain !important;
+  object-position: center !important;
+  background: #000;
+}
 body.moment-encounter #action-wheel,
 body.moment-encounter #verb-bar,
 body.moment-encounter #custom-form,

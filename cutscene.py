@@ -107,20 +107,32 @@ MOODS: Dict[str, Dict[str, Any]] = {
              "this place, standing empty — architecture as portrait, deadpan and "
              "frontal, nobody in it and nothing happening. The emptiness is the "
              "subject"),
-            # Absence, not arrival. The character does not appear in any generated
-            # panel; the montage cuts to the level plate after these four.
+            # The shot the montage exists to arrive at, and the frame the run
+            # continues from. It is generated rather than taken from the level
+            # plate: the plate is a 1K file and these panels are 4K, so ending on
+            # it made the last and most important frame visibly the softest of the
+            # five. Generated here it is the same resolution as everything else.
             #
-            # This brief used to describe "the evidence that people were here and
-            # are not now", and the render answered with a pair of legs and boots
-            # standing in the dirt. Naming people at all — even to say they are
-            # gone — puts a person in the frame. So the subject is stated purely as
-            # objects, and the ban names the parts that actually turned up.
-            ("leftovers", "What was left",
-             "NO PEOPLE. A held frame low on the ground: tyre tracks pressed into "
-             "dust, scattered litter and broken board, a door standing open onto "
-             "darkness, a chair facing nothing. Objects and ground only. NO legs, "
-             "NO feet, NO boots, NO hands, NO shadow of a figure, nothing alive "
-             "anywhere in the frame"),
+            # Composition is spelled out because this is the shot that has to sell
+            # the level: the character small in a wide, the goal readable in the
+            # distance beyond her, and the distance between the two as the subject.
+            ("threshold", "The character, and what she came for",
+             "THE CHARACTER IS IN THIS PANEL, and this is the composed hero shot "
+             "the montage has been building to. Third-person follow-cam FROM "
+             "BEHIND: the camera sits back and a little above the player "
+             "character, so we see the BACK of her head and shoulders and none of "
+             "her face. She is small in a wide frame, standing at the near edge of "
+             "the place, and the location opens away from her into depth. What she "
+             "came here for is visible far off beyond her — small, unreached, with "
+             "the whole distance she still has to cross lying between her and it. "
+             "That distance is the subject of the shot. Compose it properly: put "
+             "her off-centre on a third, lead the eye from her body to the "
+             "far-off goal along a road, fence line, gully or shadow, build "
+             "foreground, midground and distance, and leave the space she is about "
+             "to walk into open. Still, level, held — beautiful and withholding, a "
+             "frame that makes a viewer want to know what is out there. NOT a "
+             "portrait, NOT facing the lens, NOT a close-up, NOT centred, NOT "
+             "cropped tight on her"),
         ),
     },
     "arrival": {
@@ -397,13 +409,15 @@ def build_cutscene_prompt(
             "landscape, one is a macro detail, one is a frontal architectural "
             "wide. They belong together because they are the same place and the "
             "same light, not because they are the same instant.\n"
-            "ALL FOUR PANELS ARE COMPLETELY EMPTY OF PEOPLE — no figure, no face, "
-            "no back, no hands, no legs, no feet, no boots, no silhouette, no "
-            "shadow of a person, no crowd, nobody in the distance, nobody "
-            "reflected in anything. A cropped body part is still a person: a pair "
-            "of legs at the edge of frame fails this. These are photographs of a "
-            "place with nobody in it; the person arrives after this montage, in a "
-            "shot that is not yours to draw."
+            f"PANELS 1, 2 AND 3 ARE COMPLETELY EMPTY OF PEOPLE — no figure, no "
+            f"face, no back, no hands, no legs, no feet, no boots, no silhouette, "
+            f"no shadow of a person, nobody in the distance, nobody reflected in "
+            f"anything. A cropped body part is still a person: a pair of legs at "
+            f"the edge of frame fails this.\n"
+            f"THE {_cell_name(len(pack['shots']))} PANEL IS THE ONLY ONE WITH THE "
+            f"CHARACTER IN IT. It is the shot the montage arrives at and the frame "
+            f"the game continues from, so it is the one that must be composed "
+            f"most carefully of the four."
         )
     else:
         bits.append(
@@ -465,6 +479,20 @@ def build_cutscene_prompt(
             "the cell it names and nowhere else — a render that draws all four "
             "subjects correctly but puts them in the wrong cells is a failed "
             "render, because the panels are cut apart and shown in that order."
+        )
+    if opening:
+        # The 4K renders came back as lavender-dusk landscape photography —
+        # technically lovely and completely wrong for the material. The palette
+        # already says 1993 and rust; what was missing was any instruction about
+        # MOOD, so the model defaulted to a postcard.
+        bits.append(
+            "GRADE AND MOOD — THIS IS NOT A POSTCARD. Analog horror, not landscape "
+            "photography. Desaturate: dirty, muted, slightly sickly colour on "
+            "expired consumer film, with visible grain and a soft, low-contrast "
+            "haze rather than clean digital clarity. No lavender or candy dusk "
+            "skies, no glossy travel-magazine light, no lens flare, no vivid "
+            "saturation, nothing picturesque. Every frame should feel a little "
+            "wrong — too still, too empty, watched. Dread, quiet and specific."
         )
     bits.append(
         "A finished 1993 photograph in each panel. Empty hands, no text, "
@@ -621,6 +649,26 @@ def generate_shots(
                 tod = str((engine.get_state(session_id) or {}).get("time_of_day") or "")
             except Exception:
                 tod = ""
+
+            # The character sheet's reference plate has to travel with this
+            # request. The only other reference is the level plate, which is an
+            # ENVIRONMENT frame — so when the last panel asked for "the
+            # character", the model had no idea who that was and invented one: a
+            # render came back as a close-up of a middle-aged man in a cap,
+            # against a brief that spelled out a woman seen from behind, small in
+            # a wide. It is the same identity lock the main image pipeline passes
+            # (see identity_paths at engine.py:7492); the montage was simply not
+            # passing it.
+            identity_plates = []
+            try:
+                import game_identity
+                identity_plates = game_identity.identity_reference_paths(
+                    include_character=True, include_setting=False)
+            except Exception:
+                logging.exception("[CUTSCENE] identity plate lookup failed")
+            if identity_plates:
+                print(f"[CUTSCENE] {len(identity_plates)} identity plate(s) locked "
+                      f"to the hero panel", flush=True)
             grid_file = generate_gemini_img2img(
                 prompt=prompt,
                 caption=stem + "_grid",
@@ -637,6 +685,8 @@ def generate_shots(
                 # a photograph.
                 model=GRID_RENDER_MODEL,
                 image_size=GRID_RENDER_SIZE,
+                identity_paths=identity_plates or None,
+                hold_cast=True,
             )
             if grid_file and Path(grid_file).exists():
                 grid_path = Path(grid_file)
@@ -759,49 +809,12 @@ def play_for_session(
     except Exception:
         logging.exception("[CUTSCENE] generate_shots failed")
         return {"ok": False, "error": "generate_failed", "shots": []}
-    # The opening ends on the plate itself, as a final beat.
-    #
-    # This is the frame the run continues from: _finish_opening_montage takes
-    # shots[-1] and writes it into history as the opening handoff, and turn one
-    # does img2img off it. Asking the model to draw that composition did not work
-    # — the panel came back as a front-facing portrait, then a side-on medium,
-    # with the wardrobe drifting — and a wrong frame there is not cosmetic, it is
-    # the seed for every later frame in the run. The plate is already the right
-    # composition, drawn by the pipeline that knows the follow-cam rules and
-    # locked to the character reference, so the cut is exact by construction.
-    #
-    # This does NOT undo the earlier decision that the plate must not OPEN the run
-    # (see _stage_opening_montage, which keeps it out of the feed). The objection
-    # there was to the first thing a player sees being a frame nobody shot for
-    # this run; arriving on it after four photographs of the empty place is the
-    # opposite — it is the shot the montage has been withholding.
-    #
-    # Built here rather than in generate_shots because only this layer knows the
-    # plate's real web URL. A World frame lives in worlds/, not in the session's
-    # images/, so `_to_web` maps it to /images/world.frame.png, which 404s — and
-    # since this beat's url becomes current_image_url, that 404 was handed to turn
-    # one and the run opened on a black screen with the client retrying the
-    # missing file four times. The staged url is the one the route can serve.
-    if mood == "approach" and generated.get("shots"):
-        # _stage_opening_montage leaves the plate's servable URL in
-        # current_image_url on purpose ("so a status poll has something true to
-        # report"), which makes it the one url here known to resolve.
-        try:
-            staged_url = str((engine.get_state(session_id) or {})
-                             .get("current_image_url") or "").strip()
-        except Exception:
-            staged_url = ""
-        if staged_url:
-            generated["shots"] = list(generated["shots"]) + [{
-                "url": staged_url,
-                "path": str(plate),
-                "camera": "threshold",
-                "label": "The place, as you find it",
-            }]
-        else:
-            logging.warning("[CUTSCENE] no servable plate url; the montage will "
-                            "end on a generated panel instead")
-
+    # The montage no longer appends the level plate as a final beat. It did, so
+    # that the composition the run continues from was guaranteed correct rather
+    # than argued for — but the plate is a 1K file and these panels are 4K, so the
+    # last and most important frame arrived visibly softer than the four before
+    # it. The hero shot is generated with the rest now, at the same resolution,
+    # with its composition spelled out (see the "threshold" shot in MOODS).
     play_id = cutscene_id or ("play-" + uuid.uuid4().hex[:8])
     payload = {
         "ok": True,
